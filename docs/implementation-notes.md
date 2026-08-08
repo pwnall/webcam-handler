@@ -67,3 +67,41 @@ one) take a narrow `#[expect(clippy::disallowed_methods, reason = "…")]`.
 — `grep` finds every exception and each carries a reason; a test-only ban is not.
 
 **Retires when:** clippy grows per-target `disallowed-methods`.
+
+---
+
+## PF:13 — `bus_info` is per-USB-device, not per-logical-camera
+
+**Measured** 2026-08-08 on kernel 7.0.0-29-generic, against the same seed hardware as the
+docs/1 §1.2 registry. Continues that registry; cite it as `[PF:13]`.
+
+`VIDIOC_QUERYCAP` reports `bus_info` for both Chicony logical cameras as the identical
+string `usb-0000:00:14.0-4`, even though they are separate USB *interfaces* (`3-4:1.0` RGB
+and `3-4:1.2` IR) hosting separate capture nodes with different formats. The card names do
+differ (`Integrated Camera: Integrated C` vs `… Integrated I`), but that is the vendor's
+courtesy, not a guarantee.
+
+**Consequences, both load-bearing:**
+
+1. **Grouping must come from the sysfs USB interface path**, never from `bus_info` —
+   PF:7's rule, now with the counter-example that shows why the easier field does not
+   work. Two cameras that share `bus_info` would collapse into one group.
+2. **`CameraFingerprint::bus_path` holds the interface path** (`3-4:1.2`), not `bus_info`.
+   A fingerprint built on `bus_info` could not tell the IR camera from the RGB one, and
+   `calibrate apply` would happily replay an IR session onto the RGB sensor.
+
+Measured node facts, for the P1 enumeration tests:
+
+| Node | Interface | `device_caps` | Kind |
+|---|---|---|---|
+| video0 | 3-4:1.0 | `0x04200001` | capture (Chicony RGB) |
+| video1 | 3-4:1.0 | `0x04a00000` | metadata |
+| video2 | 3-4:1.2 | `0x04200001` | capture (Chicony IR) |
+| video3 | 3-4:1.2 | `0x04a00000` | metadata |
+| video4 | 3-1:1.0 | `0x04200001` | capture (OBSBOT Tiny 3) |
+| video5 | 3-1:1.0 | `0x04a00000` | metadata |
+
+USB ids: Chicony `04f2:b83c` serial `"0001"`; OBSBOT `3564:ff02`, no serial — PF:8 holds.
+
+**Retires when:** never, unless the kernel starts reporting per-interface `bus_info`. It
+becomes corpus at P1, where the three committed profiles pin these node tables.
