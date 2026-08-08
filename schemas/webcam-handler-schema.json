@@ -295,6 +295,27 @@
         }
       ]
     },
+    "CameraDetail": {
+      "description": "What `info` answers: one camera and the formats its capture node offers.",
+      "properties": {
+        "formats": {
+          "description": "Formats, with sizes and the intervals available at each size nested under them\n[PF:9]. Empty for a camera with no capture node, which is a real shape.",
+          "items": {
+            "$ref": "#/$defs/FormatInfo"
+          },
+          "type": "array"
+        },
+        "info": {
+          "$ref": "#/$defs/CameraInfo",
+          "description": "Identity, nodes, grouping."
+        }
+      },
+      "required": [
+        "info",
+        "formats"
+      ],
+      "type": "object"
+    },
     "CameraFingerprint": {
       "description": "Best-effort identity across replug and reboot.\n\nSerial numbers are in here but not trusted: the Chicony reports `\"0001\"` and the\nOBSBOT reports none at all [PF:8]. Matching is conservative — a mismatch on\n`calibrate apply` is a refusal naming the differing fields, not a warning.",
       "properties": {
@@ -383,6 +404,29 @@
         "bus_info",
         "nodes",
         "backend"
+      ],
+      "type": "object"
+    },
+    "CameraList": {
+      "description": "What `list` answers.",
+      "properties": {
+        "cameras": {
+          "description": "The cameras, in enumeration order.",
+          "items": {
+            "$ref": "#/$defs/CameraInfo"
+          },
+          "type": "array"
+        },
+        "hints": {
+          "description": "Anything worth saying about what is *not* in the list.",
+          "items": {
+            "$ref": "#/$defs/ListHint"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cameras"
       ],
       "type": "object"
     },
@@ -533,6 +577,27 @@
         "min",
         "max",
         "step"
+      ],
+      "type": "object"
+    },
+    "ControlReport": {
+      "description": "What `controls` answers.",
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/CameraId",
+          "description": "Which camera these came from — so a saved `--json` document is self-describing."
+        },
+        "controls": {
+          "description": "Every control the device enumerated, including the ones this build cannot\ninterpret [PF:1].",
+          "items": {
+            "$ref": "#/$defs/ControlDesc"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "camera",
+        "controls"
       ],
       "type": "object"
     },
@@ -1742,6 +1807,16 @@
       ],
       "type": "object"
     },
+    "HintKind": {
+      "description": "Why a listing might not say what the user expected.\n\nD1: \"an empty enumeration is diagnosed, not shrugged at\". Hints are *data*, not\nprose the CLI prints and the daemon forgets — an agent reading `--json` gets the\nsame diagnosis a human reading the table does.",
+      "oneOf": [
+        {
+          "const": "driverless_usb_video_device",
+          "description": "A USB device presents a video-class interface and no driver has bound a V4L2\nnode to it — the skill's `lsusb` triage, built in [PF:14].",
+          "type": "string"
+        }
+      ]
+    },
     "Holder": {
       "description": "A process holding a device open, as diagnosed from `/proc/*/fd` — the `fuser`\nreplacement. Killing one is a separate explicit command, never a side effect\n(design §5, D10).",
       "properties": {
@@ -1832,6 +1907,24 @@
           "type": "string"
         }
       ]
+    },
+    "ListHint": {
+      "description": "One diagnosis attached to a listing.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/HintKind",
+          "description": "What kind of problem this is."
+        },
+        "subject": {
+          "description": "What it is about — a USB device path such as `1-2`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject"
+      ],
+      "type": "object"
     },
     "LogEntry": {
       "description": "One line of `log.ndjson`.",
@@ -3130,8 +3223,11 @@
   "title": "webcam-handler schema bundle",
   "x-roots": [
     "Applied",
+    "CameraDetail",
     "CameraInfo",
+    "CameraList",
     "ControlDesc",
+    "ControlReport",
     "ControlValue",
     "DeviceProfile",
     "Error",

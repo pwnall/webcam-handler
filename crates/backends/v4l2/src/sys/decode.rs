@@ -127,7 +127,10 @@ pub(crate) fn control_desc(bytes: &[u8]) -> Option<ControlDesc> {
     let nr_of_dims = fields::read_u32(bytes, offset_of!(v4l2_query_ext_ctrl, nr_of_dims))?;
 
     Some(ControlDesc {
-        id: ControlId(fields::read_u32(bytes, offset_of!(v4l2_query_ext_ctrl, id))?),
+        id: ControlId(fields::read_u32(
+            bytes,
+            offset_of!(v4l2_query_ext_ctrl, id),
+        )?),
         name,
         slug,
         control_type: ControlType::from_raw(fields::read_u32(
@@ -557,7 +560,10 @@ mod tests {
             "…while the whole reply must"
         );
         assert_eq!(capability(&QUERYCAP_CHICONY_RGB[..16]), None);
-        assert_eq!(menu_item(&MENU_ITEM_1[..8], ControlType::Menu.to_raw()), None);
+        assert_eq!(
+            menu_item(&MENU_ITEM_1[..8], ControlType::Menu.to_raw()),
+            None
+        );
         assert_eq!(frame_size(&FRAMESIZE_MJPG[..8]), None);
         assert_eq!(frame_interval(&FRAMEINTERVAL_MJPG[..8]), None);
         assert_eq!(format_desc(&ENUM_FMT_MJPG[..8]), None);

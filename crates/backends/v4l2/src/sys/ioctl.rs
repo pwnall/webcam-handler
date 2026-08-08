@@ -13,11 +13,11 @@
 use std::mem::offset_of;
 
 use schema::error::{Error, Result};
-use v4l::v4l2::vidioc;
 use v4l::v4l_sys::{
     v4l2_capability, v4l2_ext_control, v4l2_ext_controls, v4l2_fmtdesc, v4l2_frmivalenum,
     v4l2_frmsizeenum, v4l2_query_ext_ctrl, v4l2_querymenu,
 };
+use v4l::v4l2::vidioc;
 
 use super::{Fd, Payload, decode, fields};
 
@@ -119,7 +119,12 @@ pub(crate) fn querymenu(
         index,
         "VIDIOC_QUERYMENU",
     )?;
-    match call_enumerating(fd, vidioc::VIDIOC_QUERYMENU, &mut payload, "VIDIOC_QUERYMENU")? {
+    match call_enumerating(
+        fd,
+        vidioc::VIDIOC_QUERYMENU,
+        &mut payload,
+        "VIDIOC_QUERYMENU",
+    )? {
         Enumerated::Exhausted => Ok(Enumerated::Exhausted),
         Enumerated::Entry(()) => decode::menu_item(payload.bytes(), control_type)
             .map(Enumerated::Entry)
@@ -225,7 +230,12 @@ pub(crate) fn get_scalar(
 ) -> Result<schema::control::ControlValue> {
     let op = "VIDIOC_G_EXT_CTRLS";
     let mut control = Payload::<v4l2_ext_control>::zeroed();
-    set_u32(&mut control, offset_of!(v4l2_ext_control, id), control_id, op)?;
+    set_u32(
+        &mut control,
+        offset_of!(v4l2_ext_control, id),
+        control_id,
+        op,
+    )?;
 
     let mut controls = ext_controls_header(&mut control, op)?;
     // SAFETY: `controls` holds a zeroed `v4l2_ext_controls` whose `count` is 1 and whose
@@ -235,7 +245,8 @@ pub(crate) fn get_scalar(
     // holds an inline scalar — so the kernel dereferences nothing beyond the array. The
     // pointer passed is to `controls` itself, valid for `size_of::<v4l2_ext_controls>()`
     // writable bytes.
-    let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
+    let ret =
+        unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
     ret.map_err(|error| device_error(fd, op, &error))?;
 
     decode::control_scalar(control.bytes(), control_type).ok_or_else(|| short_reply(op))
@@ -255,7 +266,12 @@ pub(crate) fn get_payload(fd: &Fd, control_id: u32, len: usize) -> Result<Vec<u8
     let size = u32::try_from(len).map_err(|_| short_reply(op))?;
 
     let mut control = Payload::<v4l2_ext_control>::zeroed();
-    set_u32(&mut control, offset_of!(v4l2_ext_control, id), control_id, op)?;
+    set_u32(
+        &mut control,
+        offset_of!(v4l2_ext_control, id),
+        control_id,
+        op,
+    )?;
     set_u32(&mut control, offset_of!(v4l2_ext_control, size), size, op)?;
     fields::write_usize(
         control.bytes_mut(),
@@ -271,7 +287,8 @@ pub(crate) fn get_payload(fd: &Fd, control_id: u32, len: usize) -> Result<Vec<u8
     // `decode::payload_len`, which bounds the device-supplied product against
     // `limits::MAX_CONTROL_PAYLOAD_BYTES` and rejects zero, so the kernel writes at most
     // as many bytes as the allocation holds.
-    let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
+    let ret =
+        unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
     ret.map_err(|error| device_error(fd, op, &error))?;
 
     Ok(buffer)

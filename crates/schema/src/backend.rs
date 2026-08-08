@@ -114,6 +114,18 @@ pub trait CameraBackend: fmt::Debug + Send + Sync {
 
     /// Subscribe to add/remove events.
     fn watch(&self) -> Result<Box<dyn HotplugWatch>>;
+
+    /// Why [`CameraBackend::enumerate`] might not have said what the caller expected.
+    ///
+    /// D1: "an empty enumeration is diagnosed, not shrugged at". The diagnosis is
+    /// backend-specific — only the V4L2 backend knows what a USB video-class interface
+    /// with no driver looks like — so it belongs on the seam rather than in a client that
+    /// would have to ask which backend it is holding (design §2.10: a second `match` on
+    /// `BackendKind` is a second home). Defaulted to empty, because "I have nothing to
+    /// add" is the honest answer for a backend replaying a document. See note N7.
+    fn diagnose(&self) -> Vec<crate::report::ListHint> {
+        Vec::new()
+    }
 }
 
 /// **T2** — one open camera. Blocking, object-safe, minimal.

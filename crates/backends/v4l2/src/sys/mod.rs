@@ -170,7 +170,9 @@ impl<T: Copy> Payload<T> {
         // SAFETY: as `bytes`, with `&mut self` giving the exclusive borrow the mutable
         // slice requires. Writing initialized bytes over initialized bytes keeps the
         // whole allocation initialized, which is what `bytes` relies on.
-        unsafe { std::slice::from_raw_parts_mut(self.slot.as_mut_ptr().cast::<u8>(), size_of::<T>()) }
+        unsafe {
+            std::slice::from_raw_parts_mut(self.slot.as_mut_ptr().cast::<u8>(), size_of::<T>())
+        }
     }
 }
 

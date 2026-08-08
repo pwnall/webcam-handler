@@ -14,3 +14,14 @@ name = "cli_core"
 [lints]
 workspace = true
 
+
+[dependencies]
+camino.workspace = true
+clap.workspace = true
+comfy-table.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+webcam-handler-schema.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -88,7 +88,11 @@ pub(crate) fn nodes_in(class_dir: &Utf8Path) -> Result<Vec<SysfsNode>> {
         let link = class_dir.join(&name);
         nodes.push(node_from(&link, name));
     }
-    nodes.sort_by(|a, b| node_order(&a.name).cmp(&node_order(&b.name)).then(a.name.cmp(&b.name)));
+    nodes.sort_by(|a, b| {
+        node_order(&a.name)
+            .cmp(&node_order(&b.name))
+            .then(a.name.cmp(&b.name))
+    });
     Ok(nodes)
 }
 
@@ -277,7 +281,11 @@ mod tests {
         fs.add("video3", "3-4", "3-4:1.2", chicony);
         // The OBSBOT's serial file exists and is empty — measured, and the reason
         // `attribute` treats empty as absent.
-        let obsbot = &[("idVendor", "3564"), ("idProduct", "ff02"), ("serial", "\n")];
+        let obsbot = &[
+            ("idVendor", "3564"),
+            ("idProduct", "ff02"),
+            ("serial", "\n"),
+        ];
         fs.add("video4", "3-1", "3-1:1.0", obsbot);
         fs.add("video5", "3-1", "3-1:1.0", obsbot);
         fs
@@ -294,7 +302,9 @@ mod tests {
         let keys: Vec<&str> = nodes.iter().map(SysfsNode::group_key).collect();
         assert_eq!(
             keys,
-            vec!["3-4:1.0", "3-4:1.0", "3-4:1.2", "3-4:1.2", "3-1:1.0", "3-1:1.0"]
+            vec![
+                "3-4:1.0", "3-4:1.0", "3-4:1.2", "3-4:1.2", "3-1:1.0", "3-1:1.0"
+            ]
         );
         let distinct: std::collections::BTreeSet<&str> = keys.into_iter().collect();
         assert_eq!(
@@ -361,11 +371,7 @@ mod tests {
         assert_eq!(orphan.interface, None);
         assert_eq!(orphan.group_key(), "video9");
         assert!(
-            nodes
-                .iter()
-                .filter(|n| n.group_key() == "video9")
-                .count()
-                == 1,
+            nodes.iter().filter(|n| n.group_key() == "video9").count() == 1,
             "an unplaceable node is its own group"
         );
     }

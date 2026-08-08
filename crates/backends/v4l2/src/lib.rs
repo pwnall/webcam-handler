@@ -1,7 +1,7 @@
 //! The V4L2 backend.
 //!
 //! This is the one crate in the workspace without `#![forbid(unsafe_code)]`: talking to
-//! the kernel means ioctls and mmap. The token `unsafe` is confined to [`sys`] by
+//! the kernel means ioctls and mmap. The token `unsafe` is confined to `src/sys/` by
 //! `scripts/gates/unsafe-scope.sh`, which derives the allowed path from the tree.
 //!
 //! ## What P1 lands, and what it does not
@@ -18,11 +18,11 @@
 //!
 //! | Module | Owns |
 //! |---|---|
-//! | [`sys`] | ioctls, and the pure byte-to-schema decoding Miri executes |
+//! | `sys` | ioctls, and the pure byte-to-schema decoding Miri executes |
 //! | `sysfs` | the node list and the bus-interface topology, read without udev |
 //! | `enumerate` | the pure grouping rule: nodes to cameras \[PF:7, PF:13\] |
 //!
-//! Nothing above `sys` names a kernel type; `scripts/gates/dependency-walls.sh` holds
+//! Nothing above `src/sys/` names a kernel type; `scripts/gates/dependency-walls.sh` holds
 //! that line for the rest of the workspace by refusing `v4l::` outside this crate.
 // Kernel-shaped integers are converted with `try_from`, never `as` (rubric B10).
 #![deny(
@@ -52,13 +52,12 @@ use std::time::Instant;
 
 use camino::Utf8Path;
 use schema::backend::{BackendKind, Camera, CameraBackend, HotplugWatch};
-use schema::camera::{
-    CameraId, CameraInfo, FormatInfo, FrameSizeInfo, PixelFormat,
-};
+use schema::camera::{CameraId, CameraInfo, FormatInfo, FrameSizeInfo, PixelFormat};
 use schema::capture::{Frame, NegotiatedStream, StreamRequest};
 use schema::control::{Applied, ControlDesc, ControlId, ControlType, ControlValue, KnownFlag};
 use schema::error::{Error, Result};
 use schema::limits;
+use schema::report::{HintKind, ListHint};
 
 use enumerate::ProbedNode;
 use sys::{Fd, ioctl};
@@ -99,6 +98,16 @@ impl CameraBackend for V4l2Backend {
 
     fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
         Err(unimplemented_here("CameraBackend::watch", HOTPLUG_PHASE))
+    }
+
+    fn diagnose(&self) -> Vec<ListHint> {
+        sysfs::unbound_video_devices()
+            .into_iter()
+            .map(|device| ListHint {
+                kind: HintKind::DriverlessUsbVideoDevice,
+                subject: device,
+            })
+            .collect()
     }
 }
 
@@ -287,11 +296,10 @@ impl Camera for V4l2Camera {
     fn formats(&self) -> Result<Vec<FormatInfo>> {
         let mut formats = Vec::new();
         for index in 0..limits::MAX_FORMATS_PER_NODE {
-            let (pixel_format, description, flags) =
-                match ioctl::enum_fmt(&self.fd, index)? {
-                    ioctl::Enumerated::Exhausted => break,
-                    ioctl::Enumerated::Entry(entry) => entry,
-                };
+            let (pixel_format, description, flags) = match ioctl::enum_fmt(&self.fd, index)? {
+                ioctl::Enumerated::Exhausted => break,
+                ioctl::Enumerated::Entry(entry) => entry,
+            };
             formats.push(FormatInfo {
                 sizes: self.sizes_for(pixel_format)?,
                 pixel_format,
@@ -348,10 +356,7 @@ impl Camera for V4l2Camera {
     }
 
     fn start_stream(&mut self, _request: &StreamRequest) -> Result<NegotiatedStream> {
-        Err(unimplemented_here(
-            "Camera::start_stream",
-            WRITE_PATH_PHASE,
-        ))
+        Err(unimplemented_here("Camera::start_stream", WRITE_PATH_PHASE))
     }
 
     fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {

@@ -89,7 +89,10 @@ pub(crate) fn group(nodes: &[ProbedNode]) -> Vec<CameraInfo> {
         })
         .collect();
 
-    let cards: Vec<String> = groups.iter().map(|(_, _, head)| head.card.clone()).collect();
+    let cards: Vec<String> = groups
+        .iter()
+        .map(|(_, _, head)| head.card.clone())
+        .collect();
     let ids = assign_ids(&cards);
 
     groups
@@ -261,7 +264,9 @@ mod tests {
             "an IR session must not apply to the RGB sensor"
         );
         assert_eq!(
-            chicony[0].fingerprint.differing_fields(&chicony[1].fingerprint),
+            chicony[0]
+                .fingerprint
+                .differing_fields(&chicony[1].fingerprint),
             vec!["bus_path", "card"]
         );
     }
@@ -300,10 +305,7 @@ mod tests {
             .iter()
             .find(|c| c.card.ends_with('I'))
             .expect("the IR camera");
-        assert_eq!(
-            ir.capture_node().expect("capture node").path,
-            "/dev/video2"
-        );
+        assert_eq!(ir.capture_node().expect("capture node").path, "/dev/video2");
     }
 
     #[test]

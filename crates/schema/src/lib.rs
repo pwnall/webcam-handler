@@ -46,6 +46,7 @@ pub mod limits;
 pub mod metrics;
 pub mod pairing;
 pub mod profile;
+pub mod report;
 pub mod session;
 pub mod slug;
 pub mod snapshot;
@@ -56,6 +57,7 @@ pub use camera::{CameraFingerprint, CameraId, CameraInfo, PixelFormat};
 pub use control::{Applied, ControlDesc, ControlId, ControlSlug, ControlValue};
 pub use error::{BackendError, Error, ErrorKind, Result};
 pub use profile::DeviceProfile;
+pub use report::{CameraDetail, CameraList, ControlReport, ListHint};
 pub use session::Session;
 pub use time::Stamp;
 

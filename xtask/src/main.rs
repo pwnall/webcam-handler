@@ -87,6 +87,7 @@ fn bundle() -> Result<Value> {
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
     use schema::error::Error;
     use schema::profile::DeviceProfile;
+    use schema::report::{CameraDetail, CameraList, ControlReport};
     use schema::session::{LogEntry, Session};
     use schema::snapshot::{RestoreReport, Snapshot};
 
@@ -94,6 +95,11 @@ fn bundle() -> Result<Value> {
     let mut roots: Vec<String> = Vec::new();
 
     register::<CameraInfo>(&mut generator, &mut roots);
+    // The read verbs' answers: `--json` emits these verbatim (design §2.7), so a
+    // consumer validating our output needs them named in the bundle.
+    register::<CameraList>(&mut generator, &mut roots);
+    register::<CameraDetail>(&mut generator, &mut roots);
+    register::<ControlReport>(&mut generator, &mut roots);
     register::<FormatInfo>(&mut generator, &mut roots);
     register::<ControlDesc>(&mut generator, &mut roots);
     register::<ControlValue>(&mut generator, &mut roots);

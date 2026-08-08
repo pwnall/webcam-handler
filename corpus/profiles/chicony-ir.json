@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "captured_at": "2026-08-08T16:19:01.09276368Z",
+    "kernel": "7.0.0-29-generic",
+    "tool_version": "0.1.0",
+    "capturer": "victor@costan.us (P1 corpus seed)",
+    "backend": "v4l2"
+  },
+  "invariant": {
+    "info": {
+      "id": "cam:integrated-camera-integrated-i",
+      "fingerprint": {
+        "bus_path": "3-4:1.2",
+        "usb_id": {
+          "vendor": 1266,
+          "product": 47164
+        },
+        "card": "Integrated Camera: Integrated I",
+        "driver": "uvcvideo",
+        "serial": "0001"
+      },
+      "card": "Integrated Camera: Integrated I",
+      "driver": "uvcvideo",
+      "bus_info": "usb-0000:00:14.0-4",
+      "nodes": [
+        {
+          "path": "/dev/video2",
+          "kind": {
+            "kind": "video_capture"
+          },
+          "device_caps": 69206017,
+          "capabilities": 2225078273
+        },
+        {
+          "path": "/dev/video3",
+          "kind": {
+            "kind": "meta_capture"
+          },
+          "device_caps": 77594624,
+          "capabilities": 2225078273
+        }
+      ],
+      "backend": "v4l2"
+    },
+    "formats": [
+      {
+        "pixel_format": [
+          71,
+          82,
+          69,
+          89
+        ],
+        "description": "8-bit Greyscale",
+        "flags": 0,
+        "sizes": [
+          {
+            "size": {
+              "kind": "discrete",
+              "width": 640,
+              "height": 360
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 15
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "controls": [
+      {
+        "id": 9961473,
+        "name": "User Controls",
+        "slug": "user_controls",
+        "type": {
+          "kind": "control_class"
+        },
+        "range": {
+          "min": 0,
+          "max": 0,
+          "step": 0
+        },
+        "default": 0,
+        "flags": {
+          "raw": 68,
+          "known": [
+            "read_only",
+            "write_only"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 0,
+        "elem_size": 0
+      },
+      {
+        "id": 9968353,
+        "name": "Region of Interest Rectangle",
+        "slug": "region_of_interest_rectangle",
+        "type": {
+          "kind": "rect"
+        },
+        "range": {
+          "min": 0,
+          "max": 0,
+          "step": 0
+        },
+        "default": 0,
+        "flags": {
+          "raw": 4352,
+          "known": [
+            "has_payload",
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 16
+      },
+      {
+        "id": 9968354,
+        "name": "Region of Interest Auto Ctrls",
+        "slug": "region_of_interest_auto_ctrls",
+        "type": {
+          "kind": "bitmask"
+        },
+        "range": {
+          "min": 0,
+          "max": 1,
+          "step": 0
+        },
+        "default": 1,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      }
+    ]
+  },
+  "state": {
+    "values": {
+      "region_of_interest_auto_ctrls": {
+        "kind": "int",
+        "value": 0
+      },
+      "region_of_interest_rectangle": {
+        "kind": "bytes",
+        "value": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "flags": {
+      "region_of_interest_auto_ctrls": 4096,
+      "region_of_interest_rectangle": 4352,
+      "user_controls": 68
+    }
+  }
+}
