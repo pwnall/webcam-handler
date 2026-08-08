@@ -103,10 +103,11 @@ this table is the commissioning record).
 
 | Gate | Phase | Enforced by | Catches |
 |---|---|---|---|
-| **Profile capture/replay inverse** | P1 | battery arm + `just gate-g1` counted selection | `profile capture` and fake replay drifting apart — the corpus quietly ceasing to resemble devices (E5) |
-| **vivid rung skip accounting** | P1 | the R2 recipe reports run-or-named-skip; a silent no-op fails `counted-selections.sh` | the virtual-driver rung decaying into green-by-absence on every runner |
-| **Miri over the sys-decode units** | P1 | a CI job running Miri on the unsafe-adjacent pure functions (raw-struct→`ControlDesc` over captured bytes — §2.5 shapes the code to keep this population real); its selection is counted | undefined behavior in the one crate allowed to have any |
-| **PF regression fixtures loaded** | P1 | corpus floor: each committed profile is loaded by ≥1 test, counted against the corpus listing (derived, not hand-listed) | dead corpus — a profile nobody replays |
+| ~~**Profile capture/replay inverse**~~ | P1 | **landed**: `crates/backends/fake/tests/corpus_replay.rs` replays every committed profile through the battery and asserts the fake rewrites only the id and the backend field; `hw_profile_capture_reproduces_the_committed_invariant_section` closes the capture half on hardware | `profile capture` and fake replay drifting apart — the corpus quietly ceasing to resemble devices (E5) |
+| ~~**vivid rung skip accounting**~~ | P1 | **landed**: four `vivid_*` tests, declared by `scripts/rung-vivid.sh`'s `wch-suite` marker and checked by `ignored-suites-have-recipes.sh`. **The suite itself has never been executed** — see the E1 evidence entry in the implementation notes | the virtual-driver rung decaying into green-by-absence on every runner |
+| ~~**Miri over the sys-decode units**~~ | P1 | **landed**: `scripts/miri.sh` selects `sys::decode`, 19 units green over the captured ioctl replies in `crates/backends/v4l2/fixtures/`. The decoders take `&[u8]` at `offset_of!`-derived offsets precisely so the population is real | undefined behavior in the one crate allowed to have any |
+| ~~**PF regression fixtures loaded**~~ | P1 | **landed**: `scripts/gates/corpus-floor.sh` (three claims: non-empty, every profile reachable, at least one test *replays* rather than merely parses). `corpus_replay.rs` additionally asserts each device-behavior PF finding is exhibited by a committed profile, and names the ones deliberately absent | dead corpus — a profile nobody replays |
+| **`--json` validates against the bundle** | P1 (uncommissioned) | `scripts/gates/json-validates.sh`: runs the built `wch` over the fake backend and checks each read verb's answer against `#/$defs/<type>` in the committed bundle | a renderer that wraps the answer in an envelope, adds a field, or hand-builds an object — `schema-artifacts-current.sh` proves the bundle matches the *types*, and nothing proved the *output* matched either |
 | **Guarded-set inverse** | P2 | property test + constructible-inverse fixture in the battery write arms | a manual write under live automation slipping through the planner |
 | **Snapshot-restore assertion** | P2 | battery arm: perturb → restore → byte-compare control state; R3 twin asserts on hardware | restoration by assumption (rubric C smell) |
 | **EXIF read-back** | P2 | independent-reader test (kamadak-exif reads what little_exif wrote — a gate-commissioned oracle gets its §2.8 dependency entry at commissioning time, as this one has) | write-only EXIF claims |
@@ -141,7 +142,18 @@ this table is the commissioning record).
 - **R3 hardware criteria are evidence-recorded, not CI-gating**: shared CI has no camera.
   The gate-g1/g2 recipes assert the *recipes select tests*; the runs themselves land in
   the implementation notes with transcripts. This is the plan's largest honest hole and
-  it is structural (design §3.3 item 1).
+  it is structural (design §3.3 item 1). The P1 run is recorded as entry E1 there.
+- **The R2 vivid suite is written and unrun** (as of P1). The module is installed on the
+  development machine and not loaded, and `rung-vivid.sh` declines to load kernel modules
+  on anyone's behalf — including on the behalf of whoever is writing the tests. "The rung
+  reports a counted skip" is established; "the rung works" is not, and the two are
+  different claims.
+- **`json-validates.sh` is not a JSON Schema validator.** The offline toolchain has none,
+  so it enforces the checkable core: every `required` property present, and no property
+  the schema does not declare. Types, formats, nested shapes and array element schemas are
+  unchecked. That catches the defect it was written for — an envelope, an extra field, a
+  hand-built object — and this line is what keeps its green from being read as full
+  validation.
 - **Miri cannot cross an ioctl.** It covers the pure decode half of the unsafe module;
   the ioctl calls themselves are exercised only on R2/R3. The split is deliberate (§2.5
   shapes the code for it) and this line is what keeps "Miri green" from being read as
