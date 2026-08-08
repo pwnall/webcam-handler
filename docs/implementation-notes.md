@@ -386,6 +386,27 @@ privileged boundary. Thirty lines is the cheaper half of that trade.
 all landed and someone decides the loop no longer needs to load modules unattended. Delete
 `crates/priv/`, the `bless` recipe, and the gate together; nothing else references them.
 
+**Corrected once already, on the first real bless.** The helper was blessed `+eip` on the
+theory that the file's inheritable bit is what lets a capability reach a child. It is not.
+The kernel computes `pI' = pI` across `exec` — a process's inheritable set is whatever its
+*caller* had — and the file's `fI` only ever appears as the term `pI & fI`, which is empty
+when the caller is a shell. `PR_CAP_AMBIENT_RAISE` needs the capability in both `pP` and
+`pI`, so `wch-priv exec` could never have worked, while `getcap` showed a perfect-looking
+`cap_net_admin,cap_sys_module=eip`. The fix is to raise into `pI` at runtime, which
+`capabilities(7)` allows without `CAP_SETPCAP` (`pI' ⊆ (pI | pP)`), and the blessing is now
+`+ep` — the inheritable bit was dead weight carrying a false explanation.
+
+Two things follow, both of which outlive the bug:
+
+- **`doctor` performs the ambient raise instead of predicting it.** The old version
+  reported a static guess and got it wrong in the one direction that matters; the new one
+  runs the same call `exec` does, so a green line means the chain has actually executed.
+  `just bless` ends by running it.
+- **`just bless` stages the copy** and moves it into place only after `setcap` succeeds. A
+  bless that cannot finish used to replace a *working* helper with an un-capped one — it
+  failed closed, which is the right direction, but left the machine worse off than before
+  the command was run.
+
 **Amend this note if** a verb is added that takes a module name, a path, or anything else
 from its caller. That would not *increase* the privilege — `exec` already grants root — but
 it would add a second, quieter route to it, one that reads like a safe utility in a shell

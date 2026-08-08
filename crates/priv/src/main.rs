@@ -177,14 +177,35 @@ fn doctor(setcap_argument: bool) -> Result<(), String> {
                 .collect::<Vec<_>>()
         )
     );
+    println!(
+        "  ambient:     {}",
+        held.ambient.as_ref().map_or_else(
+            || "(this kernel has none — pre-4.3)".to_owned(),
+            |set| render_set(&set.iter().map(String::as_str).collect::<Vec<_>>()),
+        )
+    );
     println!();
     println!("  can act on modules:        {}", yes_no(held.can_act()));
-    println!(
-        "  can delegate to a child:   {}",
-        yes_no(held.can_delegate())
-    );
 
-    if !held.can_delegate() {
+    // Delegation is *performed*, not predicted. The last version of this reported a
+    // static guess and got it wrong in the one direction that matters — it said "no"
+    // while the file looked perfect in `getcap`, and it would just as happily have said
+    // "yes" for a mechanism that did not work. Raising into the ambient set here costs
+    // nothing (the process exits immediately) and is the same call `exec` makes, so a
+    // green line means the chain has actually run.
+    if held.can_act() {
+        match caps::raise_ambient() {
+            Ok(()) => println!("  can delegate to a child:   yes (ambient raise verified)"),
+            Err(error) => {
+                println!("  can delegate to a child:   NO — {error}");
+                return Ok(());
+            }
+        }
+    } else {
+        println!("  can delegate to a child:   no (not blessed)");
+    }
+
+    if !held.can_act() {
         println!();
         // Not an error exit: `doctor` answering "you are not blessed" is a successful
         // diagnosis, and a non-zero exit would make `just bless` unable to use it.

@@ -1,19 +1,33 @@
 //! The capability set this helper carries, and how it reaches a child process.
 //!
-//! ## Why `+eip` and not `+ep`
+//! ## How a capability reaches a child, and the trap on the way
 //!
-//! File capabilities do **not** cross `exec`. A binary blessed `cap_sys_module+ep` runs
-//! with that capability itself, and anything it spawns gets nothing — which would make
-//! [`super::exec`] a wrapper that grants exactly zero privilege, the most dangerous kind
-//! of tool: one that looks like it works.
+//! File capabilities do **not** cross `exec`. A blessed binary runs privileged and
+//! anything it spawns gets nothing, which would make [`super::exec`] a wrapper that grants
+//! exactly zero privilege — the most dangerous kind of tool: one that looks like it works.
 //!
-//! Three sets are involved, and all three have to line up:
+//! Four sets are involved:
 //!
-//! - **Permitted** — what we may use. `setcap … +p` puts it here.
-//! - **Inheritable** — what *may* be raised into ambient. `setcap … +i` puts it here.
-//! - **Ambient** — what a child actually receives across `exec` (Linux 4.3+). A
-//!   capability can only be raised into ambient if it is in *both* permitted and
-//!   inheritable, which is why [`BLESSING`] spells `+eip` rather than `+ep`.
+//! - **Permitted** (`pP`) — what this process may use. `setcap … +p` puts it here.
+//! - **Inheritable** (`pI`) — half of what may be raised into ambient.
+//! - **Ambient** (`pA`) — what a child actually receives across `exec` (Linux 4.3+).
+//! - **Effective** (`pE`) — what is active right now. `setcap … +e` puts `pP` here on exec.
+//!
+//! **The trap:** `setcap … +i` sets the *file's* inheritable set, `fI`, and `fI` is not
+//! `pI`. The kernel computes `pI' = pI` across `exec` — unchanged from whoever called us —
+//! and `fI` only ever appears as the term `pI & fI`, which is empty unless the *caller*
+//! already held the capability inheritable. A shell does not. So blessing `+eip` and then
+//! calling `PR_CAP_AMBIENT_RAISE`, which requires the capability in both `pP` and `pI`,
+//! fails every time — with the file looking exactly right in `getcap`.
+//!
+//! **The fix, and why it is allowed:** [`raise_ambient`] adds each capability to `pI`
+//! itself before raising it into `pA`. `capabilities(7)` permits that without
+//! `CAP_SETPCAP` — the rule for `capset` is `pI' ⊆ (pI | pP)`, so holding a capability in
+//! *permitted* is licence enough to make it inheritable. `pP` is exactly what the file's
+//! `+p` gave us.
+//!
+//! [`BLESSING`] is therefore `+ep`: the inheritable bit on the file is dead weight, and
+//! carrying it would preserve a false explanation of why delegation works.
 //!
 //! ## What this crate deliberately does not do
 //!
@@ -31,7 +45,7 @@ use caps::{CapSet, Capability};
 /// One home: the justfile reads this string out of `wch-priv doctor --setcap-argument`
 /// rather than repeating it, so the bless and the runtime check cannot disagree about
 /// what "blessed" means.
-pub(crate) const BLESSING: &str = "cap_sys_module,cap_net_admin+eip";
+pub(crate) const BLESSING: &str = "cap_sys_module,cap_net_admin+ep";
 
 /// Every capability this helper needs, with what each one is for.
 ///
@@ -54,13 +68,16 @@ pub(crate) const REQUIRED: &[(Capability, &str)] = &[
 pub(crate) struct Held {
     /// Capabilities in the permitted set — what this process may use itself.
     pub(crate) permitted: BTreeSet<String>,
-    /// Capabilities in the inheritable set — what it may raise into ambient.
+    /// Capabilities in the inheritable set. Informational: this is the set
+    /// [`raise_ambient`] *writes*, so what it holds before the raise says nothing about
+    /// whether delegation will work.
     pub(crate) inheritable: BTreeSet<String>,
-    /// The required capabilities that are missing from permitted.
+    /// Capabilities in the ambient set, or `None` on a kernel without one (pre-4.3).
+    /// `None` is the only thing that makes delegation impossible for a blessed binary.
+    pub(crate) ambient: Option<BTreeSet<String>>,
+    /// The required capabilities that are missing from permitted — the one signal that
+    /// means "not blessed".
     pub(crate) missing_permitted: Vec<&'static str>,
-    /// The required capabilities that are missing from inheritable, which is what stops
-    /// them reaching a child.
-    pub(crate) missing_inheritable: Vec<&'static str>,
 }
 
 impl Held {
@@ -75,7 +92,9 @@ impl Held {
         let inheritable = read_set(CapSet::Inheritable)?;
         Ok(Held {
             missing_permitted: missing(&permitted),
-            missing_inheritable: missing(&inheritable),
+            // A kernel too old for ambient capabilities cannot delegate at all, and that
+            // is a different answer from "not blessed" — so it is `None`, not empty.
+            ambient: read_set(CapSet::Ambient).ok(),
             permitted,
             inheritable,
         })
@@ -87,25 +106,13 @@ impl Held {
         self.missing_permitted.is_empty()
     }
 
-    /// Whether it can hand the capabilities to a child.
-    #[must_use]
-    pub(crate) fn can_delegate(&self) -> bool {
-        self.can_act() && self.missing_inheritable.is_empty()
-    }
-
     /// Every required capability this process lacks, once each.
     ///
     /// A capability missing from both permitted and inheritable is one problem with one
     /// fix — `just bless` — so it is reported once.
     #[must_use]
     pub(crate) fn missing(&self) -> Vec<&'static str> {
-        let mut seen = BTreeSet::new();
-        self.missing_permitted
-            .iter()
-            .chain(self.missing_inheritable.iter())
-            .filter(|purpose| seen.insert(**purpose))
-            .copied()
-            .collect()
+        self.missing_permitted.clone()
     }
 }
 
@@ -134,25 +141,29 @@ fn missing(held: &BTreeSet<String>) -> Vec<&'static str> {
 /// for its own verbs and silently grants nothing to children.
 pub(crate) fn raise_ambient() -> Result<(), Error> {
     let held = Held::read()?;
-    if !held.can_delegate() {
+    if !held.can_act() {
         return Err(Error::NotBlessed {
-            what: if held.can_act() {
-                "blessed, but without the inheritable bit, so the capabilities cannot \
-                 reach a child process"
-                    .to_owned()
-            } else {
-                "not blessed".to_owned()
-            },
+            what: "not blessed".to_owned(),
             held: Box::new(held),
         });
     }
+    if held.ambient.is_none() {
+        return Err(Error::NoAmbientSet);
+    }
 
     for (cap, why) in REQUIRED {
-        caps::raise(None, CapSet::Ambient, *cap).map_err(|error| Error::Ambient {
-            capability: cap.to_string(),
-            purpose: (*why).to_owned(),
-            message: error.to_string(),
-        })?;
+        // Inheritable first, and this order is the whole fix: `PR_CAP_AMBIENT_RAISE`
+        // requires the capability in *both* permitted and inheritable, and the file's
+        // `+i` bit never reaches a process's inheritable set. Permitted is what licenses
+        // this write (`capabilities(7)`: `pI' ⊆ (pI | pP)`).
+        for set in [CapSet::Inheritable, CapSet::Ambient] {
+            caps::raise(None, set, *cap).map_err(|error| Error::Ambient {
+                capability: cap.to_string(),
+                set: format!("{set:?}"),
+                purpose: (*why).to_owned(),
+                message: error.to_string(),
+            })?;
+        }
     }
     Ok(())
 }
@@ -191,15 +202,21 @@ pub(crate) enum Error {
         /// The system's description.
         message: String,
     },
-    /// Raising into the ambient set failed.
+    /// Raising a capability into one of the sets failed.
     Ambient {
         /// Which capability.
         capability: String,
+        /// Which set it could not reach.
+        set: String,
         /// What it was for.
         purpose: String,
         /// The system's description.
         message: String,
     },
+    /// The kernel has no ambient capability set (pre-4.3), so nothing can be delegated
+    /// however well this binary is blessed. Distinct from "not blessed": no amount of
+    /// `just bless` fixes it.
+    NoAmbientSet,
 }
 
 impl fmt::Display for Error {
@@ -223,12 +240,18 @@ impl fmt::Display for Error {
             }
             Error::Ambient {
                 capability,
+                set,
                 purpose,
                 message,
             } => write!(
                 f,
-                "could not raise {capability} (needed to {purpose}) into the ambient set: \
+                "could not raise {capability} (needed to {purpose}) into the {set} set: \
                  {message}"
+            ),
+            Error::NoAmbientSet => write!(
+                f,
+                "this kernel has no ambient capability set (it arrived in Linux 4.3), so \
+                 capabilities cannot be passed to a child process at all"
             ),
         }
     }
@@ -261,16 +284,22 @@ mod tests {
     }
 
     #[test]
-    fn the_blessing_asks_for_the_inheritable_bit() {
-        // The whole reason `exec` works. `+ep` would leave every child unprivileged while
-        // the helper's own verbs kept working — a tool that looks like it works.
+    fn the_blessing_asks_for_permitted_and_effective_and_not_inheritable() {
+        // The corrected story, pinned so it cannot quietly revert. `+i` on the *file*
+        // does not populate a process's inheritable set — `pI' = pI` across exec — so it
+        // would be dead weight carrying a false explanation of why delegation works.
+        // `raise_ambient` writes inheritable itself, licensed by permitted.
         let flags = BLESSING
             .split('+')
             .nth(1)
             .expect("the blessing has a flag set");
-        assert!(flags.contains('i'), "{BLESSING} cannot reach a child");
         assert!(flags.contains('p'), "{BLESSING} grants nothing");
         assert!(flags.contains('e'), "{BLESSING} is not effective on entry");
+        assert!(
+            !flags.contains('i'),
+            "{BLESSING} carries a file-inheritable bit that cannot affect a process's \
+             inheritable set; delegation comes from raising it at runtime"
+        );
     }
 
     #[test]

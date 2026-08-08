@@ -393,7 +393,23 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// Serializes the tests that open a camera.
+    ///
+    /// [`video_holders`] reports holders by `(pid, node)`, and under `cargo test` every
+    /// test is a *thread* of one process — so two tests holding the same node are
+    /// indistinguishable, and the "released it again" direction below sees the other
+    /// thread's fd and fails. Under `cargo nextest` (what `just ci` runs) each test is its
+    /// own process and the pids differ, which is exactly why this only ever failed on the
+    /// runner nobody was watching.
+    ///
+    /// A real shared resource, serialized. Poisoning is recovered from rather than
+    /// propagated: a panic in one camera test should not turn the other into a second,
+    /// misleading failure.
+    static CAMERA_FD: Mutex<()> = Mutex::new(());
 
     #[test]
     fn a_loaded_module_is_found_and_an_invented_one_is_not() {
@@ -465,6 +481,9 @@ mod tests {
 
     #[test]
     fn the_holder_scan_reads_this_process_and_survives_unreadable_ones() {
+        let _serialized = CAMERA_FD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Non-vacuity for the interlock: the scan must at minimum be able to see a
         // *deliberately opened* node, or `cycle_uvcvideo`'s refusal would never fire.
         let nodes = video_nodes();
@@ -500,6 +519,9 @@ mod tests {
 
     #[test]
     fn cycling_refuses_while_a_camera_is_open_unless_forced() {
+        let _serialized = CAMERA_FD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // The interlock itself. Written so it exercises the refusal without ever
         // unloading anything: `force = false` returns before the first modprobe.
         let nodes = video_nodes();

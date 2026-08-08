@@ -103,26 +103,52 @@ bless:
     # the runtime check cannot drift apart.
     blessing="$("$built" doctor --setcap-argument)"
     want_caps="${blessing%%+*}"
+    want_flags="${blessing##*+}"
 
     h="$(sha256sum "$built" | cut -d' ' -f1)"
     caps_now="$(getcap "$stable" 2>/dev/null || true)"
     mode_now="$(stat -c %a "$stable" 2>/dev/null || true)"
+    # Every capability the binary asks for, plus the flag set, read out of `getcap` —
+    # derived from the blessing rather than transcribed here, so the two cannot disagree
+    # about what "already blessed" means. `getcap` prints `=ep` where setcap took `+ep`.
+    caps_ok=1
+    for want in ${want_caps//,/ }; do
+        [[ "$caps_now" == *"$want"* ]] || caps_ok=0
+    done
+    [[ "$caps_now" == *"=$want_flags" ]] || caps_ok=0
+
     if [[ -f "$stamp" && -f "$stable" && "$(cat "$stamp")" == "$h" \
-          && "$mode_now" == "700" ]] \
-       && [[ "$caps_now" == *cap_sys_module* && "$caps_now" == *cap_net_admin* \
-             && "$caps_now" == *eip* ]]; then
+          && "$mode_now" == "700" && "$caps_ok" == "1" ]]; then
         echo "bless: $stable already blessed (sha256 unchanged, caps +eip, mode 0700); skipping setcap"
         exit 0
     fi
 
-    cp -f "$built" "$stable"
+    # Staged, then moved into place only once it is actually blessed. Writing $stable
+    # directly means a bless that cannot finish — no terminal for sudo, a wrong password,
+    # a Ctrl-C — replaces a *working* helper with an un-capped one. It fails closed, which
+    # is the right direction, but it leaves you worse off than before you ran it. Observed,
+    # then fixed.
+    #
+    # `mv` within one directory is a rename: the inode is untouched, so the capabilities
+    # set below survive the move. `cp` would not — writing a file strips its xattrs, which
+    # is the same fact that puts $stable outside target/ in the first place.
+    staged="$stable.staging"
+    trap 'rm -f "$staged"' EXIT
+    cp -f "$built" "$staged"
     # Mode BEFORE setcap, and this ordering is the security boundary rather than a
     # detail: between the copy and the chmod the file is world-executable, and after the
     # setcap it would be world-executable *and* root-capable. Narrow it first.
-    chmod 0700 "$stable"
-    sudo setcap "$blessing" "$stable"
+    chmod 0700 "$staged"
+    if ! sudo setcap "$blessing" "$staged"; then
+        echo "bless: setcap failed; $stable is unchanged" >&2
+        exit 1
+    fi
+    mv -f "$staged" "$stable"
     echo "$h" >"$stamp"
     echo "bless: $stable (re)blessed — $want_caps, mode 0700, owner only"
+    # The last word goes to the binary, which *performs* an ambient raise rather than
+    # predicting one — so a green line here means delegation has actually been exercised,
+    # not merely that `getcap` looks right. That distinction is why this recipe ends here.
     "$stable" doctor
 
 # What the helper can currently do, and why not if it cannot.
