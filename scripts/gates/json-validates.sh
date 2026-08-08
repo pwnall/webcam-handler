@@ -84,7 +84,6 @@ fi
 checked=0
 for row in "${verbs[@]}"; do
     IFS='|' read -r name def argv <<<"$row"
-    checked=$((checked + 1))
 
     # `cam:` rows get the derived id appended; `list` takes no camera.
     case "$argv" in
@@ -109,7 +108,8 @@ for row in "${verbs[@]}"; do
     # `#/$defs/<name>`? Without a JSON Schema validator in the offline toolchain, the
     # checkable core is enforced directly — every required property present, and no
     # property the schema does not declare. That catches the envelope-and-timestamp defect
-    # this gate exists for, and the recorded limit below says what it does not catch.
+    # this gate exists for; types, formats, nested shapes and array element schemas go
+    # unchecked, and docs/4's recorded-limits section says so.
     if ! jq -e --slurpfile doc <(printf '%s' "$output") --arg def "$name" '
         .["$defs"][$ARGS.named.d] as $schema
         | ($doc[0]) as $value
@@ -125,6 +125,10 @@ for row in "${verbs[@]}"; do
         gate_fail "wch --json $argv does not match #/\$defs/$def in the committed bundle"
         continue
     fi
+    # Counted here, at the end, and not on entry: a row that failed to answer or failed
+    # to validate was *attempted*, not validated, and `gate_checked` is the number the
+    # report stands on.
+    checked=$((checked + 1))
     gate_note "$name → #/\$defs/$def"
 done
 

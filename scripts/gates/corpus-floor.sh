@@ -45,10 +45,21 @@ if [[ ! -d "$profiles_dir" ]]; then
     gate_finish
 fi
 
-mapfile -t profiles < <(gate_find "$profiles_dir" -name '*.json' | tr '\0' '\n')
+# Depth 1, because that is what the loader reads. `testkit::corpus` uses `read_dir` and
+# does not recurse, so a profile in a subdirectory is invisible to every test — and a
+# population built with a recursive `find` would *count* it while nothing loaded it, which
+# is the dead corpus this gate is named for, hiding inside the gate itself.
+mapfile -t profiles < <(find "$profiles_dir" -maxdepth 1 -type f -name '*.json' | sort)
 profile_count="${#profiles[@]}"
 gate_checked "$profile_count" "committed device profile(s) in corpus/profiles/"
 gate_require_nonzero "$profile_count" "committed device profiles"
+
+# The other half of that agreement: nothing deeper, where the loader would never look.
+buried="$(find "$profiles_dir" -mindepth 2 -type f -name '*.json' | wc -l)"
+if ((buried > 0)); then
+    gate_fail "$buried profile(s) live below corpus/profiles/ in a subdirectory; the corpus loader does not recurse, so nothing will ever load them"
+fi
+gate_checked "$buried" "profile(s) checked for being out of the loader's reach"
 
 # ------------------------------------------------------------------ the test population
 #
@@ -65,14 +76,28 @@ if ((${#rust_files[@]} == 0)); then
     gate_finish
 fi
 
+# A file *reaches* the corpus if it walks the whole directory or names a profile by stem.
+# A file *replays* it if it also constructs a backend from what it reached. The two are
+# computed independently: nesting the second inside the first (as an earlier version did)
+# meant a tree that named every profile individually and replayed them all still failed
+# claim 3, and — worse — made the claim-2 case below go red for the wrong reason.
 walkers=()
 replayers=()
 for file in "${rust_files[@]}"; do
+    reaches=0
     if grep -Eq "$walker_pattern" "$file"; then
         walkers+=("${file#"$root"/}")
-        if grep -Eq "$replay_pattern" "$file"; then
-            replayers+=("${file#"$root"/}")
-        fi
+        reaches=1
+    else
+        for profile in "${profiles[@]}"; do
+            if grep -Fq "$(basename "$profile" .json)" "$file"; then
+                reaches=1
+                break
+            fi
+        done
+    fi
+    if ((reaches == 1)) && grep -Eq "$replay_pattern" "$file"; then
+        replayers+=("${file#"$root"/}")
     fi
 done
 

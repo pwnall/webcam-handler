@@ -459,19 +459,40 @@ mod tests {
     }
 
     #[test]
-    fn the_real_usb_tree_agrees_with_the_real_node_list_on_this_host() {
-        // Both directions on live sysfs: if nodes are present, nothing may be diagnosed
-        // as driverless, and the diagnosis only ever names devices with no binding.
-        let nodes = nodes().expect("the node list reads");
+    fn the_real_usb_tree_never_diagnoses_a_device_that_has_a_bound_node() {
+        // Live sysfs, asserting the claim that is true *in general* rather than the one
+        // that happens to hold here. "This host has nodes, so nothing is driverless" is
+        // false on a machine with a working camera and a second, unclaimed one — and it
+        // is vacuous on CI, which has neither. What must always hold: a device the
+        // diagnosis names has no V4L2 node anywhere beneath it.
+        //
+        // That is exactly the PF:14 regression, since a per-interface rule names devices
+        // whose VideoControl interface *is* bound.
         let unbound = unbound_video_devices();
-        if !nodes.is_empty() {
+        let nodes = nodes().expect("the node list reads");
+
+        for device in &unbound {
+            let prefix = format!("{device}:");
+            let bound: Vec<&str> = nodes
+                .iter()
+                .filter(|node| {
+                    node.interface
+                        .as_deref()
+                        .is_some_and(|iface| iface.starts_with(&prefix))
+                })
+                .map(|node| node.name.as_str())
+                .collect();
             assert!(
-                unbound.is_empty(),
-                "this host has {} V4L2 node(s) and yet reports {unbound:?} driverless — \
-                 the per-device rule has regressed to a per-interface one [PF:14]",
-                nodes.len()
+                bound.is_empty(),
+                "USB device {device} is reported driverless, yet {bound:?} hang off it — \
+                 the per-device rule has regressed to a per-interface one [PF:14]"
             );
         }
+        println!(
+            "{} node(s), {} device(s) diagnosed driverless",
+            nodes.len(),
+            unbound.len()
+        );
     }
 
     #[test]

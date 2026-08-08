@@ -858,28 +858,33 @@ mod tests {
                 "{flag:?} duplicates a spelling"
             );
         }
-        let types = [
-            ControlType::Integer,
-            ControlType::Boolean,
-            ControlType::Menu,
-            ControlType::Button,
-            ControlType::Integer64,
-            ControlType::ControlClass,
-            ControlType::String,
-            ControlType::Bitmask,
-            ControlType::IntegerMenu,
-            ControlType::U8,
-            ControlType::U16,
-            ControlType::U32,
-            ControlType::Area,
-            ControlType::Rect,
-        ];
+        // `ControlType` carries a payload, so it has no generated `ALL`. The population
+        // is derived from the *decoder* instead: every discriminant `from_raw` names is a
+        // type this table must spell, and one it does not name is `Unknown`, whose
+        // rendering carries the raw value and is therefore distinct by construction. A
+        // hand-written list here would silently stop covering a variant added to
+        // `from_raw` — which is the drift docs/4's derived-population rule exists to stop.
+        let named: Vec<ControlType> = (0..=0x0110u32)
+            .map(ControlType::from_raw)
+            .filter(|t| !matches!(t, ControlType::Unknown { .. }))
+            .collect();
+        assert!(
+            named.len() >= 14,
+            "the decoder names only {} types; this walk has stopped covering them",
+            named.len()
+        );
         let mut seen = std::collections::BTreeSet::new();
-        for control_type in types {
+        for control_type in named {
             assert!(
                 seen.insert(type_text(control_type)),
                 "{control_type:?} duplicates a spelling"
             );
         }
+        // And the open-ended arm keeps its payload visible, so two unknown types never
+        // render the same way.
+        assert_ne!(
+            type_text(ControlType::Unknown { raw: 0x900 }),
+            type_text(ControlType::Unknown { raw: 0x901 })
+        );
     }
 }

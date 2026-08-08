@@ -25,6 +25,37 @@ motion_prefix='hw_motion_'
 root="$(git rev-parse --show-toplevel)"
 skips=0
 
+# Run the suite and account for the skips the *tests themselves* report.
+#
+# nextest has no runtime-skip concept: a hardware test on a machine without that hardware
+# passes, and a pass is indistinguishable from a claim actually made. That is "skip == pass
+# in a costume" (docs/3 Part C) unless somebody counts them — so the tests print a line
+# beginning `SKIP` when they decline to claim something, `--success-output final` makes
+# those lines visible for passing tests too, and this function turns them into the named,
+# counted skips the rest of the suite already reports.
+#
+# `grep -c` returns 1 on zero matches, which under `pipefail` would abort the script on
+# the *good* path; the `|| true` is that trap handled rather than tripped over.
+run_suite() {
+    local selection="$1" label="$2" log
+    log="$(mktemp "${TMPDIR:-/tmp}/wch-${label}.XXXXXXXX")"
+
+    local status=0
+    cargo nextest run --locked --offline --workspace --run-ignored all \
+        --no-tests=fail --success-output final -E "$selection" 2>&1 | tee "$log" || status=$?
+
+    local declined
+    declined="$({ grep -cE '^[[:space:]]*SKIP' "$log" || true; })"
+    if ((declined > 0)); then
+        printf '%s: %s claim(s) declined by tests that ran — each named above\n' \
+            "$label" "$declined"
+        grep -E '^[[:space:]]*SKIP' "$log" | sed "s/^/${label}:   /"
+    fi
+    rm -f "$log"
+    return "$status"
+}
+
+
 skip() {
     skips=$((skips + 1))
     printf 'smoke-hw: SKIP %s — %s\n' "$skips" "$*"
@@ -61,6 +92,5 @@ if ((nodes == 0)); then
 fi
 
 printf 'smoke-hw: %s capture node(s) present; running %s\n' "$nodes" "$selection"
-cargo nextest run --locked --offline --workspace --run-ignored all \
-    --no-tests=fail -E "$selection"
-printf 'smoke-hw: suite run, %s named skip(s)\n' "$skips"
+run_suite "$selection" smoke-hw
+printf 'smoke-hw: suite run, %s named skip(s) before it started\n' "$skips"

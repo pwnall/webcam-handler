@@ -72,7 +72,14 @@ fn hw_controls_enumerate_on_every_node_without_panicking() {
     // The PF:1 regression test, forever. The most popular V4L2 crate panics enumerating
     // the Chicony's `Region of Interest Rectangle`, and "a library you can crash by
     // plugging in a webcam is not a library" is the sentence this rung exists to keep
-    // true. Every node, not just the ones we like — including the metadata nodes.
+    // true.
+    //
+    // One camera, one node: `open` picks the capture node, so this walks the control set
+    // of every *camera*, not of every node. Nodes that implement no control ioctl are
+    // covered by `hw_a_node_that_implements_no_control_ioctl_answers_empty_rather_than_erroring`
+    // in the crate itself, which is where reaching them is possible — an earlier version
+    // of this comment claimed "including the metadata nodes", which was never true of the
+    // code beneath it.
     let Some((backend, cameras)) = attached() else {
         return;
     };
@@ -173,11 +180,16 @@ fn hw_enumeration_matches_the_committed_profile() {
             unknown.join(", ")
         );
     }
-    assert!(
-        matched > 0,
-        "no attached camera matched a committed profile; the corpus describes hardware \
-         this host does not have, so this rung proved nothing here"
-    );
+    // A host whose cameras are not in the corpus is a host this arm has nothing to say
+    // about, which the module doc promises and an `assert!(matched > 0)` broke: it turned
+    // "different hardware" into a red run. The claim is conditional by design — *if* a
+    // camera here is one the corpus knows, its enumeration must still match.
+    if matched == 0 {
+        println!(
+            "SKIP: no attached camera matches a committed profile, so this arm made no \
+             claim on this host"
+        );
+    }
 }
 
 #[test]
@@ -231,10 +243,9 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
         println!("{name}: a fresh capture reproduces the committed invariant section");
     }
 
-    assert!(
-        compared > 0,
-        "no attached camera matched a committed profile, so nothing was compared"
-    );
+    if compared == 0 {
+        println!("SKIP: no attached camera matches a committed profile, so nothing was compared");
+    }
 }
 
 #[test]
@@ -267,10 +278,29 @@ fn hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability() {
                 node.path
             );
         }
-        // Every camera the kernel gives a capture node to must show one.
-        if let Some(capture) = info.capture_node() {
-            assert_eq!(capture.kind, NodeKind::VideoCapture);
-        }
+        // The claim that can fail: exactly one node in a group may be the capture node,
+        // and if any node carries the VIDEO_CAPTURE bit then `capture_node()` must find
+        // one. `if let Some(..)` alone asserted nothing — it was true of a camera with no
+        // capture node at all, which is the case worth catching.
+        let carrying: Vec<&schema::camera::DeviceNode> = info
+            .nodes
+            .iter()
+            .filter(|node| node.device_caps & schema::camera::CAP_VIDEO_CAPTURE != 0)
+            .collect();
+        assert_eq!(
+            info.capture_node().is_some(),
+            !carrying.is_empty(),
+            "{}: {} node(s) carry VIDEO_CAPTURE but capture_node() answered {:?}",
+            info.id,
+            carrying.len(),
+            info.capture_node().map(|n| n.path.as_str())
+        );
+        assert!(
+            carrying.len() <= 1,
+            "{}: {} nodes claim VIDEO_CAPTURE; the group is two cameras, not one",
+            info.id,
+            carrying.len()
+        );
     }
 
     if let Some((bus_info, count)) = by_bus_info.iter().find(|(_, count)| **count > 1) {

@@ -41,13 +41,41 @@ fail_case_the_corpus_directory_is_gone() {
 fail_case_a_profile_nobody_loads() {
     local tree
     tree="$(gate_scratch_tree)"
-    # Remove every route to the corpus — the walkers *and* the names — then add a profile.
-    # Without either, the new file is exactly the dead corpus this gate is named for.
+    # Claim 2 in isolation, which takes some care to seed. Removing the walkers is
+    # necessary — with one present every profile is covered — but removing them alone
+    # would ALSO empty the replayer set and turn the gate red via claim 3 instead. A case
+    # that passes for the wrong reason proves nothing about the claim it names, so the
+    # tree below keeps claim 3 satisfied by hand: a file that names each surviving profile
+    # *and* constructs a backend.
     grep -rl 'corpus::load_all(\|corpus::profile_paths(' "$tree" --include='*.rs' |
         while IFS= read -r file; do
             sed -i 's/corpus::load_all(/corpus_load_all_removed(/g; s/corpus::profile_paths(/corpus_profile_paths_removed(/g' "$file"
         done
+
+    {
+        printf '// Seeded by the corpus-floor selftest: names every committed profile and\n'
+        printf '// replays it, so claims 1 and 3 hold and only claim 2 can fire.\n'
+        printf 'fn seeded_replay() {\n'
+        for f in "$tree"/corpus/profiles/*.json; do
+            printf '    let _ = "%s";\n' "$(basename "$f" .json)"
+        done
+        printf '    let _ = FakeBackend::new(Vec::new());\n'
+        printf '}\n'
+    } >"$tree/crates/backends/fake/tests/seeded_corpus_names.rs"
+
+    # …and now the one profile nothing mentions.
     cp "$tree/corpus/profiles/chicony-rgb.json" "$tree/corpus/profiles/nobody-loads-me.json"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_profile_buried_where_the_loader_cannot_see_it() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # `testkit::corpus` uses `read_dir` and does not recurse. A profile one directory down
+    # is committed, reviewed, and never loaded by anything — dead corpus that a recursive
+    # population would have counted as covered.
+    mkdir -p "$tree/corpus/profiles/attic"
+    cp "$tree/corpus/profiles/chicony-rgb.json" "$tree/corpus/profiles/attic/hidden.json"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 

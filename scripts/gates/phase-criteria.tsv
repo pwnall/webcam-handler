@@ -21,6 +21,8 @@ g0	tests	package(webcam-handler-imaging)	metric ordering tests over synthetic fi
 g0	tests	package(webcam-handler-engine)	the engine pure cores and the inverse fixtures each one refuses
 g0	tests	package(webcam-handler-fake)	the fake passes the backend conformance battery (design 2.11)
 g0	tests	package(webcam-handler-testkit)	the battery and the corpus loader hold their own invariants
+g1	command	cargo clippy --locked --offline --workspace --all-targets -- -D warnings	zero clippy violations across the workspace, tests included (docs/2 G1 says so and nothing ran it)
+g1	command	cargo deny --offline check bans licenses sources	zero cargo-deny violations: the allowlist and every named ban
 g1	command	./scripts/gates/run-all.sh	every shipped gate predicate green over the tree, the P1 additions included
 g1	command	./scripts/gates/selftest.sh	every shipped gate predicate red on its own inverse, counted, both directions
 g1	command	./scripts/gates/corpus-floor.sh	every committed device profile is loaded and replayed by a test — no dead corpus
