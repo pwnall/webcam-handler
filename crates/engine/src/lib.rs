@@ -20,6 +20,7 @@
 //! | [`sweep`] | the sweep planner (D8) |
 //! | [`session`] | the calibration state machine (D8) |
 //! | [`profile`] | assembling a T3 device profile, and the invariant/state split |
+//! | [`resolve`] | turning a typed id or prefix into the camera it names (D1) |
 #![forbid(unsafe_code)]
 
 mod refusal;
@@ -27,6 +28,7 @@ mod refusal;
 pub mod pairing;
 pub mod paths;
 pub mod profile;
+pub mod resolve;
 pub mod session;
 pub mod settle;
 pub mod sweep;

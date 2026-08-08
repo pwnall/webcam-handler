@@ -108,26 +108,13 @@ struct InProcess {
 impl InProcess {
     /// Resolve a caller-supplied id or prefix (D1) against a live enumeration.
     ///
-    /// Enumerating first means the refusal can name the candidates, which is the
-    /// difference between `CameraAmbiguous` being actionable and being a shrug.
+    /// Enumerating first is what lets the refusal name the candidates, which is the
+    /// difference between `CameraAmbiguous` being actionable and being a shrug. The rule
+    /// itself lives in `engine::resolve`, so `wch` and the P4 daemon cannot disagree
+    /// about what a prefix means.
     fn resolve(&self, requested: &CameraId) -> Result<CameraInfo> {
         let cameras = self.backend.enumerate()?;
-        let ids: Vec<CameraId> = cameras.iter().map(|c| c.id.clone()).collect();
-        match schema::camera::resolve_prefix(&ids, requested.as_str()) {
-            schema::camera::PrefixMatch::Unique(id) => cameras
-                .into_iter()
-                .find(|c| c.id == id)
-                .ok_or_else(|| Error::CameraUnknown {
-                    requested: requested.to_string(),
-                }),
-            schema::camera::PrefixMatch::None => Err(Error::CameraUnknown {
-                requested: requested.to_string(),
-            }),
-            schema::camera::PrefixMatch::Ambiguous(candidates) => Err(Error::CameraAmbiguous {
-                requested: requested.to_string(),
-                candidates,
-            }),
-        }
+        engine::resolve::camera(&cameras, requested).cloned()
     }
 
     fn open(&self, requested: &CameraId) -> Result<(CameraInfo, Box<dyn Camera>)> {

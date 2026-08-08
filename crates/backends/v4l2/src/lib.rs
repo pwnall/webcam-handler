@@ -91,8 +91,16 @@ impl CameraBackend for V4l2Backend {
     }
 
     fn open(&self, id: &CameraId) -> Result<Box<dyn Camera>> {
-        let cameras = self.enumerate()?;
-        let info = resolve(&cameras, id)?;
+        // An *exact* id, like every backend. Prefix resolution is D1 policy over the
+        // whole enumeration and lives in `engine::resolve`; a backend that resolved
+        // prefixes too would be a second opinion about what `cam:obsbot` means.
+        let info = self
+            .enumerate()?
+            .into_iter()
+            .find(|info| info.id == *id)
+            .ok_or_else(|| Error::CameraUnknown {
+                requested: id.to_string(),
+            })?;
         Ok(Box::new(V4l2Camera::open(info)?))
     }
 
@@ -108,27 +116,6 @@ impl CameraBackend for V4l2Backend {
                 subject: device,
             })
             .collect()
-    }
-}
-
-/// Resolve a caller-supplied id or prefix against the enumerated cameras (D1).
-fn resolve(cameras: &[CameraInfo], id: &CameraId) -> Result<CameraInfo> {
-    let ids: Vec<CameraId> = cameras.iter().map(|c| c.id.clone()).collect();
-    match schema::camera::resolve_prefix(&ids, id.as_str()) {
-        schema::camera::PrefixMatch::Unique(found) => cameras
-            .iter()
-            .find(|c| c.id == found)
-            .cloned()
-            .ok_or_else(|| Error::CameraUnknown {
-                requested: id.to_string(),
-            }),
-        schema::camera::PrefixMatch::None => Err(Error::CameraUnknown {
-            requested: id.to_string(),
-        }),
-        schema::camera::PrefixMatch::Ambiguous(candidates) => Err(Error::CameraAmbiguous {
-            requested: id.to_string(),
-            candidates,
-        }),
     }
 }
 
@@ -275,15 +262,29 @@ impl V4l2Camera {
 }
 
 /// A control the device declined to read is reported as valueless, not as a failed
-/// enumeration — unless the failure was about the *device* rather than the control.
+/// enumeration — but only for the two errno values that are facts about the *control*.
 ///
-/// `EINVAL` here means "this control has no readable current value", which several
-/// drivers say about controls they still enumerate. `EBUSY`, `ENODEV` and a permission
-/// refusal are facts about availability (E3) and must not be flattened into "no value".
+/// The distinction is E3's, applied one level down. `EINVAL` and `EACCES` from
+/// `G_EXT_CTRLS` on a single control both mean "this control has no readable current
+/// value": the UAPI documents `EACCES` as the answer for attempting to read a write-only
+/// control, and several drivers answer `EINVAL` for controls they enumerate but will not
+/// read. Neither says anything about our access to the *device* — an fd we could not open
+/// would have failed at `Fd::open`, long before here.
+///
+/// Everything else propagates. `EBUSY`, `ENODEV` and a permission refusal *of the device*
+/// are availability facts, and flattening one of those into "no value" would report a
+/// camera someone unplugged mid-enumeration as a camera whose controls have no values.
 fn unreadable_current(error: Error) -> Result<Option<ControlValue>> {
     match error {
-        Error::DeviceIo { errno, .. } if errno == Some(libc::EINVAL) => Ok(None),
-        Error::DeviceIo { errno, .. } if errno == Some(libc::EACCES) => Ok(None),
+        // Matched on the errno rather than on the variant: `Fd::open` maps `EACCES` to
+        // `PermissionDenied`, and that mapping is right *there* and wrong here, so this
+        // path must not accept the variant — only the raw code from an ioctl on an fd we
+        // already hold.
+        Error::DeviceIo { errno, .. }
+            if errno == Some(libc::EINVAL) || errno == Some(libc::EACCES) =>
+        {
+            Ok(None)
+        }
         other => Err(other),
     }
 }
@@ -478,49 +479,41 @@ mod tests {
     }
 
     #[test]
-    fn an_id_nothing_answers_to_is_unknown_and_an_ambiguous_prefix_names_its_candidates() {
-        let cameras = |cards: &[&str]| -> Vec<CameraInfo> {
-            let ids = schema::camera::assign_ids(
-                &cards.iter().map(|c| (*c).to_owned()).collect::<Vec<_>>(),
-            );
-            cards
-                .iter()
-                .zip(ids)
-                .map(|(card, id)| CameraInfo {
-                    id,
-                    fingerprint: schema::camera::CameraFingerprint {
-                        bus_path: "1-1:1.0".to_owned(),
-                        usb_id: None,
-                        card: (*card).to_owned(),
-                        driver: "uvcvideo".to_owned(),
-                        serial: None,
-                    },
-                    card: (*card).to_owned(),
-                    driver: "uvcvideo".to_owned(),
-                    bus_info: "usb-1".to_owned(),
-                    nodes: Vec::new(),
-                    backend: BackendKind::V4l2,
-                })
-                .collect()
+    fn open_wants_an_exact_id_and_does_not_resolve_prefixes_of_its_own() {
+        // D1's prefix rule lives in `engine::resolve`, over the whole enumeration. A
+        // backend that also resolved would be a second opinion about what `cam:obsbot`
+        // means, and the two could disagree the moment a second backend was attached.
+        //
+        // On a host with no camera this asserts the empty case; on one with cameras it
+        // asserts a prefix of a real id is refused. Both are the same claim, and neither
+        // needs particular hardware.
+        let backend = V4l2Backend::new();
+        let Ok(cameras) = backend.enumerate() else {
+            return;
         };
 
-        let two = cameras(&["Webcam", "Webcam"]);
-        let asked = CameraId::parse("cam:web").expect("literal id");
-        match resolve(&two, &asked) {
-            Err(Error::CameraAmbiguous { candidates, .. }) => assert_eq!(candidates.len(), 2),
-            other => panic!("expected ambiguity, got {other:?}"),
+        let asked = CameraId::parse("cam:nothing-answers-to-this").expect("literal id");
+        assert!(
+            matches!(backend.open(&asked), Err(Error::CameraUnknown { .. })),
+            "an id nothing answers to must be CameraUnknown"
+        );
+
+        if let Some(first) = cameras.first() {
+            // A strict prefix of a real id: `open` must refuse it rather than resolve it.
+            let body = first.id.body();
+            let Some(shortened) = body.get(..body.len().saturating_sub(1)) else {
+                return;
+            };
+            if shortened.is_empty() || shortened == body {
+                return;
+            }
+            let prefix = CameraId::parse(shortened).expect("a non-empty prefix");
+            assert!(
+                matches!(backend.open(&prefix), Err(Error::CameraUnknown { .. })),
+                "{prefix} is a prefix of {}, and the backend resolved it",
+                first.id
+            );
         }
-
-        let asked = CameraId::parse("cam:nope").expect("literal id");
-        assert!(matches!(
-            resolve(&two, &asked),
-            Err(Error::CameraUnknown { .. })
-        ));
-
-        // And a prefix that does resolve, resolves.
-        let one = cameras(&["OBSBOT Tiny 3"]);
-        let asked = CameraId::parse("cam:obsbot").expect("literal id");
-        assert_eq!(resolve(&one, &asked).expect("resolves").id, one[0].id);
     }
 
     #[test]
