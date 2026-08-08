@@ -10,7 +10,7 @@ use camino::Utf8PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{CameraId, FrameInterval, PixelFormat};
+use crate::camera::{CameraId, FormatInfo, FrameInterval, PixelFormat};
 use crate::limits;
 use crate::time::Stamp;
 use crate::vocabulary::closed_vocabulary;
@@ -53,6 +53,87 @@ impl Default for StreamRequest {
             buffer_count: default_buffer_count(),
         }
     }
+}
+
+impl StreamRequest {
+    /// Resolve this request against the formats a device enumerates (design D5).
+    ///
+    /// **The one home for "what should I ask the device for".** Every backend has the same
+    /// question and the same evidence — a `Vec<FormatInfo>` the device produced — so
+    /// answering it twice would let the fake and the hardware disagree about what
+    /// `StreamRequest::default()` means, which is precisely the resemblance E5 exists to
+    /// keep. A backend that cannot use every listed format (the fake can only synthesise
+    /// a few) filters the list before calling, rather than teaching this function about
+    /// its limitations.
+    ///
+    /// The rules, and the reason for each:
+    ///
+    /// - **Format**: the requested one when the device offers it, else the device's first.
+    ///   First, not largest: the order `VIDIOC_ENUM_FMT` returns is the driver's own
+    ///   preference, and second-guessing it is how a tool ends up defaulting to a mode the
+    ///   camera is worse at.
+    /// - **Size**: the exact request when it is offered; else the largest offered size
+    ///   that *fits inside* it, because a caller asking for 1920×1080 on a 720p camera
+    ///   wants the biggest thing there is rather than a refusal; else the format's first
+    ///   size, for the same "the driver ordered these" reason.
+    /// - **A half-specified size names nothing.** Width alone cannot pick a height without
+    ///   inventing an aspect ratio, so the size falls through to the device's first as
+    ///   though nothing had been asked — and [`NegotiatedStream::diff`] then reports no
+    ///   size adjustment, because none was requested in a form the answer could differ
+    ///   from.
+    ///
+    /// `None` when `formats` is empty or lists nothing with readable dimensions — a
+    /// camera that offers no size is not one this can pick from, and the caller turns that
+    /// into [`crate::Error::FormatUnsupported`] with the list it does have.
+    #[must_use]
+    pub fn choose(&self, formats: &[FormatInfo]) -> Option<ChosenFormat> {
+        let first = formats.first()?;
+        let chosen = self
+            .pixel_format
+            .and_then(|wanted| formats.iter().find(|f| f.pixel_format == wanted))
+            .unwrap_or(first);
+
+        let offered: Vec<(u32, u32)> = chosen
+            .sizes
+            .iter()
+            .filter_map(|entry| entry.size.max_dimensions())
+            .collect();
+        let default_size = offered.first().copied()?;
+
+        let (width, height) = match (self.width, self.height) {
+            (Some(width), Some(height)) if offered.contains(&(width, height)) => (width, height),
+            (Some(width), Some(height)) => offered
+                .iter()
+                .copied()
+                .filter(|(w, h)| *w <= width && *h <= height)
+                .max_by_key(|(w, h)| u64::from(*w) * u64::from(*h))
+                .unwrap_or(default_size),
+            _ => default_size,
+        };
+
+        Some(ChosenFormat {
+            pixel_format: chosen.pixel_format,
+            width,
+            height,
+        })
+    }
+}
+
+/// The format and size a [`StreamRequest`] resolves to against a device's format tree.
+///
+/// The interval is deliberately absent: choosing one is a *negotiation* on V4L2
+/// (`S_PARM`, with its own capability bit) and a lookup in a document for the fake, so the
+/// two backends genuinely do different things and pretending otherwise would put a lie in
+/// a shared type. Format and size are the two fields `S_FMT` carries, and those are one
+/// decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChosenFormat {
+    /// The format to ask for.
+    pub pixel_format: PixelFormat,
+    /// The width to ask for.
+    pub width: u32,
+    /// The height to ask for.
+    pub height: u32,
 }
 
 /// One way the device's answer differs from the request.
@@ -734,6 +815,138 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// A device offering one format at three sizes, in the order a driver lists them.
+    fn seed_formats() -> Vec<FormatInfo> {
+        use crate::camera::{FrameSize, FrameSizeInfo};
+
+        let size = |width, height| FrameSizeInfo {
+            size: FrameSize::Discrete { width, height },
+            intervals: Vec::new(),
+        };
+        let format = |pixel_format, sizes| FormatInfo {
+            pixel_format,
+            description: format!("{pixel_format}"),
+            flags: 0,
+            sizes,
+        };
+        vec![
+            // The Chicony's own MJPG ordering: 1280x720 first, then smaller entries.
+            format(
+                PixelFormat::MJPG,
+                vec![size(1280, 720), size(320, 180), size(640, 480)],
+            ),
+            format(PixelFormat::YUYV, vec![size(640, 480)]),
+        ]
+    }
+
+    #[test]
+    fn a_request_that_asks_for_nothing_gets_the_devices_own_first_format_and_size() {
+        // Deterministic on purpose, and this is the one that bit: a V4L2 node's format is
+        // *persistent device state*, so resolving "anything" against the node's current
+        // format made `wch photo` depend on what ran before it. Against the enumeration,
+        // the same request is the same answer every time.
+        let chosen = StreamRequest::default()
+            .choose(&seed_formats())
+            .expect("a device with formats resolves");
+        assert_eq!(
+            (chosen.pixel_format, chosen.width, chosen.height),
+            (PixelFormat::MJPG, 1280, 720)
+        );
+    }
+
+    #[test]
+    fn an_offered_size_is_taken_exactly_and_an_unoffered_one_falls_to_the_largest_that_fits() {
+        let formats = seed_formats();
+        let exact = StreamRequest {
+            pixel_format: Some(PixelFormat::MJPG),
+            width: Some(640),
+            height: Some(480),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect("offered");
+        assert_eq!((exact.width, exact.height), (640, 480));
+
+        // 800x600 is not offered; 640x480 is the largest offered size inside it.
+        let inside = StreamRequest {
+            width: Some(800),
+            height: Some(600),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect("resolves");
+        assert_eq!((inside.width, inside.height), (640, 480));
+
+        // Nothing fits inside 3x3, so the device's first entry stands — which is what
+        // makes the answer *different* from the request, and therefore reportable.
+        let tiny = StreamRequest {
+            width: Some(3),
+            height: Some(3),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect("resolves");
+        assert_eq!((tiny.width, tiny.height), (1280, 720));
+    }
+
+    #[test]
+    fn a_half_specified_size_falls_through_rather_than_inventing_the_other_half() {
+        let chosen = StreamRequest {
+            width: Some(640),
+            ..StreamRequest::default()
+        }
+        .choose(&seed_formats())
+        .expect("resolves");
+        assert_eq!(
+            (chosen.width, chosen.height),
+            (1280, 720),
+            "a width with no height cannot pick a height without inventing an aspect ratio"
+        );
+        // And the diff says nothing was adjusted, because nothing comparable was asked.
+        assert!(
+            NegotiatedStream::diff(
+                &StreamRequest {
+                    width: Some(640),
+                    ..StreamRequest::default()
+                },
+                chosen.pixel_format,
+                chosen.width,
+                chosen.height,
+                FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30
+                },
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_requested_format_is_honoured_and_an_absent_one_falls_to_the_first() {
+        let formats = seed_formats();
+        let yuyv = StreamRequest {
+            pixel_format: Some(PixelFormat::YUYV),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect("offered");
+        assert_eq!(yuyv.pixel_format, PixelFormat::YUYV);
+        assert_eq!((yuyv.width, yuyv.height), (640, 480));
+
+        // A format the device does not list: the chooser picks the device's first, and
+        // reporting *that* as an adjustment is `diff`'s job, not this function's.
+        let absent = StreamRequest {
+            pixel_format: PixelFormat::parse("H264"),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect("resolves");
+        assert_eq!(absent.pixel_format, PixelFormat::MJPG);
+
+        // A device with nothing to offer resolves to nothing rather than to a guess.
+        assert!(StreamRequest::default().choose(&[]).is_none());
     }
 
     #[test]

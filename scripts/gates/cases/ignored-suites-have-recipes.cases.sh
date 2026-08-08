@@ -89,3 +89,43 @@ fail_case_justfile_deleted() {
     rm -f "$tree/justfile"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
+
+# --------------------------------------- the exclusive-device test group, both directions
+#
+# The failure this half prevents is a *flake*: two hardware tests streaming from one
+# camera, the loser reporting a correct `EBUSY`. A flake gets re-run rather than read, so
+# the serialisation needs a gate rather than a memory.
+
+fail_case_no_nextest_config_to_serialise_the_hardware_suites() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    rm -f "$tree/.config/nextest.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_test_group_does_not_cap_itself_at_one_thread() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed 's/^max-threads = 1$/max-threads = 4/' "$tree/.config/nextest.toml" \
+        >"$tree/.config/nextest.toml.seeded"
+    mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_declared_suite_prefix_is_outside_the_test_group() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed 's/ + test(\/(^|::)vivid_\/)//' "$tree/.config/nextest.toml" \
+        >"$tree/.config/nextest.toml.seeded"
+    mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_group_is_assigned_but_never_defined() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed 's/^\[test-groups\.exclusive-device\]$/[test-groups.something-else]/' \
+        "$tree/.config/nextest.toml" >"$tree/.config/nextest.toml.seeded"
+    mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}

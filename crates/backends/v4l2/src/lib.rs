@@ -7,19 +7,20 @@
 //! ## What has landed, and what has not
 //!
 //! P1 landed the **read path** (docs/2): enumeration, the control model, and the format
-//! tree. P2 adds the **write path** — `set`, with the `S_EXT_CTRLS` write, the read-back
-//! D3 requires, and the `{requested, applied}` pair E4 keeps. Streaming and hotplug are
-//! still ahead. The T2 trait is total, so the methods that have not landed return
-//! [`schema::Error::Unimplemented`] naming themselves and the phase that lands them —
-//! *not* a device error, because the device was never asked, and not a panic, because
-//! plugging in a webcam must never be able to panic a library. See note N6, and
-//! [`the pinning test`](self#tests) which fails when that set changes.
+//! tree. P2 adds the **write and capture paths** — `set` with the read-back D3 requires,
+//! and mmap streaming with the format negotiation D5 requires. **Hotplug is the last one
+//! left**, and it arrives at P4 with the daemon's uevent socket. The T2 trait is total, so
+//! the one method that has not landed returns [`schema::Error::Unimplemented`] naming
+//! itself and the phase that lands it — *not* a device error, because the device was never
+//! asked, and not a panic, because plugging in a webcam must never be able to panic a
+//! library. See note N6, and [`the pinning test`](self#tests) which fails when that set
+//! changes.
 //!
 //! ## The layering
 //!
 //! | Module | Owns |
 //! |---|---|
-//! | `sys` | ioctls, and the pure byte-to-schema decoding Miri executes |
+//! | `sys` | ioctls, mmap, the bounded wait, and the pure byte-to-schema decoding Miri executes |
 //! | `sysfs` | the node list and the bus-interface topology, read without udev |
 //! | `enumerate` | the pure grouping rule: nodes to cameras \[PF:7, PF:13\] |
 //!
@@ -53,7 +54,7 @@ use std::time::Instant;
 
 use camino::Utf8Path;
 use schema::backend::{BackendKind, Camera, CameraBackend, HotplugWatch};
-use schema::camera::{CameraId, CameraInfo, FormatInfo, FrameSizeInfo, PixelFormat};
+use schema::camera::{CameraId, CameraInfo, FormatInfo, FrameInterval, FrameSizeInfo, PixelFormat};
 use schema::capture::{Frame, NegotiatedStream, StreamRequest};
 use schema::control::{
     Applied, ControlDesc, ControlId, ControlType, ControlValue, KnownFlag, Unverifiable,
@@ -66,8 +67,6 @@ use schema::report::{HintKind, ListHint};
 use enumerate::ProbedNode;
 use sys::{Fd, ioctl};
 
-/// The phase that lands the half of the T2 surface P1 does not.
-const WRITE_PATH_PHASE: &str = "P2";
 /// The ioctl a control write goes through, for error messages that name it.
 const SET_CTRL_OP: &str = "VIDIOC_S_EXT_CTRLS";
 /// The phase that lands hotplug (design §2.6: the uevent socket arrives with the daemon).
@@ -211,11 +210,35 @@ fn probe_one(node: &sysfs::SysfsNode) -> Result<ProbedNode> {
     })
 }
 
+/// A running stream: what the device agreed to, and the buffers it is filling.
+///
+/// The mappings live here rather than beside the fd because their lifetime is the
+/// *stream's*, not the camera's: `stop_stream` drops this whole value, and dropping it
+/// unmaps every buffer before `REQBUFS(0)` tells the driver they are free. Getting that
+/// order wrong is a use-after-free the kernel is entitled to punish.
+#[derive(Debug)]
+struct StreamState {
+    /// What `S_FMT`/`S_PARM` settled on, with every difference from the request (D5).
+    negotiated: NegotiatedStream,
+    /// The driver's buffers, indexed the way the driver indexes them.
+    buffers: Vec<sys::mmap::Mapping>,
+    /// How many frames this stream has delivered, so a timeout can say whether the camera
+    /// is slow or dead (E3).
+    frames_delivered: u32,
+}
+
 /// One open camera.
 #[derive(Debug)]
 pub struct V4l2Camera {
     info: CameraInfo,
     fd: Fd,
+    /// `Some` between `start_stream` and `stop_stream`.
+    ///
+    /// No `Drop` impl reaches for this: closing the fd is what releases a V4L2 stream, the
+    /// driver stops and frees its buffers on last close, and `Fd`'s own `Drop` does that.
+    /// The mappings are unmapped by their own `Drop` in the same breath. A hand-written
+    /// teardown here would be a second copy of a thing the kernel already guarantees.
+    stream: Option<StreamState>,
 }
 
 impl V4l2Camera {
@@ -224,7 +247,11 @@ impl V4l2Camera {
     fn open(info: CameraInfo) -> Result<V4l2Camera> {
         let path = Self::working_node(&info)?.to_owned();
         let fd = Fd::open(&path)?;
-        Ok(V4l2Camera { info, fd })
+        Ok(V4l2Camera {
+            info,
+            fd,
+            stream: None,
+        })
     }
 
     fn working_node(info: &CameraInfo) -> Result<&Utf8Path> {
@@ -501,20 +528,254 @@ impl Camera for V4l2Camera {
         })
     }
 
-    fn start_stream(&mut self, _request: &StreamRequest) -> Result<NegotiatedStream> {
-        Err(unimplemented_here("Camera::start_stream", WRITE_PATH_PHASE))
+    fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
+        if self.stream.is_some() {
+            // What the driver would say a moment later: `S_FMT` on a streaming node
+            // answers `EBUSY`. Saying it here keeps a half-finished re-negotiation from
+            // tearing down buffers the caller is still dequeuing from. The holder list is
+            // empty rather than naming this process — D13's `holders` is for the
+            // `/proc` walk that identifies *other* processes, and inventing a one-entry
+            // list here would make "who has it" answerable two different ways.
+            return Err(Error::Busy {
+                path: self.fd.path().to_owned(),
+                holders: Vec::new(),
+            });
+        }
+        // A metadata-only camera is a shape D1 supports on purpose: it is listed, and
+        // streaming it is a typed refusal rather than a surprise.
+        if self.info.capture_node().is_none() {
+            return Err(Error::FormatUnsupported {
+                requested: request.pixel_format,
+                available: Vec::new(),
+            });
+        }
+
+        let negotiated = self.negotiate(request)?;
+        match self.map_buffers(request.buffer_count) {
+            Ok(buffers) => {
+                self.stream = Some(StreamState {
+                    negotiated: negotiated.clone(),
+                    buffers,
+                    frames_delivered: 0,
+                });
+                Ok(negotiated)
+            }
+            Err(error) => {
+                // Half a stream is worse than none: the driver is holding buffers nobody
+                // will dequeue, and the next `start_stream` would find the node busy. The
+                // release cannot report anything useful — we are already failing, and the
+                // caller needs the *first* error, not this one.
+                self.release_buffers();
+                Err(error)
+            }
+        }
     }
 
-    fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {
-        Err(unimplemented_here("Camera::next_frame", WRITE_PATH_PHASE))
+    fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
+        let started = Instant::now();
+        // The loop exists for one reason: a buffer the driver marks `V4L2_BUF_FLAG_ERROR`
+        // carries no frame, and handing one back as a frame is how a decoder ends up
+        // reading a half-written JPEG. It is requeued and the wait resumes against the
+        // *same* deadline, so a device producing nothing but corrupt frames times out
+        // rather than spinning.
+        loop {
+            let Some(state) = self.stream.as_ref() else {
+                return Err(Error::DeviceIo {
+                    operation: "VIDIOC_DQBUF".to_owned(),
+                    errno: None,
+                    message: "the stream is not running".to_owned(),
+                });
+            };
+            let frames_delivered = state.frames_delivered;
+
+            if !sys::wait::readable(&self.fd, deadline)? {
+                return Err(Error::SettleTimeout {
+                    waited_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    frames_seen: frames_delivered,
+                });
+            }
+
+            let dequeued = ioctl::dequeue_buffer(&self.fd)?;
+            let frame = self.take_frame(&dequeued);
+            // Back to the driver either way, and before the error return: a buffer we
+            // dequeued and did not requeue is one the device will never fill again, so a
+            // stream that hits a few corrupt frames would starve itself.
+            ioctl::queue_buffer(&self.fd, dequeued.index)?;
+
+            match frame {
+                Some(frame) => {
+                    if let Some(state) = self.stream.as_mut() {
+                        state.frames_delivered = state.frames_delivered.saturating_add(1);
+                    }
+                    return Ok(frame);
+                }
+                None => continue,
+            }
+        }
     }
 
     fn stop_stream(&mut self) -> Result<()> {
-        Err(unimplemented_here("Camera::stop_stream", WRITE_PATH_PHASE))
+        // Idempotent, like `VIDIOC_STREAMOFF` itself: stopping a stopped stream is not an
+        // error, and a caller unwinding from a failure should not have to know whether it
+        // got as far as starting.
+        if self.stream.is_none() {
+            return Ok(());
+        }
+        let stopped = ioctl::stream_off(&self.fd);
+        // The mappings go before `REQBUFS(0)`, which is what tells the driver the buffers
+        // are free — unmapping after that would be unmapping memory the kernel has
+        // already taken back.
+        self.stream = None;
+        let released = ioctl::request_buffers(&self.fd, 0);
+
+        // Both are reported, and `STREAMOFF` wins: it is the one whose failure means
+        // frames may still be arriving.
+        stopped?;
+        released.map(|_| ())
     }
 }
 
 impl V4l2Camera {
+    /// Ask the driver for the caller's format and report what it actually agreed to (D5).
+    ///
+    /// What to ask *for* is resolved against the device's own enumeration by
+    /// [`StreamRequest::choose`], not against the node's current format. That distinction
+    /// is load-bearing and was learned the hard way: a V4L2 node's format is **persistent
+    /// device state**, so building the request on top of `G_FMT` makes
+    /// `StreamRequest::default()` mean "whatever the last program left this camera set
+    /// to". The first hardware run of the streaming suite streamed 1920×1080; the second,
+    /// after a test had negotiated 3×3 down to 320×180, streamed 320×180 — same code,
+    /// same camera, different answer. A photo verb whose resolution depends on what ran
+    /// before it is not one anybody can use, and the shared chooser is also what keeps the
+    /// fake's answer to the same request identical (E5).
+    fn negotiate(&self, request: &StreamRequest) -> Result<NegotiatedStream> {
+        let formats = self.formats()?;
+        let chosen = request
+            .choose(&formats)
+            .ok_or_else(|| Error::FormatUnsupported {
+                requested: request.pixel_format,
+                available: formats.iter().map(|f| f.pixel_format).collect(),
+            })?;
+        let wanted = ioctl::set_format(
+            &self.fd,
+            chosen.pixel_format.to_fourcc(),
+            chosen.width,
+            chosen.height,
+        )?;
+
+        // The interval is a separate negotiation with its own capability bit, and a
+        // device that does not implement it has said so rather than failed: `interval`
+        // then reports `Unknown`, which is D2's "represent what you cannot interpret"
+        // rather than a fabricated 30 fps.
+        let interval = match request.interval {
+            Some(FrameInterval::Discrete {
+                numerator,
+                denominator,
+            }) => ioctl::set_interval(&self.fd, numerator, denominator)?,
+            // A stepwise or unreadable interval is not something `S_PARM` can be asked
+            // for — its field is one fraction — so the request is left alone and the
+            // answer below reports whatever the device is running at. The difference is
+            // then visible as an adjustment rather than as a silently ignored field.
+            _ => ioctl::get_interval(&self.fd)?,
+        };
+        let interval = interval.unwrap_or(FrameInterval::Unknown { raw: 0 });
+
+        Ok(NegotiatedStream {
+            pixel_format: wanted.pixel_format,
+            width: wanted.width,
+            height: wanted.height,
+            bytes_per_line: wanted.bytes_per_line,
+            size_image: wanted.size_image,
+            interval,
+            adjustments: NegotiatedStream::diff(
+                request,
+                wanted.pixel_format,
+                wanted.width,
+                wanted.height,
+                interval,
+            ),
+        })
+    }
+
+    /// Ask for buffers, map each one, and hand them all to the driver to fill.
+    ///
+    /// The count the caller asked for is a request in both directions: bounded above by
+    /// [`limits::MAX_BUFFERS_PER_STREAM`] before the driver is asked to allocate anything,
+    /// and reported back by the driver, which is free to grant fewer.
+    fn map_buffers(&self, requested: u32) -> Result<Vec<sys::mmap::Mapping>> {
+        let asked = requested.clamp(1, limits::MAX_BUFFERS_PER_STREAM);
+        let granted = ioctl::request_buffers(&self.fd, asked)?;
+        if granted == 0 {
+            // Not a capability answer: the device can stream, it just has no memory to do
+            // it with right now (E3). `REQBUFS` succeeding with a count of zero is the
+            // documented way a driver says that, and reading it as success would make
+            // `STREAMON` fail with something far less legible.
+            return Err(Error::DeviceIo {
+                operation: "VIDIOC_REQBUFS".to_owned(),
+                errno: None,
+                message: format!("the driver granted 0 of the {asked} buffers asked for"),
+            });
+        }
+
+        let mut buffers = Vec::with_capacity(usize::try_from(granted).unwrap_or(0));
+        for index in 0..granted {
+            let mapping = ioctl::query_buffer(&self.fd, index)?;
+            buffers.push(sys::mmap::Mapping::map(
+                &self.fd,
+                mapping.offset,
+                mapping.length,
+            )?);
+            // Queued as it is mapped rather than in a second pass: a buffer that is mapped
+            // and not queued is one the driver will never fill, and the two loops could
+            // drift apart.
+            ioctl::queue_buffer(&self.fd, index)?;
+        }
+        ioctl::stream_on(&self.fd)?;
+        Ok(buffers)
+    }
+
+    /// Undo whatever `map_buffers` managed before it failed.
+    ///
+    /// Best effort by construction: this runs while another error is on its way to the
+    /// caller, and that error is the one worth reporting.
+    fn release_buffers(&self) {
+        let _ = ioctl::stream_off(&self.fd);
+        let _ = ioctl::request_buffers(&self.fd, 0);
+    }
+
+    /// Copy one dequeued buffer out, or `None` when the driver says it is not a frame.
+    ///
+    /// The copy happens *before* the buffer is requeued — the driver is free to start
+    /// overwriting it the moment it has it back — and it is a copy rather than a borrow
+    /// because a `Frame` outlives the buffer it came from by design.
+    fn take_frame(&self, dequeued: &sys::decode::Dequeued) -> Option<Frame> {
+        let state = self.stream.as_ref()?;
+        if dequeued.is_error() {
+            return None;
+        }
+        let index = usize::try_from(dequeued.index).ok()?;
+        // The index is device-supplied: a driver naming a buffer it never gave us gets
+        // `None` and a requeue, not an index into the vector (rubric B10).
+        let mapping = state.buffers.get(index)?;
+        let bytes = mapping.bytes(dequeued.bytes_used);
+        if bytes.is_empty() {
+            // A zero-length frame is not a frame. It happens on the first buffer of some
+            // UVC streams, and passing it on would make the JPEG-marker check downstream
+            // report a corrupt bitstream instead of an empty one.
+            return None;
+        }
+
+        Some(Frame {
+            bytes: bytes.to_vec(),
+            pixel_format: state.negotiated.pixel_format,
+            width: state.negotiated.width,
+            height: state.negotiated.height,
+            bytes_per_line: state.negotiated.bytes_per_line,
+            sequence: dequeued.sequence,
+            timestamp_us: dequeued.timestamp_us,
+        })
+    }
+
     /// Every size this format offers, with the intervals available *at that size*.
     ///
     /// The nesting is not decoration: the OBSBOT offers MJPG to 3840×2160 while YUYV
@@ -566,15 +827,10 @@ fn unimplemented_here(operation: &str, arrives_in: &str) -> Error {
 }
 
 /// The methods that answer [`Error::Unimplemented`] in this build, and the phase each
-/// waits for. Pinned by a test, so P2 cannot land without emptying its half.
+/// waits for. Pinned by a test, so a phase cannot land without emptying its rows.
 #[must_use]
 pub fn unimplemented_surface() -> BTreeMap<&'static str, &'static str> {
-    BTreeMap::from([
-        ("Camera::start_stream", WRITE_PATH_PHASE),
-        ("Camera::next_frame", WRITE_PATH_PHASE),
-        ("Camera::stop_stream", WRITE_PATH_PHASE),
-        ("CameraBackend::watch", HOTPLUG_PHASE),
-    ])
+    BTreeMap::from([("CameraBackend::watch", HOTPLUG_PHASE)])
 }
 
 #[cfg(test)]
@@ -678,16 +934,19 @@ mod tests {
 
     #[test]
     fn the_unfinished_half_of_the_trait_is_named_and_says_which_phase_lands_it() {
-        // The pin. When P2 implements the write path it must delete four rows here, and
-        // this test is what makes forgetting impossible.
+        // The pin, one row from empty. P2 deleted four of the five; note N6 says the
+        // `Unimplemented` variant retires when P4 deletes the last one, and this test is
+        // what makes that a compile-time obligation rather than a memory.
         let surface = unimplemented_surface();
-        assert_eq!(surface.len(), 4);
-        assert_eq!(
-            surface.get("Camera::set"),
-            None,
-            "the write path landed at P2"
-        );
-        assert_eq!(surface.get("Camera::start_stream"), Some(&"P2"));
+        assert_eq!(surface.len(), 1);
+        for landed in [
+            "Camera::set",
+            "Camera::start_stream",
+            "Camera::next_frame",
+            "Camera::stop_stream",
+        ] {
+            assert_eq!(surface.get(landed), None, "{landed} landed at P2");
+        }
         assert_eq!(surface.get("CameraBackend::watch"), Some(&"P4"));
 
         // Every entry renders as the D13 refusal, blaming this build rather than the
@@ -807,6 +1066,7 @@ mod tests {
                     backend: BackendKind::V4l2,
                 },
                 fd,
+                stream: None,
             };
 
             let controls = camera.controls().unwrap_or_else(|error| {

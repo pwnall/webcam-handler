@@ -28,6 +28,14 @@ pub const FRAME_DEADLINE_MS: u64 = 2_000;
 /// Buffers to request from the driver for a capture stream.
 pub const DEFAULT_BUFFER_COUNT: u32 = 4;
 
+/// The most buffers one stream may ask the driver to allocate.
+///
+/// `buffer_count` arrives from a caller (a CLI flag, an RPC field), and every buffer is a
+/// driver-side allocation of a whole frame — 8 MB each at 4K MJPG on the OBSBOT. A request
+/// for a thousand is not a caller who wants smooth capture, and the driver would be the
+/// one to run out of memory.
+pub const MAX_BUFFERS_PER_STREAM: u32 = 32;
+
 /// The most samples one sweep may take.
 ///
 /// A sweep of a 468000-wide pan range at step 3600 would otherwise plan 260 photos and

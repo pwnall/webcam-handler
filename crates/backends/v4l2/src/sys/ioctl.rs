@@ -11,11 +11,13 @@
 //! becomes a dense one \[PF:2\] or a short format list becomes an error.
 
 use std::mem::offset_of;
+use std::os::raw::c_int;
 
 use schema::error::{Error, Result};
 use v4l::v4l_sys::{
-    v4l2_capability, v4l2_ext_control, v4l2_ext_controls, v4l2_fmtdesc, v4l2_frmivalenum,
-    v4l2_frmsizeenum, v4l2_query_ext_ctrl, v4l2_querymenu,
+    v4l2_buffer, v4l2_capability, v4l2_captureparm, v4l2_ext_control, v4l2_ext_controls,
+    v4l2_fmtdesc, v4l2_format, v4l2_fract, v4l2_frmivalenum, v4l2_frmsizeenum, v4l2_pix_format,
+    v4l2_query_ext_ctrl, v4l2_querymenu, v4l2_requestbuffers, v4l2_streamparm,
 };
 use v4l::v4l2::vidioc;
 
@@ -412,6 +414,189 @@ fn ext_controls_header(
     )
     .ok_or_else(|| short_reply(op))?;
     Ok(controls)
+}
+
+// ------------------------------------------------------------------ the streaming path
+
+/// `V4L2_MEMORY_MMAP` — the driver allocates, we map (design §2.5).
+const MEMORY_MMAP: u32 = 1;
+
+/// `VIDIOC_S_FMT` on the capture queue, reading back what the driver settled on.
+///
+/// The read-back is not a courtesy: `S_FMT` adjusts the caller's request in place and
+/// returns success, so the struct that comes back *is* the negotiated format. A caller
+/// that ignored it would report the size it asked for rather than the size it will get,
+/// which is D3's mistake wearing D5's clothes.
+pub(crate) fn set_format(
+    fd: &Fd,
+    pixel_format: u32,
+    width: u32,
+    height: u32,
+) -> Result<decode::PixFormat> {
+    let op = "VIDIOC_S_FMT";
+    let mut payload = Payload::<v4l2_format>::zeroed();
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_format, type_),
+        BUF_TYPE_VIDEO_CAPTURE,
+        op,
+    )?;
+    for (field, value) in [
+        (offset_of!(v4l2_pix_format, pixelformat), pixel_format),
+        (offset_of!(v4l2_pix_format, width), width),
+        (offset_of!(v4l2_pix_format, height), height),
+    ] {
+        let at = decode::pix_field(field).ok_or_else(|| short_reply(op))?;
+        set_u32(&mut payload, at, value, op)?;
+    }
+    // Everything else stays zero, which is what the UAPI asks for: `field` zero is
+    // `V4L2_FIELD_ANY`, and a zeroed `bytesperline`/`sizeimage` tells the driver to
+    // compute them.
+    call(fd, vidioc::VIDIOC_S_FMT, &mut payload, op)?;
+    decode::pix_format(payload.bytes()).ok_or_else(|| short_reply(op))
+}
+
+/// `VIDIOC_S_PARM`, asking for a frame interval and reading back what was granted.
+///
+/// A driver with no `V4L2_CAP_TIMEPERFRAME` answers `None` rather than an error: it has
+/// said its interval field means nothing, which is a fact about the device and not a
+/// failure of the call (E3).
+pub(crate) fn set_interval(
+    fd: &Fd,
+    numerator: u32,
+    denominator: u32,
+) -> Result<Option<schema::camera::FrameInterval>> {
+    let op = "VIDIOC_S_PARM";
+    let mut payload = Payload::<v4l2_streamparm>::zeroed();
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_streamparm, type_),
+        BUF_TYPE_VIDEO_CAPTURE,
+        op,
+    )?;
+    for (field, value) in [
+        (
+            offset_of!(v4l2_captureparm, timeperframe) + offset_of!(v4l2_fract, numerator),
+            numerator,
+        ),
+        (
+            offset_of!(v4l2_captureparm, timeperframe) + offset_of!(v4l2_fract, denominator),
+            denominator,
+        ),
+    ] {
+        let at = decode::capture_parm_field(field).ok_or_else(|| short_reply(op))?;
+        set_u32(&mut payload, at, value, op)?;
+    }
+    call(fd, vidioc::VIDIOC_S_PARM, &mut payload, op)?;
+    Ok(decode::capture_interval(payload.bytes()))
+}
+
+/// `VIDIOC_G_PARM` — the interval the device is running at, when it will say.
+pub(crate) fn get_interval(fd: &Fd) -> Result<Option<schema::camera::FrameInterval>> {
+    let op = "VIDIOC_G_PARM";
+    let mut payload = Payload::<v4l2_streamparm>::zeroed();
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_streamparm, type_),
+        BUF_TYPE_VIDEO_CAPTURE,
+        op,
+    )?;
+    call(fd, vidioc::VIDIOC_G_PARM, &mut payload, op)?;
+    Ok(decode::capture_interval(payload.bytes()))
+}
+
+/// `VIDIOC_REQBUFS` — ask the driver for `count` mmap buffers, and learn how many it gave.
+///
+/// `count` of zero is the documented way to release every buffer, and this function is
+/// how a stream is torn down as well as how it is set up.
+pub(crate) fn request_buffers(fd: &Fd, count: u32) -> Result<u32> {
+    let op = "VIDIOC_REQBUFS";
+    let mut payload = Payload::<v4l2_requestbuffers>::zeroed();
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_requestbuffers, count),
+        count,
+        op,
+    )?;
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_requestbuffers, type_),
+        BUF_TYPE_VIDEO_CAPTURE,
+        op,
+    )?;
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_requestbuffers, memory),
+        MEMORY_MMAP,
+        op,
+    )?;
+    call(fd, vidioc::VIDIOC_REQBUFS, &mut payload, op)?;
+    decode::granted_buffers(payload.bytes()).ok_or_else(|| short_reply(op))
+}
+
+/// `VIDIOC_QUERYBUF` — where buffer `index` lives, so it can be mapped.
+pub(crate) fn query_buffer(fd: &Fd, index: u32) -> Result<decode::BufferMapping> {
+    let op = "VIDIOC_QUERYBUF";
+    let mut payload = buffer_request(index, op)?;
+    call(fd, vidioc::VIDIOC_QUERYBUF, &mut payload, op)?;
+    decode::buffer_mapping(payload.bytes()).ok_or_else(|| short_reply(op))
+}
+
+/// `VIDIOC_QBUF` — hand buffer `index` back to the driver to fill.
+pub(crate) fn queue_buffer(fd: &Fd, index: u32) -> Result<()> {
+    let op = "VIDIOC_QBUF";
+    let mut payload = buffer_request(index, op)?;
+    call(fd, vidioc::VIDIOC_QBUF, &mut payload, op)
+}
+
+/// `VIDIOC_DQBUF` — take the next filled buffer.
+///
+/// Blocking, because [`super::Fd::open`] does not set `O_NONBLOCK`; the caller bounds it
+/// with [`super::wait::readable`] first, so this only ever runs when a buffer is ready.
+pub(crate) fn dequeue_buffer(fd: &Fd) -> Result<decode::Dequeued> {
+    let op = "VIDIOC_DQBUF";
+    // The index is an *output* here — the driver says which buffer it filled — so the
+    // request carries only the queue type and the memory model.
+    let mut payload = buffer_request(0, op)?;
+    call(fd, vidioc::VIDIOC_DQBUF, &mut payload, op)?;
+    decode::dequeued(payload.bytes()).ok_or_else(|| short_reply(op))
+}
+
+/// `VIDIOC_STREAMON`.
+pub(crate) fn stream_on(fd: &Fd) -> Result<()> {
+    stream_switch(fd, vidioc::VIDIOC_STREAMON, "VIDIOC_STREAMON")
+}
+
+/// `VIDIOC_STREAMOFF`. Idempotent in the kernel, and therefore here.
+pub(crate) fn stream_off(fd: &Fd) -> Result<()> {
+    stream_switch(fd, vidioc::VIDIOC_STREAMOFF, "VIDIOC_STREAMOFF")
+}
+
+/// The two stream switches take a bare buffer-type `int`, not a struct.
+fn stream_switch(fd: &Fd, request: vidioc::_IOC_TYPE, op: &str) -> Result<()> {
+    let mut payload = Payload::<c_int>::zeroed();
+    fields::write_u32(payload.bytes_mut(), 0, BUF_TYPE_VIDEO_CAPTURE)
+        .ok_or_else(|| short_reply(op))?;
+    call(fd, request, &mut payload, op)
+}
+
+/// A `v4l2_buffer` naming one index on the mmap capture queue.
+fn buffer_request(index: u32, op: &str) -> Result<Payload<v4l2_buffer>> {
+    let mut payload = Payload::<v4l2_buffer>::zeroed();
+    set_u32(&mut payload, offset_of!(v4l2_buffer, index), index, op)?;
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_buffer, type_),
+        BUF_TYPE_VIDEO_CAPTURE,
+        op,
+    )?;
+    set_u32(
+        &mut payload,
+        offset_of!(v4l2_buffer, memory),
+        MEMORY_MMAP,
+        op,
+    )?;
+    Ok(payload)
 }
 
 /// Run an ioctl whose only acceptable answer is success.

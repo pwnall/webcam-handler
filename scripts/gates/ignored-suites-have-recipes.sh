@@ -69,6 +69,63 @@ done < <(grep -rHn '^# wch-suite:' "$root/scripts" --include='*.sh' | sed 's/:[0
 gate_checked "$declarations" "wch-suite declarations in scripts/"
 gate_require_nonzero "$declarations" "wch-suite declarations"
 
+# ------------------------------------------------- the exclusive-device test group
+#
+# A camera is a physical thing and V4L2 allows one streamer per node, so two hardware
+# tests running at once contend for it and the loser sees a correct `EBUSY` from a correct
+# backend. `.config/nextest.toml` serialises them; this half asserts the serialisation
+# still covers every suite that exists, because the failure mode is a *flake* — the kind
+# of red that gets re-run rather than read.
+#
+# Every declared prefix must be in the group's filter. That is the right population here
+# rather than an over-fit: a suite in this project is `#[ignore]`d precisely because it
+# needs hardware or a loaded kernel module, and both of those are exclusive.
+
+nextest_config="$root/.config/nextest.toml"
+if [[ ! -f "$nextest_config" ]]; then
+    gate_fail "no .config/nextest.toml; nothing stops two hardware suites streaming from one camera at once"
+else
+    group="$(sed -n 's/^[[:space:]]*test-group[[:space:]]*=[[:space:]]*.\([A-Za-z0-9_-]*\).*/\1/p' \
+        "$nextest_config" | head -n1)"
+    if [[ -z "$group" ]]; then
+        gate_fail ".config/nextest.toml assigns no test-group; the hardware suites are not serialised"
+    elif ! grep -Eq "^\[test-groups\.${group}\]" "$nextest_config"; then
+        gate_fail ".config/nextest.toml assigns test-group '$group', which it does not define"
+    elif ! awk -v group="$group" '
+        $0 ~ "^\\[test-groups\\." group "\\]" { inside = 1; next }
+        inside && /^\[/                       { inside = 0 }
+        inside && /max-threads[[:space:]]*=[[:space:]]*1[[:space:]]*$/ { found = 1 }
+        END { exit !found }
+    ' "$nextest_config"; then
+        gate_fail "test group '$group' does not cap itself at one thread, so it serialises nothing"
+    fi
+
+    # The *filter expressions* of the overrides that assign the group — not the file. The
+    # first version of this check grepped the whole file and passed on a config whose
+    # filter had lost a prefix, because the paragraph above the filter still mentioned it.
+    # The selftest caught that, which is what the selftest is for.
+    filters="$(awk -v group="$group" '
+        /^\[\[/                                   { block = ""; assigned = 0; next }
+        /^\[/                                     { block = ""; assigned = 0; next }
+        /^[[:space:]]*filter[[:space:]]*=/        { block = $0 }
+        $0 ~ "test-group[[:space:]]*=.*" group    { assigned = 1 }
+        assigned && block != ""                   { print block; block = ""; assigned = 0 }
+    ' "$nextest_config")"
+    if [[ -z "$filters" ]]; then
+        gate_fail "no override in .config/nextest.toml assigns '$group' to a filter, so the group holds nothing"
+    fi
+
+    covered=0
+    for prefix in "${prefixes[@]}"; do
+        if grep -Fq "$prefix" <<<"$filters"; then
+            covered=$((covered + 1))
+        else
+            gate_fail "suite prefix '$prefix' is not in .config/nextest.toml's '$group' filter; two of its tests can stream from one camera at once"
+        fi
+    done
+    gate_checked "$covered" "suite prefix(es) covered by the exclusive-device test group"
+fi
+
 # ------------------------------------------------------------------ ignored tests
 
 # Every workspace member's directory, longest-first, so a test file resolves to the most

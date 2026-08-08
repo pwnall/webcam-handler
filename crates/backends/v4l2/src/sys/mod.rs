@@ -29,8 +29,9 @@
 //!
 //! ## The residual `unsafe`, counted
 //!
-//! Five blocks, one obligation each (`clippy::multiple_unsafe_ops_per_block` is denied, so
-//! that is enforced rather than claimed):
+//! Nine blocks and one `unsafe impl`, one obligation each
+//! (`clippy::multiple_unsafe_ops_per_block` is denied, so that is enforced rather than
+//! claimed):
 //!
 //! | Where | Obligation |
 //! |---|---|
@@ -39,18 +40,30 @@
 //! | `ioctl::call` | the pointer is valid and correctly sized for the request's declared width |
 //! | `ioctl::call_enumerating` | the same; only the *interpretation* of the error differs |
 //! | `ioctl::call_ext_ctrls` | the same, plus the one-entry control array — and its payload pointer, when it has one — that the kernel dereferences |
+//! | `mmap::Mapping::map` | a null hint address and a descriptor the region belongs to |
+//! | `mmap::Mapping::bytes` | the slice lies inside a region that is still mapped |
+//! | `mmap::Mapping::drop` | the address and length are the ones `mmap` returned, unmapped once |
+//! | `unsafe impl Send for mmap::Mapping` | the region is owned exclusively and is not thread-affine |
+//! | `wait::readable` | one live `pollfd`, and a count of one to match |
 //!
-//! P2's write path added two ioctls and *removed* a block: reads and writes of an
-//! `ext_ctrls` header carry the identical obligation, so `call_ext_ctrls` states it once
-//! for all four calls rather than each call stating it again in slightly different words.
+//! Two movements worth recording. P2's **write** path added two ioctls and *removed* a
+//! block: reads and writes of an `ext_ctrls` header carry the identical obligation, so
+//! `call_ext_ctrls` states it once for all four calls rather than each call stating it
+//! again in slightly different words. P2's **streaming** path added four, and every one of
+//! them is about a buffer's lifetime rather than about an ioctl — which is why [`mmap`] is
+//! a type with a `Drop` rather than a pair of free functions: the length that `munmap`
+//! needs and the length that bounds a read are the same number, and a type is how they
+//! stay the same number.
 //!
-//! Miri reaches the first two and cannot cross the other three, which is why [`payload`] is
+//! Miri reaches the payload pair and cannot cross the rest, which is why [`payload`] is
 //! its own module rather than a few lines here: `scripts/miri.sh` selects it by name.
 
 pub(crate) mod decode;
 pub(crate) mod fields;
 pub(crate) mod ioctl;
+pub(crate) mod mmap;
 pub(crate) mod payload;
+pub(crate) mod wait;
 
 use std::os::raw::c_int;
 
@@ -108,6 +121,20 @@ impl Fd {
     /// The node this descriptor came from, so an error can name it.
     pub(crate) fn path(&self) -> &Utf8Path {
         &self.path
+    }
+
+    /// Take ownership of a descriptor that did not come from a device node.
+    ///
+    /// Test-only, and it exists so [`wait::readable`] can be exercised in both directions
+    /// without a camera: a socket pair is the one descriptor a test can *make* readable
+    /// on demand. The caller transfers ownership — `Drop` closes it — so a raw fd handed
+    /// here must not be closed anywhere else.
+    #[cfg(test)]
+    pub(crate) fn from_raw_for_test(fd: c_int) -> Fd {
+        Fd {
+            fd,
+            path: Utf8PathBuf::from("<test descriptor>"),
+        }
     }
 }
 

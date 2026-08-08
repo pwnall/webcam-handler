@@ -29,9 +29,11 @@
 //! wch-suite: prefix=hw_ recipe=smoke-hw
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use schema::backend::{Camera, CameraBackend};
 use schema::camera::NodeKind;
+use schema::capture::StreamRequest;
 use schema::control::{ControlDesc, ControlType, ControlValue, KnownFlag};
 use schema::profile::DeviceProfile;
 use testkit::{battery, corpus};
@@ -654,3 +656,213 @@ fn inactive_slugs(controls: &[ControlDesc]) -> BTreeSet<String> {
         .map(|desc| desc.slug.to_string())
         .collect()
 }
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_stream_negotiates_delivers_frames_and_stops_twice_over() {
+    // The whole capture path against real drivers: `S_FMT` negotiation, mmap buffers,
+    // `DQBUF` bounded by a deadline, and teardown. Twice, because "stop released
+    // everything" is only observable from the second start — the failure this catches is
+    // a `REQBUFS(0)` that never happens, which leaves the node busy for everybody.
+    //
+    // What is asserted is the frame's agreement with its own negotiated header, never its
+    // content: lighting varies and a test that reads pixels is a test that fails on
+    // somebody else's desk.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut streamed = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            println!(
+                "SKIP (partial): {} has no capture node, so it is listed but not streamable",
+                info.id
+            );
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+
+        for cycle in 1..=2u32 {
+            let negotiated = match camera.start_stream(&StreamRequest::default()) {
+                Ok(negotiated) => negotiated,
+                // E3: a camera somebody else holds has not told us it cannot stream.
+                Err(
+                    error @ (schema::Error::Busy { .. } | schema::Error::PermissionDenied { .. }),
+                ) => {
+                    println!("SKIP (partial): {} could not be streamed: {error}", info.id);
+                    break;
+                }
+                Err(error) => panic!("{}: start_stream on cycle {cycle} failed: {error}", info.id),
+            };
+
+            for index in 0..FRAMES_PER_HARDWARE_CYCLE {
+                let deadline =
+                    Instant::now() + Duration::from_millis(schema::limits::FRAME_DEADLINE_MS);
+                let frame = camera.next_frame(deadline).unwrap_or_else(|error| {
+                    panic!(
+                        "{}: frame {index} on cycle {cycle} failed: {error}",
+                        info.id
+                    )
+                });
+
+                assert_eq!(
+                    frame.pixel_format, negotiated.pixel_format,
+                    "{}: a frame arrived in a format the stream did not negotiate",
+                    info.id
+                );
+                assert_eq!(
+                    (frame.width, frame.height),
+                    (negotiated.width, negotiated.height),
+                    "{}: a frame's size disagrees with the negotiated one",
+                    info.id
+                );
+                assert!(
+                    !frame.bytes.is_empty(),
+                    "{}: frame {index} carries no bytes",
+                    info.id
+                );
+                if frame.pixel_format.is_compressed() {
+                    // PF:9 checked this by hand during the design probe; here it is the
+                    // standing assertion, and it is what makes E6's verbatim JPEG sink a
+                    // claim about a real bitstream.
+                    assert!(
+                        frame.bytes.starts_with(&[0xff, 0xd8]),
+                        "{}: frame {index} is {} and does not start with a JPEG SOI marker",
+                        info.id,
+                        frame.pixel_format
+                    );
+                }
+            }
+
+            camera.stop_stream().unwrap_or_else(|error| {
+                panic!("{}: stop on cycle {cycle} failed: {error}", info.id)
+            });
+            if cycle == 2 {
+                streamed += 1;
+                println!(
+                    "{}: streamed {} at {}x{} ({}), two cycles, {} frames each",
+                    info.id,
+                    negotiated.pixel_format,
+                    negotiated.width,
+                    negotiated.height,
+                    negotiated.interval.fps().map_or_else(
+                        || "no rate reported".to_owned(),
+                        |fps| format!("{fps:.0} fps")
+                    ),
+                    FRAMES_PER_HARDWARE_CYCLE
+                );
+            }
+        }
+
+        // Stopping a stopped stream is not an error, and a caller unwinding from a
+        // failure must not have to know how far it got.
+        camera
+            .stop_stream()
+            .unwrap_or_else(|error| panic!("{}: a redundant stop failed: {error}", info.id));
+    }
+
+    if streamed == 0 {
+        println!("SKIP: no attached camera could be streamed");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_stream_honours_a_size_the_camera_offers_and_reports_one_it_does_not() {
+    // D5 in both directions on real hardware: a size the device lists must come back
+    // exactly and report no adjustment, and a size it does not list must come back
+    // *different* and say so. A negotiator that always reported "exact" would pass the
+    // first arm alone.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut checked = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let formats = camera
+            .formats()
+            .unwrap_or_else(|error| panic!("{}: formats() failed: {error}", info.id));
+
+        let offered = formats.iter().find_map(|format| {
+            format.sizes.iter().find_map(|entry| {
+                entry
+                    .size
+                    .max_dimensions()
+                    .map(|wh| (format.pixel_format, wh))
+            })
+        });
+        let Some((pixel_format, (width, height))) = offered else {
+            println!("SKIP (partial): {} offers no readable frame size", info.id);
+            continue;
+        };
+
+        let exact = camera
+            .start_stream(&StreamRequest {
+                pixel_format: Some(pixel_format),
+                width: Some(width),
+                height: Some(height),
+                ..StreamRequest::default()
+            })
+            .unwrap_or_else(|error| panic!("{}: a size it listed was refused: {error}", info.id));
+        camera.stop_stream().expect("stop");
+        assert_eq!(
+            (exact.width, exact.height),
+            (width, height),
+            "{}: asked for a size the device lists and got another",
+            info.id
+        );
+        assert!(
+            exact.is_exact(),
+            "{}: an honoured request reported adjustments {:?}",
+            info.id,
+            exact.adjustments
+        );
+
+        // Three pixels wide is not a frame size any UVC camera offers, so the driver must
+        // adjust — and the adjustment must be *reported*, which is the half a silent
+        // negotiator gets wrong.
+        let adjusted = camera
+            .start_stream(&StreamRequest {
+                pixel_format: Some(pixel_format),
+                width: Some(3),
+                height: Some(3),
+                ..StreamRequest::default()
+            })
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: a tiny size errored instead of adjusting: {error}",
+                    info.id
+                )
+            });
+        camera.stop_stream().expect("stop");
+        assert!(
+            !adjusted.is_exact(),
+            "{}: 3x3 came back as {}x{} and was reported exact",
+            info.id,
+            adjusted.width,
+            adjusted.height
+        );
+        checked += 1;
+        println!(
+            "{}: D5 live — 3x3 negotiated to {}x{}, reported as {:?}",
+            info.id, adjusted.width, adjusted.height, adjusted.adjustments
+        );
+    }
+
+    if checked == 0 {
+        println!("SKIP: no attached camera could be asked to negotiate a size");
+    }
+}
+
+/// Enough frames to see the driver recycle its buffers, and few enough not to make
+/// `just smoke-hw` a coffee break. The default buffer count is four.
+const FRAMES_PER_HARDWARE_CYCLE: u32 = 6;

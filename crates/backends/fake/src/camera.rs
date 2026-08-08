@@ -584,73 +584,62 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
         });
     }
 
-    let usable: Vec<&FormatInfo> = formats
+    // The formats this backend can actually synthesize frames for. Filtered *before* the
+    // chooser rather than inside it: "which formats can I produce" is this crate's
+    // limitation, and teaching the shared resolver about it would make the schema know
+    // something only the fake is true of.
+    let usable: Vec<FormatInfo> = formats
         .iter()
         .filter(|f| frames::can_synthesize(f.pixel_format) && !f.sizes.is_empty())
+        .cloned()
         .collect();
-    let Some(first) = usable.first().copied() else {
+    // A format the device offers and this backend cannot synthesize is *adjusted*, not
+    // refused: a driver in the same position adjusts and says so (D5), and the shared diff
+    // below reports it. A format the device does not offer at all is a refusal.
+    if let Some(wanted) = request.pixel_format
+        && !formats.iter().any(|f| f.pixel_format == wanted)
+    {
+        return Err(Error::FormatUnsupported {
+            requested: Some(wanted),
+            available: usable.iter().map(|f| f.pixel_format).collect(),
+        });
+    }
+    let Some(chosen) = request.choose(&usable) else {
         return Err(Error::FormatUnsupported {
             requested: request.pixel_format,
             available: formats.iter().map(|f| f.pixel_format).collect(),
         });
     };
 
-    let chosen = match request.pixel_format {
-        None => first,
-        Some(wanted) => match usable.iter().copied().find(|f| f.pixel_format == wanted) {
-            Some(found) => found,
-            // The device offers it; this backend cannot synthesize it. A driver in the
-            // same position adjusts rather than refusing (D5), and the adjustment is
-            // reported by the shared diff below rather than pushed by hand here.
-            None if formats.iter().any(|f| f.pixel_format == wanted) => first,
-            None => {
-                return Err(Error::FormatUnsupported {
-                    requested: Some(wanted),
-                    available: usable.iter().map(|f| f.pixel_format).collect(),
-                });
-            }
-        },
-    };
-
-    let (width, height) = choose_size(&chosen.sizes, request);
-    let interval = choose_interval(&chosen.sizes, width, height, request);
-    let bytes_per_line = bytes_per_line(chosen.pixel_format, width);
+    // The size list of the format that was chosen, for the interval lookup below.
+    let sizes = usable
+        .iter()
+        .find(|f| f.pixel_format == chosen.pixel_format)
+        .map_or(&[][..], |f| f.sizes.as_slice());
+    let interval = choose_interval(sizes, chosen.width, chosen.height, request);
+    let bytes_per_line = bytes_per_line(chosen.pixel_format, chosen.width);
     Ok(NegotiatedStream {
         pixel_format: chosen.pixel_format,
-        width,
-        height,
+        width: chosen.width,
+        height: chosen.height,
         bytes_per_line,
-        size_image: size_image(chosen.pixel_format, width, height, bytes_per_line),
+        size_image: size_image(
+            chosen.pixel_format,
+            chosen.width,
+            chosen.height,
+            bytes_per_line,
+        ),
         interval,
         // Choosing is this backend's business; describing how the choice differs from the
         // request is one law, and it lives in the schema (§2.10).
-        adjustments: NegotiatedStream::diff(request, chosen.pixel_format, width, height, interval),
+        adjustments: NegotiatedStream::diff(
+            request,
+            chosen.pixel_format,
+            chosen.width,
+            chosen.height,
+            interval,
+        ),
     })
-}
-
-/// The size the device would settle on: the exact request when it is offered, otherwise
-/// the largest offered size that fits inside it, otherwise the first the device listed.
-fn choose_size(sizes: &[FrameSizeInfo], request: &StreamRequest) -> (u32, u32) {
-    // A size shaped in a way this build cannot read has no dimensions to negotiate
-    // against; it is carried in the format list but cannot be chosen.
-    let offered: Vec<(u32, u32)> = sizes
-        .iter()
-        .filter_map(|s| s.size.max_dimensions())
-        .collect();
-    let first = offered.first().copied().unwrap_or((640, 480));
-    let (Some(width), Some(height)) = (request.width, request.height) else {
-        // Nothing was asked for, so nothing was adjusted: the device's own first entry.
-        return first;
-    };
-    if offered.contains(&(width, height)) {
-        return (width, height);
-    }
-    offered
-        .iter()
-        .copied()
-        .filter(|(w, h)| *w <= width && *h <= height)
-        .max_by_key(|(w, h)| u64::from(*w) * u64::from(*h))
-        .unwrap_or(first)
 }
 
 /// The interval offered at the chosen size: the request when it is on the list, else the

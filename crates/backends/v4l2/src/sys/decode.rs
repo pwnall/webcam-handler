@@ -34,8 +34,9 @@ use schema::control::{
 };
 use schema::limits;
 use v4l::v4l_sys::{
-    v4l2_capability, v4l2_ext_control, v4l2_fmtdesc, v4l2_frmivalenum, v4l2_frmsizeenum,
-    v4l2_query_ext_ctrl, v4l2_querymenu,
+    timeval, v4l2_buffer, v4l2_capability, v4l2_captureparm, v4l2_ext_control, v4l2_fmtdesc,
+    v4l2_format, v4l2_fract, v4l2_frmivalenum, v4l2_frmsizeenum, v4l2_pix_format,
+    v4l2_query_ext_ctrl, v4l2_querymenu, v4l2_requestbuffers, v4l2_streamparm,
 };
 
 use super::fields;
@@ -328,6 +329,186 @@ pub(crate) fn scalar_arm(control_type: u32, value: i64) -> Option<ScalarArm> {
     } else {
         i32::try_from(value).ok().map(ScalarArm::Narrow)
     }
+}
+
+// ------------------------------------------------------------------ the streaming path
+
+/// `V4L2_CAP_TIMEPERFRAME` — the bit that says a `G_PARM` answer's interval means
+/// anything.
+const CAP_TIMEPERFRAME: u32 = 0x1000;
+/// `V4L2_BUF_FLAG_ERROR` — this buffer was dequeued and its contents are not a frame.
+pub(crate) const BUF_FLAG_ERROR: u32 = 0x0040;
+
+/// The timestamp decoder below reads two 64-bit halves, which is `timeval`'s shape on
+/// every target this project builds for. A target where it is not stops the build here
+/// rather than silently reporting a garbage frame time.
+const _: () = assert!(size_of::<timeval>() == 16);
+
+/// The byte offset of a `v4l2_pix_format` field inside a `v4l2_format`.
+///
+/// Two derived offsets composed, never a transcribed constant: the union's own offset
+/// within `v4l2_format`, plus the field's offset within the `pix` arm. Composing them is
+/// what lets this module reach into a union without an `unsafe` field access whose
+/// obligation would be "prove which arm was written".
+pub(crate) const fn pix_field(field_offset: usize) -> Option<usize> {
+    offset_of!(v4l2_format, fmt).checked_add(field_offset)
+}
+
+/// The byte offset of a `v4l2_captureparm` field inside a `v4l2_streamparm`.
+pub(crate) const fn capture_parm_field(field_offset: usize) -> Option<usize> {
+    offset_of!(v4l2_streamparm, parm).checked_add(field_offset)
+}
+
+/// What the driver agreed to stream, as `G_FMT` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PixFormat {
+    /// The fourcc the driver settled on.
+    pub(crate) pixel_format: PixelFormat,
+    /// Frame width in pixels.
+    pub(crate) width: u32,
+    /// Frame height in pixels.
+    pub(crate) height: u32,
+    /// Bytes per row; 0 for a compressed bitstream.
+    pub(crate) bytes_per_line: u32,
+    /// The driver's maximum frame size, which bounds the buffers it will allocate.
+    pub(crate) size_image: u32,
+}
+
+/// Decode the capture half of a `VIDIOC_G_FMT`/`S_FMT` reply.
+///
+/// The reply is the *negotiated* format, which is the whole reason both calls read it
+/// back: `S_FMT` adjusts silently and reports success, exactly as a control write does
+/// (D5 is D3 applied to formats).
+pub(crate) fn pix_format(bytes: &[u8]) -> Option<PixFormat> {
+    if !is_whole::<v4l2_format>(bytes) {
+        return None;
+    }
+    Some(PixFormat {
+        pixel_format: PixelFormat::from_fourcc(fields::read_u32(
+            bytes,
+            pix_field(offset_of!(v4l2_pix_format, pixelformat))?,
+        )?),
+        width: fields::read_u32(bytes, pix_field(offset_of!(v4l2_pix_format, width))?)?,
+        height: fields::read_u32(bytes, pix_field(offset_of!(v4l2_pix_format, height))?)?,
+        bytes_per_line: fields::read_u32(
+            bytes,
+            pix_field(offset_of!(v4l2_pix_format, bytesperline))?,
+        )?,
+        size_image: fields::read_u32(bytes, pix_field(offset_of!(v4l2_pix_format, sizeimage))?)?,
+    })
+}
+
+/// How many buffers `VIDIOC_REQBUFS` actually granted.
+///
+/// The driver is free to give fewer than were asked for — and to give *zero*, which the
+/// caller must not read as "the request was honoured". D5's theme again, one field wide.
+pub(crate) fn granted_buffers(bytes: &[u8]) -> Option<u32> {
+    if !is_whole::<v4l2_requestbuffers>(bytes) {
+        return None;
+    }
+    fields::read_u32(bytes, offset_of!(v4l2_requestbuffers, count))
+}
+
+/// Where one buffer lives, from a `VIDIOC_QUERYBUF` reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BufferMapping {
+    /// The offset to hand `mmap`, in the device's own address space.
+    pub(crate) offset: u32,
+    /// How many bytes the buffer holds.
+    pub(crate) length: u32,
+}
+
+/// Decode a `VIDIOC_QUERYBUF` reply's mapping fields.
+pub(crate) fn buffer_mapping(bytes: &[u8]) -> Option<BufferMapping> {
+    if !is_whole::<v4l2_buffer>(bytes) {
+        return None;
+    }
+    Some(BufferMapping {
+        // `m` is a union whose first member is the mmap offset; the other members are a
+        // userptr, a plane array and a dmabuf fd, none of which this build requests.
+        offset: fields::read_u32(bytes, offset_of!(v4l2_buffer, m))?,
+        length: fields::read_u32(bytes, offset_of!(v4l2_buffer, length))?,
+    })
+}
+
+/// What a `VIDIOC_DQBUF` reply says about the buffer it handed back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Dequeued {
+    /// Which buffer, so the caller can find its mapping and queue it back.
+    pub(crate) index: u32,
+    /// How many bytes the driver wrote. Device-supplied, and bounded by the mapping
+    /// before it becomes a length (rubric B10).
+    pub(crate) bytes_used: u32,
+    /// The driver's sequence number. Gaps mean dropped frames, which is a fact worth
+    /// carrying rather than smoothing over.
+    pub(crate) sequence: u32,
+    /// The driver's timestamp on its own clock, in microseconds.
+    pub(crate) timestamp_us: i64,
+    /// The buffer's flag word, raw. `BUF_FLAG_ERROR` is the one this build reads.
+    pub(crate) flags: u32,
+}
+
+impl Dequeued {
+    /// Whether the driver marked this buffer as carrying no usable frame.
+    pub(crate) const fn is_error(self) -> bool {
+        self.flags & BUF_FLAG_ERROR != 0
+    }
+}
+
+/// Decode a `VIDIOC_DQBUF` reply.
+pub(crate) fn dequeued(bytes: &[u8]) -> Option<Dequeued> {
+    if !is_whole::<v4l2_buffer>(bytes) {
+        return None;
+    }
+    let stamp_at = offset_of!(v4l2_buffer, timestamp);
+    let seconds = fields::read_i64(bytes, stamp_at.checked_add(offset_of!(timeval, tv_sec))?)?;
+    let micros = fields::read_i64(bytes, stamp_at.checked_add(offset_of!(timeval, tv_usec))?)?;
+
+    Some(Dequeued {
+        index: fields::read_u32(bytes, offset_of!(v4l2_buffer, index))?,
+        bytes_used: fields::read_u32(bytes, offset_of!(v4l2_buffer, bytesused))?,
+        sequence: fields::read_u32(bytes, offset_of!(v4l2_buffer, sequence))?,
+        // Saturating rather than wrapping: a driver whose clock is far enough out to
+        // overflow this has told us something implausible, and a wrapped timestamp would
+        // make a frame look like it arrived before the one before it.
+        timestamp_us: seconds.saturating_mul(1_000_000).saturating_add(micros),
+        flags: fields::read_u32(bytes, offset_of!(v4l2_buffer, flags))?,
+    })
+}
+
+/// The frame interval a `VIDIOC_G_PARM`/`S_PARM` reply reports, when it reports one.
+///
+/// `None` when the driver does not set `V4L2_CAP_TIMEPERFRAME`, which is the driver saying
+/// its `timeperframe` field means nothing — several UVC devices leave it zeroed. Reading
+/// it anyway would produce a `1/0` interval, and a denominator of zero downstream is a
+/// frame rate nobody can divide by.
+pub(crate) fn capture_interval(bytes: &[u8]) -> Option<FrameInterval> {
+    if !is_whole::<v4l2_streamparm>(bytes) {
+        return None;
+    }
+    let capability = fields::read_u32(
+        bytes,
+        capture_parm_field(offset_of!(v4l2_captureparm, capability))?,
+    )?;
+    if capability & CAP_TIMEPERFRAME == 0 {
+        return None;
+    }
+    let per_frame = capture_parm_field(offset_of!(v4l2_captureparm, timeperframe))?;
+    let numerator = fields::read_u32(
+        bytes,
+        per_frame.checked_add(offset_of!(v4l2_fract, numerator))?,
+    )?;
+    let denominator = fields::read_u32(
+        bytes,
+        per_frame.checked_add(offset_of!(v4l2_fract, denominator))?,
+    )?;
+    if numerator == 0 || denominator == 0 {
+        return None;
+    }
+    Some(FrameInterval::Discrete {
+        numerator,
+        denominator,
+    })
 }
 
 /// A payload control's bytes, bounded before anything is allocated.
@@ -773,6 +954,154 @@ mod tests {
             scalar_arm(CTRL_TYPE_INTEGER64, i64::MAX),
             Some(ScalarArm::Wide(i64::MAX))
         );
+    }
+
+    // ------------------------------------------------------------- the streaming path
+    //
+    // These decoders have **no captured fixture**: the independent Python probe that
+    // produced the `.bin` files in `fixtures/` never ran a stream, so there is no recorded
+    // `DQBUF` reply to replay. Recorded rather than glossed over — the width assertion in
+    // `the_bindings_and_the_captured_replies_agree_on_every_struct_width` therefore does
+    // not cover `v4l2_buffer`, `v4l2_format` or `v4l2_streamparm`, and what stands in for
+    // it is the round trip below: a reply built through the *same derived offsets* the
+    // decoder reads, so the two agree about layout by construction, plus the R3 rung,
+    // where a real driver fills the struct and the frames either decode or they do not.
+
+    #[test]
+    fn a_dequeued_buffer_reports_what_the_driver_wrote_and_when() {
+        let mut bytes = vec![0u8; size_of::<v4l2_buffer>()];
+        fields::write_u32(&mut bytes, offset_of!(v4l2_buffer, index), 2).expect("fits");
+        fields::write_u32(&mut bytes, offset_of!(v4l2_buffer, bytesused), 91_234).expect("fits");
+        fields::write_u32(&mut bytes, offset_of!(v4l2_buffer, sequence), 17).expect("fits");
+        let stamp_at = offset_of!(v4l2_buffer, timestamp);
+        fields::write_i64(&mut bytes, stamp_at + offset_of!(timeval, tv_sec), 1_700).expect("fits");
+        fields::write_i64(&mut bytes, stamp_at + offset_of!(timeval, tv_usec), 250_000)
+            .expect("fits");
+
+        let buffer = dequeued(&bytes).expect("a whole reply decodes");
+        assert_eq!(buffer.index, 2);
+        assert_eq!(buffer.bytes_used, 91_234);
+        assert_eq!(buffer.sequence, 17);
+        assert_eq!(
+            buffer.timestamp_us, 1_700_250_000,
+            "seconds and microseconds are one timeline, not two fields"
+        );
+        assert!(!buffer.is_error());
+
+        // The error flag, which is the reason a caller must not treat every dequeued
+        // buffer as a frame.
+        fields::write_u32(&mut bytes, offset_of!(v4l2_buffer, flags), BUF_FLAG_ERROR)
+            .expect("fits");
+        assert!(dequeued(&bytes).expect("decodes").is_error());
+
+        // A short reply is a disagreement about the ABI, and decoding its readable prefix
+        // would produce a plausible frame — the worst possible answer.
+        assert!(dequeued(&bytes[..8]).is_none());
+    }
+
+    #[test]
+    fn a_negotiated_format_decodes_out_of_the_pix_arm_of_the_union() {
+        // The union is the interesting part: `pix` is one of eight arms, and reading the
+        // wrong one yields numbers that look like a frame size.
+        let mut bytes = vec![0u8; size_of::<v4l2_format>()];
+        for (field, value) in [
+            (offset_of!(v4l2_pix_format, width), 1_280u32),
+            (offset_of!(v4l2_pix_format, height), 720),
+            (
+                offset_of!(v4l2_pix_format, pixelformat),
+                PixelFormat::MJPG.to_fourcc(),
+            ),
+            (offset_of!(v4l2_pix_format, bytesperline), 0),
+            (offset_of!(v4l2_pix_format, sizeimage), 1 << 21),
+        ] {
+            let at = pix_field(field).expect("inside the struct");
+            fields::write_u32(&mut bytes, at, value).expect("fits");
+        }
+
+        let decoded = pix_format(&bytes).expect("a whole reply decodes");
+        assert_eq!(decoded.pixel_format, PixelFormat::MJPG);
+        assert_eq!((decoded.width, decoded.height), (1_280, 720));
+        assert_eq!(decoded.bytes_per_line, 0, "a bitstream has no stride");
+        assert_eq!(decoded.size_image, 1 << 21);
+        assert!(pix_format(&bytes[..4]).is_none());
+
+        // A fourcc nobody has named survives as itself [PF:1's rule, one type over].
+        let at = pix_field(offset_of!(v4l2_pix_format, pixelformat)).expect("inside");
+        fields::write_u32(&mut bytes, at, 0x3231_3841).expect("fits");
+        let odd = pix_format(&bytes).expect("decodes");
+        assert_eq!(odd.pixel_format.to_fourcc(), 0x3231_3841);
+    }
+
+    #[test]
+    fn an_interval_is_only_reported_when_the_driver_says_the_field_means_something() {
+        // Several UVC devices leave `timeperframe` zeroed and clear `TIMEPERFRAME`.
+        // Reading it anyway produces a `1/0` interval, and a zero denominator downstream
+        // is a frame rate nobody can divide by.
+        let mut bytes = vec![0u8; size_of::<v4l2_streamparm>()];
+        let per_frame = capture_parm_field(offset_of!(v4l2_captureparm, timeperframe))
+            .expect("inside the struct");
+        fields::write_u32(&mut bytes, per_frame + offset_of!(v4l2_fract, numerator), 1)
+            .expect("fits");
+        fields::write_u32(
+            &mut bytes,
+            per_frame + offset_of!(v4l2_fract, denominator),
+            30,
+        )
+        .expect("fits");
+
+        assert_eq!(
+            capture_interval(&bytes),
+            None,
+            "without the capability bit the field is not an interval, however it reads"
+        );
+
+        let capability =
+            capture_parm_field(offset_of!(v4l2_captureparm, capability)).expect("inside");
+        fields::write_u32(&mut bytes, capability, CAP_TIMEPERFRAME).expect("fits");
+        assert_eq!(
+            capture_interval(&bytes),
+            Some(FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30
+            })
+        );
+
+        // And a degenerate fraction is refused even with the bit set: a driver saying
+        // "1/0 seconds per frame" has said nothing usable.
+        fields::write_u32(
+            &mut bytes,
+            per_frame + offset_of!(v4l2_fract, denominator),
+            0,
+        )
+        .expect("fits");
+        assert_eq!(capture_interval(&bytes), None);
+    }
+
+    #[test]
+    fn a_buffer_query_and_a_request_report_what_the_driver_granted() {
+        let mut bytes = vec![0u8; size_of::<v4l2_buffer>()];
+        fields::write_u32(&mut bytes, offset_of!(v4l2_buffer, m), 0x0001_0000).expect("fits");
+        fields::write_u32(&mut bytes, offset_of!(v4l2_buffer, length), 4_147_200).expect("fits");
+        assert_eq!(
+            buffer_mapping(&bytes),
+            Some(BufferMapping {
+                offset: 0x0001_0000,
+                length: 4_147_200
+            })
+        );
+
+        let mut request = vec![0u8; size_of::<v4l2_requestbuffers>()];
+        fields::write_u32(&mut request, offset_of!(v4l2_requestbuffers, count), 3).expect("fits");
+        assert_eq!(
+            granted_buffers(&request),
+            Some(3),
+            "the driver is free to grant fewer than were asked for"
+        );
+        // Zero is a *successful* answer meaning "none", not a failure, and the caller is
+        // the one that turns it into an error naming what it asked for.
+        fields::write_u32(&mut request, offset_of!(v4l2_requestbuffers, count), 0).expect("fits");
+        assert_eq!(granted_buffers(&request), Some(0));
+        assert_eq!(granted_buffers(&request[..2]), None);
     }
 
     #[test]

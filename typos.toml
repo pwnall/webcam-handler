@@ -12,3 +12,7 @@ GREY = "GREY"
 grey = "grey"
 # "a crashed sweep can leave a camera mis-set" — the prefix, not a truncated "miss".
 mis = "mis"
+# `v4l2_streamparm`, `v4l2_captureparm` and their fields. The kernel's spelling of
+# "parameters", which we do not get to correct: the names come out of bindgen and appear
+# in the offsets derived from it.
+parm = "parm"

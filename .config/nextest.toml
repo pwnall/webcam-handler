@@ -1,0 +1,38 @@
+# nextest configuration.
+#
+# One rule, and it exists because a camera is a physical thing.
+#
+# ## Why the hardware rungs cannot run concurrently
+#
+# V4L2 allows **one streamer per node**. That is not a limitation to work around — it is
+# the property D12 builds the daemon's per-camera actor around, and the property
+# `Camera::start_stream` reports as `Error::Busy`. nextest runs each test in its own
+# process and several at once, so two `#[ignore]`d hardware tests that both stream from
+# `/dev/video0` are two processes contending for an exclusive device, and the loser sees a
+# perfectly correct `EBUSY` from a perfectly correct backend.
+#
+# Observed, on the run that landed the streaming path: `hw_a_stream_negotiates_…` and
+# `hw_a_stream_honours_a_size_…` overlapped, and the second failed with "/dev/video0 is
+# busy". The bug was in the suite, not in the code under test — the suite was modelling a
+# world with three cameras per test rather than three cameras per machine.
+#
+# A test group with one thread is the smallest thing that models the real constraint. The
+# alternative — teaching each test to tolerate `Busy` — would make every hardware test
+# able to pass by doing nothing, which is exactly the "skip reads as pass" failure docs/3
+# Part C names.
+#
+# ## Why the filter is the suite prefixes
+#
+# `hw_` (R3, real hardware) and `vivid_` (R2, the virtual driver) both enumerate
+# `/dev/video*` and both open nodes from it, so they contend with each other as well as
+# among themselves. The prefixes are the same ones `scripts/*.sh` declare in their
+# `wch-suite:` markers, and `scripts/gates/ignored-suites-have-recipes.sh` asserts that
+# every declared prefix appears here — so a new rung cannot be added, or an existing one
+# renamed, without this file following it.
+
+[test-groups.exclusive-device]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(/(^|::)hw_/) + test(/(^|::)vivid_/)'
+test-group = 'exclusive-device'

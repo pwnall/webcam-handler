@@ -20,10 +20,13 @@
 //! wch-suite: prefix=vivid_ recipe=rung-vivid
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use schema::backend::CameraBackend;
 use schema::camera::{CameraInfo, NodeKind};
+use schema::capture::StreamRequest;
 use schema::control::{ControlSlug, ControlType};
+use testkit::battery;
 use v4l2::V4l2Backend;
 
 /// The driver name `vivid` reports through `QUERYCAP`.
@@ -350,3 +353,169 @@ fn vivid_reads_every_readable_controls_current_value() {
         println!("{payloads} compound payload(s) read");
     }
 }
+
+// ------------------------------------------------- P2: writes and streaming, on ioctls
+
+#[test]
+#[ignore = "R2: needs the vivid kernel module loaded; run with `just rung-vivid`"]
+fn vivid_a_write_goes_out_and_the_read_back_comes_from_the_driver() {
+    // The `S_EXT_CTRLS` half of the ioctl plumbing, which R3 also exercises but on
+    // hardware that offers this rung's whole point: **77 controls rather than 18**,
+    // including types and shapes the seed cameras do not have (entry E2). What is claimed
+    // is the plumbing — the write reaches the driver and the value comes back from it —
+    // not any device quirk; §3.3 item 4 draws that line and the clamp behaviour stays on
+    // R3 and in the corpus.
+    let Some((backend, cameras)) = vivid_cameras() else {
+        return;
+    };
+
+    let mut written = 0usize;
+    for info in &cameras {
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+
+        for desc in controls
+            .iter()
+            .filter(|d| battery::is_perturbable(d) && !battery::is_motorized(&d.slug))
+            .take(WRITES_PER_VIVID_NODE)
+        {
+            let Some(value) = battery::perturbation(desc) else {
+                continue;
+            };
+            let original = desc
+                .current
+                .clone()
+                .expect("a perturbable control has a current value");
+            let applied = camera
+                .set(desc.id, value.clone())
+                .unwrap_or_else(|error| panic!("{}: writing {value} failed: {error}", desc.slug));
+            assert_eq!(applied.requested, value, "{}: E4's pair", desc.slug);
+
+            let back = camera
+                .set(desc.id, original.clone())
+                .unwrap_or_else(|error| {
+                    panic!("{}: restoring {original} failed: {error}", desc.slug)
+                });
+            assert_eq!(
+                back.applied, original,
+                "{}: this test left the control somewhere else",
+                desc.slug
+            );
+            written += 1;
+        }
+    }
+
+    assert!(
+        written > 0,
+        "vivid exposes 77 controls; none of them was writable, which is a finding"
+    );
+    println!("{written} control write(s) went out and read back through the driver");
+}
+
+#[test]
+#[ignore = "R2: needs the vivid kernel module loaded; run with `just rung-vivid`"]
+fn vivid_a_stream_negotiates_starts_delivers_and_stops_twice_over() {
+    // The streaming ioctl sequence against a driver the code has never met: `S_FMT`,
+    // `REQBUFS`, `QUERYBUF` + `mmap`, `QBUF`, `STREAMON`, `DQBUF`, `STREAMOFF`,
+    // `REQBUFS(0)`. Twice, because a teardown that leaks buffers is only visible from the
+    // second start.
+    //
+    // vivid generates test patterns, so unlike R3 this arm can run on a machine with no
+    // camera at all — which is exactly the hole R2 exists to narrow.
+    let Some((backend, cameras)) = vivid_cameras() else {
+        return;
+    };
+
+    let mut streamed = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+
+        for cycle in 1..=2u32 {
+            let negotiated = camera
+                .start_stream(&StreamRequest::default())
+                .unwrap_or_else(|error| panic!("{}: cycle {cycle} start: {error}", info.id));
+            for index in 0..FRAMES_PER_VIVID_CYCLE {
+                let deadline =
+                    Instant::now() + Duration::from_millis(schema::limits::FRAME_DEADLINE_MS);
+                let frame = camera.next_frame(deadline).unwrap_or_else(|error| {
+                    panic!("{}: cycle {cycle} frame {index}: {error}", info.id)
+                });
+                assert_eq!(frame.pixel_format, negotiated.pixel_format);
+                assert_eq!(
+                    (frame.width, frame.height),
+                    (negotiated.width, negotiated.height)
+                );
+                assert!(!frame.bytes.is_empty(), "frame {index} carries no bytes");
+            }
+            camera
+                .stop_stream()
+                .unwrap_or_else(|error| panic!("{}: cycle {cycle} stop: {error}", info.id));
+        }
+        streamed += 1;
+        println!("{}: two stream cycles through the real ioctl path", info.id);
+    }
+
+    assert!(
+        streamed > 0,
+        "no vivid camera had a capture node, which vivid always provides"
+    );
+}
+
+#[test]
+#[ignore = "R2: needs the vivid kernel module loaded; run with `just rung-vivid`"]
+fn vivid_a_second_stream_on_one_node_is_refused_as_busy_rather_than_unsupported() {
+    // E3's line, on the one path that can actually produce it: V4L2 allows a single
+    // streamer per node, and a second `start_stream` must say the device is *unavailable*
+    // rather than that it cannot stream. The two answers send a caller in opposite
+    // directions — retry, or give up.
+    let Some((backend, cameras)) = vivid_cameras() else {
+        return;
+    };
+
+    let mut refused = 0usize;
+    for info in cameras.iter().filter(|i| i.capture_node().is_some()) {
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        camera
+            .start_stream(&StreamRequest::default())
+            .unwrap_or_else(|error| panic!("{}: first start: {error}", info.id));
+
+        let error = camera
+            .start_stream(&StreamRequest::default())
+            .expect_err("a node already streaming must refuse a second start");
+        assert_eq!(
+            error.kind(),
+            schema::ErrorKind::Busy,
+            "{}: a second start answered {error} instead of Busy",
+            info.id
+        );
+        camera.stop_stream().expect("stop");
+        // And the refusal was about the *stream*, not the camera: after the stop, the
+        // same handle streams again. Without this the arm would pass on a backend that
+        // wedged itself.
+        camera
+            .start_stream(&StreamRequest::default())
+            .unwrap_or_else(|error| panic!("{}: restart after stop: {error}", info.id));
+        camera.stop_stream().expect("stop");
+        refused += 1;
+    }
+
+    assert!(refused > 0, "no vivid camera offered a capture node");
+    println!("{refused} node(s) refused a second concurrent stream as Busy");
+}
+
+/// Enough writes per node to be a claim, few enough that 77 controls do not make the rung
+/// a coffee break.
+const WRITES_PER_VIVID_NODE: usize = 8;
+/// Enough frames to see the driver recycle its four buffers.
+const FRAMES_PER_VIVID_CYCLE: u32 = 6;
