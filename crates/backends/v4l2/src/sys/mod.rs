@@ -27,18 +27,34 @@
 //! - **Device-derived numbers are validated in safe code**, where the validation is
 //!   ordinary and testable, before any of them reaches a length or an index.
 //!
-//! The residual `unsafe` is three obligations, one per block: viewing an initialized
-//! payload as bytes, viewing it as mutable bytes, and the ioctl itself.
+//! ## The residual `unsafe`, counted
+//!
+//! Six blocks, one obligation each (`clippy::multiple_unsafe_ops_per_block` is denied, so
+//! that is enforced rather than claimed):
+//!
+//! | Where | Obligation |
+//! |---|---|
+//! | [`payload::Payload::bytes`] | every byte of the buffer is initialized |
+//! | [`payload::Payload::bytes_mut`] | the same, with the exclusive borrow the mutable slice needs |
+//! | `ioctl::call` | the pointer is valid and correctly sized for the request's declared width |
+//! | `ioctl::call_enumerating` | the same; only the *interpretation* of the error differs |
+//! | `ioctl::get_scalar` | the same, plus a one-entry control array the kernel dereferences |
+//! | `ioctl::get_payload` | the same, plus a payload buffer whose length was bounded before it became one |
+//!
+//! Miri reaches the first two and cannot cross the other four, which is why [`payload`] is
+//! its own module rather than a few lines here: `scripts/miri.sh` selects it by name.
 
 pub(crate) mod decode;
 pub(crate) mod fields;
 pub(crate) mod ioctl;
+pub(crate) mod payload;
 
-use std::mem::MaybeUninit;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use schema::error::{Error, Result};
+
+pub(crate) use payload::Payload;
 
 /// An open device node.
 ///
@@ -123,79 +139,9 @@ fn open_error(path: &Utf8Path, error: &std::io::Error) -> Error {
     }
 }
 
-/// A correctly sized and correctly aligned buffer for one ioctl argument.
-///
-/// The kernel wants a pointer to `T`; this crate wants bytes. `MaybeUninit<T>` supplies
-/// both: the allocation has `T`'s size and alignment, and [`Payload::zeroed`] makes every
-/// byte of it — padding included — initialized before anyone looks.
-pub(crate) struct Payload<T: Copy> {
-    slot: MaybeUninit<T>,
-}
-
-impl<T: Copy> std::fmt::Debug for Payload<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Payload")
-            .field("bytes", &format_args!("<{} bytes>", size_of::<T>()))
-            .finish()
-    }
-}
-
-impl<T: Copy> Payload<T> {
-    /// A payload with every byte zero — the state every V4L2 ioctl argument starts in,
-    /// because the kernel reads reserved fields and rejects non-zero ones.
-    pub(crate) fn zeroed() -> Payload<T> {
-        Payload {
-            slot: MaybeUninit::zeroed(),
-        }
-    }
-
-    /// The pointer the ioctl writes through.
-    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
-        self.slot.as_mut_ptr().cast::<c_void>()
-    }
-
-    /// The payload's bytes.
-    pub(crate) fn bytes(&self) -> &[u8] {
-        // SAFETY: every byte of `slot` is initialized — `zeroed()` is the only
-        // constructor and it writes the whole allocation, padding included, and the only
-        // subsequent writers (`bytes_mut` and the kernel through `as_mut_ptr`) overwrite
-        // initialized bytes rather than deinitializing any. The slice borrows `self` for
-        // its own lifetime and covers exactly `size_of::<T>()` bytes starting at a
-        // pointer valid for that many.
-        unsafe { std::slice::from_raw_parts(self.slot.as_ptr().cast::<u8>(), size_of::<T>()) }
-    }
-
-    /// The payload's bytes, for filling in request fields before the call.
-    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: as `bytes`, with `&mut self` giving the exclusive borrow the mutable
-        // slice requires. Writing initialized bytes over initialized bytes keeps the
-        // whole allocation initialized, which is what `bytes` relies on.
-        unsafe {
-            std::slice::from_raw_parts_mut(self.slot.as_mut_ptr().cast::<u8>(), size_of::<T>())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_zeroed_payload_is_all_zero_and_the_right_size() {
-        let payload = Payload::<v4l::v4l_sys::v4l2_capability>::zeroed();
-        assert_eq!(
-            payload.bytes().len(),
-            size_of::<v4l::v4l_sys::v4l2_capability>()
-        );
-        assert!(payload.bytes().iter().all(|b| *b == 0));
-    }
-
-    #[test]
-    fn writes_through_the_mutable_view_are_visible_through_the_shared_one() {
-        let mut payload = Payload::<v4l::v4l_sys::v4l2_fmtdesc>::zeroed();
-        fields::write_u32(payload.bytes_mut(), 0, 7).expect("index field is in range");
-        assert_eq!(fields::read_u32(payload.bytes(), 0), Some(7));
-    }
 
     #[test]
     fn opening_a_node_that_is_not_there_is_device_gone_not_a_capability_answer() {
@@ -207,5 +153,15 @@ mod tests {
             matches!(error, Error::DeviceGone { .. }),
             "expected DeviceGone, got {error}"
         );
+    }
+
+    #[test]
+    fn a_path_with_an_interior_nul_is_refused_before_it_reaches_the_dependency() {
+        // `v4l::v4l2::open` builds its `CString` with `.unwrap()`. Nothing in this crate
+        // constructs such a path today, and "nothing does today" is not a property of the
+        // function.
+        let error = Fd::open(Utf8Path::new("/dev/video\u{0}0"))
+            .expect_err("a path with an interior NUL cannot be opened");
+        assert!(matches!(error, Error::DeviceGone { .. }), "{error}");
     }
 }

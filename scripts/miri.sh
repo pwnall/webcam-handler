@@ -12,8 +12,15 @@
 # on the normal interpreter. This script runs them again under Miri.
 set -euo pipefail
 
-# The selection. P1 fills in the decode units; this line is the only thing that changes.
-selection='package(webcam-handler-v4l2) and test(/^sys::decode/)'
+# The selection: the two `sys` modules that make no syscall.
+#
+# `decode` is the pure byte-to-schema half. `payload` holds two of this crate's six
+# `unsafe` blocks — the ones viewing an initialized buffer as bytes — and they are exactly
+# what Miri exists to check here, so leaving them out (as an earlier selection did) meant
+# the job covered only safe code. The other four blocks are the ioctl calls in
+# `sys::ioctl`, which Miri cannot cross; `sys::tests` opens a device node and is excluded
+# for the same reason.
+selection='package(webcam-handler-v4l2) and (test(/^sys::decode/) or test(/^sys::payload/))'
 marker='sys::decode'
 
 root="$(git rev-parse --show-toplevel)"
