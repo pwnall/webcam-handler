@@ -54,11 +54,16 @@ pub mod time;
 
 pub use backend::{BackendKind, Camera, CameraBackend, HotplugEvent, HotplugWatch};
 pub use camera::{CameraFingerprint, CameraId, CameraInfo, PixelFormat};
-pub use control::{Applied, ControlDesc, ControlId, ControlSlug, ControlValue};
+pub use capture::{
+    Frame, NegotiatedStream, PhotoFormat, PhotoReport, PhotoRequest, SettlePolicy, Sink,
+    StreamRequest, Transform,
+};
+pub use control::{Applied, ControlDesc, ControlId, ControlSlug, ControlValue, WriteWarning};
 pub use error::{BackendError, Error, ErrorKind, Result};
 pub use profile::DeviceProfile;
-pub use report::{CameraDetail, CameraList, ControlReport, ListHint};
+pub use report::{CameraDetail, CameraList, ControlReport, ListHint, WriteReport};
 pub use session::Session;
+pub use snapshot::{RestoreReport, Snapshot};
 pub use time::Stamp;
 
 /// The version of this crate, for provenance blocks and `--json` output.

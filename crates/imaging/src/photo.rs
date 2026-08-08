@@ -26,58 +26,12 @@
 //! rotated" are different facts and a viewer that ignores EXIF distinguishes them.
 
 use image::{ImageBuffer, Pixel, imageops};
-use schema::camera::PixelFormat;
-use schema::capture::{Frame, PhotoFormat, Transform};
+use schema::capture::{Frame, PhotoFormat, PhotoRendering, Transform, TransformApplication};
 use schema::error::Result;
 
 use crate::decode::{Decoded, decode_frame};
 use crate::encode::{self, DEFAULT_JPEG_QUALITY};
 use crate::fault::imaging_failure;
-
-/// What the pipeline did to produce a photo's bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhotoRendering {
-    /// The camera's own bitstream, byte for byte (E6).
-    Verbatim {
-        /// The format the camera delivered, which is the format on disk.
-        source: PixelFormat,
-    },
-    /// A compressed frame was decoded and encoded again.
-    DecodedAndEncoded {
-        /// What the camera delivered.
-        source: PixelFormat,
-        /// What was written.
-        target: PhotoFormat,
-    },
-    /// A raw frame was converted to pixels and encoded.
-    ConvertedAndEncoded {
-        /// What the camera delivered.
-        source: PixelFormat,
-        /// What was written.
-        target: PhotoFormat,
-    },
-}
-
-impl PhotoRendering {
-    /// Whether these bytes are the camera's, untouched.
-    #[must_use]
-    pub const fn is_verbatim(self) -> bool {
-        matches!(self, PhotoRendering::Verbatim { .. })
-    }
-}
-
-/// Where the requested orientation ended up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransformApplication {
-    /// Nothing was asked for.
-    Identity,
-    /// The pixels were rotated or mirrored before encoding.
-    Pixels,
-    /// The pixels were left alone and the orientation rides in EXIF, so the bitstream
-    /// stays verbatim (E6). The payload is the tag value
-    /// [`Transform::exif_orientation`] produced.
-    ExifOrientation(u16),
-}
 
 /// A rendered photo: the bytes to write, and what was done to get them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +131,9 @@ fn verbatim(frame: &Frame, transform: Transform) -> Result<Photo> {
         transform: if transform == Transform::None {
             TransformApplication::Identity
         } else {
-            TransformApplication::ExifOrientation(transform.exif_orientation())
+            TransformApplication::ExifOrientation {
+                orientation: transform.exif_orientation(),
+            }
         },
         width: frame.width,
         height: frame.height,
@@ -215,6 +171,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use schema::camera::PixelFormat;
+
     use super::*;
     use crate::decode;
     use crate::fixtures;
@@ -286,7 +244,10 @@ mod tests {
         let frame = mjpg_frame(64, 48);
         let photo = render(&frame, PhotoFormat::Jpeg, Transform::Rot90).expect("render");
         assert_eq!(photo.bytes, frame.bytes);
-        assert_eq!(photo.transform, TransformApplication::ExifOrientation(6));
+        assert_eq!(
+            photo.transform,
+            TransformApplication::ExifOrientation { orientation: 6 }
+        );
         // And the dimensions reported are the frame's, not the rotated ones — nothing
         // was rotated.
         assert_eq!((photo.width, photo.height), (64, 48));

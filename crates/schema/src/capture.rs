@@ -4,12 +4,16 @@
 //! The theme is D3's, applied to formats instead of controls: drivers adjust silently, so
 //! the *negotiated* result is always reported alongside the request.
 
+use std::fmt;
+
 use camino::Utf8PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{FrameInterval, PixelFormat};
+use crate::camera::{CameraId, FrameInterval, PixelFormat};
 use crate::limits;
+use crate::time::Stamp;
+use crate::vocabulary::closed_vocabulary;
 
 /// What a caller wants from a stream. Every field is optional: "just give me something"
 /// is a legitimate request, and the answer is always reported back.
@@ -109,6 +113,56 @@ impl NegotiatedStream {
     pub fn is_exact(&self) -> bool {
         self.adjustments.is_empty()
     }
+
+    /// Every way an answer differs from the request that produced it (design D5).
+    ///
+    /// **The single home for the comparison**, so a driver's silent adjustment and a
+    /// backend's chosen one are reported in the same words. *Choosing* a format is each
+    /// backend's business — the V4L2 one asks the kernel, the fake picks from a document
+    /// — but describing the difference is one law, and two copies of it would drift the
+    /// day one of them learned about a new field.
+    ///
+    /// A request that named only one of width and height reports **no** size adjustment:
+    /// [`Adjustment::Size`] carries both requested dimensions, and filling the unnamed one
+    /// in from the answer would put a number in the caller's mouth. A half-specified size
+    /// is honoured as far as it goes and the answer speaks for itself.
+    #[must_use]
+    pub fn diff(
+        request: &StreamRequest,
+        pixel_format: PixelFormat,
+        width: u32,
+        height: u32,
+        interval: FrameInterval,
+    ) -> Vec<Adjustment> {
+        let mut adjustments = Vec::new();
+        if let Some(requested) = request.pixel_format
+            && requested != pixel_format
+        {
+            adjustments.push(Adjustment::PixelFormat {
+                requested,
+                negotiated: pixel_format,
+            });
+        }
+        if let (Some(requested_width), Some(requested_height)) = (request.width, request.height)
+            && (requested_width, requested_height) != (width, height)
+        {
+            adjustments.push(Adjustment::Size {
+                requested_width,
+                requested_height,
+                negotiated_width: width,
+                negotiated_height: height,
+            });
+        }
+        if let Some(requested) = request.interval
+            && requested != interval
+        {
+            adjustments.push(Adjustment::Interval {
+                requested,
+                negotiated: interval,
+            });
+        }
+        adjustments
+    }
 }
 
 /// One captured frame, copied out of the driver's buffer.
@@ -199,26 +253,36 @@ impl Default for SettlePolicy {
     }
 }
 
-/// An orientation transform (the skill's flip and rotate).
-///
-/// On the verbatim-JPEG sink these become an EXIF Orientation tag — zero re-encode, byte
-/// fidelity preserved (E6). On PNG and re-encode sinks they are applied to pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Transform {
-    /// Leave the image as the camera framed it.
-    #[default]
-    None,
-    /// Mirror horizontally.
-    HFlip,
-    /// Mirror vertically.
-    VFlip,
-    /// Rotate a quarter turn clockwise.
-    Rot90,
-    /// Rotate a half turn.
-    Rot180,
-    /// Rotate a quarter turn counter-clockwise.
-    Rot270,
+closed_vocabulary! {
+    /// An orientation transform (the skill's flip and rotate).
+    ///
+    /// On the verbatim-JPEG sink these become an EXIF Orientation tag — zero re-encode,
+    /// byte fidelity preserved (E6). On PNG and re-encode sinks they are applied to
+    /// pixels.
+    ///
+    /// The serde spelling and [`Transform::as_str`] are the same strings on purpose: a
+    /// `--transform` argument and a `"transform"` field in a JSON document must name the
+    /// same thing the same way, and the CLI reaches this vocabulary rather than deriving
+    /// a second one of its own.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "lowercase")]
+    pub enum Transform {
+        /// Leave the image as the camera framed it.
+        #[default]
+        None,
+        /// Mirror horizontally.
+        #[serde(rename = "hflip")]
+        HFlip,
+        /// Mirror vertically.
+        #[serde(rename = "vflip")]
+        VFlip,
+        /// Rotate a quarter turn clockwise.
+        Rot90,
+        /// Rotate a half turn.
+        Rot180,
+        /// Rotate a quarter turn counter-clockwise.
+        Rot270,
+    }
 }
 
 impl Transform {
@@ -237,18 +301,45 @@ impl Transform {
             Transform::Rot270 => 8,
         }
     }
+
+    /// The name this transform is written by, in JSON and on a command line alike.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Transform::None => "none",
+            Transform::HFlip => "hflip",
+            Transform::VFlip => "vflip",
+            Transform::Rot90 => "rot90",
+            Transform::Rot180 => "rot180",
+            Transform::Rot270 => "rot270",
+        }
+    }
+
+    /// Parse one of those names.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|t| t.as_str() == s)
+    }
 }
 
-/// The encoding a photo lands in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PhotoFormat {
-    /// JPEG. Verbatim camera bytes when the stream is already MJPG (E6), else encoded.
-    Jpeg,
-    /// PNG. Always encoded, always lossless.
-    Png,
-    /// Binary PPM/PGM — the "give me pixels" escape hatch for tooling.
-    Ppm,
+impl fmt::Display for Transform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+closed_vocabulary! {
+    /// The encoding a photo lands in.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "lowercase")]
+    pub enum PhotoFormat {
+        /// JPEG. Verbatim camera bytes when the stream is already MJPG (E6), else encoded.
+        Jpeg,
+        /// PNG. Always encoded, always lossless.
+        Png,
+        /// Binary PPM/PGM — the "give me pixels" escape hatch for tooling.
+        Ppm,
+    }
 }
 
 impl PhotoFormat {
@@ -264,6 +355,10 @@ impl PhotoFormat {
     }
 
     /// The extension this format writes.
+    ///
+    /// Not the same string as [`PhotoFormat::as_str`], and deliberately: the format is
+    /// named `jpeg` and the file is named `.jpg`, because both spellings are load-bearing
+    /// conventions somebody else owns.
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
@@ -272,6 +367,85 @@ impl PhotoFormat {
             PhotoFormat::Ppm => "ppm",
         }
     }
+
+    /// The name this format is written by, in JSON and on a command line alike.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PhotoFormat::Jpeg => "jpeg",
+            PhotoFormat::Png => "png",
+            PhotoFormat::Ppm => "ppm",
+        }
+    }
+
+    /// Parse one of those names.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|f| f.as_str() == s)
+    }
+}
+
+impl fmt::Display for PhotoFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What the photo pipeline did to produce a photo's bytes (design D6/E6).
+///
+/// Reported alongside every photo because "the camera's own bitstream" and "a faithful
+/// re-encode" are different products, and a calibration sample that was re-encoded is
+/// partly ranking our codec rather than the lens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PhotoRendering {
+    /// The camera's own bitstream, byte for byte (E6).
+    Verbatim {
+        /// The format the camera delivered, which is the format on disk.
+        source: PixelFormat,
+    },
+    /// A compressed frame was decoded and encoded again.
+    DecodedAndEncoded {
+        /// What the camera delivered.
+        source: PixelFormat,
+        /// What was written.
+        target: PhotoFormat,
+    },
+    /// A raw frame was converted to pixels and encoded.
+    ConvertedAndEncoded {
+        /// What the camera delivered.
+        source: PixelFormat,
+        /// What was written.
+        target: PhotoFormat,
+    },
+}
+
+impl PhotoRendering {
+    /// Whether these bytes are the camera's, untouched.
+    #[must_use]
+    pub const fn is_verbatim(self) -> bool {
+        matches!(self, PhotoRendering::Verbatim { .. })
+    }
+}
+
+/// Where a requested orientation ended up.
+///
+/// "The photo is rotated" and "the photo says it is rotated" are different facts, and a
+/// viewer that ignores EXIF distinguishes them — so the answer records which happened
+/// rather than leaving the caller to infer it from the sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TransformApplication {
+    /// Nothing was asked for.
+    Identity,
+    /// The pixels were rotated or mirrored before encoding.
+    Pixels,
+    /// The pixels were left alone and the orientation rides in EXIF, so the bitstream
+    /// stays verbatim (E6).
+    ExifOrientation {
+        /// The tag value [`Transform::exif_orientation`] produced.
+        orientation: u16,
+    },
 }
 
 /// Where binary results go (design D10).
@@ -293,6 +467,93 @@ pub enum Sink {
         #[schemars(with = "String")]
         path: Utf8PathBuf,
     },
+}
+
+/// Everything one photo needs (design D5, D6, D10).
+///
+/// Assembled by the caller so `wch photo`, the daemon's `photo` method and a calibration
+/// sample all ask for a photo the same way — the sweep at P3 varies the control values
+/// between shots and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PhotoRequest {
+    /// What to ask the device's format negotiation for.
+    #[serde(default)]
+    pub stream: StreamRequest,
+    /// How long to let the sensor settle first \[PF:11\].
+    #[serde(default)]
+    pub settle: SettlePolicy,
+    /// The orientation, applied to pixels or recorded in EXIF depending on the sink (E6).
+    #[serde(default)]
+    pub transform: Transform,
+    /// Where the bytes go.
+    pub sink: Sink,
+}
+
+/// Where a photo's bytes ended up — [`Sink`], answered.
+///
+/// The two variants pair with the two sinks, and each says the thing its caller cannot
+/// otherwise learn: a path answer reports how much was written, and a bytes answer reports
+/// how much is on its way. **The bytes themselves are not in this document**: `wch` streams
+/// them to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire
+/// surface that needs it (docs/2 puts the sink DTO in `webcam-handler-api`). Carrying an
+/// unused encoding here would be a dependency nobody reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PhotoDelivery {
+    /// The bytes were handed back to the caller.
+    Bytes {
+        /// The encoding they are in.
+        format: PhotoFormat,
+        /// How many there are.
+        byte_count: u64,
+    },
+    /// The bytes were written to a file.
+    Path {
+        /// Where.
+        #[schemars(with = "String")]
+        path: Utf8PathBuf,
+        /// How many bytes it holds.
+        byte_count: u64,
+    },
+}
+
+impl PhotoDelivery {
+    /// How many bytes the photo came to, whichever way it was delivered.
+    #[must_use]
+    pub const fn byte_count(&self) -> u64 {
+        match self {
+            PhotoDelivery::Bytes { byte_count, .. } | PhotoDelivery::Path { byte_count, .. } => {
+                *byte_count
+            }
+        }
+    }
+}
+
+/// What `photo` answers (design D6).
+///
+/// Self-describing on purpose: a saved `--json` document says which camera, when, what the
+/// device actually agreed to stream, and whether the bytes are the camera's own — the four
+/// things a calibration sample or a bug report needs and cannot reconstruct later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PhotoReport {
+    /// Which camera took it.
+    pub camera: CameraId,
+    /// When.
+    pub taken_at: Stamp,
+    /// What the device agreed to, including every way that differs from the request (D5).
+    pub negotiated: NegotiatedStream,
+    /// Which of D6's three paths produced the bytes.
+    pub rendering: PhotoRendering,
+    /// Where the orientation request went.
+    pub transform: TransformApplication,
+    /// The width of the image the bytes encode, after any pixel-domain transform.
+    pub width: u32,
+    /// The height of the same.
+    pub height: u32,
+    /// How many frames were discarded before this one \[PF:11\].
+    pub frames_settled: u32,
+    /// Where the bytes went.
+    pub delivery: PhotoDelivery,
 }
 
 #[cfg(test)]
@@ -340,11 +601,205 @@ mod tests {
 
     #[test]
     fn photo_formats_round_trip_through_their_extensions() {
-        for f in [PhotoFormat::Jpeg, PhotoFormat::Png, PhotoFormat::Ppm] {
+        for &f in PhotoFormat::ALL {
             assert_eq!(PhotoFormat::from_extension(f.extension()), Some(f));
         }
         assert_eq!(PhotoFormat::from_extension("JPEG"), Some(PhotoFormat::Jpeg));
         assert_eq!(PhotoFormat::from_extension("webp"), None);
+    }
+
+    #[test]
+    fn every_transform_and_format_parses_from_the_name_it_prints_and_serializes_as() {
+        // One vocabulary, one spelling: `--transform hflip` and `"transform":"hflip"`
+        // must name the same thing, so the serde rendering and `as_str` are compared
+        // against each other rather than each trusted on its own.
+        for &t in Transform::ALL {
+            assert_eq!(Transform::parse(t.as_str()), Some(t));
+            let json = serde_json::to_string(&t).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", t.as_str()), "{t:?}");
+        }
+        for &f in PhotoFormat::ALL {
+            assert_eq!(PhotoFormat::parse(f.as_str()), Some(f));
+            let json = serde_json::to_string(&f).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", f.as_str()), "{f:?}");
+        }
+        // The inverse: a name nobody defined parses to nothing rather than to a default.
+        assert_eq!(Transform::parse("rot45"), None);
+        assert_eq!(Transform::parse("h_flip"), None);
+        assert_eq!(PhotoFormat::parse("webp"), None);
+    }
+
+    #[test]
+    fn the_negotiation_diff_reports_every_field_that_moved_and_no_field_that_did_not() {
+        let exact = StreamRequest {
+            pixel_format: Some(PixelFormat::MJPG),
+            width: Some(1920),
+            height: Some(1080),
+            interval: Some(FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30,
+            }),
+            buffer_count: 4,
+        };
+        assert!(
+            NegotiatedStream::diff(
+                &exact,
+                PixelFormat::MJPG,
+                1920,
+                1080,
+                FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30
+                }
+            )
+            .is_empty(),
+            "an honoured request has nothing to report"
+        );
+
+        let moved = NegotiatedStream::diff(
+            &exact,
+            PixelFormat::YUYV,
+            640,
+            480,
+            FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 15,
+            },
+        );
+        assert_eq!(
+            moved,
+            vec![
+                Adjustment::PixelFormat {
+                    requested: PixelFormat::MJPG,
+                    negotiated: PixelFormat::YUYV,
+                },
+                Adjustment::Size {
+                    requested_width: 1920,
+                    requested_height: 1080,
+                    negotiated_width: 640,
+                    negotiated_height: 480,
+                },
+                Adjustment::Interval {
+                    requested: FrameInterval::Discrete {
+                        numerator: 1,
+                        denominator: 30
+                    },
+                    negotiated: FrameInterval::Discrete {
+                        numerator: 1,
+                        denominator: 15
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_request_that_asked_for_nothing_is_never_reported_as_adjusted() {
+        // "Just give me something" cannot have been disappointed. A diff that reported
+        // adjustments here would make every default-request photo look negotiated-away.
+        let anything = StreamRequest::default();
+        assert!(
+            NegotiatedStream::diff(
+                &anything,
+                PixelFormat::YUYV,
+                640,
+                480,
+                FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 15
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_request_that_named_only_one_dimension_reports_no_size_adjustment() {
+        // `Adjustment::Size` carries both requested dimensions; filling the unnamed one
+        // in from the answer would put a number in the caller's mouth.
+        let half = StreamRequest {
+            width: Some(1920),
+            ..StreamRequest::default()
+        };
+        assert!(
+            NegotiatedStream::diff(
+                &half,
+                PixelFormat::MJPG,
+                640,
+                480,
+                FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_photo_answer_round_trips_and_reports_its_size_either_way_it_was_delivered() {
+        let report = PhotoReport {
+            camera: crate::camera::CameraId::parse("cam:test").expect("literal id"),
+            taken_at: Stamp::epoch(),
+            negotiated: NegotiatedStream {
+                pixel_format: PixelFormat::MJPG,
+                width: 1280,
+                height: 720,
+                bytes_per_line: 0,
+                size_image: 1 << 20,
+                interval: FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30,
+                },
+                adjustments: Vec::new(),
+            },
+            rendering: PhotoRendering::Verbatim {
+                source: PixelFormat::MJPG,
+            },
+            transform: TransformApplication::ExifOrientation { orientation: 6 },
+            width: 1280,
+            height: 720,
+            frames_settled: 10,
+            delivery: PhotoDelivery::Path {
+                path: Utf8PathBuf::from("/tmp/shot.jpg"),
+                byte_count: 91_234,
+            },
+        };
+        let json = serde_json::to_string(&report).expect("serialize");
+        let back: PhotoReport = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, report);
+        assert_eq!(back.delivery.byte_count(), 91_234);
+        assert!(back.rendering.is_verbatim());
+
+        let returned = PhotoDelivery::Bytes {
+            format: PhotoFormat::Png,
+            byte_count: 17,
+        };
+        assert_eq!(returned.byte_count(), 17);
+        // The inverse of `is_verbatim`, so the predicate is not measuring nothing.
+        assert!(
+            !PhotoRendering::DecodedAndEncoded {
+                source: PixelFormat::MJPG,
+                target: PhotoFormat::Png,
+            }
+            .is_verbatim()
+        );
+    }
+
+    #[test]
+    fn a_photo_request_fills_its_defaults_the_way_the_limits_table_says() {
+        let parsed: PhotoRequest =
+            serde_json::from_str(r#"{"sink":{"kind":"return_bytes","format":"jpeg"}}"#)
+                .expect("a sink is the only required field");
+        assert_eq!(parsed.stream, StreamRequest::default());
+        assert_eq!(parsed.settle, SettlePolicy::default());
+        assert_eq!(parsed.transform, Transform::None);
+        assert_eq!(
+            parsed.sink,
+            Sink::ReturnBytes {
+                format: PhotoFormat::Jpeg
+            }
+        );
     }
 
     #[test]

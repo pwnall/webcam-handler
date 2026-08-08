@@ -140,9 +140,15 @@ impl Executor for InProcess {
 
     fn controls(&mut self, requested: &CameraId) -> Result<ControlReport> {
         let (info, camera) = self.open(requested)?;
+        let controls = camera.controls()?;
         Ok(ControlReport {
+            // The declared table (D3) narrowed to the relationships this device can
+            // actually exhibit. Nothing has been measured on it, so every pair reported
+            // here carries `Provenance::Declared` — a nomination, and labelled as one
+            // (E1). `controls --discover-pairs` is what turns one into evidence.
+            pairs: engine::pairing::applicable(&controls, &schema::pairing::declared_pairs()),
             camera: info.id,
-            controls: camera.controls()?,
+            controls,
         })
     }
 

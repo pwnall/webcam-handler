@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | [`Fault::DeviceGoneMidStream`] | one shot | `next_frame` → [`schema::Error::DeviceGone`], stream torn down |
 //! | [`Fault::Busy`] | one shot | `open` → [`schema::Error::Busy`] |
-//! | [`Fault::ClampOnWrite`] | one shot | `set` clamps an in-range write to the maximum, with the warning \[PF:6\] |
+//! | [`Fault::ClampOnWrite`] | one shot | `set` moves an in-range write to the maximum, reported as [`schema::control::WriteWarning::Adjusted`] \[PF:6\] |
 //! | [`Fault::InactiveFlip`] | one shot | `controls` reports every measured manual partner's INACTIVE bit toggled \[PF:3\] |
 //! | [`Fault::SettleNeverConverges`] | held | every frame's exposure differs, so no settle policy converges \[PF:11\] |
 //! | [`Fault::FrameTimeout`] | one shot | `next_frame` → [`schema::Error::SettleTimeout`] |
@@ -38,7 +38,12 @@ closed_vocabulary! {
         DeviceGoneMidStream,
         /// Another process holds the device.
         Busy,
-        /// The driver clamps a perfectly in-range write \[PF:6\].
+        /// The driver's real range is narrower than the one it declares, so a perfectly
+        /// in-range write does not stick \[PF:6\].
+        ///
+        /// The warning is [`schema::control::WriteWarning::Adjusted`] rather than
+        /// `Clamped`, and that is the point of the fault: the declared range does not
+        /// explain the move, so nothing may claim it does.
         ClampOnWrite,
         /// INACTIVE flips without anybody writing an automation control \[PF:3\].
         InactiveFlip,

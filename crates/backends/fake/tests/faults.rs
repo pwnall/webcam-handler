@@ -136,13 +136,35 @@ fn clamp_on_write() {
         .expect("a clamp is a success [PF:6]");
     assert_eq!(applied.requested, ControlValue::Int(in_range));
     assert_eq!(applied.applied, ControlValue::Int(brightness.range.max));
-    assert!(
-        applied
-            .warnings
-            .iter()
-            .any(|w| matches!(w, WriteWarning::Clamped { .. })),
-        "a driver whose real range is narrower than its declared one still says so: {:?}",
-        applied.warnings
+
+    // `Adjusted`, and specifically **not** `Clamped`. The request was inside the declared
+    // range, so nothing the caller can see explains the move: the driver's real range is
+    // narrower than the one it publishes, and that is not deducible from the publication.
+    // Reporting it as `Clamped { requested: 1, applied: 255, range: [0..255] }` would be a
+    // sentence that contradicts itself — 1 is in [0..255] — and a caller reading it would
+    // conclude their own value was out of bounds.
+    assert_eq!(
+        applied.warnings,
+        vec![WriteWarning::Adjusted {
+            requested: ControlValue::Int(in_range),
+            applied: ControlValue::Int(brightness.range.max),
+        }],
+        "an unattributable adjustment must not borrow the clamp's explanation"
+    );
+
+    // The other direction, so the assertion above is not simply "some warning": a write
+    // that really *was* past the maximum reports the clamp, with the range that did it.
+    let beyond = brightness.range.max + 1_000;
+    let clamped = camera
+        .set(brightness.id, ControlValue::Int(beyond))
+        .expect("an out-of-range write is a clamped success [PF:6]");
+    assert_eq!(
+        clamped.warnings,
+        vec![WriteWarning::Clamped {
+            requested: beyond,
+            applied: brightness.range.max,
+            range: brightness.range,
+        }]
     );
 }
 

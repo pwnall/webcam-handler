@@ -26,10 +26,10 @@ use std::time::Instant;
 use camino::Utf8PathBuf;
 use schema::backend::{BackendKind, Camera};
 use schema::camera::{CameraId, CameraInfo, FormatInfo, FrameInterval, FrameSizeInfo, PixelFormat};
-use schema::capture::{Adjustment, Frame, NegotiatedStream, StreamRequest};
+use schema::capture::{Frame, NegotiatedStream, StreamRequest};
 use schema::control::{
-    Applied, ControlDesc, ControlFlags, ControlId, ControlRange, ControlSlug, ControlType,
-    ControlValue, KnownFlag, WriteWarning,
+    Applied, ControlDesc, ControlFlags, ControlId, ControlSlug, ControlType, ControlValue,
+    KnownFlag, WriteWarning,
 };
 use schema::error::{Error, Result};
 use schema::limits;
@@ -345,6 +345,11 @@ fn menu_write(desc: &ControlDesc, requested: &ControlValue) -> Result<ControlVal
 
 /// PF:6 — an out-of-range write succeeds and applies the clamped value, with a warning.
 /// It is not an error, because the driver did not report one.
+///
+/// The *simulation* is here — clamp into the declared range, then round down to the step,
+/// which is what the seed hardware's drivers do. The *description* of what that did is
+/// [`WriteWarning::classify`]'s, in the schema, so the fake and the V4L2 backend cannot
+/// describe the same adjustment differently (E5).
 fn scalar_write(
     desc: &ControlDesc,
     requested: &ControlValue,
@@ -357,24 +362,9 @@ fn scalar_write(
     // declares, which is what makes a caller that trusts `requested` wrong.
     let target = if force_clamp { desc.range.max } else { value };
 
-    let mut warnings = Vec::new();
-    let clamped = clamp_to(&desc.range, target);
-    if clamped != value {
-        warnings.push(WriteWarning::Clamped {
-            requested: value,
-            applied: clamped,
-            range: desc.range,
-        });
-    }
-    let aligned = align_to_step(&desc.range, clamped);
-    if aligned != clamped {
-        warnings.push(WriteWarning::StepAligned {
-            requested: clamped,
-            applied: aligned,
-            step: desc.range.effective_step(),
-        });
-    }
-    Ok((ControlValue::Int(aligned), warnings))
+    let applied = ControlValue::Int(desc.range.align_down(desc.range.clamp_value(target)));
+    let warnings = WriteWarning::classify(desc, requested, &applied);
+    Ok((applied, warnings))
 }
 
 fn text_write(desc: &ControlDesc, requested: &ControlValue) -> Result<ControlValue> {
@@ -407,27 +397,6 @@ fn payload_write(desc: &ControlDesc, requested: &ControlValue) -> Result<Control
         ));
     }
     Ok(requested.clone())
-}
-
-/// Clamp without believing a descriptor that declares its minimum above its maximum —
-/// `i64::clamp` panics on that, and a descriptor is device data (D2).
-fn clamp_to(range: &ControlRange, value: i64) -> i64 {
-    if range.min > range.max {
-        value
-    } else {
-        value.clamp(range.min, range.max)
-    }
-}
-
-/// Round down to the nearest step from the minimum, the way a driver does.
-fn align_to_step(range: &ControlRange, value: i64) -> i64 {
-    let step = range.effective_step();
-    if step <= 1 || range.min > range.max {
-        return value;
-    }
-    let offset = value.saturating_sub(range.min);
-    let aligned = range.min.saturating_add(offset - offset.rem_euclid(step));
-    clamp_to(range, aligned)
 }
 
 fn invalid_write(desc: &ControlDesc, message: String) -> Error {
@@ -622,20 +591,14 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
         });
     };
 
-    let mut adjustments = Vec::new();
     let chosen = match request.pixel_format {
         None => first,
         Some(wanted) => match usable.iter().copied().find(|f| f.pixel_format == wanted) {
             Some(found) => found,
-            None if formats.iter().any(|f| f.pixel_format == wanted) => {
-                // The device offers it; this backend cannot synthesize it. A driver in
-                // the same position adjusts and says so (D5), so that is what happens.
-                adjustments.push(Adjustment::PixelFormat {
-                    requested: wanted,
-                    negotiated: first.pixel_format,
-                });
-                first
-            }
+            // The device offers it; this backend cannot synthesize it. A driver in the
+            // same position adjusts rather than refusing (D5), and the adjustment is
+            // reported by the shared diff below rather than pushed by hand here.
+            None if formats.iter().any(|f| f.pixel_format == wanted) => first,
             None => {
                 return Err(Error::FormatUnsupported {
                     requested: Some(wanted),
@@ -646,27 +609,7 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
     };
 
     let (width, height) = choose_size(&chosen.sizes, request);
-    if let (Some(requested_width), Some(requested_height)) = (request.width, request.height)
-        && (requested_width, requested_height) != (width, height)
-    {
-        adjustments.push(Adjustment::Size {
-            requested_width,
-            requested_height,
-            negotiated_width: width,
-            negotiated_height: height,
-        });
-    }
-
     let interval = choose_interval(&chosen.sizes, width, height, request);
-    if let Some(requested_interval) = request.interval
-        && requested_interval != interval
-    {
-        adjustments.push(Adjustment::Interval {
-            requested: requested_interval,
-            negotiated: interval,
-        });
-    }
-
     let bytes_per_line = bytes_per_line(chosen.pixel_format, width);
     Ok(NegotiatedStream {
         pixel_format: chosen.pixel_format,
@@ -675,7 +618,9 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
         bytes_per_line,
         size_image: size_image(chosen.pixel_format, width, height, bytes_per_line),
         interval,
-        adjustments,
+        // Choosing is this backend's business; describing how the choice differs from the
+        // request is one law, and it lives in the schema (§2.10).
+        adjustments: NegotiatedStream::diff(request, chosen.pixel_format, width, height, interval),
     })
 }
 

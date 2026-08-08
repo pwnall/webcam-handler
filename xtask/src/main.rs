@@ -83,11 +83,14 @@ fn register<T: JsonSchema>(generator: &mut SchemaGenerator, roots: &mut Vec<Stri
 
 fn bundle() -> Result<Value> {
     use schema::camera::{CameraInfo, FormatInfo};
-    use schema::capture::{NegotiatedStream, PhotoFormat, Sink, StreamRequest, Transform};
+    use schema::capture::{
+        NegotiatedStream, PhotoFormat, PhotoReport, PhotoRequest, SettlePolicy, Sink,
+        StreamRequest, Transform,
+    };
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
     use schema::error::Error;
     use schema::profile::DeviceProfile;
-    use schema::report::{CameraDetail, CameraList, ControlReport};
+    use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session};
     use schema::snapshot::{RestoreReport, Snapshot};
 
@@ -110,6 +113,13 @@ fn bundle() -> Result<Value> {
     register::<Transform>(&mut generator, &mut roots);
     register::<PhotoFormat>(&mut generator, &mut roots);
     register::<Sink>(&mut generator, &mut roots);
+    // The P2 write and photo answers. `PhotoDelivery`, `PhotoRendering`,
+    // `TransformApplication`, `SettleSpec`, `Adjustment` and `AutomationPair` arrive as
+    // `$defs` by reachability rather than as roots — a root is a document a verb emits.
+    register::<WriteReport>(&mut generator, &mut roots);
+    register::<PhotoRequest>(&mut generator, &mut roots);
+    register::<PhotoReport>(&mut generator, &mut roots);
+    register::<SettlePolicy>(&mut generator, &mut roots);
     register::<Snapshot>(&mut generator, &mut roots);
     register::<RestoreReport>(&mut generator, &mut roots);
     register::<Session>(&mut generator, &mut roots);

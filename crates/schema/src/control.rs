@@ -328,6 +328,41 @@ impl ControlRange {
     pub const fn contains(&self, value: i64) -> bool {
         value >= self.min && value <= self.max
     }
+
+    /// `value` pulled into the declared range, the way a driver pulls it \[PF:6\].
+    ///
+    /// A descriptor declaring its minimum above its maximum is returned unchanged rather
+    /// than panicking: `i64::clamp` panics on an inverted range, and a range is device
+    /// data (D2), so a lying descriptor must not be able to abort the process.
+    #[must_use]
+    pub const fn clamp_value(&self, value: i64) -> i64 {
+        if self.min > self.max {
+            value
+        } else if value < self.min {
+            self.min
+        } else if value > self.max {
+            self.max
+        } else {
+            value
+        }
+    }
+
+    /// `value` rounded **down** to a whole [`ControlRange::effective_step`] counted from
+    /// [`ControlRange::min`], then pulled back into range.
+    ///
+    /// Down is the direction the UVC drivers on the seed hardware round, and rounding is
+    /// only ever applied to a value already inside the range — an inverted or unusable
+    /// range leaves the value alone rather than inventing a grid for it.
+    #[must_use]
+    pub const fn align_down(&self, value: i64) -> i64 {
+        let step = self.effective_step();
+        if step <= 1 || self.min > self.max {
+            return value;
+        }
+        let offset = value.saturating_sub(self.min);
+        let aligned = self.min.saturating_add(offset - offset.rem_euclid(step));
+        self.clamp_value(aligned)
+    }
 }
 
 /// A control value, as read or as written.
@@ -489,6 +524,77 @@ pub enum WriteWarning {
         /// What the device now holds.
         applied: ControlValue,
     },
+}
+
+impl WriteWarning {
+    /// Explain one write, given the control that took it (design D3, §2.10).
+    ///
+    /// **The single home for "what kind of adjustment was that".** Every backend's
+    /// [`crate::Camera::set`] calls this and the engine never re-derives it: a second copy
+    /// would let the fake and the real driver describe the same adjustment differently,
+    /// and E5's whole claim is that they do not.
+    ///
+    /// The method is a *diagnosis*, not a model. It replays what a driver would have done
+    /// — clamp into range \[PF:6\], then round down to the step — and reports that chain
+    /// only when the chain actually predicts what came back. When it does not, the honest
+    /// answer is [`WriteWarning::Adjusted`]: the device changed the value for a reason
+    /// this build cannot attribute, and an unexplained difference is the most interesting
+    /// kind. Claiming "clamped" for an adjustment that was not a clamp would be inventing
+    /// a cause, which is the one thing D2 forbids.
+    ///
+    /// An exact write produces no warnings, whatever its type — including a
+    /// [`ControlType::Button`], which has no value to adjust.
+    #[must_use]
+    pub fn classify(
+        desc: &ControlDesc,
+        requested: &ControlValue,
+        applied: &ControlValue,
+    ) -> Vec<WriteWarning> {
+        if requested == applied {
+            return Vec::new();
+        }
+        let unattributed = || {
+            vec![WriteWarning::Adjusted {
+                requested: requested.clone(),
+                applied: applied.clone(),
+            }]
+        };
+        let (ControlValue::Int(asked), ControlValue::Int(took)) = (requested, applied) else {
+            // A string or a payload that came back different has no range to explain it.
+            return unattributed();
+        };
+
+        let clamped = desc.range.clamp_value(*asked);
+        let aligned = desc.range.align_down(clamped);
+        if aligned != *took {
+            return unattributed();
+        }
+
+        // The chain, in the order the driver walked it, so a value that was both out of
+        // range and off the grid reports both steps rather than one summarised jump.
+        //
+        // At least one of the two fires, and that is arithmetic rather than optimism:
+        // `aligned == took` and `asked != took`, so `clamped == asked && aligned ==
+        // clamped` would make `asked == took`. A silent empty list is therefore
+        // unreachable here rather than merely unlikely — which is why there is no
+        // defensive third branch nobody could turn red.
+        let mut warnings = Vec::new();
+        if clamped != *asked {
+            warnings.push(WriteWarning::Clamped {
+                requested: *asked,
+                applied: clamped,
+                range: desc.range,
+            });
+        }
+        if aligned != clamped {
+            warnings.push(WriteWarning::StepAligned {
+                requested: clamped,
+                applied: aligned,
+                step: desc.range.effective_step(),
+            });
+        }
+        warnings
+    }
 }
 
 /// The result of a write: what was asked, what the device actually holds, and why they
@@ -714,6 +820,204 @@ mod tests {
         let json = serde_json::to_string(&desc).expect("serialize");
         let back: ControlDesc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, desc);
+    }
+
+    // ------------------------------------------- the write-warning classifier
+
+    /// A plain integer control with the given range, for the classifier tests.
+    fn scalar(min: i64, max: i64, step: i64) -> ControlDesc {
+        ControlDesc {
+            id: ControlId(0x0098_0900),
+            name: "Brightness".to_owned(),
+            slug: ControlSlug::from_name("Brightness").expect("literal name"),
+            control_type: ControlType::Integer,
+            range: ControlRange { min, max, step },
+            default: 0,
+            flags: ControlFlags::from_raw(0),
+            menu: BTreeMap::new(),
+            elems: 1,
+            elem_size: 4,
+            dims: Vec::new(),
+            current: Some(ControlValue::Int(0)),
+        }
+    }
+
+    #[test]
+    fn an_exact_write_classifies_as_no_warning_at_all() {
+        let desc = scalar(0, 100, 1);
+        assert!(
+            WriteWarning::classify(&desc, &ControlValue::Int(50), &ControlValue::Int(50))
+                .is_empty()
+        );
+        // Non-scalar values too: a payload that came back byte-identical is exact.
+        let bytes = ControlValue::Bytes(vec![1, 2, 3]);
+        assert!(WriteWarning::classify(&desc, &bytes, &bytes).is_empty());
+    }
+
+    #[test]
+    fn a_write_the_driver_pulled_into_range_classifies_as_clamped_and_says_by_how_much() {
+        // PF:6, as a diagnosis: the driver took 100 for a request of 5000 and reported
+        // success. The pair is the fact E4 exists to keep.
+        let desc = scalar(0, 100, 1);
+        let warnings =
+            WriteWarning::classify(&desc, &ControlValue::Int(5_000), &ControlValue::Int(100));
+        assert_eq!(
+            warnings,
+            vec![WriteWarning::Clamped {
+                requested: 5_000,
+                applied: 100,
+                range: desc.range,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_write_off_the_step_classifies_as_step_aligned_and_names_the_step() {
+        let desc = scalar(0, 100, 5);
+        let warnings =
+            WriteWarning::classify(&desc, &ControlValue::Int(37), &ControlValue::Int(35));
+        assert_eq!(
+            warnings,
+            vec![WriteWarning::StepAligned {
+                requested: 37,
+                applied: 35,
+                step: 5,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_clamped_and_realigned_write_reports_both_warnings_in_the_order_they_happened() {
+        // The maximum is not itself on the grid, so the driver clamps to 102 and then
+        // rounds to 100. Reporting one warning would drop half the story.
+        let desc = scalar(0, 102, 5);
+        let warnings =
+            WriteWarning::classify(&desc, &ControlValue::Int(500), &ControlValue::Int(100));
+        assert_eq!(
+            warnings,
+            vec![
+                WriteWarning::Clamped {
+                    requested: 500,
+                    applied: 102,
+                    range: desc.range,
+                },
+                WriteWarning::StepAligned {
+                    requested: 102,
+                    applied: 100,
+                    step: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_adjustment_the_range_cannot_explain_is_reported_as_unattributed() {
+        // The value was in range and on the grid, and the device took something else
+        // anyway. Calling that a clamp would invent a cause; `Adjusted` says what
+        // happened and admits it does not know why.
+        let desc = scalar(0, 100, 1);
+        let warnings =
+            WriteWarning::classify(&desc, &ControlValue::Int(50), &ControlValue::Int(42));
+        assert_eq!(
+            warnings,
+            vec![WriteWarning::Adjusted {
+                requested: ControlValue::Int(50),
+                applied: ControlValue::Int(42),
+            }]
+        );
+
+        // The same when the clamp *would* have predicted something else: a request past
+        // the maximum that came back as neither the request nor the maximum.
+        let odd = WriteWarning::classify(&desc, &ControlValue::Int(5_000), &ControlValue::Int(7));
+        assert_eq!(
+            odd,
+            vec![WriteWarning::Adjusted {
+                requested: ControlValue::Int(5_000),
+                applied: ControlValue::Int(7),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_text_or_payload_write_the_device_changed_classifies_as_adjusted_not_as_clamped() {
+        // A range says nothing about a string, so there is no chain to replay.
+        let mut desc = scalar(0, 100, 1);
+        desc.control_type = ControlType::String;
+        let warnings = WriteWarning::classify(
+            &desc,
+            &ControlValue::Text("hello".to_owned()),
+            &ControlValue::Text("hell".to_owned()),
+        );
+        assert!(matches!(
+            warnings.as_slice(),
+            [WriteWarning::Adjusted { .. }]
+        ));
+
+        // And a scalar that came back as bytes — a kind change is never a clamp.
+        let mixed = WriteWarning::classify(
+            &scalar(0, 100, 1),
+            &ControlValue::Int(5),
+            &ControlValue::Bytes(vec![5]),
+        );
+        assert!(matches!(mixed.as_slice(), [WriteWarning::Adjusted { .. }]));
+    }
+
+    #[test]
+    fn a_descriptor_that_declares_its_minimum_above_its_maximum_classifies_without_panicking() {
+        // Device data (D2), and `i64::clamp` panics on it. The range explains nothing, so
+        // the difference is reported as unattributed rather than as a clamp into a range
+        // that has no inside.
+        let desc = scalar(100, 0, 1);
+        assert_eq!(desc.range.clamp_value(5_000), 5_000);
+        assert_eq!(desc.range.align_down(37), 37);
+        let warnings =
+            WriteWarning::classify(&desc, &ControlValue::Int(5_000), &ControlValue::Int(3));
+        assert!(matches!(
+            warnings.as_slice(),
+            [WriteWarning::Adjusted { .. }]
+        ));
+    }
+
+    #[test]
+    fn alignment_rounds_down_the_way_a_driver_does_and_never_leaves_the_range() {
+        let range = ControlRange {
+            min: 3,
+            max: 27,
+            step: 4,
+        };
+        // Counted from the minimum, not from zero: 3, 7, 11, …
+        assert_eq!(range.align_down(3), 3);
+        assert_eq!(range.align_down(6), 3);
+        assert_eq!(range.align_down(7), 7);
+        assert_eq!(range.align_down(26), 23);
+        assert_eq!(range.align_down(27), 27);
+        // A step of one or zero has no grid to snap to.
+        let unstepped = ControlRange {
+            min: 0,
+            max: 10,
+            step: 0,
+        };
+        assert_eq!(unstepped.align_down(7), 7);
+        // Saturating at the extremes rather than wrapping into a different answer.
+        let wide = ControlRange {
+            min: i64::MIN,
+            max: i64::MAX,
+            step: 1_000,
+        };
+        assert!(wide.contains(wide.align_down(i64::MAX)));
+        assert!(wide.contains(wide.align_down(i64::MIN)));
+    }
+
+    #[test]
+    fn clamping_puts_a_value_inside_the_range_from_either_side() {
+        let range = ControlRange {
+            min: -100,
+            max: 100,
+            step: 1,
+        };
+        assert_eq!(range.clamp_value(245), 100);
+        assert_eq!(range.clamp_value(-245), -100);
+        assert_eq!(range.clamp_value(0), 0);
     }
 
     #[test]

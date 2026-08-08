@@ -593,6 +593,13 @@
             "$ref": "#/$defs/ControlDesc"
           },
           "type": "array"
+        },
+        "pairs": {
+          "description": "The auto/manual pairs in effect for this camera (design D3): the declared table\nfiltered to controls this device has, merged with anything a probe measured on it.\n\nEach pair carries its own [`crate::pairing::Provenance`], because \"the UVC spec\nsays so\" and \"this camera did it while we watched\" are different claims and E1\nmakes the second one win.",
+          "items": {
+            "$ref": "#/$defs/AutomationPair"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -2392,6 +2399,61 @@
         }
       ]
     },
+    "PhotoDelivery": {
+      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports\nhow much is on its way. **The bytes themselves are not in this document**: `wch` streams\nthem to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire\nsurface that needs it (docs/2 puts the sink DTO in `webcam-handler-api`). Carrying an\nunused encoding here would be a dependency nobody reads.",
+      "oneOf": [
+        {
+          "description": "The bytes were handed back to the caller.",
+          "properties": {
+            "byte_count": {
+              "description": "How many there are.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "format": {
+              "$ref": "#/$defs/PhotoFormat",
+              "description": "The encoding they are in."
+            },
+            "kind": {
+              "const": "bytes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "format",
+            "byte_count"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The bytes were written to a file.",
+          "properties": {
+            "byte_count": {
+              "description": "How many bytes it holds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "path",
+              "type": "string"
+            },
+            "path": {
+              "description": "Where.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "byte_count"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "PhotoFormat": {
       "description": "The encoding a photo lands in.",
       "oneOf": [
@@ -2411,6 +2473,170 @@
           "type": "string"
         }
       ]
+    },
+    "PhotoRendering": {
+      "description": "What the photo pipeline did to produce a photo's bytes (design D6/E6).\n\nReported alongside every photo because \"the camera's own bitstream\" and \"a faithful\nre-encode\" are different products, and a calibration sample that was re-encoded is\npartly ranking our codec rather than the lens.",
+      "oneOf": [
+        {
+          "description": "The camera's own bitstream, byte for byte (E6).",
+          "properties": {
+            "kind": {
+              "const": "verbatim",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/PixelFormat",
+              "description": "The format the camera delivered, which is the format on disk."
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A compressed frame was decoded and encoded again.",
+          "properties": {
+            "kind": {
+              "const": "decoded_and_encoded",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/PixelFormat",
+              "description": "What the camera delivered."
+            },
+            "target": {
+              "$ref": "#/$defs/PhotoFormat",
+              "description": "What was written."
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A raw frame was converted to pixels and encoded.",
+          "properties": {
+            "kind": {
+              "const": "converted_and_encoded",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/PixelFormat",
+              "description": "What the camera delivered."
+            },
+            "target": {
+              "$ref": "#/$defs/PhotoFormat",
+              "description": "What was written."
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "target"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PhotoReport": {
+      "description": "What `photo` answers (design D6).\n\nSelf-describing on purpose: a saved `--json` document says which camera, when, what the\ndevice actually agreed to stream, and whether the bytes are the camera's own — the four\nthings a calibration sample or a bug report needs and cannot reconstruct later.",
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/CameraId",
+          "description": "Which camera took it."
+        },
+        "delivery": {
+          "$ref": "#/$defs/PhotoDelivery",
+          "description": "Where the bytes went."
+        },
+        "frames_settled": {
+          "description": "How many frames were discarded before this one [PF:11].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "height": {
+          "description": "The height of the same.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "negotiated": {
+          "$ref": "#/$defs/NegotiatedStream",
+          "description": "What the device agreed to, including every way that differs from the request (D5)."
+        },
+        "rendering": {
+          "$ref": "#/$defs/PhotoRendering",
+          "description": "Which of D6's three paths produced the bytes."
+        },
+        "taken_at": {
+          "$ref": "#/$defs/Stamp",
+          "description": "When."
+        },
+        "transform": {
+          "$ref": "#/$defs/TransformApplication",
+          "description": "Where the orientation request went."
+        },
+        "width": {
+          "description": "The width of the image the bytes encode, after any pixel-domain transform.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "camera",
+        "taken_at",
+        "negotiated",
+        "rendering",
+        "transform",
+        "width",
+        "height",
+        "frames_settled",
+        "delivery"
+      ],
+      "type": "object"
+    },
+    "PhotoRequest": {
+      "description": "Everything one photo needs (design D5, D6, D10).\n\nAssembled by the caller so `wch photo`, the daemon's `photo` method and a calibration\nsample all ask for a photo the same way — the sweep at P3 varies the control values\nbetween shots and nothing else.",
+      "properties": {
+        "settle": {
+          "$ref": "#/$defs/SettlePolicy",
+          "default": {
+            "deadline_ms": 5000,
+            "spec": {
+              "frames": 10,
+              "kind": "skip_frames"
+            }
+          },
+          "description": "How long to let the sensor settle first [PF:11]."
+        },
+        "sink": {
+          "$ref": "#/$defs/Sink",
+          "description": "Where the bytes go."
+        },
+        "stream": {
+          "$ref": "#/$defs/StreamRequest",
+          "default": {
+            "buffer_count": 4
+          },
+          "description": "What to ask the device's format negotiation for."
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform",
+          "default": "none",
+          "description": "The orientation, applied to pixels or recorded in EXIF depending on the sink (E6)."
+        }
+      },
+      "required": [
+        "sink"
+      ],
+      "type": "object"
     },
     "PixelFormat": {
       "description": "A pixel format, as its FourCC.",
@@ -2801,6 +3027,72 @@
       ],
       "type": "object"
     },
+    "SettlePolicy": {
+      "description": "A settle policy: the spec plus the deadline that bounds it.\n\nBoth forms are bounded, because \"skip 10 frames\" on a camera delivering none is a\nhang, and a hang is the failure mode E3 warns about wearing a disguise.",
+      "properties": {
+        "deadline_ms": {
+          "default": 5000,
+          "description": "How long the whole settle may take.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "spec": {
+          "$ref": "#/$defs/SettleSpec",
+          "default": {
+            "frames": 10,
+            "kind": "skip_frames"
+          },
+          "description": "What counts as settled."
+        }
+      },
+      "type": "object"
+    },
+    "SettleSpec": {
+      "description": "How long to wait for the sensor to settle before taking a photo [PF:11].",
+      "oneOf": [
+        {
+          "description": "Discard this many frames first.",
+          "properties": {
+            "frames": {
+              "description": "How many.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "skip_frames",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "frames"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Keep discarding frames for this long.",
+          "properties": {
+            "kind": {
+              "const": "settle_for",
+              "type": "string"
+            },
+            "millis": {
+              "description": "How long, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "millis"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Sink": {
       "description": "Where binary results go (design D10).\n\nTwo variants, because a daemon and an in-process CLI need different answers and\npretending otherwise is how `-o out.jpg` ends up meaning the server's cwd. Clients\nresolve relative paths against their own cwd *before* sending.",
       "oneOf": [
@@ -3043,7 +3335,7 @@
       ]
     },
     "Transform": {
-      "description": "An orientation transform (the skill's flip and rotate).\n\nOn the verbatim-JPEG sink these become an EXIF Orientation tag — zero re-encode, byte\nfidelity preserved (E6). On PNG and re-encode sinks they are applied to pixels.",
+      "description": "An orientation transform (the skill's flip and rotate).\n\nOn the verbatim-JPEG sink these become an EXIF Orientation tag — zero re-encode,\nbyte fidelity preserved (E6). On PNG and re-encode sinks they are applied to\npixels.\n\nThe serde spelling and [`Transform::as_str`] are the same strings on purpose: a\n`--transform` argument and a `\"transform\"` field in a JSON document must name the\nsame thing the same way, and the CLI reaches this vocabulary rather than deriving\na second one of its own.",
       "oneOf": [
         {
           "const": "none",
@@ -3051,12 +3343,12 @@
           "type": "string"
         },
         {
-          "const": "h_flip",
+          "const": "hflip",
           "description": "Mirror horizontally.",
           "type": "string"
         },
         {
-          "const": "v_flip",
+          "const": "vflip",
           "description": "Mirror vertically.",
           "type": "string"
         },
@@ -3074,6 +3366,58 @@
           "const": "rot270",
           "description": "Rotate a quarter turn counter-clockwise.",
           "type": "string"
+        }
+      ]
+    },
+    "TransformApplication": {
+      "description": "Where a requested orientation ended up.\n\n\"The photo is rotated\" and \"the photo says it is rotated\" are different facts, and a\nviewer that ignores EXIF distinguishes them — so the answer records which happened\nrather than leaving the caller to infer it from the sink.",
+      "oneOf": [
+        {
+          "description": "Nothing was asked for.",
+          "properties": {
+            "kind": {
+              "const": "identity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The pixels were rotated or mirrored before encoding.",
+          "properties": {
+            "kind": {
+              "const": "pixels",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The pixels were left alone and the orientation rides in EXIF, so the bitstream\nstays verbatim (E6).",
+          "properties": {
+            "kind": {
+              "const": "exif_orientation",
+              "type": "string"
+            },
+            "orientation": {
+              "description": "The tag value [`Transform::exif_orientation`] produced.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "orientation"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -3171,6 +3515,34 @@
       "required": [
         "vendor",
         "product"
+      ],
+      "type": "object"
+    },
+    "WriteReport": {
+      "description": "What `set` answers (design D3/E4).\n\nA list rather than a single [`Applied`], because a guarded write is more than one\nwrite: switching an automation partner off is a change to the camera the caller is\nentitled to see, and hiding it would make `--guarded` a verb whose side effects are\nundocumented at the moment they happen.",
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/CameraId",
+          "description": "Which camera took them."
+        },
+        "disabled_automation": {
+          "description": "The automation controls that were switched off to make the rest stick.\n\nDerived from the plan rather than from the writes, so it stays a statement about\nintent: a caller restoring the camera afterwards needs the list even when one of\nthe switch-offs was itself adjusted.",
+          "items": {
+            "$ref": "#/$defs/ControlSlug"
+          },
+          "type": "array"
+        },
+        "writes": {
+          "description": "Every write the plan made, in the order it made them — the automation switch-offs\nincluded, each with its own `{requested, applied}` pair.",
+          "items": {
+            "$ref": "#/$defs/Applied"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "camera",
+        "writes"
       ],
       "type": "object"
     },
@@ -3280,12 +3652,16 @@
     "LogEntry",
     "NegotiatedStream",
     "PhotoFormat",
+    "PhotoReport",
+    "PhotoRequest",
     "RestoreReport",
     "Session",
+    "SettlePolicy",
     "Sink",
     "Snapshot",
     "StreamRequest",
     "Transform",
+    "WriteReport",
     "WriteWarning"
   ],
   "x-tool-version": "0.1.0"

@@ -58,4 +58,7 @@ pub mod photo;
 
 pub use decode::{Decoded, SourceFormat, decode_frame};
 pub use metrics::measure_all;
-pub use photo::{Photo, PhotoRendering, TransformApplication, render};
+// `PhotoRendering` and `TransformApplication` are deliberately *not* re-exported: they
+// live in `schema::capture` because they cross the wire in a `PhotoReport`, and a second
+// path to the same type is a second name for it.
+pub use photo::{Photo, render};

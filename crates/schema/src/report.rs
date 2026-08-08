@@ -12,7 +12,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{CameraId, CameraInfo, FormatInfo};
-use crate::control::ControlDesc;
+use crate::control::{Applied, ControlDesc, ControlSlug};
+use crate::pairing::AutomationPair;
 use crate::vocabulary::closed_vocabulary;
 
 closed_vocabulary! {
@@ -94,6 +95,14 @@ pub struct ControlReport {
     /// Every control the device enumerated, including the ones this build cannot
     /// interpret \[PF:1\].
     pub controls: Vec<ControlDesc>,
+    /// The auto/manual pairs in effect for this camera (design D3): the declared table
+    /// filtered to controls this device has, merged with anything a probe measured on it.
+    ///
+    /// Each pair carries its own [`crate::pairing::Provenance`], because "the UVC spec
+    /// says so" and "this camera did it while we watched" are different claims and E1
+    /// makes the second one win.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairs: Vec<AutomationPair>,
 }
 
 impl ControlReport {
@@ -108,6 +117,45 @@ impl ControlReport {
             .iter()
             .filter(|desc| desc.default_out_of_range() || desc.current_out_of_range())
             .collect()
+    }
+}
+
+/// What `set` answers (design D3/E4).
+///
+/// A list rather than a single [`Applied`], because a guarded write is more than one
+/// write: switching an automation partner off is a change to the camera the caller is
+/// entitled to see, and hiding it would make `--guarded` a verb whose side effects are
+/// undocumented at the moment they happen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WriteReport {
+    /// Which camera took them.
+    pub camera: CameraId,
+    /// Every write the plan made, in the order it made them — the automation switch-offs
+    /// included, each with its own `{requested, applied}` pair.
+    pub writes: Vec<Applied>,
+    /// The automation controls that were switched off to make the rest stick.
+    ///
+    /// Derived from the plan rather than from the writes, so it stays a statement about
+    /// intent: a caller restoring the camera afterwards needs the list even when one of
+    /// the switch-offs was itself adjusted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_automation: Vec<ControlSlug>,
+}
+
+impl WriteReport {
+    /// The writes the device did not take exactly (E4).
+    ///
+    /// Computed here so a table and `--json` agree about which rows deserve a mark — and
+    /// so no renderer has to re-derive "did this land" from two fields.
+    #[must_use]
+    pub fn inexact(&self) -> Vec<&Applied> {
+        self.writes.iter().filter(|a| !a.is_exact()).collect()
+    }
+
+    /// Whether every write landed exactly as asked.
+    #[must_use]
+    pub fn is_exact(&self) -> bool {
+        self.writes.iter().all(Applied::is_exact)
     }
 }
 
@@ -192,6 +240,7 @@ mod tests {
                 // PF:4's shape: a current outside it.
                 control("Odd Current", 50, 245),
             ],
+            pairs: Vec::new(),
         };
         let flagged: Vec<&str> = report
             .self_contradicting()
@@ -199,5 +248,71 @@ mod tests {
             .map(|d| d.name.as_str())
             .collect();
         assert_eq!(flagged, vec!["Odd Default", "Odd Current"]);
+    }
+
+    #[test]
+    fn a_write_report_names_the_writes_the_device_did_not_take_exactly() {
+        use crate::control::{ControlId, ControlRange, ControlValue, WriteWarning};
+
+        let applied = |slug: &str, requested: i64, took: i64| Applied {
+            control: ControlId(1),
+            slug: ControlSlug::parse(slug).expect("literal slug"),
+            requested: ControlValue::Int(requested),
+            applied: ControlValue::Int(took),
+            warnings: if requested == took {
+                Vec::new()
+            } else {
+                vec![WriteWarning::Clamped {
+                    requested,
+                    applied: took,
+                    range: ControlRange {
+                        min: 0,
+                        max: took,
+                        step: 1,
+                    },
+                }]
+            },
+        };
+
+        let report = WriteReport {
+            camera: CameraId::parse("cam:test").expect("literal id"),
+            writes: vec![
+                applied("white_balance_automatic", 0, 0),
+                applied("white_balance_temperature", 9_000, 6_500),
+            ],
+            disabled_automation: vec![
+                ControlSlug::parse("white_balance_automatic").expect("literal slug"),
+            ],
+        };
+        assert!(!report.is_exact());
+        assert_eq!(
+            report
+                .inexact()
+                .iter()
+                .map(|a| a.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["white_balance_temperature"]
+        );
+
+        let json = serde_json::to_string(&report).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<WriteReport>(&json).expect("deserialize"),
+            report
+        );
+
+        // The inverse: a report where everything landed has nothing to mark, and its
+        // empty automation list stays out of the document.
+        let clean = WriteReport {
+            camera: report.camera.clone(),
+            writes: vec![applied("brightness", 50, 50)],
+            disabled_automation: Vec::new(),
+        };
+        assert!(clean.is_exact());
+        assert!(clean.inexact().is_empty());
+        assert!(
+            !serde_json::to_string(&clean)
+                .expect("serialize")
+                .contains("disabled_automation")
+        );
     }
 }

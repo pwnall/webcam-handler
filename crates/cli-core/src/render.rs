@@ -633,6 +633,7 @@ mod tests {
 
         controls(
             &ControlReport {
+                pairs: Vec::new(),
                 camera: CameraId::parse("cam:test").expect("literal id"),
                 controls: vec![rect, future],
             },
@@ -671,6 +672,7 @@ mod tests {
         ]);
         controls(
             &ControlReport {
+                pairs: Vec::new(),
                 camera: CameraId::parse("cam:test").expect("literal id"),
                 controls: vec![auto_exposure],
             },
@@ -708,6 +710,7 @@ mod tests {
 
         controls(
             &ControlReport {
+                pairs: Vec::new(),
                 camera: CameraId::parse("cam:test").expect("literal id"),
                 controls: vec![zoom, plf, desc("Brightness", ControlType::Integer)],
             },

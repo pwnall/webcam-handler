@@ -227,6 +227,32 @@ pub fn validate(
     Ok(())
 }
 
+/// The pairs this device can actually exhibit: both halves name controls it has.
+///
+/// The declared table nominates relationships for hardware in general — it lists both
+/// spellings of the white-balance automation control because a device exposes one or the
+/// other — so "the pairs in effect for *this* camera" is a different list, and it is the
+/// one a `controls` report shows and a snapshot's roles are decided from.
+///
+/// Stricter than the planner's own filter, and deliberately: [`plan`] keeps a pair whose
+/// *automation* control exists because it is answering "what must I switch off before
+/// this target", a question that only comes up once the target has been resolved. This
+/// function answers "what does this device do", and a pair whose manual half is missing
+/// is not something this device does.
+#[must_use]
+pub fn applicable(controls: &[ControlDesc], pairs: &[AutomationPair]) -> Vec<AutomationPair> {
+    let present: BTreeMap<&str, &ControlDesc> =
+        controls.iter().map(|c| (c.slug.as_str(), c)).collect();
+    pairs
+        .iter()
+        .filter(|pair| {
+            present.contains_key(pair.manual.as_str())
+                && present.contains_key(pair.automation.as_str())
+        })
+        .cloned()
+        .collect()
+}
+
 /// Whether a control is the automation half of any pair the device can honor.
 ///
 /// The snapshot's restore ordering (D4) needs the same question answered, and answering
@@ -1158,6 +1184,35 @@ mod tests {
         // does never exercises the refusals. Both arms have to be populated.
         assert!(planned > 100, "only {planned} cases produced a plan");
         assert!(refused > 100, "only {refused} cases were refused");
+    }
+
+    #[test]
+    fn applicable_keeps_only_the_pairs_whose_two_halves_this_device_both_has() {
+        // The declared table's white-balance rows are the case: two spellings of the
+        // automation control, one of which this device has. And a pair whose *manual*
+        // half is missing is not a relationship this camera exhibits, even though the
+        // planner would happily carry it — the two are answering different questions.
+        let controls = vec![
+            boolean("white_balance_automatic", 1),
+            integer("white_balance_temperature", 4_600, 0x0010),
+            auto_exposure(3),
+        ];
+        let kept = applicable(&controls, &declared_pairs());
+        assert_eq!(
+            kept.iter()
+                .map(|p| (p.manual.as_str(), p.automation.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("white_balance_temperature", "white_balance_automatic")],
+            "the absent spelling and the pair with no manual half both drop out"
+        );
+
+        // The inverse: a device with both halves of the exposure pair keeps it.
+        let with_exposure = vec![auto_exposure(3), integer("exposure_time_absolute", 156, 0)];
+        assert_eq!(
+            applicable(&with_exposure, &[exposure_pair()]),
+            vec![exposure_pair()]
+        );
+        assert!(applicable(&[], &declared_pairs()).is_empty());
     }
 
     #[test]
