@@ -58,14 +58,9 @@ fn backend_for(cli: &Cli) -> Result<Box<dyn CameraBackend>> {
     match cli.backend.0 {
         BackendKind::V4l2 => Ok(Box::new(v4l2::V4l2Backend::new())),
         BackendKind::Fake => {
-            // The fake replays documents, so it needs to be given some. Refusing an
-            // empty list beats enumerating nothing and letting the user conclude their
-            // cameras vanished.
-            if cli.profile.is_empty() {
-                return Err(Error::CameraUnknown {
-                    requested: "--backend fake with no --profile".to_owned(),
-                });
-            }
+            // `--profile` is `required_if_eq("backend", "fake")`, so an empty list here
+            // cannot come from a command line — clap refuses it as the usage error it is,
+            // rather than letting it arrive as a camera error later.
             let mut profiles = Vec::with_capacity(cli.profile.len());
             for path in &cli.profile {
                 profiles.push(read_profile(path)?);
@@ -193,17 +188,6 @@ mod tests {
             assert_ne!(release, "(unknown)");
             assert!(!release.contains('\n'), "{release:?} was not trimmed");
         }
-    }
-
-    #[test]
-    fn the_fake_backend_refuses_to_start_with_nothing_to_replay() {
-        // Enumerating zero cameras from a backend nobody gave any documents would look
-        // exactly like a machine whose cameras vanished.
-        let cli = Cli::try_parse_from(["wch", "--backend", "fake", "list"]).expect("parses");
-        assert!(matches!(
-            backend_for(&cli),
-            Err(Error::CameraUnknown { .. })
-        ));
     }
 
     #[test]

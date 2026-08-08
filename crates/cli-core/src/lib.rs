@@ -58,7 +58,17 @@ pub struct Cli {
     pub backend: BackendKindArg,
 
     /// Device profiles for the fake backend to replay. Repeatable.
-    #[arg(long, global = true, value_name = "PATH")]
+    ///
+    /// Required with `--backend fake`, and enforced by clap rather than at run time: a
+    /// backend with nothing to replay enumerates nothing, and "no cameras" is exactly
+    /// what a user whose cameras had vanished would see. A usage mistake must not be
+    /// spelled like a device answer.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        required_if_eq("backend", "fake")
+    )]
     pub profile: Vec<Utf8PathBuf>,
 
     /// What to do.
@@ -215,10 +225,22 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
 
 /// The exit code a failure leaves behind.
 ///
-/// Two codes, not eighteen: a caller who wants to branch on *which* thing went wrong
-/// reads `--json`, where the whole typed error is. Shell exit codes are a one-bit channel
-/// and pretending otherwise invites a script to treat `2` as meaningful when the registry
-/// grows.
+/// **One code for every D13 error**, not eighteen. A caller who wants to branch on *which*
+/// thing went wrong reads `--json`, where the whole typed error is; shell exit codes are a
+/// one-bit channel, and mapping a growing registry onto small integers invites a script to
+/// treat `2` as meaningful and then break when a nineteenth variant lands.
+///
+/// The process therefore has three outcomes, and only the first two come from here:
+///
+/// | Code | Meaning |
+/// |---|---|
+/// | 0 | the verb answered |
+/// | 1 | a typed [`Error`] — the camera, the device, or the filesystem said no |
+/// | 2 | clap's own: the command line was not a command line |
+///
+/// 2 is clap's convention and is left to it deliberately. "You typed it wrong" and "the
+/// camera is busy" are different kinds of failure, and a script that retries the second
+/// should not retry the first.
 #[must_use]
 pub fn exit_code(_error: &Error) -> u8 {
     1
@@ -286,6 +308,24 @@ mod tests {
     }
 
     #[test]
+    fn the_fake_backend_cannot_be_selected_without_something_to_replay() {
+        // The inverse of the test below, and the reason `required_if_eq` is on the
+        // argument: a fake backend with no documents enumerates nothing, which reads
+        // exactly like a machine whose cameras disappeared.
+        let error = Cli::try_parse_from(["wch", "--backend", "fake", "list"])
+            .expect_err("--backend fake without --profile must not parse");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "{error}"
+        );
+        assert!(error.to_string().contains("--profile"), "{error}");
+
+        // …and the default backend needs no profile at all.
+        assert!(Cli::try_parse_from(["wch", "list"]).is_ok());
+    }
+
+    #[test]
     fn the_fake_backend_is_selectable_with_the_profiles_it_replays() {
         let cli = Cli::try_parse_from([
             "wch",
@@ -311,9 +351,14 @@ mod tests {
     }
 
     #[test]
-    fn every_error_kind_leaves_a_nonzero_exit_code() {
+    fn every_error_kind_leaves_the_same_nonzero_exit_code_distinct_from_claps() {
         for &kind in schema::error::ErrorKind::ALL {
-            assert_ne!(exit_code(&Error::sample(kind)), 0, "{kind:?}");
+            let code = exit_code(&Error::sample(kind));
+            assert_ne!(code, 0, "{kind:?} would look like success");
+            // Distinct from clap's usage code: "you typed it wrong" and "the camera is
+            // busy" must not be the same answer to a script deciding whether to retry.
+            assert_ne!(code, 2, "{kind:?} collides with clap's usage exit code");
+            assert_eq!(code, 1, "{kind:?} differs from the other kinds");
         }
     }
 }
