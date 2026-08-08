@@ -17,18 +17,24 @@
 //! different camera runs the PF:1 arm and reports a named skip for the corpus arm, rather
 //! than failing for having the wrong hardware.
 //!
-//! Nothing here writes a control or moves a motor. P1 is the read path; §5's motor rule
-//! and the `hw_motion_` prefix arrive with the writes that need them (P2).
+//! **Writes, and §5's motor rule.** P2 adds arms that change the camera's state, and
+//! every one of them puts it back and *asserts* that it did — a restore by assumption is
+//! the failure docs/3 Part C names. Which controls a write arm may touch is not decided
+//! here: [`testkit::battery::is_perturbable`] and [`testkit::battery::is_motorized`] are
+//! the same predicates the conformance battery uses, so "may this test move the camera
+//! somebody is pointing at a person" has one answer in the workspace. Nothing on this
+//! rung moves a motor at all; the `hw_motion_` prefix `smoke-hw` excludes by default is
+//! reserved for the sweeps that do.
 //!
 //! wch-suite: prefix=hw_ recipe=smoke-hw
 
 use std::collections::BTreeSet;
 
-use schema::backend::CameraBackend;
+use schema::backend::{Camera, CameraBackend};
 use schema::camera::NodeKind;
-use schema::control::ControlType;
+use schema::control::{ControlDesc, ControlType, ControlValue, KnownFlag};
 use schema::profile::DeviceProfile;
-use testkit::corpus;
+use testkit::{battery, corpus};
 use v4l2::V4l2Backend;
 
 /// Enumerate, or report why this host cannot take part.
@@ -314,4 +320,337 @@ fn hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability() {
              counter-example is not exercised on this host"
         );
     }
+}
+
+// ---------------------------------------------------------------- P2: the write path
+
+/// A control this rung may perturb: safe by the battery's own rule, and not a motor.
+///
+/// Returned with the value to write, so a caller cannot pick a control and then invent a
+/// perturbation for it that §5 would not allow.
+fn perturbable_target(controls: &[ControlDesc]) -> Option<(ControlDesc, ControlValue)> {
+    controls.iter().find_map(|desc| {
+        if !battery::is_perturbable(desc) || battery::is_motorized(&desc.slug) {
+            return None;
+        }
+        // An INACTIVE control is an automation partner's to write [PF:3]; driving one
+        // here would be testing the guarded-set rule the engine owns, from the wrong
+        // layer, and the value would not stick.
+        if desc.is_inactive() {
+            return None;
+        }
+        battery::perturbation(desc).map(|value| (desc.clone(), value))
+    })
+}
+
+/// Write `value`, then put `desc` back where it was and assert that it went.
+///
+/// The restoration is the assertion, not the cleanup: §5 says a suite restores what it
+/// touched, and docs/3 Part C says a restore nobody checked is a promise rather than a
+/// fact.
+fn write_and_restore(
+    camera: &mut dyn Camera,
+    desc: &ControlDesc,
+    value: ControlValue,
+) -> schema::control::Applied {
+    let original = desc
+        .current
+        .clone()
+        .expect("a perturbable control has a current value");
+    let applied = camera
+        .set(desc.id, value)
+        .unwrap_or_else(|error| panic!("{}: the write failed: {error}", desc.slug));
+
+    let back = camera
+        .set(desc.id, original.clone())
+        .unwrap_or_else(|error| panic!("{}: restoring {original} failed: {error}", desc.slug));
+    assert_eq!(
+        back.applied, original,
+        "{}: this test left the camera holding {} instead of {original}",
+        desc.slug, back.applied
+    );
+    applied
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_write_reads_back_and_reports_what_the_driver_actually_took() {
+    // D3 and E4 against a real driver for the first time: the write goes out through
+    // `S_EXT_CTRLS`, the value comes back through `G_EXT_CTRLS`, and both halves of the
+    // pair survive to the caller. P1's notes record that "no control on any attached
+    // camera was written" — this is the arm that changes that.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut written = 0usize;
+    for info in &cameras {
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+
+        let Some((desc, value)) = perturbable_target(&controls) else {
+            println!(
+                "SKIP (partial): {} exposes no safely perturbable control",
+                info.id
+            );
+            continue;
+        };
+        let applied = write_and_restore(camera.as_mut(), &desc, value.clone());
+        written += 1;
+
+        assert_eq!(
+            applied.control, desc.id,
+            "{}: wrong control reported",
+            desc.slug
+        );
+        assert_eq!(applied.slug, desc.slug);
+        assert_eq!(
+            applied.requested, value,
+            "{}: the request must survive the round trip verbatim (E4)",
+            desc.slug
+        );
+        assert_eq!(
+            applied.applied, value,
+            "{}: a one-step write inside the declared range was adjusted to {} — that is \
+             a finding about this device, not a test failure to paper over",
+            desc.slug, applied.applied
+        );
+        println!(
+            "{}: {} {} -> {} (read back from the device)",
+            info.id,
+            desc.slug,
+            desc.current
+                .as_ref()
+                .map_or_else(|| "?".to_owned(), ToString::to_string),
+            applied.applied
+        );
+    }
+
+    if written == 0 {
+        println!("SKIP: no attached camera offered a control this arm could safely write");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_write_past_the_range_is_clamped_and_the_clamp_is_a_warning_not_an_error() {
+    // PF:6 on real hardware. The P1 notes list this explicitly under "not established by
+    // any of the above — the hardware twin arrives at P2 with the write path", so the
+    // interesting outcome is either direction: a driver that clamps confirms the finding,
+    // and a driver that *refuses* is a new one worth a PF entry.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut probed = 0usize;
+    for info in &cameras {
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+
+        let candidate = controls.iter().find(|desc| {
+            battery::is_perturbable(desc)
+                && !battery::is_motorized(&desc.slug)
+                && !desc.is_inactive()
+                && matches!(
+                    desc.control_type,
+                    ControlType::Integer | ControlType::Integer64
+                )
+                && desc.range.max > desc.range.min
+                && desc.range.max.checked_add(1_000).is_some()
+        });
+        let Some(desc) = candidate.cloned() else {
+            println!(
+                "SKIP (partial): {} exposes no non-motorized integer control to probe \
+                 clamping on (design §5 keeps motors off their limits)",
+                info.id
+            );
+            continue;
+        };
+
+        let beyond = desc.range.max + 1_000;
+        let applied = write_and_restore(camera.as_mut(), &desc, ControlValue::Int(beyond));
+        probed += 1;
+
+        assert_eq!(applied.requested, ControlValue::Int(beyond));
+        let took = applied
+            .applied
+            .as_int()
+            .unwrap_or_else(|| panic!("{}: a scalar read back as {}", desc.slug, applied.applied));
+        assert!(
+            desc.range.contains(took),
+            "{}: a write of {beyond} landed on {took}, outside the declared range \
+             [{}..={}]",
+            desc.slug,
+            desc.range.min,
+            desc.range.max
+        );
+        assert!(
+            !applied.warnings.is_empty(),
+            "{}: the driver moved {beyond} to {took} and said nothing about it — a silent \
+             adjustment is the fact E4 exists to keep",
+            desc.slug
+        );
+        println!(
+            "{}: PF:6 live — {} took {took} for a write of {beyond}, warnings {:?}",
+            info.id, desc.slug, applied.warnings
+        );
+    }
+
+    if probed == 0 {
+        println!("SKIP: no attached camera offered a control this arm could probe");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_switching_an_automation_control_moves_its_partners_inactive_bit() {
+    // PF:3, live and in both directions. The finding is that a manual control's INACTIVE
+    // flag tracks whether its automation partner owns it *right now*, which is what makes
+    // the flag diff a usable pair-discovery method (D3 layer 2) — and what makes a
+    // guarded write necessary in the first place.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut observed = 0usize;
+    for info in &cameras {
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+
+        // A boolean automation control, off a motor, that is currently *on*: switching it
+        // off is the direction that frees a partner, and it is also the direction that is
+        // safe to leave the camera in for the microseconds before the restore.
+        let candidate = controls.iter().find(|desc| {
+            schema::pairing::looks_like_automation(desc)
+                && !battery::is_motorized(&desc.slug)
+                && desc.control_type == schema::control::ControlType::Boolean
+                && desc.current.as_ref().and_then(ControlValue::as_int) == Some(1)
+        });
+        let Some(desc) = candidate.cloned() else {
+            println!(
+                "SKIP (partial): {} has no enabled non-motorized boolean automation \
+                 control to toggle",
+                info.id
+            );
+            continue;
+        };
+
+        let inactive_before = inactive_slugs(&controls);
+        camera
+            .set(desc.id, ControlValue::Int(0))
+            .unwrap_or_else(|error| panic!("{}: switching off failed: {error}", desc.slug));
+        let during = camera.controls().expect("controls after the switch-off");
+        let inactive_during = inactive_slugs(&during);
+
+        // Put it back before asserting anything: a failed assertion must not leave the
+        // camera with its automation off.
+        let back = camera
+            .set(desc.id, ControlValue::Int(1))
+            .unwrap_or_else(|error| panic!("{}: switching back on failed: {error}", desc.slug));
+        assert_eq!(
+            back.applied,
+            ControlValue::Int(1),
+            "{}: this test left {} switched off",
+            info.id,
+            desc.slug
+        );
+        let after = camera.controls().expect("controls after the restore");
+        assert_eq!(
+            inactive_slugs(&after),
+            inactive_before,
+            "{}: the INACTIVE set did not come back to where it started",
+            info.id
+        );
+
+        let freed: Vec<&str> = inactive_before
+            .difference(&inactive_during)
+            .map(String::as_str)
+            .collect();
+        observed += 1;
+        if freed.is_empty() {
+            println!(
+                "{}: switching {} off freed no control's INACTIVE bit — this device does \
+                 not couple through that flag [PF:3 does not hold here]",
+                info.id, desc.slug
+            );
+        } else {
+            println!(
+                "{}: PF:3 live — switching {} off freed {}",
+                info.id,
+                desc.slug,
+                freed.join(", ")
+            );
+        }
+    }
+
+    if observed == 0 {
+        println!("SKIP: no attached camera offered an automation control this arm could toggle");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_read_only_control_refuses_the_write_rather_than_pretending() {
+    // PF:12 — the Chicony's `Privacy` is READ_ONLY, and §5 says the hardware privacy
+    // control is honored rather than worked around. The refusal must be the typed
+    // capability answer, not a permission problem with the device (E3).
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut refused = 0usize;
+    for info in &cameras {
+        let camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+        let mut camera = camera;
+
+        for desc in controls
+            .iter()
+            .filter(|d| d.flags.has(KnownFlag::ReadOnly) && d.control_type.is_scalar())
+        {
+            let error = camera
+                .set(desc.id, ControlValue::Int(desc.default))
+                .expect_err("a read-only control must refuse the write");
+            assert_eq!(
+                error,
+                schema::Error::ControlReadOnly {
+                    control: desc.slug.clone()
+                },
+                "{}: {} refused with the wrong variant",
+                info.id,
+                desc.slug
+            );
+            refused += 1;
+            println!("{}: {} is read-only and said so", info.id, desc.slug);
+        }
+    }
+
+    if refused == 0 {
+        println!("SKIP: no attached camera exposes a read-only scalar control");
+    }
+}
+
+/// The slugs whose INACTIVE bit is set right now.
+fn inactive_slugs(controls: &[ControlDesc]) -> BTreeSet<String> {
+    controls
+        .iter()
+        .filter(|desc| desc.is_inactive())
+        .map(|desc| desc.slug.to_string())
+        .collect()
 }

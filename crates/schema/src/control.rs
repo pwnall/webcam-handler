@@ -18,7 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::slug::{Separator, slugify};
-use crate::vocabulary::bit_vocabulary;
+use crate::vocabulary::{bit_vocabulary, closed_vocabulary};
 
 /// A V4L2 control id (`V4L2_CID_*`), as the kernel numbers it.
 #[derive(
@@ -478,6 +478,22 @@ impl ControlDesc {
         self.flags.has(KnownFlag::Volatile)
     }
 
+    /// Why a write to this control cannot be read back, when it cannot (design D3).
+    ///
+    /// Asked by every backend's `set` through [`WriteWarning::classify`], so "which
+    /// controls cannot be verified" is one question with one answer rather than a
+    /// condition each backend re-derives.
+    #[must_use]
+    pub fn unverifiable(&self) -> Option<Unverifiable> {
+        if self.control_type == ControlType::Button {
+            Some(Unverifiable::TypeHasNoValue)
+        } else if self.flags.has(KnownFlag::WriteOnly) {
+            Some(Unverifiable::WriteOnly)
+        } else {
+            None
+        }
+    }
+
     /// The menu index whose item name matches `predicate`.
     ///
     /// Menu semantics are discovered by *name*, never by index: `Manual Mode` is index 1
@@ -524,6 +540,44 @@ pub enum WriteWarning {
         /// What the device now holds.
         applied: ControlValue,
     },
+    /// The write was accepted and there was nothing to read back, so
+    /// [`Applied::applied`] is what was *asked for* rather than what was observed.
+    ///
+    /// D3 says every write reads back. Some controls cannot: a `BUTTON` is a trigger with
+    /// no value, and a `WRITE_ONLY` control's value is the device's to keep. Returning
+    /// `{requested, applied}` with the two equal and no warning would make those writes
+    /// indistinguishable from verified ones, which is the collapse E4 exists to prevent —
+    /// so the gap is carried as data instead.
+    Unverified {
+        /// What makes the value unreadable.
+        because: Unverifiable,
+    },
+}
+
+closed_vocabulary! {
+    /// Why a write could not be read back.
+    ///
+    /// Both members are read off the descriptor the device supplied, so neither is a
+    /// guess about the device's intentions.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Unverifiable {
+        /// The control's type has no value: `V4L2_CTRL_TYPE_BUTTON` is a trigger, and
+        /// writing it *is* the effect.
+        TypeHasNoValue,
+        /// The device flags the control `WRITE_ONLY`, which is the device saying that
+        /// reading it would not mean anything.
+        WriteOnly,
+        /// The write was accepted and the read-back that should have followed it was
+        /// refused by the device.
+        ///
+        /// Distinct from the two above because it is not a property of the descriptor:
+        /// nothing said this control was unreadable, and then it was. Several drivers
+        /// answer `EINVAL` to `G_EXT_CTRLS` for controls they happily enumerate, so this
+        /// is a real outcome rather than a defensive branch — and it is the one case
+        /// where a caller might sensibly re-read later.
+        DeviceDeclinedToRead,
+    }
 }
 
 impl WriteWarning {
@@ -542,14 +596,20 @@ impl WriteWarning {
     /// kind. Claiming "clamped" for an adjustment that was not a clamp would be inventing
     /// a cause, which is the one thing D2 forbids.
     ///
-    /// An exact write produces no warnings, whatever its type — including a
-    /// [`ControlType::Button`], which has no value to adjust.
+    /// A control the device will not let us read back gets
+    /// [`WriteWarning::Unverified`] instead of a diagnosis, whatever the two values look
+    /// like — there is nothing to compare, and a caller who cannot tell that apart from a
+    /// verified write has lost the fact D3 is about. Otherwise an exact write produces no
+    /// warnings at all.
     #[must_use]
     pub fn classify(
         desc: &ControlDesc,
         requested: &ControlValue,
         applied: &ControlValue,
     ) -> Vec<WriteWarning> {
+        if let Some(because) = desc.unverifiable() {
+            return vec![WriteWarning::Unverified { because }];
+        }
         if requested == applied {
             return Vec::new();
         }
@@ -852,6 +912,44 @@ mod tests {
         // Non-scalar values too: a payload that came back byte-identical is exact.
         let bytes = ControlValue::Bytes(vec![1, 2, 3]);
         assert!(WriteWarning::classify(&desc, &bytes, &bytes).is_empty());
+    }
+
+    #[test]
+    fn a_control_the_device_will_not_read_back_classifies_as_unverified() {
+        // D3 says every write reads back; a BUTTON and a WRITE_ONLY control cannot, and
+        // reporting `requested == applied` with no warning would make those writes
+        // indistinguishable from the ones we actually checked.
+        let mut button = scalar(0, 100, 1);
+        button.control_type = ControlType::Button;
+        assert_eq!(
+            button.unverifiable(),
+            Some(Unverifiable::TypeHasNoValue),
+            "a button is a trigger, not a value"
+        );
+        assert_eq!(
+            WriteWarning::classify(&button, &ControlValue::Int(1), &ControlValue::Int(1)),
+            vec![WriteWarning::Unverified {
+                because: Unverifiable::TypeHasNoValue
+            }],
+            "the two values matching proves nothing when nothing was read"
+        );
+
+        let mut write_only = scalar(0, 100, 1);
+        write_only.flags = ControlFlags::from_raw(KnownFlag::WriteOnly.bit());
+        assert_eq!(
+            WriteWarning::classify(&write_only, &ControlValue::Int(7), &ControlValue::Int(7)),
+            vec![WriteWarning::Unverified {
+                because: Unverifiable::WriteOnly
+            }]
+        );
+
+        // The inverse: an ordinary control is verifiable, so an exact write is silent.
+        let ordinary = scalar(0, 100, 1);
+        assert_eq!(ordinary.unverifiable(), None);
+        assert!(
+            WriteWarning::classify(&ordinary, &ControlValue::Int(7), &ControlValue::Int(7))
+                .is_empty()
+        );
     }
 
     #[test]

@@ -3494,6 +3494,26 @@
         }
       ]
     },
+    "Unverifiable": {
+      "description": "Why a write could not be read back.\n\nBoth members are read off the descriptor the device supplied, so neither is a\nguess about the device's intentions.",
+      "oneOf": [
+        {
+          "const": "type_has_no_value",
+          "description": "The control's type has no value: `V4L2_CTRL_TYPE_BUTTON` is a trigger, and\nwriting it *is* the effect.",
+          "type": "string"
+        },
+        {
+          "const": "write_only",
+          "description": "The device flags the control `WRITE_ONLY`, which is the device saying that\nreading it would not mean anything.",
+          "type": "string"
+        },
+        {
+          "const": "device_declined_to_read",
+          "description": "The write was accepted and the read-back that should have followed it was\nrefused by the device.\n\nDistinct from the two above because it is not a property of the descriptor:\nnothing said this control was unreadable, and then it was. Several drivers\nanswer `EINVAL` to `G_EXT_CTRLS` for controls they happily enumerate, so this\nis a real outcome rather than a defensive branch — and it is the one case\nwhere a caller might sensibly re-read later.",
+          "type": "string"
+        }
+      ]
+    },
     "UsbId": {
       "description": "A USB vendor:product pair.",
       "properties": {
@@ -3630,6 +3650,24 @@
             "kind",
             "requested",
             "applied"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The write was accepted and there was nothing to read back, so\n[`Applied::applied`] is what was *asked for* rather than what was observed.\n\nD3 says every write reads back. Some controls cannot: a `BUTTON` is a trigger with\nno value, and a `WRITE_ONLY` control's value is the device's to keep. Returning\n`{requested, applied}` with the two equal and no warning would make those writes\nindistinguishable from verified ones, which is the collapse E4 exists to prevent —\nso the gap is carried as data instead.",
+          "properties": {
+            "because": {
+              "$ref": "#/$defs/Unverifiable",
+              "description": "What makes the value unreadable."
+            },
+            "kind": {
+              "const": "unverified",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "because"
           ],
           "type": "object"
         }

@@ -247,19 +247,84 @@ pub(crate) fn get_scalar(
     )?;
 
     let mut controls = ext_controls_header(&mut control, op)?;
-    // SAFETY: `controls` holds a zeroed `v4l2_ext_controls` whose `count` is 1 and whose
-    // `controls` field holds the address of `control`, a live, correctly aligned,
-    // writable `v4l2_ext_control` — both bindings are in scope for the whole call, and
-    // the `&mut` borrow that planted the address has ended, so nothing aliases it while
-    // the kernel writes. `control` carries no payload pointer (`size` is 0 and the union
-    // holds an inline scalar), so the kernel dereferences nothing beyond that one entry.
-    // The pointer passed is to `controls` itself, valid for
-    // `size_of::<v4l2_ext_controls>()` writable bytes.
-    let ret =
-        unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
-    ret.map_err(|error| device_error(fd, op, &error))?;
+    call_ext_ctrls(fd, vidioc::VIDIOC_G_EXT_CTRLS, &mut controls, op)?;
 
     decode::control_scalar(control.bytes(), control_type).ok_or_else(|| short_reply(op))
+}
+
+/// `VIDIOC_S_EXT_CTRLS` for one scalar control.
+///
+/// The value goes into the union arm the control's *type* selects, which is the same
+/// choice [`decode::control_scalar`] makes when reading: 64 bits for
+/// `V4L2_CTRL_TYPE_INTEGER64`, 32 for everything else. Getting that backwards writes four
+/// bytes of a neighbouring field and the kernel reports success.
+pub(crate) fn set_scalar(fd: &Fd, control_id: u32, control_type: u32, value: i64) -> Result<()> {
+    let op = "VIDIOC_S_EXT_CTRLS";
+    let mut control = Payload::<v4l2_ext_control>::zeroed();
+    set_u32(
+        &mut control,
+        offset_of!(v4l2_ext_control, id),
+        control_id,
+        op,
+    )?;
+
+    let union_at = offset_of!(v4l2_ext_control, __bindgen_anon_1);
+    let arm = decode::scalar_arm(control_type, value).ok_or_else(|| Error::DeviceIo {
+        operation: op.to_owned(),
+        errno: None,
+        message: format!(
+            "{value} does not fit the 32-bit value field this control's type declares"
+        ),
+    })?;
+    match arm {
+        decode::ScalarArm::Wide(wide) => fields::write_i64(control.bytes_mut(), union_at, wide),
+        decode::ScalarArm::Narrow(narrow) => {
+            fields::write_i32(control.bytes_mut(), union_at, narrow)
+        }
+    }
+    .ok_or_else(|| short_reply(op))?;
+
+    let mut controls = ext_controls_header(&mut control, op)?;
+    call_ext_ctrls(fd, vidioc::VIDIOC_S_EXT_CTRLS, &mut controls, op)
+}
+
+/// `VIDIOC_S_EXT_CTRLS` for one compound control, from a caller-supplied buffer.
+///
+/// The buffer is the caller's — it came from a [`schema::control::ControlValue::Bytes`],
+/// which for this backend can only have come from a previous `get_payload` — and its
+/// length is what goes in `size`. A payload of the wrong length is the device's to refuse.
+pub(crate) fn set_payload(fd: &Fd, control_id: u32, bytes: &[u8]) -> Result<()> {
+    let op = "VIDIOC_S_EXT_CTRLS";
+    if bytes.is_empty() {
+        return Err(short_reply(op));
+    }
+    let size = u32::try_from(bytes.len()).map_err(|_| Error::DeviceIo {
+        operation: op.to_owned(),
+        errno: None,
+        message: format!("a payload of {} bytes does not fit a u32 size", bytes.len()),
+    })?;
+    // Copied rather than pointed at: the kernel's `controls` field is `*mut`, and handing
+    // it the address of a `&[u8]` would be lending it a write capability over memory the
+    // caller still owns and believes is immutable.
+    let mut buffer = bytes.to_vec();
+
+    let mut control = Payload::<v4l2_ext_control>::zeroed();
+    set_u32(
+        &mut control,
+        offset_of!(v4l2_ext_control, id),
+        control_id,
+        op,
+    )?;
+    set_u32(&mut control, offset_of!(v4l2_ext_control, size), size, op)?;
+    fields::write_usize(
+        control.bytes_mut(),
+        offset_of!(v4l2_ext_control, __bindgen_anon_1),
+        buffer.as_mut_ptr().expose_provenance(),
+    )
+    .ok_or_else(|| short_reply(op))?;
+
+    let mut controls = ext_controls_header(&mut control, op)?;
+    call_ext_ctrls(fd, vidioc::VIDIOC_S_EXT_CTRLS, &mut controls, op)
 }
 
 /// `VIDIOC_G_EXT_CTRLS` for one compound control, into a caller-sized buffer.
@@ -291,20 +356,37 @@ pub(crate) fn get_payload(fd: &Fd, control_id: u32, len: usize) -> Result<Vec<u8
     .ok_or_else(|| short_reply(op))?;
 
     let mut controls = ext_controls_header(&mut control, op)?;
-    // SAFETY: as `call`, plus the two pointers this struct carries. `controls.controls`
-    // holds the address of `control`, and `control`'s union holds the address of
-    // `buffer`'s allocation; both bindings are still in scope, so both allocations are
-    // live for the whole call. Neither is aliased during it — the `&mut` borrows that
-    // planted the addresses have ended, and nothing else reads or writes either binding
-    // between here and the return, so the kernel is the only writer. `control.size` is
-    // `len`, which came from `decode::payload_len`: bounded against
-    // `limits::MAX_CONTROL_PAYLOAD_BYTES` and non-zero, so the kernel writes at most as
-    // many bytes as `buffer` holds.
-    let ret =
-        unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
-    ret.map_err(|error| device_error(fd, op, &error))?;
+    call_ext_ctrls(fd, vidioc::VIDIOC_G_EXT_CTRLS, &mut controls, op)?;
 
     Ok(buffer)
+}
+
+/// Run one of the four `*_EXT_CTRLS` calls over a prepared one-entry header.
+///
+/// One function, and therefore one `unsafe` block, for reads and writes alike: the
+/// obligation is identical in both directions — the same header shape, the same pointer
+/// graph, the same liveness — and stating it four times would be four chances to state it
+/// differently. The *caller* owns the parts that do differ, and each of them is checked in
+/// safe code before this is reached: `size` is bounded by `decode::payload_len` on the way
+/// in and by `u32::try_from` on the way out, and the union arm is chosen by control type.
+fn call_ext_ctrls(
+    fd: &Fd,
+    request: vidioc::_IOC_TYPE,
+    controls: &mut Payload<v4l2_ext_controls>,
+    op: &str,
+) -> Result<()> {
+    // SAFETY: `controls` is a live, exclusively borrowed `v4l2_ext_controls`, correctly
+    // aligned and valid for `size_of::<v4l2_ext_controls>()` writable bytes — the width
+    // the `_IOWR`-encoded `request` declares. Its `count` is 1 and its `controls` field
+    // holds the address of the caller's `v4l2_ext_control`, which outlives this call: the
+    // caller holds that binding across it, and the `&mut` borrow that planted the address
+    // has ended, so the kernel is the only accessor. When that entry carries a payload
+    // pointer its `size` is the length of the live allocation it points at (bounded
+    // non-zero before it became one), so the kernel touches at most that many bytes; when
+    // it does not, `size` is 0 and the union holds an inline scalar the kernel
+    // dereferences nothing from.
+    let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), request, controls.as_mut_ptr()) };
+    ret.map_err(|error| device_error(fd, op, &error))
 }
 
 /// The one-entry `v4l2_ext_controls` header pointing at `control`.

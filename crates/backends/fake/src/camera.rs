@@ -182,18 +182,22 @@ impl CameraState {
             return Err(Error::ControlReadOnly { control: desc.slug });
         }
 
-        let (applied, warnings) = if desc.control_type == ControlType::Button {
+        let applied = if desc.control_type == ControlType::Button {
             // A button has no value; writing it is the whole effect.
-            (requested.clone(), Vec::new())
+            requested.clone()
         } else if desc.control_type.is_menu() {
-            (menu_write(&desc, requested)?, Vec::new())
+            menu_write(&desc, requested)?
         } else if desc.control_type.is_scalar() {
             scalar_write(&desc, requested, force_clamp)?
         } else if desc.control_type == ControlType::String {
-            (text_write(&desc, requested)?, Vec::new())
+            text_write(&desc, requested)?
         } else {
-            (payload_write(&desc, requested)?, Vec::new())
+            payload_write(&desc, requested)?
         };
+        // Simulating what the driver did is this crate's business; describing it is the
+        // schema's (§2.10), so every arm above lands in the same classifier the V4L2
+        // backend uses on its own read-back.
+        let warnings = WriteWarning::classify(&desc, requested, &applied);
 
         if desc.control_type != ControlType::Button
             && let Some(entry) = self.controls.get_mut(&id)
@@ -354,7 +358,7 @@ fn scalar_write(
     desc: &ControlDesc,
     requested: &ControlValue,
     force_clamp: bool,
-) -> Result<(ControlValue, Vec<WriteWarning>)> {
+) -> Result<ControlValue> {
     let value = requested
         .as_int()
         .ok_or_else(|| invalid_write(desc, "a scalar control takes an integer value".to_owned()))?;
@@ -362,9 +366,9 @@ fn scalar_write(
     // declares, which is what makes a caller that trusts `requested` wrong.
     let target = if force_clamp { desc.range.max } else { value };
 
-    let applied = ControlValue::Int(desc.range.align_down(desc.range.clamp_value(target)));
-    let warnings = WriteWarning::classify(desc, requested, &applied);
-    Ok((applied, warnings))
+    Ok(ControlValue::Int(
+        desc.range.align_down(desc.range.clamp_value(target)),
+    ))
 }
 
 fn text_write(desc: &ControlDesc, requested: &ControlValue) -> Result<ControlValue> {

@@ -297,6 +297,39 @@ pub(crate) fn control_scalar(bytes: &[u8], control_type: u32) -> Option<ControlV
     }
 }
 
+/// Which union arm a scalar write goes into, and the value narrowed to fit it.
+///
+/// [`ScalarArm`]'s whole reason for existing is that [`control_scalar`] chooses an arm by
+/// control type when *reading*, and a write that chose differently would put four bytes
+/// into a neighbouring field while the kernel reported success — a defect no read-back
+/// could detect, because the read would look in the arm the write did not fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScalarArm {
+    /// The 64-bit arm, for `V4L2_CTRL_TYPE_INTEGER64`.
+    Wide(i64),
+    /// The 32-bit arm, for everything else the kernel writes inline.
+    Narrow(i32),
+}
+
+/// The arm and value one scalar write occupies — [`control_scalar`]'s inverse.
+///
+/// The one encoder in a module named for decoding, and it lives here on purpose: the arm
+/// the reader looks in and the arm the writer fills are one decision, and two homes for it
+/// is two chances to disagree. It is pure and total, so Miri runs it alongside the
+/// decoders.
+///
+/// `None` means the value cannot be expressed: a request wider than the 32-bit field the
+/// control's type declares. Refused rather than truncated — an `as` cast would write a
+/// different number and the read-back would then report an adjustment the device never
+/// made.
+pub(crate) fn scalar_arm(control_type: u32, value: i64) -> Option<ScalarArm> {
+    if control_type == CTRL_TYPE_INTEGER64 {
+        Some(ScalarArm::Wide(value))
+    } else {
+        i32::try_from(value).ok().map(ScalarArm::Narrow)
+    }
+}
+
 /// A payload control's bytes, bounded before anything is allocated.
 ///
 /// `elem_size × elems` is device-supplied and therefore attacker-shaped (rubric B10).
@@ -691,6 +724,55 @@ mod tests {
             Some(ControlValue::Int(0xffff_ffff))
         );
         assert_eq!(control_scalar(&bytes[..4], 1), None);
+    }
+
+    #[test]
+    fn a_scalar_write_fills_exactly_the_arm_the_matching_read_looks_in() {
+        // The defect this rules out is silent in both directions: a write into the wrong
+        // union arm leaves four bytes in a neighbouring field, the kernel reports success,
+        // and the read-back looks in the arm nobody filled — so the value reads as
+        // whatever was there before and nothing anywhere says a write went astray. The
+        // round trip is asserted through the *pair* of functions rather than against a
+        // transcribed offset, because agreeing with each other is the property.
+        let mut bytes = vec![0u8; size_of::<v4l2_ext_control>()];
+        let union_at = offset_of!(v4l2_ext_control, __bindgen_anon_1);
+
+        for (control_type, value) in [
+            (1u32, 245i64),           // INTEGER, PF:4's out-of-range current
+            (1, -468_000),            // INTEGER, the OBSBOT's pan minimum
+            (1, i64::from(i32::MIN)), // the narrow arm's edge
+            (1, i64::from(i32::MAX)),
+            (2, 1), // BOOLEAN
+            (3, 3), // MENU
+            (CTRL_TYPE_INTEGER64, i64::MAX),
+            (CTRL_TYPE_INTEGER64, i64::MIN),
+        ] {
+            bytes.fill(0);
+            match scalar_arm(control_type, value).expect("representable") {
+                ScalarArm::Wide(wide) => fields::write_i64(&mut bytes, union_at, wide),
+                ScalarArm::Narrow(narrow) => fields::write_i32(&mut bytes, union_at, narrow),
+            }
+            .expect("fits");
+            assert_eq!(
+                control_scalar(&bytes, control_type),
+                Some(ControlValue::Int(value)),
+                "type {control_type} value {value} did not survive the round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_wider_than_a_32_bit_control_is_refused_rather_than_truncated() {
+        // Truncation is the dangerous answer: `i32::MAX + 1` would arrive as `i32::MIN`,
+        // the device would take it, and the read-back would report a plausible clamp the
+        // device never performed.
+        assert_eq!(scalar_arm(1, i64::from(i32::MAX) + 1), None);
+        assert_eq!(scalar_arm(1, i64::from(i32::MIN) - 1), None);
+        // The 64-bit arm has no such limit, which is the other half of the claim.
+        assert_eq!(
+            scalar_arm(CTRL_TYPE_INTEGER64, i64::MAX),
+            Some(ScalarArm::Wide(i64::MAX))
+        );
     }
 
     #[test]

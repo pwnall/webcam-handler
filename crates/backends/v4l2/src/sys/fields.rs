@@ -36,6 +36,20 @@ pub(crate) fn write_u32(bytes: &mut [u8], offset: usize, value: u32) -> Option<(
     write(bytes, offset, &value.to_ne_bytes())
 }
 
+/// Write an `i32` field at `offset`. `None` when the field does not fit.
+///
+/// Separate from [`write_u32`] rather than a cast at the call site: control values are
+/// signed (the OBSBOT's pan runs to −468000) and `clippy::as_conversions` is denied, so
+/// the two-byte-pattern question is answered once, here.
+pub(crate) fn write_i32(bytes: &mut [u8], offset: usize, value: i32) -> Option<()> {
+    write(bytes, offset, &value.to_ne_bytes())
+}
+
+/// Write an `i64` field at `offset`. `None` when the field does not fit.
+pub(crate) fn write_i64(bytes: &mut [u8], offset: usize, value: i64) -> Option<()> {
+    write(bytes, offset, &value.to_ne_bytes())
+}
+
 /// Write a `u64` field at `offset`. `None` when the field does not fit.
 ///
 /// Test-only: no request field the read path fills is 64 bits wide. It exists so the
@@ -107,6 +121,27 @@ mod tests {
         assert_eq!(read_u64(&bytes, 8), Some(u64::MAX));
         assert_eq!(read_i64(&bytes, 8), Some(-1));
         assert_eq!(read_u64(&bytes, 16), Some(0x1234_5678));
+    }
+
+    #[test]
+    fn a_signed_field_round_trips_at_both_extremes_of_its_width() {
+        // The OBSBOT's pan runs to −468000, so the sign is not decorative: a value
+        // written through the unsigned door and read back through the signed one has to
+        // be the number that went in.
+        let mut bytes = [0u8; 16];
+        for value in [0, -1, 1, i32::MIN, i32::MAX] {
+            write_i32(&mut bytes, 0, value).expect("fits");
+            assert_eq!(read_i32(&bytes, 0), Some(value));
+        }
+        for value in [0, -1, i64::MIN, i64::MAX, -468_000] {
+            write_i64(&mut bytes, 8, value).expect("fits");
+            assert_eq!(read_i64(&bytes, 8), Some(value));
+        }
+        // And neither writer runs off the end.
+        let mut narrow = [0u8; 4];
+        assert_eq!(write_i64(&mut narrow, 0, -1), None);
+        assert_eq!(write_i32(&mut narrow, 1, -1), None);
+        assert_eq!(narrow, [0u8; 4], "a refused write must not have written");
     }
 
     #[test]

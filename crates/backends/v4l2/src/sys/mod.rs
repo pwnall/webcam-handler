@@ -29,7 +29,7 @@
 //!
 //! ## The residual `unsafe`, counted
 //!
-//! Six blocks, one obligation each (`clippy::multiple_unsafe_ops_per_block` is denied, so
+//! Five blocks, one obligation each (`clippy::multiple_unsafe_ops_per_block` is denied, so
 //! that is enforced rather than claimed):
 //!
 //! | Where | Obligation |
@@ -38,10 +38,13 @@
 //! | [`payload::Payload::bytes_mut`] | the same, with the exclusive borrow the mutable slice needs |
 //! | `ioctl::call` | the pointer is valid and correctly sized for the request's declared width |
 //! | `ioctl::call_enumerating` | the same; only the *interpretation* of the error differs |
-//! | `ioctl::get_scalar` | the same, plus a one-entry control array the kernel dereferences |
-//! | `ioctl::get_payload` | the same, plus a payload buffer whose length was bounded before it became one |
+//! | `ioctl::call_ext_ctrls` | the same, plus the one-entry control array — and its payload pointer, when it has one — that the kernel dereferences |
 //!
-//! Miri reaches the first two and cannot cross the other four, which is why [`payload`] is
+//! P2's write path added two ioctls and *removed* a block: reads and writes of an
+//! `ext_ctrls` header carry the identical obligation, so `call_ext_ctrls` states it once
+//! for all four calls rather than each call stating it again in slightly different words.
+//!
+//! Miri reaches the first two and cannot cross the other three, which is why [`payload`] is
 //! its own module rather than a few lines here: `scripts/miri.sh` selects it by name.
 
 pub(crate) mod decode;

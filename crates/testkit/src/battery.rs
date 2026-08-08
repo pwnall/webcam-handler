@@ -1062,7 +1062,12 @@ const MOTORIZED_FRAGMENTS: &[&str] = &["pan", "tilt", "zoom", "focus", "roll"];
 
 /// Whether writing this control turns a motor, judged by name because that is all a
 /// backend-agnostic suite has.
-fn is_motorized(slug: &ControlSlug) -> bool {
+///
+/// Public because §5's motor rule is a law rather than this module's private taste, and
+/// the hardware rung has to obey the same one: a second list of fragments is a second
+/// answer to "may this test move the camera somebody is pointing at a person".
+#[must_use]
+pub fn is_motorized(slug: &ControlSlug) -> bool {
     let slug = slug.as_str();
     MOTORIZED_FRAGMENTS.iter().any(|f| slug.contains(f))
 }
@@ -1074,7 +1079,11 @@ fn is_motorized(slug: &ControlSlug) -> bool {
 /// question. A control sitting off its own step is excluded too: writing such a value
 /// back aligns it, so the arm would report a restore failure for a state the device put
 /// itself in \[PF:4\].
-fn is_perturbable(desc: &ControlDesc) -> bool {
+///
+/// Public for the same reason [`is_motorized`] is: the hardware rung perturbs controls
+/// too, and it must exclude exactly what this arm excludes.
+#[must_use]
+pub fn is_perturbable(desc: &ControlDesc) -> bool {
     desc.is_writable()
         && desc.control_type.is_scalar()
         && !desc.is_volatile()
@@ -1106,7 +1115,11 @@ fn is_clamp_probe_candidate(desc: &ControlDesc) -> bool {
 
 /// A value one step away from where the control is now — the smallest perturbation that
 /// is still a change (design §5 again: minimal travel).
-fn perturbation(desc: &ControlDesc) -> Option<ControlValue> {
+///
+/// `None` for a control whose vocabulary this suite cannot move by one: a bitmask's bits
+/// mean things it does not know, and guessing one is the "represent, don't invent" line.
+#[must_use]
+pub fn perturbation(desc: &ControlDesc) -> Option<ControlValue> {
     let current = desc.current.as_ref()?.as_int()?;
     match desc.control_type {
         ControlType::Boolean => Some(ControlValue::Int(i64::from(current == 0))),

@@ -4,11 +4,12 @@
 //! the kernel means ioctls and mmap. The token `unsafe` is confined to `src/sys/` by
 //! `scripts/gates/unsafe-scope.sh`, which derives the allowed path from the tree.
 //!
-//! ## What P1 lands, and what it does not
+//! ## What has landed, and what has not
 //!
-//! P1 is the **read path** (docs/2): enumeration, the control model, and the format tree.
-//! Writes, streaming and hotplug arrive at P2 and P4 with their own gates. The T2 trait
-//! is total, so the methods that have not landed return
+//! P1 landed the **read path** (docs/2): enumeration, the control model, and the format
+//! tree. P2 adds the **write path** — `set`, with the `S_EXT_CTRLS` write, the read-back
+//! D3 requires, and the `{requested, applied}` pair E4 keeps. Streaming and hotplug are
+//! still ahead. The T2 trait is total, so the methods that have not landed return
 //! [`schema::Error::Unimplemented`] naming themselves and the phase that lands them —
 //! *not* a device error, because the device was never asked, and not a panic, because
 //! plugging in a webcam must never be able to panic a library. See note N6, and
@@ -54,7 +55,10 @@ use camino::Utf8Path;
 use schema::backend::{BackendKind, Camera, CameraBackend, HotplugWatch};
 use schema::camera::{CameraId, CameraInfo, FormatInfo, FrameSizeInfo, PixelFormat};
 use schema::capture::{Frame, NegotiatedStream, StreamRequest};
-use schema::control::{Applied, ControlDesc, ControlId, ControlType, ControlValue, KnownFlag};
+use schema::control::{
+    Applied, ControlDesc, ControlId, ControlType, ControlValue, KnownFlag, Unverifiable,
+    WriteWarning,
+};
 use schema::error::{Error, Result};
 use schema::limits;
 use schema::report::{HintKind, ListHint};
@@ -64,6 +68,8 @@ use sys::{Fd, ioctl};
 
 /// The phase that lands the half of the T2 surface P1 does not.
 const WRITE_PATH_PHASE: &str = "P2";
+/// The ioctl a control write goes through, for error messages that name it.
+const SET_CTRL_OP: &str = "VIDIOC_S_EXT_CTRLS";
 /// The phase that lands hotplug (design §2.6: the uevent socket arrives with the daemon).
 const HOTPLUG_PHASE: &str = "P4";
 
@@ -330,6 +336,36 @@ fn unreadable_current(error: Error) -> Result<Option<ControlValue>> {
     }
 }
 
+/// What an `S_EXT_CTRLS` failure means for the control it was aimed at.
+///
+/// The write-side sibling of [`unreadable_current`], and deliberately **not** a reuse of
+/// it: the same errno means different things in the two directions. From a *read*,
+/// `EACCES` means "this control has no readable value" and the enumeration carries on;
+/// from a *write* the UAPI documents it as the answer for a read-only control, and the
+/// caller's next move is to stop asking rather than to try again. Flattening the write
+/// into the read's answer would report a refused write as a successful one with no value.
+///
+/// `EINVAL` keeps its message but gains the control's name: "invalid argument" about an
+/// unnamed ioctl is the least actionable sentence in the registry, and by here we know
+/// exactly which control and which value the device would not take.
+///
+/// Everything else — `EBUSY`, `ENODEV`, a device-level permission refusal — passes
+/// through untouched. Those are availability facts (E3) and none of them is a statement
+/// about the control.
+fn unwritable_control(desc: &ControlDesc, error: Error) -> Error {
+    match error {
+        Error::DeviceIo { errno, .. } if errno == Some(libc::EACCES) => Error::ControlReadOnly {
+            control: desc.slug.clone(),
+        },
+        Error::DeviceIo { errno, message, .. } if errno == Some(libc::EINVAL) => Error::DeviceIo {
+            operation: format!("{SET_CTRL_OP} ({})", desc.slug),
+            errno,
+            message,
+        },
+        other => other,
+    }
+}
+
 impl Camera for V4l2Camera {
     fn info(&self) -> &CameraInfo {
         &self.info
@@ -398,8 +434,71 @@ impl Camera for V4l2Camera {
             })
     }
 
-    fn set(&mut self, _id: ControlId, _value: ControlValue) -> Result<Applied> {
-        Err(unimplemented_here("Camera::set", WRITE_PATH_PHASE))
+    fn set(&mut self, id: ControlId, value: ControlValue) -> Result<Applied> {
+        // Freshly queried, and that is load-bearing three times over: the range the
+        // read-back is explained against, the flags that decide whether the write is
+        // allowed at all, and the INACTIVE bit an automation partner may have set since
+        // the caller last looked \[PF:3\].
+        let desc = self.describe(id)?;
+        if !desc.is_writable() {
+            // PF:12's `Privacy`, plus DISABLED controls and class headers. One "you may
+            // not write this" refusal in D13, and all three are the device stating a
+            // capability limit rather than a passing condition (E3).
+            return Err(Error::ControlReadOnly { control: desc.slug });
+        }
+
+        match &value {
+            ControlValue::Int(scalar) => {
+                ioctl::set_scalar(&self.fd, id.0, desc.control_type.to_raw(), *scalar)
+            }
+            ControlValue::Bytes(bytes) => ioctl::set_payload(&self.fd, id.0, bytes),
+            ControlValue::Text(_) => Err(Error::DeviceIo {
+                operation: format!("{SET_CTRL_OP} ({})", desc.slug),
+                errno: None,
+                // Not a gap this build is hiding: `V4L2_CTRL_TYPE_STRING` carries
+                // `HAS_PAYLOAD`, so the read path already answers for one in `Bytes`, and
+                // a write must speak the same shape. No attached device exposes one, so
+                // inventing an encoding here would be designing against nothing.
+                message: "this backend writes control values as integers or as opaque \
+                          payloads; a text value has no V4L2 spelling that a read of the \
+                          same control would produce"
+                    .to_owned(),
+            }),
+        }
+        .map_err(|error| unwritable_control(&desc, error))?;
+
+        // D3's read-back, and the backend's obligation rather than the engine's: only the
+        // thing holding the fd can say what the device took \[PF:6\].
+        //
+        // Two ways it can be unavailable, and they are different facts. A BUTTON or a
+        // WRITE_ONLY control is unreadable *by its descriptor*, which `classify` reads for
+        // itself; a device that enumerates a control and then declines to read it is a
+        // surprise the descriptor did not predict, and only the code that made the call
+        // knows it happened. Both land in the same warning, so neither can pass for an
+        // observation — `applied` equal to `requested` with no warning would be a claim
+        // nobody checked.
+        let (applied, declined) = match desc.unverifiable() {
+            Some(_) => (value.clone(), false),
+            None => match self.read_current(&desc)? {
+                Some(read) => (read, false),
+                None => (value.clone(), true),
+            },
+        };
+        let warnings = if declined {
+            vec![WriteWarning::Unverified {
+                because: Unverifiable::DeviceDeclinedToRead,
+            }]
+        } else {
+            WriteWarning::classify(&desc, &value, &applied)
+        };
+
+        Ok(Applied {
+            control: id,
+            slug: desc.slug.clone(),
+            warnings,
+            requested: value,
+            applied,
+        })
     }
 
     fn start_stream(&mut self, _request: &StreamRequest) -> Result<NegotiatedStream> {
@@ -471,7 +570,6 @@ fn unimplemented_here(operation: &str, arrives_in: &str) -> Error {
 #[must_use]
 pub fn unimplemented_surface() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
-        ("Camera::set", WRITE_PATH_PHASE),
         ("Camera::start_stream", WRITE_PATH_PHASE),
         ("Camera::next_frame", WRITE_PATH_PHASE),
         ("Camera::stop_stream", WRITE_PATH_PHASE),
@@ -483,13 +581,113 @@ pub fn unimplemented_surface() -> BTreeMap<&'static str, &'static str> {
 mod tests {
     use super::*;
 
+    /// A control descriptor for the pure error-mapping tests.
+    fn desc(slug: &str, flags: u32) -> ControlDesc {
+        use schema::control::{ControlFlags, ControlRange, ControlSlug};
+
+        ControlDesc {
+            id: ControlId(0x0098_0900),
+            name: slug.to_owned(),
+            slug: ControlSlug::parse(slug).expect("literal slug"),
+            control_type: ControlType::Integer,
+            range: ControlRange {
+                min: 0,
+                max: 100,
+                step: 1,
+            },
+            default: 0,
+            flags: ControlFlags::from_raw(flags),
+            menu: BTreeMap::new(),
+            elems: 1,
+            elem_size: 4,
+            dims: Vec::new(),
+            current: Some(ControlValue::Int(0)),
+        }
+    }
+
+    #[test]
+    fn an_eacces_from_a_write_is_a_read_only_control_and_not_a_permission_problem() {
+        // The same errno the *read* path reads as "no readable value". From a write the
+        // UAPI documents it as "read-only control", and the caller's next move differs:
+        // stop asking, rather than join the `video` group or try again.
+        let control = desc("privacy", 0);
+        let mapped = unwritable_control(
+            &control,
+            Error::DeviceIo {
+                operation: SET_CTRL_OP.to_owned(),
+                errno: Some(libc::EACCES),
+                message: "Permission denied".to_owned(),
+            },
+        );
+        assert_eq!(
+            mapped,
+            Error::ControlReadOnly {
+                control: control.slug.clone()
+            }
+        );
+        assert_ne!(
+            mapped.kind(),
+            schema::error::ErrorKind::PermissionDenied,
+            "a read-only control is not a permission problem with the device"
+        );
+    }
+
+    #[test]
+    fn an_einval_from_a_write_names_the_control_that_refused_the_value() {
+        // "Invalid argument" about an unnamed ioctl is the least actionable sentence in
+        // the registry, and by the time we are here we know exactly which control it was.
+        let control = desc("brightness", 0);
+        let mapped = unwritable_control(
+            &control,
+            Error::DeviceIo {
+                operation: SET_CTRL_OP.to_owned(),
+                errno: Some(libc::EINVAL),
+                message: "Invalid argument".to_owned(),
+            },
+        );
+        assert_eq!(mapped.kind(), schema::error::ErrorKind::DeviceIo);
+        assert!(mapped.to_string().contains("brightness"), "{mapped}");
+    }
+
+    #[test]
+    fn an_availability_failure_from_a_write_passes_through_untouched() {
+        // E3: `EBUSY`, `ENODEV` and a device-level permission refusal say nothing about
+        // the control, and a write path that rewrote them as `ControlReadOnly` would
+        // report an unplugged camera as a camera whose controls cannot be written.
+        let control = desc("brightness", 0);
+        for error in [
+            Error::Busy {
+                path: camino::Utf8PathBuf::from("/dev/video0"),
+                holders: Vec::new(),
+            },
+            Error::DeviceGone {
+                path: camino::Utf8PathBuf::from("/dev/video0"),
+            },
+            Error::PermissionDenied {
+                path: camino::Utf8PathBuf::from("/dev/video0"),
+                hint: "join the video group".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                unwritable_control(&control, error.clone()),
+                error,
+                "an availability fact must not become a capability answer"
+            );
+        }
+    }
+
     #[test]
     fn the_unfinished_half_of_the_trait_is_named_and_says_which_phase_lands_it() {
         // The pin. When P2 implements the write path it must delete four rows here, and
         // this test is what makes forgetting impossible.
         let surface = unimplemented_surface();
-        assert_eq!(surface.len(), 5);
-        assert_eq!(surface.get("Camera::set"), Some(&"P2"));
+        assert_eq!(surface.len(), 4);
+        assert_eq!(
+            surface.get("Camera::set"),
+            None,
+            "the write path landed at P2"
+        );
+        assert_eq!(surface.get("Camera::start_stream"), Some(&"P2"));
         assert_eq!(surface.get("CameraBackend::watch"), Some(&"P4"));
 
         // Every entry renders as the D13 refusal, blaming this build rather than the
