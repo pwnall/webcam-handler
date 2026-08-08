@@ -1,0 +1,54 @@
+//! Bounded everything (rubric A14).
+//!
+//! Every loop over device behavior has a deadline or a cap, and every cap lives here.
+//! A constant nobody reads is a defect (rubric A8), so this module grows with the code
+//! that consumes it rather than ahead of it.
+
+/// The persisted session document version (design D9). Bumped when the on-disk shape
+/// changes; a foreign version is [`crate::Error::SchemaVersionForeign`], never a
+/// best-effort parse.
+pub const SESSION_SCHEMA_VERSION: u32 = 1;
+
+/// The device-profile document version (design T3).
+pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+
+/// Frames to discard before a photo, by default.
+///
+/// Frames immediately after `STREAMON` are dark and miscolored until AE and AWB
+/// converge [PF:11]; ten was enough on both seed cameras [PF:9].
+pub const DEFAULT_SETTLE_SKIP_FRAMES: u32 = 10;
+
+/// How long a settle policy may wait before giving up with
+/// [`crate::Error::SettleTimeout`].
+pub const DEFAULT_SETTLE_DEADLINE_MS: u64 = 5_000;
+
+/// How long a single `DQBUF` may block before the deadline logic gets a turn.
+pub const FRAME_DEADLINE_MS: u64 = 2_000;
+
+/// Buffers to request from the driver for a capture stream.
+pub const DEFAULT_BUFFER_COUNT: u32 = 4;
+
+/// The most samples one sweep may take.
+///
+/// A sweep of a 468000-wide pan range at step 3600 would otherwise plan 260 photos and
+/// a great deal of motor travel.
+pub const MAX_SWEEP_SAMPLES: u32 = 256;
+
+/// The most samples a sweep that *moves motors* may take (design §5: motors wear).
+pub const MAX_MOTION_SWEEP_SAMPLES: u32 = 32;
+
+/// The largest control payload we will read back from a device.
+///
+/// `elem_size × elems` is device-supplied, and a lying driver is attacker-shaped input
+/// (rubric B10): the product is checked against this before anything is allocated.
+pub const MAX_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// The most menu indices `VIDIOC_QUERYMENU` is asked about for one control.
+///
+/// Menus are sparse and enumeration walks `min..=max` tolerating holes [PF:2]; a driver
+/// reporting a menu range of `0..=i64::MAX` must not become an infinite loop.
+pub const MAX_MENU_INDICES: u32 = 4_096;
+
+/// The most device nodes one camera group may contain before we stop believing the
+/// grouping. Real groups hold two [PF:7].
+pub const MAX_NODES_PER_CAMERA: usize = 16;

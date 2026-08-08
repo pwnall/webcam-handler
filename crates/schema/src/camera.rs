@@ -1,0 +1,689 @@
+//! Camera identity, device nodes, and the format tree (design D1).
+//!
+//! A *camera* is a group of device nodes sharing a USB interface, not a `/dev/videoN`
+//! path: one USB device can host several logical cameras, and node numbering says
+//! nothing about which nodes belong together [PF:7]. Capture nodes are told from
+//! metadata nodes by `device_caps`, never by "the lowest-numbered one".
+
+use std::collections::BTreeSet;
+use std::fmt;
+
+use camino::Utf8PathBuf;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::slug::{Separator, slugify};
+
+/// The name RPC calls and CLI arguments use: `cam:<card-slug>[-<n>]`.
+///
+/// Reproducible across runs while the attached topology is unchanged, and stable for one
+/// engine's lifetime even across replug. Never persisted as identity — that is
+/// [`CameraFingerprint`]'s job.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(transparent)]
+pub struct CameraId(String);
+
+/// The prefix every camera id carries, so an id is recognizable in isolation.
+pub const CAMERA_ID_PREFIX: &str = "cam:";
+
+impl CameraId {
+    /// Build an id from an already-derived slug body (no `cam:` prefix).
+    ///
+    /// Returns `None` for an empty body — a card name that slugs to nothing gets an
+    /// ordinal-only id from [`assign_ids`] instead of a nameless one.
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        if slug.is_empty() {
+            None
+        } else {
+            Some(CameraId(format!("{CAMERA_ID_PREFIX}{slug}")))
+        }
+    }
+
+    /// Parse a user-supplied id. The `cam:` prefix is optional on input and always
+    /// present on output.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        let body = s.strip_prefix(CAMERA_ID_PREFIX).unwrap_or(s);
+        Self::from_slug(body)
+    }
+
+    /// The full id, prefix included.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The id without its `cam:` prefix.
+    #[must_use]
+    pub fn body(&self) -> &str {
+        self.0.strip_prefix(CAMERA_ID_PREFIX).unwrap_or(&self.0)
+    }
+}
+
+impl fmt::Display for CameraId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Assign ids to cameras in enumeration order, resolving collisions by D1's rule.
+///
+/// A natural slug always wins its own name, and a collision ordinal increments until it
+/// collides with nothing — natural slugs included. The seed hardware is why the second
+/// clause exists: "OBSBOT Tiny 3" slugs to `obsbot-tiny-3`, which looks exactly like a
+/// collision form of `obsbot-tiny`, so a second "OBSBOT Tiny" must skip past it.
+#[must_use]
+pub fn assign_ids(cards: &[String]) -> Vec<CameraId> {
+    let naturals: Vec<String> = cards
+        .iter()
+        .map(|c| slugify(c, Separator::Hyphen))
+        .collect();
+    let reserved: BTreeSet<&str> = naturals
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(String::as_str)
+        .collect();
+
+    let mut taken: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::with_capacity(cards.len());
+    for (index, natural) in naturals.iter().enumerate() {
+        // A card name that slugs to nothing still needs a handle. `camera-<index>` is
+        // derived from something stable (enumeration position), and cannot collide with
+        // a natural slug that is by definition non-empty and differently shaped.
+        let base = if natural.is_empty() {
+            format!("camera-{index}")
+        } else {
+            natural.clone()
+        };
+
+        let chosen = if taken.contains(&base) {
+            let mut n = 2u32;
+            loop {
+                let candidate = format!("{base}-{n}");
+                if !taken.contains(&candidate) && !reserved.contains(candidate.as_str()) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        } else {
+            base
+        };
+        taken.insert(chosen.clone());
+        out.push(CameraId::from_slug(&chosen).expect("chosen slug is non-empty by construction"));
+    }
+    out
+}
+
+/// How a caller-supplied prefix resolved against the known ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrefixMatch {
+    /// Exactly one id starts with the prefix.
+    Unique(CameraId),
+    /// Nothing starts with it.
+    None,
+    /// Several do — the candidates, so the error can name them.
+    Ambiguous(Vec<CameraId>),
+}
+
+/// Resolve an unambiguous id prefix (`cam:obsbot` for `cam:obsbot-tiny-3`).
+///
+/// Derived slugs get long; agents should not have to type them in full. An exact match
+/// always wins, so a full id is never ambiguous against a longer one.
+#[must_use]
+pub fn resolve_prefix(ids: &[CameraId], input: &str) -> PrefixMatch {
+    let body = input.strip_prefix(CAMERA_ID_PREFIX).unwrap_or(input);
+    if let Some(exact) = ids.iter().find(|id| id.body() == body) {
+        return PrefixMatch::Unique(exact.clone());
+    }
+    let matches: Vec<CameraId> = ids
+        .iter()
+        .filter(|id| id.body().starts_with(body))
+        .cloned()
+        .collect();
+    match matches.len() {
+        0 => PrefixMatch::None,
+        1 => PrefixMatch::Unique(matches.into_iter().next().expect("length checked")),
+        _ => PrefixMatch::Ambiguous(matches),
+    }
+}
+
+/// A USB vendor:product pair.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct UsbId {
+    /// Vendor id.
+    pub vendor: u16,
+    /// Product id.
+    pub product: u16,
+}
+
+impl fmt::Display for UsbId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:04x}:{:04x}", self.vendor, self.product)
+    }
+}
+
+/// Best-effort identity across replug and reboot.
+///
+/// Serial numbers are in here but not trusted: the Chicony reports `"0001"` and the
+/// OBSBOT reports none at all [PF:8]. Matching is conservative — a mismatch on
+/// `calibrate apply` is a refusal naming the differing fields, not a warning.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct CameraFingerprint {
+    /// The USB interface path (`3-1:1.0`) or, for non-USB devices, the driver's bus info.
+    pub bus_path: String,
+    /// `VID:PID` when the device is on USB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usb_id: Option<UsbId>,
+    /// The `QUERYCAP` card name.
+    pub card: String,
+    /// The driver name.
+    pub driver: String,
+    /// The serial, only when the device reports a distinguishing one [PF:8].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+}
+
+impl CameraFingerprint {
+    /// A filesystem-safe slug for the session directory layout (design D9).
+    #[must_use]
+    pub fn slug(&self) -> String {
+        let card = slugify(&self.card, Separator::Hyphen);
+        let bus = slugify(&self.bus_path, Separator::Hyphen);
+        match (card.is_empty(), bus.is_empty()) {
+            (false, false) => format!("{card}-{bus}"),
+            (false, true) => card,
+            (true, false) => bus,
+            (true, true) => "unknown-camera".to_owned(),
+        }
+    }
+
+    /// The fields where `self` and `other` disagree, in a stable order.
+    ///
+    /// Empty means "these are the same camera as far as we can tell". A `None` serial on
+    /// either side is not a disagreement — it is an absence, and PF:8 says absence is
+    /// the common case.
+    #[must_use]
+    pub fn differing_fields(&self, other: &CameraFingerprint) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.bus_path != other.bus_path {
+            out.push("bus_path");
+        }
+        if self.usb_id != other.usb_id && self.usb_id.is_some() && other.usb_id.is_some() {
+            out.push("usb_id");
+        }
+        if self.card != other.card {
+            out.push("card");
+        }
+        if self.driver != other.driver {
+            out.push("driver");
+        }
+        match (&self.serial, &other.serial) {
+            (Some(a), Some(b)) if a != b => out.push("serial"),
+            _ => {}
+        }
+        out
+    }
+
+    /// Whether these fingerprints identify the same camera.
+    #[must_use]
+    pub fn matches(&self, other: &CameraFingerprint) -> bool {
+        self.differing_fields(other).is_empty()
+    }
+}
+
+/// What a device node is for, decided by `device_caps` [PF:7].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NodeKind {
+    /// `V4L2_CAP_VIDEO_CAPTURE` — frames come from here.
+    VideoCapture,
+    /// `V4L2_CAP_META_CAPTURE` — recorded, never streamed.
+    MetaCapture,
+    /// `V4L2_CAP_VIDEO_OUTPUT` — an output node on the same interface.
+    VideoOutput,
+    /// Something else. Represented, not discarded.
+    Other {
+        /// The `device_caps` word that produced this classification.
+        device_caps: u32,
+    },
+}
+
+/// `V4L2_CAP_VIDEO_CAPTURE`.
+pub const CAP_VIDEO_CAPTURE: u32 = 0x0000_0001;
+/// `V4L2_CAP_VIDEO_OUTPUT`.
+pub const CAP_VIDEO_OUTPUT: u32 = 0x0000_0002;
+/// `V4L2_CAP_META_CAPTURE`.
+pub const CAP_META_CAPTURE: u32 = 0x0080_0000;
+
+impl NodeKind {
+    /// Classify a node from its `device_caps`.
+    #[must_use]
+    pub const fn from_device_caps(device_caps: u32) -> Self {
+        if device_caps & CAP_VIDEO_CAPTURE != 0 {
+            NodeKind::VideoCapture
+        } else if device_caps & CAP_META_CAPTURE != 0 {
+            NodeKind::MetaCapture
+        } else if device_caps & CAP_VIDEO_OUTPUT != 0 {
+            NodeKind::VideoOutput
+        } else {
+            NodeKind::Other { device_caps }
+        }
+    }
+}
+
+/// One `/dev/videoN` node belonging to a camera.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceNode {
+    /// The device path.
+    #[schemars(with = "String")]
+    pub path: Utf8PathBuf,
+    /// What it is for.
+    pub kind: NodeKind,
+    /// The node's own `device_caps`.
+    pub device_caps: u32,
+    /// The whole-device `capabilities` word, kept because it differs from `device_caps`
+    /// on multi-node devices and the difference is the point.
+    pub capabilities: u32,
+}
+
+/// A camera: a group of nodes, an identity, and the driver's own description of itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CameraInfo {
+    /// The id callers use.
+    pub id: CameraId,
+    /// The identity that survives a replug.
+    pub fingerprint: CameraFingerprint,
+    /// The `QUERYCAP` card name, verbatim.
+    pub card: String,
+    /// The driver name.
+    pub driver: String,
+    /// The driver's bus info string.
+    pub bus_info: String,
+    /// Every node in the group, capture and metadata alike.
+    pub nodes: Vec<DeviceNode>,
+    /// Which backend produced this. Recorded so `--json` output is self-describing and
+    /// a fake-backend run can never be mistaken for a hardware one.
+    pub backend: crate::backend::BackendKind,
+}
+
+impl CameraInfo {
+    /// The node frames come from: the group member with `VIDEO_CAPTURE` capabilities.
+    ///
+    /// `None` for a group of metadata-only nodes, which is a real shape — the camera is
+    /// listed, and streaming it is a typed refusal rather than a surprise.
+    #[must_use]
+    pub fn capture_node(&self) -> Option<&DeviceNode> {
+        self.nodes.iter().find(|n| n.kind == NodeKind::VideoCapture)
+    }
+}
+
+/// A pixel format, as its FourCC.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(transparent)]
+pub struct PixelFormat(
+    /// The four characters, e.g. `MJPG`.
+    pub [u8; 4],
+);
+
+impl PixelFormat {
+    /// Motion JPEG — the format photos pass through verbatim (E6).
+    pub const MJPG: PixelFormat = PixelFormat(*b"MJPG");
+    /// Packed YUV 4:2:2.
+    pub const YUYV: PixelFormat = PixelFormat(*b"YUYV");
+    /// 8-bit greyscale — the Chicony IR camera's only format.
+    pub const GREY: PixelFormat = PixelFormat(*b"GREY");
+    /// Planar YUV 4:2:0 with interleaved chroma.
+    pub const NV12: PixelFormat = PixelFormat(*b"NV12");
+    /// JPEG, as distinct from MJPG in the kernel's vocabulary.
+    pub const JPEG: PixelFormat = PixelFormat(*b"JPEG");
+
+    /// Decode a `v4l2_fmtdesc::pixelformat` word (little-endian FourCC).
+    #[must_use]
+    pub const fn from_fourcc(raw: u32) -> Self {
+        PixelFormat(raw.to_le_bytes())
+    }
+
+    /// The kernel's word for this format.
+    #[must_use]
+    pub const fn to_fourcc(self) -> u32 {
+        u32::from_le_bytes(self.0)
+    }
+
+    /// Parse a four-character format name.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() == 4 {
+            Some(PixelFormat([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        } else {
+            None
+        }
+    }
+
+    /// Whether frames in this format are a compressed bitstream we pass through rather
+    /// than pixels we interpret.
+    #[must_use]
+    pub fn is_compressed(self) -> bool {
+        self == PixelFormat::MJPG || self == PixelFormat::JPEG
+    }
+}
+
+impl fmt::Display for PixelFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for &b in &self.0 {
+            // Formats are ASCII by kernel convention, but a driver is input: print the
+            // byte rather than assume it.
+            if b.is_ascii_graphic() {
+                write!(f, "{}", b as char)?;
+            } else {
+                write!(f, "\\x{b:02x}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A frame size the device offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FrameSize {
+    /// One exact size.
+    Discrete {
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+    },
+    /// A range with a step.
+    Stepwise {
+        /// Smallest width.
+        min_width: u32,
+        /// Largest width.
+        max_width: u32,
+        /// Width step.
+        step_width: u32,
+        /// Smallest height.
+        min_height: u32,
+        /// Largest height.
+        max_height: u32,
+        /// Height step.
+        step_height: u32,
+    },
+}
+
+impl FrameSize {
+    /// The largest size this entry offers, as `(width, height)`.
+    #[must_use]
+    pub const fn max_dimensions(&self) -> (u32, u32) {
+        match *self {
+            FrameSize::Discrete { width, height } => (width, height),
+            FrameSize::Stepwise {
+                max_width,
+                max_height,
+                ..
+            } => (max_width, max_height),
+        }
+    }
+}
+
+/// A frame interval (the reciprocal of a frame rate — the kernel's own convention).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FrameInterval {
+    /// One exact interval, as a fraction of a second.
+    Discrete {
+        /// Numerator.
+        numerator: u32,
+        /// Denominator.
+        denominator: u32,
+    },
+    /// A range with a step.
+    Stepwise {
+        /// Shortest interval numerator.
+        min_numerator: u32,
+        /// Shortest interval denominator.
+        min_denominator: u32,
+        /// Longest interval numerator.
+        max_numerator: u32,
+        /// Longest interval denominator.
+        max_denominator: u32,
+    },
+}
+
+impl FrameInterval {
+    /// Frames per second, for display. `None` when the interval is degenerate.
+    #[must_use]
+    pub fn fps(&self) -> Option<f64> {
+        match *self {
+            FrameInterval::Discrete {
+                numerator,
+                denominator,
+            } => {
+                if numerator == 0 {
+                    None
+                } else {
+                    Some(f64::from(denominator) / f64::from(numerator))
+                }
+            }
+            FrameInterval::Stepwise { .. } => None,
+        }
+    }
+}
+
+/// A frame size together with the intervals available *at that size*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FrameSizeInfo {
+    /// The size.
+    pub size: FrameSize,
+    /// The intervals offered at it.
+    pub intervals: Vec<FrameInterval>,
+}
+
+/// One pixel format and everything available in it.
+///
+/// Nesting is load-bearing: the OBSBOT offers MJPG up to 3840×2160 while YUYV stops at
+/// 640×480 on the same cable, so a flat size list would be a lie [PF:9].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FormatInfo {
+    /// The format.
+    pub pixel_format: PixelFormat,
+    /// The driver's description string.
+    pub description: String,
+    /// The `v4l2_fmtdesc` flags word.
+    pub flags: u32,
+    /// Sizes, each with its own intervals.
+    pub sizes: Vec<FrameSizeInfo>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cards(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn bodies(ids: &[CameraId]) -> Vec<&str> {
+        ids.iter().map(CameraId::body).collect()
+    }
+
+    #[test]
+    fn distinct_cards_get_their_natural_slugs() {
+        let ids = assign_ids(&cards(&[
+            "Integrated Camera: Integrated C",
+            "OBSBOT Tiny 3",
+        ]));
+        assert_eq!(
+            bodies(&ids),
+            vec!["integrated-camera-integrated-c", "obsbot-tiny-3"]
+        );
+    }
+
+    #[test]
+    fn collisions_take_ordinals_starting_at_two() {
+        let ids = assign_ids(&cards(&["Webcam", "Webcam", "Webcam"]));
+        assert_eq!(bodies(&ids), vec!["webcam", "webcam-2", "webcam-3"]);
+    }
+
+    #[test]
+    fn a_natural_slug_wins_its_own_name_even_when_a_collision_wants_it() {
+        // The seed-hardware ambiguity D1 closes by rule: `obsbot-tiny-3` is somebody's
+        // real name, so the second "OBSBOT Tiny" must skip over it.
+        let ids = assign_ids(&cards(&["OBSBOT Tiny", "OBSBOT Tiny", "OBSBOT Tiny 3"]));
+        assert_eq!(
+            bodies(&ids),
+            vec!["obsbot-tiny", "obsbot-tiny-2", "obsbot-tiny-3"]
+        );
+
+        // And with the natural-slug camera enumerated first, the ordinal must still skip
+        // past it rather than steal it.
+        let ids = assign_ids(&cards(&[
+            "OBSBOT Tiny 3",
+            "OBSBOT Tiny",
+            "OBSBOT Tiny",
+            "OBSBOT Tiny",
+        ]));
+        assert_eq!(
+            bodies(&ids),
+            vec![
+                "obsbot-tiny-3",
+                "obsbot-tiny",
+                "obsbot-tiny-2",
+                "obsbot-tiny-4"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nameless_card_still_gets_a_handle() {
+        let ids = assign_ids(&cards(&["???", "Webcam"]));
+        assert_eq!(bodies(&ids), vec!["camera-0", "webcam"]);
+    }
+
+    #[test]
+    fn prefixes_resolve_when_unambiguous_and_report_candidates_when_not() {
+        let ids = assign_ids(&cards(&[
+            "OBSBOT Tiny 3",
+            "Integrated Camera: Integrated C",
+        ]));
+        assert_eq!(
+            resolve_prefix(&ids, "cam:obsbot"),
+            PrefixMatch::Unique(ids[0].clone())
+        );
+        assert_eq!(
+            resolve_prefix(&ids, "obsbot"),
+            PrefixMatch::Unique(ids[0].clone())
+        );
+        assert_eq!(resolve_prefix(&ids, "cam:nope"), PrefixMatch::None);
+
+        let ids = assign_ids(&cards(&["Webcam", "Webcam"]));
+        match resolve_prefix(&ids, "cam:web") {
+            PrefixMatch::Ambiguous(c) => assert_eq!(c.len(), 2),
+            other => panic!("expected ambiguity, got {other:?}"),
+        }
+        // An exact match beats being a prefix of a longer id.
+        assert_eq!(
+            resolve_prefix(&ids, "cam:webcam"),
+            PrefixMatch::Unique(ids[0].clone())
+        );
+    }
+
+    #[test]
+    fn capture_and_metadata_nodes_are_told_apart_by_caps_not_numbering() {
+        // PF:7 — the Chicony RGB camera's nodes, in kernel order.
+        assert_eq!(
+            NodeKind::from_device_caps(CAP_VIDEO_CAPTURE),
+            NodeKind::VideoCapture
+        );
+        assert_eq!(
+            NodeKind::from_device_caps(CAP_META_CAPTURE),
+            NodeKind::MetaCapture
+        );
+        // An unrecognized node keeps its caps word rather than becoming "capture".
+        assert_eq!(
+            NodeKind::from_device_caps(0x0400_0000),
+            NodeKind::Other {
+                device_caps: 0x0400_0000
+            }
+        );
+    }
+
+    #[test]
+    fn fingerprint_mismatch_names_the_fields() {
+        let a = CameraFingerprint {
+            bus_path: "3-1:1.0".to_owned(),
+            usb_id: Some(UsbId {
+                vendor: 0x04f2,
+                product: 0xb83c,
+            }),
+            card: "OBSBOT Tiny 3".to_owned(),
+            driver: "uvcvideo".to_owned(),
+            serial: None,
+        };
+        let mut b = a.clone();
+        assert!(a.matches(&b));
+        b.card = "Something Else".to_owned();
+        b.bus_path = "3-4:1.0".to_owned();
+        assert_eq!(a.differing_fields(&b), vec!["bus_path", "card"]);
+    }
+
+    #[test]
+    fn an_absent_serial_is_not_a_mismatch() {
+        // PF:8: the OBSBOT reports no serial. If absence counted as disagreement,
+        // `calibrate apply` would refuse to run against the camera that recorded it.
+        let a = CameraFingerprint {
+            bus_path: "3-1:1.0".to_owned(),
+            usb_id: None,
+            card: "OBSBOT Tiny 3".to_owned(),
+            driver: "uvcvideo".to_owned(),
+            serial: None,
+        };
+        let mut b = a.clone();
+        b.serial = Some("0001".to_owned());
+        assert!(a.matches(&b));
+        // Two *different* declared serials do disagree.
+        let mut c = a.clone();
+        c.serial = Some("0002".to_owned());
+        assert_eq!(b.differing_fields(&c), vec!["serial"]);
+    }
+
+    #[test]
+    fn fourcc_round_trips_and_prints() {
+        for f in [
+            PixelFormat::MJPG,
+            PixelFormat::YUYV,
+            PixelFormat::GREY,
+            PixelFormat::NV12,
+        ] {
+            assert_eq!(PixelFormat::from_fourcc(f.to_fourcc()), f);
+        }
+        assert_eq!(PixelFormat::MJPG.to_string(), "MJPG");
+        assert_eq!(PixelFormat::parse("YUYV"), Some(PixelFormat::YUYV));
+        assert_eq!(PixelFormat::parse("YUY"), None);
+        // A driver emitting a non-ASCII fourcc prints rather than panics.
+        assert_eq!(PixelFormat([0, 1, b'A', b'B']).to_string(), "\\x00\\x01AB");
+    }
+
+    #[test]
+    fn frame_intervals_report_fps() {
+        let i = FrameInterval::Discrete {
+            numerator: 1,
+            denominator: 30,
+        };
+        assert_eq!(i.fps(), Some(30.0));
+        let degenerate = FrameInterval::Discrete {
+            numerator: 0,
+            denominator: 30,
+        };
+        assert_eq!(degenerate.fps(), None);
+    }
+}
