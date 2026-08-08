@@ -19,10 +19,6 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 camino.workspace = true
-clap.workspace = true
-clap_complete.workspace = true
-clap_mangen.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
-webcam-handler-cli-core.workspace = true
 webcam-handler-schema.workspace = true
