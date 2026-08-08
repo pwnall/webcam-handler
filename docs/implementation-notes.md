@@ -183,3 +183,47 @@ USB ids: Chicony `04f2:b83c` serial `"0001"`; OBSBOT `3564:ff02`, no serial — 
 
 **Retires when:** never, unless the kernel starts reporting per-interface `bus_info`. It
 becomes corpus at P1, where the three committed profiles pin these node tables.
+
+---
+
+## N6 — D13 gained a nineteenth variant, `Unimplemented`, and it is scheduled to die
+
+**Doc:** docs/1 D13 lists the error registry; note N4 already recorded four additions and
+argued each was *completion* of the registry's stated purpose rather than a new escape
+hatch. Design §2.3 states the T1/T2 traits as total: `Camera` has eight methods and every
+backend implements all eight.
+
+**Repo:** `webcam-handler-schema::error::Error` has nineteen variants. The new one is
+
+```rust
+Unimplemented { operation: String, arrives_in: String }
+```
+
+and at P1 it is returned by exactly five methods — `Camera::{set, start_stream,
+next_frame, stop_stream}` (which arrive at P2) and `CameraBackend::watch` (P4).
+
+**Why:** docs/2 splits one *total* trait across three phases. P1 lands the V4L2 read path;
+the write path is P2's and hotplug is P4's, each with its own gate. But the trait must be
+total to compile at P1, so the four-and-one methods that have not landed must return
+something, and every other candidate is a lie:
+
+| Candidate | Why it is worse |
+|---|---|
+| `panic!`/`todo!` | "plugging in a webcam cannot panic the library" is the whole reason this crate exists (PF:1). A panic is also banned on device-driven paths by the crate's lint set. |
+| `Error::DeviceIo` | blames the kernel for our release schedule. A bug report filed against `uvcvideo` is a real cost. |
+| `Error::FormatUnsupported` with an empty list | a **capability** answer. E3's entire subject is that "the camera can't" and "we didn't" must never be spelled the same way. |
+| Implementing the write path early | over-scoping; G2's criteria — clamp warnings, read-back, the guarded-set planner — are where writes are proven, and landing them unproven at P1 would put them past their gate rather than before it. |
+| Splitting the trait so P1 implements a narrower one | two backend contracts instead of one, which is what T1/T2 exists to prevent, and `wch` would need a backend-specific path — the exact "one home" violation §2.10 forbids. |
+
+**Why this is not the escape hatch N4 warned about:** it is typed, it carries the two
+things a caller acts on (which operation, which phase), and it says *this build* rather
+than *this device*. `schema`'s own test asserts the rendering names the build and the
+phase, and asserts the kind is distinct from `DeviceIo`.
+
+**What keeps it honest:** `webcam-handler-v4l2::unimplemented_surface()` is the one list
+of methods that answer it, and a test pins the list's size and contents. P2 cannot land
+its four without editing that test, and when the fifth goes at P4 the function has no
+rows left. The variant is therefore scheduled to become unconstructed.
+
+**Retires when:** P4 closes and no crate constructs it. At that point deleting the variant
+is a one-line change that the exhaustive `Error::kind` match will drive.

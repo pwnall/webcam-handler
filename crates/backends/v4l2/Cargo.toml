@@ -15,12 +15,11 @@ name = "v4l2"
 workspace = true
 
 [dependencies]
+camino.workspace = true
+libc.workspace = true
 # Default features ONLY: the `libv4l` feature links LGPL libv4l (design §2.8).
 v4l.workspace = true
+webcam-handler-schema.workspace = true
 
-# `v4l` is declared before the ioctl layer that uses it (P1), because it is the only
-# thing putting the crate in the graph for `feature-posture.sh` to check — that gate
-# exists to keep the LGPL `libv4l` feature off, and it cannot check a crate nobody
-# depends on. Drop the ignore when src/sys/ lands.
-[package.metadata.cargo-machete]
-ignored = ["v4l"]
+[dev-dependencies]
+tempfile.workspace = true

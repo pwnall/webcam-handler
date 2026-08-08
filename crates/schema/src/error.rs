@@ -73,6 +73,8 @@ closed_vocabulary! {
         DeviceIo,
         /// See [`Error::StorageIo`].
         StorageIo,
+        /// See [`Error::Unimplemented`].
+        Unimplemented,
     }
 }
 
@@ -240,6 +242,21 @@ pub enum Error {
         /// The system's description.
         message: String,
     },
+
+    /// The operation exists in the contract and this build does not perform it yet.
+    ///
+    /// Emphatically **not** a capability answer (E3): the device was never asked. A
+    /// half-built backend has to say something when a trait method it has not reached
+    /// is called, and every other choice is worse — a panic breaks the "plugging in a
+    /// webcam cannot panic the library" rule, and reusing [`Error::DeviceIo`] would
+    /// blame the kernel for our own schedule. See note N6.
+    #[error("{operation} is not implemented in this build; it lands at {arrives_in}")]
+    Unimplemented {
+        /// The trait method or verb that was called.
+        operation: String,
+        /// The phase that lands it, in docs/2's spelling (`P2`).
+        arrives_in: String,
+    },
 }
 
 impl Error {
@@ -268,6 +285,7 @@ impl Error {
             Error::HolderGone { .. } => ErrorKind::HolderGone,
             Error::DeviceIo { .. } => ErrorKind::DeviceIo,
             Error::StorageIo { .. } => ErrorKind::StorageIo,
+            Error::Unimplemented { .. } => ErrorKind::Unimplemented,
         }
     }
 
@@ -355,6 +373,10 @@ impl Error {
                 path: "/home/you/.local/state/webcam-handler".into(),
                 errno: Some(28),
                 message: "No space left on device".to_owned(),
+            },
+            ErrorKind::Unimplemented => Error::Unimplemented {
+                operation: "Camera::start_stream".to_owned(),
+                arrives_in: "P2".to_owned(),
             },
         }
     }
@@ -510,6 +532,30 @@ mod tests {
         };
         let rendered = err.to_string();
         assert!(rendered.contains("unknown process"), "{rendered}");
+    }
+
+    #[test]
+    fn an_unfinished_operation_blames_the_build_rather_than_the_device() {
+        // N6's whole reason for existing: a caller reading this must not conclude the
+        // camera cannot do it, and a bug report must not be filed against the kernel.
+        let Error::Unimplemented { .. } = Error::sample(ErrorKind::Unimplemented) else {
+            panic!("sample changed shape");
+        };
+        let rendered = Error::sample(ErrorKind::Unimplemented).to_string();
+        assert!(
+            rendered.contains("this build"),
+            "the rendering must name us, not the device: {rendered}"
+        );
+        assert!(
+            rendered.contains("P2"),
+            "the rendering must say when it arrives: {rendered}"
+        );
+        // And it is its own kind — no code path may fold it into a device or capability
+        // answer (E3).
+        assert_ne!(
+            Error::sample(ErrorKind::Unimplemented).kind(),
+            ErrorKind::DeviceIo
+        );
     }
 
     #[test]

@@ -52,3 +52,20 @@ pub const MAX_MENU_INDICES: u32 = 4_096;
 /// The most device nodes one camera group may contain before we stop believing the
 /// grouping. Real groups hold two \[PF:7\].
 pub const MAX_NODES_PER_CAMERA: usize = 16;
+
+/// The most controls one device may enumerate.
+///
+/// `QUERY_EXT_CTRL` with `NEXT_CTRL` walks in strictly increasing id order and ends with
+/// `EINVAL`, so a well-behaved driver terminates on its own. A driver that never says
+/// `EINVAL` would otherwise walk the whole 32-bit id space; the seed cameras expose 18
+/// and 24.
+pub const MAX_CONTROLS_PER_DEVICE: u32 = 1_024;
+
+/// The most pixel formats one capture node may enumerate. The seed cameras offer two.
+pub const MAX_FORMATS_PER_NODE: u32 = 128;
+
+/// The most frame sizes one pixel format may enumerate. The Chicony's MJPG offers nine.
+pub const MAX_FRAME_SIZES_PER_FORMAT: u32 = 256;
+
+/// The most frame intervals one size may enumerate. The OBSBOT's 1080p offers ten.
+pub const MAX_FRAME_INTERVALS_PER_SIZE: u32 = 256;

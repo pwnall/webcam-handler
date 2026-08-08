@@ -1643,7 +1643,11 @@ dependencies = [
 name = "webcam-handler-v4l2"
 version = "0.1.0"
 dependencies = [
+ "camino",
+ "libc",
+ "tempfile",
  "v4l",
+ "webcam-handler-schema",
 ]
 
 [[package]]
