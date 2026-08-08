@@ -414,6 +414,59 @@ history.
 
 ---
 
+## E2 — The R2 rung's first execution, 2026-08-08
+
+Entry E1 recorded that the four `vivid_*` tests had never run, and said plainly that "the
+rung reports a counted skip" and "the rung works" are different claims. The privileged
+helper (note N8) closed that gap. This is the second claim.
+
+`just rung-vivid`, with `vivid` loaded at `n_devs=1`:
+
+```
+    Starting 4 tests across 21 binaries (395 tests skipped)
+        PASS vivid_enumeration_groups_nodes_and_classifies_them_by_capability
+        PASS vivid_controls_enumerate_and_hold_the_control_model_invariants
+        PASS vivid_reads_every_readable_controls_current_value
+        PASS vivid_formats_enumerate_with_sizes_and_intervals_nested_under_them
+     Summary  4 tests run: 4 passed, 0 skipped
+```
+
+**All four passed on first execution**, against a driver the code had never met.
+
+**What R2 covers that R3 cannot.** The virtual driver is a far larger control-model surface
+than the seed hardware:
+
+| | Chicony RGB | OBSBOT | vivid |
+|---|---|---|---|
+| controls | 18 | 24 | **77** |
+| formats | 2 | 2 | **83** |
+| size entries | 13 | 7 | **747** |
+| compound payloads read | 1 | 0 | **10** |
+
+The last row is the one that matters most: the `G_EXT_CTRLS` payload path — a caller-sized
+buffer whose length comes from device-supplied `elem_size × elems` (rubric B10) — was
+exercised by exactly one control on the real hardware and by ten here. §3.3 item 4 says a
+green R2 proves the ioctl plumbing and not device quirks; that remains true, and the
+plumbing it proves is materially wider than it was.
+
+**It also found a defect, in a test rather than in the product.**
+`hw_a_node_that_implements_no_control_ioctl_answers_empty_rather_than_erroring` asserted
+that a node without `VIDEO_CAPTURE` reports no controls. That is false, and vivid is the
+counter-example: its **video output** nodes are not capture nodes and carry 77 controls
+each. "Not a capture node" and "implements no control ioctl" are different claims, and only
+the second is PF:15. The test now asserts the property the finding actually names — that
+`controls()` and `formats()` never *fail* on any node — with non-vacuity on both halves (at
+least one non-capture node, at least one node answering nothing). It is still red when the
+ENOTTY fix is reverted, and now green with vivid loaded as well as without.
+
+That is the R2 rung earning its place on its first run: the bug was in a hardware test that
+had passed four times against hardware that could not contradict it.
+
+**Also established:** `just smoke-hw` passes with vivid loaded (10 nodes rather than 6),
+so the R3 suite does not depend on the machine having only its real cameras attached.
+
+---
+
 ## PF:15 — `ENOTTY` is how a node says "I do not implement that ioctl", and it terminates enumeration
 
 **Measured** 2026-08-08 on kernel 7.0.0-29-generic against the docs/1 §1.2 seed hardware.
@@ -539,6 +592,8 @@ by the adversarial review that followed, and the narrowing belongs next to the e
   `ENOTTY`, not `EINVAL` (PF:15), and no test reached a node the public surface never
   opens. The regression test that closes it is red on this machine when the fix is
   reverted; that is what the original four could not have told us.
+- **The R2 skip above is retired.** See entry E2: `vivid` has been loaded and the suite
+  has run.
 
 ### Not established by any of the above
 

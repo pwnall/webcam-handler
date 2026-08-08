@@ -104,7 +104,7 @@ this table is the commissioning record).
 | Gate | Phase | Enforced by | Catches |
 |---|---|---|---|
 | ~~**Profile capture/replay inverse**~~ | P1 | **landed**: `crates/backends/fake/tests/corpus_replay.rs` replays every committed profile through the battery and asserts the fake rewrites only the id and the backend field; `hw_profile_capture_reproduces_the_committed_invariant_section` closes the capture half on hardware | `profile capture` and fake replay drifting apart — the corpus quietly ceasing to resemble devices (E5) |
-| ~~**vivid rung skip accounting**~~ | P1 | **landed**: four `vivid_*` tests, declared by `scripts/rung-vivid.sh`'s `wch-suite` marker and checked by `ignored-suites-have-recipes.sh`. **The suite itself has never been executed** — see the E1 evidence entry in the implementation notes | the virtual-driver rung decaying into green-by-absence on every runner |
+| ~~**vivid rung skip accounting**~~ | P1 | **landed and executed**: four `vivid_*` tests, declared by `scripts/rung-vivid.sh`'s `wch-suite` marker and checked by `ignored-suites-have-recipes.sh`; all four green on their first run (evidence E2). The rung scripts additionally count the skips *tests* report at run time, so a hardware test that declines a claim is named rather than passing quietly | the virtual-driver rung decaying into green-by-absence on every runner |
 | ~~**Miri over the sys-decode units**~~ | P1 | **landed**: `scripts/miri.sh` selects `sys::decode`, 19 units green over the captured ioctl replies in `crates/backends/v4l2/fixtures/`. The decoders take `&[u8]` at `offset_of!`-derived offsets precisely so the population is real | undefined behavior in the one crate allowed to have any |
 | ~~**PF regression fixtures loaded**~~ | P1 | **landed**: `scripts/gates/corpus-floor.sh` (three claims: non-empty, every profile reachable, at least one test *replays* rather than merely parses). `corpus_replay.rs` additionally asserts each device-behavior PF finding is exhibited by a committed profile, and names the ones deliberately absent | dead corpus — a profile nobody replays |
 | **`--json` validates against the bundle** | P1 (uncommissioned) | `scripts/gates/json-validates.sh`: runs the built `wch` over the fake backend and checks each read verb's answer against `#/$defs/<type>` in the committed bundle | a renderer that wraps the answer in an envelope, adds a field, or hand-builds an object — `schema-artifacts-current.sh` proves the bundle matches the *types*, and nothing proved the *output* matched either |
@@ -143,11 +143,12 @@ this table is the commissioning record).
   The gate-g1/g2 recipes assert the *recipes select tests*; the runs themselves land in
   the implementation notes with transcripts. This is the plan's largest honest hole and
   it is structural (design §3.3 item 1). The P1 run is recorded as entry E1 there.
-- **The R2 vivid suite is written and unrun** (as of P1). The module is installed on the
-  development machine and not loaded, and `rung-vivid.sh` declines to load kernel modules
-  on anyone's behalf — including on the behalf of whoever is writing the tests. "The rung
-  reports a counted skip" is established; "the rung works" is not, and the two are
-  different claims.
+- ~~**The R2 vivid suite is written and unrun**~~ — **retired 2026-08-08**. The privileged
+  helper (note N8) loads the module, and all four `vivid_*` tests passed on their first
+  execution; evidence entry E2 records the transcript and what the rung covers that the
+  seed hardware cannot (77 controls against 18/24, and ten compound payload reads against
+  one). The rung's own honest limit stands unchanged: it proves ioctl plumbing, not device
+  quirks (design §3.3 item 4).
 - **`json-validates.sh` is not a JSON Schema validator.** The offline toolchain has none,
   so it enforces the checkable core: every `required` property present, and no property
   the schema does not declare. Types, formats, nested shapes and array element schemas are

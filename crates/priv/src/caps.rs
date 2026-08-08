@@ -132,13 +132,19 @@ fn missing(held: &BTreeSet<String>) -> Vec<&'static str> {
         .collect()
 }
 
-/// Raise every required capability into the ambient set, so `exec` carries them.
+/// Raise every required capability into the ambient set, so a child process carries them.
+///
+/// **Every privileged verb needs this, not just `exec`.** Nothing in this crate loads a
+/// module itself: `vivid up` and `uvcvideo cycle` spawn `/usr/sbin/modprobe`, and a
+/// subprocess is an `exec` like any other — `pP' = (X & fP) | (X & pI & fI) | pA`, and
+/// with no file capabilities on `modprobe` the first two terms are empty. The child gets
+/// the ambient set or it gets nothing. Calling this only from `exec` left every module
+/// verb failing with `EPERM` while `getcap` and `doctor` both looked correct.
 ///
 /// # Errors
 ///
-/// [`Error::NotBlessed`] when the binary was not blessed, or was blessed `+ep` instead of
-/// `+eip` — the second case is the one worth distinguishing, because the helper *works*
-/// for its own verbs and silently grants nothing to children.
+/// [`Error::NotBlessed`] when the binary carries no capabilities, [`Error::NoAmbientSet`]
+/// on a kernel too old to have one.
 pub(crate) fn raise_ambient() -> Result<(), Error> {
     let held = Held::read()?;
     if !held.can_act() {
@@ -166,23 +172,6 @@ pub(crate) fn raise_ambient() -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-/// Insist this process can do the work itself, with an error that says how to fix it.
-///
-/// # Errors
-///
-/// [`Error::NotBlessed`] with the full held/missing breakdown.
-pub(crate) fn require_effective() -> Result<(), Error> {
-    let held = Held::read()?;
-    if held.can_act() {
-        Ok(())
-    } else {
-        Err(Error::NotBlessed {
-            what: "not blessed".to_owned(),
-            held: Box::new(held),
-        })
-    }
 }
 
 /// What can go wrong before any privileged work is attempted.
@@ -315,12 +304,16 @@ mod tests {
     fn an_unblessed_process_reports_what_is_missing_and_how_to_fix_it() {
         // The ordinary case for a fresh checkout, and for `cargo test` itself: the test
         // binary is not blessed, so this is the branch a developer meets first.
+        //
+        // Against `raise_ambient`, because that is now what *every* privileged verb calls
+        // — the weaker `require_effective` check was what let the module verbs ship
+        // believing a subprocess would inherit something it cannot.
         let held = Held::read().expect("capget works on Linux");
         if held.can_act() {
             // Only reachable if someone blessed the *test* binary, which nothing does.
             return;
         }
-        let error = require_effective().expect_err("an unblessed process cannot act");
+        let error = raise_ambient().expect_err("an unblessed process cannot delegate");
         let rendered = error.to_string();
         assert!(rendered.contains("just bless"), "{rendered}");
         assert!(rendered.contains("sudo"), "{rendered}");

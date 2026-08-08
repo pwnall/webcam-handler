@@ -185,24 +185,34 @@ fn doctor(setcap_argument: bool) -> Result<(), String> {
         )
     );
     println!();
-    println!("  can act on modules:        {}", yes_no(held.can_act()));
 
-    // Delegation is *performed*, not predicted. The last version of this reported a
-    // static guess and got it wrong in the one direction that matters — it said "no"
-    // while the file looked perfect in `getcap`, and it would just as happily have said
-    // "yes" for a mechanism that did not work. Raising into the ambient set here costs
-    // nothing (the process exits immediately) and is the same call `exec` makes, so a
-    // green line means the chain has actually run.
-    if held.can_act() {
+    // Delegation is *performed*, not predicted, and it is the only question worth asking:
+    // nothing here acts on a module itself, so "can act" was a line about a capability we
+    // never spend. `modprobe` is a subprocess, and a subprocess receives the ambient set
+    // or nothing.
+    //
+    // Raising here costs nothing (the process exits straight after) and is the same call
+    // every privileged verb makes, so a green line means the chain has actually run.
+    if !held.can_act() {
+        println!("  can delegate to a child:   no (not blessed)");
+    } else {
         match caps::raise_ambient() {
-            Ok(()) => println!("  can delegate to a child:   yes (ambient raise verified)"),
+            Ok(()) => {
+                let after = caps::Held::read().map_err(|error| error.to_string())?;
+                println!("  can delegate to a child:   yes (ambient raise verified)");
+                println!(
+                    "  ambient after raise:       {}",
+                    after.ambient.as_ref().map_or_else(
+                        || "(none)".to_owned(),
+                        |set| render_set(&set.iter().map(String::as_str).collect::<Vec<_>>()),
+                    )
+                );
+            }
             Err(error) => {
                 println!("  can delegate to a child:   NO — {error}");
                 return Ok(());
             }
         }
-    } else {
-        println!("  can delegate to a child:   no (not blessed)");
     }
 
     if !held.can_act() {
@@ -223,10 +233,6 @@ fn render_set(items: &[&str]) -> String {
     } else {
         items.join(", ")
     }
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
 }
 
 /// `exec` — raise the capabilities into the ambient set, then become the target.
@@ -250,7 +256,7 @@ fn exec(argv: &[String]) -> Result<(), String> {
 fn vivid(verb: &VividVerb) -> Result<(), String> {
     match verb {
         VividVerb::Up { devices } => {
-            caps::require_effective().map_err(|error| error.to_string())?;
+            caps::raise_ambient().map_err(|error| error.to_string())?;
             let created = modules::load_vivid(*devices).map_err(|error| error.to_string())?;
             println!(
                 "vivid: loaded ({devices} instance(s)); {} node(s) appeared: {}",
@@ -260,7 +266,7 @@ fn vivid(verb: &VividVerb) -> Result<(), String> {
             Ok(())
         }
         VividVerb::Down => {
-            caps::require_effective().map_err(|error| error.to_string())?;
+            caps::raise_ambient().map_err(|error| error.to_string())?;
             let removed = modules::unload_vivid().map_err(|error| error.to_string())?;
             println!(
                 "vivid: unloaded; {} node(s) went away: {}",
@@ -299,7 +305,7 @@ fn vivid(verb: &VividVerb) -> Result<(), String> {
 fn uvcvideo(verb: &UvcVerb) -> Result<(), String> {
     match verb {
         UvcVerb::Cycle { force } => {
-            caps::require_effective().map_err(|error| error.to_string())?;
+            caps::raise_ambient().map_err(|error| error.to_string())?;
             let cycled = modules::cycle_uvcvideo(*force).map_err(|error| error.to_string())?;
 
             println!(
@@ -464,7 +470,14 @@ mod tests {
         if caps::Held::read().is_ok_and(|h| h.can_act()) {
             return;
         }
+        // Every privileged verb, not just `exec`: they all delegate to a subprocess, so
+        // they all need the same thing, and the one that checked a weaker precondition
+        // was the one that failed against a real kernel.
         let error = vivid(&VividVerb::Up { devices: 1 }).expect_err("unblessed cannot load");
+        assert!(error.contains("just bless"), "{error}");
+        let error = vivid(&VividVerb::Down).expect_err("unblessed cannot unload");
+        assert!(error.contains("just bless"), "{error}");
+        let error = uvcvideo(&UvcVerb::Cycle { force: true }).expect_err("unblessed cannot cycle");
         assert!(error.contains("just bless"), "{error}");
         let error = exec(&["/bin/true".to_owned()]).expect_err("unblessed cannot delegate");
         assert!(error.contains("just bless"), "{error}");

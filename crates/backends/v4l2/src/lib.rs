@@ -562,19 +562,23 @@ mod tests {
 
     #[test]
     #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
-    fn hw_a_node_that_implements_no_control_ioctl_answers_empty_rather_than_erroring() {
-        // PF:15, at a level the public surface cannot reach. Every metadata node on the
-        // seed hardware answers ENOTTY to QUERY_EXT_CTRL — "this node does not implement
-        // that ioctl" — which is a terminator, not a failure. A build accepting only
-        // EINVAL reports a metadata-only camera's control set as a device error.
+    fn hw_every_node_answers_the_control_and_format_ioctls_without_erroring() {
+        // PF:15, at a level the public surface cannot reach: `open` picks a capture node,
+        // and the bug only appears on a node that implements no control ioctl at all.
         //
-        // This lives in the crate rather than in `tests/` because `V4l2Camera` is private
-        // and the bug is only reachable through a node `open` would never pick on
-        // hardware that also has a capture node.
+        // The property is **`controls()` and `formats()` never fail**, on any node. An
+        // earlier version asserted the stronger "a non-capture node reports no controls",
+        // which is false and was caught the first time `vivid` was loaded: vivid's *video
+        // output* nodes are not capture nodes and have 77 controls apiece. "Not a capture
+        // node" and "implements no control ioctl" are different claims, and only the
+        // second one is PF:15.
         let Ok(nodes) = sysfs::nodes() else {
             return;
         };
-        let mut metadata_nodes = 0usize;
+        let mut examined = 0usize;
+        let mut non_capture = 0usize;
+        let mut control_less = 0usize;
+
         for node in &nodes {
             let Ok(fd) = Fd::open(&node.dev_path) else {
                 continue;
@@ -582,10 +586,11 @@ mod tests {
             let Ok(cap) = ioctl::querycap(&fd) else {
                 continue;
             };
-            if cap.device_caps & schema::camera::CAP_VIDEO_CAPTURE != 0 {
-                continue;
+            let is_capture = cap.device_caps & schema::camera::CAP_VIDEO_CAPTURE != 0;
+            if !is_capture {
+                non_capture += 1;
             }
-            metadata_nodes += 1;
+            examined += 1;
 
             let camera = V4l2Camera {
                 info: CameraInfo {
@@ -608,31 +613,41 @@ mod tests {
 
             let controls = camera.controls().unwrap_or_else(|error| {
                 panic!(
-                    "{}: controls() failed with {error}; ENOTTY from a node that does not \
-                     implement the control ioctls is a terminator, not a failure [PF:15]",
+                    "{}: controls() failed with {error}; a node that does not implement \
+                     the control ioctls answers ENOTTY, which terminates the walk rather \
+                     than failing it [PF:15]",
                     node.dev_path
                 )
             });
-            assert!(
-                controls.is_empty(),
-                "{}: a node with no control ioctl reported {} control(s)",
-                node.dev_path,
-                controls.len()
-            );
-            assert!(
-                camera
-                    .formats()
-                    .expect("formats() must not fail either")
-                    .is_empty(),
-                "{}: a node with no capture capability reported formats",
-                node.dev_path
-            );
+            if controls.is_empty() {
+                control_less += 1;
+            }
+            camera.formats().unwrap_or_else(|error| {
+                panic!(
+                    "{}: formats() failed with {error}; same terminator, same rule [PF:15]",
+                    node.dev_path
+                )
+            });
         }
+
+        assert!(examined > 0, "no node on this host could be opened");
         assert!(
-            metadata_nodes > 0,
-            "this host exposes no non-capture node, so PF:15 was not exercised"
+            non_capture > 0,
+            "every node on this host is a capture node, so the PF:15 path — a node `open` \
+             would never pick — was not exercised"
         );
-        println!("{metadata_nodes} non-capture node(s) answered empty rather than erroring");
+        // Non-vacuity for the finding itself: at least one node must answer *nothing*,
+        // which on this hardware is the ENOTTY terminator rather than a device that
+        // genuinely has no controls.
+        assert!(
+            control_less > 0,
+            "no node reported an empty control set, so the ENOTTY terminator was never \
+             reached"
+        );
+        println!(
+            "{examined} node(s) answered both ioctls; {non_capture} non-capture, \
+             {control_less} with no controls"
+        );
     }
 
     #[test]
