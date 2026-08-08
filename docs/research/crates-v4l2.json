@@ -1,0 +1,130 @@
+{
+ "area": "Rust crates for direct (ioctl-level) V4L2 device access on Linux: device/capability enumeration, format/frame-size/frame-interval enumeration, full control enumeration (extended controls, menus, camera-class PTZ), mmap streaming capture, frame-rate setting, V4L2 events, hotplug monitoring, async story",
+ "crates": [
+  {
+   "name": "v4l",
+   "version": "0.14.0 (released 2023-05-12; crate created 2020-04-30)",
+   "license": "MIT (crates.io + repo LICENSE agree). Default feature 'v4l2' -> v4l2-sys-mit (MIT, pure ioctl). CAUTION: optional feature 'libv4l' -> v4l-sys, which links the libv4l C library (LGPL-2.1+) \u2014 must never be enabled given our license constraint; the default is safe.",
+   "repository": "https://github.com/raymanfx/libv4l-rs",
+   "downloads": "7.07M all-time, 1.44M recent (90d) \u2014 by far the most-used V4L2 crate; it is also nokhwa's Linux backend",
+   "maintenance": "Semi-dormant but not dead: last release May 2023, last commit Oct 2024 (unreleased fixes on master), 188 stars, 28 open issues incl. '#104 new release' open since Jul 2024. Single maintainer (raymanfx) = bus factor 1. Huge installed base via nokhwa keeps it de-facto stable.",
+   "native_deps": "None at runtime with default features (direct ioctls via libc). Build-time: v4l2-sys-mit runs bindgen against system <linux/videodev2.h>, so building requires libclang + kernel UAPI headers (standard on Linux dev boxes). With non-default 'libv4l' feature it links libv4l (LGPL) \u2014 forbidden for us.",
+   "fit": "Best overall fit, verified against source (cloned repo): (1) enumeration: v4l::context::enum_devices() lists /dev/video*; Device::query_caps() returns Capabilities whose flags come from querycap's device_caps field (from_bits_retain, includes VIDEO_CAPTURE and META_CAPTURE bits) \u2014 exactly what's needed to distinguish capture nodes from UVC metadata nodes. (2) Capture trait: enum_formats (ENUM_FMT), enum_framesizes (incl. stepwise), enum_frameintervals, format/set_format, params/set_params (VIDIOC_G_PARM/S_PARM for frame rate). (3) Controls: query_controls() uses VIDIOC_QUERY_EXT_CTRL + VIDIOC_QUERYMENU; Description includes type (Menu, IntegerMenu, Boolean, Integer64, Button, U8/U16/U32...), min/max/step/default, flags (INACTIVE/READ_ONLY/VOLATILE/etc.), and items: Option<Vec<(u32, MenuItem)>> with menu item names \u2014 full menu enumeration. get/set via VIDIOC_G_EXT_CTRLS/S_EXT_CTRLS with typed Value enum incl. compound payloads. Camera-class CIDs (PAN/TILT/ZOOM/FOCUS/EXPOSURE_ABSOLUTE, *_AUTO pairs) are all reachable since raw CIDs from the generated bindings are used; auto/manual pairing is our layer's job (flags INACTIVE tells you when manual is gated by auto). (4) Streaming: mmap and userptr Stream types (REQBUFS/QBUF/DQBUF/STREAMON) \u2014 fine for photo capture with settle/skip-frames and for video. (5) Events: NOT supported \u2014 no VIDIOC_SUBSCRIBE_EVENT/DQEVENT anywhere in src (verified by grep). Mitigation is cheap: Device implements AsRawFd, and v4l2-sys-mit's wrapper.h includes all of videodev2.h, so v4l2_event/v4l2_event_subscription structs are already in the bindings; two small nix::ioctl wrappers in our backend crate add control-change events. (6) Pure ioctl by default. (7) No async; blocking DQBUF + AsRawFd means tokio::io::unix::AsyncFd integration is straightforward for the daemon.",
+   "caveats": "Edition 2018, no declared MSRV (older rustc fine; a Rust-2024 workspace can freely depend on it). No MPLANE capture support (issues #121/#105) \u2014 irrelevant for UVC webcams. Capabilities struct exposes only device_caps, not the union capabilities field (fine for our purpose, but the naming is confusing). Slow release cadence means we may want to pin and vendor patches if a fix on master is needed. Never enable the 'libv4l' feature (LGPL link)."
+  },
+  {
+   "name": "v4l2r",
+   "version": "0.0.8 (released 2026-07-30; crate created 2024-03; project started ~2020)",
+   "license": "MIT \u2014 crates.io shows 'non-standard' only because the package uses license-file instead of an SPDX expression; I fetched the repo LICENSE and it is verbatim MIT text; GitHub also detects MIT.",
+   "repository": "https://github.com/Gnurou/v4l2r",
+   "downloads": "164K all-time, 40K recent",
+   "maintenance": "Actively maintained: last release and last push 2026-07-30, 47 stars, 17 open issues. Author Alexandre Courbot (Gnurou) does ChromeOS/Linux V4L2 codec work; repo carries Android.bp / cargo_embargo.json, i.e. it is integrated into AOSP \u2014 a strong longevity signal despite the small star count. Bus factor ~1.",
+   "native_deps": "None at runtime (pure ioctl via nix). Build-time: bindgen 0.72 runs against system /usr/include/linux/videodev2.h (overridable via V4L2R_VIDEODEV2_H_PATH env var) \u2014 requires libclang + kernel UAPI headers.",
+   "fit": "The most complete ioctl coverage of any crate, verified in-tree: querycap, enum_fmt, framesizes, frameintervals, queryctrl (both VIDIOC_QUERYCTRL and VIDIOC_QUERY_EXT_CTRL), querymenu (in g_ext_ctrls.rs), g_ext_ctrls/s_ext_ctrls with SafeExtControl typed wrapper, g_parm/s_parm (frame rate), g_selection, expbuf (dmabuf export), reqbufs/querybuf/qbuf/dqbuf/mmap/streamon, media request API, and \u2014 uniquely \u2014 subscribe_event/unsubscribe_event/dqevent (VIDIOC_SUBSCRIBE_EVENT / VIDIOC_DQEVENT), i.e. native control-change event support. Layered design: thin safe ioctl layer usable \u00e0 la carte, plus a device/queue layer with a poller (fd/epoll-based event loop, integrable with tokio via AsFd). Edition 2021.",
+   "caveats": "Version 0.0.x \u2014 API explicitly unstable between releases. The high-level device/decoder/encoder layers are memory-to-memory codec-oriented; for webcam capture you mostly use the raw ioctl layer, which is lower-level and less ergonomic than the v4l crate (you assemble your own capture loop, control descriptions, etc.). Typed control helpers in src/controls are codec+user class oriented; camera-class controls are used via raw CIDs. No device enumeration helper (you scan /dev yourself). Depends on nix 0.28 (fine). deps include anyhow in the library (mild smell)."
+  },
+  {
+   "name": "linuxvideo",
+   "version": "0.3.5 (released 2025-07-15)",
+   "license": "0BSD (permissive, fine)",
+   "repository": "https://github.com/SludgePhD/LinuxVideo",
+   "downloads": "27K all-time, 13K recent",
+   "maintenance": "Alive but tiny: last release/push Jul 2025, 7 stars, 2 open issues, single maintainer (SludgePhD), minimal community.",
+   "native_deps": "None at all \u2014 pure ioctl with hand-written binding definitions via uoctl (0BSD, same author); notably does NOT need bindgen/libclang/kernel headers at build time.",
+   "fit": "Verified ioctl usage (cloned repo): QUERYCAP, ENUM_FMT, ENUM_FRAMESIZES, ENUM_FRAMEINTERVALS, ENUMINPUT/OUTPUT, QUERYCTRL + QUERYMENU (menu names supported), G_CTRL/S_CTRL, S_FMT/G_FMT, S_PARM, REQBUFS/QUERYBUF/QBUF/DQBUF/STREAMON/OFF (mmap streaming). Has a list() device-enumeration helper, an explicit MetaCaptureDevice type (metadata-node aware \u2014 nice), and a uvc extension module. Typed device wrappers (VideoCaptureDevice etc.) keyed off capabilities.",
+   "caveats": "Uses legacy VIDIOC_G_CTRL/S_CTRL and VIDIOC_QUERYCTRL rather than the extended-control ioctls \u2014 cannot read/write 64-bit, string, or compound controls, and control enumeration may miss extended-only controls; no G_PARM; no V4L2 event support; no async. Adoption is too small to bet the core on, but it is a clean reference implementation (0BSD lets us lift code with attribution-free terms)."
+  },
+  {
+   "name": "nokhwa (+ nokhwa-bindings-linux, nokhwa-core)",
+   "version": "nokhwa 0.10.11 / nokhwa-bindings-linux 0.1.4 (released 2026-05-15)",
+   "license": "Apache-2.0 (all three crates)",
+   "repository": "https://github.com/l1npengtul/nokhwa",
+   "downloads": "nokhwa 430K all-time / 153K recent; bindings-linux 360K all-time",
+   "maintenance": "Active: releases Nov 2025 and May 2026, 801 stars, 65 open issues; default branch 'senpai' is an in-progress 0.11 rewrite, so 0.10.x is effectively maintenance-mode.",
+   "native_deps": "On Linux none beyond what the v4l crate needs \u2014 its Linux backend is literally the v4l crate (nokhwa-bindings-linux depends on v4l ^0.14; verified in the published crate's dependency list and source).",
+   "fit": "Answers the 'what does nokhwa use internally' question: v4l ^0.14, pure ioctl. Its abstraction would actively hinder us (verified by reading nokhwa-bindings-linux 0.1.4 source): (a) KnownCameraControl maps Pan/Tilt/Zoom/Focus/Iris/Exposure to the *_RELATIVE V4L2 CIDs (V4L2_CID_PAN_RELATIVE etc.), while most UVC cameras only implement *_ABSOLUTE \u2014 PTZ via the typed API simply misses the controls that matter; auto/manual partners (EXPOSURE_AUTO, FOCUS_AUTO, AUTO_WHITE_BALANCE) are reachable only through the untyped Other(u128) escape hatch. (b) camera_controls() flattens Menu/IntegerMenu controls into IntegerRange, discarding menu item names entirely; unsupported control types return an error (literally: 'what is this?????? todo: support ig'). (c) No device_caps exposure, no metadata-node filtering, no events, no S_PARM-level fps control beyond format selection. Good crate for its goal (simple cross-platform frame capture), wrong altitude for a control-centric V4L2 tool.",
+   "caveats": "Rejected for core use, but its choice of backend independently validates the v4l crate. If we ever add macOS/Windows support, nokhwa is the obvious cross-platform layer to look at again (0.11 rewrite may fix the control story)."
+  },
+  {
+   "name": "udev",
+   "version": "0.9.3 (released 2025-01-23)",
+   "license": "MIT (crate) \u2014 BUT links libudev from systemd, which is LGPL-2.1-or-later: fails our native-library license constraint (flagged per instructions)",
+   "repository": "https://github.com/Smithay/udev-rs",
+   "downloads": "5.85M all-time, 943K recent",
+   "maintenance": "Maintained by the Smithay org (healthy bus factor), last release Jan 2025, 3 open issues.",
+   "native_deps": "libudev (dynamic link via libudev-sys + pkg-config) \u2014 LGPL-2.1-or-later (systemd). This is the flag: the crate itself is MIT but every binary linking it dynamically links LGPL code.",
+   "fit": "The standard way to do hotplug monitoring + rich device metadata (udev properties like ID_V4L_CAPABILITIES, ID_SERIAL, ID_PATH for stable camera identity across replug). MonitorBuilder with subsystem filter 'video4linux' gives add/remove events; Enumerator gives initial device scan; mio feature integrates with event loops; tokio-udev (Apache-2.0 OR MIT, 0.10.0, Oct 2025) wraps it for async.",
+   "caveats": "Use only if the project decides dynamically linking LGPL libudev is acceptable; under the stated hard constraint ('no copyleft of any strength' for linked native libs) it is NOT, so it is demoted to a documented alternative. Also unavailable on non-systemd systems (musl/Alpine needs eudev)."
+  },
+  {
+   "name": "kobject-uevent",
+   "version": "0.2.0 (released 2024-12-30)",
+   "license": "MIT (deps: netlink-sys MIT, thiserror MIT/Apache-2.0) \u2014 no native libraries at all",
+   "repository": "https://github.com/rust-italia/kobject-uevent",
+   "downloads": "99K all-time, 61K recent",
+   "maintenance": "rust-italia org, last release Dec 2024; small but stable scope (uevent parsing changes rarely).",
+   "native_deps": "None \u2014 talks NETLINK_KOBJECT_UEVENT directly via netlink-sys sockets.",
+   "fit": "License-clean hotplug path: listen on the kernel uevent netlink group, filter subsystem == 'video4linux', ACTION add/remove, DEVNAME=/dev/videoN \u2014 pairs with an initial /dev + /sys/class/video4linux scan and querycap device_caps filtering (which we need anyway) to maintain the camera list. Raw socket is poll-able, so tokio AsyncFd integration is trivial for the daemon.",
+   "caveats": "Raw kernel uevents only: no udev database properties (no ID_* keys, no persistent-symlink info \u2014 derive stable identity from sysfs ID_SERIAL equivalents: /sys/class/video4linux/videoN/device/../serial etc. or bus_info from querycap), and it sees kernel events, not udev-processed ones (fine for our purpose). Needs no privileges beyond an AF_NETLINK socket."
+  },
+  {
+   "name": "v4l2-sys-mit (context: transitive dep of v4l)",
+   "version": "0.3.0 (released 2023-05-07)",
+   "license": "MIT",
+   "repository": "(part of https://github.com/raymanfx/libv4l-rs, v4l2-sys/ subdir; crates.io lists no repo)",
+   "downloads": "7.04M all-time (tracks the v4l crate)",
+   "maintenance": "Released in lockstep with v4l; same maintainer.",
+   "native_deps": "Build-time only: bindgen against system <linux/videodev2.h> (wrapper.h is literally '#include <linux/videodev2.h>'), so libclang + kernel UAPI headers required to build; zero runtime linkage.",
+   "fit": "Raw MIT-licensed bindings for the entire videodev2.h surface \u2014 this is what makes the 'fill v4l's gaps by hand' strategy cheap: v4l2_event, v4l2_event_subscription, VIDIOC_SUBSCRIBE_EVENT/DQEVENT constants, control-class constants, etc. are all already generated and re-exported inside the v4l dependency tree; our backend can add the two missing event ioctls with nix::ioctl_* macros without any new binding crate.",
+   "caveats": "Bindings are regenerated on every build from the host's kernel headers \u2014 build environments need linux-libc-dev (Debian) / kernel-headers (Fedora) and libclang."
+  }
+ ],
+ "rejected": [
+  {
+   "name": "libcamera (+ libcamera-sys, lit-robotics/libcamera-rs)",
+   "reason": "HARD LICENSE FAIL on native dependency: the bindings are MIT OR Apache-2.0 (v0.7.0, 2026-02-28, actively maintained), but they link the libcamera C++ library, whose core is LGPL-2.1-or-later (confirmed via libcamera COPYING/docs) \u2014 copyleft native link is disallowed by our constraint. Also a poor architectural fit for UVC webcam tooling: libcamera abstracts away V4L2 controls behind its own control model and targets complex CSI camera pipelines (Raspberry Pi etc.); its UVC pipeline handler exposes only a subset of controls, defeating our full-enumeration requirement."
+  },
+  {
+   "name": "rscam",
+   "reason": "Abandoned: last release 0.5.5 in May 2019, last commit Oct 2023, 15 open issues. API is decent for its era (formats/resolutions/intervals iterators, control enumeration incl. controls_by_class) but uses legacy VIDIOC_QUERYCTRL + G_CTRL/S_CTRL (no extended/compound controls), has no querycap/device_caps exposure, no S_PARM frame-rate API surfaced, no events. License itself is fine (MIT OR Apache-2.0)."
+  },
+  {
+   "name": "nokhwa (as the core backend)",
+   "reason": "Abstraction hinders full control tooling (see crates entry for verified details): PTZ/focus/exposure mapped to *_RELATIVE CIDs that most UVC cameras don't implement, auto/manual pairs only via Other(u128), menu item names discarded (menus flattened to integer ranges), unsupported control types hard-error. Since its Linux backend is just the v4l crate, using v4l directly gives strictly more capability with no extra native deps. Keep on the radar only for future cross-platform expansion."
+  },
+  {
+   "name": "v4l2-sys (gitlab.com/Russel/rust-v4l2-sys)",
+   "reason": "HARD LICENSE FAIL: crate itself is LGPL-3.0. Also dormant (last release May 2020). Not to be confused with v4l2-sys-mit, which is the MIT one the v4l crate uses."
+  },
+  {
+   "name": "eye / eye-hal",
+   "reason": "Dormant (last releases Oct 2023, ~12K downloads, same author as v4l): a cross-platform HAL layered on top of the v4l crate; adds an abstraction we don't want (we need V4L2-specific depth: ext controls, menus, device_caps) while inheriting v4l's limitations. Using v4l directly dominates it."
+  },
+  {
+   "name": "uvc (libuvc-rs) / libuvc",
+   "reason": "Wrong architecture: drives cameras from userspace over libusb, bypassing (and fighting for the device with) the kernel uvcvideo driver our whole design is built on. Native-dep problem too: libusb is LGPL-2.1. Also dormant (uvc 0.2.0, Jan 2021)."
+  },
+  {
+   "name": "linux-media (media controller API)",
+   "reason": "Immature/unproven: single release 0.2.0 (Apr 2025), 712 downloads all-time, 9 recent; the GitHub repo listed on crates.io returns no metadata (missing or renamed). Also unnecessary: for UVC cameras, distinguishing capture vs metadata nodes needs only querycap device_caps (VIDEO_CAPTURE vs META_CAPTURE), which the v4l crate exposes; the media-controller graph is overkill."
+  },
+  {
+   "name": "media-rs",
+   "reason": "Does not exist on crates.io (API returns null). Nothing to evaluate."
+  },
+  {
+   "name": "tokio-udev",
+   "reason": "Fine crate (0.10.0, Oct 2025, Apache-2.0 OR MIT) but inherits the udev crate's libudev (LGPL-2.1-or-later) native link, so it falls with udev under the hard license constraint. Documented alternative only."
+  },
+  {
+   "name": "libv4l feature of the v4l crate (v4l-sys)",
+   "reason": "Links the libv4l C library, LGPL-2.1+ \u2014 forbidden. Also unnecessary: libv4l's main value is userspace format conversion, which we can do in Rust (or capture native MJPEG/YUYV). Rejecting the feature, not the crate: v4l's default 'v4l2' feature is pure-ioctl MIT."
+  },
+  {
+   "name": "openpnp-capture / openpnp-capture-sys",
+   "reason": "Wraps the openpnp-capture C library (builds/links external C code, adds cmake toolchain burden) and exposes only a small fixed property set aimed at pick-and-place machine vision \u2014 no full control/menu enumeration. No advantage over direct V4L2 for a Linux-only tool."
+  }
+ ],
+ "recommendation": "PRIMARY (core V4L2 backend): the `v4l` crate 0.14.0 with default features only (pure-ioctl via v4l2-sys-mit, MIT throughout; never enable the LGPL `libv4l` feature). It is the only crate that combines mass adoption (7M downloads; it is nokhwa's Linux backend), ergonomic capture (mmap streams, format negotiation, G/S_PARM frame-rate), and \u2014 critically for us \u2014 complete extended-control enumeration verified in source: VIDIOC_QUERY_EXT_CTRL + VIDIOC_QUERYMENU with menu-item names, typed G/S_EXT_CTRLS, control flags (INACTIVE/VOLATILE) needed for auto/manual pairing logic, and querycap device_caps (incl. META_CAPTURE) for filtering metadata nodes during enumeration. Its one hard gap \u2014 no VIDIOC_SUBSCRIBE_EVENT/DQEVENT \u2014 is a ~100-line fix in our own backend crate using nix ioctl macros over the v4l2_event structs already present in its v4l2-sys-mit bindings (Device is AsRawFd); plan for that in the design doc rather than switching crates. Accept and monitor its slow release cadence (last release May 2023, live master); pin the version, and keep a fork-and-vendor escape hatch. FALLBACK (and reference): `v4l2r` 0.0.8 \u2014 MIT (crates.io 'non-standard' is just license-file packaging; LICENSE is verbatim MIT), actively maintained (Jul 2026 release, used in AOSP), and the only crate with native subscribe_event/dqevent plus every enumeration ioctl we need including querymenu; costs are 0.0.x API instability, a lower-level assemble-it-yourself capture layer, and bindgen/libclang+kernel-headers at build time (which the primary path needs anyway). If libv4l-rs goes fully dead, migrate the backend trait implementation to v4l2r's ioctl layer. HOTPLUG: primary `kobject-uevent` 0.2.0 (MIT, pure-netlink, zero native deps) filtering subsystem 'video4linux', paired with an initial /dev/video* + querycap device_caps scan; its raw fd suits tokio AsyncFd in the daemon. The conventional `udev`/`tokio-udev` stack is rejected under the hard constraint because it links LGPL libudev \u2014 document it as the alternative if the constraint is ever relaxed (it would add stable ID_* identity properties). CONTROL-CHANGE EVENTS: V4L2_EVENT_CTRL via the hand-rolled subscribe/dqevent wrappers (primary) or v4l2r's ioctl::subscribe_event (fallback) \u2014 this also cleanly solves detecting driver-side value changes when auto modes adjust paired manual controls during calibration sweeps. ASYNC: no candidate offers native async; standardize on blocking V4L2 calls in a dedicated per-camera thread (or spawn_blocking) with AsyncFd-based readiness for event/hotplug fds \u2014 note this explicitly in the daemon design.\"",
+ "risks": "1) Maintenance risk on the primary pick: libv4l-rs has one maintainer, no release since May 2023 (commits until Oct 2024, open 'new release' issue) \u2014 mitigate by pinning 0.14.0, wrapping it behind our camera-backend trait (already planned), and keeping v4l2r as a drop-in target for the same trait. 2) Build-environment requirement: both v4l (via v4l2-sys-mit) and v4l2r run bindgen at build time, needing libclang and kernel UAPI headers (linux-libc-dev); CI images and packaging docs must include them; linuxvideo (0BSD, no bindgen) is the escape hatch if this ever becomes untenable. 3) License tripwires to enforce in CI (cargo-deny): forbid v4l's 'libv4l' feature / v4l-sys (LGPL libv4l), forbid v4l2-sys (LGPL-3.0 \u2014 near-identical name to the MIT one), forbid udev/tokio-udev/libudev-sys (LGPL libudev), forbid libcamera/libcamera-sys (LGPL libcamera). 4) v4l2r is 0.0.x: expect API churn between releases if we use it for events instead of hand-rolled wrappers. 5) kobject-uevent gives raw uevents without the udev property database \u2014 stable camera identity must come from querycap bus_info + sysfs serial, which the design doc should specify; also verify container/sandbox environments permit AF_NETLINK uevent sockets. 6) The v4l crate's Capabilities only exposes device_caps (not the union capabilities field) and enum_devices() matches any /dev entry starting with 'video' \u2014 both fine but worth encoding in backend tests. 7) Rust 2024 workspace compatibility is a non-issue (v4l is edition 2018, v4l2r/nokhwa/linuxvideo edition 2021; none declare an MSRV near current), but verify with `cargo +stable build` in CI once pinned."
+}

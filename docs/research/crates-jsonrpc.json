@@ -1,0 +1,122 @@
+{
+ "area": "JSON-RPC 2.0 server + client crates for the webcam-handler daemon (Unix socket + HTTP/WebSocket transports, server-push notifications/subscriptions, proc-macro method definitions, CLI + browser clients), plus JSON Schema / OpenRPC documentation tooling",
+ "crates": [
+  {
+   "name": "jsonrpsee",
+   "version": "0.26.0 (2025-08-11); 0.24.x branch still patched (0.24.11 on 2026-05-27)",
+   "license": "MIT",
+   "repository": "https://github.com/paritytech/jsonrpsee",
+   "downloads": "23.3M all-time, 3.8M recent (90-day)",
+   "maintenance": "Very active: Parity-maintained, funds Polkadot/Substrate RPC; 0.26.0 Aug 2025, backport patches to 0.24.x as late as May 2026; 65 published versions; large user base (Substrate, reth, Foundry/Alloy ecosystem). Bus factor healthy (org-backed).",
+   "fit": "Best overall fit. Full framework: server AND typed client from one proc-macro trait \u2014 `#[rpc(server, client, namespace=\"...\")]` with `#[method(name=...)]` and `#[subscription(name=..., unsubscribe=..., item=T)]`; the daemon implements the generated server trait, the CLI binary gets a generated async typed client for free. Server serves HTTP and WebSocket on the SAME port (jsonrpsee-server merged the old http/ws split at 0.16) \u2014 one TCP listener covers both the browser Web client (WS for calibration-progress/hotplug subscriptions, HTTP for one-shot calls) and remote CLI use. First-class subscription model (PendingSubscriptionSink/SubscriptionSink server-side, SubscriptionClientT client-side) maps directly onto calibration-sweep progress events and camera hotplug events. Structured errors: ErrorObject{code, message, data} with custom application codes \u2014 exactly the requested error model. Middleware at two levels: tower HTTP middleware (set_http_middleware) and RPC-layer middleware (RpcServiceBuilder) for logging/auth. Client transports are pluggable via jsonrpsee-client-transport's TransportSenderT/TransportReceiverT traits. Sub-crates selectable via features (no default features): server, http-client, ws-client, wasm-client, macros, full. MSRV 1.85, edition 2024 on master \u2014 matches our Rust 2024 workspace. Tokio-native.",
+   "native_deps": "None. Pure Rust: hyper 1.x (MIT), tower 0.5 (MIT), soketto 0.8.1 WS impl (Apache-2.0 OR MIT), tokio (MIT), serde/serde_json (MIT OR Apache-2.0), http (MIT OR Apache-2.0); TLS is optional rustls (Apache-2.0 OR ISC OR MIT; ring's license is permissive ISC/OpenSSL-style) and can be omitted entirely for a localhost daemon. Whole tree permissive.",
+   "caveats": "No built-in Unix-domain-socket transport (open issues paritytech/jsonrpsee#5 and #907; Windows named-pipe parity is the historical blocker). Two proven ways to add UDS: (1) server side, convert the server to a tower Service (TowerServiceBuilder / TowerServiceNoHttp + stop_channel) and drive it over a tokio UnixListener with hyper-util serve_connection \u2014 i.e., HTTP-over-UDS, works with the same RpcModule; client side, write a small TransportSenderT/TransportReceiverT impl over UnixStream (newline-delimited JSON), ~200 lines; or (2) borrow reth's reth-ipc (see separate entry) which already implements both IPC server and client for jsonrpsee. Second caveat: 0.x semver \u2014 breaking API changes between minor versions (0.24\u21920.25\u21920.26 all broke API); pin the minor version workspace-wide. Subscriptions require a stateful transport (WS or the UDS stream) \u2014 plain HTTP calls cannot receive server pushes."
+  },
+  {
+   "name": "ajj",
+   "version": "0.7.1 (2026-04-17)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/init4tech/ajj",
+   "downloads": "~14.8k all-time, ~900 recent",
+   "maintenance": "Young but actively developed by init4 (James Prestwich / Alloy-ecosystem engineers); releases through April 2026; ~80 stars, small community, effectively single-org bus factor.",
+   "fit": "The only evaluated crate that serves the same router over HTTP (axum), WebSocket (tokio-tungstenite), AND Unix sockets/named pipes (interprocess crate) out of the box \u2014 its `pubsub` module's Connect trait covers WS and IPC listeners natively, which is exactly our transport matrix. Axum-style ergonomics: `.route(\"method\", |params, ctx| async {...})` closures, no proc macros needed; router nests into an axum Router (`Router::into_axum(path)`) so the daemon could share a port with static Web-client assets. Server-initiated notifications via HandlerCtx::notify() and ctx.spawn_with_ctx() for long-lived tasks (calibration progress). Errors via IntoErrorPayload -> ErrorPayload{code, message, data}. Tokio-native, tower/axum dependency stack (all MIT/Apache-2.0); interprocess is 0BSD OR Apache-2.0.",
+   "native_deps": "None (pure Rust; interprocess wraps OS syscalls).",
+   "caveats": "SERVER-ONLY \u2014 no client crate, so the CLI client must use jsonrpsee's ws-client or a hand-rolled UDS client against it. No standardized subscribe/unsubscribe protocol \u2014 notify() gives you raw JSON-RPC notifications and you design the subscription semantics yourself (jsonrpsee gives you the full pattern). Low download count and short track record; API still moving (0.x). MSRV not clearly documented."
+  },
+  {
+   "name": "yerpc",
+   "version": "0.6.4 (2025-04-16)",
+   "license": "MIT OR Apache-2.0 (declared \"Apache-2.0/MIT\")",
+   "repository": "https://github.com/deltachat/yerpc",
+   "downloads": "~146k all-time, ~20k recent",
+   "maintenance": "Maintained by the Delta Chat / chatmail org (it powers Delta Chat's desktop RPC); moderate pace \u2014 last release Apr 2025, ~148 commits; org-backed but niche.",
+   "fit": "Attribute-macro API (`#[rpc]` on an impl block) generating JSON-RPC handlers; axum + tokio-tungstenite WebSocket integration; genuinely bidirectional \u2014 RpcSession/OutReceiver let the server push notifications at any time (good for events). Its standout feature for us: it auto-generates TypeScript client bindings AND an openrpc.json spec from the Rust impl (via typescript-type-def + schemars), which would give the browser Web client a fully typed API surface for free. Has a basic RpcClient. Tokio-native.",
+   "native_deps": "None.",
+   "caveats": "No Unix-socket transport out of the box (RpcSession is Sink/Stream-based and could be adapted over a framed UnixStream, but that is DIY). Notification support is raw push, not a subscribe/unsubscribe protocol. Client is rudimentary compared to jsonrpsee's. Smaller community; release cadence slowed (>1 year since last release as of Aug 2026). Worth mining for its TS/OpenRPC generation approach even if not adopted as the framework."
+  },
+  {
+   "name": "reth-ipc",
+   "version": "unpublished \u2014 git-only, part of paradigmxyz/reth workspace (rpc/ipc); NOT on crates.io (search returns zero results)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/paradigmxyz/reth (rpc/ipc directory)",
+   "downloads": "n/a (git dependency only)",
+   "maintenance": "Maintained inside reth, one of the most active Rust codebases (Paradigm); used in production by every reth node (default /tmp/reth.ipc endpoint).",
+   "fit": "Exactly the missing jsonrpsee piece: a jsonrpsee transport adapter providing BOTH an IPC server (serves a jsonrpsee RpcModule, including subscriptions, over Unix domain sockets on Linux/macOS and named pipes on Windows via the interprocess crate, with jsonrpsee RpcMiddleware support) and an IPC client (implements jsonrpsee's client-transport traits). Proof that the jsonrpsee+UDS combination is production-viable, and a ready-made implementation to depend on via git or to vendor/port (~small crate).",
+   "native_deps": "None (interprocess, tokio).",
+   "caveats": "Must be pulled as a git dependency (pin a rev in Cargo.lock) or vendored \u2014 it is not on crates.io; its jsonrpsee version must be kept in sync with ours; it drags reth workspace conventions (though the crate itself is nearly standalone). Vendoring ~1-2 files under MIT/Apache attribution is the low-risk route."
+  },
+  {
+   "name": "jsonrpc-lite",
+   "version": "0.7.0 (2026-03-10)",
+   "license": "MIT OR Apache-2.0 (declared \"MIT/Apache-2.0\")",
+   "downloads": "~264k all-time, ~23k recent",
+   "repository": "https://github.com/iorust/jsonrpc-lite",
+   "maintenance": "Alive but minimal-scope; fresh release March 2026.",
+   "fit": "Types-only: serde serialization of JSON-RPC 2.0 Request/Response/Notification/Error objects. Zero transport, routing, macro, or subscription machinery. Only relevant as the wire-type layer if we hand-roll the protocol over axum + tokio UnixListener.",
+   "native_deps": "None (serde, serde_json only).",
+   "caveats": "Not a framework; choosing it means writing routing, batch handling, id correlation, subscription bookkeeping, and a client by hand."
+  },
+  {
+   "name": "schemars",
+   "version": "1.2.2 (2026-07-27)",
+   "license": "MIT",
+   "repository": "https://github.com/GREsau/schemars",
+   "downloads": "381.9M all-time, 136.4M recent \u2014 de-facto standard",
+   "maintenance": "Very active (release two weeks before today's date); 1.x stable line; single primary author (GREsau) but enormous ecosystem usage.",
+   "fit": "JSON Schema (draft 2020-12) generation from Rust types via `#[derive(JsonSchema)]`, honoring serde rename/skip/flatten attributes \u2014 ideal for documenting our API DTOs (camera descriptors, control ranges/menus, calibration session state) and for the Web client to validate/generate forms. Integrates with yerpc, aide, dropshot-style doc pipelines, and pairs with openrpc-types for OpenRPC assembly.",
+   "native_deps": "None.",
+   "caveats": "Generates schemas for types, not RPC method surfaces \u2014 method-level docs need OpenRPC assembly on top (see openrpc-types) or manual doc generation."
+  },
+  {
+   "name": "openrpc-types",
+   "version": "0.5.0 (2025-06-24)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/aatifsyed/openrpc-types",
+   "downloads": "~123k all-time, ~24k recent",
+   "maintenance": "Small single-author crate (aatifsyed, Filecoin/forest contributor), updated mid-2025; ~700 LoC, low risk to vendor.",
+   "fit": "Faithful Rust transcription of the OpenRPC specification document types, designed to interoperate with schemars \u2014 the practical building block if we want to emit an openrpc.json describing the daemon's method surface (methods, params, result schemas, error codes) for the design doc and Web client. Rust's OpenRPC ecosystem is otherwise thin: open-rpc (0.1.0, MIT, stale since Oct 2023), typed-openrpc (0.1.1, MIT, Oct 2025, very young proc-macro experiment), and yerpc's built-in openrpc.json emitter are the only alternatives found.",
+   "native_deps": "None.",
+   "caveats": "Types only \u2014 we write the ~100-line assembler that walks our method list and plugs in schemars-generated schemas. No mature spec-first codegen exists in Rust; treat OpenRPC output as documentation, not as the source of truth."
+  }
+ ],
+ "rejected": [
+  {
+   "name": "jsonrpc-core family (paritytech/jsonrpc: jsonrpc-core 18.0.0, jsonrpc-http-server, jsonrpc-ipc-server, jsonrpc-ws-server, jsonrpc-tcp-server, jsonrpc-stdio-server, jsonrpc-pubsub, jsonrpc-derive)",
+   "reason": "Officially deprecated \u2014 README states it is no longer actively developed and points to jsonrpsee. Last release July 2021 (five years stale). Ironically it is the only framework that ever shipped a complete transport set including a first-party IPC/Unix-socket server plus pubsub (MIT, 19.4M downloads), but building a new daemon on an explicitly dead framework with an old hyper/tokio stack is disqualifying."
+  },
+  {
+   "name": "jsonrpc-v2",
+   "reason": "Poor fit + weak maintenance: server-only, no subscriptions or server-push notifications (a hard requirement for calibration progress and hotplug events), transports limited to hyper/actix-web HTTP (no WS, no UDS). Version 0.14.0-beta.0 (Jan 2025) has sat in beta; small community (~48 stars), 243k downloads with declining recent numbers. License (MIT) is fine."
+  },
+  {
+   "name": "async-jsonrpc-client",
+   "reason": "Abandoned: last release 0.3.0 in February 2021, repo (koushiro/async-jsonrpc) inactive. Client-only anyway (HTTP + WS), so it never covered the server half. License (MIT/Apache-2.0) fine but irrelevant."
+  },
+  {
+   "name": "tower-jsonrpc",
+   "reason": "Does not exist: crates.io returns 404 and web search finds no crate of this name. Nearest matches are tower-lsp's internal jsonrpc module (LSP-specific, and note tower-lsp itself targets LSP framing, not generic JSON-RPC servers) and async-json-rpc (a minimal tower-based client). Nothing to evaluate."
+  },
+  {
+   "name": "jsonrpc (rust-bitcoin/corepc)",
+   "reason": "Wrong shape for us despite acceptable CC0-1.0 license, 4.3M downloads, and active maintenance (0.20.1, May 2026): it is a minimal SYNCHRONOUS client only (with simple_http/simple_uds transports), aimed at Bitcoin Core RPC; no server, no async, no notifications/subscriptions. Could serve an ultra-minimal scripting client, but jsonrpsee's generated async client with subscription support supersedes it here."
+  },
+  {
+   "name": "jsonrpsee-http-server / jsonrpsee-ws-server (the old split crates)",
+   "reason": "Obsolete artifacts of pre-0.16 jsonrpsee: the two crates were merged into jsonrpsee-server (one server, HTTP+WS on the same port) in late 2022 and the split crates are unmaintained. Use the merged jsonrpsee-server via the jsonrpsee facade's `server` feature; never depend on the old split crates."
+  },
+  {
+   "name": "open-rpc",
+   "reason": "Stale one-shot types crate (0.1.0, Oct 2023, single author, no updates); openrpc-types covers the same ground with schemars interop and more recent maintenance."
+  },
+  {
+   "name": "typed-openrpc",
+   "reason": "Too young/unproven (0.1.1, Oct 2025, one author, minimal adoption) to base API documentation on; keep an eye on it but prefer schemars + openrpc-types assembly."
+  },
+  {
+   "name": "Hand-rolling over axum + serde (+ jsonrpc-lite types)",
+   "reason": "Rejected as the primary path, retained as fallback: axum (MIT) can serve WS upgrades and UDS (axum::serve accepts a tokio UnixListener via its Listener trait since 0.7/0.8), and jsonrpc-lite supplies wire types \u2014 but we would re-implement method routing, param deserialization, batch requests, id correlation, subscription lifecycle, structured errors, AND a typed client. That is exactly the ~80% of jsonrpsee we would use; only justified if dependency minimalism becomes a project goal."
+  }
+ ],
+ "recommendation": "PRIMARY: jsonrpsee 0.26 end-to-end (features: server, ws-client, macros; MIT, all-permissive tree of hyper/tower/soketto/tokio/serde). Define the whole API once as a `#[rpc(server, client)]` trait in a shared api crate: the daemon implements the generated server trait; the CLI client binary gets the generated typed async client; `#[subscription]` methods carry calibration-sweep progress and camera-hotplug events; ErrorObject{code,message,data} carries structured daemon error codes (e.g. control-not-supported, device-busy). Serve HTTP+WebSocket on one localhost TCP port for the browser Web client (browsers speak plain WebSocket JSON-RPC to jsonrpsee directly; no special client library needed). For the Unix domain socket, add the one missing piece: vendor or git-pin reth's reth-ipc adapter (MIT OR Apache-2.0, production-proven in reth, serves a jsonrpsee RpcModule with subscriptions over UDS and provides the matching client transport) \u2014 or equivalently serve jsonrpsee's tower service over a tokio UnixListener with hyper-util and write a ~200-line client transport implementing TransportSenderT/TransportReceiverT. Pin jsonrpsee's minor version workspace-wide (0.x breaking changes). ALTERNATIVE (if native UDS with zero glue outranks having a generated client): ajj 0.7 for the server \u2014 the only crate serving one router over HTTP, WS, and Unix sockets out of the box (MIT OR Apache-2.0, interprocess is 0BSD OR Apache-2.0) \u2014 paired with jsonrpsee's ws-client in the CLI; accept that you design the subscription protocol yourself and that ajj is young (~15k downloads). FALLBACK: hand-rolled axum + serde + jsonrpc-lite. DOCUMENTATION: schemars 1.2 (MIT) deriving JsonSchema on all DTOs is the clear pick for JSON Schema; for OpenRPC output, assemble an openrpc.json with openrpc-types 0.5 + schemars (the Rust OpenRPC ecosystem is otherwise embryonic; yerpc is worth studying for its auto-generated TypeScript bindings + openrpc.json if the Web client wants typed codegen, but is not recommended as the framework).\"",
+ "risks": "1) jsonrpsee has no first-party Unix-socket transport \u2014 the UDS layer is glue we own (vendored reth-ipc or tower-service-over-UnixListener + small client transport); it must be version-locked to our jsonrpsee minor and covered by integration tests. reth-ipc is git-only (not on crates.io), so vendoring with license attribution is the reproducible route. 2) jsonrpsee is 0.x with real breaking changes each minor (0.24\u21920.26); pin and budget for upgrade PRs. 3) Server-push only works over stateful transports (WS or the UDS stream) \u2014 the CLI client must connect via WS/UDS-stream for calibration progress; plain HTTP calls cannot receive notifications. 4) If the ajj alternative is chosen: server-only (no client), no standardized subscribe/unsubscribe semantics, low adoption (~15k downloads) and single-org bus factor. 5) Licensing is clean across every recommended tree (MIT / Apache-2.0 / 0BSD / ISC / CC0; rustls+ring optional and omittable for localhost) \u2014 no copyleft or source-available components found anywhere in the candidate set; the only GPL-adjacent trap in this area (old parity jsonrpc is MIT, fine but dead) was maintenance, not licensing. 6) OpenRPC tooling is immature: treat openrpc.json as generated documentation, not a contract source; TypeScript typings for the Web client either come from adopting yerpc's approach (typescript-type-def) or from JSON-Schema-to-TS codegen outside Rust. 7) yerpc's slowing cadence (last release Apr 2025) makes it a study reference, not a dependency bet."
+}

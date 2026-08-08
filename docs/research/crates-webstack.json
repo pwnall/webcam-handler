@@ -1,0 +1,215 @@
+{
+ "area": "Async runtime + HTTP server stack for the webcam-handler daemon (WebSocket JSON-RPC, MJPEG-over-HTTP live preview, static web-client assets), static-asset embedding, tower middleware/graceful shutdown, and web-client technology choice (vanilla JS vs Rust-WASM frameworks)",
+ "crates": [
+  {
+   "name": "tokio",
+   "version": "1.53.1 (released 2026-07-20)",
+   "license": "MIT",
+   "repository": "https://github.com/tokio-rs/tokio",
+   "downloads": "~860M all-time (by far the dominant Rust async runtime)",
+   "maintenance": "Extremely healthy: pushed to on the day of research (2026-08-07), 32.9k stars, large multi-vendor maintainer team (no bus-factor concern), LTS release policy, 444 open issues (normal for its size). MSRV 1.71, edition 2021 (freely usable from a Rust 2024 workspace \u2014 editions interop).",
+   "fit": "The async runtime for the daemon. Multi-threaded scheduler for concurrent WS sessions + MJPEG streams + calibration sessions; `spawn_blocking` is the right home for blocking V4L2 ioctls/DQBUF calls so device I/O never stalls the reactor; `tokio::sync::watch`/`broadcast` channels are the natural 'latest frame' fan-out primitive for MJPEG; `tokio::signal` (ctrl_c + unix SIGTERM) drives graceful shutdown. Entire axum/hyper/tower stack assumes it.",
+   "native_deps": "None beyond libc (pure Rust; mio uses epoll directly).",
+   "caveats": "Enable only needed features (rt-multi-thread, macros, sync, signal, time, net, io-util) rather than `full` to keep the daemon lean."
+  },
+  {
+   "name": "axum",
+   "version": "0.8.9 (released 2026-04-14)",
+   "license": "MIT",
+   "repository": "https://github.com/tokio-rs/axum",
+   "downloads": "~416M all-time",
+   "maintenance": "Maintained by the tokio-rs org (same governance as tokio/hyper/tower \u2014 strong bus factor), pushed 2026-08-07, 26.8k stars, only 75 open issues. MSRV 1.80.",
+   "fit": "Primary HTTP framework recommendation. (1) WebSocket: built-in via the `ws` feature \u2014 `WebSocketUpgrade` extractor + `on_upgrade`, tungstenite-based, `WebSocket` implements Stream+Sink and splits for concurrent read/write; ideal for the JSON-RPC endpoint. (2) MJPEG multipart/x-mixed-replace: a plain handler returning a Response with `Content-Type: multipart/x-mixed-replace; boundary=frame` and `axum::body::Body::from_stream(stream_of_Bytes)`; because hyper polls the body only as the client socket drains, per-connection backpressure is inherent \u2014 combine with a `tokio::sync::watch` latest-frame channel so slow clients drop frames instead of buffering (this is the standard, well-trodden pattern; scottlamb/multipart-stream-rs documents the wire format used by IP cameras). (3) Static assets: tower-http ServeDir for disk or a ~20-line rust-embed handler for embedded. (4) Graceful shutdown: `axum::serve(listener, app).with_graceful_shutdown(signal_future)` stops accepting and waits for in-flight connections. Handlers are plain async fns sharing `State<Arc<AppState>>` \u2014 trivially wraps the core library's camera manager.",
+   "native_deps": "None.",
+   "caveats": "Still 0.x \u2014 0.7\u21920.8 had breaking router/extractor changes; pin the minor version. `with_graceful_shutdown` waits for in-flight connections, and an infinite MJPEG/WS stream never finishes \u2014 you must additionally cancel long-lived stream tasks (CancellationToken selected inside the frame loop) and/or wrap shutdown in a `tokio::time::timeout`, or the daemon will hang on exit while a browser tab is open. WebSockets/multipart/compression are separate features/crates by design (assembly-required philosophy)."
+  },
+  {
+   "name": "tower",
+   "version": "0.5.3 (released 2026-01-12)",
+   "license": "MIT",
+   "repository": "https://github.com/tower-rs/tower",
+   "downloads": "~580M all-time",
+   "maintenance": "tokio-rs-adjacent org, active, MSRV 1.64.",
+   "fit": "The `Service`/`Layer` middleware abstraction axum is built on. We mostly consume it transitively; directly useful utilities: `timeout`, `limit` (concurrency caps on capture-triggering endpoints), `ServiceBuilder` for composing layers once for the whole router.",
+   "native_deps": "None.",
+   "caveats": "None material. Use the `util` + `timeout` features only."
+  },
+  {
+   "name": "tower-http",
+   "version": "0.7.0 (released 2026-06-15)",
+   "license": "MIT",
+   "repository": "https://github.com/tower-rs/tower-http",
+   "downloads": "~383M all-time",
+   "maintenance": "Active (pushed 2026-08-01), 902 stars, 39 open issues, MSRV 1.65.",
+   "fit": "Batteries for axum: `CorsLayer` (needed if the web client is ever served from a dev server on another port; for same-origin serving it can be permissive-localhost-only), `ServeDir`/`ServeFile` with correct ETag/Range/mime handling for disk-based assets during development, `TraceLayer` for request logging, `CompressionLayer` (do NOT apply to the MJPEG route), `SetResponseHeaderLayer` for cache-control on embedded assets.",
+   "native_deps": "None.",
+   "caveats": "ServeDir serves from disk, not from embedded data \u2014 for single-binary deployment pair with rust-embed instead; keep ServeDir as the dev-mode path."
+  },
+  {
+   "name": "tokio-tungstenite",
+   "version": "0.30.0 (released 2026-07-11)",
+   "license": "MIT",
+   "repository": "https://github.com/snapview/tokio-tungstenite",
+   "downloads": "~237M all-time",
+   "maintenance": "Active (release + push July 2026), 2.5k stars, 17 open issues. MSRV 1.85.",
+   "fit": "WebSocket CLIENT for the daemon's CLI client crate (connect_async to the daemon's JSON-RPC endpoint). The server side does not need it directly \u2014 axum's `ws` feature wraps tungstenite itself. Using tungstenite on both ends keeps one WS implementation in the tree.",
+   "native_deps": "None (no TLS needed for localhost; avoid native-tls features).",
+   "caveats": "Version must be compatible with the tungstenite version axum's `ws` feature uses to deduplicate the dependency; check `cargo tree` when pinning."
+  },
+  {
+   "name": "tokio-util",
+   "version": "0.7.19 (released 2026-07-21)",
+   "license": "MIT",
+   "repository": "https://github.com/tokio-rs/tokio",
+   "downloads": "part of tokio-rs; hundreds of millions",
+   "maintenance": "Same governance/cadence as tokio.",
+   "fit": "`CancellationToken` + `TaskTracker` are the recommended graceful-shutdown pattern: clone a token into every MJPEG frame loop, WS session, and calibration task; on SIGINT/SIGTERM cancel the token, `tracker.close(); tracker.wait()` with a timeout, then let axum's `with_graceful_shutdown` resolve. Solves the 'infinite stream never ends' problem cleanly.",
+   "native_deps": "None.",
+   "caveats": "None."
+  },
+  {
+   "name": "hyper",
+   "version": "1.11.0 (released 2026-07-20)",
+   "license": "MIT",
+   "repository": "https://github.com/hyperium/hyper",
+   "downloads": "~822M all-time",
+   "maintenance": "Extremely healthy; seanmonstar + large contributor base.",
+   "fit": "Transitive foundation of axum (and warp). Not used directly, but its poll-driven Body model is what gives every streaming response real backpressure. Listed so the design doc records the full HTTP stack: tokio -> hyper 1.x -> tower -> axum.",
+   "native_deps": "None.",
+   "caveats": "None."
+  },
+  {
+   "name": "rust-embed",
+   "version": "8.12.0 (released 2026-07-08)",
+   "license": "MIT",
+   "repository": "https://pyrossh.dev/repos/rust-embed (self-hosted; the old github.com/pyrossh/rust-embed now 404s)",
+   "downloads": "~45M all-time",
+   "maintenance": "Actively released (July 2026) but a governance yellow flag: single maintainer (pyrossh) who moved the repository off GitHub to a personal self-hosted forge (verified reachable, HTTP 200). MSRV 1.80.",
+   "fit": "Primary pick for embedding the web client into the daemon binary. Derive macro embeds a folder tree; killer feature for us: in debug builds it reads files from disk at runtime (instant edit-refresh web dev loop) and only embeds in release builds \u2014 include_dir has no equivalent. Optional built-in compression and mime-guess metadata. Serving through axum is a ~20-line handler (match path against `Asset::get`, set mime + long cache headers); the small `axum-embed` adapter crate exists but is trivial to inline instead.",
+   "native_deps": "None.",
+   "caveats": "The repo move + solo maintainer means audit updates when bumping; mitigations: the API surface is tiny, the crate is build-time only (no runtime attack surface beyond file contents), and include_dir is a drop-in-ish fallback. License verified MIT on crates.io."
+  },
+  {
+   "name": "include_dir",
+   "version": "0.7.4 (released 2024-06-17)",
+   "license": "MIT",
+   "repository": "https://github.com/Michael-F-Bryan/include_dir",
+   "downloads": "~63M all-time",
+   "maintenance": "Dormant-but-stable: last release June 2024, last push July 2024, 395 stars, 37 open issues. Small, essentially feature-complete (`include_dir!` is a recursive `include_bytes!`). MSRV 1.64.",
+   "fit": "Fallback embedding choice. Simpler and zero-magic; fine if rust-embed's governance becomes unacceptable. You lose the debug-mode disk fallback and must write your own mime-type + caching headers (use `mime_guess`, MIT).",
+   "native_deps": "None.",
+   "caveats": "No dev-mode hot serving; embeds in debug builds too (slower incremental builds when assets change)."
+  },
+  {
+   "name": "actix-web",
+   "version": "4.14.0 (released 2026-06-21)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/actix/actix-web",
+   "downloads": "~76M all-time",
+   "maintenance": "Active (pushed 2026-08-07), 24.8k stars, 193 open issues, MSRV 1.88.",
+   "fit": "Evaluated as the main axum alternative. Fully capable for our needs: `actix-ws` for WebSockets, `HttpResponse::streaming` for MJPEG, `actix-files`/`actix-web-static-files` for assets, best-in-class raw throughput (~10-15% over axum in benchmarks \u2014 irrelevant for a localhost camera daemon). NOT chosen: it layers its own runtime model (actix-rt: single-threaded worker runtimes, `!Send` handlers, `spawn_local`) on top of tokio, which makes sharing one multi-threaded camera/state core with non-HTTP daemon tasks awkward; its middleware ecosystem is separate from tower, so we'd forgo tower-http; heavier dependency tree.",
+   "native_deps": "None (pure Rust unless openssl features enabled).",
+   "caveats": "Ecosystem split with the tokio/tower stack is the disqualifier, not quality."
+  },
+  {
+   "name": "warp",
+   "version": "0.4.3 (released 2026-05-04, now on hyper 1.x)",
+   "license": "MIT",
+   "repository": "https://github.com/seanmonstar/warp",
+   "downloads": "~46M all-time",
+   "maintenance": "Alive but slow: ~1-2 releases/year (0.4.1/0.4.2 Aug 2025, 0.4.3 May 2026), 10.4k stars, 232 open issues, effectively one core maintainer (seanmonstar, whose attention is primarily hyper/reqwest).",
+   "fit": "Has everything we need technically (built-in websockets, `reply::stream()` added in 0.4.3, tower compatibility via wrappers). NOT chosen: the filter-combinator API produces notoriously opaque compile errors and awkward state-sharing; community momentum and third-party examples have consolidated on axum, which covers the same hyper/tokio foundation with better docs and team backing.",
+   "native_deps": "None.",
+   "caveats": "No MSRV declared on crates.io."
+  },
+  {
+   "name": "poem",
+   "version": "3.1.12 (released 2025-07-28)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/poem-web/poem",
+   "downloads": "~5.4M all-time",
+   "maintenance": "Repo active (pushed 2026-08-03) but last crates.io release >12 months old; 4.4k stars, 191 open issues; bus factor ~1 (sunli829). MSRV 1.85, already Rust 2024 edition.",
+   "fit": "Pleasant batteries-included design: built-in WebSocket, SSE, static files AND first-party rust-embed integration (`EmbeddedFilesEndpoint`) \u2014 on paper the best feature match. NOT chosen: an order of magnitude fewer users than axum, essentially one maintainer, smaller middleware/examples ecosystem, and a slowing release cadence; for a project others will maintain from a design doc, axum's ubiquity wins.",
+   "native_deps": "None.",
+   "caveats": "Reasonable fallback if axum is rejected for taste reasons."
+  },
+  {
+   "name": "axum-server",
+   "version": "0.8.0 (released 2025-12-06)",
+   "license": "MIT",
+   "repository": "https://github.com/programatik29/axum-server",
+   "downloads": "~31M all-time",
+   "maintenance": "Maintained, MSRV 1.82.",
+   "fit": "Only needed if the daemon ever wants TLS (rustls) or hot cert reload. For a localhost daemon, plain `axum::serve` over a TcpListener (or a Unix socket) suffices \u2014 listed as optional future add-on only.",
+   "native_deps": "None (rustls path).",
+   "caveats": "Skip initially."
+  },
+  {
+   "name": "leptos",
+   "version": "0.8.20 stable (2026-06-25); 0.9.0-beta in progress",
+   "license": "MIT",
+   "repository": "https://github.com/leptos-rs/leptos",
+   "downloads": "~4.2M all-time",
+   "maintenance": "Very active (pushed 2026-08-07), 21.2k stars, 127 open issues, healthy contributor base. MSRV 1.88, edition 2024.",
+   "fit": "Best-in-class Rust-WASM option if the team insists on Rust end-to-end: fine-grained reactivity, client-side-rendering-only mode (no SSR server integration needed \u2014 the daemon just serves the wasm bundle), builds with trunk (0.21.14 stable, MIT/Apache-2.0) + wasm-bindgen (0.2.126, MIT OR Apache-2.0). All licenses permissive. NOT the primary recommendation for this project \u2014 see recommendation field: a modest control panel does not repay the trunk/wasm toolchain, several-hundred-KB payloads, and 0.x API churn (0.7->0.8->0.9 each broke signal APIs).",
+   "native_deps": "Build-time: wasm32-unknown-unknown target + trunk + wasm-bindgen-cli (external build tools, no linked native libs).",
+   "caveats": "If chosen, pin trunk and wasm-bindgen versions in CI; MJPEG preview would still be a plain <img> tag either way."
+  }
+ ],
+ "rejected": [
+  {
+   "name": "async-std",
+   "reason": "Officially discontinued March 2025 (RUSTSEC-2025-0052); maintainers recommend smol or tokio. License was fine (MIT OR Apache-2.0) but the project is dead. Hard reject."
+  },
+  {
+   "name": "smol",
+   "reason": "Good crate, permissive (MIT OR Apache-2.0), but last release Sept 2024 and the entire server stack we want (axum/hyper services, tower, tokio-tungstenite, tower-http) is tokio-first; choosing smol buys nothing and costs ecosystem compatibility. Reject on fit."
+  },
+  {
+   "name": "actix-web",
+   "reason": "Not chosen (fully evaluated above): its actix-rt runtime layer (single-threaded workers, !Send handlers) and non-tower middleware ecosystem complicate sharing one multi-threaded camera core across HTTP and non-HTTP daemon tasks; raw-throughput edge is irrelevant for a localhost daemon. License fine."
+  },
+  {
+   "name": "warp",
+   "reason": "Not chosen (evaluated above): filter-combinator API with poor compile errors, ~1 maintainer, 1-2 releases/year, community consolidated on axum over the identical tokio/hyper foundation. License fine."
+  },
+  {
+   "name": "poem",
+   "reason": "Not chosen (evaluated above): best on-paper feature fit (built-in WS/SSE/rust-embed endpoints) but ~1 maintainer, 5.4M downloads vs axum's 416M, last release >1 year old. Named fallback, not primary. License fine."
+  },
+  {
+   "name": "rouille",
+   "reason": "Sync thread-per-request framework; last release April 2023, author (tomaka) inactive on it; websocket support exists but is rudimentary; no async backpressure story for many concurrent MJPEG viewers. Abandonment + fit reject. License fine (MIT/Apache-2.0)."
+  },
+  {
+   "name": "tiny_http",
+   "reason": "The 'minimal-dependency' option evaluated: sync, last release Oct 2022, last push Aug 2024, no WebSocket support (would need hand-rolled upgrade + a separate WS crate), thread-per-connection streaming only. Our daemon's WS JSON-RPC requirement alone disqualifies it. License fine."
+  },
+  {
+   "name": "static-files",
+   "reason": "Permissively licensed (Unlicense OR MIT) and alive (0.3.1, Aug 2025) but it is a build.rs companion designed around actix-web-static-files, with only ~1.25M downloads; pointless outside the actix ecosystem we are not using. Poor fit."
+  },
+  {
+   "name": "multipart-stream",
+   "reason": "Scott Lamb's multipart/x-mixed-replace (de)serializer \u2014 correct domain fit and permissive (MIT/Apache-2.0), but frozen at 0.1.2 since May 2021 with 13k downloads. The MJPEG framing is ~30 lines of code; write it in-house using this crate/RFC as the reference rather than depending on an unmaintained crate."
+  },
+  {
+   "name": "yew",
+   "reason": "WASM framework, MIT OR Apache-2.0, still releasing (0.23.0, Mar 2026) but VDOM architecture and community momentum have been eclipsed by leptos/dioxus; if we went WASM at all, leptos is the stronger pick. Also rejected for the same build-complexity reasons as all WASM options."
+  },
+  {
+   "name": "dioxus",
+   "reason": "Very active (38.5k stars, 0.7.10 July 2026, MIT OR Apache-2.0) but oriented toward its own `dx` CLI/tooling universe and cross-platform rendering \u2014 heavier conceptual footprint than the project needs; rejected with the general anti-WASM-for-this-UI rationale. Would be reconsidered only if a desktop app were ever wanted."
+  },
+  {
+   "name": "sycamore",
+   "reason": "MIT, technically sound fine-grained-reactivity WASM framework, but small community (3.3k stars, ~300k downloads, last release Sept 2025) \u2014 bus-factor risk for a UI we want others to maintain. Reject."
+  },
+  {
+   "name": "rocket",
+   "reason": "Not in the evaluation shortlist and not competitive here: release cadence historically slow and websocket/streaming story weaker than axum's; noted only for completeness since design-doc readers may ask."
+  }
+ ],
+ "recommendation": "RUNTIME: tokio 1.x (MIT) \u2014 no viable competitor: async-std is officially discontinued (RUSTSEC-2025-0052), smol has no server-stack ecosystem. Use spawn_blocking for V4L2 ioctls, tokio::sync::watch for latest-frame fan-out, tokio::signal for SIGINT/SIGTERM. HTTP FRAMEWORK: axum 0.8 (MIT) as primary \u2014 same tokio-rs governance as the runtime, built-in `ws` WebSocket for JSON-RPC, MJPEG via a handler returning `Body::from_stream` with `Content-Type: multipart/x-mixed-replace; boundary=frame` (hyper's poll-driven bodies give inherent per-connection backpressure; pair with a watch channel so slow clients skip frames), tower + tower-http 0.7 for CORS/tracing/static-dev-serving, graceful shutdown via `axum::serve(...).with_graceful_shutdown(...)` PLUS tokio-util CancellationToken/TaskTracker to terminate infinite streams (without this the server waits forever on open MJPEG/WS connections \u2014 bake this into the design doc). Fallback framework: poem 3.x (best feature fit, weaker community) \u2014 actix-web only if someone mandates it, accepting the tower-ecosystem split. CLI client WS: tokio-tungstenite 0.30 (MIT). STATIC EMBEDDING: rust-embed 8.x (MIT) primary \u2014 its debug-builds-read-from-disk mode gives a real web dev loop and release builds are single-binary; serve via a small hand-written axum handler (skip the axum-embed micro-crate). Fallback: include_dir 0.7 (MIT, dormant-but-stable) + mime_guess. Reject static-files (actix-oriented). WEB CLIENT: plain HTML + CSS + vanilla ES-module JavaScript, no framework and no build step \u2014 the three UI jobs are trivially covered by platform APIs: MJPEG preview is literally `<img src=\\\"/api/preview.mjpg\\\">`, JSON-RPC is a native `WebSocket` + `JSON.stringify` with a ~50-line id-correlation helper, and controls are `<input type=\\\"range\\\">`/`<select>` generated from the capability-listing RPC. Zero dependencies means zero license exposure and maximum maintainability for a modest control panel. If a reactive helper later earns its keep, vendor (never CDN \u2014 assets must embed) one permissive single-file library: preact (MIT), lit (BSD-3-Clause), Alpine.js (MIT), or htmx (0BSD \u2014 verified against its LICENSE file); all confirmed permissive. Rust-WASM (leptos being the best of them: MIT, active, CSR mode) is rejected for this UI: it adds the trunk + wasm-bindgen + wasm32 toolchain to CI, several-hundred-KB payloads, and 0.x churn, while the MJPEG `<img>` centerpiece gains nothing from WASM. Revisit leptos only if the client grows real application logic (e.g., client-side calibration visualization) that wants to share Rust types with the daemon.",
+ "risks": "1) Shutdown hang: axum's with_graceful_shutdown waits for in-flight connections, and MJPEG/WS connections are infinite \u2014 the design MUST cancel stream loops via CancellationToken and bound shutdown with a timeout, or Ctrl-C hangs while a browser tab is open. 2) Slow-consumer latency: per-connection backpressure means a slow browser would watch increasingly stale frames if the producer queues; the frame source must be a latest-value watch/broadcast channel that drops frames, and the capture task must never block on HTTP consumers. 3) rust-embed governance: solo maintainer who moved the repo off GitHub to a self-hosted forge (pyrossh.dev \u2014 verified live); license remains MIT and releases are current (8.12.0, July 2026), but pin versions, review diffs on bump, and keep include_dir as the named fallback. 4) axum is still 0.x: 0.7->0.8 broke routing syntax; pin minor version and expect a mechanical migration roughly yearly. 5) Version alignment: axum's `ws` feature embeds a specific tungstenite version \u2014 keep tokio-tungstenite (CLI client) on the matching version or two copies compile in. 6) tower-http CompressionLayer must exclude the MJPEG route (compressing multipart/x-mixed-replace breaks progressive rendering and adds latency). 7) MJPEG framing is hand-written (the only maintained option); it is ~30 lines but needs a test against real browsers (Chrome/Firefox both render multipart/x-mixed-replace in <img>; Safari support has historically been flaky \u2014 flag Safari as a compatibility caveat, with a JPEG-poll or WS-binary-frame fallback as the documented escape hatch). 8) No native/system library dependencies exist anywhere in the recommended stack (all pure Rust, no TLS needed for localhost), so the hard license constraint is satisfied end-to-end: every recommended crate is MIT, MIT OR Apache-2.0, or (static-files, rejected anyway) Unlicense OR MIT; all verified on crates.io on 2026-08-07, with htmx additionally verified 0BSD against its repository LICENSE. MSRV ceiling of the recommended set is 1.88 (none conflict with a Rust 2024 workspace, which already requires 1.85+; edition mixing is a non-issue in Cargo)."
+}

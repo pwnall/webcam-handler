@@ -1,0 +1,335 @@
+{
+ "area": "Image/video capture pipeline for a V4L2 webcam tool: MJPEG/JPEG decode, YUYV/NV12\u2192RGB conversion, PNG/JPEG encode, permissive-only video recording (remux + encode + native-H.264 mux), calibration quality metrics, EXIF writing. All crates.io data verified 2026-08-07 via the crates.io API; capability claims verified against docs.rs/GitHub.",
+ "crates": [
+  {
+   "name": "zune-jpeg",
+   "version": "0.5.15 (released 2026-08-07)",
+   "license": "MIT OR Apache-2.0 OR Zlib",
+   "repository": "https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg",
+   "maintenance": "Extremely active (release literally today); primary author etemesi254 with image-rs collaboration since it became the `image` crate's default JPEG decoder. 89.2M all-time / 32.3M recent downloads.",
+   "downloads": "89M all-time, 32M recent-90d",
+   "fit": "PRIMARY for MJPEG frame decode. Pure Rust, fastest pure-Rust baseline+progressive JPEG decoder (near libjpeg-turbo speed), outputs RGB/BGR/Luma/YCbCr directly. MJPEG frames from webcams are baseline JPEG (some lack Huffman tables per the MJPEG spec \u2014 the classic MJPEG quirk; zune-jpeg handles standard streams, but verify against your camera since some UVC cams omit DHT segments and need default tables spliced in). Battle-tested via the image crate's default path.",
+   "native_deps": "None (pure Rust).",
+   "caveats": "Decode only (no encoder). For UVC cameras that emit DHT-less MJPEG, you must inject standard Huffman tables into the bitstream before decode (~40 lines, well-documented trick)."
+  },
+  {
+   "name": "turbojpeg",
+   "version": "1.5.1 (2026-07-25)",
+   "license": "Crate: Unlicense OR MIT. Links libjpeg-turbo: BSD-3-Clause (TurboJPEG API) AND IJG (libjpeg API code) AND Zlib (SIMD asm).",
+   "repository": "https://github.com/honzasp/rust-turbojpeg",
+   "maintenance": "Active (release 2026-07). Single maintainer (honzasp). 2.4M downloads.",
+   "downloads": "2.4M all-time, 785K recent",
+   "fit": "FALLBACK for maximum-throughput MJPEG decode (high-fps video recording pipelines). SIMD C library, roughly 2-4x faster than pure Rust on decode; has decompress-to-RGB/BGRA one-call API and optional `image` crate integration.",
+   "native_deps": "libjpeg-turbo \u2014 either system lib via pkg-config or vendored build requiring cmake + NASM. This is a real C dependency.",
+   "caveats": "LICENSE FLAG: BSD-3 and Zlib are on your allowlist; IJG is NOT on the stated allowlist. IJG is a permissive attribution license (the libjpeg license, shipped in virtually every Linux distro and commercial product), but it needs an explicit approval decision since your constraint enumerates licenses. Vendored build toolchain burden (cmake+nasm)."
+  },
+  {
+   "name": "yuv",
+   "version": "0.8.16 (2026-06-14)",
+   "license": "BSD-3-Clause OR Apache-2.0",
+   "repository": "https://github.com/awxkee/yuvutils-rs (crate name is `yuv`; the older crate `yuvutils-rs` 0.8.3 is the stale name, same repo)",
+   "maintenance": "Very active, 1000+ commits, continuous releases through mid-2026. Single prolific maintainer (awxkee, who also maintains moxcms and pic-scale used by image-rs \u2014 credible). 3.3M all-time / 1.25M recent downloads.",
+   "downloads": "3.3M all-time, 1.25M recent",
+   "fit": "PRIMARY for raw format conversion. Explicitly supports the exact webcam formats: YUYV/YUY2 packed 4:2:2 \u2192 RGB/RGBA, NV12 \u2192 RGB, I420/I422/I444 planar \u2192 RGB, plus 10/12-bit variants. BT.601/BT.709/BT.2020, limited+full range. Hand-written SIMD (SSE, AVX2, AVX-512, NEON, WASM) with runtime CPU detection; benchmarks at parity or better vs libyuv. This is precisely the V4L2 \u2192 RGB shim you need.",
+   "native_deps": "None (pure Rust + intrinsics).",
+   "caveats": "Bus factor 1. API is a large flat set of per-conversion functions (yuyv422_to_rgb etc.) \u2014 slightly verbose but trivially wrapped behind your backend trait."
+  },
+  {
+   "name": "dcv-color-primitives",
+   "version": "1.0.0 (2026-01-30)",
+   "license": "MIT-0",
+   "repository": "https://github.com/aws/dcv-color-primitives",
+   "maintenance": "AWS-owned (NICE DCV team); sporadic but alive (1.0.0 in Jan 2026). 691K downloads.",
+   "downloads": "691K all-time, 57K recent",
+   "fit": "FALLBACK for conversion \u2014 but verified limitation: supports ARGB/BGR/BGRA/RGB/I420/I444/NV12 conversions with BT.601/BT.709 and SIMD, yet does NOT support YUYV/YUY2 packed 4:2:2, which is the single most common USB webcam raw format. That gap disqualifies it as primary.",
+   "native_deps": "None (pure Rust).",
+   "caveats": "No YUYV. Corporate crate with slow issue turnaround. MIT-0 is fine (more permissive than MIT)."
+  },
+  {
+   "name": "image",
+   "version": "0.25.10 (2026-03-10)",
+   "license": "MIT OR Apache-2.0 (all default-feature transitive deps verified permissive: png MIT/Apache, zune-jpeg MIT/Apache/Zlib, jpeg-encoder (MIT OR Apache-2.0) AND IJG, gif MIT/Apache, tiff MIT, exr BSD-3, image-webp MIT/Apache, qoi MIT/Apache, ravif+avif-serialize BSD-3, rav1e BSD-2, bytemuck Zlib/MIT/Apache, moxcms BSD-3/Apache)",
+   "repository": "https://github.com/image-rs/image",
+   "maintenance": "Flagship image-rs org crate, many maintainers, very active. 164M downloads.",
+   "downloads": "164M all-time, 41M recent",
+   "fit": "PRIMARY facade for photo encode (PNG + JPEG) and the interchange type (ImageBuffer/DynamicImage) that imageproc consumes. Verified feature graph for 0.25.10: `jpeg` = zune-jpeg (decode) + jpeg-encoder (encode); `png` = png crate; DEFAULT features include `avif`, which pulls ravif\u2192rav1e \u2014 permissive but a heavy build-time cost.",
+   "native_deps": "None with default or trimmed features. (`avif-native` feature would link libdav1d BSD-2 \u2014 do not enable.)",
+   "caveats": "Use default-features=false, features=[\"png\",\"jpeg\"] to avoid compiling rav1e/exr/tiff etc. The jpeg-encoder dependency carries an `AND IJG` term (ported IJG code) \u2014 same allowlist flag as libjpeg-turbo; if IJG is refused, PNG output is 100% clean and JPEG photos can be saved by passing through the camera's own MJPEG bytes unmodified (zero re-encode, zero IJG)."
+  },
+  {
+   "name": "png",
+   "version": "0.18.1 (2026-02-14)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/image-rs/image-png",
+   "maintenance": "image-rs org, very active. 189M downloads.",
+   "downloads": "189M all-time, 57M recent",
+   "fit": "Direct PNG encode/decode if you want to bypass the image facade for lossless calibration captures. Pure Rust (miniz_oxide MIT/Zlib/Apache underneath). Streaming encoder, all bit depths.",
+   "native_deps": "None.",
+   "caveats": "None."
+  },
+  {
+   "name": "jpeg-encoder",
+   "version": "0.7.1 (2026-07-27)",
+   "license": "(MIT OR Apache-2.0) AND IJG",
+   "repository": "https://github.com/vstroebel/jpeg-encoder",
+   "maintenance": "Active (July 2026 release). 7.1M downloads. This is what `image` uses for JPEG encoding.",
+   "downloads": "7.1M all-time, 1.1M recent",
+   "fit": "Pure-Rust baseline JPEG encoder with optional SIMD (std feature), 4:2:0/4:2:2/4:4:4 subsampling, quality control. Needed only when re-encoding processed frames to JPEG (e.g., annotated calibration shots).",
+   "native_deps": "None.",
+   "caveats": "The AND IJG term (contains code derived from IJG libjpeg) requires the same allowlist exception decision as libjpeg-turbo. Flag once, decide once \u2014 it gates all JPEG *encode* paths in the pure-Rust ecosystem."
+  },
+  {
+   "name": "riff",
+   "version": "2.0.0 (2023-06-15)",
+   "license": "MIT",
+   "repository": "https://github.com/frabert/riff",
+   "maintenance": "Dormant since 2023 but the RIFF format is frozen; 11.7M downloads via downstream users. Low-level chunk reader/writer only.",
+   "downloads": "11.7M all-time",
+   "fit": "Optional helper for the recommended DEFAULT recording path: hand-rolled AVI/MJPEG muxer. AVI is the canonical MJPEG container (plays in VLC/mpv/ffmpeg/browsers-via-transcode); writing 'AVI ' + hdrl(avih+strl/strh/strf) + movi(00dc chunks) + idx1 is ~250-300 lines over riff or plain std::io. No maintained ready-made AVI muxer exists on crates.io (verified: `avi` is a reserved empty name; `avirus` is a non-standard-license glitch-art toy).",
+   "native_deps": "None.",
+   "caveats": "You own the muxer code; mitigate with round-trip tests through ffprobe/mpv in CI. Dormancy is acceptable for a frozen container format, or skip the crate and emit chunks directly."
+  },
+  {
+   "name": "webm-iterable",
+   "version": "0.6.4 (2024-12-12)",
+   "license": "MIT (wraps ebml-iterable 0.6.3, also MIT, same author)",
+   "repository": "https://github.com/austinleroy/webm-iterable",
+   "maintenance": "Small single-author project, last release Dec 2024, responsive history. 333K downloads.",
+   "downloads": "333K all-time, 87K recent",
+   "fit": "MKV alternative for MJPEG remux: WebmWriter writes Matroska tags, and since Matroska CodecID is just a string element you can emit V_MJPEG (full MKV, not the WebM codec subset) or V_MPEG4/ISO/AVC. Gives seekable, modern-container output without any codec.",
+   "native_deps": "None (pure Rust).",
+   "caveats": "Tag-level API: you assemble Segment/Info/Tracks/Cluster/SimpleBlock structure and timestamp math yourself (a thin muxer layer, but more spec knowledge than AVI). Bus factor 1."
+  },
+  {
+   "name": "shiguredo_mp4",
+   "version": "2026.4.0 (2026-08-03, calendar versioning)",
+   "license": "Apache-2.0",
+   "repository": "https://github.com/shiguredo/mp4-rs",
+   "maintenance": "Corporate-backed (Shiguredo Inc., Japanese WebRTC vendor), 1600+ commits, releases through Aug 2026, CI. Young on crates.io (30.6K downloads).",
+   "downloads": "30.6K all-time",
+   "fit": "PRIMARY MP4 muxer for the zero-encoder path: sans-I/O, zero-dependency, no_std-capable pure-Rust MP4 reader/writer supporting BOTH regular and fragmented MP4, with sample-entry support for H.264/AVC, H.265, VP8, VP9, AV1, plus AAC/Opus/FLAC. Exactly what's needed to mux native UVC-H.264 camera bitstreams or rav1e AV1 output into .mp4 without any codec library.",
+   "native_deps": "None.",
+   "caveats": "Docs primarily Japanese (English README exists); small English-speaking community; API churn possible under calendar versioning. Pin the version. Fallback: alfg/mp4."
+  },
+  {
+   "name": "mp4",
+   "version": "0.14.0 (2023-08-01)",
+   "license": "MIT",
+   "repository": "https://github.com/alfg/mp4-rust",
+   "maintenance": "Stale-but-not-dead: last release Aug 2023, 12 open issues, occasional commits. 11.9M downloads. Rerun forked it as re_mp4 (read-only) rather than upstream \u2014 a signal maintenance lagged.",
+   "downloads": "11.9M all-time, 1.4M recent",
+   "fit": "FALLBACK MP4 muxer. Mp4Writer + MediaConfig::AvcConfig (you supply SPS/PPS) writes avc1 tracks; also hev1, vp09, mp4a, tx3g. Proven for the write-H.264-samples use case. No AV1, no MJPEG sample entries.",
+   "native_deps": "None.",
+   "caveats": "3 years without a release; you may need to vendor patches (e.g., large-file/co64 edge cases in its tracker)."
+  },
+  {
+   "name": "h264-reader",
+   "version": "0.8.0 (2025-01-28)",
+   "license": "MIT/Apache-2.0",
+   "repository": "https://github.com/dholroyd/h264-reader",
+   "maintenance": "Active, maintained by dholroyd (mpeg2ts-reader ecosystem). 1.49M downloads.",
+   "downloads": "1.5M all-time, 669K recent",
+   "fit": "Required glue for the UVC-native-H.264 path: parses Annex B byte streams, splits NALs, decodes SPS/PPS (profile/level/resolution) so you can build the avcC box and convert Annex B \u2192 AVCC length-prefixed samples for MP4 muxing, and detect IDR frames for keyframe flags.",
+   "native_deps": "None.",
+   "caveats": "Parser only (by design). Note V4L2_PIX_FMT_H264 delivery varies by camera (Annex B with in-band SPS/PPS is typical for UVC 1.1 vendor extensions; UVC 1.5 H.264 is rarer on Linux)."
+  },
+  {
+   "name": "openh264",
+   "version": "0.9.7 (2026-07-08); openh264-sys2 same version",
+   "license": "BSD-2-Clause (crate and Cisco's OpenH264 source both)",
+   "repository": "https://github.com/ralfbiedert/openh264-rs",
+   "maintenance": "Active releases (edition 2024, MSRV 1.83), but maintainer explicitly states limited time / relies on contributors. 668K downloads.",
+   "downloads": "668K all-time, 336K recent",
+   "fit": "The optional real-time H.264 ENCODER escape hatch (for cameras without native H.264, when MJPEG remux isn't acceptable). Software encoder, real-time capable at 720p/1080p, YUV420 input, bitrate control. Two modes: (a) default `source` feature \u2014 openh264-sys2 compiles bundled Cisco BSD-2 source with cc, no external deps; (b) `libloading` feature \u2014 dlopens a Cisco-distributed prebuilt binary you fetch separately.",
+   "native_deps": "None in source mode (C compiler only); Cisco .so download in libloading mode.",
+   "caveats": "THE PATENT NUANCE, precisely: BSD-2 grants copyright, not patents. H.264 is covered by the Via-LA (ex-MPEG-LA) AVC pool. Cisco's promise to pay pool royalties applies ONLY to the unmodified prebuilt binaries downloaded from Cisco's servers (the Firefox model \u2014 fetch at install/run time with user notice, per Cisco's binary license); compiling from source (the crate's default) gives you zero patent cover from Cisco. Mitigating context, not legal advice: the core AVC baseline patents have largely expired (US essentially by ~2023-2027), and a CLI tool for personal webcams is a low-risk profile \u2014 but a design doc must state: use `libloading` + Cisco binary for the conservative posture, or ship source-build behind a non-default cargo feature with a README notice."
+  },
+  {
+   "name": "rav1e",
+   "version": "0.8.1 (2025-06-16)",
+   "license": "BSD-2-Clause",
+   "repository": "https://github.com/xiph/rav1e/",
+   "maintenance": "Xiph/AOM-adjacent project, many contributors, steady if slowed releases. 38.2M downloads (pulled in by image/ravif for AVIF).",
+   "downloads": "38.2M all-time, 12.3M recent",
+   "fit": "The fully-permissive, royalty-free ENCODER option: AV1 (AOM patent license = royalty-free with defensive termination \u2014 no pool fees ever). Pure Rust with optional nasm-built asm. Use for offline/short-clip recording or timelapse; speed presets 0-10, but even at speed 10 sustained 1080p30 realtime is marginal on typical CPUs \u2014 treat as offline transcode or low-res live. Mux output into MP4 via shiguredo_mp4 (av01), IVF via `ivf` crate, or MKV (V_AV1) via webm-iterable.",
+   "native_deps": "None required (asm feature optionally needs nasm on x86_64; off by default when consumed via ravif/image `nasm` feature).",
+   "caveats": "Speed. Also binary size and compile time are significant. AV1 playback support is now ubiquitous (browsers, VLC, mpv), so ecosystem risk is low."
+  },
+  {
+   "name": "ivf",
+   "version": "0.1.4 (2025-05-26)",
+   "license": "BSD-2-Clause",
+   "repository": "rust-av project (crates.io lists no repo URL; published from rust-av)",
+   "maintenance": "Minimal but sufficient \u2014 IVF is a trivial frozen format. 328K downloads.",
+   "downloads": "328K all-time",
+   "fit": "Simplest possible container for raw AV1/VP9 streams (IVF is what aomenc/rav1e CLI emit). Good intermediate/debug output for the AV1 path before MP4 muxing.",
+   "native_deps": "None.",
+   "caveats": "IVF is a developer format, not an end-user container; ship MP4/MKV for users."
+  },
+  {
+   "name": "y4m",
+   "version": "0.8.0 (2023-04-21)",
+   "license": "MIT",
+   "repository": "https://github.com/image-rs/y4m",
+   "maintenance": "Dormant but format is frozen (YUV4MPEG2); image-rs org. 21.1M downloads.",
+   "downloads": "21M all-time, 10.7M recent",
+   "fit": "Zero-risk raw video escape hatch: write uncompressed YUV4MPEG2 streams that pipe directly into any external encoder (`ffmpeg -i cap.y4m`, aomenc, x264 CLI) \u2014 keeps every non-permissive codec fully outside your process and distribution. Also ideal for calibration-session lossless capture.",
+   "native_deps": "None.",
+   "caveats": "Enormous files (1080p30 YUYV \u2248 124 MB/s); positioning is debug/pipeline, not default output."
+  },
+  {
+   "name": "ffmpeg-sidecar",
+   "version": "2.5.2 (2026-05-30)",
+   "license": "MIT (crate; it links NOTHING \u2014 spawns an external ffmpeg process over pipes)",
+   "repository": "https://github.com/nathanbabcock/ffmpeg-sidecar",
+   "maintenance": "Active (May 2026), responsive maintainer. 1.57M downloads.",
+   "downloads": "1.6M all-time, 461K recent",
+   "fit": "EXTERNAL-TOOL escape hatch (explicitly flagged as such): full transcode/mux capability (H.264/H.265/VP9/AV1, any container) by piping raw or MJPEG frames to a user-supplied ffmpeg binary. Because it execs a separate program and links nothing, the (L)GPL of the ffmpeg binary does not touch your distribution \u2014 acceptable under your constraint as an EXTERNAL TOOL DEPENDENCY, opt-in at runtime.",
+   "native_deps": "External binary: ffmpeg on PATH (or its optional auto-download helper \u2014 disable auto-download and require system ffmpeg to keep distribution clean).",
+   "caveats": "Must be an optional runtime feature with graceful absence handling, never a hard dependency; document that users who invoke it are running GPL software themselves (fine). Do not bundle/redistribute the ffmpeg binary in your packages."
+  },
+  {
+   "name": "imageproc",
+   "version": "0.27.0 (2026-06-02)",
+   "license": "MIT",
+   "repository": "https://github.com/image-rs/imageproc",
+   "maintenance": "image-rs org, active (June 2026 release), multiple maintainers. 11.8M downloads.",
+   "downloads": "11.8M all-time, 2.9M recent",
+   "fit": "PRIMARY for calibration scoring: `filter::laplacian_filter` gives variance-of-Laplacian focus/sharpness scoring (the standard autofocus metric); Sobel gradients (`gradients` module) for edge energy (alternative sharpness metric better for pan/tilt scenes); integral images for fast regional mean/variance (exposure/white-balance scoring per region); plus contrast/histogram utilities. Operates on `image` buffers directly.",
+   "native_deps": "None (rayon optional).",
+   "caveats": "Variance of the Laplacian response is ~10 lines of your own iterator code on top of laplacian_filter (imageproc gives the filter, you compute the statistic). If you want zero extra deps, the whole metric is ~30 lines hand-rolled over a GrayImage \u2014 a legitimate alternative; imageproc earns its place once you also want regional stats and Sobel."
+  },
+  {
+   "name": "image-compare",
+   "version": "0.5.0 (2025-08-18)",
+   "license": "MIT",
+   "repository": "https://github.com/ChrisRega/image-compare",
+   "maintenance": "Single maintainer, steady annual releases. 1.6M downloads.",
+   "downloads": "1.6M all-time, 493K recent",
+   "fit": "OPTIONAL for calibration: SSIM / RMS / hybrid similarity between two frames \u2014 useful for measuring stability across a control sweep (e.g., detecting when white-balance has settled, or scoring frame-to-frame consistency). Permissive replacement for the AGPL dssim.",
+   "native_deps": "None.",
+   "caveats": "Not needed for MVP; add only if calibration uses frame-differencing metrics."
+  },
+  {
+   "name": "ndarray",
+   "version": "0.17.2 (2026-01-10)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/rust-ndarray/ndarray",
+   "maintenance": "Very active, org-maintained. 108M downloads.",
+   "downloads": "108M all-time, 24M recent",
+   "fit": "OPTIONAL: only if calibration analysis grows into real numeric work (per-control response curves, polynomial fits over sweep data). For mean/variance/max-sharpness-argmax, plain slices suffice \u2014 recommend NOT adding it initially to keep the core lean.",
+   "native_deps": "None (BLAS strictly optional, don't enable).",
+   "caveats": "Dependency weight without proven need; defer."
+  },
+  {
+   "name": "little_exif",
+   "version": "0.6.23 (2026-01-13)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/TechnikTobi/little_exif",
+   "maintenance": "Active (Jan 2026, 740+ commits), single maintainer. 311K all-time / 141K recent downloads \u2014 adoption is climbing.",
+   "downloads": "311K all-time, 141K recent",
+   "fit": "PRIMARY for EXIF writing \u2014 verified it is the only pure-Rust crate with a one-call EXIF WRITE API: Metadata::new_from_path \u2192 set_tag(ExifTag::...) \u2192 write_to_file, supporting JPEG, PNG, TIFF, WebP, JXL, HEIF. Perfect for stamping captured photos with camera model, timestamp, and your calibration state (control values per shot) in ImageDescription/UserComment. Answer to 'if easy': yes, genuinely easy.",
+   "native_deps": "None.",
+   "caveats": "Bus factor 1; tag coverage is good for standard IFD0/ExifIFD tags but exotic tags may be missing \u2014 round-trip-test the tags you write with exiftool in CI."
+  },
+  {
+   "name": "kamadak-exif",
+   "version": "0.6.1 (2024-11-06)",
+   "license": "BSD-2-Clause",
+   "repository": "https://github.com/kamadak/exif-rs",
+   "maintenance": "Mature, slow-moving (Nov 2024 release), stable API. 12.1M downloads \u2014 the de-facto EXIF reader.",
+   "downloads": "12.1M all-time, 2.5M recent",
+   "fit": "FALLBACK/READER: best-in-class EXIF parsing (useful for verifying what you wrote); writing exists only via `exif::experimental::Writer`, which serializes an EXIF blob you must splice into the JPEG APP1 segment yourself \u2014 pair with img-parts (MIT OR Apache-2.0, 10.1M downloads, active 2025-08, https://github.com/paolobarbolini/img-parts) which does exactly that splice for JPEG/PNG/WebP.",
+   "native_deps": "None.",
+   "caveats": "Write path is labeled experimental and is 3x the integration code of little_exif."
+  }
+ ],
+ "rejected": [
+  {
+   "name": "minimp4",
+   "reason": "LICENSE: crates.io declares MPL-2.0 (the Rust wrapper darkskygit/minimp4.rs), despite upstream lieff/minimp4 C being CC0 \u2014 MPL is copyleft, banned by constraint. Also near-dormant (0.1.2, 2024-06, 60K downloads). If ever reconsidered, one would bind the CC0 C header directly, but shiguredo_mp4 makes that pointless."
+  },
+  {
+   "name": "jpeg-decoder",
+   "reason": "License fine (MIT OR Apache-2.0, image-rs) but SUPERSEDED: the image crate itself switched its default JPEG path to zune-jpeg; jpeg-decoder is slower and now maintenance-mode (0.3.2, 2025-06). No reason to prefer it."
+  },
+  {
+   "name": "mozjpeg / mozjpeg-sys",
+   "reason": "LICENSE FLAG + POOR FIT: crates.io declares `IJG` for mozjpeg and `IJG AND Zlib AND BSD-3-Clause` for mozjpeg-sys \u2014 IJG is permissive but not on your enumerated allowlist, so it needs the same exception as libjpeg-turbo while offering nothing for this use case: mozjpeg's value is slow, high-compression ENCODING (web asset optimization), irrelevant to webcam capture. Native C build too."
+  },
+  {
+   "name": "zune-image",
+   "reason": "POOR FIT as a framework: fine triple license (MIT/Apache/Zlib) but only 80K downloads vs image's 164M, no packed-YUV (YUYV) support for the conversion role, and its valuable piece \u2014 zune-jpeg \u2014 is consumed directly and via the image crate anyway. Redundant surface area."
+  },
+  {
+   "name": "x264 (crate) / any x265 binding",
+   "reason": "LICENSE: crate wrapper is MIT but it LINKS libx264/libx265 which are GPL-2.0+ (dual 'GPL or commercial') \u2014 hard reject per constraint. Also x264 crate is dormant (0.5.0, 2022)."
+  },
+  {
+   "name": "ffmpeg-next + ffmpeg-sys-next",
+   "reason": "LICENSE: crate code is WTFPL (itself an odd non-allowlisted license), but decisive issue is that ffmpeg-sys-next LINKS FFmpeg: libavcodec/libavformat are LGPL-2.1+ at minimum, GPL in every common distro build (x264 enabled). Your constraint bans all copyleft including LGPL, so no FFmpeg build configuration can comply \u2014 even a custom LGPL-only, shared-linked build is still LGPL. Only the process-boundary approach (ffmpeg-sidecar) is compatible."
+  },
+  {
+   "name": "env-libvpx-sys",
+   "reason": "LICENSE: the wrapper crate itself is MPL-2.0 (copyleft) even though libvpx is BSD-3. Also stale (2023). VP8/VP9 in-process encoding therefore has no compliant maintained binding; if VP9 were ever required, new bindgen bindings to BSD-3 libvpx would have to be written in-house."
+  },
+  {
+   "name": "vpx-encode",
+   "reason": "Depends on env-libvpx-sys (MPL-2.0) and dormant since 2022 (0.6.2). Rejected for transitive license + abandonment."
+  },
+  {
+   "name": "webm (rust-webm)",
+   "reason": "LICENSE: MPL-2.0 wrapper over libwebm \u2014 copyleft, rejected despite libwebm itself being BSD-3."
+  },
+  {
+   "name": "svt-av1-enc / svt-av1-sys / svt-av1-rs",
+   "reason": "Bindings are tiny or dead (svt-av1-sys/-rs frozen at 2020, 0.1.x; svt-av1-enc 2K downloads, pinned to one SVT-AV1 version, needs system library). Native SVT-AV1 is BSD-3-Clause-CLEAR + AOM patent grant \u2014 permissive in spirit but BSD-3-Clause-Clear is not on your allowlist (it explicitly withholds patent grants). rav1e covers AV1 without any of this."
+  },
+  {
+   "name": "av-format (rust-av)",
+   "reason": "POOR FIT/IMMATURE: MIT but low activity (3.7K recent downloads), incomplete muxer implementations, rust-av ecosystem never reached production critical mass for containers. shiguredo_mp4/webm-iterable are better targeted."
+  },
+  {
+   "name": "matroska (tuffy)",
+   "reason": "READ-ONLY: solid MIT/Apache metadata parser, but provides no writing/muxing \u2014 wrong direction for a recorder."
+  },
+  {
+   "name": "re_mp4",
+   "reason": "READER ONLY (verified in repo README: fork of alfg/mp4 focused on demuxing for Rerun's video playback; 'does NOT decode' and does not mux). Great provenance, wrong direction."
+  },
+  {
+   "name": "mp4_muxer",
+   "reason": "IMMATURE: v0.1.0 published 2026-07 with 25 total downloads, unknown author. Cannot be load-bearing in a design document."
+  },
+  {
+   "name": "mp4e",
+   "reason": "IMMATURE: pure-Rust MP4 muxer with 2.9K downloads, single hobby author \u2014 superseded by shiguredo_mp4 which is corporate-backed and broader."
+  },
+  {
+   "name": "avirus",
+   "reason": "crates.io license field is 'non-standard' (custom license) and it is a glitch-art AVI manipulation toy (12K downloads, dormant) \u2014 rejected on license AND fit. Also checked: the crate name `avi` is a RESERVED empty placeholder (0.0.0, 2017); there is genuinely no maintained AVI writer on crates.io, hence the hand-roll recommendation."
+  },
+  {
+   "name": "less-avc",
+   "reason": "NICHE: strawlab's pure-Rust H.264 writer (MIT/Apache) encodes LOSSLESS H.264 only \u2014 files larger than MJPEG, marginal player support for lossless profiles, dormant since 2023. Interesting existence proof, wrong tool here."
+  },
+  {
+   "name": "dssim",
+   "reason": "LICENSE: AGPL-3.0 \u2014 strongest copyleft, hard reject. Use image-compare (MIT) for SSIM-family metrics instead."
+  },
+  {
+   "name": "gstreamer / gstreamer-app bindings",
+   "reason": "Bindings are MIT/Apache but they LINK the GStreamer runtime (LGPL-2.1) \u2014 banned by the no-copyleft-of-any-strength constraint, same reasoning as FFmpeg linking."
+  },
+  {
+   "name": "statrs",
+   "reason": "UNNECESSARY: fine license (MIT) but calibration needs mean/variance/argmax \u2014 std iterators suffice; adding a statistics tower is dead weight."
+  },
+  {
+   "name": "kamadak-exif as writer (specifically)",
+   "reason": "Not rejected as a crate (recommended as reader/fallback) but rejected as the primary WRITE path: its Writer is in an `experimental` module and requires manual APP1 splicing via img-parts \u2014 little_exif does the same job in three lines."
+  }
+ ],
+ "recommendation": "(1) JPEG/MJPEG DECODE \u2014 Primary: zune-jpeg (MIT/Apache/Zlib, pure Rust, fastest pure-Rust, released today, backs the image crate). Fallback: turbojpeg (Unlicense/MIT crate over libjpeg-turbo BSD-3+IJG+Zlib) only if profiling shows the decode budget demands SIMD C \u2014 requires an explicit IJG-license exception plus cmake/nasm. Handle DHT-less MJPEG frames by splicing standard Huffman tables. (2) RAW CONVERSION \u2014 Primary: yuv crate (BSD-3/Apache-2.0, SIMD, supports YUYV+NV12+I420, the exact V4L2 formats; verified dcv-color-primitives has NO YUYV support). Fallback: hand-rolled scalar YUYV\u2192RGB (~30 lines) to keep a zero-dep build profile; dcv-color-primitives (MIT-0) acceptable for NV12/I420-only paths. (3) PNG/JPEG ENCODE \u2014 Primary: image crate with default-features=false, features=[\"png\",\"jpeg\"] (avoids the default avif\u2192rav1e build hit; verified dep licenses all permissive). PNG path is allowlist-pure; JPEG encode carries jpeg-encoder's AND-IJG term \u2014 flag for the same single IJG decision; if refused, save photos as camera-native MJPEG bytes (no re-encode) or PNG. (4) VIDEO \u2014 LAYERED STRATEGY, default = zero non-permissive code and zero encoders: L0 remux camera MJPEG into a hand-rolled AVI writer (~300 lines, no viable crate exists \u2014 verified; riff MIT optional) and/or MKV V_MJPEG via webm-iterable (MIT); plus y4m (MIT) raw output for pipelines. L1 for UVC cameras exposing V4L2_PIX_FMT_H264: parse with h264-reader (MIT/Apache), mux to MP4 with shiguredo_mp4 (Apache-2.0, pure Rust, active; fallback alfg/mp4 MIT but stale since 2023) \u2014 real .mp4 output with no encoder and no patent-implementing code. L2 optional cargo feature \"encode-av1\": rav1e (BSD-2, royalty-free AV1) \u2192 MP4 via shiguredo_mp4 or IVF/MKV \u2014 the only fully-permissive, patent-royalty-free in-process encode path; positioned for offline/short clips due to speed. L3 optional cargo feature \"encode-h264\": openh264 (BSD-2) \u2014 conservative posture uses the libloading feature with Cisco's downloaded binary (Cisco pays pool royalties, Firefox model); source-build mode is BSD-2 code but zero patent cover \u2014 ship OFF by default with documented tradeoff. L4 runtime escape hatch: ffmpeg-sidecar (MIT) spawning user-installed ffmpeg \u2014 flagged external-tool dependency, never bundled, never linked. Rejected outright: minimp4 (MPL), x264/x265 (GPL), ffmpeg-next/-sys (links LGPL/GPL \u2014 no compliant configuration exists), env-libvpx-sys/rust-webm (MPL wrappers), svt-av1 bindings (dead + BSD-3-Clause-Clear). (5) CALIBRATION METRICS \u2014 Primary: imageproc (MIT, active) for laplacian_filter (variance-of-Laplacian focus scoring), Sobel gradients, and integral-image regional stats; compute the variance statistic in ~10 lines of your code. Optional: image-compare (MIT) for SSIM-based stability scoring across sweeps; defer ndarray until response-curve fitting demands it; dssim is AGPL \u2014 never. (6) EXIF \u2014 Primary: little_exif (MIT/Apache, pure Rust, one-call write to JPEG/PNG/WebP/TIFF \u2014 genuinely easy; stamp control values into UserComment/ImageDescription per calibration shot). Fallback: kamadak-exif (BSD-2) experimental Writer + img-parts (MIT/Apache) for APP1 splicing, and kamadak-exif as the verification reader in tests.",
+ "risks": "1) IJG-license decision is a single gate affecting all pure-Rust JPEG ENCODE paths (jpeg-encoder's AND-IJG) and both fast-C decode options (libjpeg-turbo, mozjpeg): IJG is a universally-shipped permissive attribution license but is NOT on the project's enumerated allowlist \u2014 get an explicit yes/no early; a 'no' still leaves full functionality (zune-jpeg decode + PNG/native-MJPEG output). 2) H.264 patent posture: BSD-2 code licenses (OpenH264) do not grant patent rights; Cisco's royalty cover applies only to their downloaded binary; core AVC patents are largely expired by 2026 but not uniformly worldwide \u2014 keep every H.264 ENCODER behind non-default features and document the choice (muxing/remuxing existing camera bitstreams implements no codec and is low-risk). 3) Hand-rolled AVI muxer is owned code: bounded (~300 lines, frozen format) but must be CI-tested against ffprobe/mpv; the absence of any maintained AVI crate is confirmed, so this cost is unavoidable for the MJPEG default path. 4) Bus-factor-1 crates on the critical path: yuv (awxkee), little_exif (TechnikTobi), webm-iterable (austinleroy), turbojpeg (honzasp) \u2014 all healthy today (verified activity through 2026), but pin versions and keep the hand-rolled conversion fallback alive. 5) shiguredo_mp4 is young on crates.io (30K downloads, calendar-versioned, Japanese docs) \u2014 mitigated by corporate backing and the alfg/mp4 fallback; conversely alfg/mp4 has had no release since 2023, so track both. 6) image crate DEFAULT features now include avif\u2192ravif\u2192rav1e: harmless licensing-wise but a large build-time cost and it drags an AV1 encoder into every build \u2014 must remember default-features=false. 7) MSRV/edition: a Rust 2024 workspace already requires rustc \u22651.85, which satisfies every observed MSRV (highest seen: openh264 at 1.83); dependency crates' older editions are irrelevant to workspace edition. 8) UVC H.264 (L1 path) hardware coverage is spotty on Linux \u2014 many cameras advertise it only via UVC 1.5 or vendor extensions; treat L1 as opportunistic, MJPEG-remux L0 as the guaranteed baseline. 9) rav1e realtime limits: do not promise live 1080p AV1 recording; scope it to offline transcode/timelapse or verify per-machine at runtime."
+}

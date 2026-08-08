@@ -1,0 +1,323 @@
+{
+ "area": "CLI ergonomics and shared plumbing (argument parsing, completions/man pages, tables, progress, color, errors, logging/journald, config, XDG paths, daemonization/systemd, human-friendly output) for the webcam-handler Rust 2024 workspace",
+ "crates": [
+  {
+   "name": "clap",
+   "version": "4.6.6 (2026-08-06)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/clap-rs/clap",
+   "downloads": "~1.03B all-time, ~214M recent",
+   "maintenance": "Extremely active; release the day before research date (2026-08-06). Large maintainer team (clap-rs org, epage lead). MSRV 1.85 \u2014 exactly the Rust 2024 edition baseline, so fully edition-2024 compatible.",
+   "native_deps": "None",
+   "fit": "Argument parsing for the CLI binary, daemon, and CLI client via #[derive(Parser)] with subcommands (enumerate, caps, get/set control, capture, calibrate). Derive API gives typed args, value enums (pixel formats), value parsers/ranges (control values), env fallback, and colored help via its anstream/anstyle stack. The de facto standard; zero-risk choice.",
+   "caveats": "Derive feature must be enabled explicitly (features = [\"derive\"]). Compile-time cost is the usual complaint; irrelevant at this project scale."
+  },
+  {
+   "name": "clap_complete",
+   "version": "4.6.9 (2026-08-06)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/clap-rs/clap (same monorepo)",
+   "downloads": "~100M all-time, ~25M recent",
+   "maintenance": "Released in lockstep with clap; same team; MSRV 1.85.",
+   "native_deps": "None",
+   "fit": "Shell completion generation (bash/zsh/fish/elvish/powershell) for both CLI binaries. Typical pattern: a hidden `completions <shell>` subcommand or a build.rs/xtask that writes completion files for packaging. Also offers unstable-dynamic completions (CompleteEnv) if runtime completion of e.g. camera names is ever wanted.",
+   "caveats": "Keep its version aligned with clap's minor version. Dynamic-completion API is behind an unstable feature flag \u2014 stick to static generation."
+  },
+  {
+   "name": "clap_mangen",
+   "version": "0.3.2 (2026-08-06)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/clap-rs/clap (same monorepo)",
+   "downloads": "~13.6M all-time, ~3.5M recent",
+   "maintenance": "Released in lockstep with clap; same team; MSRV 1.85.",
+   "native_deps": "None (generates roff text; no groff needed at build time)",
+   "fit": "man page generation straight from the same clap::Command definitions used for parsing, so man pages never drift from --help. Best invoked from an xtask or build.rs producing troff into a dist/ directory for packaging.",
+   "caveats": "Still 0.x; API is small and stable in practice. Multi-page output for subcommands requires iterating subcommands yourself (documented pattern)."
+  },
+  {
+   "name": "clap-verbosity-flag",
+   "version": "3.0.4 (2025-08-19)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/clap-rs/clap-verbosity-flag",
+   "downloads": "~16.6M all-time, ~3.2M recent",
+   "maintenance": "Maintained under the clap-rs org; MSRV 1.74; slower cadence but it is a tiny finished crate.",
+   "native_deps": "None",
+   "fit": "Optional nicety: adds conventional -v/-q flags that map directly to a tracing level filter (has a `tracing` feature). One #[command(flatten)] line per binary; keeps -v semantics identical across cli, daemon, and client.",
+   "caveats": "Pure convenience \u2014 trivially hand-rollable if you prefer one less dependency."
+  },
+  {
+   "name": "comfy-table",
+   "version": "8.0.0 (2026-08-05)",
+   "license": "MIT",
+   "repository": "https://github.com/nukesor/comfy-table",
+   "downloads": "~90M all-time, ~17M recent",
+   "maintenance": "Very healthy: 8.0.0 released 2026-08-05, repo pushed same week, only 4 open issues, 1.4k stars. Single primary maintainer (Nukesor) but responsive for years. v7.2.1 documents MSRV 1.85 (edition-2024 compatible).",
+   "native_deps": "None. Runtime deps verified all-permissive: unicode-segmentation, unicode-width, optional crossterm/console/ansi-str (all MIT or MIT/Apache).",
+   "fit": "Terminal tables for camera enumeration and capability/control listings. Its killer feature for this project is automatic content-aware column wrapping and terminal-width detection (tty feature) \u2014 control descriptions and menu-item lists wrap cleanly instead of overflowing. Dynamic row-by-row API suits data coming from device queries. Styling presets (UTF8_FULL, NOTHING) allow both pretty and pipe-friendly plain output.",
+   "caveats": "Builder-style API only \u2014 no derive from structs (that is tabled's niche). 8.0.0 is days old; pin ^8 and expect no churn (changelog is a routine major)."
+  },
+  {
+   "name": "tabled",
+   "version": "0.21.0 (2026-05-31)",
+   "license": "MIT",
+   "repository": "https://github.com/zhiburt/tabled",
+   "downloads": "~35M all-time, ~8.3M recent",
+   "maintenance": "Active: repo pushed 2026-07-15, release May 2026, 2.4k stars; 116 open issues reflects large feature surface; effectively single maintainer (zhiburt).",
+   "native_deps": "None",
+   "fit": "Fallback table crate. #[derive(Tabled)] on your CameraInfo/ControlInfo structs renders Vec<T> directly \u2014 very ergonomic when table rows mirror serde structs you already define for JSON output. Rich styling/format system.",
+   "caveats": "Pre-1.0 with occasional breaking API churn between 0.x releases; terminal-width-aware wrapping is less automatic than comfy-table's. Choose one table crate, not both."
+  },
+  {
+   "name": "indicatif",
+   "version": "0.18.6 (2026-07-01)",
+   "license": "MIT",
+   "repository": "https://github.com/console-rs/indicatif",
+   "downloads": "~195M all-time, ~45M recent",
+   "maintenance": "Active (console-rs org, djc/mitsuhiko lineage); release July 2026; MSRV 1.85 (edition-2024 compatible).",
+   "native_deps": "None (uses console crate, MIT)",
+   "fit": "Progress reporting for exactly our long operations: settle/skip-frame countdowns during photo capture, video capture duration, and especially calibration sweeps (ProgressBar over the control's value range, MultiProgress if sweeping multiple controls, ProgressStyle with ETA + current control value via msg). suspend() lets you print per-step log lines without corrupting the bar.",
+   "caveats": "The only mainstream option and there is no reason to look further. Interacts with tracing output \u2014 route tracing fmt output through indicatif's suspend or use tracing-indicatif if bars and logs must interleave (only in the interactive CLI, not the daemon)."
+  },
+  {
+   "name": "anstream",
+   "version": "1.0.0 (2026-02-11)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/rust-cli/anstyle",
+   "downloads": "~598M all-time, ~163M recent",
+   "maintenance": "rust-cli org (epage \u2014 same maintainer as clap); hit 1.0.0 in Feb 2026; MSRV 1.66.",
+   "native_deps": "None",
+   "fit": "Color-capable stdout/stderr wrappers (anstream::stdout()/println!) that auto-degrade: strips ANSI when piped, respects NO_COLOR/CLICOLOR/TERM=dumb. Already in the dependency tree because clap's default `color` feature uses it \u2014 so adopting it for our own output adds zero new transitive deps and guarantees our colors and clap's help colors obey identical rules.",
+   "caveats": "Lower-level ergonomics than owo-colors: you write styled text via anstyle style structs or ANSI-in-format-strings rather than `\"text\".red()`."
+  },
+  {
+   "name": "anstyle",
+   "version": "1.0.14 (2026-03-13)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/rust-cli/anstyle",
+   "downloads": "~646M all-time, ~178M recent",
+   "maintenance": "Same org/maintainer as anstream and clap; stable 1.x; MSRV 1.66.",
+   "native_deps": "None",
+   "fit": "The style-definition vocabulary (Style, AnsiColor, Effects) shared by clap, anstream, and clap's `styles()` customization. Needed anyway if we theme clap help output; pairs with anstream for our own colored output.",
+   "caveats": "None of note; it is a tiny vocabulary crate."
+  },
+  {
+   "name": "owo-colors",
+   "version": "4.3.0 (2026-04-14)",
+   "license": "MIT",
+   "repository": "https://github.com/owo-colors/owo-colors",
+   "downloads": "~148M all-time, ~31.5M recent",
+   "maintenance": "Active (jam1garner + org); release April 2026; MSRV 1.81.",
+   "native_deps": "None",
+   "fit": "Ergonomic alternative for colored output: zero-allocation `\"text\".red().bold()` extension-trait API, with if_supports_color() for terminal detection. Drop-in replacement for the MPL-licensed `colored`. Also what miette's fancy reporter uses, so it arrives anyway if miette is adopted.",
+   "caveats": "Its stream-detection (supports-colors feature) is per-call-site rather than anstream's whole-stream wrapping; mixing owo-colors and anstream conventions in one binary invites inconsistency \u2014 pick one idiom."
+  },
+  {
+   "name": "anyhow",
+   "version": "1.0.104 (2026-07-18)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/dtolnay/anyhow",
+   "downloads": "~856M all-time, ~190M recent",
+   "maintenance": "dtolnay; effectively infrastructure-grade; release July 2026; MSRV 1.68.",
+   "native_deps": "None",
+   "fit": "Application-side error type for the three binaries (cli, daemon, client): context chaining (`.context(\"opening /dev/video0\")`), main() -> anyhow::Result<()> with readable multi-cause output. Not for the core library's public API.",
+   "caveats": "Opaque error type \u2014 never expose it across the core library boundary; that is thiserror's job."
+  },
+  {
+   "name": "thiserror",
+   "version": "2.0.19 (2026-07-18)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/dtolnay/thiserror",
+   "downloads": "~1.28B all-time, ~318M recent",
+   "maintenance": "dtolnay; the most-downloaded proc-macro-adjacent crate in the ecosystem; release July 2026; MSRV 1.71.",
+   "native_deps": "None",
+   "fit": "Typed error enums for the core library and daemon protocol: CameraError::{DeviceNotFound, Busy, UnsupportedFormat, ControlOutOfRange, Io(#[from] io::Error), ...}. Callers (daemon JSON-RPC error mapping!) can match variants to produce structured error codes \u2014 exactly what a pluggable-backend trait needs. Use v2.x.",
+   "caveats": "None."
+  },
+  {
+   "name": "miette",
+   "version": "7.6.0 (2025-04-27)",
+   "license": "Apache-2.0 (verified on crates.io and GitHub \u2014 permissive, passes constraint)",
+   "repository": "https://github.com/zkat/miette",
+   "downloads": "~65M all-time, ~15M recent",
+   "maintenance": "Repo active (pushed 2026-06-25, 2.6k stars, zkat + contributors) though last release is Apr 2025; MSRV 1.70.",
+   "native_deps": "None",
+   "fit": "Fancy graphical diagnostics with labeled source spans. License is fine, but its value is highest when errors point into source text (parsers, compilers). Our errors are about devices and ioctls, not spans \u2014 anyhow's context chain covers it.",
+   "caveats": "Heavier dependency tree with `fancy` feature (owo-colors, supports-color, textwrap...). Evaluated and passed on for fit, not license: adopt later only if we want pretty rendered diagnostics for config-file validation errors."
+  },
+  {
+   "name": "tracing",
+   "version": "0.1.44 (2025-12-18)",
+   "license": "MIT",
+   "repository": "https://github.com/tokio-rs/tracing",
+   "downloads": "~756M all-time, ~173M recent",
+   "maintenance": "tokio-rs org; ecosystem cornerstone; MSRV 1.65. 0.1.x has been the stable line for years (0.2 long in the works \u2014 no urgency).",
+   "native_deps": "None",
+   "fit": "Instrumentation facade for all crates including the core library (structured fields: device path, control id, frame count; #[instrument] spans around capture/calibration steps). Async-aware \u2014 matters for the JSON-RPC daemon. The library crates depend only on `tracing`, never on a subscriber, preserving backend pluggability.",
+   "caveats": "None."
+  },
+  {
+   "name": "tracing-subscriber",
+   "version": "0.3.23 (2026-03-13)",
+   "license": "MIT",
+   "repository": "https://github.com/tokio-rs/tracing",
+   "downloads": "~538M all-time, ~133M recent",
+   "maintenance": "Same org; release March 2026; MSRV 1.65.",
+   "native_deps": "None",
+   "fit": "Subscriber assembly in the binaries: fmt layer for CLI stderr, EnvFilter for RUST_LOG-style filtering (enable `env-filter` feature), layered composition to add journald in the daemon. Registry/Layer model matches the 'stderr when foreground, journald under systemd' switch cleanly.",
+   "caveats": "EnvFilter is a non-default feature; ansi output feature interplays with the anstream decision (fmt has its own ANSI handling \u2014 fine, it detects tty itself)."
+  },
+  {
+   "name": "tracing-journald",
+   "version": "0.3.2 (2025-11-26)",
+   "license": "MIT",
+   "repository": "https://github.com/tokio-rs/tracing",
+   "downloads": "~8.1M all-time, ~2.3M recent",
+   "maintenance": "Lives in the tokio-rs/tracing monorepo \u2014 maintained with the family; release Nov 2025.",
+   "native_deps": "NONE \u2014 crucially it speaks the journald native protocol over the AF_UNIX socket (/run/systemd/journal/socket) directly and does NOT link libsystemd (LGPL). Keeps the daemon's license posture clean.",
+   "fit": "journald layer for the daemon: structured fields become journal fields (PRIORITY, custom CAMERA_DEVICE=...), queryable via journalctl -t webcam-handlerd CAMERA_DEVICE=/dev/video0. Compose: registry().with(EnvFilter).with(journald_layer) when running under systemd, fmt layer otherwise (detect via JOURNAL_STREAM env var or a flag).",
+   "caveats": "Linux-only (fine \u2014 the whole project is V4L2/Linux). Falls back with an error if the journal socket is absent; guard with a runtime check."
+  },
+  {
+   "name": "serde",
+   "version": "1.0.229 (2026-07-18)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/serde-rs/serde",
+   "downloads": "~1.24B all-time, ~262M recent",
+   "maintenance": "dtolnay; infrastructure-grade; MSRV 1.56.",
+   "native_deps": "None",
+   "fit": "Non-negotiable shared plumbing: derive Serialize/Deserialize on every wire and persistence type \u2014 JSON-RPC requests/responses, capability descriptions, control values, calibration session state, config structs. One set of types serves the daemon protocol, --json CLI output, config files, and session persistence.",
+   "caveats": "Enable `derive` feature."
+  },
+  {
+   "name": "serde_json",
+   "version": "1.0.151 (2026-07-20)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/serde-rs/json",
+   "downloads": "~1.15B all-time, ~264M recent",
+   "maintenance": "dtolnay; release July 2026; MSRV 1.71.",
+   "native_deps": "None",
+   "fit": "JSON-RPC message bodies for the daemon and clients; `to_string_pretty` for human-readable --json CLI output and calibration session files (pretty JSON on disk = diffable, inspectable session state); `to_writer` for compact wire format.",
+   "caveats": "None. (If session files should be human-edited config-style instead, TOML via `toml` is the alternative; JSON is better for machine-written session state.)"
+  },
+  {
+   "name": "toml",
+   "version": "1.1.4+spec-1.1.0 (2026-07-28)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/toml-rs/toml",
+   "downloads": "~800M all-time, ~188M recent",
+   "maintenance": "toml-rs org (epage); post-1.0, release July 2026; MSRV 1.85 (edition-2024 aligned).",
+   "native_deps": "None",
+   "fit": "Config-file format: parse a #[derive(Deserialize)] Config struct straight from ~/.config/webcam-handler/config.toml (defaults via #[serde(default)], typed errors with line/column). For a project of this scope, serde + toml IS the config system \u2014 no framework needed.",
+   "caveats": "toml 1.x is a fresh major (mid-2026, TOML 1.1 spec support); API is essentially the familiar 0.8 surface."
+  },
+  {
+   "name": "config",
+   "version": "0.15.25 (2026-06-26)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/rust-cli/config-rs",
+   "downloads": "~105M all-time, ~19.5M recent",
+   "maintenance": "Now under the rust-cli org; release June 2026 \u2014 actively maintained, unlike figment; MSRV 1.85.",
+   "native_deps": "None",
+   "fit": "Layered-config fallback if we outgrow plain toml: merge defaults <- system file (/etc/webcam-handler) <- user file <- WEBCAM_HANDLER_* env vars <- CLI overrides in one builder. The daemon (system service reading /etc config + env from unit files) is where layering plausibly earns its keep.",
+   "caveats": "Pulls parsers for multiple formats by default \u2014 trim features to `toml` only. Still 0.x with occasional builder-API churn between minors."
+  },
+  {
+   "name": "directories",
+   "version": "6.0.0 (2025-01-12)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/soc/directories-rs",
+   "downloads": "~64M all-time, ~12M recent",
+   "maintenance": "Maintained at low velocity (release Jan 2025) \u2014 acceptable for a spec-implementing crate whose spec doesn't change; single maintainer (soc); widely depended upon.",
+   "native_deps": "None",
+   "fit": "XDG paths via ProjectDirs::from(\"us\", \"costan\", \"webcam-handler\"): config_dir for config.toml, data_dir for calibration sessions and captures index, cache_dir/state_dir as needed. Follows XDG base dirs on Linux; cross-platform for free if clients ever leave Linux.",
+   "caveats": "Slow issue turnaround historically; low API risk. If a leaner tree is preferred, etcetera is the modern minimal alternative; if Linux-only forever, `xdg` is even more direct."
+  },
+  {
+   "name": "etcetera",
+   "version": "0.11.0 (2025-10-28)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/lunacookies/etcetera",
+   "downloads": "~91M all-time, ~28M recent",
+   "maintenance": "Active (Oct 2025 release); adopted by high-profile tools (uv, ruff ecosystem drives its download curve); MSRV 1.87 \u2014 note this EXCEEDS the 1.85 edition-2024 baseline, effectively setting workspace MSRV to 1.87 if adopted.",
+   "native_deps": "None",
+   "fit": "Fallback XDG-paths crate: unopinionated, lets you choose XDG-on-all-platforms or native strategy; smaller than directories.",
+   "caveats": "MSRV 1.87 is the only friction; API requires slightly more assembly than ProjectDirs."
+  },
+  {
+   "name": "xdg",
+   "version": "3.0.0 (2025-05-04)",
+   "license": "Apache-2.0 OR MIT",
+   "repository": "https://github.com/whitequark/rust-xdg",
+   "downloads": "~20.7M all-time, ~3.4M recent",
+   "maintenance": "Maintained (3.0.0 May 2025, whitequark); low churn by nature; MSRV 1.60.",
+   "native_deps": "None",
+   "fit": "Linux-only XDG Base Directory implementation with the most faithful spec surface (place_config_file, state_home, runtime_dir with correct permission checks \u2014 runtime_dir is genuinely useful for the daemon's socket path). Defensible choice given the project is inherently Linux-only.",
+   "caveats": "No cross-platform story \u2014 Web/CLI clients of the daemon could conceivably run off-Linux someday, which is why directories gets the primary nod."
+  },
+  {
+   "name": "sd-notify",
+   "version": "0.5.0 (2026-03-09 update; 0.5.0 line current)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/lnicola/sd-notify",
+   "downloads": "~13.1M all-time, ~2.4M recent",
+   "maintenance": "Active (repo pushed 2026-03-09); maintainer lnicola (rust-analyzer team) \u2014 bus factor 1 but the crate is ~300 lines implementing a frozen protocol; MSRV 1.82.",
+   "native_deps": "NONE \u2014 implements the sd_notify datagram protocol (NOTIFY_SOCKET) in pure Rust; no LGPL libsystemd linkage.",
+   "fit": "systemd readiness/liveness for the daemon: NotifyState::Ready once the JSON-RPC socket is listening (enables Type=notify ordering), NotifyState::Status for human-readable state ('3 cameras, calibration running'), watchdog petting (WatchdogSec) around the event loop, NotifyState::Stopping on shutdown. Also exposes listen_fds() so it can even cover socket activation.",
+   "caveats": "No-ops gracefully outside systemd (NOTIFY_SOCKET unset) \u2014 safe to call unconditionally."
+  },
+  {
+   "name": "listenfd",
+   "version": "1.0.2 (2025-01-19)",
+   "license": "Apache-2.0",
+   "repository": "https://github.com/mitsuhiko/listenfd",
+   "downloads": "~5.5M all-time, ~0.7M recent",
+   "maintenance": "Maintained-when-needed (mitsuhiko; pushed Jan 2025); 1.x stable; tiny frozen-protocol crate like sd-notify.",
+   "native_deps": "NONE \u2014 parses LISTEN_FDS/LISTEN_PID itself, no libsystemd.",
+   "fit": "systemd socket activation for the daemon: take_unix_listener(0)/take_tcp_listener(0) with fallback to binding our own socket when run standalone. Lets the daemon be .socket-activated on demand (nice for a webcam service that is idle most of the time) and enables restart-without-dropping-connections.",
+   "caveats": "Optional \u2014 sd-notify's listen_fds() can substitute if we want one systemd crate; listenfd's typed take_*_listener API is more convenient. cargo-watch systemfd workflow is a dev bonus."
+  },
+  {
+   "name": "humantime",
+   "version": "2.4.0 (2026-07-02)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/chronotope/humantime",
+   "downloads": "~409M all-time, ~60M recent",
+   "maintenance": "Formerly stalled under tailhook, ADOPTED by the chronotope org (chrono maintainers) \u2014 2.4.0 released July 2026, so the historical 'unmaintained' concern is resolved; MSRV 1.60.",
+   "native_deps": "None",
+   "fit": "Parse human duration strings in CLI args ('--settle 500ms', '--duration 10s', '--timeout 2m') via clap value_parser, and format durations/timestamps in human output ('captured 3s ago'). humantime-serde companion crate can serialize durations in the TOML config.",
+   "caveats": "Formats SystemTime as RFC3339 only; for rich local-time formatting you'd reach for jiff/chrono \u2014 not needed here."
+  }
+ ],
+ "rejected": [
+  {
+   "name": "colored",
+   "reason": "LICENSE VIOLATION: MPL-2.0 (verified on crates.io for current 3.1.1, published 2026-01-16). MPL is weak copyleft and the project constraint excludes copyleft of any strength. Otherwise healthy (~209M downloads, active) \u2014 rejected purely on license. owo-colors or anstream provide the same capability under MIT/Apache."
+  },
+  {
+   "name": "prettytable-rs",
+   "reason": "Abandoned: last release 0.10.0 in December 2022, ~4 years old; 50 open issues; repo effectively dormant (last push Sep 2024 was housekeeping). License is fine (BSD-3-Clause) but comfy-table and tabled are strictly better-maintained supersets."
+  },
+  {
+   "name": "daemonize",
+   "reason": "Two independent disqualifiers: (1) dormant \u2014 last release 0.5.0 Feb 2023, last repo push Feb 2024, single inactive maintainer; (2) wrong architecture \u2014 double-fork self-daemonization is an anti-pattern under systemd, which wants foreground processes with Type=simple/notify (systemd handles process supervision, stdout goes to journal). Use sd-notify + a systemd unit instead; users not on systemd can use setsid or a supervisor."
+  },
+  {
+   "name": "figment",
+   "reason": "Dormant: last release 0.10.19 May 2024, last repo push Sep 2024, ~2 years without activity, single maintainer focused on Rocket. License fine (MIT OR Apache-2.0) and the profile/provider design is elegant, but for a project outliving its research phase, plain serde+toml (or config-rs, actively maintained under rust-cli, June 2026 release) is the safer layered-config path."
+  },
+  {
+   "name": "miette (as default error reporter)",
+   "reason": "Rejected on FIT, not license (Apache-2.0 is acceptable): its labeled-source-span diagnostics shine for parsers/compilers, but webcam errors are device/ioctl-shaped with no source text to annotate. The fancy feature also drags a larger dep tree. anyhow + thiserror cover the need; miette remains a clean later add-on for config-file validation errors if desired."
+  },
+  {
+   "name": "log + env_logger (implicit alternative to tracing)",
+   "reason": "Not evaluated as primary: the daemon is async (JSON-RPC server) and needs journald structured fields; the log facade lacks spans/structured fields and env_logger has no journald sink. tracing subsumes it (log-compat shim available for dependencies that emit log records)."
+  },
+  {
+   "name": "termcolor (implicit alternative for colored output)",
+   "reason": "Superseded for new code: BurntSushi has placed it in maintenance mode and the clap ecosystem standardized on anstream/anstyle, which we get transitively via clap anyway. No reason to carry two color stacks."
+  }
+ ],
+ "recommendation": "RECOMMENDED SET (minimal overlap, all MIT and/or Apache-2.0, zero native-library linkage, all edition-2024/MSRV-1.85 compatible): (1) Args: clap 4.6 with derive + clap_complete + clap_mangen (generation via xtask), optionally clap-verbosity-flag; no fallback needed \u2014 clap is uncontested. (2) Tables: comfy-table 8 primary (active, MIT, automatic width-aware wrapping suits capability/control listings); fallback tabled 0.21 if derive-from-struct rendering is preferred. (3) Progress: indicatif 0.18 (calibration sweeps, capture settle countdowns); no credible alternative needed. (4) Color: anstream + anstyle primary \u2014 they are already in the tree via clap, give stream-aware NO_COLOR-respecting degradation, and keep one color stack; fallback owo-colors if the team wants `.red().bold()` ergonomics (MIT); colored is license-banned. (5) Errors: thiserror 2 for typed errors in the core library and protocol crates (JSON-RPC error-code mapping needs matchable variants) + anyhow 1 at binary top level; miette explicitly optional-later. (6) Logging: tracing (facade everywhere, including the library) + tracing-subscriber 0.3 (fmt + EnvFilter) in binaries + tracing-journald 0.3 in the daemon when NOTIFY_SOCKET/JOURNAL_STREAM indicates systemd \u2014 pure-Rust journald protocol, no LGPL libsystemd. (7) Config: serde + toml 1.x parsed into a Config struct \u2014 a framework is overkill at this scope; fallback for true layering (system + user + env) is config 0.15 (actively maintained, rust-cli org) \u2014 NOT figment (dormant). (8) XDG paths: directories 6 primary (ProjectDirs, cross-platform headroom for clients); fallback etcetera 0.11 (note MSRV 1.87) or Linux-only xdg 3 (its runtime_dir handling is a genuine point in favor for the daemon socket). (9) Daemon/systemd: DO NOT self-daemonize \u2014 run foreground under systemd with sd-notify 0.5 (Type=notify readiness, status, watchdog) + listenfd 1.0 for socket activation of the JSON-RPC socket; daemonize crate rejected. (10) Human-friendly output: serde_json (compact on the wire, to_string_pretty for --json and calibration session files) + humantime 2.4 (now chronotope-maintained) for '--settle 500ms'-style args and friendly durations. Shared-plumbing note: serde derive types should live in a small protocol/types crate reused by daemon, both clients, and session persistence, so the same structs feed JSON-RPC, --json output, and tables.",
+ "risks": "(1) License near-miss to police in CI: `colored` (MPL-2.0) is a popular transitive dependency of many CLI crates \u2014 add cargo-deny with an explicit permissive-only allowlist to catch it (and any GPL/LGPL native -sys crate) sneaking in via the capture/encoding side of the workspace. (2) Version freshness: comfy-table 8.0.0 and toml 1.x are weeks-old majors \u2014 pin with ^ and expect trivial migration, or hold comfy-table at 7.2.1 (MSRV 1.85, same license) if conservatism is preferred. (3) Bus factor: sd-notify, listenfd, directories, comfy-table, and tabled are each effectively single-maintainer; mitigated because sd-notify/listenfd implement frozen systemd protocols (~hundreds of lines, forkable) and directories implements a frozen spec. (4) MSRV interactions: workspace baseline is 1.85 (edition 2024); etcetera would raise it to 1.87 \u2014 only adopt knowingly. (5) indicatif + tracing fmt output can interleave badly in the interactive CLI \u2014 route logs through ProgressBar::suspend or add tracing-indicatif (MIT) if it becomes an issue. (6) tracing-journald needs the journal socket; guard layer installation on socket presence so the daemon still runs on non-systemd hosts with the fmt layer. (7) config 0.15 is 0.x \u2014 its builder API has churned between minors before; if layering is never needed, plain toml avoids the risk entirely."
+}

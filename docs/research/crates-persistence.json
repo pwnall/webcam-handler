@@ -1,0 +1,166 @@
+{
+ "area": "Calibration-session state and structured persistence (daemon + CLI): serialization format, atomic writes, embedded DB alternatives, cross-process file locking, session IDs, timestamps, UTF-8 paths",
+ "crates": [
+  {
+   "name": "serde",
+   "version": "1.0.229 (2026-07-18)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/serde-rs/serde",
+   "downloads": "1.24B all-time / 262M last 90 days (most-downloaded crate in the ecosystem)",
+   "maintenance": "Actively maintained by dtolnay; releases in 2026; effectively zero abandonment risk",
+   "fit": "Foundation for all state modeling: derive Serialize/Deserialize on SessionState, ControlCalibration {NotCalibrated | InProgress | Calibrated { precision: u32 }}, sample records, log entries. Serde's tagged-enum support maps calibration status enums to readable JSON like {\"status\":\"calibrated\",\"precision\":3}.",
+   "native_deps": "None (pure Rust; serde_derive is a proc-macro)",
+   "caveats": "MSRV 1.56, edition 2021 -- fully compatible with a Rust 2024 workspace (2024 edition requires rustc >= 1.85; crates of older editions interoperate freely)"
+  },
+  {
+   "name": "serde_json",
+   "version": "1.0.151 (2026-07-20)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/serde-rs/json",
+   "downloads": "1.15B all-time / 264M last 90 days",
+   "maintenance": "Actively maintained by dtolnay; multiple releases in 2026; MSRV 1.71",
+   "fit": "PRIMARY persistence format. Session state as pretty-printed JSON (serde_json::to_writer_pretty) is human-inspectable with any editor/jq, diffable, and format-aligned with the daemon's JSON-RPC API -- the same serde structs serve both the wire protocol and the on-disk state with zero translation. Also supports JSON Lines for the append-only session log: one serde_json object per line via to_writer + newline; a torn final line after a crash is trivially detected and dropped on load, giving crash-tolerant append semantics without rewriting the file.",
+   "native_deps": "None (pure Rust)",
+   "caveats": "No schema migration story built in -- embed a schema_version integer field in session.json from day one and match on it at load time. Use serde(default) and deny_unknown_fields judiciously to keep forward/backward compatibility explicit."
+  },
+  {
+   "name": "tempfile",
+   "version": "3.27.0 (2026-03-11)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/Stebalien/tempfile",
+   "downloads": "723M all-time / 164M last 90 days",
+   "maintenance": "Actively maintained by Stebalien (also a rust-libs contributor); 4 releases Dec 2025 - Mar 2026; MSRV 1.63",
+   "fit": "PRIMARY atomic-write mechanism. NamedTempFile::new_in(session_dir) then write, sync_all(), then persist(final_path) performs the write-temp-then-rename(2) pattern, so readers (the CLI reading while the daemon writes) always see either the old or the new complete session.json, never a partial file. Creating the temp file in the destination directory guarantees same-filesystem rename. This is the pattern the atomicwrites README itself points to.",
+   "native_deps": "None (pure Rust; uses rustix/libc syscalls)",
+   "caveats": "persist() does not fsync for you: for full crash durability call as_file().sync_all() before persist, and after persist open the parent directory and sync_all() it too (rename durability on ext4/btrfs). Wrap this in one write_json_atomic() helper in the core crate. temp files are 0600 by default -- chmod/permissions-set before persist if group-readable state files are wanted."
+  },
+  {
+   "name": "fd-lock",
+   "version": "4.0.4 (2025-03-10)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/yoshuawuyts/fd-lock",
+   "downloads": "56.5M all-time / 12.7M last 90 days",
+   "maintenance": "Maintained by yoshuawuyts (Microsoft, async WG); repo pushed June 2026; used by rustyline and wasmtime, so it has large indirect exposure; small surface = low maintenance burden",
+   "fit": "PRIMARY cross-process lock for the no-daemon case. RwLock<File> over advisory locks (flock on Linux via rustix) with RAII guards: try_write()/write() for exclusive, read() for shared. Protocol: a lock file at the state-dir root; the daemon takes the exclusive lock at startup and holds it for its lifetime; a daemonless CLI invocation takes the same exclusive lock around each read-modify-write, or a read lock for pure queries. If the lock is held, the CLI knows the daemon is running and can fall back to talking JSON-RPC to it.",
+   "native_deps": "None (pure Rust over rustix, permissively licensed Apache-2.0/MIT/LLVM-exception)",
+   "caveats": "Advisory locking only -- all parties must use the lock, which is fine since we control every accessor. flock does not work reliably on NFS; document that the state dir should be local (it will be, under XDG data dir). No declared MSRV, but edition 2021 and rustix-based -- fine on any 2024-edition toolchain."
+  },
+  {
+   "name": "uuid",
+   "version": "1.24.0 (2026-07-15)",
+   "license": "Apache-2.0 OR MIT",
+   "repository": "https://github.com/uuid-rs/uuid",
+   "downloads": "712M all-time / 164M last 90 days",
+   "maintenance": "Actively maintained by the uuid-rs org (multiple maintainers, good bus factor); releases monthly through 2026; MSRV 1.85",
+   "fit": "PRIMARY session-ID crate. Enable features [\"v7\", \"serde\"]: UUIDv7 is timestamp-prefixed, so session IDs sort chronologically as strings -- session directory listings come out in creation order for free -- while remaining standard UUIDs that any tooling, log system, or web client understands. Serde support serializes as the canonical hyphenated string in JSON.",
+   "native_deps": "None (v4/v7 pull getrandom for OS randomness)",
+   "caveats": "MSRV 1.85 equals the Rust 2024 baseline -- no conflict. Remember to enable the v7 feature explicitly; default features generate nothing."
+  },
+  {
+   "name": "jiff",
+   "version": "0.2.35 (2026-07-25)",
+   "license": "Unlicense OR MIT (both on the approved list)",
+   "repository": "https://github.com/BurntSushi/jiff",
+   "downloads": "156M all-time / 52M last 90 days -- steep adoption curve for a crate created Feb 2024",
+   "maintenance": "Actively maintained by BurntSushi (ripgrep, regex -- exemplary maintenance track record); near-weekly releases in mid-2026; MSRV 1.70",
+   "fit": "PRIMARY timestamp crate. Modeled on the Temporal standard; Timestamp and Zoned types serialize to RFC 3339/ISO 8601 via the serde feature by default -- exactly the human-readable form wanted in session.json and the log (e.g. \"2026-08-07T14:55:03Z\"). Clean duration arithmetic for settle-time bookkeeping and calibration-sweep timing. This is the current community recommendation for new projects over chrono/time.",
+   "native_deps": "None (pure Rust; reads /usr/share/zoneinfo at runtime for zone lookups -- not a linked dependency)",
+   "caveats": "Still 0.2.x, so semver-breaking bumps are possible (0.1 -> 0.2 happened once, migration was documented and mild). Timestamps in persisted files are plain RFC 3339 strings, so a hypothetical later swap of the time library would not invalidate stored data."
+  },
+  {
+   "name": "camino",
+   "version": "1.2.5 (2026-07-28)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/camino-rs/camino",
+   "downloads": "232M all-time / 57M last 90 days",
+   "maintenance": "Actively maintained by sunshowers (cargo-nextest author); releases June-July 2026; MSRV 1.61; used heavily inside cargo tooling",
+   "fit": "RECOMMENDED for all stored paths. Utf8PathBuf for sample-photo paths inside session.json: guaranteed-UTF-8 paths serialize losslessly to JSON (std PathBuf can hold non-UTF-8 bytes that JSON cannot represent, a silent corruption hazard), and the serde impls come built in (serde1 feature). Store photo paths relative to the session directory so the whole state tree is relocatable.",
+   "native_deps": "None",
+   "caveats": "Rejects non-UTF-8 paths at the boundary -- correct behavior for state we create ourselves, but convert user-supplied output paths with Utf8PathBuf::from_path_buf and report a clear error on failure."
+  },
+  {
+   "name": "chrono",
+   "version": "0.4.45 (2026-06-04)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/chronotope/chrono",
+   "downloads": "722M all-time / 154M last 90 days",
+   "maintenance": "Maintained by the chronotope org (multiple maintainers); releases through mid-2026; MSRV 1.62; the 2020 localtime_r soundness advisory (RUSTSEC-2020-0159) was fixed in 0.4.20, long resolved",
+   "fit": "FALLBACK timestamp crate if jiff's pre-1.0 status is unacceptable: DateTime<Utc> with serde serializes to RFC 3339, API-stable at 0.4.x for a decade, enormous ecosystem familiarity.",
+   "native_deps": "None",
+   "caveats": "Older API design (known footguns around Duration and local-time handling); community momentum has shifted to jiff for new code"
+  },
+  {
+   "name": "rusqlite",
+   "version": "0.40.1 (2026-06-06)",
+   "license": "MIT (crate); with feature bundled it compiles libsqlite3-sys 0.38.1 (MIT) which vendors the SQLite amalgamation -- SQLite itself is public domain. Entire stack is permissive; no licensing obstacle.",
+   "repository": "https://github.com/rusqlite/rusqlite",
+   "downloads": "89.7M all-time / 29.1M last 90 days",
+   "maintenance": "Actively maintained by the rusqlite org (gwenn et al., multi-maintainer); releases Mar-Jun 2026; edition 2021. The long OSV advisory list (use-after-free, data races) all dates to 2020-2021 and was fixed by 0.26 (RUSTSEC-2021-0128); nothing current.",
+   "fit": "FALLBACK storage engine, only if requirements grow past what per-session files handle well: cross-session queries (\"all cameras where zoom is calibrated to precision >= 3\"), many thousands of sessions, or multi-table transactional invariants. SQLite's single-writer model matches the daemon-mediated design, WAL mode lets the CLI read while the daemon writes, and SQLite handles its own cross-process locking -- which would remove the need for fd-lock.",
+   "native_deps": "With bundled: none at runtime, but a C compiler (cc) is required at build time. Without bundled: links system libsqlite3 (public domain, so license-clean either way).",
+   "caveats": "Not human-inspectable with a text editor -- requires the sqlite3 CLI (ubiquitous, but a step down from cat/jq for a calibration log a human wants to eyeball). 0.x semver with breaking API bumps a few times a year. Adds a C toolchain to the build. Recommend against unless the query need materializes."
+  },
+  {
+   "name": "fs4",
+   "version": "1.1.0 (2026-04-28)",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/al8n/fs4",
+   "downloads": "58M all-time / 16.6M last 90 days",
+   "maintenance": "Maintained fork of fs2 by al8n; 1.0 reached April 2026, releases same month; 1 open issue; MSRV 1.75; single primary maintainer (moderate bus factor)",
+   "fit": "FALLBACK locking crate if fd-lock's RAII API is a poor fit: extension-trait style (file.lock_exclusive(), try_lock_shared()) directly on std File, plus async variants (tokio feature) if the daemon wants to lock from async context without spawn_blocking.",
+   "native_deps": "None (pure Rust over rustix/windows-sys)",
+   "caveats": "Lower-level than fd-lock: no guard type, so unlock-on-drop discipline is manual (though OS releases locks on fd close). Same advisory-lock and NFS caveats as fd-lock."
+  },
+  {
+   "name": "ulid",
+   "version": "3.0.0 (2026-07-16)",
+   "license": "MIT",
+   "repository": "https://github.com/dylanhart/ulid-rs",
+   "downloads": "28M all-time / 11M last 90 days",
+   "maintenance": "Maintained (releases July 2026) but effectively single-maintainer; note 2.0.0 and 3.0.0 shipped within five days in July 2026 -- recent semver churn",
+   "fit": "ALTERNATIVE session-ID crate: 26-char Crockford-base32, lexicographically time-sortable, more compact and filename-friendly than UUID. Serde support behind a feature.",
+   "native_deps": "None",
+   "caveats": "Not chosen: uuid with the v7 feature provides the same time-ordered property inside the far more standard UUID type system, with ~25x the adoption and a multi-maintainer org behind it. Use ulid only if the shorter string form matters for directory names."
+  }
+ ],
+ "rejected": [
+  {
+   "name": "fs2",
+   "reason": "ABANDONED. Last release 0.4.3 on 2018-01-06 (over eight years ago); repo last pushed Feb 2024 with 24 open issues and no releases; license MIT/Apache-2.0 is fine but irrelevant. Still pulls 14.6M downloads/90d purely through legacy dependents. fs4 is the maintained API-compatible fork; fd-lock is the better-designed replacement."
+  },
+  {
+   "name": "sled",
+   "reason": "MAINTENANCE/STABILITY RISK. Last stable release 0.34.7 on 2021-09-12; the 1.0 rewrite has been in alpha since 2023 with the last alpha (1.0.0-alpha.124) on 2024-10-11 and no stable 1.0 as of Aug 2026; 171 open issues. License (MIT OR Apache-2.0) is fine. Also a poor fit regardless: binary log-structured store, not human-inspectable, and a KV engine adds nothing over JSON files for tens-of-KB session state."
+  },
+  {
+   "name": "atomicwrites",
+   "reason": "SUBSUMED BY TEMPFILE, low activity. MIT license (fine), 0.4.4 last released 2024-09-19, repo last pushed Oct 2024, 102 stars, single maintainer -- and its own README lists tempfile's persist() as the equivalent alternative. tempfile is maintained by a rust-libs contributor with 40x the adoption and gives us temp-file handling anyway (video capture staging), so atomicwrites would be a redundant, riskier dependency."
+  },
+  {
+   "name": "file-guard",
+   "reason": "INSUFFICIENT ADOPTION/BUS FACTOR. MIT (fine), but 0.2.0 from 2024-03-09 is the latest of only two releases ever, repo has 9 stars, single maintainer, last pushed Mar 2024. Its distinguishing feature (byte-range locking) is unneeded for whole-file session locking. fd-lock/fs4 dominate it on every axis."
+  },
+  {
+   "name": "redb",
+   "reason": "GOOD CRATE, WRONG FIT. MIT OR Apache-2.0, actively maintained (4.1.0 on 2026-04-19, repo pushed Aug 2026, only 13 open issues), pure Rust, ACID -- genuinely the best pure-Rust embedded KV store today. Rejected because its single binary B-tree file defeats the human-inspectable requirement (no standard external tool can read it, unlike SQLite), MSRV 1.89 is ahead of even the 2024-edition baseline, and typed KV tables would force us to hand-build the indexing that either JSON-files-plus-directory-layout or SQLite give naturally. Would reconsider only for high-frequency structured writes where SQLite's C dependency was also unacceptable."
+  },
+  {
+   "name": "ron",
+   "reason": "FORMAT MISMATCH, not license (MIT OR Apache-2.0, maintained, 0.12.2 on 2026-06-22). RON is Rust-community-only: the web client, jq, Python analysis scripts, and every log pipeline speak JSON natively, and session state must be consumable by the JSON-RPC daemon and web client anyway. Persisting the same structs in a second format buys enum-syntax elegance at the cost of tooling universality. Still 0.x with breaking releases roughly yearly."
+  },
+  {
+   "name": "toml",
+   "reason": "WRONG SHAPE FOR SESSION STATE, not license (MIT OR Apache-2.0, extremely active, 1.1.4 on 2026-07-28, MSRV 1.85/edition 2024). TOML excels at flat human-edited config but is awkward for what calibration sessions are: deeply nested arrays of per-control records with enum-tagged statuses and an append-heavy log ([[control.samples]] table soup, no streaming append). Fine choice later for the daemon's own config file; rejected for session persistence."
+  },
+  {
+   "name": "time",
+   "reason": "VIABLE BUT THIRD CHOICE for timestamps. MIT OR Apache-2.0, maintained (0.3.55 on 2026-08-01), but: aggressive MSRV policy (currently 1.88, historically bumps within months of stable) creates friction; RUSTSEC-2026-0009 (RFC 2822 parsing stack-exhaustion DoS, fixed 0.3.47) is recent, though we would not parse untrusted RFC 2822; and its formatting/parsing API is more ceremony than jiff's for the simple store-RFC3339-in-JSON need. jiff (primary) and chrono (fallback) both beat it here."
+  },
+  {
+   "name": "atomic-write-file",
+   "reason": "UNNECESSARY DUPLICATE. BSD-3-Clause (fine), maintained-ish (0.3.0 on 2025-09-11), clever O_TMPFILE-based anonymous temp files on Linux -- but 5M downloads vs tempfile's 723M, single maintainer, and tempfile already covers the same rename-based atomic pattern plus general temp-file needs. One dependency instead of two."
+  }
+ ],
+ "recommendation": "PRIMARY: plain JSON files, written atomically, in a directory-per-session layout -- serde 1.0 + serde_json 1.0 for the data model, tempfile 3.x (NamedTempFile::new_in(session_dir) -> write -> sync_all -> persist, then fsync the parent dir) for atomic replacement of session.json, fd-lock 4.x on a single lock file at the state-dir root for the no-daemon concurrent-access case, uuid 1.x (features v7, serde) for time-ordered session IDs, jiff 0.2 (serde feature) for RFC 3339 timestamps, camino 1.x (serde1 feature) for UTF-8 photo paths stored relative to the session dir. Suggested layout: <state_dir>/sessions/<camera_id>/<task>/<uuidv7>/{session.json, log.ndjson, photos/}. session.json (pretty-printed, with a schema_version field) holds the ordered control list, per-control status/precision/chosen values, and sample records with photo paths and scores; log.ndjson is an append-only JSON-Lines session log (crash-tolerant: drop a torn last line on load). Locking protocol: the daemon takes the exclusive fd-lock at startup and holds it for its lifetime (single writer, mediates all RPC clients internally); a daemonless CLI takes the same exclusive lock per read-modify-write operation, and a lock-held failure tells the CLI to route through the daemon's JSON-RPC instead. Justification: session state is small (tens of KB), write frequency is human-paced (one update per captured calibration photo), the requirement explicitly prizes human inspectability (cat/jq/git-diffable, photos sit beside their metadata), and the same serde structs serve the JSON-RPC wire format -- an embedded DB adds a binary format, a C toolchain (rusqlite bundled), or a pre-1.0 storage engine (redb) while solving no problem we actually have. FALLBACK: rusqlite 0.40 with the bundled feature (all-permissive: rusqlite MIT, libsqlite3-sys MIT, SQLite public domain) in WAL mode, if and only if cross-session querying at scale or transactional multi-session invariants become real requirements; it would then also replace fd-lock since SQLite does its own cross-process locking. Fallback within the file approach: fs4 1.x if fd-lock's guard API fights the daemon's async structure; chrono 0.4 if jiff's pre-1.0 status is ruled unacceptable.",
+ "risks": "1) Durability subtlety: the tempfile persist pattern is only fully crash-durable if we fsync the file before rename and the parent directory after -- this must be encapsulated in one audited write_json_atomic() helper in the core crate, not open-coded at call sites. 2) jiff is pre-1.0 (0.2.x): a future semver break is plausible, though persisted data is plain RFC 3339 strings so storage is unaffected; chrono is the drop-in retreat. 3) Advisory locks are cooperative and unreliable on NFS: acceptable because we control all accessors and state lives under the local XDG data dir, but the design doc should state the local-filesystem assumption. 4) Schema evolution of session.json is our own responsibility (no DB migrations): mandate a schema_version field and a versioned-load path from the first release. 5) rusqlite (fallback only) has semver-breaking 0.x releases a few times a year and needs a C compiler with bundled; its scary-looking advisory list is entirely 2020-2021 vintage, fixed by 0.26. 6) uuid MSRV 1.85 and toml/time/redb MSRVs at or above 1.85-1.89 mean the workspace should declare rust-version >= 1.85 (already implied by edition 2024) and pin CI to a recent stable. 7) Log growth: log.ndjson is append-only with no rotation; calibration sessions are bounded so this is likely fine, but a max-size/rotation policy is a cheap safeguard worth specifying."
+}

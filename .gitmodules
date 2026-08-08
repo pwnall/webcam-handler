@@ -1,0 +1,3 @@
+[submodule "vendor/v4l2-webcam-skill"]
+	path = vendor/v4l2-webcam-skill
+	url = https://github.com/pwnall/v4l2-webcam-skill.git
