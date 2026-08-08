@@ -19,7 +19,9 @@ set -euo pipefail
 # The suite selection. P1 fills in the tests; this line is the only thing that changes.
 # Named by prefix so `ignored-suites-have-recipes.sh` can prove every `#[ignore]`d test
 # belongs to a recipe.
-selection='test(/^vivid_/)'
+# Anchored on a module boundary for the reason `smoke-hw.sh` documents: nextest names a
+# lib unit test `tests::vivid_foo` and an integration test `vivid_foo`.
+selection='test(/(^|::)vivid_/)'
 prefix='vivid_'
 
 root="$(git rev-parse --show-toplevel)"

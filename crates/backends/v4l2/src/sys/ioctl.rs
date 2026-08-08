@@ -34,9 +34,15 @@ pub(crate) const CTRL_FLAG_HAS_PAYLOAD: u32 = 0x0100;
 
 /// What an enumeration ioctl said.
 ///
-/// `Exhausted` is the kernel's `EINVAL` for "there is no entry at that index", which is a
-/// *terminator*, not a failure — V4L2 has no count-first call, so every enumeration ends
-/// this way.
+/// `Exhausted` covers the kernel's two ways of saying "there is nothing more here", both
+/// of which are *terminators* rather than failures — V4L2 has no count-first call, so
+/// every enumeration ends in an error code:
+///
+/// - **`EINVAL`** — "no entry at that index". The ordinary end of a list.
+/// - **`ENOTTY`** — "this node does not implement this ioctl at all". Measured \[PF:15\]:
+///   every metadata node on the seed hardware answers `ENOTTY` to `QUERY_EXT_CTRL` while
+///   answering `EINVAL` to `ENUM_FMT`, so a build that accepted only `EINVAL` would report
+///   a metadata-only camera's control set as a device error instead of as empty.
 #[derive(Debug)]
 pub(crate) enum Enumerated<T> {
     /// There was an entry.
@@ -350,7 +356,9 @@ fn call_enumerating<T: Copy>(
     let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), request, payload.as_mut_ptr()) };
     match ret {
         Ok(()) => Ok(Enumerated::Entry(())),
-        Err(error) if error.raw_os_error() == Some(libc::EINVAL) => Ok(Enumerated::Exhausted),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTTY)) => {
+            Ok(Enumerated::Exhausted)
+        }
         Err(error) => Err(device_error(fd, op, &error)),
     }
 }
@@ -377,6 +385,14 @@ fn short_reply(op: &str) -> Error {
 }
 
 /// Map an ioctl failure onto the D13 registry, keeping E3's distinctions.
+///
+/// **`EACCES` is deliberately not here.** On an fd we already hold, `EACCES` is never
+/// "you may not use this device" — that answer arrived at `Fd::open` and is mapped there.
+/// From an ioctl it is a fact about the *operation*: the UAPI's answer for reading a
+/// write-only control, or writing a read-only one. Mapping it to
+/// [`Error::PermissionDenied`] here would tell a user to join the `video` group because a
+/// control had no readable value, and would make the caller's own `EACCES` handling
+/// unreachable — which is exactly what it did before this comment existed.
 fn device_error(fd: &Fd, op: &str, error: &std::io::Error) -> Error {
     match error.raw_os_error() {
         Some(libc::EBUSY) => Error::Busy {
@@ -386,7 +402,7 @@ fn device_error(fd: &Fd, op: &str, error: &std::io::Error) -> Error {
         Some(libc::ENODEV | libc::ENXIO) => Error::DeviceGone {
             path: fd.path().to_owned(),
         },
-        Some(libc::EACCES | libc::EPERM) => Error::PermissionDenied {
+        Some(libc::EPERM) => Error::PermissionDenied {
             path: fd.path().to_owned(),
             hint: "add yourself to the `video` group, then log out and back in".to_owned(),
         },

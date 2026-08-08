@@ -321,6 +321,48 @@ revision, as N4 says of the four error variants.
 
 ---
 
+## PF:15 — `ENOTTY` is how a node says "I do not implement that ioctl", and it terminates enumeration
+
+**Measured** 2026-08-08 on kernel 7.0.0-29-generic against the docs/1 §1.2 seed hardware.
+Continues that registry; cite it as `[PF:15]`.
+
+V4L2 has no count-first call: every enumeration walks an index until the kernel refuses.
+The refusal was assumed to be `EINVAL` throughout. It is not the only one.
+
+| Node | `VIDIOC_QUERY_EXT_CTRL` | `VIDIOC_ENUM_FMT` |
+|---|---|---|
+| video0, video2, video4 (capture) | OK | OK |
+| video1, video3, video5 (metadata) | **`ENOTTY`** | `EINVAL` |
+
+The same node answers *differently for different ioctls*: `EINVAL` for `ENUM_FMT` ("no
+format at that index") and `ENOTTY` for `QUERY_EXT_CTRL` ("this device does not implement
+that call at all"). `ENOTTY` is errno 25, `Inappropriate ioctl for device`.
+
+**Consequence:** a build accepting only `EINVAL` reports a metadata node's control set as
+`Error::DeviceIo`. That is not hypothetical — `V4l2Camera::open` falls back to a group's
+first node when it has no capture node, and a **metadata-only camera is a shape this
+project deliberately supports** (`CameraInfo::capture_node` documents it: "the camera is
+listed, and streaming it is a typed refusal rather than a surprise"). Such a camera's
+`controls` would have failed with a device error instead of returning an empty set.
+
+`sys::ioctl::call_enumerating` now reads both as `Exhausted`. The distinction that
+survives: `ENOTTY` from an *enumeration* is a terminator; from `VIDIOC_QUERYCAP` it still
+means "not a V4L2 device" and stays an error, because `querycap` does not go through that
+path.
+
+**Why it was invisible:** the independent Python probe that produced the byte fixtures
+caught bare `OSError` to end each loop, so it recorded "0 controls" for the metadata nodes
+and never revealed which errno ended them. A second implementation only catches what it
+distinguishes — worth remembering the next time one is used as an oracle.
+
+**Retires when:** never, unless the kernel starts implementing the control ioctls on
+metadata nodes. Regression-tested by
+`hw_a_node_that_implements_no_control_ioctl_answers_empty_rather_than_erroring`, which
+lives in the crate rather than in `tests/` because the bug is only reachable through a node
+`open` would never pick on hardware that also has a capture node.
+
+---
+
 ## E1 — G1 hardware evidence, 2026-08-08
 
 docs/2's G1 asks for the dev-machine R3 run to be "recorded as evidence in the notes with

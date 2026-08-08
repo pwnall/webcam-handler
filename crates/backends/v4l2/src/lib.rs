@@ -556,6 +556,81 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+    fn hw_a_node_that_implements_no_control_ioctl_answers_empty_rather_than_erroring() {
+        // PF:15, at a level the public surface cannot reach. Every metadata node on the
+        // seed hardware answers ENOTTY to QUERY_EXT_CTRL — "this node does not implement
+        // that ioctl" — which is a terminator, not a failure. A build accepting only
+        // EINVAL reports a metadata-only camera's control set as a device error.
+        //
+        // This lives in the crate rather than in `tests/` because `V4l2Camera` is private
+        // and the bug is only reachable through a node `open` would never pick on
+        // hardware that also has a capture node.
+        let Ok(nodes) = sysfs::nodes() else {
+            return;
+        };
+        let mut metadata_nodes = 0usize;
+        for node in &nodes {
+            let Ok(fd) = Fd::open(&node.dev_path) else {
+                continue;
+            };
+            let Ok(cap) = ioctl::querycap(&fd) else {
+                continue;
+            };
+            if cap.device_caps & schema::camera::CAP_VIDEO_CAPTURE != 0 {
+                continue;
+            }
+            metadata_nodes += 1;
+
+            let camera = V4l2Camera {
+                info: CameraInfo {
+                    id: CameraId::parse("cam:probe").expect("literal id"),
+                    fingerprint: schema::camera::CameraFingerprint {
+                        bus_path: node.group_key().to_owned(),
+                        usb_id: node.usb_id,
+                        card: cap.card.clone(),
+                        driver: cap.driver.clone(),
+                        serial: node.serial.clone(),
+                    },
+                    card: cap.card,
+                    driver: cap.driver,
+                    bus_info: cap.bus_info,
+                    nodes: Vec::new(),
+                    backend: BackendKind::V4l2,
+                },
+                fd,
+            };
+
+            let controls = camera.controls().unwrap_or_else(|error| {
+                panic!(
+                    "{}: controls() failed with {error}; ENOTTY from a node that does not \
+                     implement the control ioctls is a terminator, not a failure [PF:15]",
+                    node.dev_path
+                )
+            });
+            assert!(
+                controls.is_empty(),
+                "{}: a node with no control ioctl reported {} control(s)",
+                node.dev_path,
+                controls.len()
+            );
+            assert!(
+                camera
+                    .formats()
+                    .expect("formats() must not fail either")
+                    .is_empty(),
+                "{}: a node with no capture capability reported formats",
+                node.dev_path
+            );
+        }
+        assert!(
+            metadata_nodes > 0,
+            "this host exposes no non-capture node, so PF:15 was not exercised"
+        );
+        println!("{metadata_nodes} non-capture node(s) answered empty rather than erroring");
+    }
+
+    #[test]
     fn a_group_missing_a_node_is_refused_rather_than_described_without_it() {
         // The E3 property, at the level it can be stated without a device: a camera is
         // only ever built from a group *all* of whose nodes answered.

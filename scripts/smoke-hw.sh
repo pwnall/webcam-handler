@@ -31,10 +31,10 @@ skip() {
 }
 
 if [[ "${WCH_ALLOW_MOTION:-0}" == "1" ]]; then
-    selection="test(/^${prefix}/)"
+    selection="test(/(^|::)${prefix}/)"
     printf 'smoke-hw: WCH_ALLOW_MOTION=1 — motor-moving suites are included\n'
 else
-    selection="test(/^${prefix}/) - test(/^${motion_prefix}/)"
+    selection="test(/(^|::)${prefix}/) - test(/(^|::)${motion_prefix}/)"
     skip "motor-moving suites (${motion_prefix}*) are excluded; set WCH_ALLOW_MOTION=1 to include them"
 fi
 
