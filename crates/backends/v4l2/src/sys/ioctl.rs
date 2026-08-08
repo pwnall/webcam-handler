@@ -248,12 +248,13 @@ pub(crate) fn get_scalar(
 
     let mut controls = ext_controls_header(&mut control, op)?;
     // SAFETY: `controls` holds a zeroed `v4l2_ext_controls` whose `count` is 1 and whose
-    // `controls` field was set above to the address of `control`, a live, correctly
-    // aligned, writable `v4l2_ext_control` that outlives this call (both bindings are
-    // still in scope). `control` carries no payload pointer — `size` is 0 and the union
-    // holds an inline scalar — so the kernel dereferences nothing beyond the array. The
-    // pointer passed is to `controls` itself, valid for `size_of::<v4l2_ext_controls>()`
-    // writable bytes.
+    // `controls` field holds the address of `control`, a live, correctly aligned,
+    // writable `v4l2_ext_control` — both bindings are in scope for the whole call, and
+    // the `&mut` borrow that planted the address has ended, so nothing aliases it while
+    // the kernel writes. `control` carries no payload pointer (`size` is 0 and the union
+    // holds an inline scalar), so the kernel dereferences nothing beyond that one entry.
+    // The pointer passed is to `controls` itself, valid for
+    // `size_of::<v4l2_ext_controls>()` writable bytes.
     let ret =
         unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
     ret.map_err(|error| device_error(fd, op, &error))?;
@@ -290,12 +291,15 @@ pub(crate) fn get_payload(fd: &Fd, control_id: u32, len: usize) -> Result<Vec<u8
     .ok_or_else(|| short_reply(op))?;
 
     let mut controls = ext_controls_header(&mut control, op)?;
-    // SAFETY: as `get_scalar`, plus the payload arm — `control.size` is `len` and its
-    // union holds the address of `buffer`, a live `Vec<u8>` of exactly `len` bytes that
-    // is borrowed mutably for the duration of this call and outlives it. `len` came from
-    // `decode::payload_len`, which bounds the device-supplied product against
-    // `limits::MAX_CONTROL_PAYLOAD_BYTES` and rejects zero, so the kernel writes at most
-    // as many bytes as the allocation holds.
+    // SAFETY: as `call`, plus the two pointers this struct carries. `controls.controls`
+    // holds the address of `control`, and `control`'s union holds the address of
+    // `buffer`'s allocation; both bindings are still in scope, so both allocations are
+    // live for the whole call. Neither is aliased during it — the `&mut` borrows that
+    // planted the addresses have ended, and nothing else reads or writes either binding
+    // between here and the return, so the kernel is the only writer. `control.size` is
+    // `len`, which came from `decode::payload_len`: bounded against
+    // `limits::MAX_CONTROL_PAYLOAD_BYTES` and non-zero, so the kernel writes at most as
+    // many bytes as `buffer` holds.
     let ret =
         unsafe { v4l::v4l2::ioctl(fd.raw(), vidioc::VIDIOC_G_EXT_CTRLS, controls.as_mut_ptr()) };
     ret.map_err(|error| device_error(fd, op, &error))?;

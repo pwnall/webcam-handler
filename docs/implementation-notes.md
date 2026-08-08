@@ -329,14 +329,23 @@ Continues that registry; cite it as `[PF:15]`.
 V4L2 has no count-first call: every enumeration walks an index until the kernel refuses.
 The refusal was assumed to be `EINVAL` throughout. It is not the only one.
 
-| Node | `VIDIOC_QUERY_EXT_CTRL` | `VIDIOC_ENUM_FMT` |
-|---|---|---|
-| video0, video2, video4 (capture) | OK | OK |
-| video1, video3, video5 (metadata) | **`ENOTTY`** | `EINVAL` |
+Measured on `/dev/video0` (capture) and `/dev/video1` (metadata), same USB interface:
 
-The same node answers *differently for different ioctls*: `EINVAL` for `ENUM_FMT` ("no
-format at that index") and `ENOTTY` for `QUERY_EXT_CTRL` ("this device does not implement
-that call at all"). `ENOTTY` is errno 25, `Inappropriate ioctl for device`.
+| ioctl | capture node | metadata node |
+|---|---|---|
+| `VIDIOC_QUERY_EXT_CTRL` | OK | **`ENOTTY`** |
+| `VIDIOC_QUERYMENU` | (`EINVAL`, no such index) | **`ENOTTY`** |
+| `VIDIOC_ENUM_FRAMESIZES` | OK | **`ENOTTY`** |
+| `VIDIOC_ENUM_FRAMEINTERVALS` | OK | **`ENOTTY`** |
+| `VIDIOC_G_EXT_CTRLS` | OK | **`ENOTTY`** |
+| `VIDIOC_ENUM_FMT` (type `VIDEO_CAPTURE`) | OK | `EINVAL` |
+
+So the *same node* answers differently for different ioctls: `EINVAL` for `ENUM_FMT` ("I
+implement that, and there is no format at that index") and `ENOTTY` for the other five ("I
+do not implement that call at all"). `ENOTTY` is errno 25, `Inappropriate ioctl for
+device`. The split is not arbitrary — a metadata node genuinely has an `ENUM_FMT`
+implementation, for the metadata buffer type — but it is not one a caller can predict from
+the node's capabilities, so both answers have to be accepted wherever a list ends.
 
 **Consequence:** a build accepting only `EINVAL` reports a metadata node's control set as
 `Error::DeviceIo`. That is not hypothetical — `V4l2Camera::open` falls back to a group's
@@ -423,6 +432,20 @@ are selected by the recipe; they are unproven code until somebody runs
 `sudo modprobe vivid && just rung-vivid`. Recorded here rather than left implicit,
 because "the rung reports a counted skip" and "the rung works" are different claims and
 only the first is established.
+
+### Amendments after the P1 review
+
+The transcripts above are as-run and stand. Two of the claims they rest on were narrowed
+by the adversarial review that followed, and the narrowing belongs next to the evidence:
+
+- **The Miri run above covered no `unsafe` block.** Its selection was `sys::decode`, which
+  is entirely safe code; the two Miri-reachable blocks (`Payload::bytes`/`bytes_mut`) were
+  outside it. Corrected — the job now runs 23 units including those two, and the other four
+  blocks are ioctl calls Miri cannot cross either way.
+- **The R3 run above passed while a real defect was present.** Metadata nodes answer
+  `ENOTTY`, not `EINVAL` (PF:15), and no test reached a node the public surface never
+  opens. The regression test that closes it is red on this machine when the fix is
+  reverted; that is what the original four could not have told us.
 
 ### Not established by any of the above
 

@@ -354,20 +354,25 @@ impl Camera for V4l2Camera {
 
     fn controls(&self) -> Result<Vec<ControlDesc>> {
         let mut controls = Vec::new();
-        let mut previous = 0u32;
+        let mut previous: Option<u32> = None;
 
         for _ in 0..limits::MAX_CONTROLS_PER_DEVICE {
-            let walked = match ioctl::query_ext_ctrl(&self.fd, previous)? {
+            let walked = match ioctl::query_ext_ctrl(&self.fd, previous.unwrap_or(0))? {
                 ioctl::Enumerated::Exhausted => break,
                 ioctl::Enumerated::Entry(walked) => walked,
             };
             // `NEXT_CTRL` promises strictly increasing ids. A driver that repeats one
             // would otherwise spin here until the cap, reporting the same control over
             // and over; stopping is the honest response to a device contradicting itself.
-            if walked.id <= previous && previous != 0 {
+            //
+            // "Have we seen one yet" is an `Option` rather than `previous != 0`, which
+            // was the same question asked of a value that can legitimately *be* zero: a
+            // driver answering id 0 every time would have skipped the guard on every
+            // iteration and walked to the cap.
+            if previous.is_some_and(|last| walked.id <= last) {
                 break;
             }
-            previous = walked.id;
+            previous = Some(walked.id);
 
             // A control whose name slugs to nothing has no handle D2 will invent; the
             // walk steps past it rather than stopping, so it cannot hide the rest.
