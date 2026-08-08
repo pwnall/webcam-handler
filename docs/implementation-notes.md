@@ -382,9 +382,40 @@ asks "is *any* camera in use", the backend's asks "who holds *this* node" and re
 `schema::Holder` — and merging them would drag the product's crate graph inside the
 privileged boundary. Thirty lines is the cheaper half of that trade.
 
-**Retires when:** the R2 rung, the hotplug tests, and the `DeviceGone` hardware twin are
-all landed and someone decides the loop no longer needs to load modules unattended. Delete
-`crates/priv/`, the `bless` recipe, and the gate together; nothing else references them.
+### Reconsider the granted powers when the plan closes (owner ruling, 2026-08-08)
+
+**The powers granted here are deliberately broader than the demonstrated need, and that is
+an accepted, time-boxed decision rather than an oversight.** `wch-priv exec` grants
+`CAP_SYS_MODULE` to any program; `CAP_NET_ADMIN` was granted on a *prediction* about P4's
+uevent socket that nobody has verified. The owner's ruling: on this machine, for the
+duration of the implementation plan, that is fine — the cost of a too-narrow tool is a
+loop that stalls on a password prompt, and the cost of guessing the boundary early is
+guessing it wrong twice.
+
+**The trigger is G6.** When the last phase gate closes, the guesswork ends: P2–P6 will have
+established exactly which privileged operations the project actually performs, and the
+evidence will be sitting in the justfile recipes and the suites that call them. Revisit
+then, with these questions:
+
+1. **Which capabilities were actually spent?** If `CAP_NET_ADMIN` was never needed — if P4's
+   uevent socket turns out to bind unprivileged on this kernel, which was never tested —
+   drop it. A capability granted "in case" and never used is the easiest thing in this
+   whole design to remove and the easiest to forget.
+2. **Was `exec` used for anything but delegating to a test process?** If not, the closed
+   verb vocabulary that was offered and declined becomes available at no cost: the one
+   argument that defeated it was that only a wrapper can put a capability *inside* a test
+   process, and by G6 we will know whether that was ever needed.
+3. **Does the loop still need to load modules unattended at all?** After the plan, the R2
+   rung runs on demand rather than continuously. If nothing routine needs it, the whole of
+   `crates/priv/`, the `bless` recipe, and `privileged-helper.sh` delete together — nothing
+   else references them.
+
+Recording the deferral rather than the decision is the point. A broad grant with a named
+revisit is a different thing from a broad grant nobody revisits, and the difference is
+entirely whether it was written down.
+
+**Retires when:** question 3 above is answered "no" — or, short of that, when questions 1
+and 2 have narrowed the grant to what the finished project measurably uses.
 
 **Corrected once already, on the first real bless.** The helper was blessed `+eip` on the
 theory that the file's inheritable bit is what lets a capability reach a child. It is not.

@@ -119,7 +119,7 @@ bless:
 
     if [[ -f "$stamp" && -f "$stable" && "$(cat "$stamp")" == "$h" \
           && "$mode_now" == "700" && "$caps_ok" == "1" ]]; then
-        echo "bless: $stable already blessed (sha256 unchanged, caps +eip, mode 0700); skipping setcap"
+        echo "bless: $stable already blessed (sha256 unchanged, caps +$want_flags, mode 0700); skipping setcap"
         exit 0
     fi
 

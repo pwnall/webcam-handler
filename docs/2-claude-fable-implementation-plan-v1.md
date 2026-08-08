@@ -269,6 +269,7 @@ generated agent guide's examples smoke-checked against the built binaries;
 | Session GC | a full disk | §8.8 |
 | Cross-session query store (SQLite) | queries at scale | §7 |
 | Audio | a license-clean path appears | §8.2 |
+| Narrow or delete the `wch-priv` blessed helper | **G6 closes** — by then P2–P6 have established which privileged operations the project actually performs, so the grant can be measured against use instead of predicted | note N8 |
 
 ## Risks to the plan
 
