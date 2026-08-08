@@ -2798,6 +2798,35 @@
           "type": "object"
         },
         {
+          "description": "The automation that owned this control when the snapshot was taken owns it again,\nso its value is that automation's to choose — exactly as it was.\n\n**A success**, and the distinction is not pedantry. Restoring an automation control\nto \"on\" re-engages the manual control it governs, so on any device whose INACTIVE\nflag follows the automation's value this is the *ordinary* outcome for every\nguarded write's restore. Measured on the seed hardware the day\n`controls --discover-pairs` first ran: the probe put the camera back perfectly and\nthen reported two controls it \"could not put back\", because the vocabulary had no\nway to say \"its owner is back\". See note N9.",
+          "properties": {
+            "automation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ControlSlug"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The automation control that holds it, when the pair set names one."
+            },
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "outcome": {
+              "const": "owned_by_automation",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "control"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Could not be put back, and why.",
           "properties": {
             "control": {
@@ -3425,7 +3454,7 @@
       "description": "Why one control could not be put back.",
       "oneOf": [
         {
-          "description": "The control is still INACTIVE after its automation partner was handled.",
+          "description": "The control has been taken over by automation that did **not** hold it when the\nsnapshot was taken.\n\nA real change we could not undo, and distinct from\n[`RestoreOutcome::OwnedByAutomation`], which is the same *flag* meaning the\nopposite thing: there, the owner is the one that was there before.",
           "properties": {
             "automation": {
               "anyOf": [

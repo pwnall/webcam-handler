@@ -15,10 +15,16 @@ use std::io::Write as _;
 use camino::Utf8Path;
 use comfy_table::{Cell, ContentArrangement, Table, presets};
 use schema::camera::{CameraInfo, FrameInterval, FrameSize};
-use schema::control::{ControlDesc, ControlType, ControlValue, KnownFlag};
+use schema::capture::{
+    Adjustment, NegotiatedStream, PhotoDelivery, PhotoRendering, PhotoReport, TransformApplication,
+};
+use schema::control::{
+    ControlDesc, ControlType, ControlValue, KnownFlag, Unverifiable, WriteWarning,
+};
 use schema::error::{Error, Result};
 use schema::profile::DeviceProfile;
-use schema::report::{CameraDetail, CameraList, ControlReport};
+use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot, UnrestorableReason};
 
 /// Where rendered output goes.
 ///
@@ -62,6 +68,31 @@ impl Output {
     #[must_use]
     pub fn to_buffers(stdout: Box<dyn std::io::Write>, stderr: Box<dyn std::io::Write>) -> Output {
         Output { stdout, stderr }
+    }
+
+    /// Write raw bytes, with no newline and no interpretation.
+    ///
+    /// `wch photo cam:x > shot.jpg` is the reason this exists: with no `-o`, the photo's
+    /// bytes *are* the answer, and a `line` would append a byte the image does not have.
+    ///
+    /// # Errors
+    ///
+    /// As [`Output::line`].
+    pub fn bytes(&mut self, stream: Stream, data: &[u8]) -> Result<()> {
+        let sink = match stream {
+            Stream::Stdout => &mut self.stdout,
+            Stream::Stderr => &mut self.stderr,
+        };
+        sink.write_all(data)
+            .and_then(|()| sink.flush())
+            .map_err(|error| Error::StorageIo {
+                path: match stream {
+                    Stream::Stdout => "<stdout>".into(),
+                    Stream::Stderr => "<stderr>".into(),
+                },
+                errno: error.raw_os_error(),
+                message: error.to_string(),
+            })
     }
 
     /// Write a line.
@@ -423,6 +454,391 @@ fn flag_text(flag: KnownFlag) -> &'static str {
         KnownFlag::ModifyLayout => "modify-layout",
         KnownFlag::DynamicArray => "dyn-array",
         KnownFlag::HasWhichMinMax => "has-min-max",
+    }
+}
+
+/// `get` — one control, in full.
+pub(crate) fn control(desc: &ControlDesc, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(desc, out);
+    }
+
+    let mut table = table();
+    table.set_header(vec!["FIELD", "VALUE"]);
+    for (field, value) in [
+        ("control", desc.slug.to_string()),
+        ("name", desc.name.clone()),
+        ("id", desc.id.to_string()),
+        ("type", type_text(desc.control_type)),
+        ("current", current_text(desc)),
+        ("default", desc.default.to_string()),
+        ("range", range_text(desc)),
+        ("flags", flags_text(desc)),
+    ] {
+        table.add_row(vec![Cell::new(field), Cell::new(value)]);
+    }
+    out.line(Stream::Stdout, &table.to_string())?;
+
+    // The marks the table cannot carry, on stderr so a piped table stays a table. Read
+    // from the schema's own predicates, so `--json` supports the same conclusion.
+    if desc.current_out_of_range() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: {}'s current value is outside its declared range [PF:4] — reported, \
+                 not corrected",
+                desc.slug
+            ),
+        )?;
+    }
+    if desc.default_out_of_range() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: {}'s default is outside its declared range [PF:5]",
+                desc.slug
+            ),
+        )?;
+    }
+    if desc.is_inactive() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: {} is INACTIVE — an automation control owns it right now [PF:3]",
+                desc.slug
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// `set` — what was asked, what the device took, and why they differ.
+pub(crate) fn writes(report: &WriteReport, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(report, out);
+    }
+
+    let mut table = table();
+    table.set_header(vec!["CONTROL", "REQUESTED", "APPLIED", "WHY"]);
+    for applied in &report.writes {
+        table.add_row(vec![
+            Cell::new(applied.slug.as_str()),
+            Cell::new(applied.requested.to_string()),
+            Cell::new(applied.applied.to_string()),
+            Cell::new(if applied.warnings.is_empty() {
+                "—".to_owned()
+            } else {
+                applied
+                    .warnings
+                    .iter()
+                    .map(warning_text)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        ]);
+    }
+    out.line(Stream::Stdout, &table.to_string())?;
+
+    if !report.disabled_automation.is_empty() {
+        // A guarded write changes more than the caller named, and that is a change to the
+        // camera they are entitled to hear about at the moment it happens.
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: switched off to make the write stick: {}",
+                report
+                    .disabled_automation
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )?;
+    }
+    if !report.is_exact() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: {} write(s) did not land exactly as asked",
+                report.inexact().len()
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// `snapshot`. Always JSON — a snapshot is a document `restore` reads back, not a view.
+pub(crate) fn snapshot(
+    snapshot: &Snapshot,
+    destination: Option<&Utf8Path>,
+    out: &mut Output,
+) -> Result<()> {
+    let text = serde_json::to_string_pretty(snapshot).map_err(|error| Error::StorageIo {
+        path: destination.map_or_else(|| "<stdout>".into(), Utf8Path::to_path_buf),
+        errno: None,
+        message: format!("could not serialize the snapshot: {error}"),
+    })?;
+
+    match destination {
+        None => out.line(Stream::Stdout, &text),
+        Some(path) => {
+            std::fs::write(path, format!("{text}\n")).map_err(|error| Error::StorageIo {
+                path: path.to_path_buf(),
+                errno: error.raw_os_error(),
+                message: error.to_string(),
+            })?;
+            out.line(
+                Stream::Stderr,
+                &format!("wrote {path} ({} control(s))", snapshot.entries.len()),
+            )
+        }
+    }
+}
+
+/// `restore` — what went back, and what did not.
+pub(crate) fn restore(report: &RestoreReport, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(report, out);
+    }
+
+    let mut table = table();
+    table.set_header(vec!["CONTROL", "OUTCOME"]);
+    for outcome in &report.outcomes {
+        let (control, text) = outcome_text(outcome);
+        table.add_row(vec![Cell::new(control), Cell::new(text)]);
+    }
+    out.line(Stream::Stdout, &table.to_string())?;
+
+    // The one line that matters, and it is on stderr because a caller scripting a restore
+    // wants the exit code and the table, not prose in the middle of them.
+    if !report.is_complete() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: {} control(s) did not come back: {}",
+                report.unrestored().len(),
+                report
+                    .unrestored()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// `photo` — where the bytes went, and what was done to them.
+///
+/// With no `-o`, the bytes go to standard output and the summary to standard error, so
+/// `wch photo cam:x > shot.jpg` is a photo and not a photo with a table in it. `--json`
+/// requires `-o` for exactly that reason, and clap enforces it.
+pub(crate) fn photo(
+    report: &PhotoReport,
+    returned: Option<&[u8]>,
+    as_json: bool,
+    out: &mut Output,
+) -> Result<()> {
+    if as_json {
+        // `--json` requires `-o`, so there are no bytes to place and the document is the
+        // whole of standard output. clap enforces that rather than this function, because
+        // "you cannot have both" is a usage rule and belongs where usage rules are.
+        return json(report, out);
+    }
+
+    // The bytes first and the table after, both because a reader piping stdout wants the
+    // image at byte zero and because the summary describes what was just written.
+    if let Some(bytes) = returned {
+        out.bytes(Stream::Stdout, bytes)?;
+    }
+    let summary = if returned.is_some() {
+        Stream::Stderr
+    } else {
+        Stream::Stdout
+    };
+
+    let mut table = table();
+    table.set_header(vec!["FIELD", "VALUE"]);
+    for (field, value) in [
+        ("camera", report.camera.to_string()),
+        ("taken at", report.taken_at.to_string()),
+        ("size", format!("{}x{}", report.width, report.height)),
+        ("stream", stream_text(&report.negotiated)),
+        ("rendering", rendering_text(report.rendering)),
+        ("transform", transform_text(report.transform)),
+        ("frames settled", report.frames_settled.to_string()),
+        ("delivery", delivery_text(&report.delivery)),
+    ] {
+        table.add_row(vec![Cell::new(field), Cell::new(value)]);
+    }
+    out.line(summary, &table.to_string())?;
+
+    if !report.negotiated.is_exact() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: the device adjusted the request: {}",
+                report
+                    .negotiated
+                    .adjustments
+                    .iter()
+                    .map(adjustment_text)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// One write warning, in a phrase.
+fn warning_text(warning: &WriteWarning) -> String {
+    match warning {
+        WriteWarning::Clamped {
+            requested,
+            applied,
+            range,
+        } => format!(
+            "clamped {requested} into [{}..={}] as {applied} [PF:6]",
+            range.min, range.max
+        ),
+        WriteWarning::StepAligned {
+            requested,
+            applied,
+            step,
+        } => format!("aligned {requested} to step {step} as {applied}"),
+        WriteWarning::Adjusted { requested, applied } => {
+            format!("the device took {applied} for {requested}, for a reason it did not give")
+        }
+        WriteWarning::Unverified { because } => match because {
+            Unverifiable::TypeHasNoValue => {
+                "written; this control has no value to read back".to_owned()
+            }
+            Unverifiable::WriteOnly => {
+                "written; the device flags this control write-only".to_owned()
+            }
+            Unverifiable::DeviceDeclinedToRead => {
+                "written; the device then declined to read it back".to_owned()
+            }
+        },
+    }
+}
+
+/// One restore outcome, as `(control, what happened)`.
+fn outcome_text(outcome: &RestoreOutcome) -> (String, String) {
+    match outcome {
+        RestoreOutcome::Restored { applied } => (
+            applied.slug.to_string(),
+            if applied.is_exact() {
+                format!("restored to {}", applied.applied)
+            } else {
+                format!(
+                    "written {} and took {} — not where it was",
+                    applied.requested, applied.applied
+                )
+            },
+        ),
+        RestoreOutcome::AlreadyCorrect { control } => {
+            (control.to_string(), "already correct".to_owned())
+        }
+        RestoreOutcome::OwnedByAutomation {
+            control,
+            automation,
+        } => (
+            control.to_string(),
+            match automation {
+                Some(a) => format!("back under {a}, as it was [PF:3]"),
+                None => "back under automation, as it was [PF:3]".to_owned(),
+            },
+        ),
+        RestoreOutcome::Unrestorable { control, reason } => (
+            control.to_string(),
+            match reason {
+                UnrestorableReason::StillInactive {
+                    automation: Some(a),
+                } => {
+                    format!("still owned by {a} [PF:3]")
+                }
+                UnrestorableReason::StillInactive { automation: None } => {
+                    "still INACTIVE, and no pair names what owns it [PF:3]".to_owned()
+                }
+                UnrestorableReason::Volatile => {
+                    "volatile — the value is the device's to choose".to_owned()
+                }
+                UnrestorableReason::NoLongerWritable => "no longer writable".to_owned(),
+                UnrestorableReason::WriteFailed { error } => format!("the write failed: {error}"),
+            },
+        ),
+    }
+}
+
+fn transform_text(application: TransformApplication) -> String {
+    match application {
+        TransformApplication::Identity => "none".to_owned(),
+        TransformApplication::Pixels => "applied to the pixels".to_owned(),
+        TransformApplication::ExifOrientation { orientation } => {
+            format!("EXIF Orientation {orientation}; the bitstream is untouched [E6]")
+        }
+    }
+}
+
+fn rendering_text(rendering: PhotoRendering) -> String {
+    match rendering {
+        PhotoRendering::Verbatim { source } => {
+            format!("the camera's own {source} bytes, unmodified [E6]")
+        }
+        PhotoRendering::DecodedAndEncoded { source, target } => {
+            format!("{source} decoded and re-encoded as {target}")
+        }
+        PhotoRendering::ConvertedAndEncoded { source, target } => {
+            format!("{source} converted and encoded as {target}")
+        }
+    }
+}
+
+fn delivery_text(delivery: &PhotoDelivery) -> String {
+    match delivery {
+        PhotoDelivery::Bytes { format, byte_count } => {
+            format!("{byte_count} bytes of {format} returned")
+        }
+        PhotoDelivery::Path { path, byte_count } => format!("{path} ({byte_count} bytes)"),
+    }
+}
+
+fn stream_text(negotiated: &NegotiatedStream) -> String {
+    let rate = negotiated.interval.fps().map_or_else(
+        || "no rate reported".to_owned(),
+        |fps| format!("{fps:.0} fps"),
+    );
+    format!(
+        "{} {}x{} @ {rate}",
+        negotiated.pixel_format, negotiated.width, negotiated.height
+    )
+}
+
+fn adjustment_text(adjustment: &Adjustment) -> String {
+    match adjustment {
+        Adjustment::PixelFormat {
+            requested,
+            negotiated,
+        } => format!("asked {requested}, got {negotiated}"),
+        Adjustment::Size {
+            requested_width,
+            requested_height,
+            negotiated_width,
+            negotiated_height,
+        } => format!(
+            "asked {requested_width}x{requested_height}, got {negotiated_width}x{negotiated_height}"
+        ),
+        Adjustment::Interval {
+            requested,
+            negotiated,
+        } => format!(
+            "asked {}, got {}",
+            requested.fps().unwrap_or(0.0),
+            negotiated.fps().unwrap_or(0.0)
+        ),
     }
 }
 
@@ -889,5 +1305,176 @@ mod tests {
             type_text(ControlType::Unknown { raw: 0x900 }),
             type_text(ControlType::Unknown { raw: 0x901 })
         );
+    }
+
+    #[test]
+    fn every_write_warning_and_restore_outcome_has_a_distinct_rendering() {
+        // The same completeness rule one phase later. These two vocabularies carry
+        // payloads and so have no generated `ALL`; the populations below are exhaustive
+        // `match`-shaped constructions, which means adding a variant stops the build here
+        // rather than producing a table row nobody wrote.
+        let range = schema::control::ControlRange {
+            min: 0,
+            max: 100,
+            step: 5,
+        };
+        let warnings = vec![
+            WriteWarning::Clamped {
+                requested: 500,
+                applied: 100,
+                range,
+            },
+            WriteWarning::StepAligned {
+                requested: 7,
+                applied: 5,
+                step: 5,
+            },
+            WriteWarning::Adjusted {
+                requested: ControlValue::Int(50),
+                applied: ControlValue::Int(42),
+            },
+            WriteWarning::Unverified {
+                because: Unverifiable::TypeHasNoValue,
+            },
+            WriteWarning::Unverified {
+                because: Unverifiable::WriteOnly,
+            },
+            WriteWarning::Unverified {
+                because: Unverifiable::DeviceDeclinedToRead,
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for warning in &warnings {
+            assert!(
+                seen.insert(warning_text(warning)),
+                "{warning:?} duplicates a spelling"
+            );
+        }
+        // The `Unverifiable` half is a generated `ALL`, so its coverage is checkable: a
+        // new reason must appear above or this count stops matching.
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|w| matches!(w, WriteWarning::Unverified { .. }))
+                .count(),
+            Unverifiable::ALL.len(),
+            "a reason was added to the vocabulary and not to this walk"
+        );
+
+        let slug = |s: &str| ControlSlug::parse(s).expect("literal slug");
+        let outcomes = vec![
+            RestoreOutcome::Restored {
+                applied: schema::Applied {
+                    control: schema::control::ControlId(1),
+                    slug: slug("a"),
+                    requested: ControlValue::Int(1),
+                    applied: ControlValue::Int(1),
+                    warnings: Vec::new(),
+                },
+            },
+            RestoreOutcome::AlreadyCorrect { control: slug("b") },
+            RestoreOutcome::OwnedByAutomation {
+                control: slug("c"),
+                automation: Some(slug("c_auto")),
+            },
+            RestoreOutcome::OwnedByAutomation {
+                control: slug("d"),
+                automation: None,
+            },
+            RestoreOutcome::Unrestorable {
+                control: slug("e"),
+                reason: UnrestorableReason::StillInactive {
+                    automation: Some(slug("e_auto")),
+                },
+            },
+            RestoreOutcome::Unrestorable {
+                control: slug("f"),
+                reason: UnrestorableReason::StillInactive { automation: None },
+            },
+            RestoreOutcome::Unrestorable {
+                control: slug("g"),
+                reason: UnrestorableReason::Volatile,
+            },
+            RestoreOutcome::Unrestorable {
+                control: slug("h"),
+                reason: UnrestorableReason::NoLongerWritable,
+            },
+            RestoreOutcome::Unrestorable {
+                control: slug("i"),
+                reason: UnrestorableReason::WriteFailed {
+                    error: schema::Error::DeviceGone {
+                        path: "/dev/video0".into(),
+                    },
+                },
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for outcome in &outcomes {
+            let (_, text) = outcome_text(outcome);
+            assert!(
+                seen.insert(text.clone()),
+                "{outcome:?} renders as {text:?}, which is taken"
+            );
+        }
+
+        // A restore that *worked* and one that did not must not read alike: the whole
+        // point of `OwnedByAutomation` is that a caller can tell them apart at a glance.
+        let (_, owned) = outcome_text(&outcomes[2]);
+        let (_, taken) = outcome_text(&outcomes[4]);
+        assert!(owned.contains("as it was"), "{owned}");
+        assert!(!taken.contains("as it was"), "{taken}");
+    }
+
+    #[test]
+    fn every_photo_rendering_and_transform_application_has_a_distinct_rendering() {
+        let renderings = vec![
+            PhotoRendering::Verbatim {
+                source: PixelFormat::MJPG,
+            },
+            PhotoRendering::DecodedAndEncoded {
+                source: PixelFormat::MJPG,
+                target: schema::PhotoFormat::Png,
+            },
+            PhotoRendering::ConvertedAndEncoded {
+                source: PixelFormat::YUYV,
+                target: schema::PhotoFormat::Png,
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for rendering in renderings {
+            assert!(
+                seen.insert(rendering_text(rendering)),
+                "{rendering:?} duplicates a spelling"
+            );
+        }
+        // Only the verbatim rendering may claim byte fidelity, and it is the only one that
+        // does. A table that said "unmodified" about a re-encode would be the E6 claim
+        // made falsely, in the one place a human reads it.
+        assert!(rendering_text(renderings_verbatim()).contains("unmodified"));
+        assert!(
+            !rendering_text(PhotoRendering::DecodedAndEncoded {
+                source: PixelFormat::MJPG,
+                target: schema::PhotoFormat::Png,
+            })
+            .contains("unmodified")
+        );
+
+        let mut seen = std::collections::BTreeSet::new();
+        for application in [
+            TransformApplication::Identity,
+            TransformApplication::Pixels,
+            TransformApplication::ExifOrientation { orientation: 6 },
+        ] {
+            assert!(
+                seen.insert(transform_text(application)),
+                "{application:?} duplicates a spelling"
+            );
+        }
+    }
+
+    fn renderings_verbatim() -> PhotoRendering {
+        PhotoRendering::Verbatim {
+            source: PixelFormat::MJPG,
+        }
     }
 }

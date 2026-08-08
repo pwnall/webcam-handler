@@ -36,26 +36,65 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 root="$(gate_root)"
 bundle="$root/schemas/webcam-handler-schema.json"
 
+# The slug of a control this gate may write: an integer, writable, and holding a value
+# inside its own declared range. Read out of the profile rather than transcribed, so a
+# re-capture that renames a control does not silently break the write rows.
+#
+# `0x0004` is READ_ONLY and `0x0001` is DISABLED; both make a control unwritable, and both
+# are checked against the raw flag word because that is what the profile records.
+writable_control() {
+    jq -r '
+        [ .invariant.controls[]
+          | select(.type.kind == "integer")
+          | select((.flags.raw // 0) % 2 == 0)
+          | select((((.flags.raw // 0) / 4) | floor) % 2 == 0)
+          | select(.range.max > .range.min)
+        ] | first | if . == null then "" else "\(.slug)\t\(.default)\t\(.range.min)\t\(.range.max)" end
+    ' "$1" 2>/dev/null
+}
+
 if [[ ! -f "$bundle" ]]; then
     gate_fail "no schema bundle at ${bundle#"$root"/}; 'just generate' writes it"
     gate_finish
 fi
 
-# The read verbs and the `$defs` name each one's answer must validate against.
-# `<profile>` is substituted with a committed profile path.
+# Every verb and the `$defs` name its answer must validate against. Three tokens are
+# substituted into the argv: `<camera>` anywhere in the line, `<control>` with a writable
+# control the replayed profile actually has, and `<snapshot>` with a document this gate
+# produces by running `snapshot` first.
+#
+# `photo` takes a `-o` under a temporary directory: `--json` requires one (the bytes and
+# the document cannot share standard output), and writing outside the tree is what keeps
+# `no-frame-bytes-in-repo.sh` true even though these frames are synthetic.
 verbs=(
     "list|CameraList|list"
-    "info|CameraDetail|info cam:"
-    "controls|ControlReport|controls cam:"
-    "profile-capture|DeviceProfile|profile capture cam:"
+    "info|CameraDetail|info <camera>"
+    "controls|ControlReport|controls <camera>"
+    "get|ControlDesc|get <camera> <control>"
+    "set|WriteReport|set <camera> <control>=<value>"
+    "snapshot|Snapshot|snapshot <camera>"
+    "restore|RestoreReport|restore <camera> <snapshot>"
+    "photo|PhotoReport|photo <camera> -o <photo>"
+    "profile-capture|DeviceProfile|profile capture <camera>"
 )
 
 # Sorted, so the gate examines the same profile on every run and in every scratch copy —
 # `find` has no defined order, and a gate whose subject varies run to run is a gate whose
 # green means something different each time.
-profile="$(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\n' | sort | head -n1)"
+#
+# The *first sorted profile with a writable integer control*, rather than simply the first:
+# `get` and `set` need a control to name, and the corpus's first entry alphabetically
+# (`chicony-ir`) exposes three controls, none of them writable. Still deterministic, and
+# still derived from the tree rather than transcribed.
+profile=""
+for candidate in $(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\n' | sort); do
+    if [[ -n "$(writable_control "$candidate")" ]]; then
+        profile="$candidate"
+        break
+    fi
+done
 if [[ -z "$profile" ]]; then
-    gate_fail "corpus/profiles/ is empty; this gate replays a committed profile so its answers do not depend on attached hardware"
+    gate_fail "no committed profile exposes a writable integer control, so the write verbs cannot be exercised against a replayed device"
     gate_finish
 fi
 
@@ -69,6 +108,20 @@ if [[ -z "$camera_id" ]]; then
     gate_finish
 fi
 gate_note "replaying $(basename "$profile") as cam:$camera_id"
+
+# The control the write rows name, and a value inside its declared range. The *default* is
+# free to sit outside the range [PF:5], so it is clamped rather than trusted — a gate that
+# fed a device an out-of-range value would be testing the clamp instead of the schema.
+IFS=$'\t' read -r control control_default control_min control_max <<<"$(writable_control "$profile")"
+value="$control_default"
+if ((value < control_min)); then value="$control_min"; fi
+if ((value > control_max)); then value="$control_max"; fi
+gate_note "writing $control=$value (declared range $control_min..$control_max)"
+
+# Scratch space for the documents and bytes these rows produce. Outside the tree, so
+# `no-frame-bytes-in-repo.sh` stays true and a failed run leaves nothing behind.
+scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-json-validates.XXXXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
 
 # The real checkout, whatever tree is under test — see the note above.
 checkout="$(git rev-parse --show-toplevel)"
@@ -85,10 +138,20 @@ checked=0
 for row in "${verbs[@]}"; do
     IFS='|' read -r name def argv <<<"$row"
 
-    # `cam:` rows get the derived id appended; `list` takes no camera.
-    case "$argv" in
-    *"cam:") argv="${argv}${camera_id}" ;;
-    esac
+    argv="${argv//<camera>/cam:$camera_id}"
+    argv="${argv//<control>/$control}"
+    argv="${argv//<value>/$value}"
+    argv="${argv//<photo>/$scratch/shot.jpg}"
+    if [[ "$argv" == *"<snapshot>"* ]]; then
+        # `restore` needs a document, and the only honest source of one is `snapshot`
+        # itself: a hand-written fixture would validate a shape nothing produces.
+        if ! "$binary" --backend fake --profile "$profile" --json \
+            snapshot "cam:$camera_id" >"$scratch/snapshot.json" 2>/dev/null; then
+            gate_fail "could not take the snapshot the restore row replays"
+            continue
+        fi
+        argv="${argv//<snapshot>/$scratch/snapshot.json}"
+    fi
 
     output=""
     status=0

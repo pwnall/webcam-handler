@@ -1769,7 +1769,8 @@ name = "webcam-handler-cli"
 version = "0.1.0"
 dependencies = [
  "camino",
- "clap",
+ "image",
+ "kamadak-exif",
  "serde_json",
  "tempfile",
  "webcam-handler-cli-core",

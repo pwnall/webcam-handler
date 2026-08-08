@@ -18,7 +18,8 @@ workspace = true
 
 [dependencies]
 camino.workspace = true
-clap.workspace = true
+# No clap: `Cli::parse_checked` lives in the shared command surface, because the rule it
+# enforces beyond clap's own attributes has to hold for `wchc` too (T4).
 serde_json.workspace = true
 webcam-handler-cli-core.workspace = true
 webcam-handler-engine.workspace = true
@@ -27,4 +28,10 @@ webcam-handler-schema.workspace = true
 webcam-handler-v4l2.workspace = true
 
 [dev-dependencies]
+# The photo suite reads its own EXIF back with an implementation that shares no code with
+# the writer (docs/4: write-only EXIF is a defect class), and decodes its own output rather
+# than trusting the magic bytes.
+image.workspace = true
+kamadak-exif.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true

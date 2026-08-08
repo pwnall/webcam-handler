@@ -86,7 +86,12 @@ impl Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnrestorableReason {
-    /// The control is still INACTIVE after its automation partner was handled.
+    /// The control has been taken over by automation that did **not** hold it when the
+    /// snapshot was taken.
+    ///
+    /// A real change we could not undo, and distinct from
+    /// [`RestoreOutcome::OwnedByAutomation`], which is the same *flag* meaning the
+    /// opposite thing: there, the owner is the one that was there before.
     StillInactive {
         /// The automation partner, when one is known.
         automation: Option<ControlSlug>,
@@ -117,6 +122,22 @@ pub enum RestoreOutcome {
         /// Which control.
         control: ControlSlug,
     },
+    /// The automation that owned this control when the snapshot was taken owns it again,
+    /// so its value is that automation's to choose — exactly as it was.
+    ///
+    /// **A success**, and the distinction is not pedantry. Restoring an automation control
+    /// to "on" re-engages the manual control it governs, so on any device whose INACTIVE
+    /// flag follows the automation's value this is the *ordinary* outcome for every
+    /// guarded write's restore. Measured on the seed hardware the day
+    /// `controls --discover-pairs` first ran: the probe put the camera back perfectly and
+    /// then reported two controls it "could not put back", because the vocabulary had no
+    /// way to say "its owner is back". See note N9.
+    OwnedByAutomation {
+        /// Which control.
+        control: ControlSlug,
+        /// The automation control that holds it, when the pair set names one.
+        automation: Option<ControlSlug>,
+    },
     /// Could not be put back, and why.
     Unrestorable {
         /// Which control.
@@ -134,12 +155,20 @@ pub struct RestoreReport {
 }
 
 impl RestoreReport {
-    /// Whether every control came back to its recorded value.
+    /// Whether the camera is back where the snapshot found it.
+    ///
+    /// [`RestoreOutcome::OwnedByAutomation`] counts as complete: the control's owner is
+    /// the one that owned it before, so the camera *is* in the configuration that was
+    /// recorded, even though no value was written. Counting it as incomplete would make
+    /// every guarded write's restore look like a failure, which is how a field stops being
+    /// read (note N9).
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.outcomes.iter().all(|o| match o {
             RestoreOutcome::Restored { applied } => applied.is_exact(),
-            RestoreOutcome::AlreadyCorrect { .. } => true,
+            RestoreOutcome::AlreadyCorrect { .. } | RestoreOutcome::OwnedByAutomation { .. } => {
+                true
+            }
             RestoreOutcome::Unrestorable { .. } => false,
         })
     }
@@ -152,7 +181,9 @@ impl RestoreReport {
             .filter_map(|o| match o {
                 RestoreOutcome::Unrestorable { control, .. } => Some(control),
                 RestoreOutcome::Restored { applied } if !applied.is_exact() => Some(&applied.slug),
-                _ => None,
+                RestoreOutcome::Restored { .. }
+                | RestoreOutcome::AlreadyCorrect { .. }
+                | RestoreOutcome::OwnedByAutomation { .. } => None,
             })
             .collect()
     }

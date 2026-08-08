@@ -22,16 +22,19 @@
 use std::process::ExitCode;
 
 use camino::Utf8Path;
-use clap::Parser as _;
-use cli_core::{Cli, Executor, Output, Stream};
+use cli_core::{Cli, Executor, Output, Photograph, Stream};
 use schema::backend::{BackendKind, Camera, CameraBackend};
 use schema::camera::{CameraId, CameraInfo};
+use schema::capture::PhotoRequest;
+use schema::control::{ControlDesc, ControlSlug};
 use schema::error::{Error, Result};
 use schema::profile::DeviceProfile;
-use schema::report::{CameraDetail, CameraList, ControlReport};
+use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::snapshot::{RestoreReport, Snapshot};
+use schema::time::Stamp;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_checked();
     let mut out = Output::process();
 
     match run(&cli, &mut out) {
@@ -117,6 +120,45 @@ impl InProcess {
         let camera = self.backend.open(&info.id)?;
         Ok((info, camera))
     }
+
+    /// The pair set every verb plans against: the declared table (D3) merged with whatever
+    /// was measured on this device (E1).
+    ///
+    /// One place, because a `set` that guarded against a different pair set than the
+    /// `snapshot` that recorded roles would order its restore against a device the two
+    /// halves disagreed about.
+    fn pairs_for(
+        &self,
+        controls: &[ControlDesc],
+        measured: Vec<schema::pairing::AutomationPair>,
+    ) -> Vec<schema::pairing::AutomationPair> {
+        let merged = engine::pairing::merge(schema::pairing::declared_pairs(), measured);
+        engine::pairing::applicable(controls, &merged)
+    }
+}
+
+/// Say what the probe touched and what it put back, on standard error.
+///
+/// The `--json` document carries the *pairs*; what a probe declined and how the restore
+/// went are facts about the run rather than about the camera, and a caller redirecting
+/// stdout should still see them.
+fn report_probe(found: &engine::discover::Discovery) {
+    for (control, reason) in &found.skipped {
+        eprintln!("wch: did not probe {control}: {reason}");
+    }
+    if !found.left_the_camera_alone() {
+        let stuck: Vec<String> = found
+            .restored
+            .unrestored()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        eprintln!(
+            "wch: the probe could not put {} control(s) back: {}",
+            stuck.len(),
+            stuck.join(", ")
+        );
+    }
 }
 
 impl Executor for InProcess {
@@ -138,17 +180,91 @@ impl Executor for InProcess {
         })
     }
 
-    fn controls(&mut self, requested: &CameraId) -> Result<ControlReport> {
-        let (info, camera) = self.open(requested)?;
+    fn controls(&mut self, requested: &CameraId, discover_pairs: bool) -> Result<ControlReport> {
+        let (info, mut camera) = self.open(requested)?;
+        // The probe first, because it writes: the control set reported afterwards is the
+        // one the camera is actually in, and reading before the probe would describe a
+        // device the caller no longer has.
+        let measured = if discover_pairs {
+            let found = engine::discover::pairs(camera.as_mut(), Stamp::now())?;
+            report_probe(&found);
+            found.pairs
+        } else {
+            Vec::new()
+        };
         let controls = camera.controls()?;
         Ok(ControlReport {
             // The declared table (D3) narrowed to the relationships this device can
-            // actually exhibit. Nothing has been measured on it, so every pair reported
-            // here carries `Provenance::Declared` — a nomination, and labelled as one
-            // (E1). `controls --discover-pairs` is what turns one into evidence.
-            pairs: engine::pairing::applicable(&controls, &schema::pairing::declared_pairs()),
+            // exhibit, merged with anything the probe measured. Every pair carries its own
+            // provenance, and measured beats declared (E1) — so a caller reading `--json`
+            // can tell a nomination from an observation without asking how it was made.
+            pairs: engine::pairing::applicable(&controls, &self.pairs_for(&controls, measured)),
             camera: info.id,
             controls,
+        })
+    }
+
+    fn get(&mut self, requested: &CameraId, control: &ControlSlug) -> Result<ControlDesc> {
+        let (_, camera) = self.open(requested)?;
+        let controls = camera.controls()?;
+        controls
+            .iter()
+            .find(|desc| &desc.slug == control)
+            .cloned()
+            // The suggestion list comes from the planner's, so `get brightnes` and
+            // `set brightnes=1` name the same candidates.
+            .ok_or_else(|| {
+                engine::pairing::plan_unguarded(
+                    &controls,
+                    &[(control.clone(), schema::ControlValue::Int(0))],
+                )
+                .err()
+                .unwrap_or(Error::ControlUnknown {
+                    requested: control.to_string(),
+                    did_you_mean: Vec::new(),
+                })
+            })
+    }
+
+    fn set(
+        &mut self,
+        requested: &CameraId,
+        targets: &[(ControlSlug, schema::ControlValue)],
+        guarded: bool,
+    ) -> Result<WriteReport> {
+        let (_, mut camera) = self.open(requested)?;
+        let controls = camera.controls()?;
+        let pairs = self.pairs_for(&controls, Vec::new());
+        engine::write::set(camera.as_mut(), &pairs, targets, guarded)
+    }
+
+    fn snapshot(&mut self, requested: &CameraId) -> Result<Snapshot> {
+        let (_, mut camera) = self.open(requested)?;
+        let controls = camera.controls()?;
+        let pairs = self.pairs_for(&controls, Vec::new());
+        engine::snapshot::take(camera.as_mut(), &pairs, Stamp::now())
+    }
+
+    fn restore(&mut self, requested: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
+        let (_, mut camera) = self.open(requested)?;
+        let controls = camera.controls()?;
+        let pairs = self.pairs_for(&controls, Vec::new());
+        engine::snapshot::restore(camera.as_mut(), &pairs, snapshot)
+    }
+
+    fn photo(&mut self, requested: &CameraId, request: &PhotoRequest) -> Result<Photograph> {
+        let (_, mut camera) = self.open(requested)?;
+        let taken = engine::photo::take(
+            camera.as_mut(),
+            request,
+            &engine::settle::MonotonicClock::new(),
+            Stamp::now(),
+        )?;
+        // Two structurally identical types, and they stay separate on purpose: `wchc`
+        // links no engine (T6), so the shared command surface cannot name the engine's.
+        Ok(Photograph {
+            report: taken.report,
+            returned: taken.returned,
         })
     }
 

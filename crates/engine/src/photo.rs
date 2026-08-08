@@ -31,6 +31,22 @@ use schema::time::Stamp;
 use crate::capture;
 use crate::settle::Clock;
 
+/// A photo, and — when the sink asked for them — its bytes.
+///
+/// The bytes are *beside* the report rather than in it, and that is D10's split showing
+/// through: [`PhotoReport`] crosses the wire and gets serialized, and a `Vec<u8>` in a
+/// JSON document needs an encoding that only the wire surface needs (P4). Here the caller
+/// already has the bytes in memory, so handing them over costs nothing and commits to
+/// nothing.
+#[derive(Debug)]
+pub struct Photograph {
+    /// What was taken, where it went, and what was done to it.
+    pub report: PhotoReport,
+    /// The bytes, for a [`Sink::ReturnBytes`] request. `None` when they were written to a
+    /// path — a caller who asked for a file gets a file, not a file and a copy.
+    pub returned: Option<Vec<u8>>,
+}
+
 /// Take one photo (design D5, D6, D10).
 ///
 /// `now` and `clock` are both arguments because the engine reads no clock: `now` is the
@@ -48,7 +64,7 @@ pub fn take(
     request: &PhotoRequest,
     clock: &dyn Clock,
     now: Stamp,
-) -> Result<PhotoReport> {
+) -> Result<Photograph> {
     let camera_id = camera.info().id.clone();
     let fingerprint = camera.info().fingerprint.clone();
     // Read *before* the stream starts. A control read is an ioctl on the same fd, and the
@@ -81,16 +97,22 @@ pub fn take(
         photo.bytes.clone()
     };
 
-    Ok(PhotoReport {
-        camera: camera_id,
-        taken_at: now,
-        negotiated: captured.negotiated,
-        rendering: photo.rendering,
-        transform: photo.transform,
-        width: photo.width,
-        height: photo.height,
-        frames_settled: captured.frames_settled,
-        delivery: deliver(&request.sink, format, &bytes)?,
+    let delivery = deliver(&request.sink, format, &bytes)?;
+    let returned = matches!(delivery, PhotoDelivery::Bytes { .. }).then_some(bytes);
+
+    Ok(Photograph {
+        report: PhotoReport {
+            camera: camera_id,
+            taken_at: now,
+            negotiated: captured.negotiated,
+            rendering: photo.rendering,
+            transform: photo.transform,
+            width: photo.width,
+            height: photo.height,
+            frames_settled: captured.frames_settled,
+            delivery,
+        },
+        returned,
     })
 }
 
@@ -228,7 +250,8 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
-        .expect("takes a photo");
+        .expect("takes a photo")
+        .report;
 
         assert!(matches!(report.delivery, PhotoDelivery::Bytes { .. }));
         assert!(report.delivery.byte_count() > 0);
@@ -247,7 +270,8 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
-        .expect("takes a photo");
+        .expect("takes a photo")
+        .report;
 
         let PhotoDelivery::Path {
             path: reported,
@@ -293,7 +317,8 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
-        .expect("takes a photo");
+        .expect("takes a photo")
+        .report;
 
         assert!(report.rendering.is_verbatim(), "{:?}", report.rendering);
         assert_eq!(
@@ -321,7 +346,8 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
-        .expect("takes a photo");
+        .expect("takes a photo")
+        .report;
 
         assert!(!report.rendering.is_verbatim());
         assert_eq!(report.transform, TransformApplication::Pixels);
@@ -349,7 +375,8 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
-        .expect("a grayscale camera takes photos");
+        .expect("a grayscale camera takes photos")
+        .report;
 
         assert_eq!(report.negotiated.pixel_format, PixelFormat::GREY);
         assert!(

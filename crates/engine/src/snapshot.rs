@@ -24,17 +24,22 @@
 //! **On a device whose flag follows its automation control's value, the second pass never
 //! writes**, and that is arithmetic rather than a gap: the control was INACTIVE because
 //! the automation was engaged, the snapshot recorded the automation *as engaged*, so
-//! restoring it engages the partner again. Such a control is reported
-//! [`UnrestorableReason::StillInactive`] with its partner named, and
-//! [`RestoreReport::is_complete`] is then false — which is literally true, because the
-//! recorded *value* did not go back, even though the camera is in the configuration it was
-//! recorded in. A guarded sweep's restore will routinely look like this; if that reads as
-//! noise once P3 has real sweeps in hand, the fix is a vocabulary D4 does not currently
-//! have, not a quiet re-labelling here.
+//! restoring it engages the partner again. That is a **success** — the camera is in the
+//! configuration the snapshot recorded — and it is reported
+//! [`RestoreOutcome::OwnedByAutomation`] rather than as a failure. The first version of
+//! this module called it unrestorable, and the very first hardware run of
+//! `controls --discover-pairs` put the camera back perfectly and then announced that it
+//! could not put two controls back (note N9).
 //!
-//! The pass therefore *writes* only where the flag is not a function of the value we
-//! wrote — a driver updating INACTIVE on its own schedule, which is exactly why PF:3
-//! records the flag diff as a measured method rather than a guarantee.
+//! The pass *writes* only where the flag is not a function of the value we wrote — a
+//! driver updating INACTIVE on its own schedule, which is exactly why PF:3 records the
+//! flag diff as a measured method rather than a guarantee.
+//!
+//! [`UnrestorableReason::StillInactive`] is kept for the case it actually names, which is
+//! the other one: a control that was *ours* when the snapshot was taken and is owned by
+//! automation now. That is a change we could not undo, and telling it apart from the
+//! benign case is why pass one defers on the device's present state as well as on the
+//! snapshot's record of it.
 //!
 //! The second pass builds its writes through [`crate::pairing::plan`] and runs them
 //! through [`crate::write::execute`], so "disable the partner" and "walk a plan" each
@@ -137,11 +142,15 @@ pub fn restore(
 
     // Pass one, in D4's order: automation before manual, and within each group the
     // controls that were active before the ones that were not.
+    //
+    // What is deferred is decided by the device's state *now*, not only by the snapshot's
+    // record of it. A control an automation partner owns at this moment cannot take a
+    // write whenever it became owned, so writing it here would be writing into the wind —
+    // and it is the difference between the two cases (owned then, or owned only now) that
+    // pass two turns into two different answers.
+    let before = inactive_now(camera)?;
     for entry in snapshot.restore_order() {
-        if entry.was_inactive {
-            // An automation partner owned it when the snapshot was taken. Writing it now
-            // would be writing into the wind; it waits until every automation control has
-            // been put back.
+        if entry.was_inactive || before.contains(entry.control.as_str()) {
             deferred.push(entry);
             continue;
         }
@@ -164,13 +173,23 @@ pub fn restore(
             continue;
         };
         if desc.is_inactive() {
-            // Still owned. Naming the partner is what makes this actionable — "still
-            // inactive" alone tells a caller nothing they can do about it.
-            outcomes.push(RestoreOutcome::Unrestorable {
-                control: entry.control.clone(),
-                reason: UnrestorableReason::StillInactive {
-                    automation: partner_of(&controls, pairs, &entry.control),
-                },
+            let automation = partner_of(&controls, pairs, &entry.control);
+            outcomes.push(if entry.was_inactive {
+                // Its owner is back. The camera is in the configuration the snapshot
+                // recorded, which is what D4 promises — the *value* is the automation's,
+                // as it was. This is the ordinary outcome for every guarded write's
+                // restore, and calling it unrestorable is what note N9 was written about.
+                RestoreOutcome::OwnedByAutomation {
+                    control: entry.control.clone(),
+                    automation,
+                }
+            } else {
+                // It was ours when the snapshot was taken and is not now. A real change
+                // we could not undo, and naming the partner is what makes it actionable.
+                RestoreOutcome::Unrestorable {
+                    control: entry.control.clone(),
+                    reason: UnrestorableReason::StillInactive { automation },
+                }
             });
             continue;
         }
@@ -178,6 +197,20 @@ pub fn restore(
     }
 
     Ok(RestoreReport { outcomes })
+}
+
+/// The slugs the device reports INACTIVE at this instant.
+///
+/// # Errors
+///
+/// Whatever the camera says when asked for its controls.
+fn inactive_now(camera: &mut dyn Camera) -> Result<std::collections::BTreeSet<String>> {
+    Ok(camera
+        .controls()?
+        .into_iter()
+        .filter(ControlDesc::is_inactive)
+        .map(|desc| desc.slug.to_string())
+        .collect())
 }
 
 /// Put one control back, or say why not.
@@ -349,6 +382,7 @@ mod tests {
             .map(|o| match o {
                 RestoreOutcome::Restored { applied } => applied.slug.as_str(),
                 RestoreOutcome::AlreadyCorrect { control }
+                | RestoreOutcome::OwnedByAutomation { control, .. }
                 | RestoreOutcome::Unrestorable { control, .. } => control.as_str(),
             })
             .collect()
@@ -445,11 +479,11 @@ mod tests {
     }
 
     #[test]
-    fn a_control_still_owned_after_the_second_pass_names_the_automation_holding_it() {
+    fn a_control_whose_owner_is_back_is_a_success_that_names_the_owner() {
         // The snapshot was taken with automation *on*, so restoring the automation value
-        // re-engages it and the partner is still INACTIVE. Nothing is wrong — the camera
-        // is back where it was — but the manual value did not go in, and the report has to
-        // say which control is responsible rather than shrugging.
+        // re-engages it and the partner is INACTIVE again. The camera is exactly where it
+        // was, and the report must say so: this is the ordinary outcome of every guarded
+        // write's restore, and calling it a failure is how a field stops being read.
         let mut camera = coupled_camera();
         let snapshot =
             take(&mut camera, &[white_balance_pair()], Stamp::epoch()).expect("snapshots");
@@ -461,29 +495,26 @@ mod tests {
         );
 
         let report = restore(&mut camera, &[white_balance_pair()], &snapshot).expect("restores");
-        let stuck = report
+        let reported = report
             .outcomes
             .iter()
-            .find_map(|o| match o {
-                RestoreOutcome::Unrestorable { control, reason }
-                    if control.as_str() == "white_balance_temperature" =>
-                {
-                    Some(reason.clone())
-                }
-                _ => None,
+            .find(|o| {
+                matches!(o, RestoreOutcome::OwnedByAutomation { control, .. }
+                    if control.as_str() == "white_balance_temperature")
             })
-            .expect("the deferred control is reported");
+            .expect("the deferred control is reported as owned, not as a failure");
         assert_eq!(
-            stuck,
-            UnrestorableReason::StillInactive {
+            reported,
+            &RestoreOutcome::OwnedByAutomation {
+                control: slug("white_balance_temperature"),
                 automation: Some(slug("white_balance_automatic")),
             }
         );
-        assert!(!report.is_complete());
-        assert_eq!(
-            report.unrestored(),
-            vec![&slug("white_balance_temperature")]
-        );
+        // And the whole restore is *complete*: the camera is in the configuration the
+        // snapshot recorded. Reporting otherwise made the probe's first hardware run
+        // announce a failure it had not had (note N9).
+        assert!(report.is_complete(), "{report:?}");
+        assert!(report.unrestored().is_empty());
     }
 
     #[test]
