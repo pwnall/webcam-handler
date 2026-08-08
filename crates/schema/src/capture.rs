@@ -148,7 +148,7 @@ impl std::fmt::Debug for Frame {
     }
 }
 
-/// How long to wait for the sensor to settle before taking a photo [PF:11].
+/// How long to wait for the sensor to settle before taking a photo \[PF:11\].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SettleSpec {

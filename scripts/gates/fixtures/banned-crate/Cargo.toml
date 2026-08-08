@@ -1,0 +1,5 @@
+# A workspace whose graph contains a crate deny.toml bans by name, for the failing arm of
+# `license-allowlist.sh`. Not a member of the repository workspace; never compiled.
+[workspace]
+resolver = "3"
+members = ["consumer", "colored"]

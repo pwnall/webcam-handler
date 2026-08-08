@@ -63,7 +63,7 @@ pub enum Selector {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BlockedReason {
-    /// The device says READ_ONLY [PF:12].
+    /// The device says READ_ONLY \[PF:12\].
     ReadOnly,
     /// The device says DISABLED.
     Disabled,
@@ -149,7 +149,7 @@ impl ControlStatus {
 pub struct Sample {
     /// The value the sweep asked for.
     pub requested: i64,
-    /// The value the device actually holds — D3 applies inside sweeps too [PF:6], and a
+    /// The value the device actually holds — D3 applies inside sweeps too \[PF:6\], and a
     /// sample labeled with a value the camera never held would poison every comparison
     /// built on it.
     pub applied: i64,

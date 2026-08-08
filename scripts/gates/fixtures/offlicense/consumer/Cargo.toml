@@ -1,0 +1,12 @@
+[package]
+name = "offlicense-consumer"
+description = "Depends on a GPL-3.0-only path crate so cargo-deny's license check has something to reject."
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# An explicit version keeps the requirement off `*`: deny.toml sets `wildcards = "deny"`,
+# and this fixture must fail the *license* check, not that one.
+[dependencies]
+copyleft-fixture = { path = "../copyleft-fixture", version = "0.0.0" }

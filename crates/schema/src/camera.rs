@@ -2,7 +2,7 @@
 //!
 //! A *camera* is a group of device nodes sharing a USB interface, not a `/dev/videoN`
 //! path: one USB device can host several logical cameras, and node numbering says
-//! nothing about which nodes belong together [PF:7]. Capture nodes are told from
+//! nothing about which nodes belong together \[PF:7\]. Capture nodes are told from
 //! metadata nodes by `device_caps`, never by "the lowest-numbered one".
 
 use std::collections::BTreeSet;
@@ -170,7 +170,7 @@ impl fmt::Display for UsbId {
 /// Best-effort identity across replug and reboot.
 ///
 /// Serial numbers are in here but not trusted: the Chicony reports `"0001"` and the
-/// OBSBOT reports none at all [PF:8]. Matching is conservative — a mismatch on
+/// OBSBOT reports none at all \[PF:8\]. Matching is conservative — a mismatch on
 /// `calibrate apply` is a refusal naming the differing fields, not a warning.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
@@ -185,7 +185,7 @@ pub struct CameraFingerprint {
     pub card: String,
     /// The driver name.
     pub driver: String,
-    /// The serial, only when the device reports a distinguishing one [PF:8].
+    /// The serial, only when the device reports a distinguishing one \[PF:8\].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
 }
@@ -238,7 +238,7 @@ impl CameraFingerprint {
     }
 }
 
-/// What a device node is for, decided by `device_caps` [PF:7].
+/// What a device node is for, decided by `device_caps` \[PF:7\].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeKind {
@@ -491,7 +491,7 @@ pub struct FrameSizeInfo {
 /// One pixel format and everything available in it.
 ///
 /// Nesting is load-bearing: the OBSBOT offers MJPG up to 3840×2160 while YUYV stops at
-/// 640×480 on the same cable, so a flat size list would be a lie [PF:9].
+/// 640×480 on the same cable, so a flat size list would be a lie \[PF:9\].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FormatInfo {
     /// The format.

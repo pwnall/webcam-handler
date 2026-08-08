@@ -39,7 +39,7 @@ pub struct SnapshotEntry {
     /// Its role in restore ordering, decided from the pairing set when the snapshot was
     /// taken.
     pub role: ControlRole,
-    /// Whether the device reported it INACTIVE at snapshot time [PF:3] — such a control
+    /// Whether the device reported it INACTIVE at snapshot time \[PF:3\] — such a control
     /// is restored on the second pass.
     pub was_inactive: bool,
     /// Whether the device reported it VOLATILE. A volatile value cannot be meaningfully

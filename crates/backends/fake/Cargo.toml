@@ -15,8 +15,10 @@ name = "fake"
 workspace = true
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
+# Device-node paths in the schema's error and node types are `camino::Utf8PathBuf`.
+camino.workspace = true
+# `image::GrayImage` is what the imaging crate's fixture generators produce and consume.
+image.workspace = true
 webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true
 

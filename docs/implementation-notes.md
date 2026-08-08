@@ -101,6 +101,53 @@ this is repo case law (docs/2's standing conventions).
 
 ---
 
+## N5 — `webcam-handler-api` is exempt from the tokio half of the T6 wall
+
+**Doc:** design §2.8 states the purity wall as "`schema`, `imaging`, `fake`, `api`,
+`cli-core` link no tokio/axum/hyper", gate-asserted from `cargo metadata`.
+
+**Repo:** `scripts/gates/dependency-walls.sh` applies the full three-crate ban to
+`schema`, `imaging`, `fake` and `cli-core`. `webcam-handler-api` gets its own wall —
+**no axum, no hyper, no tower-http** — and is allowed tokio.
+
+**Why:** measured on 2026-08-08 against jsonrpsee 0.26.0, three feature sets built in a
+scratch crate containing nothing but a `#[rpc(server, client)]` trait:
+
+| `jsonrpsee` features | Result |
+|---|---|
+| `macros` | does not compile — the expansion needs `IntoResponse` and `RpcModule` |
+| `macros`, `client-core` | does not compile — the server half is unresolved |
+| `macros`, `server-core` | does not compile — the client half is unresolved |
+| `macros`, `client-core`, `server-core` | compiles; `jsonrpsee-core → tokio` (`rt`, `sync`, `time`, `macros`) |
+
+`jsonrpsee-core` activates tokio in *both* its `client` and `server` features, and the
+macro's expansion references it. So a crate holding one `#[rpc(server, client)]` trait
+links tokio, necessarily. Making the features optional on our side does not help either:
+the two composition roots enable them and cargo unifies.
+
+That leaves three options. Splitting the trait so client and server halves live in
+separate crates would give us two wire surfaces, which is the thing D10/T5 exists to
+prevent. Hand-rolling JSON-RPC is §7's recorded "shape of last resort" and costs us the
+80% of jsonrpsee we actually use. Narrowing the wall costs us the least, provided the
+narrowing is to exactly what the wall was protecting.
+
+**What the wall was protecting**, read from §2.8's own sentence: "only `daemon` links the
+web stack". That property is intact and now gate-asserted for `api` specifically —
+measured today, `api` pulls no axum, no hyper, no tower. Tokio arriving as a transitive
+library dependency of a JSON-RPC codec is not the defect the rule was written against;
+`wchc` linking hyper would be, and that half still fails loudly.
+
+**What is not covered:** that `api` never *starts* a runtime or spawns a task. Linkage
+cannot see that. It joins the behavioral halves of T6 that §2.8 already declares
+review-held — so this note widens the review surface by one claim rather than pretending
+the gate grew.
+
+**Retires when:** jsonrpsee splits a runtime-free core out of `jsonrpsee-core`, or the
+wire surface stops being jsonrpsee. Re-run the table above on any jsonrpsee bump; if a
+version makes the original wall satisfiable, delete the exemption and this note.
+
+---
+
 ## PF:13 — `bus_info` is per-USB-device, not per-logical-camera
 
 **Measured** 2026-08-08 on kernel 7.0.0-29-generic, against the same seed hardware as the

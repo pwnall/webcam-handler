@@ -8,7 +8,7 @@
 //!   device. This is what "the corpus still resembles the device" means, and it compares
 //!   exactly.
 //! - the **state** block — current control values and the INACTIVE-class flags, which
-//!   change with use [PF:3, PF:4]. Re-capturing a profile after a sweep must not read as
+//!   change with use \[PF:3, PF:4\]. Re-capturing a profile after a sweep must not read as
 //!   corpus drift, so this compares loosely or not at all.
 //!
 //! Provenance rides outside both.
@@ -47,12 +47,12 @@ pub struct ProfileProvenance {
 pub struct ProfileInvariant {
     /// Identity, nodes, grouping.
     pub info: CameraInfo,
-    /// Formats, with sizes and intervals nested [PF:9].
+    /// Formats, with sizes and intervals nested \[PF:9\].
     pub formats: Vec<FormatInfo>,
     /// The full control set, with `current` cleared and the volatile flag bits masked
     /// out — see [`invariant_control`].
     pub controls: Vec<ControlDesc>,
-    /// Automation pairs discovered by probing this device [PF:3].
+    /// Automation pairs discovered by probing this device \[PF:3\].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub measured_pairs: Vec<AutomationPair>,
 }
@@ -61,11 +61,11 @@ pub struct ProfileInvariant {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ProfileState {
     /// Each control's value at capture time — including the ones outside their declared
-    /// range [PF:4], which is exactly why this is recorded.
+    /// range \[PF:4\], which is exactly why this is recorded.
     #[serde(default)]
     pub values: BTreeMap<ControlSlug, ControlValue>,
     /// Each control's raw flag word at capture time. The INACTIVE bit here tracks which
-    /// automation was on when the profile was taken [PF:3].
+    /// automation was on when the profile was taken \[PF:3\].
     #[serde(default)]
     pub flags: BTreeMap<ControlSlug, u32>,
 }

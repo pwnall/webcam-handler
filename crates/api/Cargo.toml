@@ -16,6 +16,10 @@ workspace = true
 
 [dependencies]
 jsonrpsee = { workspace = true, features = ["macros", "client-core", "server-core"] }
-serde.workspace = true
-serde_json.workspace = true
-webcam-handler-schema.workspace = true
+
+# `jsonrpsee` is declared before the T5 trait that uses it (P4), because it is what
+# makes `dependency-walls.sh`'s wire-crate wall a live check rather than a vacuous
+# one: it is the edge that drags tokio in, which is the whole subject of note N5.
+# Drop the ignore when src/ actually names it.
+[package.metadata.cargo-machete]
+ignored = ["jsonrpsee"]

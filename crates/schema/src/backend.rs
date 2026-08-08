@@ -124,23 +124,23 @@ pub trait Camera: fmt::Debug + Send {
     /// What this camera is, as enumerated when it was opened.
     fn info(&self) -> &CameraInfo;
 
-    /// Pixel formats, with sizes and intervals nested under each [PF:9].
+    /// Pixel formats, with sizes and intervals nested under each \[PF:9\].
     fn formats(&self) -> Result<Vec<FormatInfo>>;
 
-    /// The full control set, including controls of types we cannot interpret [PF:1].
+    /// The full control set, including controls of types we cannot interpret \[PF:1\].
     ///
     /// Never panics on device vocabulary. That is not a style preference: the most
     /// popular V4L2 crate panics on a control type this kernel emits, and a library that
     /// can be panicked by plugging in a webcam is not a library.
     fn controls(&self) -> Result<Vec<ControlDesc>>;
 
-    /// Read one control's current value, unvalidated [PF:4].
+    /// Read one control's current value, unvalidated \[PF:4\].
     fn get(&mut self, id: ControlId) -> Result<ControlValue>;
 
     /// Write one control and read it back (design D3).
     ///
     /// The read-back is the backend's obligation, not the engine's: drivers clamp
-    /// out-of-range writes and report success [PF:6], so only the backend is positioned
+    /// out-of-range writes and report success \[PF:6\], so only the backend is positioned
     /// to report `{requested, applied}` truthfully for its own device.
     fn set(&mut self, id: ControlId, value: ControlValue) -> Result<Applied>;
 

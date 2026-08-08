@@ -14,5 +14,3 @@ name = "web"
 [lints]
 workspace = true
 
-[dependencies]
-rust-embed.workspace = true

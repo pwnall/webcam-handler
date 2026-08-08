@@ -26,7 +26,7 @@
 //!
 //! - **The device is the only authority on itself** (E2). Nothing here validates a
 //!   device's claims against a specification. A default outside its own range and a
-//!   current value outside it are both representable, because both are real [PF:4, PF:5].
+//!   current value outside it are both representable, because both are real \[PF:4, PF:5\].
 //! - **Requested is not applied** (E4). Every write returns [`control::Applied`], and no
 //!   type in this crate collapses the pair.
 //! - **Represent the unknown** (D2). [`control::ControlType::Unknown`] and

@@ -4,10 +4,10 @@
 //! contradict the device's own declarations. Four of the twelve probe findings are a
 //! camera disagreeing with itself:
 //!
-//! - a control type the `v4l` crate has never heard of [PF:1] → [`ControlType::Unknown`]
-//! - menu indices with holes in them [PF:2] → the menu is a sparse map, not a `Vec`
-//! - a current value outside the declared range [PF:4] → [`ControlDesc::current_out_of_range`]
-//! - a default outside the declared range [PF:5] → [`ControlDesc::default_out_of_range`]
+//! - a control type the `v4l` crate has never heard of \[PF:1\] → [`ControlType::Unknown`]
+//! - menu indices with holes in them \[PF:2\] → the menu is a sparse map, not a `Vec`
+//! - a current value outside the declared range \[PF:4\] → [`ControlDesc::current_out_of_range`]
+//! - a default outside the declared range \[PF:5\] → [`ControlDesc::default_out_of_range`]
 //!
 //! None of these is corrected on the way through. They are reported.
 
@@ -88,7 +88,7 @@ impl fmt::Display for ControlSlug {
 /// Closed for the types we can interpret, open-ended for the rest: `Unknown` carries the
 /// raw discriminant so a control we cannot read still enumerates, displays, round-trips,
 /// and is reported by name. The Chicony's `Region of Interest Rectangle` (type `0x0107`)
-/// is the seed case — the crate that panicked on it is why we own this layer [PF:1].
+/// is the seed case — the crate that panicked on it is why we own this layer \[PF:1\].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlType {
@@ -96,7 +96,7 @@ pub enum ControlType {
     Integer,
     /// `V4L2_CTRL_TYPE_BOOLEAN`
     Boolean,
-    /// `V4L2_CTRL_TYPE_MENU` — items are named strings, sparsely indexed [PF:2].
+    /// `V4L2_CTRL_TYPE_MENU` — items are named strings, sparsely indexed \[PF:2\].
     Menu,
     /// `V4L2_CTRL_TYPE_BUTTON` — write-only trigger, no value.
     Button,
@@ -205,7 +205,7 @@ bit_vocabulary! {
     ///
     /// Flags are carried as raw bits *plus* this decoded set, because the set grows:
     /// `HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support
-    /// behind PF:1 and older references do not list it [PF:12]. Bits outside this
+    /// behind PF:1 and older references do not list it \[PF:12\]. Bits outside this
     /// vocabulary survive in [`ControlFlags::unknown_bits`].
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
     #[serde(rename_all = "snake_case")]
@@ -214,11 +214,11 @@ bit_vocabulary! {
         Disabled = 0x0001,
         /// `V4L2_CTRL_FLAG_GRABBED` — busy because streaming is in progress.
         Grabbed = 0x0002,
-        /// `V4L2_CTRL_FLAG_READ_ONLY` — the Chicony's `Privacy` control [PF:12].
+        /// `V4L2_CTRL_FLAG_READ_ONLY` — the Chicony's `Privacy` control \[PF:12\].
         ReadOnly = 0x0004,
         /// `V4L2_CTRL_FLAG_UPDATE` — writing it changes other controls' properties.
         Update = 0x0008,
-        /// `V4L2_CTRL_FLAG_INACTIVE` — an automation partner owns it right now [PF:3].
+        /// `V4L2_CTRL_FLAG_INACTIVE` — an automation partner owns it right now \[PF:3\].
         Inactive = 0x0010,
         /// `V4L2_CTRL_FLAG_SLIDER` — a UI hint.
         Slider = 0x0020,
@@ -234,7 +234,7 @@ bit_vocabulary! {
         ModifyLayout = 0x0400,
         /// `V4L2_CTRL_FLAG_DYNAMIC_ARRAY` — element count varies at runtime.
         DynamicArray = 0x0800,
-        /// `V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX` — widely set on recent kernels [PF:12].
+        /// `V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX` — widely set on recent kernels \[PF:12\].
         HasWhichMinMax = 0x1000,
     }
 }
@@ -276,7 +276,7 @@ impl Default for ControlFlags {
 }
 
 /// One menu item. Menus are sparse: `VIDIOC_QUERYMENU` returns `EINVAL` on the holes,
-/// and the holes are real [PF:2].
+/// and the holes are real \[PF:2\].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MenuItem {
@@ -304,7 +304,7 @@ impl MenuItem {
 }
 
 /// A control's declared range. Declared: the current value and the default are both
-/// free to sit outside it, and on real hardware they do [PF:4, PF:5].
+/// free to sit outside it, and on real hardware they do \[PF:4, PF:5\].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ControlRange {
     /// Declared minimum.
@@ -381,11 +381,11 @@ pub struct ControlDesc {
     pub control_type: ControlType,
     /// The declared range.
     pub range: ControlRange,
-    /// The declared default — which may sit outside `range` [PF:5].
+    /// The declared default — which may sit outside `range` \[PF:5\].
     pub default: i64,
     /// Flags, raw and decoded.
     pub flags: ControlFlags,
-    /// Menu items by index. Sparse [PF:2]; empty for non-menu controls.
+    /// Menu items by index. Sparse \[PF:2\]; empty for non-menu controls.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub menu: BTreeMap<u32, MenuItem>,
     /// Element count for arrays and compound controls (1 for scalars).
@@ -396,14 +396,14 @@ pub struct ControlDesc {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dims: Vec<u32>,
     /// The current value **as read, unvalidated** — outside the range is a fact about
-    /// the device, not an error to correct [PF:4]. `None` when it was not read (a
+    /// the device, not an error to correct \[PF:4\]. `None` when it was not read (a
     /// write-only control, or an enumeration that did not fetch values).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<ControlValue>,
 }
 
 impl ControlDesc {
-    /// Whether the declared default sits outside the declared range [PF:5].
+    /// Whether the declared default sits outside the declared range \[PF:5\].
     ///
     /// The OBSBOT's `Power Line Frequency` says range `[0..2]`, default `3`.
     #[must_use]
@@ -411,7 +411,7 @@ impl ControlDesc {
         !self.range.contains(self.default)
     }
 
-    /// Whether the current value sits outside the declared range [PF:4].
+    /// Whether the current value sits outside the declared range \[PF:4\].
     ///
     /// The OBSBOT's `Zoom, Continuous` says range `[-100..100]`, current `245`.
     #[must_use]
@@ -430,7 +430,7 @@ impl ControlDesc {
             && self.control_type != ControlType::ControlClass
     }
 
-    /// Whether an automation partner currently owns this control [PF:3].
+    /// Whether an automation partner currently owns this control \[PF:3\].
     #[must_use]
     pub fn is_inactive(&self) -> bool {
         self.flags.has(KnownFlag::Inactive)
@@ -446,7 +446,7 @@ impl ControlDesc {
     /// The menu index whose item name matches `predicate`.
     ///
     /// Menu semantics are discovered by *name*, never by index: `Manual Mode` is index 1
-    /// on both seed cameras, and that is a coincidence, not a contract [PF:2].
+    /// on both seed cameras, and that is a coincidence, not a contract \[PF:2\].
     pub fn menu_index_by_name<F: Fn(&str) -> bool>(&self, predicate: F) -> Option<u32> {
         self.menu
             .iter()
@@ -463,7 +463,7 @@ impl ControlDesc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WriteWarning {
-    /// The driver clamped the value into range and said "success" [PF:6].
+    /// The driver clamped the value into range and said "success" \[PF:6\].
     Clamped {
         /// What we asked for.
         requested: i64,

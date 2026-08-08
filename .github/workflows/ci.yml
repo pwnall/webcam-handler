@@ -1,0 +1,83 @@
+# webcam-handler CI.
+#
+# Two jobs, and the split is deliberate:
+#
+#   `ci`         runs `just ci` verbatim — the same command a developer runs, so a green
+#                laptop and a green runner mean the same thing. It runs offline: every
+#                dependency is fetched in an explicit step first, and from then on cargo,
+#                cargo-deny and the gates all carry `--offline`.
+#   `advisories` is the one networked job. `cargo deny check advisories` needs the RustSec
+#                database, which is a moving target; keeping it out of `just ci` is what
+#                lets `just ci` be offline and reproducible. A new advisory turning this
+#                job red is news, not a regression in the commit that got it.
+#
+# The toolchain is pinned to the MSRV declared in the root Cargo.toml's
+# `[workspace.package] rust-version`. `scripts/gates/msrv-sync.sh` asserts the two agree,
+# so editing one and not the other fails the build rather than drifting.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace on a CI failure costs nothing and saves a round trip.
+  RUST_BACKTRACE: 1
+
+jobs:
+  ci:
+    name: just ci (offline)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      # bindgen runs at build time and needs libclang plus the kernel UAPI headers
+      # (PF:10). These are build dependencies, which this project accepts; runtime
+      # external binaries, which it does not, are absent by design.
+      - name: Install build and lint tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            clang libclang-dev linux-libc-dev shellcheck jq
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest,cargo-deny,cargo-machete,typos-cli
+
+      # Everything `just ci` needs from the network, fetched here so that everything
+      # after this line can be, and is, offline.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: just ci
+        run: just ci
+
+  advisories:
+    name: cargo deny check advisories (networked)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check advisories
+        run: cargo deny check advisories

@@ -132,11 +132,36 @@ fn bundle() -> Result<Value> {
     }))
 }
 
-fn generate(out_dir: &Utf8Path) -> Result<()> {
-    std::fs::create_dir_all(out_dir)
-        .with_context(|| format!("creating {out_dir}"))?;
+/// Undo rustdoc's bracket escaping in every `description` the bundle carries.
+///
+/// Doc comments write `\[PF:8\]` because rustdoc reads `[PF:8]` as a shortcut reference
+/// link and `-D warnings` turns the unresolved target into an error. The backslashes are
+/// an artifact of that escape, not content: rustdoc renders them away, and a consumer of
+/// this bundle should see the same citation the design documents use.
+fn unescape_doc_brackets(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "description"
+                    && let Value::String(text) = child
+                {
+                    *text = text.replace("\\[", "[").replace("\\]", "]");
+                } else {
+                    unescape_doc_brackets(child);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(unescape_doc_brackets),
+        _ => {}
+    }
+}
 
-    let bundle = bundle()?;
+fn generate(out_dir: &Utf8Path) -> Result<()> {
+    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {out_dir}"))?;
+
+    let mut bundle = bundle()?;
+    unescape_doc_brackets(&mut bundle);
+    let bundle = bundle;
     // Pretty-printed with a trailing newline: these files are diffed by a gate and read
     // by humans, and serde_json's default map is a BTreeMap, so key order is stable.
     let mut text = serde_json::to_string_pretty(&bundle)?;

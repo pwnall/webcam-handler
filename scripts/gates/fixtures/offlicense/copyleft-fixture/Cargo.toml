@@ -1,0 +1,8 @@
+[package]
+name = "copyleft-fixture"
+description = "A crate whose only interesting property is its license: GPL-3.0-only is not on the allowlist."
+version = "0.0.0"
+edition = "2024"
+# The whole point of the fixture. Design §2.8's allowlist is permissive-only.
+license = "GPL-3.0-only"
+publish = false

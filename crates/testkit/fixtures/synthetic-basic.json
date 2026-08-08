@@ -1,0 +1,529 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "captured_at": "1970-01-01T00:00:00Z",
+    "kernel": "7.0.0-29-generic",
+    "tool_version": "0.1.0",
+    "capturer": "hand-authored in crates/testkit/src/fixtures.rs — no device was probed for this document",
+    "backend": "fake"
+  },
+  "invariant": {
+    "info": {
+      "id": "cam:synthetic-basic",
+      "fingerprint": {
+        "bus_path": "3-4:1.0",
+        "usb_id": {
+          "vendor": 7531,
+          "product": 1
+        },
+        "card": "Synthetic Basic Camera",
+        "driver": "uvcvideo"
+      },
+      "card": "Synthetic Basic Camera",
+      "driver": "uvcvideo",
+      "bus_info": "usb-0000:00:14.0-4",
+      "nodes": [
+        {
+          "path": "/dev/video0",
+          "kind": {
+            "kind": "video_capture"
+          },
+          "device_caps": 69206017,
+          "capabilities": 2225078273
+        },
+        {
+          "path": "/dev/video1",
+          "kind": {
+            "kind": "meta_capture"
+          },
+          "device_caps": 77594624,
+          "capabilities": 2225078273
+        }
+      ],
+      "backend": "v4l2"
+    },
+    "formats": [
+      {
+        "pixel_format": [
+          77,
+          74,
+          80,
+          71
+        ],
+        "description": "Motion-JPEG",
+        "flags": 1,
+        "sizes": [
+          {
+            "size": {
+              "kind": "discrete",
+              "width": 640,
+              "height": 480
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 30
+              }
+            ]
+          },
+          {
+            "size": {
+              "kind": "discrete",
+              "width": 1920,
+              "height": 1080
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 30
+              }
+            ]
+          },
+          {
+            "size": {
+              "kind": "discrete",
+              "width": 3840,
+              "height": 2160
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 30
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "pixel_format": [
+          89,
+          85,
+          89,
+          86
+        ],
+        "description": "YUYV 4:2:2",
+        "flags": 0,
+        "sizes": [
+          {
+            "size": {
+              "kind": "discrete",
+              "width": 320,
+              "height": 240
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 30
+              }
+            ]
+          },
+          {
+            "size": {
+              "kind": "discrete",
+              "width": 640,
+              "height": 480
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 30
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "controls": [
+      {
+        "id": 9963776,
+        "name": "Brightness",
+        "slug": "brightness",
+        "type": {
+          "kind": "integer"
+        },
+        "range": {
+          "min": 0,
+          "max": 255,
+          "step": 1
+        },
+        "default": 128,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 10094849,
+        "name": "Auto Exposure",
+        "slug": "auto_exposure",
+        "type": {
+          "kind": "menu"
+        },
+        "range": {
+          "min": 0,
+          "max": 3,
+          "step": 1
+        },
+        "default": 3,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "menu": {
+          "1": {
+            "kind": "name",
+            "name": "Manual Mode"
+          },
+          "3": {
+            "kind": "name",
+            "name": "Aperture Priority Mode"
+          }
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 10094850,
+        "name": "Exposure Time, Absolute",
+        "slug": "exposure_time_absolute",
+        "type": {
+          "kind": "integer"
+        },
+        "range": {
+          "min": 1,
+          "max": 10000,
+          "step": 1
+        },
+        "default": 156,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 9963788,
+        "name": "White Balance, Automatic",
+        "slug": "white_balance_automatic",
+        "type": {
+          "kind": "boolean"
+        },
+        "range": {
+          "min": 0,
+          "max": 1,
+          "step": 1
+        },
+        "default": 1,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 9963802,
+        "name": "White Balance Temperature",
+        "slug": "white_balance_temperature",
+        "type": {
+          "kind": "integer"
+        },
+        "range": {
+          "min": 2800,
+          "max": 6500,
+          "step": 10
+        },
+        "default": 4600,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 9963800,
+        "name": "Power Line Frequency",
+        "slug": "power_line_frequency",
+        "type": {
+          "kind": "menu"
+        },
+        "range": {
+          "min": 0,
+          "max": 2,
+          "step": 1
+        },
+        "default": 3,
+        "flags": {
+          "raw": 0,
+          "known": [],
+          "unknown_bits": 0
+        },
+        "menu": {
+          "0": {
+            "kind": "name",
+            "name": "Disabled"
+          },
+          "1": {
+            "kind": "name",
+            "name": "50 Hz"
+          },
+          "2": {
+            "kind": "name",
+            "name": "60 Hz"
+          }
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 10094861,
+        "name": "Zoom, Continuous",
+        "slug": "zoom_continuous",
+        "type": {
+          "kind": "integer"
+        },
+        "range": {
+          "min": -100,
+          "max": 100,
+          "step": 1
+        },
+        "default": 0,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 10094858,
+        "name": "Focus, Absolute",
+        "slug": "focus_absolute",
+        "type": {
+          "kind": "integer"
+        },
+        "range": {
+          "min": 0,
+          "max": 1023,
+          "step": 1
+        },
+        "default": 512,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 10094860,
+        "name": "Focus, Automatic Continuous",
+        "slug": "focus_automatic_continuous",
+        "type": {
+          "kind": "boolean"
+        },
+        "range": {
+          "min": 0,
+          "max": 1,
+          "step": 1
+        },
+        "default": 1,
+        "flags": {
+          "raw": 4096,
+          "known": [
+            "has_which_min_max"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 9963792,
+        "name": "Privacy",
+        "slug": "privacy",
+        "type": {
+          "kind": "boolean"
+        },
+        "range": {
+          "min": 0,
+          "max": 1,
+          "step": 1
+        },
+        "default": 0,
+        "flags": {
+          "raw": 4,
+          "known": [
+            "read_only"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 4
+      },
+      {
+        "id": 9968353,
+        "name": "Region of Interest Rectangle",
+        "slug": "region_of_interest_rectangle",
+        "type": {
+          "kind": "unknown",
+          "raw": 4095
+        },
+        "range": {
+          "min": 0,
+          "max": 0,
+          "step": 0
+        },
+        "default": 0,
+        "flags": {
+          "raw": 256,
+          "known": [
+            "has_payload"
+          ],
+          "unknown_bits": 0
+        },
+        "elems": 1,
+        "elem_size": 16
+      }
+    ],
+    "measured_pairs": [
+      {
+        "manual": "exposure_time_absolute",
+        "automation": "auto_exposure",
+        "off": {
+          "kind": "menu_item_named",
+          "patterns": [
+            "manual"
+          ]
+        },
+        "provenance": "measured"
+      },
+      {
+        "manual": "white_balance_temperature",
+        "automation": "white_balance_automatic",
+        "off": {
+          "kind": "value",
+          "value": 0
+        },
+        "provenance": "measured"
+      },
+      {
+        "manual": "focus_absolute",
+        "automation": "focus_automatic_continuous",
+        "off": {
+          "kind": "value",
+          "value": 0
+        },
+        "provenance": "measured"
+      }
+    ]
+  },
+  "state": {
+    "values": {
+      "auto_exposure": {
+        "kind": "int",
+        "value": 3
+      },
+      "brightness": {
+        "kind": "int",
+        "value": 128
+      },
+      "exposure_time_absolute": {
+        "kind": "int",
+        "value": 156
+      },
+      "focus_absolute": {
+        "kind": "int",
+        "value": 512
+      },
+      "focus_automatic_continuous": {
+        "kind": "int",
+        "value": 0
+      },
+      "power_line_frequency": {
+        "kind": "int",
+        "value": 2
+      },
+      "privacy": {
+        "kind": "int",
+        "value": 0
+      },
+      "region_of_interest_rectangle": {
+        "kind": "bytes",
+        "value": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          128,
+          7,
+          0,
+          0,
+          56,
+          4,
+          0,
+          0
+        ]
+      },
+      "white_balance_automatic": {
+        "kind": "int",
+        "value": 1
+      },
+      "white_balance_temperature": {
+        "kind": "int",
+        "value": 4600
+      },
+      "zoom_continuous": {
+        "kind": "int",
+        "value": 245
+      }
+    },
+    "flags": {
+      "auto_exposure": 4096,
+      "brightness": 4096,
+      "exposure_time_absolute": 4112,
+      "focus_absolute": 4096,
+      "focus_automatic_continuous": 4096,
+      "power_line_frequency": 0,
+      "privacy": 4,
+      "region_of_interest_rectangle": 256,
+      "white_balance_automatic": 4096,
+      "white_balance_temperature": 4112,
+      "zoom_continuous": 4096
+    }
+  }
+}

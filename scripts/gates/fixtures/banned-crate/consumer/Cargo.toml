@@ -1,0 +1,12 @@
+[package]
+name = "banned-crate-consumer"
+description = "Depends on a crate named `colored` so cargo-deny's named-ban check has something to reject."
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# An explicit version keeps the requirement off `*`: deny.toml sets `wildcards = "deny"`,
+# and this fixture must fail the *bans* check, not that one.
+[dependencies]
+colored = { path = "../colored", version = "0.0.0" }

@@ -10,7 +10,7 @@
 ///
 /// Generates `ALL`, `bit()`, `decode(raw)` (the known bits present) and
 /// `unknown_bits(raw)` (everything else — carried as data, never dropped: next year's
-/// kernel bit is data, not a surprise [PF:12]).
+/// kernel bit is data, not a surprise \[PF:12\]).
 macro_rules! bit_vocabulary {
     (
         $(#[$meta:meta])*

@@ -1,0 +1,23 @@
+# The phase-gate criteria (docs/2, G0-G6). One row per criterion; adding a criterion is
+# adding a line. Tab-separated:
+#
+#   phase     the gate it belongs to: g0 .. g6
+#   kind      `tests`   — a cargo-nextest filterset, run with --no-tests=fail
+#             `command` — a command run from the repository root
+#   selection the filterset or the command
+#   what      what the criterion establishes, in the words docs/2 uses
+#
+# Two readers: `phase.sh` runs the rows for one phase and counts them, and
+# `counted-selections.sh` proves every `tests` row still selects more than zero tests —
+# the predecessor's defect was a gate whose selection had silently gone to zero while the
+# gate stayed green.
+#
+# phase	kind	selection	what
+g0	command	./scripts/gates/run-all.sh	every shipped gate predicate green over the tree
+g0	command	./scripts/gates/selftest.sh	every shipped gate predicate red on its own inverse, counted, both directions
+g0	command	./scripts/gates/license-allowlist.sh	cargo-deny proves the allowlist and the named bans over the shipped tree
+g0	tests	package(webcam-handler-schema)	schema round-trips over every control type, Unknown included (D2)
+g0	tests	package(webcam-handler-imaging)	metric ordering tests over synthetic fixtures, both directions
+g0	tests	package(webcam-handler-engine)	the engine pure cores and the inverse fixtures each one refuses
+g0	tests	package(webcam-handler-fake)	the fake passes the backend conformance battery (design 2.11)
+g0	tests	package(webcam-handler-testkit)	the battery and the corpus loader hold their own invariants

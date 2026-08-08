@@ -33,7 +33,7 @@ deny:
 hygiene:
     typos
     cargo machete --with-metadata
-    shellcheck scripts/*.sh scripts/gates/*.sh
+    shellcheck scripts/*.sh scripts/gates/*.sh scripts/gates/cases/*.sh
 
 # Every gate predicate, then the self-test that proves each can go red.
 gates:

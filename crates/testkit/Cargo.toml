@@ -17,7 +17,9 @@ workspace = true
 
 [dependencies]
 camino.workspace = true
-serde.workspace = true
+# `image::GrayImage` is the type the imaging crate's fixture generators speak in; naming
+# it is the whole of this crate's use of the dependency (`images` re-exports the rest).
+image.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 webcam-handler-imaging.workspace = true

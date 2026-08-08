@@ -15,9 +15,3 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
-[dependencies]
-anyhow.workspace = true
-clap.workspace = true
-webcam-handler-api.workspace = true
-webcam-handler-cli-core.workspace = true
-webcam-handler-schema.workspace = true

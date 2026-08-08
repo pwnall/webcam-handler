@@ -5,7 +5,7 @@
 //! `EPERM` and a settle timeout all read like "the camera can't do that" to a lazy
 //! caller, so they are kept apart here and no code path converts one into another.
 //!
-//! What is **not** in here: a clamped write [PF:6]. The driver accepted it and reported
+//! What is **not** in here: a clamped write \[PF:6\]. The driver accepted it and reported
 //! success, so it rides the write result as a [`crate::control::WriteWarning`]. A warning
 //! with an error code is a success nobody can distinguish from a failure.
 
@@ -134,14 +134,14 @@ pub enum Error {
         did_you_mean: Vec<ControlSlug>,
     },
 
-    /// The control exists and cannot be written [PF:12].
+    /// The control exists and cannot be written \[PF:12\].
     #[error("control {control} is read-only on this device")]
     ControlReadOnly {
         /// Which control.
         control: ControlSlug,
     },
 
-    /// An automation partner currently owns the control [PF:3]. Actionable: the
+    /// An automation partner currently owns the control \[PF:3\]. Actionable: the
     /// variant names the control to disable.
     #[error("control {control} is inactive{}", format_automation(.automation))]
     ControlInactive {
@@ -160,7 +160,7 @@ pub enum Error {
         available: Vec<PixelFormat>,
     },
 
-    /// Frames kept arriving but the settle policy never converged [PF:11].
+    /// Frames kept arriving but the settle policy never converged \[PF:11\].
     #[error("frames did not settle within {waited_ms} ms ({frames_seen} frames seen)")]
     SettleTimeout {
         /// How long we waited.

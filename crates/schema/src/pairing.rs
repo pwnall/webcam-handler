@@ -9,7 +9,7 @@
 //! 1. **The declared table** below — transcribed from the UVC/V4L2 vocabulary. Data
 //!    marked `declared`, which is to say *nominated*.
 //! 2. **Empirical discovery** — toggle an automation-shaped control and diff the INACTIVE
-//!    flags across the control set [PF:3]. Marked `measured`, and **measured wins**.
+//!    flags across the control set \[PF:3\]. Marked `measured`, and **measured wins**.
 //!
 //! The planner that consumes both lives in `webcam-handler-engine::pairing`; this module
 //! is the vocabulary and the table, so there is one home for each.
@@ -51,7 +51,7 @@ pub enum AutomationOff {
     /// Select the menu item whose *name* matches — never the index.
     ///
     /// `Manual Mode` happens to be index 1 on both seed cameras, and that is a
-    /// coincidence rather than a contract: menus are sparse and per-device [PF:2].
+    /// coincidence rather than a contract: menus are sparse and per-device \[PF:2\].
     MenuItemNamed {
         /// Lowercase substrings, tried in order; the first match wins.
         patterns: Vec<String>,

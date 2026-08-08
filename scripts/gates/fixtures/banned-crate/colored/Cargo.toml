@@ -1,0 +1,10 @@
+[package]
+# The name is the fixture. deny.toml bans `colored` because the real crate is MPL-2.0;
+# the license here is deliberately permissive so the failing arm proves the *ban* fired
+# and not the allowlist.
+name = "colored"
+description = "A local stand-in for the banned crate name, so the named-ban arm needs no registry."
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

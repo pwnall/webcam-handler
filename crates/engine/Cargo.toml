@@ -14,18 +14,14 @@ name = "engine"
 [lints]
 workspace = true
 
+# P0 lands the pure cores only, so the dependency list is the pure cores' list. The
+# imperative shell's dependencies (fd-lock and tempfile for the one atomic-write path,
+# jiff, tracing, webcam-handler-imaging for per-sample scoring) arrive with the code that
+# reads them — `cargo machete` is part of `just ci`, and a dependency nobody uses is the
+# same defect as a constant nobody reads (rubric A8).
 [dependencies]
 camino.workspace = true
-fd-lock.workspace = true
-jiff = { workspace = true, features = ["serde"] }
-serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
-tracing.workspace = true
 uuid.workspace = true
-webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true
 
-[dev-dependencies]
-webcam-handler-fake.workspace = true
-webcam-handler-testkit.workspace = true
