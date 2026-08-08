@@ -227,3 +227,47 @@ rows left. The variant is therefore scheduled to become unconstructed.
 
 **Retires when:** P4 closes and no crate constructs it. At that point deleting the variant
 is a one-line change that the exhaustive `Error::kind` match will drive.
+
+---
+
+## PF:14 — A UVC camera's VideoStreaming interface never has a V4L2 binding
+
+**Measured** 2026-08-08 on kernel 7.0.0-29-generic against the docs/1 §1.2 seed hardware.
+Continues that registry; cite it as `[PF:14]`.
+
+D1 requires `list` to diagnose an empty enumeration rather than shrug at it: scan for USB
+video-class interfaces with no `video4linux` binding and report "USB camera present
+without a V4L2 driver". Implemented as literally written — *per interface* — that check
+reports **every healthy camera on this machine** as driverless.
+
+`/sys/bus/usb/devices`, with `bInterfaceClass` and the presence of a `video4linux/`
+subdirectory:
+
+| Interface | `bInterfaceClass` | `bInterfaceSubClass` | `video4linux/` |
+|---|---|---|---|
+| `3-4:1.0` | `0e` | `01` (VideoControl) | `video0`, `video1` |
+| `3-4:1.1` | `0e` | `02` (VideoStreaming) | **absent** |
+| `3-4:1.2` | `0e` | `01` (VideoControl) | `video2`, `video3` |
+| `3-4:1.3` | `0e` | `02` (VideoStreaming) | **absent** |
+| `3-1:1.0` | `0e` | `01` (VideoControl) | `video4`, `video5` |
+| `3-1:1.1` | `0e` | `02` (VideoStreaming) | **absent** |
+
+A UVC device exposes both halves of the class. `uvcvideo` binds the VideoControl interface
+and hangs the capture nodes off it; the VideoStreaming interface is claimed by the same
+driver but carries no `video4linux` directory of its own. Three cameras, all working,
+three interfaces that look unbound.
+
+**Consequence:** the question is asked **per USB device**, not per interface. A device is
+diagnosed as driverless when it presents at least one video-class interface and *none* of
+its interfaces has a V4L2 binding. Filtering on `bInterfaceSubClass == 01` would also work
+today, but it encodes more of the UVC descriptor layout than the diagnosis needs — the
+user's question is "is something driving this camera", and that is a property of the
+device.
+
+The false-positive direction is the one that matters: a wrong hint appears exactly when
+`list` is *not* empty of real cameras on other buses, i.e. when the user is least likely
+to question it. `sysfs::unbound_video_devices_in` is tested in both directions, and a live
+test asserts that a host with V4L2 nodes diagnoses nothing.
+
+**Retires when:** `uvcvideo` starts binding nodes to the VideoStreaming interface, or the
+diagnosis moves to a source that reports driver binding directly.

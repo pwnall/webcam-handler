@@ -145,6 +145,65 @@ fn attribute(dir: &Utf8Path, name: &str) -> Option<String> {
     }
 }
 
+/// Where the kernel lists USB devices and their interfaces.
+const USB_DEVICES_DIR: &str = "/sys/bus/usb/devices";
+
+/// The USB video class (`bInterfaceClass`), as sysfs spells it.
+const USB_CLASS_VIDEO: &str = "0e";
+
+/// USB devices that present a video-class interface and have no V4L2 node bound anywhere.
+///
+/// D1: an empty `list` is diagnosed, not shrugged at — this is the skill's `lsusb` triage
+/// built in, and it answers "the camera is plugged in; nothing is driving it".
+///
+/// **The question is asked per USB device, not per interface**, and that is a measured
+/// correction rather than a stylistic one \[PF:14\]. A UVC camera exposes *two* video-class
+/// interfaces: VideoControl (`bInterfaceSubClass` `01`), which `uvcvideo` binds and hangs
+/// the nodes off, and VideoStreaming (`02`), which never has a `video4linux` directory
+/// even when everything is working perfectly. Asking per interface reports every healthy
+/// camera on this machine as driverless.
+pub(crate) fn unbound_video_devices() -> Vec<String> {
+    unbound_video_devices_in(Utf8Path::new(USB_DEVICES_DIR))
+}
+
+/// [`unbound_video_devices`] against an arbitrary USB device directory, for the tests.
+pub(crate) fn unbound_video_devices_in(usb_dir: &Utf8Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(usb_dir.as_std_path()) else {
+        return Vec::new();
+    };
+
+    // device name -> (has a video-class interface, has any V4L2 binding)
+    let mut devices: std::collections::BTreeMap<String, (bool, bool)> =
+        std::collections::BTreeMap::new();
+
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // Interfaces are named `<device>:<config>.<interface>`; anything without the
+        // colon is the device node itself, which carries no class of its own.
+        let Some((device, _)) = name.split_once(':') else {
+            continue;
+        };
+        let path = usb_dir.join(&name);
+        let is_video = attribute(&path, "bInterfaceClass")
+            .is_some_and(|class| class.eq_ignore_ascii_case(USB_CLASS_VIDEO));
+        if !is_video {
+            continue;
+        }
+        let bound = path.join("video4linux").as_std_path().is_dir();
+        let slot = devices.entry(device.to_owned()).or_insert((false, false));
+        slot.0 = true;
+        slot.1 |= bound;
+    }
+
+    devices
+        .into_iter()
+        .filter(|(_, (is_video, bound))| *is_video && !*bound)
+        .map(|(device, _)| device)
+        .collect()
+}
+
 fn storage_error(path: &Utf8Path, error: &std::io::Error) -> Error {
     Error::StorageIo {
         path: path.to_owned(),
@@ -327,6 +386,86 @@ mod tests {
         let nodes = nodes_in(&fs.class_dir()).expect("reads");
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "video0");
+    }
+
+    /// Build a `/sys/bus/usb/devices`-shaped directory.
+    fn usb_tree(interfaces: &[(&str, &str, bool)]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("utf-8 temp dir");
+        for (name, class, bound) in interfaces {
+            let iface = root.join(name);
+            std::fs::create_dir_all(iface.as_std_path()).expect("interface dir");
+            std::fs::write(iface.join("bInterfaceClass").as_std_path(), class).expect("class");
+            if *bound {
+                std::fs::create_dir_all(iface.join("video4linux").as_std_path()).expect("binding");
+            }
+        }
+        (dir, root)
+    }
+
+    #[test]
+    fn a_working_camera_is_not_reported_as_driverless_because_of_its_streaming_interface() {
+        // PF:14, and the reason this question is asked per device. The measured layout:
+        // `3-4:1.0` and `3-4:1.2` are VideoControl interfaces that uvcvideo bound, and
+        // `3-4:1.1`/`3-4:1.3` are VideoStreaming interfaces that never carry a
+        // `video4linux` directory even when everything works.
+        let (_guard, root) = usb_tree(&[
+            ("3-4:1.0", "0e", true),
+            ("3-4:1.1", "0e", false),
+            ("3-4:1.2", "0e", true),
+            ("3-4:1.3", "0e", false),
+            ("3-1:1.0", "0e", true),
+            ("3-1:1.1", "0e", false),
+        ]);
+        assert_eq!(
+            unbound_video_devices_in(&root),
+            Vec::<String>::new(),
+            "a per-interface test would report every healthy camera here"
+        );
+    }
+
+    #[test]
+    fn a_camera_with_no_driver_bound_anywhere_is_reported() {
+        // The direction the diagnosis exists for: plugged in, nothing driving it.
+        let (_guard, root) = usb_tree(&[
+            ("3-4:1.0", "0e", true),
+            ("3-4:1.1", "0e", false),
+            ("1-2:1.0", "0e", false),
+            ("1-2:1.1", "0e", false),
+        ]);
+        assert_eq!(unbound_video_devices_in(&root), vec!["1-2".to_owned()]);
+    }
+
+    #[test]
+    fn a_device_that_is_not_a_camera_at_all_is_not_reported() {
+        // A USB keyboard (class 03) with no V4L2 node is not a driverless camera.
+        let (_guard, root) = usb_tree(&[("1-3:1.0", "03", false), ("1-4:1.0", "08", false)]);
+        assert_eq!(unbound_video_devices_in(&root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_missing_usb_directory_diagnoses_nothing_rather_than_failing() {
+        let (_guard, root) = usb_tree(&[]);
+        assert_eq!(
+            unbound_video_devices_in(&root.join("nope")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_real_usb_tree_agrees_with_the_real_node_list_on_this_host() {
+        // Both directions on live sysfs: if nodes are present, nothing may be diagnosed
+        // as driverless, and the diagnosis only ever names devices with no binding.
+        let nodes = nodes().expect("the node list reads");
+        let unbound = unbound_video_devices();
+        if !nodes.is_empty() {
+            assert!(
+                unbound.is_empty(),
+                "this host has {} V4L2 node(s) and yet reports {unbound:?} driverless — \
+                 the per-device rule has regressed to a per-interface one [PF:14]",
+                nodes.len()
+            );
+        }
     }
 
     #[test]
