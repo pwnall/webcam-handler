@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use schema::control::{ControlDesc, ControlId, ControlSlug, ControlValue};
-use schema::pairing::AutomationPair;
+use schema::pairing::{AutomationOff, AutomationPair, Provenance};
 use schema::{Error, Result};
 
 use crate::refusal::illegal;
@@ -186,12 +186,120 @@ pub fn plan(
         board: Board::new(controls, pairs),
         all_controls: controls,
         writes: Vec::new(),
+        guarded: true,
     };
     for (slug, value) in targets {
         planner.emit(slug, value.clone(), WritePurpose::Target, 0)?;
     }
     Ok(WritePlan {
         writes: planner.writes,
+    })
+}
+
+/// Plan the writes that set `targets`, **without** switching any automation off.
+///
+/// `--no-guard`'s planner. It exists as a sibling of [`plan`] rather than as a flag inside
+/// it, and it shares everything that is not the guard: slug resolution, the did-you-mean
+/// list, and the read-only refusal all come from the same private walk with its partner
+/// search skipped. Guarded and unguarded must disagree about *guarding* and about
+/// nothing else — two verbs that resolve a control name differently are two verbs wearing
+/// one name, and a caller who reaches for `--no-guard` to work around an unrelated refusal
+/// would find it did not help.
+///
+/// A target the device reports INACTIVE is *written anyway*, which is the whole meaning of
+/// the flag: the caller has been told there is an automation partner and has said to write
+/// regardless. Real hardware accepts such a write and lets the automation overwrite it on
+/// the next frame \[PF:3\], and the read-back reports what actually stuck — so the futility
+/// is visible in the answer rather than hidden by a refusal.
+///
+/// # Errors
+///
+/// [`Error::ControlUnknown`] and [`Error::ControlReadOnly`], identically to [`plan`].
+/// Never [`Error::ControlInactive`]: refusing for an inactive partner is exactly what this
+/// function is for not doing.
+pub fn plan_unguarded(
+    controls: &[ControlDesc],
+    targets: &[(ControlSlug, ControlValue)],
+) -> Result<WritePlan> {
+    // An empty pair set is not a shortcut: with no pairs, `Board` finds no partners, so
+    // `plan`'s guard loop has nothing to do and its INACTIVE refusal — which fires only
+    // when a control is inactive *and* has no known partner — would still trigger. That
+    // refusal is the one thing this path must not make, so the planner is told to skip it
+    // rather than starved of the data that reaches it.
+    let mut planner = Planner {
+        board: Board::new(controls, &[]),
+        all_controls: controls,
+        writes: Vec::new(),
+        guarded: false,
+    };
+    for (slug, value) in targets {
+        planner.emit(slug, value.clone(), WritePurpose::Target, 0)?;
+    }
+    Ok(WritePlan {
+        writes: planner.writes,
+    })
+}
+
+/// The controls whose INACTIVE bit differs between two readings of one device.
+///
+/// The comparator behind D3's empirical pass \[PF:3\]: toggle an automation-shaped control,
+/// read the control set again, and whatever changed is what that control owns. Pure, so the
+/// probe's one judgement is testable without a camera.
+///
+/// A control present in only one of the two readings is **not** reported. A control that
+/// appeared or vanished between the reads did not have its flag flipped by the write — it
+/// is a different device answer — and calling it a discovered partner would put a
+/// hallucinated pair into the corpus with `Provenance::Measured` on it.
+#[must_use]
+pub fn inactive_diff(before: &[ControlDesc], after: &[ControlDesc]) -> Vec<ControlSlug> {
+    let was: BTreeMap<&str, bool> = before
+        .iter()
+        .map(|d| (d.slug.as_str(), d.is_inactive()))
+        .collect();
+    after
+        .iter()
+        .filter(|desc| {
+            was.get(desc.slug.as_str())
+                .is_some_and(|before| *before != desc.is_inactive())
+        })
+        .map(|desc| desc.slug.clone())
+        .collect()
+}
+
+/// Turn one observation into a pair a profile can carry (design D3 layer 2, E1).
+///
+/// `off_index` is the value the probe wrote to `automation` when `manual` came free.
+///
+/// A menu-valued automation control records its "off" position **by name** when the item
+/// at that index has one. Menu indices are per-device \[PF:2\] — `Manual Mode` is index 1
+/// on both seed cameras and that is a coincidence — so a name is the portable claim and an
+/// index is a claim about this unit. Only a nameless index falls back to a bare value, and
+/// a pair recorded that way is honest about being device-specific rather than pretending
+/// to a portability it does not have.
+///
+/// `None` when the automation control is not writable, because a pair whose switch-off
+/// cannot be performed is not a pair anybody can use.
+#[must_use]
+pub fn measured_pair(
+    automation: &ControlDesc,
+    off_index: i64,
+    manual: &ControlSlug,
+) -> Option<AutomationPair> {
+    if !automation.is_writable() {
+        return None;
+    }
+    let by_name = u32::try_from(off_index)
+        .ok()
+        .and_then(|index| automation.menu.get(&index))
+        .and_then(schema::control::MenuItem::name)
+        .map(|name| AutomationOff::MenuItemNamed {
+            patterns: vec![name.to_ascii_lowercase()],
+        });
+    Some(AutomationPair {
+        manual: manual.clone(),
+        automation: automation.slug.clone(),
+        off: by_name.unwrap_or(AutomationOff::Value { value: off_index }),
+        provenance: Provenance::Measured,
     })
 }
 
@@ -359,6 +467,10 @@ struct Planner<'a> {
     board: Board<'a>,
     all_controls: &'a [ControlDesc],
     writes: Vec<PlannedWrite>,
+    /// Whether to switch automation partners off, and — inseparably — whether an INACTIVE
+    /// control with no partner is a refusal. Both are "the guard"; splitting them would
+    /// let `--no-guard` refuse a write it is supposed to make.
+    guarded: bool,
 }
 
 impl Planner<'_> {
@@ -383,6 +495,17 @@ impl Planner<'_> {
             return Err(Error::ControlReadOnly {
                 control: slug.clone(),
             });
+        }
+
+        if !self.guarded {
+            self.board.note_write(slug.as_str(), &value);
+            self.writes.push(PlannedWrite {
+                control: slug.clone(),
+                id: desc.id,
+                value,
+                purpose,
+            });
+            return Ok(());
         }
 
         let partner_count = self.board.partners.get(slug.as_str()).map_or(0, Vec::len);

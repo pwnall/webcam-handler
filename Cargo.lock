@@ -1805,9 +1805,14 @@ name = "webcam-handler-engine"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "kamadak-exif",
  "serde_json",
+ "tempfile",
  "uuid",
+ "webcam-handler-fake",
+ "webcam-handler-imaging",
  "webcam-handler-schema",
+ "webcam-handler-testkit",
 ]
 
 [[package]]

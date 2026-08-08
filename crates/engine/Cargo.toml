@@ -14,14 +14,23 @@ name = "engine"
 [lints]
 workspace = true
 
-# P0 lands the pure cores only, so the dependency list is the pure cores' list. The
-# imperative shell's dependencies (fd-lock and tempfile for the one atomic-write path,
-# jiff, tracing, webcam-handler-imaging for per-sample scoring) arrive with the code that
-# reads them — `cargo machete` is part of `just ci`, and a dependency nobody uses is the
-# same defect as a constant nobody reads (rubric A8).
+# The shell's dependencies arrive with the code that reads them — `cargo machete` is part
+# of `just ci`, and a dependency nobody uses is the same defect as a constant nobody reads
+# (rubric A8). P2 adds `webcam-handler-imaging`, which the photo pipeline calls; fd-lock
+# and tracing still wait for the session store (P3) and the daemon (P4).
 [dependencies]
 camino.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true
+
+# A dev-dependency on a backend is legal where a normal one would not be:
+# `scripts/gates/dependency-walls.sh` counts shipping edges, and a test binary ships
+# nowhere. The fake is how the engine's own tests get a device that behaves like one.
+[dev-dependencies]
+kamadak-exif.workspace = true
+tempfile.workspace = true
+webcam-handler-fake.workspace = true
+webcam-handler-testkit.workspace = true
 

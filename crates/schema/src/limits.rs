@@ -25,6 +25,20 @@ pub const DEFAULT_SETTLE_DEADLINE_MS: u64 = 5_000;
 /// How long a single `DQBUF` may block before the deadline logic gets a turn.
 pub const FRAME_DEADLINE_MS: u64 = 2_000;
 
+/// The most times a settle loop may go round before giving up.
+///
+/// The **deadline** is the real bound; this is the backstop for the one case the deadline
+/// cannot cover — a round that neither consumes a frame nor advances the clock. That
+/// happens when a backend returns "no frame" without waiting *and* the clock is not
+/// moving, which is a test's `SteppedClock` today and would be a wedged monotonic clock in
+/// the field. Either way, spinning is the one outcome that helps nobody: the loop gives up
+/// and reports the settle timeout it would eventually have reported anyway.
+///
+/// Generous by design. At 30 fps a `SettleFor` policy running the full
+/// [`DEFAULT_SETTLE_DEADLINE_MS`] sees ~150 frames, so this leaves an order of magnitude
+/// before a legitimate settle could reach it.
+pub const MAX_SETTLE_ROUNDS: u32 = 4_096;
+
 /// Buffers to request from the driver for a capture stream.
 pub const DEFAULT_BUFFER_COUNT: u32 = 4;
 

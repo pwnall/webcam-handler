@@ -21,14 +21,26 @@
 //! | [`session`] | the calibration state machine (D8) |
 //! | [`profile`] | assembling a T3 device profile, and the invariant/state split |
 //! | [`resolve`] | turning a typed id or prefix into the camera it names (D1) |
+//! | [`mod@write`] | executing a write plan, and reporting one that stopped part way (D3) |
+//! | [`snapshot`] | taking a snapshot and putting it back, in D4's order |
+//! | [`capture`] | start, settle, one frame, stop — with the stop on every exit (D5) |
+//! | [`photo`] | the photo assembly and the file sinks (D6, D10) |
+//! | [`discover`] | empirical pair discovery, by toggling and diffing INACTIVE (D3, PF:3) |
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod double;
 mod refusal;
 
+pub mod capture;
+pub mod discover;
 pub mod pairing;
 pub mod paths;
+pub mod photo;
 pub mod profile;
 pub mod resolve;
 pub mod session;
 pub mod settle;
+pub mod snapshot;
 pub mod sweep;
+pub mod write;
