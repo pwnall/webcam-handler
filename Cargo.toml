@@ -9,6 +9,7 @@ members = [
     "crates/api",
     "crates/cli-core",
     "crates/cli",
+    "crates/priv",
     "crates/client",
     "crates/daemon",
     "crates/web",
@@ -44,6 +45,8 @@ anstyle = "1.0.13"
 anyhow = "1.0.104"
 axum = { version = "0.8.9", default-features = false }
 base64 = "0.23.1"
+# Ambient-capability manipulation for the dev-only `wch-priv` helper. MIT/Apache-2.0.
+caps = "0.5.6"
 camino = { version = "1.2.5", features = ["serde1"] }
 clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
 clap_complete = "4.6.9"

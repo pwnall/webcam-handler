@@ -74,15 +74,83 @@ gate-g5:
 gate-g6:
     ./scripts/gates/phase.sh g6
 
+# ------------------------------------------------------- the privileged helper
+
+# Where the blessed copy lives. Outside `target/` on purpose: writing a binary file
+# strips its capabilities, and cargo rewrites `target/<profile>/wch-priv` for reasons
+# unrelated to its source (a RUSTFLAGS re-fingerprint, a profile change). The copy under
+# `.wch-bin/` keeps its caps across all that churn, so a re-bless is rare.
+priv_bin := ".wch-bin/wch-priv"
+
+# Idempotent: the stamp records the freshly-built binary's sha256, and the bless is
+# skipped — no password prompt — until that changes. But the stamp alone would be a FALSE
+# skip if the blessed copy lost its caps or its mode out of band (an rsync, a
+# backup-restore, a filesystem move all strip xattrs), so the skip also re-verifies both.
+# Reporting "already blessed" over a copy that is effectively un-capped is skip-reads-as-
+# pass wearing a filesystem.
+#
+# Grant `wch-priv` the capabilities the dev loop needs. Needs sudo once.
+bless:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --locked --offline -p webcam-handler-priv
+    built="target/debug/wch-priv"
+    stable="{{priv_bin}}"
+    stamp="$(dirname "$stable")/.blessed"
+    mkdir -p "$(dirname "$stable")"
+
+    # The capability list has one home: the binary itself. Asking it means the bless and
+    # the runtime check cannot drift apart.
+    blessing="$("$built" doctor --setcap-argument)"
+    want_caps="${blessing%%+*}"
+
+    h="$(sha256sum "$built" | cut -d' ' -f1)"
+    caps_now="$(getcap "$stable" 2>/dev/null || true)"
+    mode_now="$(stat -c %a "$stable" 2>/dev/null || true)"
+    if [[ -f "$stamp" && -f "$stable" && "$(cat "$stamp")" == "$h" \
+          && "$mode_now" == "700" ]] \
+       && [[ "$caps_now" == *cap_sys_module* && "$caps_now" == *cap_net_admin* \
+             && "$caps_now" == *eip* ]]; then
+        echo "bless: $stable already blessed (sha256 unchanged, caps +eip, mode 0700); skipping setcap"
+        exit 0
+    fi
+
+    cp -f "$built" "$stable"
+    # Mode BEFORE setcap, and this ordering is the security boundary rather than a
+    # detail: between the copy and the chmod the file is world-executable, and after the
+    # setcap it would be world-executable *and* root-capable. Narrow it first.
+    chmod 0700 "$stable"
+    sudo setcap "$blessing" "$stable"
+    echo "$h" >"$stamp"
+    echo "bless: $stable (re)blessed — $want_caps, mode 0700, owner only"
+    "$stable" doctor
+
+# What the helper can currently do, and why not if it cannot.
+priv-doctor:
+    @{{priv_bin}} doctor 2>/dev/null || cargo run --locked --offline -q -p webcam-handler-priv -- doctor
+
 # ---------------------------------------------------------------- rungs
 
-# R2 — the vivid virtual-driver rung. Runs where the module is loadable; reports a
-# named, counted skip elsewhere (never silence).
+# Runs where the module is loadable; reports a named, counted skip elsewhere.
+#
+# R2 — the vivid virtual-driver rung.
 rung-vivid:
     ./scripts/rung-vivid.sh
 
-# R3 — real hardware. `#[ignore]`d suites, opt-in, motor-moving sweeps excluded
-# unless WCH_ALLOW_MOTION=1.
+# Separate from `rung-vivid` on purpose: that recipe is what CI and a camera-less
+# contributor run, and it must keep working with no privileged helper in sight.
+#
+# R2, loading vivid with the blessed helper first and unloading it after.
+rung-vivid-managed:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{priv_bin}} vivid up --devices 1
+    trap '{{priv_bin}} vivid down || true' EXIT
+    ./scripts/rung-vivid.sh
+
+# Opt-in; motor-moving sweeps excluded unless WCH_ALLOW_MOTION=1.
+#
+# R3 — real hardware, on the ignore-attributed suites.
 smoke-hw:
     ./scripts/smoke-hw.sh
 

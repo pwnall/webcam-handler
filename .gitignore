@@ -5,3 +5,8 @@
 **/*.rs.bk
 .DS_Store
 .claude/
+
+# The blessed privileged helper and its stamp. A capability-carrying binary must never be
+# committed: git does not preserve xattrs, so a committed copy would be an un-capped
+# binary that looks blessed, and anything that DID preserve them would be shipping root.
+/.wch-bin/

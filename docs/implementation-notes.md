@@ -321,6 +321,78 @@ revision, as N4 says of the four error variants.
 
 ---
 
+## N8 — A dev-only binary in this workspace carries root-equivalent capabilities
+
+**Doc:** design §1 states "runtime external binaries are not [acceptable]" (ffprobe and mpv
+appear only as test oracles). §2.8's licence inventory forbids LGPL linkage. Nothing in
+docs/1–5 anticipates a privileged helper, because nothing in the *product* needs privilege.
+
+**Repo:** `crates/priv/` builds `wch-priv`, a binary that a one-time `just bless` grants
+`cap_sys_module,cap_net_admin+eip`. It loads and unloads `vivid`, cycles `uvcvideo`, and —
+via `wch-priv exec` — runs an arbitrary program with those capabilities in its ambient set.
+It shells out to `/usr/sbin/modprobe`.
+
+**Why it exists:** three things the project needs are impossible without privilege, and
+each of them was, until now, gated on a human typing a sudo password:
+
+| Need | Why privilege |
+|---|---|
+| The R2 rung | `vivid` is a kernel module. As of P1 the suite had **never executed** (entry E1) purely because nothing could load it. |
+| `Error::DeviceGone` and P4 hotplug against real hardware | A laptop camera is soldered down. Cycling `uvcvideo` is the only way to make one disappear. |
+| The P4 uevent socket | Binding `NETLINK_KOBJECT_UEVENT` needs `CAP_NET_ADMIN`. *Unverified* — the probe was blocked — so this capability is granted ahead of proof, which is recorded here rather than discovered later. |
+
+**Why §1 is not violated:** §1's rule is about the product. `wch-priv` never ships, is
+never a dependency of a product crate (gate-asserted), and its `modprobe` subprocess is a
+*development* dependency in the same category as the ffprobe oracle §1 explicitly permits.
+Shelling out is also the licence-correct choice: the in-process alternative is `libkmod`,
+which is LGPL, and §2.8 forbids linking it. A process boundary is not a link edge.
+
+**The shape, and the road not taken.** Two designs were put to the owner:
+
+- a **closed verb vocabulary** — module names as compile-time constants, no caller-supplied
+  paths — whose blast radius is "vivid and uvcvideo get loaded and unloaded"; and
+- a **generic exec wrapper**, vmcell's model, which grants its capabilities to any program.
+
+The owner chose the wrapper, with the consequence stated plainly in the question
+(`wch-priv -- /bin/sh` is a root shell). The deciding argument is real: only a wrapper can
+put `CAP_NET_ADMIN` inside a *test process*, and no verb design can do that from outside.
+The module verbs were kept anyway, for ergonomics and because they are what a shell history
+should show.
+
+**So the security boundary is not a capability boundary.** It is:
+
+1. **The file mode.** `just bless` chmods the blessed copy `0700` *before* `setcap`. This is
+   the boundary, and `privileged-helper.sh` re-checks it on every `just ci` because a
+   restore or a `chmod -R` can widen it long after the bless.
+2. **The path.** `.wch-bin/`, gitignored, outside `target/` — writing a binary strips its
+   xattrs, and cargo rewrites `target/` for reasons unrelated to this crate's source.
+3. **Who has an account.** Nothing defends against a second session as the same user.
+
+**What the code does to stay defensible inside that:** `#![forbid(unsafe_code)]` (the
+`caps` crate owns the `prctl`); two dependencies, neither of them ours, because every link
+edge is attack surface *inside* a root boundary; `env_clear()` before every subprocess,
+because `modprobe` honours `MODPROBE_OPTIONS` and `AT_SECURE` does **not** scrub it;
+absolute utility paths; and an interlock that refuses to unload `uvcvideo` while any
+process holds a `/dev/video*` open, because pulling the driver out from under a video call
+is the kind of thing a tool does exactly once.
+
+**A deliberate duplication:** `modules::video_holders` walks `/proc/*/fd` and so will the
+V4L2 backend's `Busy` diagnosis (D13, P2). They are not one law in two homes — this one
+asks "is *any* camera in use", the backend's asks "who holds *this* node" and returns
+`schema::Holder` — and merging them would drag the product's crate graph inside the
+privileged boundary. Thirty lines is the cheaper half of that trade.
+
+**Retires when:** the R2 rung, the hotplug tests, and the `DeviceGone` hardware twin are
+all landed and someone decides the loop no longer needs to load modules unattended. Delete
+`crates/priv/`, the `bless` recipe, and the gate together; nothing else references them.
+
+**Amend this note if** a verb is added that takes a module name, a path, or anything else
+from its caller. That would not *increase* the privilege — `exec` already grants root — but
+it would add a second, quieter route to it, one that reads like a safe utility in a shell
+history.
+
+---
+
 ## PF:15 — `ENOTTY` is how a node says "I do not implement that ioctl", and it terminates enumeration
 
 **Measured** 2026-08-08 on kernel 7.0.0-29-generic against the docs/1 §1.2 seed hardware.

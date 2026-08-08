@@ -1,0 +1,25 @@
+[package]
+name = "webcam-handler-priv"
+description = "wch-priv — the dev-only privileged helper: loads vivid, cycles uvcvideo, and runs a test process with the capabilities it needs. Never shipped; never a dependency of any product crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "wch-priv"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+# Deliberately minimal. Every dependency here is attack surface *inside* a
+# root-equivalent boundary, so this crate links neither the product's crates nor anything
+# it can avoid: `caps` for the ambient-set prctl (which is the only reason this crate is
+# not pure std) and `clap`, which the whole workspace already shares.
+[dependencies]
+caps.workspace = true
+clap.workspace = true
