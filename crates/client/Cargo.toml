@@ -1,0 +1,23 @@
+[package]
+name = "webcam-handler-client"
+description = "wchc — the webcam-handler daemon CLI client. Links no backend and no engine (the thin-client wall)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "wchc"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+webcam-handler-api.workspace = true
+webcam-handler-cli-core.workspace = true
+webcam-handler-schema.workspace = true

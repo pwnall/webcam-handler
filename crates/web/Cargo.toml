@@ -1,0 +1,18 @@
+[package]
+name = "webcam-handler-web"
+description = "The webcam-handler web client: vanilla HTML/CSS/ES modules, embedded into wchd. No build step, no npm, no CDN."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "web"
+
+[lints]
+workspace = true
+
+[dependencies]
+rust-embed.workspace = true

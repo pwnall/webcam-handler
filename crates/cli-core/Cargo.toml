@@ -1,0 +1,27 @@
+[package]
+name = "webcam-handler-cli-core"
+description = "The one webcam-handler command surface (T4): clap tree, argument types, rendering, and the executor trait both CLIs implement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "cli_core"
+
+[lints]
+workspace = true
+
+[dependencies]
+anstream.workspace = true
+anstyle.workspace = true
+anyhow.workspace = true
+camino.workspace = true
+clap.workspace = true
+comfy-table.workspace = true
+humantime.workspace = true
+indicatif.workspace = true
+serde_json.workspace = true
+webcam-handler-schema.workspace = true

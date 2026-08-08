@@ -1,0 +1,28 @@
+[package]
+name = "webcam-handler-imaging"
+description = "Pure bytes-in/bytes-out imaging for webcam-handler: decode, convert, encode, EXIF, quality metrics, and the AVI/MJPEG muxer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "imaging"
+
+[lints]
+workspace = true
+
+[dependencies]
+image.workspace = true
+imageproc.workspace = true
+little_exif.workspace = true
+png.workspace = true
+webcam-handler-schema.workspace = true
+y4m.workspace = true
+yuv.workspace = true
+zune-jpeg.workspace = true
+
+[dev-dependencies]
+kamadak-exif.workspace = true

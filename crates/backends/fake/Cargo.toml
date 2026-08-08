@@ -1,0 +1,24 @@
+[package]
+name = "webcam-handler-fake"
+description = "The webcam-handler fake camera backend: replays captured device profiles, scripts faults, and synthesizes frames that respond to control values."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "fake"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+webcam-handler-imaging.workspace = true
+webcam-handler-schema.workspace = true
+
+[dev-dependencies]
+webcam-handler-testkit.workspace = true

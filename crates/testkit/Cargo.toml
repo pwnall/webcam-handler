@@ -1,0 +1,24 @@
+[package]
+name = "webcam-handler-testkit"
+description = "Dev-only test kit: the backend conformance battery, the device-profile corpus loader, synthetic image fixtures, and container oracles."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "testkit"
+
+[lints]
+workspace = true
+
+[dependencies]
+camino.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+webcam-handler-imaging.workspace = true
+webcam-handler-schema.workspace = true

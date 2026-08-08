@@ -1,0 +1,32 @@
+[package]
+name = "webcam-handler-daemon"
+description = "wchd — the webcam-handler daemon: JSON-RPC over a Unix socket always, opt-in loopback TCP with a bearer token for the web client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "daemon"
+
+[[bin]]
+name = "wchd"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+webcam-handler-api.workspace = true
+webcam-handler-engine.workspace = true
+webcam-handler-fake.workspace = true
+webcam-handler-schema.workspace = true
+webcam-handler-v4l2.workspace = true
+webcam-handler-web.workspace = true
+
+[dev-dependencies]
+webcam-handler-testkit.workspace = true

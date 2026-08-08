@@ -1,0 +1,116 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/schema",
+    "crates/imaging",
+    "crates/engine",
+    "crates/backends/fake",
+    "crates/backends/v4l2",
+    "crates/api",
+    "crates/cli-core",
+    "crates/cli",
+    "crates/client",
+    "crates/daemon",
+    "crates/web",
+    "crates/testkit",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# MSRV — one fact (rubric B9). `scripts/gates/msrv-sync.sh` asserts every other copy
+# (CI workflow, docs) agrees with this line.
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pwnall/webcam-handler"
+authors = ["Victor Costan <victor@costan.us>"]
+
+[workspace.dependencies]
+# --- our crates (path deps; versions kept in lockstep) ---
+webcam-handler-api = { path = "crates/api", version = "0.1.0" }
+webcam-handler-cli-core = { path = "crates/cli-core", version = "0.1.0" }
+webcam-handler-engine = { path = "crates/engine", version = "0.1.0" }
+webcam-handler-fake = { path = "crates/backends/fake", version = "0.1.0" }
+webcam-handler-imaging = { path = "crates/imaging", version = "0.1.0" }
+webcam-handler-schema = { path = "crates/schema", version = "0.1.0" }
+webcam-handler-testkit = { path = "crates/testkit", version = "0.1.0" }
+webcam-handler-v4l2 = { path = "crates/backends/v4l2", version = "0.1.0" }
+webcam-handler-web = { path = "crates/web", version = "0.1.0" }
+
+# --- third-party, pinned at adoption (design §2.8) ---
+anstream = "1.0.0"
+anstyle = "1.0.13"
+anyhow = "1.0.104"
+axum = { version = "0.8.9", default-features = false }
+base64 = "0.23.1"
+camino = { version = "1.2.5", features = ["serde1"] }
+clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
+clap_complete = "4.6.9"
+clap_mangen = "0.3.2"
+comfy-table = "8.0.0"
+fd-lock = "4.0.4"
+humantime = "2.4.0"
+# `default-features = false` is load-bearing: the default feature set drags `avif`,
+# which drags the rav1e AV1 encoder (design §2.8; feature-posture.sh gates it).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+imageproc = { version = "0.27.0", default-features = false }
+indicatif = "0.18.6"
+jiff = "0.2.35"
+jsonrpsee = "0.26.0"
+kamadak-exif = "0.6.1"
+kobject-uevent = "0.2.0"
+libc = "0.2.189"
+listenfd = "1.0.2"
+little_exif = "0.6.23"
+png = "0.18.1"
+rust-embed = "8.12.0"
+schemars = "1.2.2"
+sd-notify = "0.5.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+tokio = "1.53.1"
+tokio-util = "0.7.19"
+toml = "1.1.4"
+tower-http = "0.7.0"
+tracing = "0.1.44"
+tracing-journald = "0.3.2"
+tracing-subscriber = "0.3.23"
+uuid = { version = "1.24.0", features = ["v7", "serde"] }
+# `v4l` default features ONLY — the `libv4l` feature links LGPL libv4l
+# (design §2.8; feature-posture.sh gates it).
+v4l = "0.14.0"
+y4m = "0.8.0"
+yuv = "0.8.17"
+zune-jpeg = "0.5.15"
+
+[workspace.lints.rust]
+# One obligation per unsafe block, and no implicit unsafe inside unsafe fns
+# (design §2.5, rubric B10 [V]).
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+multiple_unsafe_ops_per_block = "deny"
+# Suppressions are `#[expect(.., reason = "..")]`, narrowest scope (rubric B11).
+# docs/4 writes these two under `cfg_attr(not(test), ..)`; a `[workspace.lints]` table
+# cannot express cfg, and one home for the lint policy beats one exemption for tests —
+# recorded as N1 in docs/implementation-notes.md. The effect is strictly stronger.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+[profile.dev]
+# Bindgen + image codecs are unbearable unoptimized; dependencies get -O2, our code
+# keeps fast rebuilds.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 1

@@ -1,0 +1,31 @@
+[package]
+name = "webcam-handler-engine"
+description = "The webcam-handler engine: camera actors, guarded writes, snapshot/restore, capture orchestration, calibration, and the session store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "engine"
+
+[lints]
+workspace = true
+
+[dependencies]
+camino.workspace = true
+fd-lock.workspace = true
+jiff = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+webcam-handler-imaging.workspace = true
+webcam-handler-schema.workspace = true
+
+[dev-dependencies]
+webcam-handler-fake.workspace = true
+webcam-handler-testkit.workspace = true

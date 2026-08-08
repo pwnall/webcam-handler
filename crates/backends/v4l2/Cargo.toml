@@ -1,0 +1,26 @@
+[package]
+name = "webcam-handler-v4l2"
+description = "The webcam-handler V4L2 backend: sysfs enumeration, the raw QUERY_EXT_CTRL control layer, mmap streaming, and uevent hotplug."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "v4l2"
+
+[lints]
+workspace = true
+
+[dependencies]
+kobject-uevent.workspace = true
+libc.workspace = true
+tracing.workspace = true
+# Default features ONLY: the `libv4l` feature links LGPL libv4l (design §2.8).
+v4l.workspace = true
+webcam-handler-schema.workspace = true
+
+[dev-dependencies]
+webcam-handler-testkit.workspace = true

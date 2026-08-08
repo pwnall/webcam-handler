@@ -1,0 +1,70 @@
+# cargo-deny configuration — the license posture of design §2.8, enforced from P0.
+#
+# `scripts/gates/license-allowlist.sh` drives this file and proves both directions:
+# the shipped tree passes, and a scratch manifest carrying each named ban fails.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[licenses]
+# Permissive only. Every entry is a decision, not a convenience.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # precautionary: rustix offers it as one OR-alternative
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0", # transitive: unicode-ident
+]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# Every ban carries its reason. Adding a crate here is how a license question stays
+# answerable-by-decision instead of arriving by accident.
+deny = [
+    # --- LGPL native libraries reached through -sys crates ---
+    { crate = "v4l-sys", reason = "links LGPL libv4l; the MIT v4l2-sys-mit is the pure-ioctl path (design §2.8)" },
+    { crate = "v4l2-sys", reason = "LGPL-3.0 near-namesake of the MIT v4l2-sys-mit — easy to typo into the tree" },
+    { crate = "udev", reason = "links LGPL libudev; hotplug is kobject-uevent + sysfs (design §7)" },
+    { crate = "libudev-sys", reason = "links LGPL libudev" },
+    { crate = "tokio-udev", reason = "links LGPL libudev" },
+    { crate = "libcamera", reason = "LGPL libcamera, and it hides the V4L2 control surface this tool exposes" },
+    { crate = "libcamera-sys", reason = "LGPL libcamera" },
+    { crate = "alsa", reason = "links LGPL alsa-lib; audio is a v1 non-goal for exactly this reason (design §8 item 2)" },
+    { crate = "alsa-sys", reason = "links LGPL alsa-lib" },
+    { crate = "cpal", reason = "links LGPL alsa-lib on Linux" },
+    # --- MPL wrappers ---
+    { crate = "colored", reason = "MPL-2.0; anstream/anstyle cover terminal color (design §7)" },
+    { crate = "option-ext", reason = "MPL-2.0, reached transitively through directories/dirs-sys — the XDG paths are ~30 lines of spec (note N2)" },
+    { crate = "minimp4", reason = "MPL-2.0 muxer wrapper" },
+    { crate = "env-libvpx-sys", reason = "MPL wrapper" },
+    { crate = "vpx-encode", reason = "MPL wrapper" },
+    { crate = "webm", reason = "MPL wrapper" },
+    # --- GPL/LGPL codec stacks ---
+    { crate = "ffmpeg-next", reason = "links LGPL/GPL FFmpeg; no compliant build configuration under this constraint" },
+    { crate = "ffmpeg-sys-next", reason = "links LGPL/GPL FFmpeg" },
+    { crate = "x264", reason = "GPL libx264" },
+    { crate = "x264-dev", reason = "GPL libx264" },
+    { crate = "x265", reason = "GPL libx265" },
+    { crate = "dssim", reason = "AGPL; image-compare is the permissive SSIM if one is ever needed" },
+    # --- IJG term: dormant, not open (design §8 item 1) ---
+    { crate = "jpeg-encoder", reason = "IJG term; image 0.25's own MIT/Apache encoder covers the default stack (design §8 item 1)" },
+    { crate = "turbojpeg", reason = "IJG term via libjpeg-turbo" },
+    { crate = "mozjpeg", reason = "IJG term" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# No git dependencies (rubric B9).
+allow-git = []

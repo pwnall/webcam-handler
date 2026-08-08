@@ -1,0 +1,29 @@
+[package]
+name = "webcam-handler-cli"
+description = "wch — the direct webcam-handler CLI, driving the engine in-process."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "wch"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tracing-subscriber.workspace = true
+webcam-handler-cli-core.workspace = true
+webcam-handler-engine.workspace = true
+webcam-handler-fake.workspace = true
+webcam-handler-schema.workspace = true
+webcam-handler-v4l2.workspace = true
+
+[dev-dependencies]
+webcam-handler-testkit.workspace = true

@@ -1,0 +1,7 @@
+/target/
+# Test captures land in gitignored scratch dirs — a camera frame never enters the
+# repository (design §5).
+/scratch/
+**/*.rs.bk
+.DS_Store
+.claude/

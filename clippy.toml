@@ -1,0 +1,13 @@
+# Lint gates (docs/4). `disallowed-*` entries are the by-name bans; module-scoped
+# levels (unwrap/expect/panic/indexing/as) live at the crate roots that need them.
+
+disallowed-methods = [
+    # PF:1 — panics on control types this kernel emits. Our raw QUERY_EXT_CTRL loop is
+    # the home for control enumeration.
+    { path = "v4l::device::Device::query_controls", reason = "panics on unknown control types (PF:1); use the raw QUERY_EXT_CTRL layer in crates/backends/v4l2/src/sys/" },
+    # A sleep is a flake being scheduled — settle logic runs on a stepped clock.
+    { path = "std::thread::sleep", reason = "no sleeps as synchronization (rubric Part C); use the stepped clock or a condvar" },
+    { path = "std::process::exit", reason = "exit only from main, so destructors and the state lock release (rubric)" },
+]
+
+disallowed-types = []
