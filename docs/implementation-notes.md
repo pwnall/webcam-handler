@@ -271,3 +271,50 @@ test asserts that a host with V4L2 nodes diagnoses nothing.
 
 **Retires when:** `uvcvideo` starts binding nodes to the VideoStreaming interface, or the
 diagnosis moves to a source that reports driver binding directly.
+
+---
+
+## N7 — `CameraBackend` gained a fifth method, `diagnose`
+
+**Doc:** design §2.3 states T1 as four methods — `name`, `enumerate`, `open`, `watch` —
+and calls the trait "the pluggability seam". Separately, D1 requires that "an empty
+enumeration is diagnosed, not shrugged at": `list` with zero cameras is to scan sysfs for
+USB video-class interfaces with no video4linux binding and report "USB camera present
+without a V4L2 driver".
+
+**Repo:** `CameraBackend` has a fifth method with a default body:
+
+```rust
+fn diagnose(&self) -> Vec<crate::report::ListHint> { Vec::new() }
+```
+
+`webcam-handler-v4l2` overrides it with the PF:14 scan; `webcam-handler-fake` inherits the
+empty default.
+
+**Why:** D1's requirement needs a channel, and the two alternatives are both worse.
+
+- *Put the scan in the client.* Then something above the seam has to know it is holding a
+  V4L2 backend, which means a second exhaustive `match` on `BackendKind` — the "second
+  home" §2.10 calls a defect, in a codebase whose composition roots exist precisely so
+  that match happens once.
+- *Return the hints from `enumerate`.* That changes the signature every backend and every
+  caller already uses, to carry a field almost every call ignores, and makes "the cameras"
+  and "why there might be fewer than you expect" one value when they are two facts.
+
+A defaulted method costs a backend that has nothing to say exactly nothing, which is the
+honest position for one replaying a document: the fake's enumeration is complete by
+construction, so it has no absence to explain.
+
+**Why this is completion rather than re-litigation:** §2.3's stated purpose for T1 is that
+the engine consumes backends without naming them. Adding `diagnose` *serves* that purpose —
+without it, the one thing D1 asks for could only be built by naming one. The method takes
+and returns schema values like every other, and adds no policy: `ListHint::message` renders
+the sentence once, in `webcam-handler-schema`, so the CLI and the daemon cannot describe the
+same finding differently.
+
+**What it does not do:** it is not a general "backend status" channel. `HintKind` is a
+closed vocabulary with one variant, and a second one needs the same justification this one
+had — a requirement in the design that cannot otherwise be met.
+
+**Retires when:** nothing retires it; docs/1 §2.3 should absorb the method at its next
+revision, as N4 says of the four error variants.

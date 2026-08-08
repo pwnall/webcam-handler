@@ -1764,6 +1764,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "webcam-handler-cli-core",
+ "webcam-handler-engine",
  "webcam-handler-fake",
  "webcam-handler-schema",
  "webcam-handler-v4l2",
@@ -1856,9 +1857,12 @@ version = "0.1.0"
 dependencies = [
  "camino",
  "libc",
+ "serde_json",
  "tempfile",
  "v4l",
+ "webcam-handler-engine",
  "webcam-handler-schema",
+ "webcam-handler-testkit",
 ]
 
 [[package]]

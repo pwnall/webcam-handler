@@ -27,9 +27,7 @@ use cli_core::{Cli, Executor, Output, Stream};
 use schema::backend::{BackendKind, Camera, CameraBackend};
 use schema::camera::{CameraId, CameraInfo};
 use schema::error::{Error, Result};
-use schema::profile::{
-    DeviceProfile, ProfileInvariant, ProfileProvenance, ProfileState, invariant_control,
-};
+use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport};
 
 fn main() -> ExitCode {
@@ -167,43 +165,19 @@ impl Executor for InProcess {
     }
 
     fn capture_profile(&mut self, requested: &CameraId, capturer: &str) -> Result<DeviceProfile> {
-        let (info, camera) = self.open(requested)?;
-        let controls = camera.controls()?;
-
-        Ok(DeviceProfile {
-            schema_version: schema::limits::PROFILE_SCHEMA_VERSION,
-            provenance: ProfileProvenance {
+        let (_, mut camera) = self.open(requested)?;
+        // The T3 split lives in the engine, so this verb, the hardware rung's comparison,
+        // and P4's `profile_capture` method all produce the same document.
+        engine::profile::capture(
+            camera.as_mut(),
+            &engine::profile::CaptureContext {
                 captured_at: schema::time::Stamp::now(),
                 kernel: kernel_release(),
                 tool_version: env!("CARGO_PKG_VERSION").to_owned(),
                 capturer: capturer.to_owned(),
-                // Which backend produced it. A profile captured from the fake would be
-                // circular corpus, and this field is what makes that visible (T3).
                 backend: self.backend.kind(),
             },
-            invariant: ProfileInvariant {
-                formats: camera.formats()?,
-                // The invariant section drops each control's current value and the flag
-                // bits that change with use, so re-capturing after somebody used the
-                // camera does not read as corpus drift (T3).
-                controls: controls.iter().map(invariant_control).collect(),
-                info,
-                // Empirical pair discovery is P2's (`controls --discover-pairs`), and it
-                // writes here. Empty is the honest answer for a read-only capture: it
-                // says "nobody measured", not "there are none".
-                measured_pairs: Vec::new(),
-            },
-            state: ProfileState {
-                values: controls
-                    .iter()
-                    .filter_map(|d| d.current.clone().map(|v| (d.slug.clone(), v)))
-                    .collect(),
-                flags: controls
-                    .iter()
-                    .map(|d| (d.slug.clone(), d.flags.raw))
-                    .collect(),
-            },
-        })
+        )
     }
 }
 

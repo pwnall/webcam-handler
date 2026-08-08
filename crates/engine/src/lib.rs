@@ -19,12 +19,14 @@
 //! | [`settle`] | the settle policy state machine (D5) |
 //! | [`sweep`] | the sweep planner (D8) |
 //! | [`session`] | the calibration state machine (D8) |
+//! | [`profile`] | assembling a T3 device profile, and the invariant/state split |
 #![forbid(unsafe_code)]
 
 mod refusal;
 
 pub mod pairing;
 pub mod paths;
+pub mod profile;
 pub mod session;
 pub mod settle;
 pub mod sweep;

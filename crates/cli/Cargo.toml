@@ -21,6 +21,7 @@ camino.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 webcam-handler-cli-core.workspace = true
+webcam-handler-engine.workspace = true
 webcam-handler-fake.workspace = true
 webcam-handler-schema.workspace = true
 webcam-handler-v4l2.workspace = true

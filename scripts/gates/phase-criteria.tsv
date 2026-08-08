@@ -21,3 +21,17 @@ g0	tests	package(webcam-handler-imaging)	metric ordering tests over synthetic fi
 g0	tests	package(webcam-handler-engine)	the engine pure cores and the inverse fixtures each one refuses
 g0	tests	package(webcam-handler-fake)	the fake passes the backend conformance battery (design 2.11)
 g0	tests	package(webcam-handler-testkit)	the battery and the corpus loader hold their own invariants
+g1	command	./scripts/gates/run-all.sh	every shipped gate predicate green over the tree, the P1 additions included
+g1	command	./scripts/gates/selftest.sh	every shipped gate predicate red on its own inverse, counted, both directions
+g1	command	./scripts/gates/corpus-floor.sh	every committed device profile is loaded and replayed by a test — no dead corpus
+g1	command	./scripts/gates/json-validates.sh	wch list/info/controls/profile-capture --json validate against the committed JSON Schema bundle
+g1	command	./scripts/gates/feature-posture.sh	the v4l libv4l feature ban holds, proven by selftest
+g1	command	./scripts/rung-vivid.sh	the R2 vivid rung runs or reports a named, counted skip — never silence
+g1	command	./scripts/miri.sh	Miri green over the sys-decode units, or a named counted skip where it is not installed
+g1	command	./scripts/smoke-hw.sh	the R3 hardware recipe exists and selects tests (the run itself is evidence, not CI-gating)
+g1	tests	package(webcam-handler-v4l2)	sysfs enumeration, the grouping rule, and the pure decode units over captured replies
+g1	tests	package(webcam-handler-v4l2) and test(/^sys::decode/)	the raw-struct decode path Miri also executes, over real captured ioctl replies
+g1	tests	package(webcam-handler-fake) and binary(corpus_replay)	every committed profile replays through the battery and carries its probe findings
+g1	tests	package(webcam-handler-cli-core)	the one command surface: the clap tree, the --json contract, and both renderings
+g1	tests	package(webcam-handler-cli)	the wch composition root's backend selection and profile reading
+g1	tests	package(webcam-handler-engine) and test(/^profile::/)	the T3 invariant/state split, and that using a camera does not read as corpus drift
