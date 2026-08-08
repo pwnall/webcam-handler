@@ -295,10 +295,8 @@ const PF_FINDINGS: &[PfFinding] = &[
                     .iter()
                     .filter(|f| f.pixel_format.is_compressed() == compressed)
                     .flat_map(|f| f.sizes.iter())
-                    .map(|s| {
-                        let (w, h) = s.size.max_dimensions();
-                        u64::from(w) * u64::from(h)
-                    })
+                    .filter_map(|s| s.size.max_dimensions())
+                    .map(|(w, h)| u64::from(w) * u64::from(h))
                     .max()
             };
             largest(true)

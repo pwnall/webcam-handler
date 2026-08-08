@@ -418,20 +418,39 @@ pub enum FrameSize {
         /// Height step.
         step_height: u32,
     },
+    /// A size described with a `v4l2_frmsizetypes` value this build cannot interpret.
+    ///
+    /// D2's rule, applied to sizes: the entry exists, so it is carried. Dropping it would
+    /// make a *short* size list look like a complete one, and "this camera does not offer
+    /// 4K" is exactly the capability claim we would be inventing.
+    Unknown {
+        /// The kernel's `type` discriminant, preserved exactly.
+        raw: u32,
+    },
 }
 
 impl FrameSize {
     /// The largest size this entry offers, as `(width, height)`.
+    ///
+    /// `None` for a size whose shape this build cannot read: guessing dimensions for it
+    /// would be inventing the very fact we are admitting we do not have.
     #[must_use]
-    pub const fn max_dimensions(&self) -> (u32, u32) {
+    pub const fn max_dimensions(&self) -> Option<(u32, u32)> {
         match *self {
-            FrameSize::Discrete { width, height } => (width, height),
+            FrameSize::Discrete { width, height } => Some((width, height)),
             FrameSize::Stepwise {
                 max_width,
                 max_height,
                 ..
-            } => (max_width, max_height),
+            } => Some((max_width, max_height)),
+            FrameSize::Unknown { .. } => None,
         }
+    }
+
+    /// Whether this build can interpret the shape the driver described.
+    #[must_use]
+    pub const fn is_interpretable(&self) -> bool {
+        !matches!(*self, FrameSize::Unknown { .. })
     }
 }
 
@@ -457,6 +476,12 @@ pub enum FrameInterval {
         /// Longest interval denominator.
         max_denominator: u32,
     },
+    /// An interval described with a `v4l2_frmivaltypes` value this build cannot interpret.
+    /// Carried for [`FrameSize::Unknown`]'s reason.
+    Unknown {
+        /// The kernel's `type` discriminant, preserved exactly.
+        raw: u32,
+    },
 }
 
 impl FrameInterval {
@@ -474,8 +499,14 @@ impl FrameInterval {
                     Some(f64::from(denominator) / f64::from(numerator))
                 }
             }
-            FrameInterval::Stepwise { .. } => None,
+            FrameInterval::Stepwise { .. } | FrameInterval::Unknown { .. } => None,
         }
+    }
+
+    /// Whether this build can interpret the shape the driver described.
+    #[must_use]
+    pub const fn is_interpretable(&self) -> bool {
+        !matches!(*self, FrameInterval::Unknown { .. })
     }
 }
 
@@ -671,6 +702,41 @@ mod tests {
         assert_eq!(PixelFormat::parse("YUY"), None);
         // A driver emitting a non-ASCII fourcc prints rather than panics.
         assert_eq!(PixelFormat([0, 1, b'A', b'B']).to_string(), "\\x00\\x01AB");
+    }
+
+    #[test]
+    fn a_size_or_interval_shape_this_build_cannot_read_is_carried_not_dropped() {
+        // D2 applied to the format tree. The kernel defines three `type` values for each
+        // and this build reads all three, so these variants are unreachable today — which
+        // is the point: when a fourth arrives, a short list must not pass for a complete
+        // one.
+        let size = FrameSize::Unknown { raw: 9 };
+        assert_eq!(size.max_dimensions(), None);
+        assert!(!size.is_interpretable());
+        assert!(
+            FrameSize::Discrete {
+                width: 640,
+                height: 480
+            }
+            .is_interpretable()
+        );
+
+        let interval = FrameInterval::Unknown { raw: 9 };
+        assert_eq!(interval.fps(), None);
+        assert!(!interval.is_interpretable());
+
+        // And both survive the wire with their discriminant.
+        for value in [
+            serde_json::to_string(&size).expect("serialize"),
+            serde_json::to_string(&interval).expect("serialize"),
+        ] {
+            assert!(value.contains("\"raw\":9"), "{value}");
+        }
+        assert_eq!(
+            serde_json::from_str::<FrameSize>(&serde_json::to_string(&size).expect("serialize"))
+                .expect("deserialize"),
+            size
+        );
     }
 
     #[test]

@@ -682,7 +682,12 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
 /// The size the device would settle on: the exact request when it is offered, otherwise
 /// the largest offered size that fits inside it, otherwise the first the device listed.
 fn choose_size(sizes: &[FrameSizeInfo], request: &StreamRequest) -> (u32, u32) {
-    let offered: Vec<(u32, u32)> = sizes.iter().map(|s| s.size.max_dimensions()).collect();
+    // A size shaped in a way this build cannot read has no dimensions to negotiate
+    // against; it is carried in the format list but cannot be chosen.
+    let offered: Vec<(u32, u32)> = sizes
+        .iter()
+        .filter_map(|s| s.size.max_dimensions())
+        .collect();
     let first = offered.first().copied().unwrap_or((640, 480));
     let (Some(width), Some(height)) = (request.width, request.height) else {
         // Nothing was asked for, so nothing was adjusted: the device's own first entry.
@@ -709,7 +714,7 @@ fn choose_interval(
 ) -> FrameInterval {
     let at_size = sizes
         .iter()
-        .find(|s| s.size.max_dimensions() == (width, height))
+        .find(|s| s.size.max_dimensions() == Some((width, height)))
         .or_else(|| sizes.first());
     let Some(entry) = at_size else {
         return FALLBACK_INTERVAL;
@@ -762,6 +767,16 @@ fn interval_micros(interval: FrameInterval) -> i64 {
             min_denominator: denominator,
             ..
         } => (i64::from(numerator), i64::from(denominator)),
+        // An interval whose shape this build cannot read cannot drive a clock. The fake
+        // falls back rather than inventing a rate — and a fake that invented one would be
+        // claiming a capability no real device demonstrated (E5).
+        FrameInterval::Unknown { .. } => match FALLBACK_INTERVAL {
+            FrameInterval::Discrete {
+                numerator,
+                denominator,
+            } => (i64::from(numerator), i64::from(denominator)),
+            _ => (1, 30),
+        },
     };
     if denominator == 0 {
         return 0;

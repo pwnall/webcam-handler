@@ -245,6 +245,9 @@ fn size_text(size: &FrameSize) -> String {
         } => format!(
             "{min_width}-{max_width}/{step_width} x {min_height}-{max_height}/{step_height}"
         ),
+        // The driver offered a size shaped in a way this build cannot read. Shown, with
+        // the discriminant, because a row that vanished would make the list look complete.
+        FrameSize::Unknown { raw } => format!("(unreadable shape {raw:#x})"),
     }
 }
 
@@ -264,6 +267,7 @@ fn intervals_text(intervals: &[FrameInterval]) -> String {
                 max_numerator,
                 max_denominator,
             } => format!("{min_numerator}/{min_denominator}-{max_numerator}/{max_denominator}"),
+            FrameInterval::Unknown { raw } => format!("(unreadable shape {raw:#x})"),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -780,6 +784,29 @@ mod tests {
             text.contains("(none reported)"),
             "PF:8's absent serial: {text}"
         );
+    }
+
+    #[test]
+    fn a_size_this_build_cannot_read_still_gets_a_row_naming_its_discriminant() {
+        // The inverse of dropping it: an omitted row would make the format list read as
+        // complete, which is a capability claim invented out of our own ignorance.
+        let (mut out, stdout, _) = captured();
+        let detail = CameraDetail {
+            info: camera("Test", true),
+            formats: vec![FormatInfo {
+                pixel_format: PixelFormat::MJPG,
+                description: "Motion-JPEG".to_owned(),
+                flags: 1,
+                sizes: vec![FrameSizeInfo {
+                    size: FrameSize::Unknown { raw: 0x63 },
+                    intervals: vec![FrameInterval::Unknown { raw: 0x63 }],
+                }],
+            }],
+        };
+        info(&detail, false, &mut out).expect("rendering into a buffer cannot fail");
+        let text = stdout.text();
+        assert!(text.contains("unreadable shape 0x63"), "{text}");
+        assert!(text.contains("MJPG"), "{text}");
     }
 
     #[test]

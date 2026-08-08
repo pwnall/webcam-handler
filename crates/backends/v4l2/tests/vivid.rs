@@ -253,7 +253,16 @@ fn vivid_formats_enumerate_with_sizes_and_intervals_nested_under_them() {
                 format.pixel_format
             );
             for entry in &format.sizes {
-                let (width, height) = entry.size.max_dimensions();
+                // A shape this build cannot read is carried rather than dropped, and has
+                // no dimensions to check — `vivid` reports none today, and if a future
+                // kernel does, that is a finding rather than a failure.
+                let Some((width, height)) = entry.size.max_dimensions() else {
+                    println!(
+                        "{}: {} lists a size shape this build cannot read: {:?}",
+                        info.id, format.pixel_format, entry.size
+                    );
+                    continue;
+                };
                 assert!(
                     width > 0 && height > 0,
                     "{}: {} offers a {width}x{height} size",

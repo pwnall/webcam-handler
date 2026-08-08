@@ -577,7 +577,7 @@ mod tests {
                 .map(|f| {
                     f.sizes
                         .iter()
-                        .map(|s| s.size.max_dimensions())
+                        .filter_map(|s| s.size.max_dimensions())
                         .max()
                         .unwrap_or((0, 0))
                 })

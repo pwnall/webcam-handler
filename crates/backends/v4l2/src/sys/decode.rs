@@ -140,11 +140,19 @@ pub(crate) fn control_desc(bytes: &[u8]) -> Option<ControlDesc> {
         range: ControlRange {
             min: fields::read_i64(bytes, offset_of!(v4l2_query_ext_ctrl, minimum))?,
             max: fields::read_i64(bytes, offset_of!(v4l2_query_ext_ctrl, maximum))?,
-            // The kernel's step is unsigned and ours is signed. A step past `i64::MAX` is
-            // a driver saying something we cannot hold, so it becomes 0 — the value
-            // `ControlRange::effective_step` already defines as "no usable step" — rather
-            // than a saturated number that would read like a real, plannable one.
-            step: i64::try_from(raw_step).unwrap_or(0),
+            // The kernel's step is unsigned and ours is signed. A step past `i64::MAX`
+            // saturates, and the direction is chosen for what it does downstream: a
+            // saturated step makes only the minimum reachable, so a sweep over such a
+            // control plans **one** sample.
+            //
+            // Mapping it to 0 was the first instinct and is the wrong one —
+            // `ControlRange::effective_step` reads 0 as "no usable step" and substitutes
+            // 1, which is the *finest* step there is, so a control we could not
+            // understand would plan the largest sweep in the table. On a pan motor with a
+            // ±468000 range that is the difference between one write and a capped 32.
+            // When a device says something we cannot represent, the safe reading is the
+            // one that does least.
+            step: i64::try_from(raw_step).unwrap_or(i64::MAX),
         },
         default: fields::read_i64(bytes, offset_of!(v4l2_query_ext_ctrl, default_value))?,
         flags: ControlFlags::from_raw(fields::read_u32(
@@ -216,11 +224,10 @@ pub(crate) fn format_desc(bytes: &[u8]) -> Option<(PixelFormat, String, u32)> {
 
 /// Decode a `VIDIOC_ENUM_FRAMESIZES` reply.
 ///
-/// `None` for a `type` outside the three the kernel defines. The schema's [`FrameSize`]
-/// has exactly two shapes because the kernel's union has exactly two readings; a fourth
-/// type would be a new shape of fact, and inventing a mapping for it here would hide a
-/// device we genuinely do not understand behind a size we made up. The caller counts
-/// what it could not decode rather than reporting a shorter list as complete.
+/// A `type` outside the three the kernel defines becomes [`FrameSize::Unknown`] carrying
+/// the discriminant — the entry exists, and dropping it would make a short size list read
+/// as a complete one. `None` means only that the reply was not as wide as the bindings
+/// say the struct is.
 pub(crate) fn frame_size(bytes: &[u8]) -> Option<FrameSize> {
     if !is_whole::<v4l2_frmsizeenum>(bytes) {
         return None;
@@ -240,12 +247,12 @@ pub(crate) fn frame_size(bytes: &[u8]) -> Option<FrameSize> {
             max_height: fields::read_u32(bytes, union_at.checked_add(16)?)?,
             step_height: fields::read_u32(bytes, union_at.checked_add(20)?)?,
         }),
-        _ => None,
+        raw => Some(FrameSize::Unknown { raw }),
     }
 }
 
-/// Decode a `VIDIOC_ENUM_FRAMEINTERVALS` reply. `None` for an unrecognized `type`, for
-/// the reason [`frame_size`] gives.
+/// Decode a `VIDIOC_ENUM_FRAMEINTERVALS` reply. An unrecognized `type` becomes
+/// [`FrameInterval::Unknown`], for the reason [`frame_size`] gives.
 pub(crate) fn frame_interval(bytes: &[u8]) -> Option<FrameInterval> {
     if !is_whole::<v4l2_frmivalenum>(bytes) {
         return None;
@@ -266,7 +273,7 @@ pub(crate) fn frame_interval(bytes: &[u8]) -> Option<FrameInterval> {
             max_numerator: fields::read_u32(bytes, union_at.checked_add(8)?)?,
             max_denominator: fields::read_u32(bytes, union_at.checked_add(12)?)?,
         }),
-        _ => None,
+        raw => Some(FrameInterval::Unknown { raw }),
     }
 }
 
@@ -570,14 +577,28 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognized_size_or_interval_type_is_undecodable_rather_than_guessed() {
+    fn an_unrecognized_size_or_interval_type_is_carried_rather_than_guessed_or_dropped() {
+        // Not `None`: the entry exists and the driver described it, so the *shape* is
+        // what we cannot read, not the fact. A dropped entry would make a short list read
+        // as a complete one — "this camera does not offer 4K" invented out of our own
+        // ignorance.
         let mut bytes = FRAMESIZE_MJPG.to_vec();
         fields::write_u32(&mut bytes, offset_of!(v4l2_frmsizeenum, type_), 99).expect("fits");
-        assert_eq!(frame_size(&bytes), None);
+        let size = frame_size(&bytes).expect("the entry is carried");
+        assert_eq!(size, FrameSize::Unknown { raw: 99 });
+        assert!(!size.is_interpretable());
+        assert_eq!(size.max_dimensions(), None);
 
         let mut bytes = FRAMEINTERVAL_MJPG.to_vec();
         fields::write_u32(&mut bytes, offset_of!(v4l2_frmivalenum, type_), 99).expect("fits");
-        assert_eq!(frame_interval(&bytes), None);
+        assert_eq!(
+            frame_interval(&bytes),
+            Some(FrameInterval::Unknown { raw: 99 })
+        );
+
+        // A truncated reply is still `None` — that is a different failure, and the two
+        // must not be spelled the same way.
+        assert_eq!(frame_size(&FRAMESIZE_MJPG[..8]), None);
     }
 
     #[test]
@@ -604,17 +625,27 @@ mod tests {
     }
 
     #[test]
-    fn a_step_too_wide_for_the_schema_becomes_no_usable_step_rather_than_a_plausible_one() {
-        let mut bytes = WHITE_BALANCE_TEMPERATURE.to_vec();
+    fn a_step_too_wide_for_the_schema_saturates_toward_doing_less_not_more() {
+        // The direction matters more than the value. Mapping an unrepresentable step to 0
+        // would send it through `effective_step`'s "no usable step" path, which
+        // substitutes 1 — the finest step in the table — so the control we understood
+        // least would plan the largest sweep. Saturating leaves only the minimum
+        // reachable.
+        let mut bytes = PAN_ABSOLUTE.to_vec();
         fields::write_u64(&mut bytes, offset_of!(v4l2_query_ext_ctrl, step), u64::MAX)
             .expect("fits");
         let desc = control_desc(&bytes).expect("decodes");
-        assert_eq!(desc.range.step, 0);
-        assert_eq!(
-            desc.range.effective_step(),
-            1,
-            "an unusable step falls through to the meaning the schema already defines"
-        );
+        assert_eq!(desc.range.step, i64::MAX);
+        assert_eq!(desc.range.effective_step(), i64::MAX);
+
+        // Concretely, over this control's real ±468000 range: one reachable value, not
+        // the 936001 that a step of 1 would have offered a sweep planner.
+        let span = desc.range.max.saturating_sub(desc.range.min);
+        assert_eq!(span / desc.range.effective_step(), 0);
+
+        // A step that *does* fit is untouched — the saturation must not swallow real ones.
+        let desc = control_desc(PAN_ABSOLUTE).expect("decodes");
+        assert_eq!(desc.range.step, 3_600);
     }
 
     #[test]

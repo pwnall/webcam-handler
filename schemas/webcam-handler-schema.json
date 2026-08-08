@@ -1696,6 +1696,26 @@
             "max_denominator"
           ],
           "type": "object"
+        },
+        {
+          "description": "An interval described with a `v4l2_frmivaltypes` value this build cannot interpret.\nCarried for [`FrameSize::Unknown`]'s reason.",
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "raw": {
+              "description": "The kernel's `type` discriminant, preserved exactly.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "raw"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1783,6 +1803,26 @@
             "step_height"
           ],
           "type": "object"
+        },
+        {
+          "description": "A size described with a `v4l2_frmsizetypes` value this build cannot interpret.\n\nD2's rule, applied to sizes: the entry exists, so it is carried. Dropping it would\nmake a *short* size list look like a complete one, and \"this camera does not offer\n4K\" is exactly the capability claim we would be inventing.",
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "raw": {
+              "description": "The kernel's `type` discriminant, preserved exactly.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "raw"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1813,6 +1853,11 @@
         {
           "const": "driverless_usb_video_device",
           "description": "A USB device presents a video-class interface and no driver has bound a V4L2\nnode to it — the skill's `lsusb` triage, built in [PF:14].",
+          "type": "string"
+        },
+        {
+          "const": "node_unreadable",
+          "description": "A device node exists and could not be interrogated, so the camera it belongs\nto is not in the listing.\n\nThe alternative — listing the camera with only the nodes that answered —\nwould let a busy capture node read as \"this camera cannot capture\", which is\nthe availability-as-capability conversion E3 exists to prevent.",
           "type": "string"
         }
       ]

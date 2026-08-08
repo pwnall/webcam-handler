@@ -27,6 +27,13 @@ closed_vocabulary! {
         /// A USB device presents a video-class interface and no driver has bound a V4L2
         /// node to it — the skill's `lsusb` triage, built in \[PF:14\].
         DriverlessUsbVideoDevice,
+        /// A device node exists and could not be interrogated, so the camera it belongs
+        /// to is not in the listing.
+        ///
+        /// The alternative — listing the camera with only the nodes that answered —
+        /// would let a busy capture node read as "this camera cannot capture", which is
+        /// the availability-as-capability conversion E3 exists to prevent.
+        NodeUnreadable,
     }
 }
 
@@ -48,6 +55,11 @@ impl ListHint {
             HintKind::DriverlessUsbVideoDevice => format!(
                 "USB device {} presents a video-class interface with no V4L2 driver bound; \
                  the camera is plugged in and nothing is driving it",
+                self.subject
+            ),
+            HintKind::NodeUnreadable => format!(
+                "{} could not be read, so the camera it belongs to is not listed; this is \
+                 a fact about access to the node, not about what the camera can do",
                 self.subject
             ),
         }

@@ -160,14 +160,13 @@ pub(crate) fn enum_fmt(
 
 /// `VIDIOC_ENUM_FRAMESIZES` for one index of one pixel format.
 ///
-/// The `Option` inside `Entry` is a size the kernel described with a `type` this build
-/// does not know: the entry exists, and we cannot represent it. Distinct from `Exhausted`,
-/// so the caller can count it rather than report a short list as complete.
+/// A size whose `type` this build cannot interpret comes back as
+/// `FrameSize::Unknown` rather than as an absence, so nothing the driver listed is lost.
 pub(crate) fn enum_framesizes(
     fd: &Fd,
     pixel_format: u32,
     index: u32,
-) -> Result<Enumerated<Option<schema::camera::FrameSize>>> {
+) -> Result<Enumerated<schema::camera::FrameSize>> {
     let mut payload = Payload::<v4l2_frmsizeenum>::zeroed();
     set_u32(
         &mut payload,
@@ -188,7 +187,9 @@ pub(crate) fn enum_framesizes(
         "VIDIOC_ENUM_FRAMESIZES",
     )? {
         Enumerated::Exhausted => Ok(Enumerated::Exhausted),
-        Enumerated::Entry(()) => Ok(Enumerated::Entry(decode::frame_size(payload.bytes()))),
+        Enumerated::Entry(()) => decode::frame_size(payload.bytes())
+            .map(Enumerated::Entry)
+            .ok_or_else(|| short_reply("VIDIOC_ENUM_FRAMESIZES")),
     }
 }
 
@@ -199,7 +200,7 @@ pub(crate) fn enum_frameintervals(
     width: u32,
     height: u32,
     index: u32,
-) -> Result<Enumerated<Option<schema::camera::FrameInterval>>> {
+) -> Result<Enumerated<schema::camera::FrameInterval>> {
     let mut payload = Payload::<v4l2_frmivalenum>::zeroed();
     let op = "VIDIOC_ENUM_FRAMEINTERVALS";
     set_u32(&mut payload, offset_of!(v4l2_frmivalenum, index), index, op)?;
@@ -218,7 +219,9 @@ pub(crate) fn enum_frameintervals(
     )?;
     match call_enumerating(fd, vidioc::VIDIOC_ENUM_FRAMEINTERVALS, &mut payload, op)? {
         Enumerated::Exhausted => Ok(Enumerated::Exhausted),
-        Enumerated::Entry(()) => Ok(Enumerated::Entry(decode::frame_interval(payload.bytes()))),
+        Enumerated::Entry(()) => decode::frame_interval(payload.bytes())
+            .map(Enumerated::Entry)
+            .ok_or_else(|| short_reply(op)),
     }
 }
 

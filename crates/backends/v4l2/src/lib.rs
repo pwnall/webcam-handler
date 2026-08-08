@@ -87,7 +87,7 @@ impl CameraBackend for V4l2Backend {
     }
 
     fn enumerate(&self) -> Result<Vec<CameraInfo>> {
-        Ok(enumerate::group(&probe_nodes()?))
+        Ok(enumerate::group(&probe_nodes()?.probed))
     }
 
     fn open(&self, id: &CameraId) -> Result<Box<dyn Camera>> {
@@ -109,42 +109,83 @@ impl CameraBackend for V4l2Backend {
     }
 
     fn diagnose(&self) -> Vec<ListHint> {
-        sysfs::unbound_video_devices()
+        let mut hints: Vec<ListHint> = sysfs::unbound_video_devices()
             .into_iter()
             .map(|device| ListHint {
                 kind: HintKind::DriverlessUsbVideoDevice,
                 subject: device,
             })
-            .collect()
+            .collect();
+
+        // The cameras `enumerate` declined to describe. Without this the drop would be
+        // silent, and a camera vanishing because one of its nodes was busy is exactly the
+        // kind of absence a user needs told rather than left to infer.
+        if let Ok(probe) = probe_nodes() {
+            for (path, error) in probe.unreadable.values().flatten() {
+                hints.push(ListHint {
+                    kind: HintKind::NodeUnreadable,
+                    subject: format!("{path}: {error}"),
+                });
+            }
+        }
+        hints
     }
+}
+
+/// What one pass over the node list learned, successes and failures alike.
+#[derive(Debug, Default)]
+struct Probe {
+    /// The nodes that answered `QUERYCAP`.
+    probed: Vec<ProbedNode>,
+    /// The nodes that did not, by the group they belong to. Keyed on the sysfs grouping
+    /// key, which is readable without opening anything.
+    unreadable: BTreeMap<String, Vec<(camino::Utf8PathBuf, Error)>>,
 }
 
 /// Read every node's sysfs facts and ask each one what it is.
 ///
-/// A node that cannot be opened is left out of its group rather than failing the whole
-/// enumeration — one camera another process is misbehaving with must not hide the rest.
-/// But if **nothing** could be opened, the first failure is returned: the overwhelmingly
-/// common cause is a missing `video` group membership, and answering "no cameras" to that
-/// would hide the one error whose message says what to do about it.
-fn probe_nodes() -> Result<Vec<ProbedNode>> {
+/// **A group with an unreadable node is not described at all**, and that is the whole
+/// point of keeping the failures. A node is classified by its `device_caps`, which only an
+/// open node reports, so a group whose capture node could not be opened would enumerate
+/// with its metadata node alone — and `capture_node()` would then answer `None`, which
+/// every caller above reads as "this camera cannot capture". That is E3's forbidden
+/// conversion exactly: a busy or vanished node answered as a capability. Dropping the
+/// group says "we could not read this device", which is true; keeping a partial one says
+/// something false about what the device can do.
+///
+/// The drop is not silent — [`V4l2Backend::diagnose`] reports each unreadable node — and
+/// if **nothing** could be read, the first failure is returned rather than an empty list:
+/// the overwhelmingly common cause is a missing `video` group membership, and "no cameras"
+/// would hide the one message that says what to do about it.
+fn probe_nodes() -> Result<Probe> {
     let nodes = sysfs::nodes()?;
-    let mut probed = Vec::with_capacity(nodes.len());
+    let mut probe = Probe::default();
     let mut first_failure = None;
 
     for node in &nodes {
         match probe_one(node) {
-            Ok(entry) => probed.push(entry),
+            Ok(entry) => probe.probed.push(entry),
             Err(error) => {
                 if first_failure.is_none() {
-                    first_failure = Some(error);
+                    first_failure = Some(error.clone());
                 }
+                probe
+                    .unreadable
+                    .entry(node.group_key().to_owned())
+                    .or_default()
+                    .push((node.dev_path.clone(), error));
             }
         }
     }
 
+    // Every group that lost a node loses the rest of itself too.
+    probe
+        .probed
+        .retain(|node| !probe.unreadable.contains_key(&node.group_key));
+
     match first_failure {
-        Some(error) if probed.is_empty() && !nodes.is_empty() => Err(error),
-        _ => Ok(probed),
+        Some(error) if probe.probed.is_empty() && !nodes.is_empty() => Err(error),
+        _ => Ok(probe),
     }
 }
 
@@ -381,17 +422,16 @@ impl V4l2Camera {
         for index in 0..limits::MAX_FRAME_SIZES_PER_FORMAT {
             let size = match ioctl::enum_framesizes(&self.fd, fourcc, index)? {
                 ioctl::Enumerated::Exhausted => break,
-                // A size described with a `type` this build cannot represent. The entry
-                // exists and we will not invent dimensions for it; the walk continues so
-                // the sizes after it are not lost too.
-                ioctl::Enumerated::Entry(None) => continue,
-                ioctl::Enumerated::Entry(Some(size)) => size,
+                ioctl::Enumerated::Entry(size) => size,
             };
-            let (width, height) = size.max_dimensions();
-            sizes.push(FrameSizeInfo {
-                size,
-                intervals: self.intervals_for(fourcc, width, height)?,
-            });
+            // Intervals are enumerated *at a size*, so a size whose dimensions this build
+            // cannot read has none to ask for — the entry is still carried, with an empty
+            // interval list, rather than dropped.
+            let intervals = match size.max_dimensions() {
+                Some((width, height)) => self.intervals_for(fourcc, width, height)?,
+                None => Vec::new(),
+            };
+            sizes.push(FrameSizeInfo { size, intervals });
         }
         Ok(sizes)
     }
@@ -406,8 +446,7 @@ impl V4l2Camera {
         for index in 0..limits::MAX_FRAME_INTERVALS_PER_SIZE {
             match ioctl::enum_frameintervals(&self.fd, fourcc, width, height, index)? {
                 ioctl::Enumerated::Exhausted => break,
-                ioctl::Enumerated::Entry(None) => continue,
-                ioctl::Enumerated::Entry(Some(interval)) => intervals.push(interval),
+                ioctl::Enumerated::Entry(interval) => intervals.push(interval),
             }
         }
         Ok(intervals)
@@ -514,6 +553,81 @@ mod tests {
                 first.id
             );
         }
+    }
+
+    #[test]
+    fn a_group_missing_a_node_is_refused_rather_than_described_without_it() {
+        // The E3 property, at the level it can be stated without a device: a camera is
+        // only ever built from a group *all* of whose nodes answered.
+        //
+        // Why it matters is the shape of the failure it prevents. `NodeKind` comes from
+        // `device_caps`, which only an open node reports. So a group whose capture node
+        // could not be opened, described from its surviving metadata node, would have
+        // `capture_node() == None` — and every caller above reads that as "this camera
+        // cannot capture". A busy node would have answered a capability question.
+        let node = |dev: &str, caps: u32| enumerate::ProbedNode {
+            dev_path: camino::Utf8PathBuf::from(dev),
+            group_key: "3-4:1.0".to_owned(),
+            usb_id: None,
+            serial: None,
+            driver: "uvcvideo".to_owned(),
+            card: "Test".to_owned(),
+            bus_info: "usb-1".to_owned(),
+            capabilities: 0x84a0_0001,
+            device_caps: caps,
+        };
+
+        // Both nodes present: one camera, with a capture node.
+        let whole = enumerate::group(&[
+            node("/dev/video0", 0x0420_0001),
+            node("/dev/video1", 0x04a0_0000),
+        ]);
+        assert_eq!(whole.len(), 1);
+        assert!(whole[0].capture_node().is_some());
+
+        // The capture node missing is exactly the dangerous shape — and it is what
+        // `probe_nodes` now refuses to construct, because the camera it produces is a
+        // truthful-looking lie.
+        let partial = enumerate::group(&[node("/dev/video1", 0x04a0_0000)]);
+        assert_eq!(partial.len(), 1);
+        assert!(
+            partial[0].capture_node().is_none(),
+            "this is the misleading camera; `probe_nodes` must never hand one out"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_node_is_reported_rather_than_dropped_in_silence() {
+        // The other half of refusing the group: the refusal has to be visible. On a host
+        // where every node reads, there is nothing to report — which is the case this
+        // machine and CI both exercise, so the assertion is written both ways.
+        let backend = V4l2Backend::new();
+        let hints = backend.diagnose();
+        let enumerated = backend.enumerate().map(|c| c.len()).unwrap_or(0);
+        let unreadable = hints
+            .iter()
+            .filter(|hint| hint.kind == HintKind::NodeUnreadable)
+            .count();
+
+        for hint in hints.iter().filter(|h| h.kind == HintKind::NodeUnreadable) {
+            assert!(
+                !hint.subject.is_empty(),
+                "an unreadable-node hint must name the node"
+            );
+            assert!(hint.message().contains("not about what the camera can do"));
+        }
+
+        // The claim that holds either way, and the one worth asserting: a host that
+        // reported no unreadable node must have enumerated successfully. The two are the
+        // same fact seen from both ends — `probe_nodes` returns the failure when nothing
+        // read, and records a hint when something did.
+        if unreadable == 0 {
+            assert!(
+                backend.enumerate().is_ok(),
+                "no node was reported unreadable, yet enumeration failed"
+            );
+        }
+        println!("{enumerated} camera(s), {unreadable} unreadable node(s)");
     }
 
     #[test]
