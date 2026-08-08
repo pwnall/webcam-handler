@@ -318,3 +318,76 @@ had — a requirement in the design that cannot otherwise be met.
 
 **Retires when:** nothing retires it; docs/1 §2.3 should absorb the method at its next
 revision, as N4 says of the four error variants.
+
+---
+
+## E1 — G1 hardware evidence, 2026-08-08
+
+docs/2's G1 asks for the dev-machine R3 run to be "recorded as evidence in the notes with
+transcripts", because shared CI has no camera and that hole is structural (docs/4's
+recorded limits). This is that record. Evidence entries are dated and appended; they are
+not amended, because the point of a transcript is that it was true once.
+
+**Host:** kernel 7.0.0-29-generic, x86_64. **Attached:** Chicony `04f2:b83c` (two logical
+cameras — RGB on interface `3-4:1.0`, IR on `3-4:1.2`), OBSBOT Tiny 3 `3564:ff02` on
+`3-1:1.0`. Six `/dev/video*` nodes, three capture and three metadata.
+
+### R3 — `just smoke-hw`
+
+```
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded; set WCH_ALLOW_MOTION=1 to include them
+smoke-hw: 6 capture node(s) present; running test(/^hw_/) - test(/^hw_motion_/)
+    Starting 4 tests across 20 binaries (363 tests skipped)
+        PASS [   0.004s] (1/4) webcam-handler-v4l2::hardware hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability
+        PASS [   0.004s] (2/4) webcam-handler-v4l2::hardware hw_enumeration_matches_the_committed_profile
+        PASS [   0.221s] (3/4) webcam-handler-v4l2::hardware hw_profile_capture_reproduces_the_committed_invariant_section
+        PASS [   0.221s] (4/4) webcam-handler-v4l2::hardware hw_controls_enumerate_on_every_node_without_panicking
+     Summary [   0.221s] 4 tests run: 4 passed, 363 skipped
+smoke-hw: suite run, 1 named skip(s)
+```
+
+The `hw_motion_` suite is empty at P1 and the skip is still counted, which is the point:
+the exclusion is a standing property of the recipe, not a fact about this run.
+
+**What the four runs establish.** `profile capture` reproduces each committed profile's
+invariant section exactly while provenance differs — G1's carve-out, demonstrated rather
+than asserted. PF:1's `Region of Interest Rectangle` (type `0x0107`, `elem_size` 16)
+enumerates on both Chicony nodes without panicking; the crate whose control layer we
+bypass panics on it. PF:13 confirmed live: two cameras report `bus_info`
+`usb-0000:00:14.0-4` and are told apart only by the interface path.
+
+### R0 — `just miri`
+
+```
+     Summary [   2.720s] 19 tests run: 19 passed, 44 skipped
+miri: suite run, 0 named skip(s)
+```
+
+All 19 `sys::decode` units, over the captured ioctl replies in
+`crates/backends/v4l2/fixtures/`. **Miri cannot cross an ioctl** — this covers the
+decoding half only, which is why the decoders take bytes rather than structs.
+
+### R2 — `just rung-vivid`
+
+```
+rung-vivid: SKIP 1 — the vivid module is installed but not loaded; run `sudo modprobe vivid` (this script never loads kernel modules on someone's behalf)
+rung-vivid: 0 tests run, 1 named skip(s)
+```
+
+**The R2 suite has never been executed.** `vivid` is installed on this host and not
+loaded, and neither the rung script nor the session that wrote the tests loaded it —
+the script's refusal is deliberate and applies to us too. Four `vivid_*` tests exist and
+are selected by the recipe; they are unproven code until somebody runs
+`sudo modprobe vivid && just rung-vivid`. Recorded here rather than left implicit,
+because "the rung reports a counted skip" and "the rung works" are different claims and
+only the first is established.
+
+### Not established by any of the above
+
+- **Writes.** P1 is the read path; `set`, streaming and hotplug answer
+  `Error::Unimplemented` (N6). No control on any attached camera was written, and no
+  motor moved.
+- **The PF:6 clamp behaviour** on real hardware. The battery probes it against replayed
+  profiles; the hardware twin arrives at P2 with the write path.
+- **Frame capture.** `PF:9`'s in-process MJPEG capture was demonstrated during the design
+  probe, not by this build.
