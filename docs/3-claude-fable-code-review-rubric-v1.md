@@ -346,7 +346,10 @@ PID 1's stack that tested green because the bytes landed in padding):
 - [ ] **The green plumbing test named for the whole** — a config-to-struct test titled
       as if it covered enforcement.
 - [ ] **List-vs-list completeness** — iterating the population under check; fixed arrays
-      included; the T5 method-count gate must be driven by the trait, not a hand list.
+      included; the T5 method-count gate is driven by the registered `RpcModule`'s
+      `method_names()`, never a hand list — a Rust trait does not reify its methods, so
+      "walk the trait" is not an available mechanism (docs/4's method-count-walk row is
+      the authoritative statement; B6 cites the same one).
 - [ ] **The gate with no self-test** — both directions or it does not ship.
 - [ ] **Assertion inside a conditional** whose false branch means "cannot go red".
 - [ ] **The fake validating the fake** — a calibration test asserting the fake's optimum

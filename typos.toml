@@ -10,3 +10,5 @@ extend-exclude = [
 # V4L2 / UVC vocabulary that reads as a typo.
 GREY = "GREY"
 grey = "grey"
+# "a crashed sweep can leave a camera mis-set" — the prefix, not a truncated "miss".
+mis = "mis"

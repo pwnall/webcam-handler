@@ -70,6 +70,37 @@ one) take a narrow `#[expect(clippy::disallowed_methods, reason = "…")]`.
 
 ---
 
+## N4 — The D13 registry gained four variants
+
+**Doc:** design D13 lists fourteen error variants and calls the registry closed.
+
+**Repo:** `webcam-handler-schema::error::Error` has eighteen. The four additions:
+
+| Variant | Why the fourteen could not cover it |
+|---|---|
+| `CameraUnknown { requested }` | `wch photo cam:nope` has to fail as something. D13 has `DeviceGone` (a camera that *was* there) but nothing for a name that never resolved. |
+| `CameraAmbiguous { requested, candidates }` | D1 grants prefix resolution (`cam:obsbot`); a prefix matching two cameras must name both, and no existing variant carries candidates. |
+| `DeviceIo { operation, errno, message }` | D13 maps `EBUSY`, `EPERM` and `ENODEV` to typed variants, which leaves every other `errno` — `EINVAL` on a format negotiation, `EIO` mid-stream — with nowhere to land except an `anyhow` string, and rubric B6 calls a string crossing the wire a finding. |
+| `StorageIo { path, errno, message }` | D9's own fault menu lists "full disk", and the fourteen have no variant for a filesystem failure. |
+
+**Why this is completion rather than re-litigation:** D13's stated purpose is that "every
+variant carries what the caller needs to act", and the closed-ness is what makes the
+`webcam-handler-api` code mapping exhaustive. Both additions of the `*Io` pair keep that
+property — they are typed, they carry `errno` and the operation, and a caller can
+distinguish them from a capability answer (E3). The alternative was a stringly escape
+hatch, which would have broken the doctrine the registry exists to hold.
+
+`ErrorKind` is generated with its `ALL` by the `closed_vocabulary!` macro, and
+`Error::kind()` is an exhaustive match, so every one of the eighteen is walked by the
+round-trip, rendering, and (from P4) RPC-code tests. Adding a nineteenth without wiring it
+in does not compile.
+
+**Retires when:** nothing retires it; docs/1 D13 should absorb these four at its next
+revision. Recorded here rather than edited into the design because the design is v1 and
+this is repo case law (docs/2's standing conventions).
+
+---
+
 ## PF:13 — `bus_info` is per-USB-device, not per-logical-camera
 
 **Measured** 2026-08-08 on kernel 7.0.0-29-generic, against the same seed hardware as the
