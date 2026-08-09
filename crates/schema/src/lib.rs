@@ -15,6 +15,7 @@
 //! | [`pairing`] | the declared auto/manual table and its provenance (D3) |
 //! | [`snapshot`] | snapshot/restore vocabulary and ordering (D4) |
 //! | [`session`] | calibration session state (D8/D9) |
+//! | [`progress`] | the live calibration progress stream the CLI renders and P4e transports (D8) |
 //! | [`metrics`] | the metric names sessions persist (D8) |
 //! | [`profile`] | the captured device profile (T3) |
 //! | [`backend`] | the `CameraBackend`/`Camera` traits and `BackendKind` (T1/T2) |
@@ -47,6 +48,7 @@ pub mod limits;
 pub mod metrics;
 pub mod pairing;
 pub mod profile;
+pub mod progress;
 pub mod report;
 pub mod session;
 pub mod slug;

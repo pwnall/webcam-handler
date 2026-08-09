@@ -58,8 +58,9 @@ use schema::time::Stamp;
 use schema::{Error, Result};
 use uuid::Uuid;
 
+use crate::discover::Discovery;
 use crate::store::{SessionRef, SessionStore, StoreLock};
-use crate::{snapshot, write};
+use crate::{discover, pairing, snapshot, write};
 
 // ------------------------------------------------------------------ create and resume
 
@@ -265,6 +266,66 @@ fn persist(
         )?;
     }
     Ok(())
+}
+
+// ------------------------------------------------------------------ pair discovery
+
+/// Ask the camera which of its controls it pairs, and record the answer on the session
+/// (design D3 layer 2, PF:3).
+///
+/// **Run at session start, before anything sweeps.** The probe is a sequence of *writes*
+/// — it toggles each automation-shaped control and diffs the INACTIVE flags across the
+/// set — so it has to happen while the camera is still where the operator left it, and it
+/// snapshots and restores itself for exactly that reason. Running it later would mean
+/// toggling automation in the middle of a calibration, and the pairs it measured would
+/// describe a device three sweeps into somebody's session.
+///
+/// What lands on the document is the *merge*: the declared UVC table (D3 layer 1),
+/// narrowed to the controls this device actually has, with everything the probe measured
+/// laid over it. Measured beats declared (E1), and the merge is stored rather than its
+/// ingredients because the caller that most needs it is the one that cannot re-run the
+/// probe — a recovery after a crash, putting the camera back in D4's automation-first
+/// order, on a process that never saw this camera before.
+///
+/// The [`Discovery`] is returned rather than reduced to its pairs: what the probe declined
+/// to touch and whether it put the camera back are facts about the *run*, and a caller
+/// that hides them is reporting "this camera has no pairs" when the truth is "this probe
+/// did not look at half of them".
+///
+/// # Errors
+///
+/// Whatever the camera says when asked for its controls, or when the probe's own
+/// pre-flight snapshot cannot be taken — a probe that cannot record where the camera
+/// started does not start. Whatever the store refuses with; in that case the probe has
+/// already run and put the camera back, and the pairs are simply not on the document yet.
+pub fn discover_pairs(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &mut Session,
+    camera: &mut dyn Camera,
+    now: Stamp,
+) -> Result<Discovery> {
+    let found = discover::pairs(camera, now)?;
+    let controls = camera.controls()?;
+    let merged = pairing::applicable(
+        &controls,
+        &pairing::merge(schema::pairing::declared_pairs(), found.pairs.clone()),
+    );
+
+    let measured = found.pairs.len();
+    let skipped = found.skipped.len();
+    let mut draft = session.clone();
+    draft.pairs = merged;
+    draft.updated_at = now;
+    persist(
+        store,
+        lock,
+        session,
+        draft,
+        now,
+        Some(&SessionEvent::PairsDiscovered { measured, skipped }),
+    )?;
+    Ok(found)
 }
 
 // ------------------------------------------------------------------ the pre-sweep snapshot
@@ -483,6 +544,7 @@ mod tests {
 
     use camino::Utf8PathBuf;
     use schema::ErrorKind;
+    use schema::backend::CameraBackend;
     use schema::control::ControlValue;
     use schema::metrics::MetricName;
     use schema::pairing::{AutomationOff, Provenance};
@@ -947,6 +1009,148 @@ mod tests {
         assert_eq!(
             stored, session,
             "the caller's session must track the disk once the document has landed"
+        );
+    }
+
+    // ---------------------------------------------------------------- pair discovery
+
+    #[test]
+    fn discovery_records_the_merged_pair_set_on_the_session_and_it_survives_a_resume() {
+        // D3's two layers, resolved once and written down. The session carries the
+        // *answer* because the caller that most needs it — a recovery on a process that
+        // never saw this camera — cannot re-run a probe that writes to the device.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let backend = fake::FakeBackend::from_profile(testkit::fixtures::synthetic_basic())
+            .expect("this build's version");
+        let info = backend
+            .enumerate()
+            .expect("the fake enumerates what it replays")
+            .into_iter()
+            .next()
+            .expect("one profile is one camera");
+        let mut camera = backend.open(&info.id).expect("nothing holds a fake");
+        let mut spec = spec(1_000, "focus");
+        spec.fingerprint = camera.info().fingerprint.clone();
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        assert!(session.pairs.is_empty(), "nothing has been probed yet");
+
+        let found = discover_pairs(temp.store(), &lock, &mut session, camera.as_mut(), later())
+            .expect("a readable camera and a writable store");
+        assert!(
+            found.left_the_camera_alone(),
+            "the probe did not put the camera back: {:?}",
+            found.restored
+        );
+
+        // A pair the probe demonstrated: toggling `white_balance_automatic` moved
+        // `white_balance_temperature`'s INACTIVE bit [PF:3], so what lands on the session
+        // says `Measured` — and measured beats declared (E1).
+        let balance = session
+            .pairs
+            .iter()
+            .find(|pair| pair.manual.as_str() == "white_balance_temperature")
+            .unwrap_or_else(|| panic!("no white balance pair in {:?}", session.pairs));
+        assert_eq!(balance.automation.as_str(), "white_balance_automatic");
+        assert_eq!(balance.provenance, Provenance::Measured);
+
+        // And a pair the probe declined to demonstrate is still *there*, still marked for
+        // what it is. `focus_automatic_continuous` moves a motor and §5 says nothing here
+        // does that, so the probe names it in `skipped` and the declared table supplies the
+        // relationship — a session that dropped it would refuse to sweep focus at all.
+        let focus = session
+            .pairs
+            .iter()
+            .find(|pair| pair.manual.as_str() == "focus_absolute")
+            .unwrap_or_else(|| panic!("no focus pair in {:?}", session.pairs));
+        assert_eq!(focus.automation.as_str(), "focus_automatic_continuous");
+        assert_eq!(
+            focus.provenance,
+            Provenance::Declared,
+            "a pair nobody measured must not claim it was measured"
+        );
+        assert!(
+            found
+                .skipped
+                .iter()
+                .any(
+                    |(control, reason)| control.as_str() == "focus_automatic_continuous"
+                        && !reason.is_empty()
+                ),
+            "the probe passed over a candidate without saying so: {:?}",
+            found.skipped
+        );
+
+        // Every recorded pair names controls this device actually has: the declared table
+        // lists both spellings of the white-balance automation control, and a session
+        // carrying a pair for a control that is not there would plan writes nobody can make.
+        let present: Vec<ControlSlug> = camera
+            .controls()
+            .expect("readable")
+            .into_iter()
+            .map(|desc| desc.slug)
+            .collect();
+        for pair in &session.pairs {
+            assert!(
+                present.contains(&pair.manual) && present.contains(&pair.automation),
+                "{pair:?} names a control this camera does not have"
+            );
+        }
+
+        // It is on the document and in the history, not only in memory.
+        let dir = temp.store().session_dir(&session);
+        assert_eq!(
+            temp.store().load_session(&dir).expect("readable").pairs,
+            session.pairs,
+            "the pairs never reached the document a second process reads"
+        );
+        assert!(
+            temp.store()
+                .load_log(&dir)
+                .expect("readable")
+                .iter()
+                .any(|entry| matches!(entry.event, SessionEvent::PairsDiscovered { .. })),
+            "the probe wrote to the camera and left no line saying so"
+        );
+        assert_eq!(
+            resume(temp.store(), &spec.fingerprint, &spec.task)
+                .expect("readable")
+                .map(|found| found.pairs),
+            Some(session.pairs.clone())
+        );
+    }
+
+    #[test]
+    fn a_camera_with_nothing_to_pair_records_an_empty_set_rather_than_the_table() {
+        // The inverse, and it is the one that matters for the merge: the declared table is
+        // a *nomination* about UVC devices in general, and narrowing it to this device is
+        // what keeps a session from planning a switch-off for a control that is not there.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = ScriptedCamera::new(vec![integer("brightness", 50)]);
+        let mut spec = spec(1_000, "brightness");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+
+        let found = discover_pairs(temp.store(), &lock, &mut session, &mut camera, later())
+            .expect("a readable camera");
+        assert!(found.pairs.is_empty());
+        assert!(
+            session.pairs.is_empty(),
+            "a camera with one manual control was given pairs: {:?}",
+            session.pairs
+        );
+        assert!(
+            temp.store()
+                .load_log(&temp.store().session_dir(&session))
+                .expect("readable")
+                .iter()
+                .any(|entry| entry.event
+                    == SessionEvent::PairsDiscovered {
+                        measured: 0,
+                        skipped: 0
+                    }),
+            "finding nothing is a result, and it is recorded like one"
         );
     }
 

@@ -90,6 +90,15 @@ pub const MAX_SWEEP_SAMPLES: u32 = 256;
 /// The most samples a sweep that *moves motors* may take (design §5: motors wear).
 pub const MAX_MOTION_SWEEP_SAMPLES: u32 = 32;
 
+/// How many calibration progress events a channel sink queues for a consumer that has
+/// stopped reading.
+///
+/// Bounded because the alternatives are both worse than dropping: an unbounded queue lets
+/// a stalled subscriber grow the sweep's memory without limit, and a blocking send lets it
+/// *stop the sweep* — a camera held at one value because a progress bar went away. The
+/// events past this bound are dropped and counted, never silently lost (rubric rule 3).
+pub const PROGRESS_QUEUE_DEPTH: usize = 256;
+
 /// The largest control payload we will read back from a device.
 ///
 /// `elem_size × elems` is device-supplied, and a lying driver is attacker-shaped input

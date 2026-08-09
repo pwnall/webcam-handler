@@ -27,5 +27,11 @@ webcam-handler-schema.workspace = true
 image.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# A session's identity is a UUIDv7 the caller supplies (the engine reads no clock), so the
+# R2 sweep arm mints one the way a composition root would.
+uuid.workspace = true
 webcam-handler-engine.workspace = true
+# The R2 sweep arm asks *this build* which source formats it can decode (D6's closed set)
+# rather than keeping a second copy of the list beside the one that answers.
+webcam-handler-imaging.workspace = true
 webcam-handler-testkit.workspace = true

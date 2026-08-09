@@ -519,3 +519,253 @@ fn vivid_a_second_stream_on_one_node_is_refused_as_busy_rather_than_unsupported(
 const WRITES_PER_VIVID_NODE: usize = 8;
 /// Enough frames to see the driver recycle its four buffers.
 const FRAMES_PER_VIVID_CYCLE: u32 = 6;
+
+#[test]
+#[ignore = "R2: needs the vivid kernel module loaded; run with `just rung-vivid`"]
+fn vivid_a_calibration_sweep_sets_settles_captures_and_scores_through_the_real_ioctl_path() {
+    // The P3c sweep loop meeting a real driver without touching a camera (docs/9's "Vivid
+    // sweep arm" row). Everything the executor does goes out as an ioctl here — the
+    // guarded write, the read-back, `S_FMT`/`REQBUFS`/`STREAMON`/`DQBUF`, the stop — and
+    // the samples that come back are scored on frames a kernel produced.
+    //
+    // What is claimed is the *plumbing*, as everywhere on this rung: that a sweep planned
+    // from a driver's own range writes, settles, captures, scores and records against that
+    // driver. Not device quirks — vivid does not clamp silently or move INACTIVE bits
+    // (§3.3 item 4), so `applied` equalling `requested` here is vivid being well-behaved
+    // and not evidence about a camera.
+    //
+    // It restores what it touched and asserts the restoration, through the same persisted
+    // pre-sweep snapshot a crash would use.
+    let Some((backend, cameras)) = vivid_cameras() else {
+        return;
+    };
+    let Some(info) = cameras.iter().find(|info| info.capture_node().is_some()) else {
+        println!("SKIP: no vivid camera offered a capture node to sweep against");
+        return;
+    };
+    let mut camera = backend
+        .open(&info.id)
+        .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+
+    // A source format this build can decode. Asked of `imaging` rather than listed here:
+    // D6's closed source set has one home, and a second copy would be the thing that stops
+    // agreeing with it.
+    let decodable = imaging::decode::SourceFormat::all_pixel_formats();
+    let formats = camera
+        .formats()
+        .unwrap_or_else(|error| panic!("{}: formats() failed: {error}", info.id));
+    let Some(pixel_format) = formats
+        .iter()
+        .map(|entry| entry.pixel_format)
+        .find(|format| decodable.contains(format))
+    else {
+        println!(
+            "SKIP: this vivid build offers no pixel format in D6's source set; it has {:?}",
+            formats
+                .iter()
+                .map(|entry| entry.pixel_format.to_string())
+                .collect::<Vec<_>>()
+        );
+        return;
+    };
+
+    let controls = camera
+        .controls()
+        .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+    let Some(desc) = controls.iter().find(|desc| {
+        battery::is_perturbable(desc)
+            && !battery::is_motorized(&desc.slug)
+            && desc.control_type == ControlType::Integer
+            && sweep_span(desc).is_some()
+    }) else {
+        println!(
+            "SKIP: none of this vivid build's {} controls is a writable integer with room \
+             for three samples",
+            controls.len()
+        );
+        return;
+    };
+    let control = desc.slug.clone();
+    let original = desc
+        .current
+        .clone()
+        .expect("a perturbable control has a current value");
+    let values = sweep_span(desc).expect("the filter above already asked");
+
+    let temp = engine::store::TempStore::new().expect("a scratch state directory");
+    let lock = temp
+        .store()
+        .lock(engine::store::LockProtocol::PerOperation)
+        .expect("nothing else holds a scratch store");
+    let now = schema::Stamp::now();
+    let mut session = engine::lifecycle::create(
+        temp.store(),
+        &lock,
+        &engine::lifecycle::SessionSpec {
+            id: uuid::Uuid::now_v7(),
+            fingerprint: info.fingerprint.clone(),
+            task: "R2 sweep".to_owned(),
+            goal: "the sweep loop meets a real driver".to_owned(),
+            criteria: Vec::new(),
+            tool_version: schema::TOOL_VERSION.to_owned(),
+        },
+        now,
+    )
+    .expect("a free slot in a fresh scratch store");
+
+    // Session start, as the product does it: probe the pairs empirically and record what
+    // the probe found *and* what it declined (D3, PF:3).
+    let found =
+        engine::lifecycle::discover_pairs(temp.store(), &lock, &mut session, camera.as_mut(), now)
+            .unwrap_or_else(|error| panic!("{}: pair discovery failed: {error}", info.id));
+    println!(
+        "{}: probe measured {} pair(s), declined {}, restore complete: {}",
+        info.id,
+        found.pairs.len(),
+        found.skipped.len(),
+        found.left_the_camera_alone()
+    );
+
+    let progress = engine::progress::Recorder::new();
+    let clock = engine::settle::MonotonicClock::new();
+    let outcome = engine::calibrate::run(
+        &engine::calibrate::SweepContext {
+            store: temp.store(),
+            lock: &lock,
+            clock: &clock,
+            progress: &progress,
+            started_at: now,
+        },
+        &mut session,
+        camera.as_mut(),
+        &engine::calibrate::SweepRequest {
+            control: control.clone(),
+            plan: schema::session::SweepSpec::Explicit {
+                values: values.clone(),
+            },
+            allow_motion: false,
+            stream: StreamRequest {
+                pixel_format: Some(pixel_format),
+                ..StreamRequest::default()
+            },
+            // A real driver on a busy machine is slower than a synthesizer, and the
+            // default settle is `limits::DEFAULT_SETTLE_SKIP_FRAMES` frames deep.
+            settle: schema::capture::SettlePolicy::default(),
+            photo_format: schema::PhotoFormat::Jpeg,
+        },
+    )
+    .unwrap_or_else(|error| panic!("{control}: the sweep failed at the driver: {error}"));
+
+    assert_eq!(
+        outcome.samples.len(),
+        values.len(),
+        "{control}: the sweep took a different number of samples than it planned"
+    );
+    let session_dir = temp.store().session_dir(&session);
+    for (sample, requested) in outcome.samples.iter().zip(&values) {
+        assert_eq!(sample.requested, *requested);
+        // The read-back came from the driver, whatever it says: E4's pair, at the one
+        // layer that could have quietly recorded the request instead.
+        assert!(
+            desc.range.contains(sample.applied),
+            "{control}: the driver reported {} for a control declared {}..={}",
+            sample.applied,
+            desc.range.min,
+            desc.range.max
+        );
+        assert!(
+            sample.photo.is_relative(),
+            "{control}: {} is not relative to the session directory",
+            sample.photo
+        );
+        let photo = session_dir.join(&sample.photo);
+        let bytes =
+            std::fs::read(photo.as_std_path()).unwrap_or_else(|error| panic!("{photo}: {error}"));
+        assert!(
+            !bytes.is_empty(),
+            "{photo}: the sweep recorded a photo it did not write"
+        );
+        // Metric *orderings* are what a hardware rung may assert; that a metric exists and
+        // is a number is the weaker claim this one makes, because vivid's test pattern is
+        // not a scene anybody focused.
+        for (metric, score) in &sample.metrics {
+            assert!(
+                score.is_finite(),
+                "{control}: {metric} scored {score} on a real frame"
+            );
+        }
+    }
+    assert_eq!(
+        progress.sequence().first().copied(),
+        Some("sweep_started"),
+        "the progress stream did not open"
+    );
+    assert_eq!(
+        progress.sequence().last().copied(),
+        Some("sweep_finished"),
+        "the progress stream did not close: {:?}",
+        progress.sequence()
+    );
+
+    // Leave the driver as it was found, and *assert* it — a teardown nobody checks is a
+    // promise (docs/8 Part C). The assertion is about **the control this arm swept**, not
+    // about the whole report: vivid's `u8_pixel_array` changes shape when the format is
+    // negotiated \[PF:17\], so a snapshot taken before the stream genuinely cannot go back
+    // and `RestoreReport::is_complete` is honestly false. Asserting completeness here
+    // would be asserting a bug in the driver's favour; the recovery is printed instead.
+    let pairs = session.pairs.clone();
+    let recovery = engine::lifecycle::recover(
+        temp.store(),
+        &lock,
+        &mut session,
+        camera.as_mut(),
+        &pairs,
+        schema::Stamp::now(),
+    )
+    .unwrap_or_else(|error| panic!("{control}: recovery failed: {error}"));
+    // Summarised rather than `{recovery:?}`: the report holds every writable control on a
+    // 77-control driver, payloads included, and a rung's output is meant to be read.
+    println!(
+        "{control}: swept {} value(s); recovery complete: {}; could not put back: {:?}",
+        values.len(),
+        recovery
+            .report()
+            .is_some_and(schema::snapshot::RestoreReport::is_complete),
+        recovery
+            .report()
+            .map(|report| report
+                .unrestored()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    let back = camera
+        .controls()
+        .unwrap_or_else(|error| panic!("{}: controls() failed after the sweep: {error}", info.id))
+        .into_iter()
+        .find(|found| found.slug == control)
+        .unwrap_or_else(|| panic!("{control} disappeared during the sweep"))
+        .current;
+    assert_eq!(
+        back,
+        Some(original),
+        "{control}: the sweep left the driver somewhere else"
+    );
+}
+
+/// Three step-aligned values inside this control's range, or `None` when it has no room.
+///
+/// Small moves from the minimum rather than the extremes: this rung is about the loop
+/// reaching the driver, and a sweep does not need to visit a control's corners to prove
+/// that.
+fn sweep_span(desc: &schema::ControlDesc) -> Option<Vec<i64>> {
+    let step = desc.range.effective_step();
+    let values: Vec<i64> = (0..3)
+        .map(|n| desc.range.min.checked_add(step.checked_mul(n)?))
+        .collect::<Option<Vec<i64>>>()?;
+    values
+        .iter()
+        .all(|value| desc.range.contains(*value))
+        .then_some(values)
+}

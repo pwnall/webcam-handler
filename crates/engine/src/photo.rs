@@ -64,14 +64,41 @@ pub fn take(
     clock: &dyn Clock,
     now: Stamp,
 ) -> Result<Photograph> {
-    let camera_id = camera.info().id.clone();
-    let fingerprint = camera.info().fingerprint.clone();
     // Read *before* the stream starts. A control read is an ioctl on the same fd, and the
     // values that describe a photo are the ones in effect when it was taken — asking
     // after the frame would report values a caller could have changed in between.
     let controls = controls_in_effect(camera);
-
     let captured = capture::grab(camera, &request.stream, request.settle, clock)?;
+    from_capture(camera, &captured, request, controls, now)
+}
+
+/// The same assembly, over a frame the caller already holds (design D6).
+///
+/// [`take`] is this function plus the capture. The split exists for exactly one caller —
+/// a calibration sweep, which has to **score the frame it stores**: metrics computed from
+/// a second capture would describe a second moment, and a sample whose photo and whose
+/// numbers came from different frames is a comparison with nothing underneath it. So the
+/// sweep grabs once ([`crate::capture::grab`]), measures the frame, and hands the same
+/// one here rather than growing a second photo pipeline beside this one (§2.10).
+///
+/// `controls` is a parameter rather than a read, because by the time a caller has a frame
+/// the stream is already up; [`controls_in_effect`] is what a caller calls *before*
+/// starting it.
+///
+/// # Errors
+///
+/// As [`take`], minus the capture's: [`schema::Error::FormatUnsupported`] for a source
+/// format outside D6's set, and [`schema::Error::StorageIo`] when the sink's path could
+/// not be written.
+pub fn from_capture(
+    camera: &dyn Camera,
+    captured: &capture::Capture,
+    request: &PhotoRequest,
+    controls: BTreeMap<ControlSlug, ControlValue>,
+    now: Stamp,
+) -> Result<Photograph> {
+    let camera_id = camera.info().id.clone();
+    let fingerprint = camera.info().fingerprint.clone();
     let format = sink_format(&request.sink);
     let photo = imaging::photo::render(&captured.frame, format, request.transform)?;
 
@@ -103,7 +130,7 @@ pub fn take(
         report: PhotoReport {
             camera: camera_id,
             taken_at: now,
-            negotiated: captured.negotiated,
+            negotiated: captured.negotiated.clone(),
             rendering: photo.rendering,
             transform: photo.transform,
             width: photo.width,
@@ -137,7 +164,12 @@ fn sink_format(sink: &Sink) -> PhotoFormat {
 /// a photo, and refusing the photo over the *metadata* would be letting the record decide
 /// whether the picture happens. An empty map renders as "(none recorded)", which is the
 /// honest thing to say.
-fn controls_in_effect(camera: &mut dyn Camera) -> BTreeMap<ControlSlug, ControlValue> {
+///
+/// Public because [`from_capture`] takes the answer as a parameter and its callers have to
+/// be able to produce one — and because *when* it is read is the load-bearing part: before
+/// the stream starts, never after.
+#[must_use]
+pub fn controls_in_effect(camera: &mut dyn Camera) -> BTreeMap<ControlSlug, ControlValue> {
     camera.controls().map_or_else(
         |_| BTreeMap::new(),
         |controls| {

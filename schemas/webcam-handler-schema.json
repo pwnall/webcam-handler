@@ -1600,6 +1600,106 @@
         }
       ]
     },
+    "ErrorKind": {
+      "description": "The discriminant of [`Error`], as a value.\n\n`ALL` is generated from this definition, so a variant cannot be added without\njoining every completeness check that walks it (rubric rule 6: no hand lists).",
+      "oneOf": [
+        {
+          "const": "device_gone",
+          "description": "See [`Error::DeviceGone`].",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "See [`Error::Busy`].",
+          "type": "string"
+        },
+        {
+          "const": "permission_denied",
+          "description": "See [`Error::PermissionDenied`].",
+          "type": "string"
+        },
+        {
+          "const": "camera_unknown",
+          "description": "See [`Error::CameraUnknown`].",
+          "type": "string"
+        },
+        {
+          "const": "camera_ambiguous",
+          "description": "See [`Error::CameraAmbiguous`].",
+          "type": "string"
+        },
+        {
+          "const": "control_unknown",
+          "description": "See [`Error::ControlUnknown`].",
+          "type": "string"
+        },
+        {
+          "const": "control_read_only",
+          "description": "See [`Error::ControlReadOnly`].",
+          "type": "string"
+        },
+        {
+          "const": "control_inactive",
+          "description": "See [`Error::ControlInactive`].",
+          "type": "string"
+        },
+        {
+          "const": "format_unsupported",
+          "description": "See [`Error::FormatUnsupported`].",
+          "type": "string"
+        },
+        {
+          "const": "settle_timeout",
+          "description": "See [`Error::SettleTimeout`].",
+          "type": "string"
+        },
+        {
+          "const": "fingerprint_mismatch",
+          "description": "See [`Error::FingerprintMismatch`].",
+          "type": "string"
+        },
+        {
+          "const": "session_conflict",
+          "description": "See [`Error::SessionConflict`].",
+          "type": "string"
+        },
+        {
+          "const": "illegal_transition",
+          "description": "See [`Error::IllegalTransition`].",
+          "type": "string"
+        },
+        {
+          "const": "schema_version_foreign",
+          "description": "See [`Error::SchemaVersionForeign`].",
+          "type": "string"
+        },
+        {
+          "const": "store_locked",
+          "description": "See [`Error::StoreLocked`].",
+          "type": "string"
+        },
+        {
+          "const": "holder_gone",
+          "description": "See [`Error::HolderGone`].",
+          "type": "string"
+        },
+        {
+          "const": "device_io",
+          "description": "See [`Error::DeviceIo`].",
+          "type": "string"
+        },
+        {
+          "const": "storage_io",
+          "description": "See [`Error::StorageIo`].",
+          "type": "string"
+        },
+        {
+          "const": "unimplemented",
+          "description": "See [`Error::Unimplemented`].",
+          "type": "string"
+        }
+      ]
+    },
     "FormatInfo": {
       "description": "One pixel format and everything available in it.\n\nNesting is load-bearing: the OBSBOT offers MJPG up to 3840×2160 while YUYV stops at\n640×480 on the same cable, so a flat size list would be a lie [PF:9].",
       "properties": {
@@ -2016,6 +2116,33 @@
           "required": [
             "event",
             "controls"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The automation pairs were probed empirically (design D3 layer 2, PF:3).\n\nA log line because the probe is a *write*: it toggles automation controls and puts\nthem back, so a session's history that omitted it would omit the first thing that\never moved the camera. `skipped` is on the record for the reason the probe reports\nit at all — a probe silent about what it passed over reads as a probe that found\nnothing there.",
+          "properties": {
+            "event": {
+              "const": "pairs_discovered",
+              "type": "string"
+            },
+            "measured": {
+              "description": "How many pairs this device demonstrated.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skipped": {
+              "description": "How many automation-shaped controls the probe declined to toggle.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "measured",
+            "skipped"
           ],
           "type": "object"
         },
@@ -2743,6 +2870,231 @@
       },
       "type": "object"
     },
+    "ProgressEvent": {
+      "description": "One progress event, addressed to a session and stamped.\n\nThe session id is on every event rather than established once at subscription time,\nbecause P4e's subscription is per *client* and a client may watch a daemon running\nmore than one session. A stream whose events had to be correlated by arrival order\nwould be a stream that could not be multiplexed.",
+      "oneOf": [
+        {
+          "description": "A sweep began, and this is how big it is.",
+          "properties": {
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "plan": {
+              "$ref": "#/$defs/SweepSpec",
+              "description": "The plan it is executing."
+            },
+            "progress": {
+              "const": "sweep_started",
+              "type": "string"
+            },
+            "total": {
+              "description": "How many samples it will take.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "progress",
+            "control",
+            "plan",
+            "total"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The camera has been moved to the next value; the sensor is settling.\n\nEmitted before the capture rather than after it because the capture is the slow\npart: a bar that only advances on [`CalibrationProgress::SampleTaken`] sits still\nfor the seconds that actually pass. It carries `{requested, applied}` for the same\nreason every other layer does — the driver may have taken something else [PF:6],\nand a viewer watching a sweep should see that when it happens, not when the\nsession file is read afterwards.",
+          "properties": {
+            "applied": {
+              "description": "The value the device actually holds.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "index": {
+              "description": "Which sample this is, counting from one.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "progress": {
+              "const": "value_set",
+              "type": "string"
+            },
+            "requested": {
+              "description": "The value the sweep asked for.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "total": {
+              "description": "How many the sweep will take.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warnings": {
+              "description": "Anything notable about the write.",
+              "items": {
+                "$ref": "#/$defs/WriteWarning"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "progress",
+            "control",
+            "index",
+            "total",
+            "requested",
+            "applied"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A photo was taken and scored.",
+          "properties": {
+            "applied": {
+              "description": "The value the device held when the shutter fell [PF:6].",
+              "format": "int64",
+              "type": "integer"
+            },
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "index": {
+              "description": "Which sample this is, counting from one.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "metrics": {
+              "additionalProperties": {
+                "format": "double",
+                "type": "number"
+              },
+              "description": "What the metrics made of it. Metrics *rank*; they do not decide (D8).",
+              "type": "object"
+            },
+            "photo": {
+              "description": "The photo, relative to the session directory (D9).",
+              "type": "string"
+            },
+            "progress": {
+              "const": "sample_taken",
+              "type": "string"
+            },
+            "requested": {
+              "description": "The value the sweep asked for — which is what the photo is named after.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "total": {
+              "description": "How many the sweep will take.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "progress",
+            "control",
+            "index",
+            "total",
+            "requested",
+            "applied",
+            "photo"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Every planned sample was taken.\n\nNote what it does **not** say: nothing was selected. A sweep produces a ranking and\nstops there, and the `Selected` fact belongs to whoever chose (D8).",
+          "properties": {
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "progress": {
+              "const": "sweep_finished",
+              "type": "string"
+            },
+            "samples": {
+              "description": "How many samples it took.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "progress",
+            "control",
+            "samples"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The sweep stopped before its plan did.\n\nThe samples already recorded stand — they happened — so `taken` is the count on\ndisk and the control is left mid-sweep rather than forced into a terminal state.",
+          "properties": {
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "detail": {
+              "description": "The refusal, rendered.",
+              "type": "string"
+            },
+            "failure": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The refusal's discriminant, so a consumer can branch without parsing prose."
+            },
+            "progress": {
+              "const": "sweep_interrupted",
+              "type": "string"
+            },
+            "taken": {
+              "description": "How many samples were recorded before it stopped.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "total": {
+              "description": "How many the plan held.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "progress",
+            "control",
+            "taken",
+            "total",
+            "failure",
+            "detail"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Stamp",
+          "description": "When it happened."
+        },
+        "session": {
+          "description": "Which session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "at"
+      ],
+      "type": "object"
+    },
     "Provenance": {
       "description": "Where a claim about this device came from.",
       "oneOf": [
@@ -2999,6 +3351,13 @@
           "description": "Free-text notes. v1 does not pretend to model that focus and exposure interact;\nit lets the operator write it down.",
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "pairs": {
+          "description": "The automation pairs this session guards its writes with (design D3).\n\nPersisted rather than re-derived, and that is the whole point of the field: a\nprocess picking a crashed session back up has to put the camera away in the same\norder the sweep took it apart (D4's automation-before-manual), and re-running the\ndiscovery probe to find that out would move the camera *during* the recovery. The\ndeclared table merged with what a probe measured on this device, measured winning\n(E1) — so what is stored here is the answer, not the ingredients.",
+          "items": {
+            "$ref": "#/$defs/AutomationPair"
           },
           "type": "array"
         },
@@ -3721,6 +4080,7 @@
     "PhotoFormat",
     "PhotoReport",
     "PhotoRequest",
+    "ProgressEvent",
     "RestoreReport",
     "Session",
     "SettlePolicy",

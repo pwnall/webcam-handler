@@ -90,6 +90,7 @@ fn bundle() -> Result<Value> {
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
     use schema::error::Error;
     use schema::profile::DeviceProfile;
+    use schema::progress::ProgressEvent;
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session};
     use schema::snapshot::{RestoreReport, Snapshot};
@@ -124,6 +125,10 @@ fn bundle() -> Result<Value> {
     register::<RestoreReport>(&mut generator, &mut roots);
     register::<Session>(&mut generator, &mut roots);
     register::<LogEntry>(&mut generator, &mut roots);
+    // The live calibration stream. A root rather than a `$def` by reachability: P4e puts
+    // these on the wire as their own documents, and a consumer validating a subscription
+    // needs the event named in the bundle rather than reachable from something else.
+    register::<ProgressEvent>(&mut generator, &mut roots);
     register::<DeviceProfile>(&mut generator, &mut roots);
     register::<Error>(&mut generator, &mut roots);
 

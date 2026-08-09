@@ -87,6 +87,14 @@ pub(crate) struct CameraState {
     pairs: Vec<AutomationPair>,
     stream: Option<NegotiatedStream>,
     frames_delivered: u32,
+    /// How many streams this camera has started, ever.
+    ///
+    /// Cumulative and never reset, unlike `frames_delivered`: a caller asking "how many
+    /// times did that operation start the sensor" is asking about the whole run. It is an
+    /// *observation* of the double, not a capability claim, so it costs the resemblance
+    /// rule (E5) nothing — and it is what lets a test hold a caller to "one capture per
+    /// sample" instead of hoping.
+    streams_started: u64,
     timestamp_us: i64,
 }
 
@@ -122,8 +130,14 @@ impl CameraState {
             pairs,
             stream: None,
             frames_delivered: 0,
+            streams_started: 0,
             timestamp_us: 0,
         }
+    }
+
+    /// How many streams this camera has started since it was opened.
+    pub(crate) fn streams_started(&self) -> u64 {
+        self.streams_started
     }
 
     pub(crate) fn info(&self) -> &CameraInfo {
@@ -505,6 +519,7 @@ impl Camera for FakeCamera {
         let negotiated = negotiate(&state, request)?;
         state.stream = Some(negotiated.clone());
         state.frames_delivered = 0;
+        state.streams_started = state.streams_started.saturating_add(1);
         Ok(negotiated)
     }
 

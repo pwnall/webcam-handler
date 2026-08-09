@@ -573,7 +573,7 @@ impl Planner<'_> {
 /// Substring containment either way, then a shared prefix of four characters or more.
 /// Deliberately not an edit distance: a wrong suggestion costs the caller one glance,
 /// and the error is already actionable without any.
-fn suggestions(controls: &[ControlDesc], requested: &str) -> Vec<ControlSlug> {
+pub(crate) fn suggestions(controls: &[ControlDesc], requested: &str) -> Vec<ControlSlug> {
     let mut scored: Vec<(usize, &ControlSlug)> = controls
         .iter()
         .filter_map(|c| {

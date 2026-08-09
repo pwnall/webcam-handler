@@ -165,6 +165,25 @@ impl FakeBackend {
         lock(&self.faults).held()
     }
 
+    /// How many streams have been started across every camera this backend replays.
+    ///
+    /// Cumulative, and asked of the *backend* rather than of a handle, because a caller
+    /// holding a `Box<dyn Camera>` cannot ask a `FakeCamera` anything (T2 hides exactly
+    /// that) and two handles onto one camera are two views of one device.
+    ///
+    /// It exists so a test can hold an operation to how many times it started the sensor.
+    /// "One capture per sample" is a real property of a calibration sweep — a second
+    /// capture is a second moment and doubles a twenty-minute sweep — and on a
+    /// deterministic synthesizer two captures of one scene are byte-identical, so nothing
+    /// in the *frames* can tell the two implementations apart. This can.
+    #[must_use]
+    pub fn streams_started(&self) -> u64 {
+        self.cameras
+            .iter()
+            .map(|state| lock(state).streams_started())
+            .sum()
+    }
+
     /// The profiles this backend replays, in enumeration order.
     ///
     /// The resemblance tests read the expectation from here: the fake's claims are

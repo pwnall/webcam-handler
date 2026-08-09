@@ -1896,8 +1896,10 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "uuid",
  "v4l",
  "webcam-handler-engine",
+ "webcam-handler-imaging",
  "webcam-handler-schema",
  "webcam-handler-testkit",
 ]

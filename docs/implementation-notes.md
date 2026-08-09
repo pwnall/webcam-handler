@@ -1144,3 +1144,142 @@ the class of property, and this pair is the counter-example that keeps the claim
 **Retires when:** nothing retires it; it is a note about why a neighbouring line *is*
 covered, and it belongs beside N12 when design §3.3's structural-gap register is next
 regenerated.
+
+---
+
+## N16 — A session records the pair set it swept with, and the probe that found it is a log line
+
+**Doc:** design D8 lists what a session holds — goal, criteria, per-control status, sweep
+plans, samples, ordering, notes — and D9 lists what its directory holds. Neither mentions
+automation pairs. D3 says empirical discovery runs "automatically at calibration start"
+and that discovered pairs "are recorded in the device profile".
+
+**Repo:** `schema::session::Session` gained
+
+```rust
+#[serde(default, skip_serializing_if = "Vec::is_empty")]
+pub pairs: Vec<AutomationPair>,
+```
+
+and `SessionEvent` gained `PairsDiscovered { measured, skipped }`.
+`engine::lifecycle::discover_pairs` runs the probe, merges its findings over the declared
+table narrowed to this device, writes the merge onto the document and appends the event.
+
+**Why the session and not only the profile.** D3's sentence is about `controls
+--discover-pairs`, whose output is a profile, and it stays true. What a *session* needs is
+different: the pair set is an input to two operations that must agree with each other
+across a process boundary. A sweep's guarded write switches an automation control off
+(D3); the restore that undoes it has to write the automation controls back **first** (D4),
+and `snapshot::take` decides which controls those are by asking the pair set. When the
+restore is a *recovery* — a second process picking up a crashed session (N9, §6) — that
+process has never seen this camera. Its choices are to re-run the probe, which writes to a
+camera in the middle of an interrupted calibration, or to read the list the first process
+used. Only the second one is a recovery.
+
+Storing the *merge* rather than the two layers is the same reasoning one step on: a
+consumer that had to re-merge could merge differently, and "measured beats declared" (E1)
+would become a rule two places implement instead of one. Provenance survives the merge, so
+nothing is lost — a reader can still tell a nomination from an observation.
+
+**Why an event.** `log.ndjson` is the record of what happened *to the device*, which is
+why P3b declined to log queue edits. The probe is not a queue edit: it toggles automation
+controls and puts them back, so it is the first thing in most sessions that moves the
+camera at all. `skipped` is on the line because a probe silent about what it passed over
+reads as a probe that found nothing there — the same reason `Discovery` carries it.
+
+**What it does not do:** it does not make the session the home of pairing. The declared
+table is still `schema::pairing`, the merge is still `engine::pairing::merge`, and the
+narrowing is still `engine::pairing::applicable`. The session stores an answer those three
+produced.
+
+**Retires when:** the device profile becomes something a session references by identity —
+at which point the session can name a profile instead of copying its conclusion, and the
+two would have to agree about staleness instead of about pairs.
+
+---
+
+## N17 — The progress seam has no fault menu, because emitting cannot fail in a way a sweep may act on
+
+**Doc:** design §2.9 says every seam has a real implementation and a scriptable double
+"with an exhaustive-match fault menu", and AGENTS.md repeats it as a rule for writing
+code. Rubric Part C asks for every fault-menu variant of every seam to be
+exhaustive-match-walked with a test.
+
+**Repo:** `engine::progress::ProgressSink::emit` returns `()`. There is a real
+implementation (`ChannelSink`, over a bounded `std::sync::mpsc`), a null one (`Silent`) and
+a double (`Recorder`), and no `ProgressFault` enum anywhere.
+
+**Why.** A fault menu exists so a caller can be made to meet every way a seam fails and
+answer each one deliberately. This seam's failures are "the subscriber's queue is full" and
+"the subscriber went away", and the correct answer to both is the same and is not the
+caller's to choose: keep sweeping. A sweep holds a camera, has a pre-sweep snapshot on
+disk, and is minutes long; ending it because a progress bar closed would put "the terminal
+went away" on the list of things that abandon a calibration. Giving `emit` a `Result` would
+make that failure *representable at every call site* — five of them in `engine::calibrate`
+— and the only correct handling would be to ignore it, which is the shape rubric B11 calls
+a suppression looking for a reason.
+
+What the rule is actually protecting against is a seam whose failures are invisible, and
+that half is kept: `ChannelSink` counts what it drops and `dropped()` reports it, with a
+test that fills the queue and asserts the count, and another that drops the receiver
+entirely. The bound is `limits::PROGRESS_QUEUE_DEPTH`, so "how much progress may pile up"
+stays in the one table (rubric A14). A dropped event is a number, not a silence.
+
+**What would change this.** If P4e's subscription needs to distinguish "this client is
+slow" from "this client is gone" — to reap it, say — that is a *query* on the sink, not a
+failure of `emit`, and it lands as another method. The moment `emit` has a failure a sweep
+should act on, it needs the menu; nothing has produced one.
+
+**Retires when:** a consumer appears whose disconnection should end a sweep. The daemon is
+not it — P4e's disconnect-mid-sweep semantics are already written down as "the sweep
+continues, the subscription is reaped" (docs/7 P4e).
+
+---
+
+## PF:17 — A compound control's element count is not invariant: `vivid`'s pixel array reshapes with the negotiated format
+
+**Measured** 2026-08-08 on kernel 7.0.0-29-generic, against `vivid` (one instance, via the
+blessed helper), while landing P3c's R2 sweep arm. Continues the docs/6 §1.2 registry;
+cite it as `[PF:17]`.
+
+`U8 pixel array` (`u8_pixel_array`, a `V4L2_CTRL_TYPE_U8` compound control) reports
+different dimensions before and after a format is negotiated on the same open file
+descriptor:
+
+```
+before desc:       elems=300 elem_size=1 dims=[15, 20]
+negotiated:        320x180 YUYV
+after-stream desc: elems=240 elem_size=1 dims=[12, 20]
+write-back:        requested len = 300  applied len = 240  equal = false
+```
+
+The grid is `ceil(height/16) × ceil(width/16)`: 240×320 at open gives `[15, 20]`, and
+`S_FMT` to 320×180 gives `[12, 20]`. An isolated write-back with no `S_FMT` in between is
+byte-exact and warning-free, so this is the *format change* reshaping the control, not an
+unstable read.
+
+**What it costs this tool, stated rather than fixed.**
+
+1. **T3's invariant/state split assumes `elems`, `elem_size` and `dims` are invariant.**
+   `profile::invariant_control` strips `current` and the volatile flag bits and keeps the
+   rest, so two `profile capture` runs against one such device disagree in the *invariant*
+   section whenever the negotiated format differed between them.
+2. **Snapshot/restore of such a control cannot complete across a format change.** The
+   snapshot holds a 300-byte payload; the write-back after streaming returns 240 bytes, so
+   the write is `WriteWarning::Adjusted`, the outcome is a non-exact `Restored`, and
+   `RestoreReport::is_complete()` is **false**. For a calibration session that means the
+   persisted pre-sweep snapshot is never consumed (N9's rule, working correctly — something
+   really did not go back).
+
+Neither is a defect introduced by the sweep executor and neither is reachable on the seed
+hardware: the Chicony's `Region of Interest Rectangle` is a fixed 16-byte payload and the
+OBSBOT exposes no compound control. It is reachable on `vivid`, which is why the R2 sweep
+arm asserts that **the control it swept** came back rather than asserting the whole restore
+report is complete — asserting completeness there would be asserting a driver bug in our
+favour, and asserting incompleteness would pin a behaviour the next kernel may change.
+
+**Retires when:** a device is found on which this does not happen *and* the invariant
+split is redefined to name which descriptor fields may move — the honest fix is a
+per-control statement, since `elems` is invariant for every other control on this driver.
+Until then the finding is that a payload's shape is device state, and code that treats it
+as identity is wrong on at least one driver in the tree.

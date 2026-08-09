@@ -17,6 +17,7 @@ use crate::camera::CameraFingerprint;
 use crate::control::{ControlSlug, WriteWarning};
 use crate::limits;
 use crate::metrics::MetricName;
+use crate::pairing::AutomationPair;
 use crate::snapshot::Snapshot;
 use crate::time::Stamp;
 
@@ -224,6 +225,16 @@ pub struct Session {
     /// it lets the operator write it down.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// The automation pairs this session guards its writes with (design D3).
+    ///
+    /// Persisted rather than re-derived, and that is the whole point of the field: a
+    /// process picking a crashed session back up has to put the camera away in the same
+    /// order the sweep took it apart (D4's automation-before-manual), and re-running the
+    /// discovery probe to find that out would move the camera *during* the recovery. The
+    /// declared table merged with what a probe measured on this device, measured winning
+    /// (E1) — so what is stored here is the answer, not the ingredients.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairs: Vec<AutomationPair>,
     /// The control state as found, persisted **before** the first write so a crashed
     /// sweep is recoverable (design §6, gate G3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,6 +283,19 @@ pub enum SessionEvent {
     SnapshotTaken {
         /// How many controls it holds.
         controls: usize,
+    },
+    /// The automation pairs were probed empirically (design D3 layer 2, PF:3).
+    ///
+    /// A log line because the probe is a *write*: it toggles automation controls and puts
+    /// them back, so a session's history that omitted it would omit the first thing that
+    /// ever moved the camera. `skipped` is on the record for the reason the probe reports
+    /// it at all — a probe silent about what it passed over reads as a probe that found
+    /// nothing there.
+    PairsDiscovered {
+        /// How many pairs this device demonstrated.
+        measured: usize,
+        /// How many automation-shaped controls the probe declined to toggle.
+        skipped: usize,
     },
     /// An automation control was switched off.
     AutomationDisabled {
@@ -379,6 +403,7 @@ pub fn new_session(
         queue: Vec::new(),
         controls: BTreeMap::new(),
         notes: Vec::new(),
+        pairs: Vec::new(),
         pre_snapshot: None,
     }
 }
