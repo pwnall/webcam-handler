@@ -42,6 +42,13 @@ pub const MAX_SETTLE_ROUNDS: u32 = 4_096;
 /// Buffers to request from the driver for a capture stream.
 pub const DEFAULT_BUFFER_COUNT: u32 = 4;
 
+/// The most processes a `Busy` refusal names.
+///
+/// The walk that finds them reads the whole process table, and a refusal listing four
+/// hundred processes is less readable than one listing none. Four is enough to say "these
+/// have it" and short enough to read in a terminal.
+pub const MAX_HOLDERS_REPORTED: usize = 4;
+
 /// The most buffers one stream may ask the driver to allocate.
 ///
 /// `buffer_count` arrives from a caller (a CLI flag, an RPC field), and every buffer is a

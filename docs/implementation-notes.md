@@ -817,3 +817,94 @@ the seed hardware's, met by code that had never seen it.
   socket arrives at P4.
 - **A second host.** Everything here is one machine, one kernel, three cameras. The corpus
   and the vivid rung are what stand in for the rest, and neither is a substitute.
+
+---
+
+## N10 — The gate that counts test selections could not count to zero
+
+**Doc:** docs/2's standing conventions require every phase gate to be "named, counted,
+re-runnable", and cite the predecessor's defect by name: *a "held" gate whose selection had
+silently gone to zero*. `scripts/gates/counted-selections.sh` is the check written against
+exactly that.
+
+**Repo, before this note:** it could not report zero for any input.
+
+`cargo nextest list -T json -E <filterset>` lists the **entire workspace** whatever the
+filter says, and marks each testcase `matches` or `mismatch`. Its `test-count` is the size
+of that whole listing. Measured on cargo-nextest 0.9.138 against this tree:
+
+```
+$ cargo nextest list -T json -E 'package(webcam-handler-engine) and test(/^zzz_no_such/)'
+  test-count: 143      # the whole workspace
+```
+
+The predicate read `test-count`, with a fallback that summed the per-suite `testcases` maps
+— which gives 143 as well. So from the day it was written, the gate whose entire subject is
+"prove no selection has silently gone to zero" was green by construction. The defect it
+exists to prevent, reproduced inside the check for it.
+
+**Why the both-directions selftest did not catch it.** The failing arm used a *stub*
+lister, and the stub returned `{"test-count":0,"rust-suites":{}}` for a non-matching filter
+— a shape nextest never produces. The stub encoded the author's belief about the tool, the
+predicate agreed with the belief, and the two shook hands. This is PF:15's lesson in a
+different costume: *a second implementation only catches what it distinguishes.*
+
+**Repo now:** the count is `filter-match.status == "matches"`, and the selftest gained an
+arm the stub cannot provide — the **real** tool, over a filter that matches nothing. The
+stub still exists, because a seeded criteria table is cheaper to drive than a rebuilt
+workspace, but it now answers the way the tool answers, and the real-tool arm is what
+notices if a nextest release changes the shape again.
+
+**Retires when:** nothing retires it. The general lesson is worth keeping in front of
+whoever writes the next gate: *the inverse arm must be driven by the thing under test, not
+by a model of it.* Where a stub is unavoidable, one arm should still run the real thing.
+
+---
+
+## E4 — The P2 adversarial review, 2026-08-08
+
+docs/3 Part E asks for a review pass at each phase boundary; P1's found four defects and is
+recorded in E1's amendments. This is P2's. Thirty-one candidate findings, each attacked by
+an independent skeptic instructed to refute it; **fifteen survived** and are fixed in the
+commit that carries this entry. The ones worth remembering:
+
+**Two the code got wrong in ways only hardware or a kernel source would show.**
+
+- `V4l2Camera::set` chose its ioctl by the *caller's* value variant while `read_current`
+  chose by the *descriptor's* `HAS_PAYLOAD` flag. A `ControlValue::Bytes` aimed at a scalar
+  control therefore reached `set_payload`, which plants a heap address in
+  `v4l2_ext_control`'s union — and `uvc_ctrl_set` ignores `size` for a control it does not
+  treat as a pointer control, taking the low 32 bits of that address as the value, clamping
+  it into range, and reporting an ordinary adjustment. On the OBSBOT's pan that is a motor
+  driven to its limit by an allocator. Reachable from `wch restore` with a hand-edited
+  snapshot. The fake refused the same input all along, so this was also the E5 resemblance
+  claim failing in the direction that matters.
+- `StreamRequest::choose` built its candidate sizes from `FrameSize::max_dimensions`, which
+  collapses a **stepwise** entry to its largest corner. A device offering 32..1920 in steps
+  of two would answer a request for 640×480 — a size it can deliver exactly — with
+  1920×1080, reported as an adjustment. No seed camera is stepwise, which is why nothing
+  noticed; `FrameSize::largest_within` now asks the range the question.
+
+**Three in the discovery probe**, all of the same family — it treated a menu as a switch:
+
+- one alternative was tried, chosen by numeric index order, so a three-item `auto_exposure`
+  resting on `Aperture Priority Mode` could report *no pairs* silently;
+- a candidate that could not be undone left residue that the *next* candidate's diff was
+  measured against, inventing pairs stamped `Measured`;
+- one "off" value was inferred for everything a toggle moved, so a mode that frees one
+  control and freezes another recorded the wrong recipe for one of them.
+
+**Two gates that were green while checking less than they claimed** — note N10 for the
+worse one, and `ignored-suites-have-recipes.sh`, whose new test-group half read overrides
+under *any* nextest profile and matched prefixes anywhere in a filter expression, including
+ones the expression subtracts.
+
+**Three tests that could not fail**: the PF:3 hardware arm counted a toggle that moved
+nothing as an observation; the `InactiveFlip` fault arm put its ordering assertion inside an
+`if let` that the defect itself would skip; and a test named
+`..._exif_an_independent_reader_can_read_back` asserted only on the report.
+
+**What the review did not find**, which is worth as much: no unsound `unsafe`, no aliasing
+or lifetime defect in the mmap path, and no case where an availability failure had been
+converted into a capability answer. Sixteen further candidates were refuted, several of them
+by skeptics that built the reviewer's exact device and ran it.

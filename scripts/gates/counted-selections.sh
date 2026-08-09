@@ -42,22 +42,30 @@ list_tests() {
     fi
 }
 
-# How many tests the selection matched. `nextest list` reports the total it matched in
-# `test-count` and lists only matching testcases; the fallback sums the per-suite maps, so
-# a nextest release that drops the summary field produces a real count rather than a
-# silent zero.
+# How many tests the selection matched.
+#
+# **Counted from `filter-match.status`, and this is the whole gate.** `nextest list -T json`
+# lists the *entire* workspace whatever `-E` says, and marks each testcase `matches` or
+# `mismatch`; its `test-count` is the size of that whole listing, not of the selection.
+# Measured on cargo-nextest 0.9.138: a filter matching nothing reports `test-count: 143`,
+# and summing the per-suite `testcases` maps gives 143 as well.
+#
+# So the first version of this function could not return zero for any input — which made a
+# gate whose entire subject is "prove no selection has silently gone to zero" green by
+# construction, from the day it was written. That is the predecessor defect this suite was
+# built to prevent, reproduced inside the check for it. Recorded as note N10.
 count_matched() {
-    jq '
-        if has("test-count") then .["test-count"]
-        else [ .. | objects | select(has("testcases")) | .testcases | length ] | add // 0
-        end
-    '
+    jq '[ .. | objects | select(has("testcases")) | .testcases | to_entries[]
+          | select(.value["filter-match"].status == "matches") ] | length'
 }
 
-# The (package, binary) pairs the tests live in — docs/4 asks selections to be compared as
-# pairs, and an empty suite is a binary that matched nothing.
+# The (package, binary) pairs the matched tests live in — docs/4 asks selections to be
+# compared as pairs, and a suite with no *matching* testcase matched nothing.
 count_suites() {
-    jq '[ .. | objects | select(has("testcases")) | select(.testcases | length > 0) ] | length'
+    jq '[ .. | objects | select(has("testcases"))
+          | select([ .testcases | to_entries[]
+                     | select(.value["filter-match"].status == "matches") ] | length > 0) ]
+        | length'
 }
 
 selections=0

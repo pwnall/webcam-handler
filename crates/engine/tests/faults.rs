@@ -106,13 +106,27 @@ fn an_inactive_flip_does_not_become_an_unguarded_write() {
                 .iter()
                 .position(|a| a.slug == pair.manual)
                 .expect("the target was written");
-            if let Some(switch_off) = report.writes.iter().position(|a| a.slug == pair.automation) {
-                assert!(
-                    switch_off < wrote_manual,
-                    "the switch-off must precede the manual write: {:?}",
-                    report.writes
-                );
-            }
+            // `expect`, not `if let`: a plan that reached the manual write with no
+            // switch-off in front of it *is* the unguarded write this arm is named after,
+            // and an `if let` would let the defect walk past the only assertion that
+            // could catch it. The camera's automation partner is engaged in this fixture
+            // — the profile's `measured_pairs` says so — so the switch-off is obligatory,
+            // and its absence must be a failure rather than a skipped branch.
+            let switch_off = report
+                .writes
+                .iter()
+                .position(|a| a.slug == pair.automation)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the manual write went out with no switch-off in front of it: {:?}",
+                        report.writes
+                    )
+                });
+            assert!(
+                switch_off < wrote_manual,
+                "the switch-off must precede the manual write: {:?}",
+                report.writes
+            );
         }
         // …or it refused, naming the control that owns the target. Both are guarded
         // answers; a manual write with neither is not.

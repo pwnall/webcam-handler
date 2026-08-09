@@ -22,6 +22,7 @@ use schema::control::{
     ControlDesc, ControlType, ControlValue, KnownFlag, Unverifiable, WriteWarning,
 };
 use schema::error::{Error, Result};
+use schema::pairing::{AutomationOff, Provenance};
 use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot, UnrestorableReason};
@@ -369,7 +370,49 @@ pub(crate) fn controls(report: &ControlReport, as_json: bool, out: &mut Output) 
             ),
         )?;
     }
+
+    // The pairs. `--json` has carried them since P2 and the table did not, which made
+    // `controls --discover-pairs` a verb that writes to the camera and shows a human
+    // nothing it learned. The two renderings are two views of one value (this module's
+    // first rule), and one of them was missing a field.
+    if !report.pairs.is_empty() {
+        let mut pairs = crate::render::table();
+        pairs.set_header(vec![
+            "MANUAL",
+            "GOVERNED BY",
+            "SWITCHED OFF WITH",
+            "EVIDENCE",
+        ]);
+        for pair in &report.pairs {
+            pairs.add_row(vec![
+                Cell::new(pair.manual.as_str()),
+                Cell::new(pair.automation.as_str()),
+                Cell::new(automation_off_text(&pair.off)),
+                // The provenance is the point, not decoration: a nomination from the
+                // declared table and an observation from this device are different
+                // claims, and measured beats declared (E1).
+                Cell::new(match pair.provenance {
+                    Provenance::Declared => "declared (from the UVC table)",
+                    Provenance::Measured => "measured on this device",
+                }),
+            ]);
+        }
+        out.line(Stream::Stdout, "\nauto/manual pairs:")?;
+        out.line(Stream::Stdout, &pairs.to_string())?;
+    }
     Ok(())
+}
+
+/// How an automation control is switched off, in a phrase.
+fn automation_off_text(off: &AutomationOff) -> String {
+    match off {
+        AutomationOff::Value { value } => format!("set to {value}"),
+        // By name, never by index: menu indices are per-device \[PF:2\], and printing an
+        // index would invite a reader to type it at a camera that numbers differently.
+        AutomationOff::MenuItemNamed { patterns } => {
+            format!("the menu item matching {:?}", patterns.join(" or "))
+        }
+    }
 }
 
 /// Append the out-of-range mark. One spelling, used for both the default and the current.

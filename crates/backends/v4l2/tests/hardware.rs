@@ -580,14 +580,17 @@ fn hw_switching_an_automation_control_moves_its_partners_inactive_bit() {
             .difference(&inactive_during)
             .map(String::as_str)
             .collect();
-        observed += 1;
         if freed.is_empty() {
+            // Not a pass. The arm's whole subject is that the flag tracks the automation
+            // control, and a toggle that moved nothing made no claim about it — counting
+            // it as an observation would be a skip wearing a pass (docs/3 Part C).
             println!(
-                "{}: switching {} off freed no control's INACTIVE bit — this device does \
-                 not couple through that flag [PF:3 does not hold here]",
+                "SKIP (partial): {}: switching {} off freed no control's INACTIVE bit, so \
+                 PF:3 was not exercised on this device",
                 info.id, desc.slug
             );
         } else {
+            observed += 1;
             println!(
                 "{}: PF:3 live — switching {} off freed {}",
                 info.id,

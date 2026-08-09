@@ -129,3 +129,26 @@ fail_case_the_group_is_assigned_but_never_defined() {
     mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
+
+fail_case_the_group_is_assigned_under_a_profile_the_recipes_never_use() {
+    # `just ci` and `just smoke-hw` pass no `--profile`, so an override under
+    # `[[profile.ci.overrides]]` serialises nothing while looking exactly right.
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed 's/^\[\[profile\.default\.overrides\]\]$/[[profile.ci.overrides]]/' \
+        "$tree/.config/nextest.toml" >"$tree/.config/nextest.toml.seeded"
+    mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_filter_subtracts_what_it_appears_to_include() {
+    # `test(/hw_/) - test(/hw_/)` mentions the prefix and holds none of it. The gate does
+    # not reimplement nextest's expression language; it refuses to vouch for one it cannot
+    # read, which is the honest answer and the safe one.
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed "s|^filter = .*|filter = 'test(/(^\|::)hw_/) + test(/(^\|::)vivid_/) - test(/(^\|::)hw_/)'|" \
+        "$tree/.config/nextest.toml" >"$tree/.config/nextest.toml.seeded"
+    mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}

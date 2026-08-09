@@ -1160,7 +1160,7 @@
           "description": "Another process holds the device. Distinct from \"the camera cannot do this\" (E3).",
           "properties": {
             "holders": {
-              "description": "Who has it, when `/proc` was readable.",
+              "description": "Who has it, as far as this user could see.\n\nEmpty means *unidentified*, not *nobody*: a holder belonging to another user\nis invisible in `/proc` without privilege, and a process that exited between\nthe `EBUSY` and the walk leaves nothing to find.",
               "items": {
                 "$ref": "#/$defs/Holder"
               },

@@ -72,9 +72,11 @@ impl StreamRequest {
     ///   First, not largest: the order `VIDIOC_ENUM_FMT` returns is the driver's own
     ///   preference, and second-guessing it is how a tool ends up defaulting to a mode the
     ///   camera is worse at.
-    /// - **Size**: the exact request when it is offered; else the largest offered size
-    ///   that *fits inside* it, because a caller asking for 1920×1080 on a 720p camera
-    ///   wants the biggest thing there is rather than a refusal; else the format's first
+    /// - **Size**: the largest thing the format offers that *fits inside* the request —
+    ///   which is the exact request when the device offers it, and the biggest available
+    ///   frame when a caller asks a 720p camera for 1080p. A **stepwise** entry is asked
+    ///   about as the range it is rather than as its maximum, so a device that can deliver
+    ///   the exact request delivers it. Nothing fitting falls back to the format's first
     ///   size, for the same "the driver ordered these" reason.
     /// - **A half-specified size names nothing.** Width alone cannot pick a height without
     ///   inventing an aspect ratio, so the size falls through to the device's first as
@@ -93,19 +95,22 @@ impl StreamRequest {
             .and_then(|wanted| formats.iter().find(|f| f.pixel_format == wanted))
             .unwrap_or(first);
 
-        let offered: Vec<(u32, u32)> = chosen
+        // The device's own first entry, at its largest — what "just give me something"
+        // resolves to, and the fallback when nothing the caller asked for fits.
+        let default_size = chosen
             .sizes
             .iter()
-            .filter_map(|entry| entry.size.max_dimensions())
-            .collect();
-        let default_size = offered.first().copied()?;
+            .find_map(|entry| entry.size.max_dimensions())?;
 
         let (width, height) = match (self.width, self.height) {
-            (Some(width), Some(height)) if offered.contains(&(width, height)) => (width, height),
-            (Some(width), Some(height)) => offered
+            (Some(width), Some(height)) => chosen
+                .sizes
                 .iter()
-                .copied()
-                .filter(|(w, h)| *w <= width && *h <= height)
+                // `largest_within` rather than a comparison against `max_dimensions`: a
+                // **stepwise** entry offers a whole range, and asking only about its
+                // maximum makes a device that can deliver 640x480 exactly report
+                // 1920x1080 and call it an adjustment.
+                .filter_map(|entry| entry.size.largest_within(width, height))
                 .max_by_key(|(w, h)| u64::from(*w) * u64::from(*h))
                 .unwrap_or(default_size),
             _ => default_size,
@@ -889,6 +894,94 @@ mod tests {
         .choose(&formats)
         .expect("resolves");
         assert_eq!((tiny.width, tiny.height), (1280, 720));
+    }
+
+    #[test]
+    fn a_stepwise_size_is_asked_about_as_the_range_it_is_and_not_as_its_maximum() {
+        // No seed camera is stepwise, which is why the first version of this function got
+        // it wrong and nothing noticed: it built its candidate list from
+        // `max_dimensions()`, so a device offering 32..1920 in steps of 2 was treated as
+        // offering exactly one size — its largest — and a request for 640x480 that the
+        // device can deliver *exactly* came back as 1920x1080 with an adjustment on it.
+        use crate::camera::{FrameSize, FrameSizeInfo};
+
+        let stepwise = vec![FormatInfo {
+            pixel_format: PixelFormat::MJPG,
+            description: "MJPG".to_owned(),
+            flags: 0,
+            sizes: vec![FrameSizeInfo {
+                size: FrameSize::Stepwise {
+                    min_width: 32,
+                    max_width: 1920,
+                    step_width: 2,
+                    min_height: 32,
+                    max_height: 1080,
+                    step_height: 2,
+                },
+                intervals: Vec::new(),
+            }],
+        }];
+
+        let exact = StreamRequest {
+            width: Some(640),
+            height: Some(480),
+            ..StreamRequest::default()
+        };
+        let chosen = exact.choose(&stepwise).expect("resolves");
+        assert_eq!(
+            (chosen.width, chosen.height),
+            (640, 480),
+            "a size inside the declared range and on its grid is deliverable"
+        );
+        assert!(
+            NegotiatedStream::diff(
+                &exact,
+                chosen.pixel_format,
+                chosen.width,
+                chosen.height,
+                FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30
+                },
+            )
+            .is_empty(),
+            "and it is not an adjustment"
+        );
+
+        // Off the grid, the answer rounds *down* to it — a driver takes the grid it
+        // declared, and reporting an off-grid size as agreed is a claim `S_FMT` refutes.
+        let odd = StreamRequest {
+            width: Some(641),
+            height: Some(481),
+            ..StreamRequest::default()
+        }
+        .choose(&stepwise)
+        .expect("resolves");
+        assert_eq!((odd.width, odd.height), (640, 480));
+
+        // Above the range, clamped to the maximum; below the minimum, nothing fits and the
+        // device's own first entry stands.
+        let big = StreamRequest {
+            width: Some(4096),
+            height: Some(2160),
+            ..StreamRequest::default()
+        }
+        .choose(&stepwise)
+        .expect("resolves");
+        assert_eq!((big.width, big.height), (1920, 1080));
+
+        let tiny = StreamRequest {
+            width: Some(8),
+            height: Some(8),
+            ..StreamRequest::default()
+        }
+        .choose(&stepwise)
+        .expect("resolves");
+        assert_eq!(
+            (tiny.width, tiny.height),
+            (1920, 1080),
+            "nothing in a 32-pixel-minimum range fits inside 8x8"
+        );
     }
 
     #[test]

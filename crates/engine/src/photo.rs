@@ -21,7 +21,6 @@
 use std::collections::BTreeMap;
 
 use camino::Utf8Path;
-use imaging::photo::Photo;
 use schema::backend::Camera;
 use schema::capture::{PhotoDelivery, PhotoFormat, PhotoReport, PhotoRequest, Sink};
 use schema::control::{ControlSlug, ControlValue};
@@ -185,12 +184,6 @@ fn write_photo(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     })
 }
 
-/// Whether a rendering kept the camera's own bytes, for a caller that only needs the bit.
-#[must_use]
-pub fn is_verbatim(photo: &Photo) -> bool {
-    photo.rendering.is_verbatim()
-}
-
 #[cfg(test)]
 mod tests {
     use exif::{In, Tag};
@@ -239,7 +232,7 @@ mod tests {
         // having produced a segment no reader accepts passes every test that trusts it.
         // `kamadak-exif` shares no code with `little_exif`, which is the whole point.
         let mut camera = camera_from("chicony-rgb");
-        let report = take(
+        let taken = take(
             camera.as_mut(),
             &request(
                 Sink::ReturnBytes {
@@ -250,12 +243,42 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
-        .expect("takes a photo")
-        .report;
+        .expect("takes a photo");
 
-        assert!(matches!(report.delivery, PhotoDelivery::Bytes { .. }));
-        assert!(report.delivery.byte_count() > 0);
-        assert_eq!(report.transform, TransformApplication::Identity);
+        assert!(matches!(taken.report.delivery, PhotoDelivery::Bytes { .. }));
+        assert_eq!(taken.report.transform, TransformApplication::Identity);
+
+        // The bytes, read by an implementation that shares no code with the writer. The
+        // first version of this test asserted only that the *report* looked right, which
+        // is precisely the write-only-EXIF defect its own name promises to catch: a
+        // writer that returns `Ok` having produced a segment no reader accepts passes
+        // every test that trusts it.
+        let bytes = taken
+            .returned
+            .expect("a ReturnBytes sink hands the bytes back");
+        assert_eq!(
+            u64::try_from(bytes.len()).expect("fits"),
+            taken.report.delivery.byte_count()
+        );
+        let mut cursor = std::io::Cursor::new(bytes);
+        let exif = exif::Reader::new()
+            .read_from_container(&mut cursor)
+            .expect("the stamped bytes carry readable EXIF");
+        assert!(
+            exif.get_field(Tag::Make, In::PRIMARY)
+                .expect("the driver is recorded as Make")
+                .display_value()
+                .to_string()
+                .contains("uvcvideo")
+        );
+        assert_eq!(
+            exif.get_field(Tag::Orientation, In::PRIMARY)
+                .expect("orientation")
+                .value
+                .get_uint(0),
+            Some(1),
+            "an untransformed photo is orientation 1"
+        );
     }
 
     #[test]

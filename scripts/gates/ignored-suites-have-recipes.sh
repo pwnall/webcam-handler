@@ -100,19 +100,36 @@ else
         gate_fail "test group '$group' does not cap itself at one thread, so it serialises nothing"
     fi
 
-    # The *filter expressions* of the overrides that assign the group — not the file. The
-    # first version of this check grepped the whole file and passed on a config whose
-    # filter had lost a prefix, because the paragraph above the filter still mentioned it.
-    # The selftest caught that, which is what the selftest is for.
+    # The filter expressions of the **default profile's** overrides that assign the group.
+    #
+    # Two narrowings, both learned by having got this wrong once each. The first version
+    # grepped the whole file, and passed on a config whose filter had lost a prefix because
+    # the paragraph *above* the filter still mentioned it. The second read any override
+    # under any profile, so moving the whole block to `[[profile.ci.overrides]]` — where
+    # `just ci` and `just smoke-hw` never look, since neither passes `--profile` — left the
+    # suites unserialised and the gate green.
     filters="$(awk -v group="$group" '
-        /^\[\[/                                   { block = ""; assigned = 0; next }
-        /^\[/                                     { block = ""; assigned = 0; next }
+        /^\[\[profile\.[A-Za-z0-9_-]+\.overrides\]\]/ {
+            profile = $0
+            sub(/^\[\[profile\./, "", profile)
+            sub(/\.overrides\]\].*$/, "", profile)
+            block = ""; assigned = 0; next
+        }
+        /^\[/                                    { profile = ""; block = ""; assigned = 0; next }
         /^[[:space:]]*filter[[:space:]]*=/        { block = $0 }
         $0 ~ "test-group[[:space:]]*=.*" group    { assigned = 1 }
-        assigned && block != ""                   { print block; block = ""; assigned = 0 }
+        assigned && block != "" && profile == "default" { print block; block = ""; assigned = 0 }
     ' "$nextest_config")"
     if [[ -z "$filters" ]]; then
-        gate_fail "no override in .config/nextest.toml assigns '$group' to a filter, so the group holds nothing"
+        gate_fail "no override under [[profile.default.overrides]] assigns '$group' to a filter; the recipes run the default profile, so a group assigned anywhere else serialises nothing"
+    fi
+
+    # A filterset can *subtract*, and `test(/hw_/) - test(/hw_/)` contains the prefix while
+    # holding none of it. Rather than reimplement nextest's expression language in awk,
+    # this refuses to bless anything but a union of inclusions — a filter it cannot read is
+    # a filter it must not vouch for.
+    if grep -Eq '[-]|[^a-z]not[^a-z]' <<<"$filters"; then
+        gate_fail "the '$group' filter subtracts or negates; this gate only vouches for a union of inclusions, and cannot tell whether a prefix survives one that does not"
     fi
 
     covered=0

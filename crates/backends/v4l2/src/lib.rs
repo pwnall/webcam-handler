@@ -46,6 +46,7 @@
 )]
 
 mod enumerate;
+mod holders;
 mod sys;
 mod sysfs;
 
@@ -379,6 +380,40 @@ fn unreadable_current(error: Error) -> Result<Option<ControlValue>> {
 /// Everything else — `EBUSY`, `ENODEV`, a device-level permission refusal — passes
 /// through untouched. Those are availability facts (E3) and none of them is a statement
 /// about the control.
+/// The refusal for a value whose shape is not the one this control takes.
+///
+/// `EINVAL`, and the errno is the driver's own answer for a value it will not accept —
+/// spelled here because this build refuses it before the ioctl rather than after. The
+/// fake produces the identical shape for the identical input (E5), which is what makes
+/// "the two backends behave alike" a checkable claim rather than a hope.
+fn shape_mismatch(desc: &ControlDesc, wants_payload: bool, given: &ControlValue) -> Error {
+    let wanted = if wants_payload {
+        "an opaque byte payload"
+    } else {
+        "an integer"
+    };
+    let got = match given {
+        ControlValue::Int(_) => "an integer",
+        ControlValue::Text(_) => "a string",
+        ControlValue::Bytes(bytes) => {
+            return Error::DeviceIo {
+                operation: format!("{SET_CTRL_OP} ({})", desc.slug),
+                errno: Some(libc::EINVAL),
+                message: format!(
+                    "this control takes {wanted}; a {}-byte payload would be handed to the \
+                     kernel as a pointer it does not read as one",
+                    bytes.len()
+                ),
+            };
+        }
+    };
+    Error::DeviceIo {
+        operation: format!("{SET_CTRL_OP} ({})", desc.slug),
+        errno: Some(libc::EINVAL),
+        message: format!("this control takes {wanted}, not {got}"),
+    }
+}
+
 fn unwritable_control(desc: &ControlDesc, error: Error) -> Error {
     match error {
         Error::DeviceIo { errno, .. } if errno == Some(libc::EACCES) => Error::ControlReadOnly {
@@ -474,23 +509,24 @@ impl Camera for V4l2Camera {
             return Err(Error::ControlReadOnly { control: desc.slug });
         }
 
-        match &value {
-            ControlValue::Int(scalar) => {
+        // **The descriptor chooses the ioctl shape, not the value.** `read_current`
+        // decides by the control's `HAS_PAYLOAD` flag, and a write that decided by the
+        // caller's variant instead would be the two directions disagreeing about what a
+        // control *is*.
+        //
+        // The consequence of getting this backwards is not a type error, which is why it
+        // is checked rather than assumed: `set_payload` plants a heap address in
+        // `v4l2_ext_control`'s union, and for a control the kernel does not treat as a
+        // pointer control, `uvc_ctrl_set` ignores `size` entirely and takes the low 32
+        // bits of that address as the value — clamped into range and reported as an
+        // ordinary driver adjustment. On a PTZ control that is a motor driven to its
+        // limit by an allocator. The fake refuses the same input (E5); so does this now.
+        match (ioctl::has_payload(desc.flags.raw), &value) {
+            (false, ControlValue::Int(scalar)) => {
                 ioctl::set_scalar(&self.fd, id.0, desc.control_type.to_raw(), *scalar)
             }
-            ControlValue::Bytes(bytes) => ioctl::set_payload(&self.fd, id.0, bytes),
-            ControlValue::Text(_) => Err(Error::DeviceIo {
-                operation: format!("{SET_CTRL_OP} ({})", desc.slug),
-                errno: None,
-                // Not a gap this build is hiding: `V4L2_CTRL_TYPE_STRING` carries
-                // `HAS_PAYLOAD`, so the read path already answers for one in `Bytes`, and
-                // a write must speak the same shape. No attached device exposes one, so
-                // inventing an encoding here would be designing against nothing.
-                message: "this backend writes control values as integers or as opaque \
-                          payloads; a text value has no V4L2 spelling that a read of the \
-                          same control would produce"
-                    .to_owned(),
-            }),
+            (true, ControlValue::Bytes(bytes)) => ioctl::set_payload(&self.fd, id.0, bytes),
+            (wants_payload, given) => Err(shape_mismatch(&desc, wants_payload, given)),
         }
         .map_err(|error| unwritable_control(&desc, error))?;
 
@@ -537,8 +573,8 @@ impl Camera for V4l2Camera {
             // `/proc` walk that identifies *other* processes, and inventing a one-entry
             // list here would make "who has it" answerable two different ways.
             return Err(Error::Busy {
+                holders: holders::of(self.fd.path()),
                 path: self.fd.path().to_owned(),
-                holders: Vec::new(),
             });
         }
         // A metadata-only camera is a shape D1 supports on purpose: it is listed, and
@@ -705,6 +741,20 @@ impl V4l2Camera {
     fn map_buffers(&self, requested: u32) -> Result<Vec<sys::mmap::Mapping>> {
         let asked = requested.clamp(1, limits::MAX_BUFFERS_PER_STREAM);
         let granted = ioctl::request_buffers(&self.fd, asked)?;
+        if granted > asked {
+            // The driver's reply is device-supplied and therefore input (rubric B10): it
+            // reaches an allocation and a loop bound, and the *request* being clamped says
+            // nothing about the answer. A driver granting more than it was asked for has
+            // contradicted itself, and believing it would mean mapping buffers on its say-so.
+            //
+            // Released before refusing, or the node stays holding them.
+            self.release_buffers();
+            return Err(Error::DeviceIo {
+                operation: "VIDIOC_REQBUFS".to_owned(),
+                errno: None,
+                message: format!("the driver granted {granted} buffers for a request of {asked}"),
+            });
+        }
         if granted == 0 {
             // Not a capability answer: the device can stream, it just has no memory to do
             // it with right now (E3). `REQBUFS` succeeding with a count of zero is the
@@ -930,6 +980,34 @@ mod tests {
                 "an availability fact must not become a capability answer"
             );
         }
+    }
+
+    #[test]
+    fn a_value_whose_shape_the_control_does_not_take_is_refused_before_the_ioctl() {
+        // The one that matters: `set_payload` plants a heap address in the union, and for
+        // a control the kernel does not treat as a pointer control it takes the low 32
+        // bits of that address as the value — clamped into range and reported as an
+        // ordinary driver adjustment. On a PTZ control that is a motor driven to its limit
+        // by an allocator. The shape comes from the *descriptor*, not from the caller.
+        let scalar = desc("brightness", 0);
+        let payload = shape_mismatch(&scalar, false, &ControlValue::Bytes(vec![0; 4]));
+        assert_eq!(payload.kind(), schema::error::ErrorKind::DeviceIo);
+        let rendered = payload.to_string();
+        assert!(rendered.contains("brightness"), "{rendered}");
+        assert!(rendered.contains("integer"), "{rendered}");
+        assert!(rendered.contains("pointer"), "{rendered}");
+
+        // The mirror image is harmless at the kernel — an `Int` on a payload control
+        // leaves `size` zero and the kernel answers `EFAULT` — but it is still a caller
+        // asking for something this control does not take, and answering it here names the
+        // control rather than relaying an errno from two layers down.
+        let compound = desc("region_of_interest_rectangle", 0);
+        let integer = shape_mismatch(&compound, true, &ControlValue::Int(5));
+        assert!(integer.to_string().contains("payload"), "{integer}");
+
+        // A text value has no V4L2 spelling a read of the same control would produce.
+        let text = shape_mismatch(&scalar, false, &ControlValue::Text("x".to_owned()));
+        assert!(text.to_string().contains("not a string"), "{text}");
     }
 
     #[test]

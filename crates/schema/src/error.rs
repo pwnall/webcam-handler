@@ -97,7 +97,11 @@ pub enum Error {
         /// The node in use.
         #[schemars(with = "String")]
         path: Utf8PathBuf,
-        /// Who has it, when `/proc` was readable.
+        /// Who has it, as far as this user could see.
+        ///
+        /// Empty means *unidentified*, not *nobody*: a holder belonging to another user
+        /// is invisible in `/proc` without privilege, and a process that exited between
+        /// the `EBUSY` and the walk leaves nothing to find.
         holders: Vec<Holder>,
     },
 
@@ -393,7 +397,12 @@ pub type BackendError = Error;
 
 fn format_holders(holders: &[Holder]) -> String {
     if holders.is_empty() {
-        return "an unknown process (/proc was not readable)".to_owned();
+        // Deliberately vague, because the two reasons a walk finds nobody are
+        // indistinguishable from here: `/proc` may have been unreadable, or the holder may
+        // be another user's process, which this user cannot see without privilege. An
+        // earlier version claimed the first, on a build where nothing had looked at
+        // `/proc` at all.
+        return "an unidentified process".to_owned();
     }
     holders
         .iter()
@@ -524,14 +533,30 @@ mod tests {
 
     #[test]
     fn busy_without_holders_still_says_something_useful() {
-        // /proc can be restricted; degrading gracefully is design §2.5's rule, and the
-        // degraded rendering must not read as "nobody has it".
+        // The walk finds nobody for two indistinguishable reasons — `/proc` restricted, or
+        // a holder belonging to another user — so the rendering commits to neither, and
+        // above all must not read as "nobody has it".
         let err = Error::Busy {
             path: "/dev/video0".into(),
             holders: Vec::new(),
         };
         let rendered = err.to_string();
-        assert!(rendered.contains("unknown process"), "{rendered}");
+        assert!(rendered.contains("unidentified process"), "{rendered}");
+        assert!(
+            !rendered.contains("/proc"),
+            "the rendering must not claim something about /proc it did not check: {rendered}"
+        );
+
+        // The other direction: a holder the walk *did* find is named, so the empty
+        // rendering is a fallback rather than the only thing this ever says.
+        let named = Error::Busy {
+            path: "/dev/video0".into(),
+            holders: vec![Holder {
+                pid: 4321,
+                comm: Some("cheese".to_owned()),
+            }],
+        };
+        assert!(named.to_string().contains("cheese (pid 4321)"), "{named}");
     }
 
     #[test]

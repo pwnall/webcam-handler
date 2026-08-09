@@ -50,6 +50,28 @@ pub(crate) enum OnWrite {
     /// method rather than a guarantee. This is the shape D4's second restore pass exists
     /// for, and without it that branch would be code no test could reach.
     ClearsInactive(Vec<&'static str>),
+    /// Take the value, and clear the named controls' INACTIVE bit **only** when the value
+    /// written equals the first field.
+    ///
+    /// A menu-valued automation control where one position hands the manual control to the
+    /// user and the others do not — which is `auto_exposure` on the seed hardware, whose
+    /// sparse menu has `Manual Mode` at index 1 and `Aperture Priority Mode` at index 3
+    /// \[PF:2\].
+    FreesAt(i64, Vec<&'static str>),
+    /// Take the value, and *exchange* which controls are owned: a non-zero value frees the
+    /// first list and freezes the second, a zero value does the reverse.
+    ///
+    /// A mode change rather than a switch. Real: a camera that hands `exposure_time_absolute`
+    /// to the user in manual mode may take `gain` away from them in the same breath, and
+    /// the two halves of that need different "off" recipes.
+    Swaps(Vec<&'static str>, Vec<&'static str>),
+    /// Take the value, set the named controls INACTIVE, and then **refuse every later
+    /// write** to this control.
+    ///
+    /// A candidate whose toggle cannot be undone, which is what makes a stale diff baseline
+    /// visible: the residue it leaves is what the next candidate would otherwise be blamed
+    /// for.
+    LatchesInactive(Vec<&'static str>),
 }
 
 /// A camera assembled from controls and a script.
@@ -63,6 +85,9 @@ pub(crate) struct ScriptedCamera {
     pub(crate) writes: Vec<(ControlSlug, ControlValue)>,
     streaming: Option<NegotiatedStream>,
     frames: Vec<Frame>,
+    /// Controls whose script has already fired once and now refuses — the `LatchesInactive`
+    /// half.
+    latched: std::collections::BTreeSet<ControlId>,
     /// Whether this camera offers any format at all. A camera that offers none is D1's
     /// metadata-only shape, and it is the one way to make `start_stream` refuse without
     /// scripting a lie.
@@ -81,6 +106,7 @@ impl ScriptedCamera {
             writes: Vec::new(),
             streaming: None,
             frames: Vec::new(),
+            latched: std::collections::BTreeSet::new(),
             formats: true,
             stops: 0,
         }
@@ -207,10 +233,22 @@ impl Camera for ScriptedCamera {
         }
 
         let action = self.script.get(&id).cloned().unwrap_or(OnWrite::Accept);
+        if matches!(action, OnWrite::LatchesInactive(_)) && self.latched.contains(&id) {
+            return Err(Error::DeviceIo {
+                operation: "VIDIOC_S_EXT_CTRLS".to_owned(),
+                errno: Some(16),
+                message: "this control latched and will not move again".to_owned(),
+            });
+        }
         let applied = match &action {
             OnWrite::Fail(error) => return Err(error.clone()),
             OnWrite::Apply(other) => ControlValue::Int(*other),
-            OnWrite::Accept | OnWrite::Couple(_) | OnWrite::ClearsInactive(_) => value.clone(),
+            OnWrite::Accept
+            | OnWrite::Couple(_)
+            | OnWrite::ClearsInactive(_)
+            | OnWrite::FreesAt(_, _)
+            | OnWrite::Swaps(_, _)
+            | OnWrite::LatchesInactive(_) => value.clone(),
         };
 
         self.writes.push((desc.slug.clone(), value.clone()));
@@ -228,6 +266,27 @@ impl Camera for ScriptedCamera {
                 for partner in partners.clone() {
                     self.set_inactive(partner, false);
                 }
+            }
+            OnWrite::FreesAt(free_at, partners) => {
+                let frees = applied.as_int() == Some(*free_at);
+                for partner in partners.clone() {
+                    self.set_inactive(partner, !frees);
+                }
+            }
+            OnWrite::Swaps(freed_when_set, frozen_when_set) => {
+                let engaged = applied.as_int().is_some_and(|v| v != 0);
+                for partner in freed_when_set.clone() {
+                    self.set_inactive(partner, !engaged);
+                }
+                for partner in frozen_when_set.clone() {
+                    self.set_inactive(partner, engaged);
+                }
+            }
+            OnWrite::LatchesInactive(partners) => {
+                for partner in partners.clone() {
+                    self.set_inactive(partner, true);
+                }
+                self.latched.insert(id);
             }
             OnWrite::Accept | OnWrite::Apply(_) | OnWrite::Fail(_) => {}
         }

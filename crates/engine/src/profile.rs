@@ -65,9 +65,16 @@ pub fn capture(camera: &mut dyn Camera, context: &CaptureContext) -> Result<Devi
             info,
             formats,
             controls: controls.iter().map(invariant_control).collect(),
-            // Empirical pair discovery is P2's (`controls --discover-pairs`) and writes
-            // here. Empty is the honest answer for a read-only capture: it says "nobody
-            // measured", not "there are none".
+            // Always empty, and the comment used to say `--discover-pairs` would fill it.
+            // It does not: the probe answers a `controls` report, and `profile capture`
+            // does not run one — a capture that wrote to the camera would stop being the
+            // read-only operation the corpus is built from, and every committed profile
+            // would then depend on a probe having been run first.
+            //
+            // Empty is therefore the honest answer here: it says "this capture measured
+            // nothing", not "this device has no pairs". Wiring a probe into `capture`
+            // needs a decision about whether a corpus entry may perturb its subject, and
+            // that decision belongs to whoever needs measured pairs in a profile.
             measured_pairs: Vec::new(),
         },
         state: ProfileState {

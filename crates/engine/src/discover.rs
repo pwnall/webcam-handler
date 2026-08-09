@@ -77,13 +77,45 @@ pub fn pairs(camera: &mut dyn Camera, now: Stamp) -> Result<Discovery> {
     // correct direction: the alternative is a camera perturbed with no record of where it
     // was.
     let before_all = snapshot::take(camera, &[], now)?;
-    let controls = camera.controls()?;
 
     let mut found: Vec<AutomationPair> = Vec::new();
     let mut skipped: Vec<(ControlSlug, String)> = Vec::new();
+    let candidates: Vec<ControlDesc> = camera
+        .controls()?
+        .into_iter()
+        .filter(looks_like_automation)
+        .collect();
 
-    for candidate in controls.iter().filter(|d| looks_like_automation(d)) {
-        match probe_one(camera, candidate, &controls) {
+    for candidate in &candidates {
+        // The baseline is re-read **per candidate**, not once for the run. A candidate
+        // whose toggle could not be undone leaves the device somewhere else, and a stale
+        // baseline would then read that residue as the *next* candidate's doing —
+        // recording a pair with `Provenance::Measured` that no control caused. Measured
+        // beats declared forever (E1), so a hallucination here is the most expensive kind.
+        let before = match camera.controls() {
+            Ok(before) => before,
+            Err(error) => {
+                skipped.push((
+                    candidate.slug.clone(),
+                    format!("the control set could not be read before the toggle: {error}"),
+                ));
+                continue;
+            }
+        };
+        // …and against the candidate's state *now*, for the same reason.
+        let Some(fresh) = before
+            .iter()
+            .find(|desc| desc.slug == candidate.slug)
+            .cloned()
+        else {
+            skipped.push((
+                candidate.slug.clone(),
+                "the control disappeared between enumeration and the toggle".to_owned(),
+            ));
+            continue;
+        };
+
+        match probe_one(camera, &fresh, &before) {
             Ok(pairs) => found.extend(pairs),
             Err(reason) => skipped.push((candidate.slug.clone(), reason)),
         }
@@ -104,74 +136,86 @@ pub fn pairs(camera: &mut dyn Camera, now: Stamp) -> Result<Discovery> {
     })
 }
 
-/// Toggle one candidate and read what moved.
+/// Toggle one candidate through every position it has, and record what each one frees.
 ///
 /// `Err` is a *skip* with its reason, not a failure of the probe: a candidate that cannot
 /// be toggled is one this device will not let us learn about, and the run carries on.
+///
+/// **Every position, not one.** A boolean has one alternative and the first version
+/// assumed every candidate did — but `auto_exposure` on the seed hardware is a menu with
+/// `Manual Mode` at index 1 and `Aperture Priority Mode` at index 3, and a camera resting
+/// on index 3 would have been toggled to index 1, seen the flag move, and stopped. A
+/// camera resting on index 1 would have been toggled to index 0 if the menu had one — a
+/// mode that frees nothing — and the probe would have reported *no pairs at all*, silently,
+/// because a candidate that moves nothing is not a skip. Walking the positions is what
+/// makes "this device couples nothing" a finding rather than a coincidence.
 fn probe_one(
     camera: &mut dyn Camera,
     candidate: &ControlDesc,
-    controls: &[ControlDesc],
+    before: &[ControlDesc],
 ) -> std::result::Result<Vec<AutomationPair>, String> {
     if is_motorized(&candidate.slug) {
         return Err("§5: a motor moves when this control is written".to_owned());
     }
-    let Some(current) = candidate.current.as_ref().and_then(ControlValue::as_int) else {
+    let Some(resting) = candidate.current.as_ref().and_then(ControlValue::as_int) else {
         return Err("no readable current value, so the toggle could not be undone".to_owned());
     };
-    let Some(other) = opposite(candidate, current) else {
+    let positions = other_positions(candidate, resting);
+    if positions.is_empty() {
         return Err(
             "no second value to toggle to; a control with one position governs nothing \
              observable"
                 .to_owned(),
         );
-    };
-
-    // The toggle. Its *own* undo happens here rather than being left to the whole-probe
-    // restore: the next candidate must be read against a device in its resting state, or
-    // one control's coupling would be attributed to the next control's toggle.
-    camera
-        .set(candidate.id, ControlValue::Int(other))
-        .map_err(|error| format!("the toggle was refused: {error}"))?;
-    let after = camera
-        .controls()
-        .map_err(|error| format!("the control set could not be re-read: {error}"))?;
-    let moved = pairing::inactive_diff(controls, &after);
-    let undo = camera.set(candidate.id, ControlValue::Int(current));
-
-    if let Err(error) = undo {
-        return Err(format!(
-            "toggled to {other} and could not be put back: {error}"
-        ));
     }
 
-    // Which of the two values *frees* the partner is what the pair needs to record: the
-    // "off" recipe is the position at which the manual control is writable. If toggling
-    // to `other` freed it, `other` is off; otherwise the original was.
-    let freed_by_other = after
-        .iter()
-        .any(|desc| moved.contains(&desc.slug) && !desc.is_inactive());
-    let off = if freed_by_other { other } else { current };
+    let mut pairs: Vec<AutomationPair> = Vec::new();
+    for position in positions {
+        // The undo happens before anything else is decided, and before any early return
+        // past this point: a candidate left toggled is a camera the next candidate is read
+        // against, and the whole-probe restore at the end is a backstop rather than a plan.
+        let toggled = camera.set(candidate.id, ControlValue::Int(position));
+        let after = toggled.as_ref().ok().and_then(|_| camera.controls().ok());
+        let undo = camera.set(candidate.id, ControlValue::Int(resting));
 
-    Ok(moved
-        .iter()
-        .filter_map(|manual| pairing::measured_pair(candidate, off, manual))
-        .collect())
+        toggled.map_err(|error| format!("the toggle to {position} was refused: {error}"))?;
+        undo.map_err(|error| format!("toggled to {position} and could not be put back: {error}"))?;
+        let Some(after) = after else {
+            return Err("the control set could not be re-read after the toggle".to_owned());
+        };
+
+        // Which value is "off" is decided **per control**, because one toggle can free one
+        // partner and freeze another: a mode that hands `exposure_time_absolute` to the
+        // user may take `gain` away from them at the same moment. Asking "did anything get
+        // freed" and applying that answer to everything that moved records the wrong recipe
+        // for half of them, with `Measured` on it.
+        for slug in pairing::inactive_diff(before, &after) {
+            let freed_here = after
+                .iter()
+                .any(|desc| desc.slug == slug && !desc.is_inactive());
+            let off = if freed_here { position } else { resting };
+            if let Some(pair) = pairing::measured_pair(candidate, off, &slug) {
+                pairs.push(pair);
+            }
+        }
+    }
+    Ok(pairs)
 }
 
-/// The other value to try, for a control that has one.
+/// Every value this control can be moved to, other than where it is.
 ///
-/// Booleans flip. Menus take the first index that is not the current one — every index, so
-/// a sparse menu's holes are skipped by construction \[PF:2\] rather than by arithmetic
-/// that assumes `current + 1` exists.
-fn opposite(desc: &ControlDesc, current: i64) -> Option<i64> {
+/// Menus list their own indices, holes and all \[PF:2\]; a boolean has exactly one other
+/// position. Bounded by the menu the device declared, which
+/// `V4l2Camera::read_menu` already caps at [`schema::limits::MAX_MENU_INDICES`].
+fn other_positions(desc: &ControlDesc, resting: i64) -> Vec<i64> {
     if desc.control_type.is_menu() {
         desc.menu
             .keys()
             .map(|index| i64::from(*index))
-            .find(|index| *index != current)
+            .filter(|index| *index != resting)
+            .collect()
     } else {
-        Some(i64::from(current == 0))
+        vec![i64::from(resting == 0)]
     }
 }
 
@@ -327,6 +371,148 @@ mod tests {
             vec!["exposure_time_absolute"],
             "one candidate refusing must not end the probe"
         );
+    }
+
+    #[test]
+    fn a_menu_candidate_is_walked_through_every_position_it_has() {
+        // The defect this pins: with only one alternative tried, a menu resting on a
+        // position whose *numerically first* neighbour frees nothing reports "no pairs",
+        // silently — not a skip, because a candidate that moves nothing is not a skip.
+        // The Chicony's `auto_exposure` is exactly this shape (a sparse menu, PF:2).
+        let mut auto = boolean("auto_exposure", 3);
+        auto.control_type = schema::control::ControlType::Menu;
+        auto.range = schema::control::ControlRange {
+            min: 0,
+            max: 3,
+            step: 1,
+        };
+        auto.menu = [
+            (
+                0u32,
+                schema::control::MenuItem::Name {
+                    name: "Auto Mode".to_owned(),
+                },
+            ),
+            (
+                1,
+                schema::control::MenuItem::Name {
+                    name: "Manual Mode".to_owned(),
+                },
+            ),
+            (
+                3,
+                schema::control::MenuItem::Name {
+                    name: "Aperture Priority Mode".to_owned(),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        // Only index 1 frees the partner. Index 0 — the first the old code would have
+        // tried and the only one — does nothing.
+        let mut camera = ScriptedCamera::new(vec![
+            auto,
+            crate::double::flagged(integer("exposure_time_absolute", 156), 0x0010),
+        ])
+        .on_write(
+            "auto_exposure",
+            OnWrite::FreesAt(1, vec!["exposure_time_absolute"]),
+        );
+
+        let found = pairs(&mut camera, Stamp::epoch()).expect("probes");
+        assert_eq!(
+            found.pairs.len(),
+            1,
+            "the position that frees the partner is not the first one: {:?}",
+            found.pairs
+        );
+        assert_eq!(found.pairs[0].manual, slug("exposure_time_absolute"));
+        // And it recorded the off position **by name**, which is the portable claim
+        // [PF:2]: index 1 is `Manual Mode` on both seed cameras and that is a coincidence.
+        assert_eq!(
+            found.pairs[0].off,
+            AutomationOff::MenuItemNamed {
+                patterns: vec!["manual mode".to_owned()]
+            }
+        );
+    }
+
+    #[test]
+    fn one_toggle_that_frees_one_control_and_freezes_another_records_each_ones_own_recipe() {
+        // A mode change is not a switch: handing `exposure_time_absolute` to the user can
+        // take `gain` away at the same moment. Deciding "off" once for everything that
+        // moved gets half of them backwards — with `Measured` on it, which outranks the
+        // declared table forever (E1).
+        let mut camera = ScriptedCamera::new(vec![
+            boolean("auto_exposure", 0),
+            crate::double::flagged(integer("exposure_time_absolute", 156), 0x0010),
+            integer("gain", 32),
+        ])
+        .on_write(
+            "auto_exposure",
+            // Writing 1 frees the exposure and freezes the gain.
+            OnWrite::Swaps(vec!["exposure_time_absolute"], vec!["gain"]),
+        );
+
+        let found = pairs(&mut camera, Stamp::epoch()).expect("probes");
+        let off_for = |manual: &str| {
+            found
+                .pairs
+                .iter()
+                .find(|p| p.manual.as_str() == manual)
+                .map(|p| p.off.clone())
+        };
+        assert_eq!(
+            off_for("exposure_time_absolute"),
+            Some(AutomationOff::Value { value: 1 }),
+            "1 is the position at which the exposure is writable"
+        );
+        assert_eq!(
+            off_for("gain"),
+            Some(AutomationOff::Value { value: 0 }),
+            "…and 0 is the position at which the gain is, which is the *other* value"
+        );
+    }
+
+    #[test]
+    fn a_candidate_that_could_not_be_undone_does_not_taint_the_next_one() {
+        // The baseline is re-read per candidate. With one reading for the whole run, a
+        // toggle that could not be put back leaves residue that the *next* candidate's
+        // diff attributes to it — a pair no control caused, stamped `Measured`.
+        let mut camera = ScriptedCamera::new(vec![
+            boolean("white_balance_automatic", 0),
+            boolean("auto_exposure", 0),
+            integer("white_balance_temperature", 46),
+            integer("exposure_time_absolute", 156),
+        ])
+        // The first candidate latches: its write sticks and its undo is refused, so it
+        // leaves `white_balance_temperature` INACTIVE behind it.
+        .on_write(
+            "white_balance_automatic",
+            OnWrite::LatchesInactive(vec!["white_balance_temperature"]),
+        );
+
+        let found = pairs(&mut camera, Stamp::epoch()).expect("probes");
+        assert!(
+            found
+                .skipped
+                .iter()
+                .any(|(slug, _)| slug.as_str() == "white_balance_automatic"),
+            "the candidate that could not be put back must be named: {:?}",
+            found.skipped
+        );
+        assert!(
+            !found
+                .pairs
+                .iter()
+                .any(|p| p.automation.as_str() == "auto_exposure"),
+            "the second candidate must not inherit the first's residue: {:?}",
+            found.pairs
+        );
+        // And the whole-probe restore reports that the camera did not come back, rather
+        // than the run reading as clean.
+        assert!(!found.left_the_camera_alone());
     }
 
     #[test]

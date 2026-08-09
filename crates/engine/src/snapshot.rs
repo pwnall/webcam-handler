@@ -41,9 +41,12 @@
 //! benign case is why pass one defers on the device's present state as well as on the
 //! snapshot's record of it.
 //!
-//! The second pass builds its writes through [`crate::pairing::plan`] and runs them
-//! through [`crate::write::execute`], so "disable the partner" and "walk a plan" each
-//! happen in one place in the workspace rather than two.
+//! Both passes write through this module's own one-control-at-a-time path, and **not** through
+//! [`crate::write::execute`]. That is deliberate rather than an omission: a plan is an
+//! ordered set of writes that must all happen, and it stops at the first refusal — which
+//! is exactly wrong for a restore, whose job is to put back as much as can be put back and
+//! *report* the rest. `write::execute` and this module walk writes for different reasons,
+//! and merging them would give one of the two the wrong failure semantics.
 
 use std::collections::BTreeMap;
 

@@ -452,6 +452,56 @@ impl FrameSize {
     pub const fn is_interpretable(&self) -> bool {
         !matches!(*self, FrameSize::Unknown { .. })
     }
+
+    /// The size this entry offers nearest to `(width, height)` without exceeding it, or
+    /// `None` when the entry offers nothing that small.
+    ///
+    /// A discrete entry offers one size and either fits or does not. A **stepwise** entry
+    /// offers a whole range, and treating it as its maximum alone — which
+    /// [`FrameSize::max_dimensions`] does, correctly, for the question *it* answers — makes
+    /// a device that can deliver 640×480 exactly report 1920×1080 and call it an
+    /// adjustment. No seed camera is stepwise, which is why nothing noticed: the two
+    /// Chicony nodes and the OBSBOT all enumerate discrete sizes.
+    ///
+    /// The result is rounded *down* to the entry's step and clamped to its minimum, because
+    /// a driver takes the grid it declared and reporting an off-grid size as agreed would
+    /// be a claim the next `S_FMT` contradicts.
+    #[must_use]
+    pub fn largest_within(&self, width: u32, height: u32) -> Option<(u32, u32)> {
+        match *self {
+            FrameSize::Discrete {
+                width: w,
+                height: h,
+            } => (w <= width && h <= height).then_some((w, h)),
+            FrameSize::Stepwise {
+                min_width,
+                max_width,
+                step_width,
+                min_height,
+                max_height,
+                step_height,
+            } => {
+                if min_width > width || min_height > height {
+                    return None;
+                }
+                Some((
+                    align_down_within(width.min(max_width), min_width, step_width),
+                    align_down_within(height.min(max_height), min_height, step_height),
+                ))
+            }
+            FrameSize::Unknown { .. } => None,
+        }
+    }
+}
+
+/// `value` rounded down to a whole `step` counted from `min`, never below `min`.
+///
+/// A zero or absent step means the driver declared no grid, so the value stands.
+fn align_down_within(value: u32, min: u32, step: u32) -> u32 {
+    if step <= 1 || value <= min {
+        return value.max(min);
+    }
+    min.saturating_add((value - min) / step * step)
 }
 
 /// A frame interval (the reciprocal of a frame rate — the kernel's own convention).

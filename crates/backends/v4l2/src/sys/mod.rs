@@ -150,9 +150,11 @@ impl Drop for Fd {
 /// Map an `open(2)` failure onto the D13 registry.
 fn open_error(path: &Utf8Path, error: &std::io::Error) -> Error {
     match error.raw_os_error() {
+        // D13's `holders`, populated where the refusal is made: `EBUSY` on its own is a
+        // dead end for the reader, and the next thing they would do is run `fuser`.
         Some(libc::EBUSY) => Error::Busy {
+            holders: crate::holders::of(path),
             path: path.to_owned(),
-            holders: Vec::new(),
         },
         Some(libc::EACCES | libc::EPERM) => Error::PermissionDenied {
             path: path.to_owned(),
