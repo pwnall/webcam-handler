@@ -45,13 +45,28 @@ root="$(gate_root)"
 # `write_json_atomic` is deliberately NOT in this pattern, and the first run of the
 # widened gate is why: `engine::photo` names it in a doc comment explaining why a photo is
 # *not* written that way. Naming the home is evidence of deference, not of a reach.
+#
+# The general shape, met again at the P3 review and recorded here rather than worked
+# around: this is a `grep`, so **prose counts**. A module that spells `session.json` only
+# in a comment joins the population, and if it also contains any raw write — a test writing
+# a fixture to a temp directory, say — the gate calls it a bypass. The narrow fix (strip
+# comments before matching) would cost the population its only defence against a bypass
+# that names a session file and writes through a variable path, so the rule stays as it is
+# and a comment that means "the session document" says that instead of naming the file.
 state_dir_pattern='state_dir|XDG_STATE_HOME|XDG_RUNTIME_DIR|session_dir|runtime_dir'
 state_dir_pattern+='|SESSIONS_DIR|SESSION_FILE|SESSION_LOG_FILE|SESSION_PHOTOS_DIR'
 state_dir_pattern+='|STORE_LOCK_FILE|sessions/|session\.json|log\.ndjson'
 
 # Raw write primitives. `write_json_atomic` is the home; everything here is a way around
 # it.
-raw_write_pattern='fs::write\(|File::create\(|OpenOptions::new\(|serde_json::to_writer|to_writer_pretty'
+#
+# `File::options(` and `File::create_new(` are std's own aliases for two of the others —
+# `File::options()` *is* `OpenOptions::new()` and `File::create_new()` is
+# `File::create()` with `O_EXCL` — and they were missing until the P3 review. Two
+# byte-identical bypasses that differed only in how the open call was spelled got
+# opposite verdicts from this gate, which is the "green while checking less than it
+# claims" family (note N10) rather than the naming limit the header records.
+raw_write_pattern='fs::write\(|File::create\(|File::create_new\(|File::options\(|OpenOptions::new\(|serde_json::to_writer|to_writer_pretty'
 
 # The home itself, and the module that resolves the paths. Both are derived from the
 # engine package's location so that moving the crate moves the exemption.

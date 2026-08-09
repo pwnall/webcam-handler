@@ -479,6 +479,194 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
     );
 }
 
+#[test]
+fn a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_again() {
+    // Availability is not capability (AGENTS rule 7, rubric A4), one layer up. An
+    // interruption *after* a sample is a sweep that stopped and the samples stand: `select`
+    // moves the control to `Calibrated`, which is terminal, and the arm above asserts that.
+    // With **zero** samples every exit was closed — `may_begin_sweep` refuses `Sweeping`,
+    // `select` refuses `no_samples`, `draft` skips anything that is not `Untouched`, no
+    // shipped verb produces `Deferred`, and `Sweeping` is never terminal so the (camera,
+    // task) slot never settles either. An unplug, a `SettleTimeout` [PF:11] or an `ENOSPC`
+    // on the first photo became a permanent refusal for that control.
+    //
+    // Nothing happened, so nothing is recorded: the control goes back where the sweep found
+    // it, and only the `SweepInterrupted` line (N18) says the attempt was made.
+    let temp = TempStore::new().expect("a temp dir");
+    let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+    let backend = backend();
+    let mut camera = open(&backend);
+    let control = slug(FOCUS);
+    let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
+    let clock = MonotonicClock::new();
+
+    // The fault fires inside sample 1 — after `begin_sweep` has committed `Sweeping`, and
+    // before any sample exists.
+    backend.queue_fault(Fault::DeviceGoneMidStream);
+    let error = calibrate::run(
+        &context(temp.store(), &lock, &clock, &Recorder::new()),
+        &mut session,
+        camera.as_mut(),
+        &SweepRequest::new(control.clone(), five_across_focus()),
+    )
+    .expect_err("the camera disappears during the first sample");
+    assert_eq!(
+        error.kind(),
+        ErrorKind::DeviceGone,
+        "the device's own answer was reshaped on its way out: {error}"
+    );
+
+    // On disk, which is what the next process reads.
+    let stored = temp
+        .store()
+        .load_session(&temp.store().session_dir(&session))
+        .expect("readable");
+    assert_eq!(
+        stored.controls.get(&control).map(|entry| &entry.status),
+        Some(&ControlStatus::Untouched),
+        "a sweep that took no samples left the control mid-sweep with no way out"
+    );
+    assert!(
+        stored.controls[&control].samples.is_empty(),
+        "a sweep that recorded nothing left samples behind"
+    );
+    // The attempt is still on the record: what was lost is a status nobody can leave, not
+    // the history (N18).
+    let history = temp
+        .store()
+        .load_log(&temp.store().session_dir(&session))
+        .expect("readable");
+    assert!(
+        history
+            .iter()
+            .any(|entry| matches!(entry.event, SessionEvent::SweepInterrupted { taken: 0, .. })),
+        "the session's history does not say the sweep was attempted: {history:?}"
+    );
+
+    // And the exit that was closed: the same control sweeps again on a healthy camera, and
+    // the session settles the ordinary way.
+    let outcome = calibrate::run(
+        &context(temp.store(), &lock, &clock, &Recorder::new()),
+        &mut session,
+        camera.as_mut(),
+        &SweepRequest::new(control.clone(), five_across_focus()),
+    )
+    .expect("a control nothing was recorded against must be sweepable again");
+    assert_eq!(outcome.taken(), 5);
+    lifecycle::commit(
+        temp.store(),
+        &lock,
+        &mut session,
+        started(),
+        |draft, now| session::select_by_metric(draft, &control, MetricName::Sharpness, now),
+    )
+    .expect("a swept control selects");
+    assert!(
+        session.is_settled(),
+        "the session never settled, so its (camera, task) slot stays open forever"
+    );
+}
+
+// ---------------------------------------------------------------- the refinement pass
+
+#[test]
+fn a_refinement_pass_cannot_overwrite_the_frames_the_coarse_pass_scored() {
+    // D8's `precision` exists so a coarse pass can be followed by a fine one, and
+    // `session::begin_sweep` is legal from `Calibrated` for exactly that reason. The fine
+    // pass refines *around* the coarse winner, so the two plans overlap — and a photo named
+    // only by its requested value is unique within one sweep and not across two. The first
+    // pass's `Sample` would keep its metrics and point at a file the second pass rewrote:
+    // the module header's "the frame that is scored is the frame that is stored", true
+    // within a sweep and false across a control's history.
+    //
+    // On this deterministic fake the two frames are byte-identical at equal control values,
+    // so the collision is invisible in the bytes. What separates the two implementations is
+    // the *paths*: this asserts that no two samples of one control ever name one file, and
+    // that both files are on disk.
+    let temp = TempStore::new().expect("a temp dir");
+    let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+    let backend = backend();
+    let mut camera = open(&backend);
+    let control = slug(FOCUS);
+    let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
+    let clock = MonotonicClock::new();
+
+    let coarse = calibrate::run(
+        &context(temp.store(), &lock, &clock, &Recorder::new()),
+        &mut session,
+        camera.as_mut(),
+        &SweepRequest::new(control.clone(), five_across_focus()),
+    )
+    .expect("a willing camera");
+    lifecycle::commit(
+        temp.store(),
+        &lock,
+        &mut session,
+        started(),
+        |draft, now| session::select_by_metric(draft, &control, MetricName::Sharpness, now),
+    )
+    .expect("a swept control selects");
+
+    // The pass that D8 says must be possible: finer values around the coarse winner, two of
+    // which the coarse pass already visited.
+    let fine = SweepSpec::Explicit {
+        values: vec![256, FOCUS_OPTIMUM, 640, 768],
+    };
+    let refined = calibrate::run(
+        &context(temp.store(), &lock, &clock, &Recorder::new()),
+        &mut session,
+        camera.as_mut(),
+        &SweepRequest::new(control.clone(), fine.clone()),
+    )
+    .expect("a refinement pass is legal");
+    assert!(
+        matches!(&fine, SweepSpec::Explicit { values }
+            if coarse.samples.iter().any(|s| values.contains(&s.requested))),
+        "the two passes do not overlap, so this arm proves nothing"
+    );
+
+    // The document is what a second process reads, and it is where the two passes meet.
+    let dir = temp.store().session_dir(&session);
+    let stored = temp.store().load_session(&dir).expect("readable");
+    let entry = &stored.controls[&control];
+    assert_eq!(
+        entry.samples.len(),
+        coarse.samples.len() + refined.samples.len(),
+        "a refinement pass replaced the coarse pass's samples instead of adding to them"
+    );
+
+    let mut seen: BTreeMap<Utf8PathBuf, usize> = BTreeMap::new();
+    for sample in &entry.samples {
+        *seen.entry(sample.photo.clone()).or_default() += 1;
+    }
+    let shared: Vec<&Utf8PathBuf> = seen
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        shared.is_empty(),
+        "two samples of {control} name one file, so one of them describes a frame nobody \
+         can retrieve: {shared:?}"
+    );
+    assert_eq!(
+        seen.len(),
+        entry.samples.len(),
+        "the sample count and the photo count disagree"
+    );
+    for sample in &entry.samples {
+        let on_disk = dir.join(&sample.photo);
+        let bytes = std::fs::read(on_disk.as_std_path()).unwrap_or_else(|error| {
+            panic!("{on_disk} is in the document and not on disk: {error}")
+        });
+        assert_eq!(
+            &bytes[..2],
+            &[0xff, 0xd8],
+            "{on_disk} is not the JPEG the sample claims"
+        );
+    }
+}
+
 // ---------------------------------------------------------------- relocation
 
 #[test]

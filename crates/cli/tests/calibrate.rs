@@ -822,6 +822,232 @@ fn apply_needs_partial_while_work_is_queued_and_then_writes_exactly_what_was_cal
     assert_eq!(applied, 1, "an apply that left no trace");
 }
 
+// ------------------------------------------------------------------ giving the camera back
+
+#[test]
+fn a_sweep_borrows_the_camera_and_calibrate_restore_spends_the_record_that_gives_it_back() {
+    // AGENTS rule 8, D4 and design §5 all say a sweep leaves the camera as it found it, and
+    // `lifecycle::sweep_write` persists the pre-sweep snapshot before the first write for
+    // exactly that reason. Until P3's review nothing a user could type ever spent it:
+    // `lifecycle::recover`'s only callers in the workspace were tests, so a real
+    // `wch calibrate sweep` exited 0 with the camera holding its last swept value and the
+    // record sitting in `session.json` forever — and the *next* session on that camera
+    // recorded the previous sweep's endpoint as "the camera as the operator found it".
+    //
+    // What this arm can and cannot claim: the fake replays a profile into a fresh device
+    // per process, so a subprocess suite cannot watch a value survive between two `wch`
+    // runs. The claim here is the half that is durable and is the half that was missing —
+    // the verb exists, it reports on every control the snapshot held, and it *consumes* the
+    // record. That the camera physically goes back is the engine suite's
+    // (`lifecycle::recover`'s own tests, and `sweep.rs`'s interrupted-sweep arm) and the R3
+    // hardware rung's.
+    let scratch = Scratch::new();
+    let wch = calibrated_session(&scratch);
+    let task = "read text from the DUT display";
+    let dir = wch.only_session_dir();
+
+    // The borrow, on the record: the sweep armed a snapshot and nothing has spent it.
+    let borrowed = document(&dir);
+    let held = borrowed["pre_snapshot"]["entries"]
+        .as_array()
+        .expect("the sweep armed a pre-sweep snapshot")
+        .len();
+    assert!(held > 0, "the snapshot holds no controls: {borrowed}");
+
+    // …and the sweep said so, naming the command that undoes it. A default nobody is told
+    // about is a default nobody runs.
+    let swept_again = wch.ok(&[
+        "calibrate",
+        "sweep",
+        "cam:integrated",
+        "--task",
+        task,
+        "contrast",
+        "--values",
+        "16,32",
+        "--skip-frames",
+        "0",
+    ]);
+    assert!(
+        swept_again.stderr.contains("calibrate restore"),
+        "a sweep left the camera borrowed and did not say how to give it back: {}",
+        swept_again.stderr
+    );
+
+    let report = wch.json(&["calibrate", "restore", "cam:integrated", "--task", task]);
+    let outcomes = report["outcomes"].as_array().expect("outcomes");
+    assert_eq!(
+        outcomes.len(),
+        held,
+        "the restore did not account for every control the snapshot held: {report}"
+    );
+    for outcome in outcomes {
+        assert!(
+            outcome["outcome"] != "unrestorable",
+            "a control did not come back: {outcome}"
+        );
+    }
+    // Consumed, atomically, in the document a second process reads (D9): the record is the
+    // only route back, so a restore that reported success and kept it would be a session
+    // that thinks it put the camera back twice.
+    assert!(
+        document(&dir)["pre_snapshot"].is_null(),
+        "a complete restore left the record unspent: {}",
+        document(&dir)
+    );
+    let log = history(&dir);
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["event"] == "restored")
+            .count(),
+        1,
+        "the restore left no trace in the session's history: {log:?}"
+    );
+
+    // The other direction, and it is not an error: running it again finds nothing to put
+    // back and says so, rather than inventing a restore or refusing.
+    let again = wch.run(&["calibrate", "restore", "cam:integrated", "--task", task]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(
+        again.stderr.contains("no unconsumed pre-sweep snapshot"),
+        "an empty restore read as a restore that did nothing: {}",
+        again.stderr
+    );
+    let empty = wch.json(&["calibrate", "restore", "cam:integrated", "--task", task]);
+    assert_eq!(empty["outcomes"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn a_mutating_calibrate_verb_refuses_a_session_that_belongs_to_another_camera() {
+    // D8: a session belongs to a (camera fingerprint, task) pair, and `lifecycle::find`
+    // walks the whole tree by design so `--session <uuid>` can reach one recorded against
+    // another camera — which is the only way the disagreement arises, and therefore the
+    // only reason the check has anything to refuse.
+    //
+    // Before P3's review the check lived in `apply` alone. `plan` and `sweep` reached a
+    // camera without it: a sweep through a foreign `--session` drove camera B and recorded
+    // the samples in a document whose fingerprint is camera A's, after which `apply` wrote
+    // B's measurements to A with its own check green. Worse for rule 8 — `arm_pre_snapshot`
+    // short-circuits on the snapshot already persisted for A, so B was moved with no record
+    // of it anywhere on disk and `recover` would refuse to put it back.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["chicony-rgb", "obsbot-tiny3"]);
+    let task = "read text from the DUT display";
+    wch.ok(&["calibrate", "start", "cam:integrated", "--task", task]);
+    wch.ok(&[
+        "calibrate",
+        "plan",
+        "cam:integrated",
+        "--task",
+        task,
+        "brightness",
+    ]);
+    let id = wch.json(&["calibrate", "list"])["sessions"][0]["id"]
+        .as_str()
+        .expect("a session id")
+        .to_owned();
+
+    // The fields that actually differ, read from the enumeration rather than transcribed.
+    let cameras = wch.json(&["list"]);
+    let mine = &cameras["cameras"][0]["fingerprint"];
+    let theirs = &cameras["cameras"][1]["fingerprint"];
+    let differing: Vec<&str> = ["bus_path", "usb_id", "card", "driver", "serial"]
+        .into_iter()
+        .filter(|field| !mine[field].is_null() && !theirs[field].is_null())
+        .filter(|field| mine[field] != theirs[field])
+        .collect();
+    assert!(
+        !differing.is_empty(),
+        "the two replayed cameras are indistinguishable, so this arm proves nothing"
+    );
+
+    // Every mutating verb, each with the twin that must still work.
+    let foreign: Vec<Vec<&str>> = vec![
+        vec![
+            "calibrate",
+            "plan",
+            "cam:obsbot",
+            "--session",
+            &id,
+            "brightness",
+        ],
+        vec![
+            "calibrate",
+            "sweep",
+            "cam:obsbot",
+            "--session",
+            &id,
+            "brightness",
+            "--values",
+            "0,32",
+            "--skip-frames",
+            "0",
+        ],
+        vec![
+            "calibrate",
+            "select",
+            "cam:obsbot",
+            "--session",
+            &id,
+            "brightness",
+            "--metric",
+            "sharpness",
+        ],
+        vec!["calibrate", "restore", "cam:obsbot", "--session", &id],
+        vec!["calibrate", "apply", "cam:obsbot", "--session", &id],
+    ];
+    for args in &foreign {
+        let refused = wch.refuses(args);
+        assert_eq!(
+            refused.code, 1,
+            "{args:?} was a usage error rather than a device refusal: {}",
+            refused.stderr
+        );
+        for field in &differing {
+            assert!(
+                refused.stderr.contains(field),
+                "{args:?}: {field} differs and the refusal does not name it: {}",
+                refused.stderr
+            );
+        }
+    }
+
+    // Nothing the foreign runs asked for landed: the OBSBOT was never swept into the
+    // Chicony's document, and the Chicony's own snapshot was never armed for it.
+    let dir = wch.only_session_dir();
+    let session = document(&dir);
+    assert!(
+        session["controls"]["brightness"]["samples"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "a sweep on the wrong camera recorded samples anyway: {session}"
+    );
+    assert!(
+        session["pre_snapshot"].is_null(),
+        "a refused sweep armed a snapshot: {session}"
+    );
+
+    // And the twin: the camera the session was recorded against takes the same sweep.
+    wch.ok(&[
+        "calibrate",
+        "sweep",
+        "cam:integrated",
+        "--session",
+        &id,
+        "brightness",
+        "--values",
+        "0,32",
+        "--skip-frames",
+        "0",
+    ]);
+    assert_eq!(
+        document(&dir)["controls"]["brightness"]["samples"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+}
+
 // ------------------------------------------------------------------ the verbs' edges
 
 #[test]
@@ -972,6 +1198,104 @@ fn a_plan_covers_every_control_and_says_why_the_ones_it_cannot_calibrate_are_out
             .iter()
             .any(|slug| blocked.iter().any(|(b, _)| b == slug)),
         "a blocked control was queued for sweeping too"
+    );
+}
+
+#[test]
+fn a_plan_queues_the_motorised_controls_because_motion_is_a_sweep_flag_and_not_a_refusal() {
+    // `lifecycle::uncalibratable` asks the sweep planner with `allow_motion = true`, and N19
+    // states the reason as law: that a control moves motors is a reason a *sweep* needs a
+    // flag (design §5), not a reason the control cannot be calibrated. Nothing pinned the
+    // `true` — the P3 review flipped it to `false` and the whole workspace stayed green,
+    // because the only test that drafts a whole device drafts the motor-less Chicony. This
+    // is that arm, on the PTZ camera the rule exists for.
+    //
+    // Both directions of the same rule, which is the point: the control is *draftable*
+    // (queued, not blocked) and it is not *implicitly sweepable* (the sweep is refused
+    // without `--allow-motion` and accepted with it). A build that blocked PTZ controls at
+    // draft time would fail the first half; one that swept motors without being told would
+    // fail the second.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["obsbot-tiny3"]);
+    let task = "framing";
+    wch.ok(&["calibrate", "start", "cam:obsbot", "--task", task]);
+    let session = wch.json(&["calibrate", "plan", "cam:obsbot", "--task", task]);
+
+    let queued: Vec<&str> = session["queue"]
+        .as_array()
+        .expect("a queue")
+        .iter()
+        .map(|slug| slug.as_str().expect("a slug"))
+        .collect();
+    let recorded = session["controls"].as_object().expect("controls");
+    // Read from the device's own enumeration rather than transcribed, so a re-capture that
+    // renames a motor control does not quietly turn this into a test of nothing.
+    let controls = wch.json(&["controls", "cam:obsbot"]);
+    let motorised: Vec<&str> = controls["controls"]
+        .as_array()
+        .expect("controls")
+        .iter()
+        .filter_map(|desc| desc["slug"].as_str())
+        .filter(|slug| slug.starts_with("pan") || slug.starts_with("tilt"))
+        .collect();
+    assert!(
+        !motorised.is_empty(),
+        "the replayed camera has no motorised control, so this arm proves nothing: \
+         {controls}"
+    );
+    for slug in &motorised {
+        assert!(
+            queued.contains(slug),
+            "{slug} moves motors and the draft left it out of the queue: {session}"
+        );
+        assert!(
+            recorded
+                .get(*slug)
+                .is_none_or(|entry| entry["status"]["status"] != "blocked"),
+            "{slug} was blocked at draft time; a PTZ camera's whole purpose is uncalibratable: \
+             {session}"
+        );
+    }
+
+    // The other half: a plan that would move motors still says so first (§5's product
+    // default). One control, two steps, and only because `--allow-motion` was typed.
+    let control = motorised.first().expect("a motorised control");
+    let refused = wch.refuses(&[
+        "calibrate",
+        "sweep",
+        "cam:obsbot",
+        "--task",
+        task,
+        control,
+        "--values",
+        "0,3600",
+        "--skip-frames",
+        "0",
+    ]);
+    assert!(
+        refused.stderr.contains("motion"),
+        "the refusal did not name the reason: {}",
+        refused.stderr
+    );
+    let swept = wch.json(&[
+        "calibrate",
+        "sweep",
+        "cam:obsbot",
+        "--task",
+        task,
+        control,
+        "--values",
+        "0,3600",
+        "--allow-motion",
+        "--skip-frames",
+        "0",
+    ]);
+    assert_eq!(
+        swept["controls"][control]["samples"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "the sweep the flag allowed took no samples: {swept}"
     );
 }
 

@@ -82,6 +82,44 @@ RS
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+# The P3-review widening, proven: the same bypass spelled with std's *aliases* for the
+# primitives the pattern already caught. `File::options()` is `OpenOptions::new()` and
+# `File::create_new()` is `File::create()` with `O_EXCL`; before this arm the gate gave
+# two byte-identical bypasses opposite verdicts because of how the open was spelled.
+fail_case_bypass_spelled_with_file_options() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/daemon/src/journal_options.rs" <<'RS'
+//! Seeded by the gate selftest: the same bypass, spelled the short way.
+use std::io::Write;
+
+pub fn note(dir: &camino::Utf8Path, line: &str) {
+    let mut f = std::fs::File::options()
+        .append(true)
+        .create(true)
+        .open(dir.join(schema::limits::SESSION_LOG_FILE))
+        .unwrap();
+    let _ = f.write_all(line.as_bytes());
+}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_bypass_spelled_with_file_create_new() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/daemon/src/journal_new.rs" <<'RS'
+//! Seeded by the gate selftest: the same bypass, with O_EXCL on it.
+use std::io::Write;
+
+pub fn note(dir: &camino::Utf8Path, line: &str) {
+    let mut f = std::fs::File::create_new(dir.join("log.ndjson")).unwrap();
+    let _ = f.write_all(line.as_bytes());
+}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 fail_case_nothing_to_scan() {
     local tree
     tree="$(gate_scratch_tree)"

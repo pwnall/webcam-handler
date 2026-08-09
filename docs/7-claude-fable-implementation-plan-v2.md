@@ -26,6 +26,7 @@ already prove. Evidence entries live in `docs/implementation-notes.md`.
 | P0 — foundations | `ddde6f7` | `g0`: 8 rows | — | gates selftested both directions from day one |
 | P1 — V4L2 read path | `59f8293`, fixes through `b7f84c3` | `g1`: 16 rows | E1 (+ its amendments) | 4 confirmed defects, fixed; PF:14–15 and N7 landed, and PF:13 (recorded while P0 was open) became corpus |
 | P2 — writes + photo | `52ec45c`, fixes in `7181aef` | `g2`: 25 rows | E2, E3, E4 | 31 candidates, 15 confirmed, fixed; PF:16 and N9 landed |
+| P3 — calibration | `abafc25`, `856170a`, fixes in the commit carrying E6 | `g3`: 31 rows | E5, E6 | 31 candidates, 12 confirmed (9 distinct defects), fixed; PF:17–20, N11–N21 landed as the phase ran, N22–N24 with the fixes; the eighth calibrate verb (`calibrate restore`) is the review's one surface change |
 
 Also landed along the way, outside any v1 phase: the privileged development helper
 `wch-priv` (§2.13, note N8) and the managed R2 rung (`just rung-vivid-managed`), which
@@ -159,7 +160,11 @@ evidence).
 
 **Then, in its own session:** the adversarial review over the P3 diff; confirmed
 findings fixed in a follow-up commit; a dated evidence entry; rubric reconciliation
-appended (docs/8 Part E).
+appended (docs/8 Part E). **Done** — E6 records it, and the ledger above carries the
+phase's row. The one thing the review changed on the surface is an **eighth** calibrate
+verb, `restore`, which spends the persisted pre-sweep snapshot: D4 and §5 say a sweep
+leaves the camera as it found it and nothing shipped could (note N23). D10's `calibrate_*`
+method list therefore lands at eight when P4c routes it.
 
 ### P3f — The mutation floor
 

@@ -76,6 +76,29 @@ fail_case_the_corpus_has_no_profile_to_replay() {
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+# The completeness half, and the only arm whose seam is the predicate's own row table
+# rather than the tree. The P3 review's finding was that six of the seven `calibrate`
+# subverbs could vanish from that table with the gate still green, so the shape of the
+# inverse is exactly "a row is missing": there is no way to seed it in the tree without
+# rebuilding `wch` with an eighth subverb, which would cost a full compile per selftest
+# run. The mutated *predicate* still drives the real binary, the real bundle and the real
+# corpus — only the list under test is doctored, which is rule 2's "construct the buggy
+# implementation" rather than N10's stub that agrees with its author.
+fail_case_a_calibrate_subverb_loses_its_validation_row() {
+    local dir mutant
+    dir="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-json-rows.XXXXXXXX")"
+    mutant="$dir/$(basename "$GATE")"
+    cp "$(dirname "$GATE")/lib.sh" "$dir/lib.sh"
+    # One row, named rather than positional, so a reordering of the table does not silently
+    # turn this arm into a no-op.
+    grep -v '^    "calibrate-sweep|' "$GATE" >"$mutant"
+    if grep -q '^    "calibrate-sweep|' "$mutant"; then
+        printf 'selftest: the calibrate-sweep row was not removed\n' >&2
+        return 0
+    fi
+    bash "$mutant"
+}
+
 fail_case_a_verb_stops_answering() {
     local tree
     tree="$(gate_scratch_tree)"

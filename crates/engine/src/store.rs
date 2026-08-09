@@ -138,17 +138,33 @@ impl SessionStore {
             .join(id.to_string())
     }
 
-    /// Where one control's sample photos go, **relative to the session directory**.
+    /// Where one **pass** of one control's sample photos go, relative to the session
+    /// directory.
     ///
     /// Relative because D9 says a session directory relocates as a unit, and a
     /// [`schema::session::Sample`] records this path verbatim.
+    ///
+    /// `from` is the number of samples the control already carried when this sweep began —
+    /// the index its first sample will take in the control's history. D9's layout writes
+    /// `photos/<control-slug>/<value>`, and that name is unique only *within* one sweep:
+    /// D8's `precision` exists so a coarse pass can be followed by a fine one, `begin_sweep`
+    /// is legal from `Calibrated` for exactly that reason, and the two passes overlap on
+    /// the values the second one refines around. A second pass writing `128.jpg` over the
+    /// first's leaves the first pass's [`schema::session::Sample`] naming a file that no
+    /// longer holds the frame its metrics describe — and on real optics the refinement pass
+    /// is run *because* the scene changed, so the two pictures are genuinely different.
+    /// The pass component is what keeps "the frame that is scored is the frame that is
+    /// stored" true across a control's whole history (note N22).
+    ///
+    /// A pass that records nothing reuses its predecessor's directory, which is correct:
+    /// there is nothing on the record naming what is in it.
     ///
     /// # Errors
     ///
     /// [`Error::ControlUnknown`] when the slug has no usable directory name — a slug of
     /// punctuation is not a control this tool ever enumerated
     /// (`ControlSlug::from_name` refuses those), so it reached the session file by hand.
-    pub fn photo_dir_rel(control: &ControlSlug) -> Result<Utf8PathBuf> {
+    pub fn photo_dir_rel(control: &ControlSlug, from: usize) -> Result<Utf8PathBuf> {
         let component = slugify(control.as_str(), Separator::Underscore);
         if component.is_empty() {
             return Err(Error::ControlUnknown {
@@ -156,16 +172,22 @@ impl SessionStore {
                 did_you_mean: Vec::new(),
             });
         }
-        Ok(Utf8PathBuf::from(limits::SESSION_PHOTOS_DIR).join(component))
+        Ok(Utf8PathBuf::from(limits::SESSION_PHOTOS_DIR)
+            .join(component)
+            .join(from.to_string()))
     }
 
-    /// Where one control's sample photos go on disk.
+    /// Where one pass of one control's sample photos go on disk.
     ///
     /// # Errors
     ///
     /// As [`SessionStore::photo_dir_rel`].
-    pub fn photo_dir(session_dir: &Utf8Path, control: &ControlSlug) -> Result<Utf8PathBuf> {
-        Ok(session_dir.join(SessionStore::photo_dir_rel(control)?))
+    pub fn photo_dir(
+        session_dir: &Utf8Path,
+        control: &ControlSlug,
+        from: usize,
+    ) -> Result<Utf8PathBuf> {
+        Ok(session_dir.join(SessionStore::photo_dir_rel(control, from)?))
     }
 
     // ------------------------------------------------------------------- mutations
@@ -269,8 +291,9 @@ impl SessionStore {
         _lock: &StoreLock,
         session_dir: &Utf8Path,
         control: &ControlSlug,
+        from: usize,
     ) -> Result<Utf8PathBuf> {
-        let dir = SessionStore::photo_dir(session_dir, control)?;
+        let dir = SessionStore::photo_dir(session_dir, control, from)?;
         fs::create_dir_all(dir.as_std_path()).map_err(|err| storage_io(&dir, &err))?;
         Ok(dir)
     }
@@ -1159,22 +1182,28 @@ mod tests {
     #[test]
     fn photo_paths_are_relative_so_a_session_directory_relocates_as_a_unit() {
         let control = ControlSlug::parse("focus_absolute").expect("literal slug");
-        let rel = SessionStore::photo_dir_rel(&control).expect("a usable slug");
-        assert_eq!(rel, Utf8PathBuf::from("photos/focus_absolute"));
+        let rel = SessionStore::photo_dir_rel(&control, 0).expect("a usable slug");
+        assert_eq!(rel, Utf8PathBuf::from("photos/focus_absolute/0"));
         assert!(rel.is_relative(), "{rel} is absolute");
+
+        // A second pass over the same control writes somewhere else, so its photos cannot
+        // land on the first pass's — the property note N22 exists for.
+        let refined = SessionStore::photo_dir_rel(&control, 5).expect("a usable slug");
+        assert_eq!(refined, Utf8PathBuf::from("photos/focus_absolute/5"));
+        assert_ne!(rel, refined);
 
         // A hand-edited slug cannot walk out of the session directory: the transform is
         // the one home and it emits `[a-z0-9_]` runs, so the separators are gone before a
         // path is ever built.
         let traversal = ControlSlug::parse("../../etc").expect("non-empty");
-        let neutral = SessionStore::photo_dir_rel(&traversal).expect("it slugs to something");
-        assert_eq!(neutral, Utf8PathBuf::from("photos/etc"));
+        let neutral = SessionStore::photo_dir_rel(&traversal, 0).expect("it slugs to something");
+        assert_eq!(neutral, Utf8PathBuf::from("photos/etc/0"));
         assert!(!neutral.as_str().contains(".."), "{neutral}");
 
         // And a slug that names no directory at all is refused rather than made up.
         let nothing = ControlSlug::parse("../..").expect("non-empty");
         assert_eq!(
-            SessionStore::photo_dir_rel(&nothing)
+            SessionStore::photo_dir_rel(&nothing, 0)
                 .expect_err("punctuation is not a control")
                 .kind(),
             ErrorKind::ControlUnknown
@@ -1330,16 +1359,16 @@ mod tests {
 
         let made = temp
             .store()
-            .create_photo_dir(&lock, &dir, &slug)
+            .create_photo_dir(&lock, &dir, &slug, 0)
             .expect("makeable");
         assert!(made.is_dir(), "{made} was not made");
-        assert_eq!(made, dir.join("photos/focus_absolute"));
+        assert_eq!(made, dir.join("photos/focus_absolute/0"));
 
         // And the refusal travels: a slug with no directory name makes no directory.
         let nothing = ControlSlug::parse("---").expect("non-empty");
         assert_eq!(
             temp.store()
-                .create_photo_dir(&lock, &dir, &nothing)
+                .create_photo_dir(&lock, &dir, &nothing, 0)
                 .expect_err("not a control")
                 .kind(),
             ErrorKind::ControlUnknown
@@ -2016,7 +2045,7 @@ mod tests {
                     requested: 42,
                     applied: 40,
                     warnings: Vec::new(),
-                    photo: SessionStore::photo_dir_rel(&slug)
+                    photo: SessionStore::photo_dir_rel(&slug, 0)
                         .expect("a usable slug")
                         .join("42.jpg"),
                     metrics: BTreeMap::new(),

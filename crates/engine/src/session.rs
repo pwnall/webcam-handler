@@ -187,6 +187,43 @@ pub fn record_sample(
     Ok(event)
 }
 
+/// Put a control that began a sweep and recorded nothing back where the sweep found it.
+///
+/// The interruption path's other half. Leaving a control mid-sweep is right when samples
+/// were taken — they happened, and `select` is the way out of [`ControlStatus::Sweeping`]
+/// — but a sweep that stopped before its *first* sample recorded nothing, and
+/// `Sweeping { done: 0 }` is a state with no exit: `may_begin_sweep` refuses it,
+/// `selectable` refuses `no_samples`, `crate::lifecycle::draft` skips anything that is
+/// not `Untouched`, and `Sweeping` is never terminal, so the session's (camera, task) slot
+/// never settles either. A transient availability failure — an unplug, a `SettleTimeout`
+/// \[PF:11\], `ENOSPC` on the first photo — would become a permanent capability refusal
+/// for that control, which is the conversion AGENTS rule 7 forbids, one layer up.
+///
+/// Only the status moves. The `SweepInterrupted` line (N18) is what records that the
+/// attempt happened, and it is appended by the same path.
+///
+/// # Errors
+///
+/// [`Error::IllegalTransition`] from any state other than `Sweeping { done: 0 }` —
+/// including a sweep that took samples, whose record must not be thrown away.
+pub fn abandon_sweep(session: &mut Session, control: &ControlSlug, now: Stamp) -> Result<()> {
+    let entry = session.controls.entry(control.clone()).or_default();
+    let ControlStatus::Sweeping { done: 0, .. } = &entry.status else {
+        return Err(refuse(&entry.status, "abandon the sweep of", control));
+    };
+    if !entry.samples.is_empty() {
+        // The counter and the samples disagree, which is a defect somewhere else; refusing
+        // is the direction that keeps the evidence.
+        return Err(illegal(
+            format!("sweeping(0 done, {} sample(s))", entry.samples.len()),
+            format!("abandon the sweep of {control}"),
+        ));
+    }
+    entry.status = ControlStatus::Untouched;
+    session.updated_at = now;
+    Ok(())
+}
+
 /// Choose a value an agent or a human picked by looking at the photos.
 ///
 /// Selection is by *applied* value, not by requested value: the applied value is the one
@@ -656,6 +693,57 @@ mod tests {
             later(),
         )
         .expect("a refinement pass is legal");
+    }
+
+    #[test]
+    fn a_sweep_that_recorded_nothing_is_abandoned_and_one_that_recorded_something_is_not() {
+        // Both directions of the rule the interruption path relies on. Zero samples: the
+        // control goes back to `Untouched`, because `Sweeping { done: 0 }` has no exit and
+        // an availability failure must not become a capability refusal (rule 7). One
+        // sample: refused, because the sample is evidence and `select` is the way out.
+        let mut session = fixture();
+        let focus = slug("focus_absolute");
+        enqueue(&mut session, &focus, Stamp::epoch());
+        begin_sweep(
+            &mut session,
+            &focus,
+            &SweepSpec::Uniform { step: 10 },
+            5,
+            Stamp::epoch(),
+        )
+        .expect("a fresh control sweeps");
+        abandon_sweep(&mut session, &focus, later()).expect("nothing was recorded");
+        assert_eq!(session.controls[&focus].status, ControlStatus::Untouched);
+        assert_eq!(session.updated_at, later());
+        // …and it is sweepable again, which is the whole point.
+        begin_sweep(
+            &mut session,
+            &focus,
+            &SweepSpec::Uniform { step: 10 },
+            5,
+            later(),
+        )
+        .expect("an abandoned sweep leaves a sweepable control");
+        record_sample(
+            &mut session,
+            &focus,
+            sample(10, &[(MetricName::Sharpness, 1.0)]),
+            later(),
+        )
+        .expect("a running sweep accepts samples");
+        let err = abandon_sweep(&mut session, &focus, later())
+            .expect_err("a sweep with a sample behind it is not nothing");
+        assert_eq!(err.kind(), ErrorKind::IllegalTransition);
+        assert_eq!(session.controls[&focus].samples.len(), 1);
+
+        // And from every state that is not a sweep at all.
+        let gamma = slug("gamma");
+        assert_eq!(
+            abandon_sweep(&mut session, &gamma, later())
+                .expect_err("nothing was swept")
+                .kind(),
+            ErrorKind::IllegalTransition
+        );
     }
 
     // -------------------------------------------------- illegal transitions

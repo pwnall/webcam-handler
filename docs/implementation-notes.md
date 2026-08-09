@@ -1930,3 +1930,328 @@ profile can carry is the absence of a motor.
 digital windowing from mechanical PTZ — UVC's `CT_DIGITAL_WINDOW_CONTROL` is the obvious
 candidate and `uvcvideo` exposes no V4L2 control for it on this kernel — at which point
 design §5 could key its motor rules on the mechanism rather than on the name.
+
+---
+
+## N22 — A sample photo's path carries the sweep pass, because D9's name is unique only within one sweep
+
+**Doc:** design D9 fixes the session layout, sample photos included:
+`photos/<control-slug>/<value>.jpg|png`. D8 says `precision` is "the final sampling step …
+so multi-pass refinement (coarse → fine) is representable", and
+`engine::session::begin_sweep` is legal from `Calibrated` for exactly that reason, with a
+test (`a_calibrated_control_can_be_swept_again_for_a_finer_pass`) whose comment reads "a
+state machine that refused this would make the field a lie".
+
+**Repo:** `photos/<control-slug>/<from>/<requested>.<ext>`, where `<from>` is the number of
+samples the control already carried when the sweep began — the index this pass's first
+sample takes in the control's history.
+
+**Why.** P3c's naming rule is stated with its scope: a requested value is unique *within a
+sweep*, because the planner deduplicates. A control's history is longer than one sweep.
+`begin_sweep` resets `done` and leaves `samples`; `record_sample` appends; a refinement pass
+refines *around* the coarse winner, so the two plans overlap by construction. Under D9's
+literal name the second pass's `128.jpg` lands on the first pass's, and the first pass's
+`Sample` — with its own metrics, its own `captured_at`, its own `applied` — keeps naming a
+file that no longer holds the frame those numbers describe. The module header states the law
+this breaks in as many words: *the frame that is scored is the frame that is stored.* It was
+true within a sweep and false across two.
+
+It is not a hypothetical shape. On real optics a refinement pass is run *because* something
+changed — the scene, the lighting, an interacting control the operator has since
+calibrated — so the two pictures at one value are genuinely different pictures, and the one
+an agent opens to check a score is the wrong one. The deterministic fake hides it perfectly:
+identical control values produce byte-identical frames, so nothing in `crates/engine/tests`
+could see the overwrite in the bytes. The arm that pins it —
+`a_refinement_pass_cannot_overwrite_the_frames_the_coarse_pass_scored` — therefore asserts
+the *paths*, that no two samples of one control ever name one file, which is a claim the
+fake cannot make true by accident.
+
+**Why the sample count rather than a pass counter.** The number is already on the document,
+so nothing new is persisted and no schema moves. It is monotone across passes that record
+anything, and a pass that records *nothing* reuses its predecessor's directory — which is
+correct rather than a hole: there is nothing on the record naming what is in it, and an
+interrupted first sample now returns the control to `Untouched` anyway (N24).
+
+**What this does not fix, stated rather than hidden.** The samples of two passes still live
+in one `ControlSession`, so `select_by_metric` ranks the union and `sampled_precision`
+computes a stride across two sampling grids. Both are defensible when the scene did not
+change and neither is when it did, and telling those apart is a D8 question — a pass
+boundary on the record — rather than a path question. Recorded here because the P3 review
+raised it alongside this defect and it is not closed.
+
+**Retires when:** D8 gives a pass its own identity on the document (a `passes` list, or a
+`SweepRun` a `Sample` belongs to), at which point the path is derived from that identity
+rather than from a count, and the ranking question above has somewhere to be answered.
+
+---
+
+## N23 — Restoring after a calibration is a verb, not a default, and it is session-scoped
+
+**Doc:** design D4 — "Sweeps and guarded operations wrap themselves in snapshot/restore by
+default; the tool leaves the camera as it found it unless told to keep changes (`--keep`)" —
+design §5's "every sweep/guarded operation restores state by default", and AGENTS rule 8.
+D10's settled method list has seven `calibrate_*` methods. N20 rules that `apply` does *not*
+restore and does not consume the pre-sweep snapshot, and justifies both by pointing at
+`lifecycle::recover`: "the same function an ordinary session end and a crash recovery both
+run — is what spends it".
+
+**Repo, before this note:** no process ran it. `grep -rn recover crates/cli crates/cli-core`
+was empty; every caller of `lifecycle::recover` in the workspace was a test. `Session::
+pre_snapshot` was written by the product and read only by tests, so `wch calibrate sweep`
+exited 0 with the camera holding its last swept value and the record unspent forever — and
+because `arm_pre_snapshot` is once per *session*, the next `calibrate start` on that camera
+recorded the previous sweep's endpoint as "the camera as the operator found it". The
+doctrine's anchor was a record of the tool's own residue. Confirmed by three independent
+skeptics in the P3 review, two of them against attached hardware.
+
+**Repo now:** an eighth verb, `wch calibrate restore <camera> --task|--session`, which runs
+`lifecycle::recover` — restore in D4's automation-first order, then consume — and answers
+with the same `RestoreReport` `wch restore` does. Running it twice is not an error: the
+second time there is nothing left to put back and it says so. Every sweep that leaves a
+snapshot armed prints, on standard error, the exact command that spends it.
+
+**Why a verb and not a default, which is what D4 says.** Three settled facts point the same
+way, and they are all about the snapshot being *session*-scoped:
+
+1. `arm_pre_snapshot` takes it **once per session** and its doc says why — by the second
+   sweep the first one's writes are on the device, and a snapshot taken then would restore
+   the camera into the middle of a calibration nobody asked for. A per-sweep restore wants a
+   per-sweep snapshot, which is a different design and a different crash story (§6).
+2. N20 requires the record to survive `apply`: "that record describes the camera **before
+   the calibration**, and it is the only route back to it; `apply` is when an operator is
+   most likely to want that route." A sweep that consumed it would delete the route the
+   moment the last sweep finished. A sweep that restored *without* consuming would restore
+   twice and still leave the question of who spends it.
+3. Design §5's "motors wear". A session that sweeps pan and then tilt would, under a
+   sweep-scoped default, drive the pan head back to where it started and immediately leave
+   it there while tilt sweeps — travel spent to reach a state no one observes. On the seed
+   PTZ hardware the default D4 words describe is worse for the device than the verb.
+
+So `--keep` has no producer, and that is the honest reading rather than an omission: the
+restore is explicit, and declining it is not running the verb. What replaces "by default" is
+"and it tells you" — the sweep names the command, because a default nobody is told about and
+a verb nobody knows about fail the same way.
+
+**What is not claimed.** The subprocess suite asserts the durable half — that the verb
+exists, reports on every control the snapshot held, and *consumes* the record — because the
+fake replays a profile into a fresh device per process and cannot show a value surviving
+between two `wch` runs. That the camera physically goes back is the engine suites' claim and
+the R3 rung's, and both already make it.
+
+**Retires when:** either the snapshot becomes sweep-scoped (at which point D4's sentence is
+implementable as written and this verb becomes `--keep`'s inverse), or D8 grows the explicit
+close/abandon verb N14 names in its own retirement clause — at which point ending a session
+and giving the camera back are one act rather than two, and D10's method list settles at
+eight for a different reason than this one.
+
+---
+
+## N24 — A sweep that recorded nothing puts the control back, because `Sweeping { done: 0 }` has no exit
+
+**Doc:** design D8's per-control vocabulary runs `Untouched` → `AutoDisabled` → `Sweeping` →
+`Calibrated | Deferred | Blocked`; no arrow goes backwards. N18 records that an interruption
+leaves "a control left `Sweeping`, and a pre-sweep snapshot still armed", and says nothing
+about what the operator does next.
+
+**Repo:** `engine::session::abandon_sweep` returns a control to `Untouched`, and
+`engine::calibrate::run`'s interruption path calls it when the sweep recorded **zero**
+samples.
+
+**Why.** Leaving a control mid-sweep is right when samples were taken — they happened, and
+`select` is the documented way out. With zero samples every exit was closed, and the P3
+review walked all of them: `may_begin_sweep` refuses `Sweeping`, so no re-sweep;
+`selectable` refuses `no_samples`; `lifecycle::draft` skips anything that is not `Untouched`,
+so `plan` is a no-op; `reorder_queue` requires a strict permutation, so the control cannot be
+dropped from the queue; no shipped verb produces `Deferred` or `Blocked`; and `Sweeping` is
+never terminal, so `is_open` stays true and `calibrate start` refuses that (camera, task)
+slot forever. A transient *availability* failure at sample 1 — an unplug, a `SettleTimeout`
+\[PF:11\], `ENOSPC` on the first photo write, a `FormatUnsupported` from the first
+`start_stream` — was converted into a permanent *capability* refusal for that control. That
+is the one conversion AGENTS rule 7 and rubric A4 exist to forbid, applied one layer up from
+where they usually watch for it.
+
+The backwards arrow is the smallest correct answer: nothing was recorded, so nothing needs
+recording. The alternative — permitting `begin_sweep` from `Sweeping { done: 0 }` — leaves
+the session unsettleable, so the (camera, task) slot stays refused even after the control is
+calibrated. `abandon_sweep` refuses from every other state, samples included, so it cannot
+be the way somebody's work is thrown away.
+
+**What still holds.** The attempt is not erased: `SweepInterrupted` is appended by the same
+path (N18), so `calibrate status` still says a sweep was tried and why it stopped. And the
+commit is best-effort for N18's reason — a store that cannot take it must not answer "the
+disk is full" to somebody whose camera was pulled out.
+
+**Retires when:** D8 gains a durable "this sweep is running, owned by that process" fact —
+N18's own retirement trigger. Silence would then be readable, and a zero-sample interruption
+would be a recorded state rather than an unreachable one.
+
+---
+
+## E6 — The P3 adversarial review, 2026-08-09
+
+docs/8 Part E asks for a review pass at each phase boundary; P1's is in E1's amendments and
+P2's is E4. This is P3's, over the five commits `361bcd8..856170a`. Six independent lenses
+raised **31 candidates**, each attacked by three skeptics instructed to refute it. **Twelve
+survived**, and they dedupe to **nine distinct defects** — two pairs and one triple were the
+same defect seen from different lenses. All nine are fixed in the commit carrying this
+entry, each with the test or gate row that turns red without it.
+
+**The one that mattered most, and it is a doctrine failure rather than a bug.** Design D4,
+design §5 and AGENTS rule 8 all say a sweep leaves the camera as it found it.
+`lifecycle::sweep_write` persists the pre-sweep snapshot before the first write for exactly
+that reason — and **nothing a user could type ever spent it**. Every caller of
+`lifecycle::recover` in the workspace was a test, so `Session::pre_snapshot` was written by
+the product and read only by the suite: rubric A8's "a typed declaration nothing reads",
+with a hardware consequence. A skeptic reproduced it on `/dev/video0` (brightness left at
+220, operator's 128 unrecovered) and on the OBSBOT (head parked at the last swept pan), and
+showed the second half too: because `arm_pre_snapshot` is once per *session*, the next
+`calibrate start` recorded the previous sweep's endpoint as "the camera as the operator
+found it". The doctrine's anchor had become a record of the tool's own residue. N20 states
+as settled fact that `recover` is "the same function an ordinary session end and a crash
+recovery both run" — a caller that did not exist; the note was not justifying the gap, it
+was assuming it closed. Fixed as an eighth verb (N23), driven against both cameras below.
+
+**Two the fixture choice hid, and they are the review's methodological lesson.**
+
+- `uncalibratable` asks the sweep planner with `allow_motion = true`, and N19 states the
+  reason as law: motion is a reason a *sweep* needs a flag, not a reason a control cannot be
+  calibrated. Flipping it to `false` left the entire workspace green — 618 tests, zero
+  failures — because the one test that drafts a whole device drafts the motor-less Chicony,
+  while `obsbot-tiny3` sat in the corpus, loaded by two other tests in the same file. The
+  rule that lets this tool calibrate a PTZ camera at all was pinned by nothing.
+- A control's sample photos were named `photos/<control>/<value>`, unique within one sweep
+  and not across a control's history. D8's `precision` exists so a coarse pass can be
+  followed by a fine one; the fine pass refines *around* the coarse winner, so the two plans
+  overlap and the second pass's frames land on the first's while the first's samples still
+  name them. Invisible on the fake, which produces byte-identical frames at identical
+  control values — the test that catches it asserts the *paths* (N22).
+
+**Two gates green while checking less than they claimed** — note N10's family, for the third
+and fourth time. `json-validates.sh` derived its verb population from top-level `--help`
+only and matched rows by prefix, so a single `calibrate-start` row satisfied the whole
+seven-verb subtree: deleting the other six left `PASS json-validates`, exit 0, six fewer
+documents validated. `atomic-write-home.sh`'s raw-write pattern omitted `File::options(` and
+`File::create_new(`, std's own aliases for two primitives it did catch, so two byte-identical
+bypasses got opposite verdicts on how the open was spelled. Both criteria stated the
+stronger guarantee in the same words the predicate did not have.
+
+**Two conversions of the kind the rubric watches for, one layer above where it watches.** A
+sweep interrupted before its *first* sample left the control in `Sweeping { done: 0 }`, a
+state every shipped verb refuses — so an unplug, a settle timeout \[PF:11\] or `ENOSPC` on
+the first photo became a permanent capability refusal for that control and a (camera, task)
+slot that never settles (N24). And `calibrate plan`/`sweep` accepted `--session <uuid>` for a
+camera that was not the session's: the D8 fingerprint law was implemented in `apply` alone,
+so a sweep could drive camera B, record the samples in camera A's document, and let `apply`
+write them to A with its own check green — and because `arm_pre_snapshot` short-circuits on
+A's snapshot, B was moved with **no record of it anywhere on disk**.
+
+**Two graded LOW, both structural rather than observable, both now closed by construction.**
+`ChosenByArg::ALL` was a hand-written array driving the `--by` parser, so a variant the
+compiler forced you to *map* was never forced into the parser's vocabulary; it is generated
+by `closed_vocabulary!` now. And the four mutating calibrate verbs read `session.json`
+immediately *before* `store.with_lock` and committed a draft cloned from that pre-lock read,
+so only the write half of a read-modify-write was protected — a skeptic hammered it into 9
+lost updates in 300 rounds of two concurrent `calibrate plan` processes, both exiting 0. The
+read now takes a `&StoreLock` it does not use: the token is proof, and a caller that has not
+taken the lock cannot perform the read at all.
+
+**The deferral P3d left and P3e dropped, ruled on.** P3d's commit said
+`calibrate::applied_value`'s two producerless refusals were "P3e's call"; P3e made none — no
+N-entry, no §3.3 register row, no test. The call is: **they are exercised, not deleted and
+not registered.** They are the contract check on a value that arrives from outside the engine
+(the T2 seam has two implementations today and a third at P4), and a sweep that took `writes`
+on faith would label a sample with a number nobody measured. Reaching them *through* a
+backend would mean teaching a double to violate T2, which makes the double a worse model of a
+device — so they are driven where they are decidable: `applied_value` is a pure function of a
+write report, and the unit test
+`a_report_that_does_not_name_the_control_or_answers_with_a_payload_is_refused` hands it
+both malformed reports directly, with the conforming twin beside them.
+
+**What the review did not find, which is worth as much.** No unsound `unsafe` and nothing new
+in the mmap path (P3 added none). No state write outside D9's home, and no path around
+`write_json_atomic` or the fd-lock — the store's own discipline held under six lenses. No
+fault-menu variant without a driven inverse. No place where the D8 state machine's refusals
+could be reached around, and no auto-selection: "metrics rank, they do not decide" survived
+every attempt. No availability error reshaped into a capability answer *at the error layer* —
+the one conversion found was in a state machine above it. Nineteen candidates were refuted,
+several by skeptics that built the reviewer's exact scenario and ran it.
+
+**Where the review did not look**, recorded so the next one starts there: `engine::progress`
+(274 new lines, no lens), `cli-core::render` (777 new lines, 21 tests, none mutation-checked),
+`photo.rs`'s `controls_in_effect`/`grab`/`from_capture` split as a PF:16 byte-fidelity path,
+`crates/backends/v4l2/tests/vivid.rs`'s sweep arm, `engine/tests/session_lifecycle.rs`, the
+three dependencies P3 adopted (`fd-lock`, `tempfile`, `indicatif`) against rubric B9, and the
+new session/progress DTOs as serde contracts. The seeded-defect counts in the five commit
+messages were not reproduced by anybody; finding 6 above is a survivor those campaigns missed,
+which is a data point about how complete they were.
+
+### The fixes against hardware, 2026-08-09
+
+Same host and cameras as E5, plus the Dell: kernel 7.0.0-29-generic, Chicony `04f2:b83c`
+(`/dev/video0`), OBSBOT Tiny 3 `3564:ff02` (`/dev/video4`), Dell U3224KB/A `413c:c03d`
+(`/dev/video6`).
+
+```
+$ just smoke-hw
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+     Summary [  52.835s] 15 tests run: 15 passed, 633 skipped
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+```
+
+The opt-out still excludes the motion arm as a named, counted skip and nothing else:
+
+```
+$ WCH_NO_MOTION=1 just smoke-hw
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded by WCH_NO_MOTION=1; unset it to include them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/) - test(/(^|::)hw_motion_/)
+     Summary [  37.432s] 14 tests run: 14 passed, 634 skipped
+```
+
+The eighth verb, driven against the two devices the finding named. Chicony, brightness:
+
+```
+$ wch get cam:integrated-camera-integrated-c brightness      -> 128
+$ wch calibrate start/plan cam:… --task p3review brightness
+$ wch calibrate sweep cam:… --task p3review brightness --values 30,150,220
+    brightness  sweeping 3/3
+    note: this sweep borrowed the camera and it still holds what the sweep left;
+          `calibrate restore cam:integrated-camera-integrated-c --session 019fe650-…` puts it back
+$ wch get cam:… brightness                                   -> 220   <- the defect, reproduced
+$ wch calibrate restore cam:… --task p3review
+    brightness                  restored to 128
+    exposure_time_absolute      back under auto_exposure, as it was [PF:3]
+    white_balance_temperature   back under white_balance_automatic, as it was [PF:3]
+    (12 further controls already correct)
+$ wch get cam:… brightness                                   -> 128
+$ wch calibrate restore cam:… --task p3review                -> exit 0, 0 outcomes
+    note: this session carries no unconsumed pre-sweep snapshot; the camera was not written to
+```
+
+OBSBOT, `pan_absolute` — the motor case, bounded to three steps and run with the motors-on
+default:
+
+```
+$ wch get cam:obsbot-… pan_absolute                          -> 7200
+$ wch calibrate sweep cam:obsbot-… --task p3ptz pan_absolute --values -3600,0,3600 --allow-motion
+    pan_absolute  sweeping 3/3
+$ wch get cam:obsbot-… pan_absolute                          -> 3600  <- the head, parked
+$ wch calibrate restore cam:obsbot-… --task p3ptz            -> pan_absolute restored to 7200
+$ wch get cam:obsbot-… pan_absolute                          -> 7200
+```
+
+\[PF:18\] bounds what that last line means, unchanged: the read-back is the *commanded*
+position, and no control on this device reports mechanism state.
+
+**Every camera was left as it was found and it is asserted rather than assumed.** A
+`wch snapshot` of all four enumerated cameras was taken before the runs and again after
+them, normalised to `{control, value}` pairs and diffed: identical on all four
+(Chicony RGB 15 controls, Chicony IR 2, OBSBOT 22, Dell 17), `pan_absolute` at its as-found
+7200 included. No camera frame entered the repository; the session trees and the snapshots
+live in a scratch directory outside it.
+
+**Still open after this pass**, recorded rather than left implicit: the two passes of a
+refinement still share one `ControlSession`, so `select_by_metric` ranks their union and
+`sampled_precision` strides across two grids (N22 says so and says why it is a D8 question);
+`--keep` has no producer because the restore is a verb rather than a default (N23); and the
+coverage gaps listed above are the next review's starting point rather than this one's work.

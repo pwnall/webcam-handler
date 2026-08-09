@@ -86,6 +86,7 @@ verbs=(
     "calibrate-status|SessionStatus|calibrate status <camera> --task gate"
     "calibrate-select|Session|calibrate select <camera> --task gate <control> --metric sharpness"
     "calibrate-apply|WriteReport|calibrate apply <camera> --task gate"
+    "calibrate-restore|RestoreReport|calibrate restore <camera> --task gate"
     "calibrate-list|SessionList|calibrate list <camera>"
     "profile-capture|DeviceProfile|profile capture <camera>"
 )
@@ -217,23 +218,55 @@ gate_checked "$checked" "--json verb answers validated against the committed bun
 gate_require_nonzero "$checked" "--json verb answers"
 
 # Every verb the CLI offers must have a row above. Derived from `--help`, so a verb added
-# without a row is a failure rather than a quiet omission.
-mapfile -t offered < <("$binary" --help 2>/dev/null |
-    awk '/^Commands:/ { inside = 1; next } inside && /^[[:space:]]+[a-z]/ { print $1 } inside && /^$/ { inside = 0 }' |
-    grep -v '^help$' || true)
+# without a row is a failure rather than a quiet omission — and derived at **both levels**,
+# because two of the ten top-level names are subtrees.
+#
+# The single-level version of this loop was the P3 review's finding: it scraped only
+# `wch --help`, and its membership test accepted a top-level verb if *any* row's name began
+# with it, so one `calibrate-start` row satisfied the whole seven-verb `calibrate` subtree.
+# Deleting the other six rows left the gate green while it validated six fewer documents —
+# the criterion in `phase-criteria.tsv`, docs/7 §P3d and docs/9 all assert a property the
+# predicate did not have. Before P3 the gap was latent (`profile` had one subcommand); P3d
+# made `calibrate` a seven-verb tree and made it load-bearing. Note N10's family, again:
+# a gate green while checking less than it claims.
+help_commands() {
+    "$binary" "$@" --help 2>/dev/null |
+        awk '/^Commands:/ { inside = 1; next } inside && /^[[:space:]]+[a-z]/ { print $1 } inside && /^$/ { inside = 0 }' |
+        grep -v '^help$' || true
+}
 
-for verb in "${offered[@]}"; do
-    found=0
+# Exact match, not a prefix: `calibrate-start` no longer answers for `calibrate-sweep`.
+has_row() {
+    local want="$1" row
     for row in "${verbs[@]}"; do
-        case "${row%%|*}" in
-        "$verb" | "$verb"-*) found=1 ;;
-        esac
+        if [[ "${row%%|*}" == "$want" ]]; then
+            return 0
+        fi
     done
-    if ((found == 0)); then
-        gate_fail "the CLI offers '$verb' but no row above validates its --json answer"
+    return 1
+}
+
+mapfile -t offered < <(help_commands)
+
+leaves=0
+for verb in "${offered[@]}"; do
+    mapfile -t subs < <(help_commands "$verb")
+    if ((${#subs[@]} == 0)); then
+        # A verb with no subcommands is its own leaf, which is the rule as it was.
+        leaves=$((leaves + 1))
+        if ! has_row "$verb"; then
+            gate_fail "the CLI offers '$verb' but no row above validates its --json answer"
+        fi
+        continue
     fi
+    for sub in "${subs[@]}"; do
+        leaves=$((leaves + 1))
+        if ! has_row "$verb-$sub"; then
+            gate_fail "the CLI offers '$verb $sub' but no row named '$verb-$sub' validates its --json answer"
+        fi
+    done
 done
-gate_checked "${#offered[@]}" "CLI verb(s) checked for a validation row"
-gate_require_nonzero "${#offered[@]}" "CLI verbs"
+gate_checked "$leaves" "CLI verb(s), subcommands included, checked for a validation row"
+gate_require_nonzero "$leaves" "CLI verbs"
 
 gate_finish

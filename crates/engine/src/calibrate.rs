@@ -24,6 +24,14 @@
 //! The plan's values are deduplicated, so a requested value is unique within a sweep; an
 //! applied value is not.
 //!
+//! *Within a sweep* is the whole of that guarantee, and a control's history is longer than
+//! one sweep: D8's `precision` exists so a coarse pass can be followed by a fine one, and
+//! the fine pass refines *around* a value the coarse pass already photographed. So the
+//! photo directory carries the pass as well — `photos/<control>/<from>/<requested>.<ext>`,
+//! where `from` is the sample count the control already had (note N22). Without it the
+//! second pass overwrites the first's overlapping frames while the first's samples still
+//! name them.
+//!
 //! ## The frame that is scored is the frame that is stored
 //!
 //! One [`crate::capture::grab`] per sample, measured and written. Two captures would be
@@ -161,6 +169,16 @@ pub fn run(
     let plan = sweep::plan(&desc, &request.plan, request.allow_motion)?;
     let total = plan.total();
     let pairs = session.pairs.clone();
+    // Which pass this is, read before the sweep starts: the count of samples the control
+    // already carries is the index this pass's first sample will take, and it is what keeps
+    // this pass's photos off the previous one's (note N22). `begin_sweep` resets `done` and
+    // leaves `samples`, so reading it afterwards would answer the same — but the number is
+    // a property of the history rather than of the transition, and it is read where it is
+    // true.
+    let pass_from = session
+        .controls
+        .get(&request.control)
+        .map_or(0, |entry| entry.samples.len());
 
     lifecycle::commit(store, lock, session, stream.at(clock), |draft, now| {
         session::begin_sweep(draft, &request.control, &request.plan, total, now)
@@ -175,8 +193,8 @@ pub fn run(
     );
 
     let session_dir = store.session_dir(session);
-    let photo_dir_rel = crate::store::SessionStore::photo_dir_rel(&request.control)?;
-    store.create_photo_dir(lock, &session_dir, &request.control)?;
+    let photo_dir_rel = crate::store::SessionStore::photo_dir_rel(&request.control, pass_from)?;
+    store.create_photo_dir(lock, &session_dir, &request.control, pass_from)?;
 
     let mut samples: Vec<Sample> = Vec::with_capacity(plan.values.len());
     for (index, &value) in plan.values.iter().enumerate() {
@@ -195,7 +213,22 @@ pub fn run(
             Err(error) => {
                 // The samples already recorded stand, and the control stays mid-sweep:
                 // this is a sweep that stopped, not a sweep that failed to happen.
+                //
+                // Unless nothing was recorded at all, in which case it *is* a sweep that
+                // failed to happen, and `Sweeping { done: 0 }` is a state with no exit
+                // (`session::abandon_sweep` names them). Best effort by the same reasoning
+                // as the log line below: the sweep already has a refusal to report, and the
+                // store's would displace it.
                 let taken = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+                if samples.is_empty() {
+                    let _ = lifecycle::commit_state(
+                        store,
+                        lock,
+                        session,
+                        stream.at(clock),
+                        |draft, now| session::abandon_sweep(draft, &request.control, now),
+                    );
+                }
                 stream.emit(
                     clock,
                     CalibrationProgress::SweepInterrupted {
@@ -407,6 +440,19 @@ fn one_sample(
 /// backend's answer and the backend is the only thing that read the control back (§2.10);
 /// a sweep that filled this in from the planned value would record a sweep of the values
 /// it asked for, which is the one thing PF:6 says a sweep may not do.
+///
+/// Its two refusals have no *producer* in this workspace: a T2-conforming backend reports
+/// every control it wrote, and the sweep planner refuses a control whose value is not
+/// scalar before the write is planned at all. P3d deferred the question of whether that
+/// makes them dead code. It does not, and this is the ruling: they are the contract check
+/// on a value that arrives from *outside* the engine — the trait has real and fake
+/// implementations today and a third at P4 — and a function that took `writes` on faith
+/// would record a sample labelled with a number nobody measured. Reaching them through a
+/// backend would mean teaching a double to violate T2, which makes the double a worse
+/// model of a device (AGENTS: "a fake capability no real device exhibits is a bug in the
+/// fake"). So they are exercised where they live: this is a pure function of a report, and
+/// [`tests::a_report_that_does_not_name_the_control_or_answers_with_a_payload_is_refused`]
+/// hands it both malformed reports directly.
 fn applied_value(writes: &[Applied], control: &ControlSlug) -> Result<Written> {
     let Some(applied) = writes.iter().find(|write| write.slug == *control) else {
         // The plan is built from this control, so the plan's own report must contain it.
@@ -433,6 +479,7 @@ fn applied_value(writes: &[Applied], control: &ControlSlug) -> Result<Written> {
 }
 
 /// The half of an [`Applied`] a sample keeps.
+#[derive(Debug)]
 struct Written {
     applied: i64,
     warnings: Vec<schema::control::WriteWarning>,
@@ -606,8 +653,9 @@ mod tests {
             first.warnings
         );
         // And the photo is named after the *request*, so two values the driver collapses
-        // onto one do not overwrite each other's picture.
-        assert_eq!(first.photo, "photos/focus_absolute/0.jpg");
+        // onto one do not overwrite each other's picture — under the pass this sweep is,
+        // so the *next* pass's overlapping values do not overwrite this one's either.
+        assert_eq!(first.photo, "photos/focus_absolute/0/0.jpg");
 
         // The inverse, from the same run: every other write was exact, so the pair is not
         // equal by construction.
@@ -811,6 +859,69 @@ mod tests {
         )
         .expect_err("nothing can release a control whose owner is unknown");
         assert_eq!(error.kind(), ErrorKind::ControlInactive);
+    }
+
+    #[test]
+    fn a_report_that_does_not_name_the_control_or_answers_with_a_payload_is_refused() {
+        // The two contract checks in `applied_value`, closed here rather than deferred a
+        // third time. No backend in this workspace produces either report — that is the
+        // point of a contract check — so they are driven where they are decidable: this is
+        // a pure function of a `WriteReport`'s writes, and a malformed report is a value a
+        // test can simply construct.
+        let control = slug("focus_absolute");
+        let other = slug("brightness");
+
+        // A report about a different control: the write and the record would be about two
+        // different things, and there is no sample to be had.
+        let elsewhere = vec![Applied {
+            control: schema::control::ControlId(1),
+            slug: other.clone(),
+            requested: ControlValue::Int(7),
+            applied: ControlValue::Int(7),
+            warnings: Vec::new(),
+        }];
+        let error = applied_value(&elsewhere, &control).expect_err("nothing wrote this control");
+        assert_eq!(error.kind(), ErrorKind::IllegalTransition);
+        assert!(
+            error.to_string().contains("no_write_recorded"),
+            "the refusal did not name the condition: {error}"
+        );
+        assert!(
+            applied_value(&[], &control).is_err(),
+            "an empty report answered for a control nobody wrote"
+        );
+
+        // A scalar control answering with a payload (D2's "represent the unknown"): refused
+        // rather than turned into a number nobody measured.
+        let payload = vec![Applied {
+            control: schema::control::ControlId(2),
+            slug: control.clone(),
+            requested: ControlValue::Int(7),
+            applied: ControlValue::Bytes(vec![0, 1, 2, 3]),
+            warnings: Vec::new(),
+        }];
+        let error = applied_value(&payload, &control).expect_err("a payload is not a value");
+        assert_eq!(error.kind(), ErrorKind::IllegalTransition);
+        assert!(
+            error.to_string().contains("non_scalar_readback"),
+            "the refusal did not name the condition: {error}"
+        );
+
+        // And the twin, so neither arm is passing for the wrong reason: a conforming report
+        // answers, carrying what the device took rather than what was asked for.
+        let honest = vec![Applied {
+            control: schema::control::ControlId(3),
+            slug: control.clone(),
+            requested: ControlValue::Int(7),
+            applied: ControlValue::Int(6),
+            warnings: vec![WriteWarning::Adjusted {
+                requested: ControlValue::Int(7),
+                applied: ControlValue::Int(6),
+            }],
+        }];
+        let written = applied_value(&honest, &control).expect("a conforming report");
+        assert_eq!(written.applied, 6);
+        assert_eq!(written.warnings.len(), 1);
     }
 
     // ------------------------------------------------------------------ the settle

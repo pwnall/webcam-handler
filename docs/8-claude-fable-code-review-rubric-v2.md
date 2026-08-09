@@ -8,10 +8,12 @@ this document: **reconcile the rubric against defects actually found at every ph
 gate.** v1 was written before the repository existed; this revision is the
 reconciliation its meta-rule scheduled ("due at the first gate whose defects it failed
 to predict, and no later than G4"): it is grounded on the P1 review (four confirmed
-defects) and the P2 review (thirty-one candidates, fifteen confirmed — notes entry E4).
-Rules that fired now carry local citations; rules yet unfired keep their transfer tags
-— two gates in, nothing has earned deletion. Part E's closing section is the
-reconciliation record.*
+defects) and the P2 review (thirty-one candidates, fifteen confirmed — notes entry E4),
+and Part E's record has since absorbed the G3 reconciliation (P3: thirty-one candidates,
+twelve confirmed over nine distinct defects — notes entry E6), whose rows are tagged
+[S:E6] where they landed. Rules that fired now carry local citations; rules yet unfired
+keep their transfer tags — three gates in, nothing has earned deletion. Part E's closing
+section is the reconciliation record.*
 
 Provenance tags: **[SB]** transferred from the lm-switchboard rubric (predecessor
 project; its provenance chains are not restated here); **[V]** transferred from the
@@ -79,7 +81,11 @@ impl · `review` human/agent judgment, no mechanical gate yet.
 4. **Availability is not capability.** [SB E-adapted][BP] EBUSY, ENODEV, a settle
    timeout, and EPERM each read exactly like "the camera can't do that" to a lazy caller.
    The D13 vocabulary keeps them distinct; no code path converts one into another; no
-   test asserts a capability from an availability failure.
+   test asserts a capability from an availability failure. **And the conversion can happen
+   a layer above the error** [S:E6]: a state machine that a transient failure leaves in a
+   state no verb can leave has turned an unplug into a permanent refusal without ever
+   mistyping an error. For every state a failure can strand something in, name the
+   transition out.
 
 5. **One law, one home — and a law's home existing is not the law applied.** [SB] The
    §2.10 registry (pairing planner, atomic writes, settle policy, error mapping, command
@@ -249,11 +255,20 @@ impl · `review` human/agent judgment, no mechanical gate yet.
       line is corruption, typed. `test`
 - [ ] Sample records store `applied` values [PF:6] and relative camino paths; a session
       directory relocates intact (test moves it and reloads). `test`
-- [ ] `select` records selector identity; `apply` refuses on fingerprint mismatch naming
-      the differing fields; `--partial` is the only path around uncalibrated controls.
-      `test`
+- [ ] `select` records selector identity; **every mutating verb** that resolves a session
+      against a camera refuses on fingerprint mismatch naming the differing fields — a
+      session belongs to (camera fingerprint, task), and a check implemented in one verb is
+      a check the other verbs walk around [S:E6]; `--partial` is the only path around
+      uncalibrated controls. `test`
 - [ ] Metrics rank, selectors decide: no code path auto-selects a value without recording
       `metric:<name>` as the selector. `review` `test`
+- [ ] A sample's evidence outlives the sweep that took it: nothing a *later* pass writes
+      may land on a path an earlier sample still names, and the test asserts the paths
+      rather than the bytes — a deterministic fake produces identical frames at identical
+      control values, so the overwrite is invisible in the bytes [S:E6]. `test`
+- [ ] The camera is given back by something a user can type. A persisted pre-sweep
+      snapshot with no shipped consumer is rule 8 unimplemented, however many tests call
+      the engine function [S:E6]. `test`
 
 ### B6 · Daemon, API, transports
 
@@ -411,6 +426,12 @@ PID 1's stack that tested green because the bytes landed in padding):
 - [ ] **The observation counter that counts non-observations** [S:E4] — a hardware arm
       that tallies "toggled an automation control" as evidence when the toggle moved
       nothing; an observation is a *diff*, not an attempt.
+- [ ] **The fixture that cannot exercise the rule** [S:E6] — a test that covers the right
+      code with the wrong data: the whole-device plan arm drafted the motor-less profile,
+      so the one line keeping PTZ controls calibratable could be inverted with the whole
+      workspace green while the motorised profile sat in the corpus, loaded by two other
+      tests in the same file. List-vs-list completeness seen from the data side; the
+      population a fixture *can* reach is part of what a test covers.
 - [ ] **The fake validating the fake** — a calibration test asserting the fake's optimum
       using the fake's own model as the expectation; the expectation comes from the
       profile/fixture, independently stated.
@@ -480,10 +501,41 @@ three tests that could not fail (Part C's cited smells). What the review did *no
 is recorded in E4 and matters equally: no unsound `unsafe`, no aliasing defect in the
 mmap path, no availability-to-capability conversion — the B10 and A4 rules held.
 
-**Not yet fired, retained:** the B5 store rows and B6/B7 daemon/web/CLI-parity rows
-await P3–P5 subjects; the muxer rows await P6. [BP]-tagged items stay until a gate
-either pays for them or proves them dead — two gates in, nothing qualifies for
-deletion.
+**G3 (P3, twelve confirmed of thirty-one candidates — nine distinct defects; notes E6).**
+Predicted by the rubric, and this is the first gate where the answer is mostly *yes*: A8's
+"a typed declaration nothing reads" caught the largest one exactly as written —
+`Session::pre_snapshot` was written by the product and read only by tests, so `wch
+calibrate sweep` could not honour rule 8 (fixed as an eighth verb, note N23). Rule 6's
+addendum caught two more: `json-validates.sh`'s verb population derived from top-level
+`--help` only, so six of seven new subverbs could vanish green, and
+`atomic-write-home.sh`'s primitive list omitted std's own aliases for two primitives it
+did catch. Both are [S:N10]'s family for the third and fourth time, and the row that keeps
+finding them is worth its space.
+
+What the rubric *named but under-specified*, and now says: Part C's smells had no row for
+**a test whose fixture cannot exercise the rule it pins** — the whole-device plan test drafts
+a motor-less profile, so the one line that keeps PTZ controls calibratable could be flipped
+with the workspace green. That is "list-vs-list completeness" seen from the data side, and
+Part C now carries it as a smell of its own. A4's
+availability-is-not-capability row was written about a *layer* (a device answer becoming a
+device capability) and the defect was one layer up: a sweep interrupted before its first
+sample left a control in a state no verb could leave, converting an unplug into a permanent
+refusal for that control (N24). And B5 had no row for **evidence outliving its evidence** —
+a second sweep's photos overwriting the first's while the first's samples still named them
+(N22), which is Part A rule 6's byte-fidelity doctrine applied to a path rather than to
+bytes; B5 has two rows now — one for the evidence, one for the camera being given back by
+something a user can type.
+
+What the review did **not** find is recorded in E6 and matters as much: no unsound `unsafe`,
+no state write outside D9's home, no fault-menu variant without a driven inverse, and no
+place where the D8 state machine's own refusals could be reached around. The two survivors
+graded LOW were both structural rather than observable — a hand `const ALL` the compiler no
+longer owns, and a read-modify-write straddling the lock — and both are now closed by
+construction rather than by a test.
+
+**Not yet fired, retained:** the B6/B7 daemon/web/CLI-parity rows await P4–P5 subjects; the
+muxer rows await P6. [BP]-tagged items stay until a gate either pays for them or proves them
+dead — three gates in, nothing qualifies for deletion.
 
 ---
 

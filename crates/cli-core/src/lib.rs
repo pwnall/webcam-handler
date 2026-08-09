@@ -49,6 +49,7 @@ use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{Selector, Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::vocabulary::closed_vocabulary;
 
 pub use photograph::Photograph;
 pub use render::SweepWatcher;
@@ -626,6 +627,33 @@ pub enum CalibrateCommand {
         partial: bool,
     },
 
+    /// Put the camera back where the session found it, and spend the record (D4, §6).
+    ///
+    /// A sweep *borrows* the camera: it drives a control to take a photograph and has no
+    /// interest in where it left it, and `lifecycle::sweep_write` persists the camera's
+    /// state before the first write of the session reaches it precisely so there is a way
+    /// back — one that survives a crash, because it is on disk rather than in a process.
+    /// This is the verb that spends it. Until P3's review there was none: the record was
+    /// written by the tool and read only by tests, so `calibrate sweep` left every camera
+    /// holding its last swept value and AGENTS rule 8 had no shipped implementation.
+    ///
+    /// Session-scoped rather than sweep-scoped, and note N23 argues it: the snapshot is
+    /// taken once per session by design, `apply` deliberately does not consume it (N20),
+    /// and putting a PTZ head back between every pair of sweeps would be travel §5's
+    /// "motors wear" spends for nothing.
+    ///
+    /// Running it twice is not an error — the second time there is nothing left to put
+    /// back, and it says so.
+    Restore {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Which session.
+        #[command(flatten)]
+        which: SessionArg,
+    },
+
     /// Every session on this machine, newest first.
     List {
         /// One camera's sessions, by id or unambiguous prefix. All cameras when omitted.
@@ -761,23 +789,29 @@ impl SelectorArgs {
     }
 }
 
-/// `--by`, as clap sees it.
-///
-/// Two spellings, and the third selector D8 names — `metric:<name>` — is deliberately not
-/// among them: a metric is not something a caller can *claim* to be, it is something the
-/// tool computed, and `--metric` is where that is said.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChosenByArg {
-    /// An agent reviewed the sample photos and picked one.
-    Agent,
-    /// A human did.
-    Human,
+closed_vocabulary! {
+    /// `--by`, as clap sees it.
+    ///
+    /// Two spellings, and the third selector D8 names — `metric:<name>` — is deliberately
+    /// not among them: a metric is not something a caller can *claim* to be, it is
+    /// something the tool computed, and `--metric` is where that is said.
+    ///
+    /// Generated, because `ALL` is the whole of this flag's accepted vocabulary:
+    /// [`FromStr`](std::str::FromStr) resolves `--by <WHO>` by walking it and builds the
+    /// refusal's `known:` list from it, while [`ChosenByArg::selector`]'s exhaustive match
+    /// forces a new variant to be *mapped* and never forces it into a hand-written array.
+    /// A variant the compiler accepted and the parser could not reach is rubric rule 6's
+    /// hand list wearing a parser table, and `schema::vocabulary`'s own header says so.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ChosenByArg {
+        /// An agent reviewed the sample photos and picked one.
+        Agent,
+        /// A human did.
+        Human,
+    }
 }
 
 impl ChosenByArg {
-    /// The two choosers a caller may claim to be.
-    pub const ALL: &'static [ChosenByArg] = &[ChosenByArg::Agent, ChosenByArg::Human];
-
     /// The selector this argument records.
     #[must_use]
     pub fn selector(self) -> Selector {
@@ -1077,6 +1111,21 @@ pub trait Executor {
         partial: bool,
     ) -> Result<WriteReport>;
 
+    /// Put the camera back where the session found it, and spend the record (D4, §6).
+    ///
+    /// The eighth verb, and the one that makes "leave the camera as you found it" a thing
+    /// an operator can type. Answers with the same [`RestoreReport`] `restore` does — a
+    /// control that could not be put back is in the *report*, not an error — and with an
+    /// **empty** report when the session carries no unconsumed snapshot, which is what
+    /// running it twice looks like.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::calibrate_start`], plus [`Error::FingerprintMismatch`] naming the
+    /// fields that differ when the camera is not the one the session was recorded against.
+    fn calibrate_restore(&mut self, camera: &CameraId, which: &SessionRef)
+    -> Result<RestoreReport>;
+
     /// Every session on this machine, or one camera's, newest first.
     ///
     /// # Errors
@@ -1253,7 +1302,24 @@ fn calibrate<E: Executor>(
             let session =
                 executor.calibrate_sweep(&camera.id()?, &which.which()?, &request, &*watcher)?;
             watcher.finish();
-            render::session(&session, as_json, out)
+            render::session(&session, as_json, out)?;
+            // The camera is still borrowed, and saying so is the difference between a
+            // restore an operator forgot and one they declined. Design D4 restores by
+            // default; this tool's restore is a verb rather than a default because the
+            // snapshot is session-scoped (N23), so the default is replaced by a reminder
+            // that names the exact command. Standard error, so the `--json` answer on
+            // standard output is still one document.
+            if session.pre_snapshot.is_some() {
+                out.line(
+                    Stream::Stderr,
+                    &format!(
+                        "note: this sweep borrowed the camera and it still holds what the \
+                         sweep left; `calibrate restore {} --session {}` puts it back",
+                        camera.camera, session.id
+                    ),
+                )?;
+            }
+            Ok(())
         }
         CalibrateCommand::Status { camera, which } => {
             let status = executor.calibrate_status(&camera.id()?, &which.which()?)?;
@@ -1280,6 +1346,20 @@ fn calibrate<E: Executor>(
         } => {
             let report = executor.calibrate_apply(&camera.id()?, &which.which()?, *partial)?;
             render::writes(&report, as_json, out)
+        }
+        CalibrateCommand::Restore { camera, which } => {
+            let report = executor.calibrate_restore(&camera.id()?, &which.which()?)?;
+            // An empty report is not "restored nothing", it is "there was nothing to put
+            // back" — the ordinary answer to running this twice, and the two would be
+            // indistinguishable from a table with no rows in it.
+            if report.outcomes.is_empty() {
+                out.line(
+                    Stream::Stderr,
+                    "note: this session carries no unconsumed pre-sweep snapshot; the camera \
+                     was not written to",
+                )?;
+            }
+            render::restore(&report, as_json, out)
         }
         CalibrateCommand::List { camera } => {
             let id = camera
@@ -1798,6 +1878,30 @@ mod tests {
         };
         assert!(!partial, "--partial must never be the default");
 
+        // `restore` — the eighth verb — names a session the two ordinary ways and takes no
+        // other argument: it puts the camera back where *that session* found it, and there
+        // is nothing to choose (note N23).
+        let cli = Cli::try_parse_checked_from([
+            "wch",
+            "calibrate",
+            "restore",
+            "cam:obsbot",
+            "--task",
+            "focus",
+        ])
+        .expect("parses");
+        let Command::Calibrate(CalibrateCommand::Restore { which, .. }) = &cli.command else {
+            panic!("expected calibrate restore");
+        };
+        assert_eq!(
+            which.which().expect("a session"),
+            SessionRef::Task("focus".to_owned())
+        );
+        // …and it needs one, like every other session verb.
+        assert!(
+            Cli::try_parse_checked_from(["wch", "calibrate", "restore", "cam:obsbot"]).is_err()
+        );
+
         // `list` takes an optional camera: every session on the machine, or one camera's.
         let cli = Cli::try_parse_checked_from(["wch", "calibrate", "list"]).expect("parses");
         assert!(matches!(
@@ -2064,15 +2168,35 @@ mod tests {
         // Nor may a caller *claim* to be a metric: that is something the tool computes.
         assert!("metric:sharpness".parse::<ChosenByArg>().is_err());
         assert!("metric".parse::<ChosenByArg>().is_err());
-        // …and the two it does accept are the schema's own spellings.
+        // …and the two it does accept are the schema's own spellings. `ALL` is generated
+        // from the enum by `closed_vocabulary!`, so this walk is over a population the
+        // compiler owns rather than over a hand list that can silently omit a variant
+        // (rubric rule 6) — and each member is driven through **clap**, not through
+        // `FromStr` alone, so a chooser the type declares and the command line cannot
+        // reach fails here rather than at somebody's terminal.
         for chooser in ChosenByArg::ALL {
+            let label = chooser.selector().label();
             assert_eq!(
-                chooser
-                    .selector()
-                    .label()
-                    .parse::<ChosenByArg>()
-                    .expect("known"),
-                *chooser
+                label.parse::<ChosenByArg>().expect("known"),
+                *chooser,
+                "{label} does not round-trip through --by's parser"
+            );
+            assert_eq!(
+                selection(&["--value", "512", "--by", &label])
+                    .unwrap_or_else(|error| panic!("--by {label} was refused: {error}")),
+                Selection::ByValue {
+                    value: 512,
+                    selector: chooser.selector(),
+                },
+                "--by {label} did not reach the selector the type maps it to"
+            );
+            // And the refusal names it, so a caller who mistyped is told the whole set.
+            let refusal = "not-a-chooser"
+                .parse::<ChosenByArg>()
+                .expect_err("no such chooser");
+            assert!(
+                refusal.contains(&label),
+                "the unknown-chooser refusal does not name {label}: {refusal}"
             );
         }
         // A metric and a value together is two answers to one question.

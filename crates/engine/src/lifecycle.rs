@@ -203,6 +203,36 @@ pub fn find(store: &SessionStore, id: Uuid) -> Result<Option<Session>> {
     Ok(Some(store.load_session(&found.dir)?))
 }
 
+/// Refuse a camera that is not the session's, naming the fields that differ (D8, D13).
+///
+/// D8 says a session belongs to a **(camera fingerprint, task)** pair, and [`find`] walks
+/// the whole tree by design so `--session <uuid>` can name a session recorded against
+/// another camera — which is the only way that disagreement can arise, and therefore the
+/// only reason this check has anything to refuse.
+///
+/// One function because it is one law, and the P3 review found the law implemented once:
+/// [`apply`] checked, and `plan` and `sweep` reached a camera without checking. A sweep run
+/// through a foreign `--session` recorded samples measured on camera B in a document whose
+/// fingerprint is camera A's, and then `apply` — with its own check green — wrote them to
+/// A. Worse for rule 8: [`arm_pre_snapshot`] short-circuits on the snapshot already
+/// persisted for A, so B was driven with no record of it anywhere on disk.
+///
+/// The refusal carries the *fields* rather than the word "wrong": "the bus path and the
+/// card differ" is something an operator can act on and "wrong camera" is not.
+///
+/// # Errors
+///
+/// [`Error::FingerprintMismatch`] naming every field that differs.
+pub fn belongs_to(session: &Session, camera: &CameraFingerprint) -> Result<()> {
+    let differing = session.fingerprint.differing_fields(camera);
+    if differing.is_empty() {
+        return Ok(());
+    }
+    Err(Error::FingerprintMismatch {
+        fields: differing.into_iter().map(str::to_owned).collect(),
+    })
+}
+
 /// Whether a session still has work in it (this module's header defines the term).
 #[must_use]
 pub fn is_open(session: &Session) -> bool {
@@ -679,14 +709,7 @@ pub fn apply(
     partial: bool,
     now: Stamp,
 ) -> Result<WriteReport> {
-    let differing = session
-        .fingerprint
-        .differing_fields(&camera.info().fingerprint);
-    if !differing.is_empty() {
-        return Err(Error::FingerprintMismatch {
-            fields: differing.into_iter().map(str::to_owned).collect(),
-        });
-    }
+    belongs_to(session, &camera.info().fingerprint)?;
 
     let targets = crate::session::apply_targets(session, partial)?;
     let report = write::set(camera, &session.pairs, &targets, true)?;
