@@ -19,8 +19,14 @@ workspace = true
 camino.workspace = true
 clap.workspace = true
 comfy-table.workspace = true
+# The sweep progress bar (T4: indicatif for sweeps). It draws to standard error and hides
+# itself when that is not a terminal, so a piped `--json` answer stays a document.
+indicatif.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# A session is named by its UUIDv7 on the command line (`calibrate apply --session`), which
+# is the only way to reach one recorded against another camera.
+uuid.workspace = true
 webcam-handler-schema.workspace = true
 
 [dev-dependencies]

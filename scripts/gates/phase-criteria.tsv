@@ -73,4 +73,10 @@ g3	tests	package(webcam-handler-engine) and test(/^calibrate::/)	the sweep execu
 g3	tests	package(webcam-handler-engine) and test(/^progress::/)	the progress hook's seam: a schema-shaped event stream with a real channel sink and a scriptable double, bounded and counting what it drops
 g3	tests	package(webcam-handler-schema) and test(/^progress::/)	the calibration progress event round-trips as a DTO, so P4e transports it instead of re-plumbing it
 g3	tests	package(webcam-handler-engine) and test(/^lifecycle::tests::discovery/)	empirical pair discovery at session start (D3, with the three E4 probe rules), merged with the declared table and persisted on the session
+g3	tests	package(webcam-handler-cli) and binary(calibrate)	wch calibrate start/plan/sweep/status/select/apply/list as CLI subprocess tests over trees built to pass and to fail, with the session files a real run wrote validated against the xtask-emitted session schema
+g3	tests	package(webcam-handler-engine) and test(/^lifecycle::tests::apply/)	apply replays a session's calibrated values with D4 ordering against a fingerprint-matched camera and refuses naming the differing fields; --partial as the only path around uncalibrated controls
+g3	tests	package(webcam-handler-cli-core) and test(/selector|who_chose/)	select records selector identity — agent, human, or metric:<name> — in the command surface that both CLIs share (T4)
+g3	tests	package(webcam-handler-cli-core) and test(/progress/)	indicatif progress consuming the P3c hook: every event of the schema-shaped stream renders, and the --json answer draws no bar
+g3	tests	package(webcam-handler-schema) and test(/^session::/)	the session documents the calibrate verbs answer with — the sweep request, the status, the listing, and the interruption a stopped sweep records — round-trip as DTOs
+g3	command	./scripts/gates/json-validates.sh	json-validates.sh learns the new verbs; its verb population derives from --help, so landing a verb without a validation row fails the gate
 g3	command	./scripts/rung-vivid.sh	the R2 vivid sweep arm: one real sweep over a writable vivid control through the actual ioctl path, or a named counted skip

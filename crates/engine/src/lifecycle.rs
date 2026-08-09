@@ -42,17 +42,21 @@
 //!
 //! ## What is not here
 //!
-//! Executing a sweep — set, settle, capture, score, record — is P3c's, and it will call
-//! [`sweep_write`] for its writes. Replaying a session's calibrated values against a
-//! camera is P3d's `calibrate apply`; the D8 gate that verb has to pass through
-//! ([`crate::session::apply_targets`]) is pure and already lives with the state machine.
+//! Executing a sweep — set, settle, capture, score, record — is [`crate::calibrate`]'s,
+//! and it calls [`sweep_write`] for its writes. Replaying a session's calibrated values
+//! against a camera *is* here ([`apply`]), because the D8 gate that verb passes through
+//! ([`crate::session::apply_targets`]) is pure and already lives with the state machine,
+//! and what is left — the fingerprint check, the guarded write, the log line — is this
+//! module's business of joining the machine to a camera and a store.
 
 use schema::backend::Camera;
 use schema::camera::CameraFingerprint;
-use schema::control::{ControlSlug, ControlValue};
+use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::pairing::AutomationPair;
 use schema::report::WriteReport;
-use schema::session::{LogEntry, Session, SessionEvent, new_session};
+use schema::session::{
+    BlockedReason, ControlStatus, LogEntry, Session, SessionEvent, SweepSpec, new_session,
+};
 use schema::snapshot::RestoreReport;
 use schema::time::Stamp;
 use schema::{Error, Result};
@@ -149,11 +153,54 @@ pub fn resume(
     fingerprint: &CameraFingerprint,
     task: &str,
 ) -> Result<Option<Session>> {
+    Ok(latest(store, fingerprint, task)?.filter(is_open))
+}
+
+/// The newest session for a (camera, task) pair, open or finished.
+///
+/// [`resume`] is this plus the open filter, and the two are different questions. "Give me
+/// the work in progress" is `resume`; "give me the session I last ran for this task" is
+/// this one, and it is what `calibrate status` and `calibrate apply` ask — a finished
+/// session is exactly what an operator wants to inspect and to replay, and answering
+/// `None` for it would make the settled state unreachable from the command line.
+///
+/// # Errors
+///
+/// As [`resume`]: a document this build cannot read is a refusal rather than a reason to
+/// hand back an older one.
+pub fn latest(
+    store: &SessionStore,
+    fingerprint: &CameraFingerprint,
+    task: &str,
+) -> Result<Option<Session>> {
     let Some(newest) = newest_in_slot(store, fingerprint, task)? else {
         return Ok(None);
     };
-    let session = store.load_session(&newest.dir)?;
-    Ok(is_open(&session).then_some(session))
+    Ok(Some(store.load_session(&newest.dir)?))
+}
+
+/// The session with this id, whichever camera and task it belongs to.
+///
+/// The one lookup that does **not** start from a camera, and it exists for the one verb
+/// that needs it: `calibrate apply --session <id>` replays a session against a camera the
+/// caller names, and the whole point of the fingerprint check it then performs is that the
+/// two may disagree. A lookup keyed on the camera could never produce that disagreement,
+/// so the refusal would be unreachable and the check would be decoration.
+///
+/// # Errors
+///
+/// [`Error::SchemaVersionForeign`] or [`Error::StorageIo`] when the session is found and
+/// cannot be read. A session nobody wrote is `None`, not an error — the caller knows what
+/// it asked for and can say so better than this can.
+pub fn find(store: &SessionStore, id: Uuid) -> Result<Option<Session>> {
+    let Some(found) = store
+        .all_sessions()?
+        .into_iter()
+        .find(|session| session.id == id)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(store.load_session(&found.dir)?))
 }
 
 /// Whether a session still has work in it (this module's header defines the term).
@@ -234,6 +281,47 @@ pub fn commit_state(
     let mut draft = session.clone();
     transition(&mut draft, now)?;
     persist(store, lock, session, draft, now, None)
+}
+
+/// A session's history, as the store holds it.
+///
+/// Takes the session rather than a directory, and that is the point: composing
+/// `<state>/sessions/<camera>/<task>/<uuid>` is the store's law (§2.10's path-layout home),
+/// so a caller that wanted a session's log had to either be handed the layout or ask for
+/// it. This is the asking.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] naming the line number when a line other than an unterminated last
+/// one fails to parse. A session that has done nothing yet has an empty history, not a
+/// failure.
+pub fn history(store: &SessionStore, session: &Session) -> Result<Vec<LogEntry>> {
+    store.load_log(&store.session_dir(session))
+}
+
+/// Append one line to `log.ndjson` and change nothing else.
+///
+/// The exception that proves the document-before-log rule rather than a second door around
+/// it: a note records something that happened to the *camera* while the document already
+/// says what it needs to say. [`crate::calibrate`]'s interruption line is the case — the
+/// samples that survived were committed one by one as they were taken, and what is left to
+/// record is why the sweep stopped.
+///
+/// # Errors
+///
+/// Whatever the store refuses with.
+pub fn note(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &Session,
+    now: Stamp,
+    event: SessionEvent,
+) -> Result<()> {
+    store.append_log(
+        lock,
+        &store.session_dir(session),
+        &LogEntry { at: now, event },
+    )
 }
 
 /// Publish a draft: the document first, then the caller's value, then the log line.
@@ -326,6 +414,122 @@ pub fn discover_pairs(
         Some(&SessionEvent::PairsDiscovered { measured, skipped }),
     )?;
     Ok(found)
+}
+
+// ------------------------------------------------------------------ the draft
+
+/// Queue the controls a session will calibrate, and record why the rest cannot be
+/// (design D8; the skill's step 6).
+///
+/// `controls` empty means **every control the camera has**, which is the skill's
+/// instruction in as many words: cover all the setting names. A control this tool cannot
+/// calibrate is recorded [`schema::session::ControlStatus::Blocked`] with the device's own
+/// reason rather than left out — a draft that silently omitted the read-only controls would
+/// read as a device that does not have them, and the operator verifying the draft against
+/// `wch controls` would find the two disagreeing.
+///
+/// **A control that already has a history is left alone.** Re-drafting a session mid-run is
+/// ordinary (a second `plan` after the queue was reordered), and a draft that re-classified
+/// a calibrated control would throw away the value somebody chose.
+///
+/// # Errors
+///
+/// [`Error::ControlUnknown`] naming the closest slugs for a control this camera does not
+/// have, whatever the camera says when asked for its controls, and whatever the store
+/// refuses with.
+pub fn draft(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &mut Session,
+    camera: &mut dyn Camera,
+    controls: &[ControlSlug],
+    now: Stamp,
+) -> Result<()> {
+    let descs = camera.controls()?;
+    let selected: Vec<ControlDesc> = if controls.is_empty() {
+        descs.clone()
+    } else {
+        let mut out = Vec::with_capacity(controls.len());
+        for slug in controls {
+            let desc = descs
+                .iter()
+                .find(|desc| desc.slug == *slug)
+                .ok_or_else(|| Error::ControlUnknown {
+                    requested: slug.as_str().to_owned(),
+                    did_you_mean: pairing::suggestions(&descs, slug.as_str()),
+                })?;
+            out.push(desc.clone());
+        }
+        out
+    };
+
+    let pairs = session.pairs.clone();
+    commit_state(store, lock, session, now, |draft, now| {
+        for desc in &selected {
+            let untouched = draft
+                .controls
+                .get(&desc.slug)
+                .is_none_or(|entry| entry.status == ControlStatus::Untouched);
+            if !untouched {
+                continue;
+            }
+            match uncalibratable(&descs, &pairs, desc) {
+                None => crate::session::enqueue(draft, &desc.slug, now),
+                Some(reason) => crate::session::block(draft, &desc.slug, reason, now),
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Why this control cannot be calibrated on this device, if it cannot.
+///
+/// Every answer comes from something that already owns the question. The DISABLED flag is
+/// read off the descriptor because it is a device fact D8's vocabulary names in its own
+/// right and nothing else distinguishes it (the write planner reports `DISABLED` and
+/// READ_ONLY as one refusal, deliberately). Everything else is *asked*: the sweep planner
+/// says whether there is an ordered range to walk, and the guarded-write planner says
+/// whether the control can be written at all. A classifier that re-derived either rule
+/// would be a second copy of it, drifting the first time the original changed.
+///
+/// `allow_motion` is `true` for the question asked here: that a control moves motors is a
+/// reason a *sweep* needs a flag (design §5), not a reason the control cannot be
+/// calibrated, and blocking every PTZ control at draft time would make the tool refuse the
+/// OBSBOT's whole reason for existing.
+fn uncalibratable(
+    controls: &[ControlDesc],
+    pairs: &[AutomationPair],
+    desc: &ControlDesc,
+) -> Option<BlockedReason> {
+    if desc.flags.has(schema::control::KnownFlag::Disabled) {
+        return Some(BlockedReason::Disabled);
+    }
+    if let Err(error) = crate::sweep::plan(desc, &SweepSpec::All, true) {
+        return Some(match &error {
+            Error::IllegalTransition { from, .. } if from.starts_with("not_sweepable") => {
+                BlockedReason::NotSweepable {
+                    control_type: crate::sweep::control_type_name(desc.control_type),
+                }
+            }
+            other => BlockedReason::Other {
+                detail: other.to_string(),
+            },
+        });
+    }
+    if let Err(error) = pairing::plan(
+        controls,
+        pairs,
+        &[(desc.slug.clone(), ControlValue::Int(desc.default))],
+    ) {
+        return Some(match &error {
+            Error::ControlReadOnly { .. } => BlockedReason::ReadOnly,
+            Error::ControlInactive { .. } => BlockedReason::InactiveWithoutPartner,
+            other => BlockedReason::Other {
+                detail: other.to_string(),
+            },
+        });
+    }
+    None
 }
 
 // ------------------------------------------------------------------ the pre-sweep snapshot
@@ -431,6 +635,68 @@ pub fn sweep_write(
     // taken now, or already there — is not a sweep's business; that it happened is.
     let _armed: PreSnapshot = arm_pre_snapshot(store, lock, session, camera, pairs, now)?;
     write::set(camera, pairs, targets, true)
+}
+
+// ------------------------------------------------------------------ apply
+
+/// Replay a session's calibrated values against a camera (design D8's `apply`).
+///
+/// Three laws meet here, and each one is somebody else's:
+///
+/// - **The camera must be the session's.** The fingerprint is checked before anything is
+///   written, and the refusal is [`Error::FingerprintMismatch`] carrying the *fields* that
+///   differ (D13) — `bus_path`, `card`, `usb_id` — because "wrong camera" is not something
+///   an operator can act on and "the card name differs" is. Checked first, ahead of the D8
+///   gate below, because a flag can answer an uncalibrated session and nothing a caller
+///   types makes this the right camera.
+/// - **What may be applied is the state machine's** ([`crate::session::apply_targets`]):
+///   a session with nothing calibrated, or with queued controls still pending, is refused
+///   unless `partial` says the caller meant it. That gate is pure and this verb consumes
+///   it rather than restating it.
+/// - **How it is written is D4's ordering**, which is [`crate::pairing::plan`]'s: the
+///   write is *guarded*, so an automation control that owns one of these values is
+///   switched off first and the value it would otherwise overwrite actually sticks
+///   \[PF:3\]. The report names those switch-offs in `disabled_automation`, so a caller
+///   sees that applying a calibration changed more than the controls it named.
+///
+/// **Nothing is restored afterwards, and that is the difference between this and a sweep.**
+/// A sweep borrows the camera and puts it back (design §6); `apply` is the operator saying
+/// "leave it like this". The pre-sweep snapshot, if the session still carries one, is
+/// untouched — it is the record of the camera *before the calibration*, and consuming it
+/// here would throw away the only way back.
+///
+/// # Errors
+///
+/// [`Error::FingerprintMismatch`] naming the fields; [`Error::IllegalTransition`] from the
+/// D8 gate; the planner's or the device's, from the first write that failed; and whatever
+/// the store refuses with when the log line cannot be written — in which case the camera
+/// does hold the values, which is why the write happens first and is reported.
+pub fn apply(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &mut Session,
+    camera: &mut dyn Camera,
+    partial: bool,
+    now: Stamp,
+) -> Result<WriteReport> {
+    let differing = session
+        .fingerprint
+        .differing_fields(&camera.info().fingerprint);
+    if !differing.is_empty() {
+        return Err(Error::FingerprintMismatch {
+            fields: differing.into_iter().map(str::to_owned).collect(),
+        });
+    }
+
+    let targets = crate::session::apply_targets(session, partial)?;
+    let report = write::set(camera, &session.pairs, &targets, true)?;
+
+    let controls = report.writes.len();
+    commit(store, lock, session, now, |draft, now| {
+        draft.updated_at = now;
+        Ok(SessionEvent::Applied { controls })
+    })?;
+    Ok(report)
 }
 
 // ------------------------------------------------------------------ recovery
@@ -1290,6 +1556,218 @@ mod tests {
                 .count(),
             1,
             "one snapshot, one event"
+        );
+    }
+
+    // ---------------------------------------------------------------- apply
+
+    /// A session whose one calibrated control is `control`, chosen by a human at `value`.
+    ///
+    /// Built through the machine rather than by assembling a `Calibrated` status: a
+    /// session that never swept is not a session `apply` will ever meet.
+    fn calibrated(
+        store: &SessionStore,
+        lock: &StoreLock,
+        session: &mut Session,
+        control: &ControlSlug,
+        value: i64,
+    ) {
+        commit_state(store, lock, session, later(), |s, now| {
+            session::enqueue(s, control, now);
+            Ok(())
+        })
+        .expect("queueing is legal");
+        commit(store, lock, session, later(), |s, now| {
+            session::begin_sweep(s, control, &SweepSpec::All, 1, now)
+        })
+        .expect("a fresh control sweeps");
+        commit(store, lock, session, later(), |s, now| {
+            session::record_sample(s, control, sample(value, 9.0), now)
+        })
+        .expect("a running sweep accepts samples");
+        commit(store, lock, session, later(), |s, now| {
+            session::select_value(s, control, value, Selector::Human, now)
+        })
+        .expect("a sampled value can be chosen");
+    }
+
+    #[test]
+    fn apply_writes_the_calibrated_value_with_its_automation_owner_switched_off_first() {
+        // D4's ordering, at the verb that replays a calibration. `white_balance_temperature`
+        // is INACTIVE while `white_balance_automatic` is on, so an unguarded apply would
+        // report a write that the camera never honoured — and on this double it does not
+        // even reach the control. The order is asserted *at the device*, not only in the
+        // report, because the report is what an implementation with the ordering wrong
+        // would still be able to assemble.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = coupled_camera();
+        let mut spec = spec(1_000, "white balance");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        session.pairs = vec![white_balance_pair()];
+        let control = slug("white_balance_temperature");
+        calibrated(temp.store(), &lock, &mut session, &control, 90);
+
+        let report = apply(
+            temp.store(),
+            &lock,
+            &mut session,
+            &mut camera,
+            false,
+            later(),
+        )
+        .expect("the session's own camera, settled");
+
+        assert_eq!(
+            camera
+                .writes
+                .iter()
+                .map(|(slug, _)| slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["white_balance_automatic", "white_balance_temperature"],
+            "the manual value was written before its owner was switched off"
+        );
+        assert_eq!(
+            camera.value_of("white_balance_temperature"),
+            Some(ControlValue::Int(90)),
+            "the calibrated value did not stick"
+        );
+        assert_eq!(
+            report.disabled_automation,
+            vec![slug("white_balance_automatic")],
+            "applying a calibration changed more than it said it did"
+        );
+        // The pre-sweep record is *not* consumed: apply is the operator saying "leave it
+        // like this", and the snapshot is the only way back to before the calibration.
+        assert!(
+            temp.store()
+                .load_log(&temp.store().session_dir(&session))
+                .expect("readable")
+                .iter()
+                .any(|entry| entry.event
+                    == SessionEvent::Applied {
+                        controls: report.writes.len()
+                    }),
+            "the camera was written to and the history does not say so"
+        );
+    }
+
+    #[test]
+    fn apply_to_a_camera_that_is_not_the_sessions_names_the_fields_that_differ() {
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = ScriptedCamera::new(vec![integer("brightness", 50)]);
+        let mut spec = spec(1_000, "brightness");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        let control = slug("brightness");
+        calibrated(temp.store(), &lock, &mut session, &control, 30);
+
+        // Two fields differ and two do not: the bus path and the card name were changed,
+        // the driver and the (absent) serial were not.
+        let mut stranger = ScriptedCamera::new(vec![integer("brightness", 50)])
+            .identified("cam:b", "1-6:1.0")
+            .carded("Another Camera");
+        let err = apply(
+            temp.store(),
+            &lock,
+            &mut session,
+            &mut stranger,
+            false,
+            later(),
+        )
+        .expect_err("a calibration is not portable between cameras");
+        let Error::FingerprintMismatch { fields } = &err else {
+            panic!("a mismatch nobody can act on: {err}");
+        };
+        assert_eq!(
+            fields,
+            &["bus_path".to_owned(), "card".to_owned()],
+            "the refusal must name what differs and only what differs"
+        );
+        assert!(
+            !fields.iter().any(|field| field == "driver"),
+            "a field that agrees was named as differing: {fields:?}"
+        );
+        assert!(
+            stranger.writes.is_empty(),
+            "the refusal wrote to the wrong camera first: {:?}",
+            stranger.writes
+        );
+
+        // The twin: the camera the session was recorded against takes the same apply.
+        let report = apply(
+            temp.store(),
+            &lock,
+            &mut session,
+            &mut camera,
+            false,
+            later(),
+        )
+        .expect("the session's own camera");
+        assert_eq!(report.writes.len(), 1);
+        assert_eq!(camera.value_of("brightness"), Some(ControlValue::Int(30)));
+    }
+
+    #[test]
+    fn apply_refuses_a_session_with_work_left_until_partial_says_the_caller_meant_it() {
+        // The D8 gate is `session::apply_targets`, and this is the verb consuming it: the
+        // refusal must reach a caller who typed no flag, and `--partial` must write exactly
+        // the controls that *are* calibrated and nothing else.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera =
+            ScriptedCamera::new(vec![integer("brightness", 50), integer("contrast", 10)]);
+        let mut spec = spec(1_000, "brightness");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        calibrated(temp.store(), &lock, &mut session, &slug("brightness"), 30);
+        commit_state(temp.store(), &lock, &mut session, later(), |s, now| {
+            session::enqueue(s, &slug("contrast"), now);
+            Ok(())
+        })
+        .expect("queueing is legal");
+
+        let err = apply(
+            temp.store(),
+            &lock,
+            &mut session,
+            &mut camera,
+            false,
+            later(),
+        )
+        .expect_err("one queued control is still untouched");
+        assert_eq!(err.kind(), ErrorKind::IllegalTransition);
+        assert!(err.to_string().contains("unsettled(1 pending)"), "{err}");
+        assert!(
+            camera.writes.is_empty(),
+            "a refused apply wrote to the camera: {:?}",
+            camera.writes
+        );
+
+        let report = apply(
+            temp.store(),
+            &lock,
+            &mut session,
+            &mut camera,
+            true,
+            later(),
+        )
+        .expect("partial applies what is decided so far");
+        assert_eq!(
+            report
+                .writes
+                .iter()
+                .map(|write| write.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["brightness"],
+            "partial wrote a control nobody calibrated"
+        );
+        assert_eq!(
+            camera.value_of("contrast"),
+            Some(ControlValue::Int(10)),
+            "the uncalibrated control was written anyway"
         );
     }
 

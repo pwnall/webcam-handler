@@ -92,7 +92,7 @@ fn bundle() -> Result<Value> {
     use schema::profile::DeviceProfile;
     use schema::progress::ProgressEvent;
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
-    use schema::session::{LogEntry, Session};
+    use schema::session::{LogEntry, Session, SessionList, SessionStatus, SweepRequest};
     use schema::snapshot::{RestoreReport, Snapshot};
 
     let mut generator = SchemaGenerator::new(SchemaSettings::draft2020_12());
@@ -125,6 +125,11 @@ fn bundle() -> Result<Value> {
     register::<RestoreReport>(&mut generator, &mut roots);
     register::<Session>(&mut generator, &mut roots);
     register::<LogEntry>(&mut generator, &mut roots);
+    // The P3d calibration verbs' answers and the one request they take. `SessionListing`
+    // arrives as a `$def` by reachability; a root is a document a verb emits or accepts.
+    register::<SweepRequest>(&mut generator, &mut roots);
+    register::<SessionStatus>(&mut generator, &mut roots);
+    register::<SessionList>(&mut generator, &mut roots);
     // The live calibration stream. A root rather than a `$def` by reachability: P4e puts
     // these on the wire as their own documents, and a consumer validating a subscription
     // needs the event named in the bundle rather than reachable from something else.

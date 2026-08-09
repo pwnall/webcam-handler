@@ -44,7 +44,7 @@ use schema::backend::{Camera, CameraBackend};
 use schema::control::ControlSlug;
 use schema::metrics::MetricName;
 use schema::progress::{CalibrationProgress, ProgressEvent};
-use schema::session::{ControlStatus, Selector, Session, SweepSpec};
+use schema::session::{ControlStatus, Selector, Session, SessionEvent, SweepSpec};
 use schema::time::Stamp;
 use uuid::Uuid;
 
@@ -395,6 +395,40 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
     );
     assert_eq!(failure, ErrorKind::DeviceGone);
     assert!(!detail.is_empty(), "an interruption nobody can read");
+
+    // …and the durable half, which is what `calibrate status` reads after the terminal
+    // that showed the live event is gone. The recorded `sample_taken` lines already say
+    // *where* the sweep stopped; without this line nothing on disk says whether the camera
+    // was pulled out, the sensor never settled [PF:11], or the disk filled — three
+    // outcomes design keeps apart everywhere else.
+    let history = temp
+        .store()
+        .load_log(&temp.store().session_dir(&session))
+        .expect("readable");
+    let stopped = history
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            SessionEvent::SweepInterrupted {
+                taken,
+                total,
+                failure,
+                detail,
+                ..
+            } => Some((*taken, *total, *failure, detail.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stopped,
+        vec![(2, 5, ErrorKind::DeviceGone, error.to_string())],
+        "the session's history does not say why the sweep stopped: {history:?}"
+    );
+    assert!(
+        !history
+            .iter()
+            .any(|entry| matches!(entry.event, SessionEvent::SweepFinished { .. })),
+        "a sweep that stopped claimed it finished"
+    );
 
     // The samples that were taken stand — they happened — and the control is left
     // mid-sweep rather than forced into a terminal state, so the session is still open.

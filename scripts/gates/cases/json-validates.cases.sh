@@ -46,6 +46,20 @@ fail_case_a_verb_answers_with_a_type_the_bundle_does_not_define() {
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+fail_case_a_calibration_answer_stops_matching_the_bundle() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # The P3d rows, specifically. They are the only ones that need a *session* to exist
+    # before they can answer, so an arm that goes red on one of them proves the whole
+    # start-to-apply sequence ran rather than being skipped: `SessionStatus` is emitted by
+    # `calibrate status`, which cannot answer at all unless `start`, `plan` and `sweep`
+    # already did.
+    jq 'del(.["$defs"].SessionStatus.properties.session)' \
+        "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
+    mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 fail_case_the_bundle_is_missing() {
     local tree
     tree="$(gate_scratch_tree)"

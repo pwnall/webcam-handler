@@ -24,7 +24,11 @@ use schema::control::{
 use schema::error::{Error, Result};
 use schema::pairing::{AutomationOff, Provenance};
 use schema::profile::DeviceProfile;
+use schema::progress::{CalibrationProgress, ProgressEvent};
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::session::{
+    BlockedReason, ControlStatus, Session, SessionEvent, SessionList, SessionStatus,
+};
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot, UnrestorableReason};
 
 /// Where rendered output goes.
@@ -885,6 +889,430 @@ fn adjustment_text(adjustment: &Adjustment) -> String {
     }
 }
 
+// ------------------------------------------------------------------ calibration
+
+/// `calibrate start`, `plan`, `sweep` and `select` — the session, as it stands.
+pub(crate) fn session(session: &Session, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(session, out);
+    }
+
+    let mut header = table();
+    header.set_header(vec!["FIELD", "VALUE"]);
+    for (field, value) in [
+        ("session", session.id.to_string()),
+        ("camera", session.fingerprint.slug()),
+        ("task", session.task.clone()),
+        ("goal", session.goal.clone()),
+        ("updated", session.updated_at.to_string()),
+    ] {
+        header.add_row(vec![Cell::new(field), Cell::new(value)]);
+    }
+    for (nth, criterion) in session.criteria.iter().enumerate() {
+        header.add_row(vec![
+            Cell::new(format!("criterion {}", nth.saturating_add(1))),
+            Cell::new(criterion),
+        ]);
+    }
+    out.line(Stream::Stdout, &header.to_string())?;
+
+    if session.controls.is_empty() {
+        return out.line(
+            Stream::Stdout,
+            "\nno controls queued yet — `calibrate plan` drafts them",
+        );
+    }
+
+    let mut controls = table();
+    controls.set_header(vec![
+        "CONTROL",
+        "STATE",
+        "VALUE",
+        "PRECISION",
+        "SCORE",
+        "CHOSEN BY",
+        "SAMPLES",
+    ]);
+    // Queue order first — the operator's chosen order is the one thing a table can show
+    // that a map cannot — then anything calibrated outside the queue, in slug order.
+    let queued = session.queue.iter();
+    let unqueued = session
+        .controls
+        .keys()
+        .filter(|slug| !session.queue.contains(slug));
+    for slug in queued.chain(unqueued) {
+        let Some(entry) = session.controls.get(slug) else {
+            // A queued control nothing has happened to yet has no entry, and D8 says the
+            // absence *is* `Untouched`. Shown, because a queue whose rows vanished would
+            // read as a queue nobody drafted.
+            controls.add_row(vec![
+                Cell::new(slug.as_str()),
+                Cell::new("untouched"),
+                Cell::new("—"),
+                Cell::new("—"),
+                Cell::new("—"),
+                Cell::new("—"),
+                Cell::new("0"),
+            ]);
+            continue;
+        };
+        let StatusCells {
+            state,
+            value,
+            precision,
+            score,
+            chosen_by,
+        } = status_cells(&entry.status);
+        controls.add_row(vec![
+            Cell::new(slug.as_str()),
+            Cell::new(state),
+            Cell::new(value),
+            Cell::new(precision),
+            Cell::new(score),
+            Cell::new(chosen_by),
+            Cell::new(entry.samples.len().to_string()),
+        ]);
+    }
+    out.line(Stream::Stdout, &controls.to_string())?;
+
+    // The one sentence a caller needs before `apply`: whether anything is still pending.
+    // Read from the schema's own predicate, so `--json` supports the same conclusion.
+    if !session.is_settled() {
+        out.line(
+            Stream::Stderr,
+            "note: this session still has queued work; `calibrate apply` needs --partial \
+             until it settles",
+        )?;
+    }
+    Ok(())
+}
+
+/// One control's status, as the five cells a row shows for it.
+struct StatusCells {
+    state: String,
+    value: String,
+    precision: String,
+    score: String,
+    chosen_by: String,
+}
+
+/// An exhaustive match, so a seventh D8 status cannot acquire a rendering by accident.
+fn status_cells(status: &ControlStatus) -> StatusCells {
+    let dash = || "—".to_owned();
+    match status {
+        ControlStatus::Untouched => StatusCells {
+            state: "untouched".to_owned(),
+            value: dash(),
+            precision: dash(),
+            score: dash(),
+            chosen_by: dash(),
+        },
+        ControlStatus::AutoDisabled {
+            automation,
+            parked_value,
+        } => StatusCells {
+            state: format!(
+                "auto-disabled ({})",
+                automation
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            value: parked_value.map_or_else(dash, |v| format!("{v} (parked)")),
+            precision: dash(),
+            score: dash(),
+            chosen_by: dash(),
+        },
+        ControlStatus::Sweeping { done, total, .. } => StatusCells {
+            state: format!("sweeping {done}/{total}"),
+            value: dash(),
+            precision: dash(),
+            score: dash(),
+            chosen_by: dash(),
+        },
+        ControlStatus::Calibrated {
+            value,
+            precision,
+            score,
+            selector,
+        } => StatusCells {
+            state: "calibrated".to_owned(),
+            value: value.to_string(),
+            // Zero means "no spacing to report" — one sample — rather than a spacing of
+            // nothing, and a refinement pass dividing it down must not read it as a
+            // divisor (`session::sampled_precision`).
+            precision: if *precision == 0 {
+                "(single sample)".to_owned()
+            } else {
+                precision.to_string()
+            },
+            score: score.map_or_else(dash, |s| format!("{s:.4}")),
+            // D8's own spelling, from the schema, so the table and the session file agree.
+            chosen_by: selector.label(),
+        },
+        ControlStatus::Deferred { reason } => StatusCells {
+            state: format!("deferred: {reason}"),
+            value: dash(),
+            precision: dash(),
+            score: dash(),
+            chosen_by: dash(),
+        },
+        ControlStatus::Blocked { reason } => StatusCells {
+            state: format!("blocked: {}", blocked_text(reason)),
+            value: dash(),
+            precision: dash(),
+            score: dash(),
+            chosen_by: dash(),
+        },
+    }
+}
+
+/// Why the device will not let a control be calibrated, in a phrase.
+fn blocked_text(reason: &BlockedReason) -> String {
+    match reason {
+        BlockedReason::ReadOnly => "the device flags it read-only [PF:12]".to_owned(),
+        BlockedReason::Disabled => "the device flags it disabled".to_owned(),
+        BlockedReason::InactiveWithoutPartner => {
+            "INACTIVE, and no pair names what owns it [PF:3]".to_owned()
+        }
+        BlockedReason::NotSweepable { control_type } => {
+            format!("a {control_type} control has no ordered range to sweep")
+        }
+        BlockedReason::Other { detail } => detail.clone(),
+    }
+}
+
+/// `calibrate status` — the session, plus the history that explains it.
+pub(crate) fn status(status: &SessionStatus, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(status, out);
+    }
+    session(&status.session, false, out)?;
+
+    if let Some(last) = status.log.last() {
+        out.line(
+            Stream::Stdout,
+            &format!(
+                "\nhistory: {} event(s), last at {}",
+                status.log.len(),
+                last.at
+            ),
+        )?;
+    }
+    // Every sweep that stopped, in full, on stderr. This is the question `status` is asked
+    // after the terminal that showed the live progress is gone, and the samples on the
+    // document say *where* a sweep stopped without ever saying why.
+    for entry in &status.log {
+        if let SessionEvent::SweepInterrupted {
+            control,
+            taken,
+            total,
+            failure,
+            detail,
+        } = &entry.event
+        {
+            out.line(
+                Stream::Stderr,
+                &format!(
+                    "note: the sweep of {control} stopped after {taken} of {total} sample(s) \
+                     at {}: {detail} ({failure:?})",
+                    entry.at
+                ),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// `calibrate list`.
+pub(crate) fn sessions(list: &SessionList, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(list, out);
+    }
+    if list.sessions.is_empty() {
+        return out.line(Stream::Stdout, "no sessions");
+    }
+
+    let mut table = table();
+    table.set_header(vec!["SESSION", "CAMERA", "TASK", "PATH"]);
+    for found in &list.sessions {
+        table.add_row(vec![
+            Cell::new(found.id.to_string()),
+            Cell::new(&found.camera),
+            Cell::new(&found.task_slug),
+            Cell::new(found.path.as_str()),
+        ]);
+    }
+    out.line(Stream::Stdout, &table.to_string())
+}
+
+// ------------------------------------------------------------------ sweep progress
+
+/// Where a running sweep's events go while the CLI renders them.
+///
+/// This crate's seam, not the engine's, and the wall is why: `wchc` links no engine (T6),
+/// so the shared command surface cannot name `engine::progress::ProgressSink`. Each binary
+/// bridges the stream it has — an in-process sink for `wch`, a subscription for `wchc` at
+/// P4e — onto this one object, and the rendering happens once, here. The events themselves
+/// are schema DTOs on both sides, so nothing is translated in between.
+pub trait SweepWatcher: Send + Sync + std::fmt::Debug {
+    /// One event, as it happens.
+    fn event(&self, event: &ProgressEvent);
+
+    /// Take the display down, before anything else writes to the terminal.
+    fn finish(&self);
+}
+
+/// The watcher a sweep should use for this invocation.
+///
+/// `--json` gets [`Quiet`]: the document goes to standard output and the bar to standard
+/// error, so they cannot collide — but a caller redirecting both into one file would find
+/// a document with a progress bar in it, and the answer is not to draw one. Otherwise the
+/// bar, which indicatif itself hides when standard error is not a terminal.
+#[must_use]
+pub(crate) fn watcher(as_json: bool) -> Box<dyn SweepWatcher> {
+    if as_json {
+        Box::new(Quiet)
+    } else {
+        Box::new(Bar::new())
+    }
+}
+
+/// Nobody is watching.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Quiet;
+
+impl SweepWatcher for Quiet {
+    fn event(&self, _event: &ProgressEvent) {}
+    fn finish(&self) {}
+}
+
+/// An indicatif bar over the sweep's own `index`/`total`.
+///
+/// The counts come from the events rather than from anything this side counted, which is
+/// what P4e's mid-sweep subscriber needs (`schema::progress`'s own reasoning): a bar that
+/// tracked its own position would start at zero for a client that connected halfway.
+#[derive(Debug)]
+pub struct Bar {
+    bar: indicatif::ProgressBar,
+}
+
+/// The bar's layout. `{msg}` is [`progress_line`]'s answer, and it comes first because it
+/// is the part that says what the sweep is *doing* — a bar with no message is a sweep of
+/// something, somewhere, at some value.
+///
+/// A constant with a test behind it ([`the_progress_bar_template_parses`]): the fallback
+/// below is a real fallback, and a template that had quietly stopped parsing would drop
+/// every line this module renders without failing anything.
+const BAR_TEMPLATE: &str = "{msg}\n{bar:24} {pos}/{len}";
+
+impl Bar {
+    /// A bar drawing to standard error.
+    #[must_use]
+    pub fn new() -> Bar {
+        // Hidden until a sweep starts and says how big it is: a bar of unknown length that
+        // appears before the first event is a spinner that promises nothing.
+        let bar = indicatif::ProgressBar::hidden();
+        bar.set_style(
+            indicatif::ProgressStyle::with_template(BAR_TEMPLATE)
+                // A malformed template is a typo in the line above, not a reason to end a
+                // calibration: the default bar still counts, and the test named there is
+                // what keeps this arm from being taken silently.
+                .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar()),
+        );
+        Bar { bar }
+    }
+}
+
+impl Default for Bar {
+    fn default() -> Bar {
+        Bar::new()
+    }
+}
+
+impl SweepWatcher for Bar {
+    fn event(&self, event: &ProgressEvent) {
+        match &event.progress {
+            CalibrationProgress::SweepStarted { total, .. } => {
+                self.bar
+                    .set_draw_target(indicatif::ProgressDrawTarget::stderr());
+                self.bar.set_length(u64::from(*total));
+                self.bar.set_position(0);
+            }
+            CalibrationProgress::ValueSet { index, .. } => {
+                self.bar.set_position(u64::from(index.saturating_sub(1)));
+            }
+            CalibrationProgress::SampleTaken { index, .. } => {
+                self.bar.set_position(u64::from(*index));
+            }
+            CalibrationProgress::SweepFinished { .. }
+            | CalibrationProgress::SweepInterrupted { .. } => {}
+        }
+        self.bar.set_message(progress_line(&event.progress));
+        if event.progress.is_terminal() {
+            // Printed rather than left on the bar: the last thing a sweep said is the
+            // thing worth keeping on screen, and `finish` is about to clear the bar.
+            self.bar.println(progress_line(&event.progress));
+        }
+    }
+
+    fn finish(&self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+/// The line one progress event puts in front of a human.
+///
+/// Separate from the bar because a terminal is not available in a test and a rendering
+/// nobody can assert is a rendering nobody checked. Every variant is spelled here, and the
+/// walk below proves no two share a spelling.
+fn progress_line(progress: &CalibrationProgress) -> String {
+    match progress {
+        CalibrationProgress::SweepStarted { control, total, .. } => {
+            format!("sweeping {control}: {total} sample(s)")
+        }
+        CalibrationProgress::ValueSet {
+            control,
+            index,
+            total,
+            requested,
+            applied,
+            warnings,
+        } => {
+            let took = if requested == applied {
+                format!("{applied}")
+            } else {
+                // PF:6 the moment it happens, rather than when the session file is read.
+                format!("{requested} → {applied}")
+            };
+            let mut line = format!("{control} {index}/{total}: set {took}, settling");
+            if !warnings.is_empty() {
+                line.push_str(&format!(" ({})", warnings.len()));
+            }
+            line
+        }
+        CalibrationProgress::SampleTaken {
+            control,
+            index,
+            total,
+            applied,
+            photo,
+            ..
+        } => format!("{control} {index}/{total}: {applied} photographed as {photo}"),
+        CalibrationProgress::SweepFinished { control, samples } => {
+            format!("{control}: {samples} sample(s) taken; nothing selected yet")
+        }
+        CalibrationProgress::SweepInterrupted {
+            control,
+            taken,
+            total,
+            detail,
+            ..
+        } => format!("{control}: stopped after {taken} of {total}: {detail}"),
+    }
+}
+
 /// `profile capture`. Always JSON — a device profile is a document, not a view.
 pub(crate) fn profile(
     profile: &DeviceProfile,
@@ -1519,5 +1947,354 @@ mod tests {
         PhotoRendering::Verbatim {
             source: PixelFormat::MJPG,
         }
+    }
+
+    // ------------------------------------------------------------------ calibration
+
+    fn session_fixture() -> Session {
+        use schema::session::{ControlSession, Sample, Selector};
+
+        let slug = |s: &str| ControlSlug::parse(s).expect("literal slug");
+        let mut session = schema::session::new_session(
+            uuid::Uuid::nil(),
+            camera("Test", true).fingerprint,
+            "read text from the DUT display",
+            "legible text",
+            "0.1.0",
+            schema::time::Stamp::epoch(),
+        );
+        session.criteria = vec!["text clarity".to_owned()];
+        session.queue = vec![slug("focus_absolute"), slug("brightness")];
+        session.controls.insert(
+            slug("focus_absolute"),
+            ControlSession {
+                status: ControlStatus::Calibrated {
+                    value: 512,
+                    precision: 64,
+                    score: Some(1234.5),
+                    selector: Selector::Metric {
+                        name: schema::metrics::MetricName::Sharpness,
+                    },
+                },
+                samples: vec![Sample {
+                    requested: 512,
+                    applied: 512,
+                    warnings: Vec::new(),
+                    photo: "photos/focus_absolute/512.jpg".into(),
+                    metrics: BTreeMap::new(),
+                    captured_at: schema::time::Stamp::epoch(),
+                }],
+            },
+        );
+        session.controls.insert(
+            slug("privacy"),
+            ControlSession {
+                status: ControlStatus::Blocked {
+                    reason: BlockedReason::ReadOnly,
+                },
+                samples: Vec::new(),
+            },
+        );
+        session
+    }
+
+    #[test]
+    fn a_session_table_names_who_chose_and_keeps_the_operators_queue_order() {
+        let (mut out, stdout, stderr) = captured();
+        session(&session_fixture(), false, &mut out).expect("rendering into a buffer cannot fail");
+
+        let text = stdout.text();
+        // D8's own spelling of the selector, from the schema, so the table and the session
+        // file say the same thing.
+        assert!(text.contains("metric:sharpness"), "{text}");
+        assert!(text.contains("512"), "{text}");
+        assert!(text.contains("1234.5"), "{text}");
+        // The device's reason, not a shrug.
+        assert!(text.contains("read-only"), "{text}");
+        // Queue order, not map order: `brightness` sorts first alphabetically and is
+        // queued second.
+        let focus = text.find("focus_absolute").expect("the calibrated control");
+        let brightness = text.find("brightness").expect("the queued control");
+        assert!(focus < brightness, "the queue order was re-sorted: {text}");
+        // A queued control nothing has happened to still has a row: D8 says the absence
+        // *is* `Untouched`, and a vanished row would read as a queue nobody drafted.
+        assert!(text.contains("untouched"), "{text}");
+        // And the one sentence a caller needs before `apply`.
+        assert!(stderr.text().contains("--partial"), "{}", stderr.text());
+    }
+
+    #[test]
+    fn a_settled_session_says_nothing_about_partial() {
+        // The inverse of the note above: a session with nothing pending must not tell a
+        // caller to pass a flag it does not need.
+        let mut fixture = session_fixture();
+        fixture
+            .queue
+            .retain(|slug| slug.as_str() == "focus_absolute");
+        let (mut out, _, stderr) = captured();
+        session(&fixture, false, &mut out).expect("rendering into a buffer cannot fail");
+        assert!(stderr.text().is_empty(), "{}", stderr.text());
+    }
+
+    #[test]
+    fn the_json_rendering_of_a_session_is_the_document_and_nothing_else() {
+        let (mut out, stdout, stderr) = captured();
+        let fixture = session_fixture();
+        session(&fixture, true, &mut out).expect("rendering into a buffer cannot fail");
+        let back: Session = serde_json::from_str(&stdout.text()).expect("valid JSON");
+        assert_eq!(back, fixture);
+        assert!(stderr.text().is_empty(), "{}", stderr.text());
+    }
+
+    #[test]
+    fn a_status_rendering_says_why_a_sweep_stopped_and_the_json_carries_the_same_history() {
+        // The question `calibrate status` is asked after the terminal that showed the live
+        // progress is gone. The document alone says a control stopped at 2 of 5; only the
+        // history says the camera was pulled out.
+        let stopped = SessionStatus {
+            session: session_fixture(),
+            log: vec![schema::session::LogEntry {
+                at: schema::time::Stamp::epoch(),
+                event: SessionEvent::SweepInterrupted {
+                    control: ControlSlug::parse("focus_absolute").expect("literal slug"),
+                    taken: 2,
+                    total: 5,
+                    failure: schema::ErrorKind::DeviceGone,
+                    detail: "/dev/video0 disappeared".to_owned(),
+                },
+            }],
+        };
+        let (mut out, stdout, stderr) = captured();
+        status(&stopped, false, &mut out).expect("rendering into a buffer cannot fail");
+        assert!(
+            stdout.text().contains("history: 1 event(s)"),
+            "{}",
+            stdout.text()
+        );
+        let note = stderr.text();
+        assert!(note.contains("stopped after 2 of 5"), "{note}");
+        assert!(note.contains("disappeared"), "{note}");
+
+        // And `--json` carries the whole history, so the human rendering computes nothing
+        // a reader of the document could not.
+        let (mut out, stdout, _) = captured();
+        status(&stopped, true, &mut out).expect("rendering into a buffer cannot fail");
+        assert_eq!(
+            serde_json::from_str::<SessionStatus>(&stdout.text()).expect("valid JSON"),
+            stopped
+        );
+    }
+
+    #[test]
+    fn an_empty_listing_says_so_and_a_populated_one_names_the_directory() {
+        let (mut out, stdout, _) = captured();
+        sessions(
+            &SessionList {
+                sessions: Vec::new(),
+            },
+            false,
+            &mut out,
+        )
+        .expect("rendering into a buffer cannot fail");
+        assert!(stdout.text().contains("no sessions"), "{}", stdout.text());
+
+        let list = SessionList {
+            sessions: vec![schema::session::SessionListing {
+                id: uuid::Uuid::nil(),
+                camera: "obsbot-tiny-3-3-1-1-0".to_owned(),
+                task_slug: "read-text".to_owned(),
+                path: "/state/tree/obsbot-tiny-3-3-1-1-0/read-text/0".into(),
+            }],
+        };
+        let (mut out, stdout, _) = captured();
+        sessions(&list, false, &mut out).expect("rendering into a buffer cannot fail");
+        let text = stdout.text();
+        assert!(text.contains("obsbot-tiny-3-3-1-1-0"), "{text}");
+        assert!(text.contains("read-text"), "{text}");
+        // The path, because the whole point of an inspectable session tree (D9) is that a
+        // reader can go and look.
+        assert!(text.contains("/state/tree/"), "{text}");
+    }
+
+    #[test]
+    fn every_control_status_and_blocked_reason_has_a_distinct_rendering() {
+        // The same completeness rule as the write warnings above, for D8's two closed
+        // vocabularies: a status or a reason sharing a spelling with another is one a
+        // reader of the table cannot tell apart.
+        use schema::session::{Selector, SweepSpec};
+
+        let slug = |s: &str| ControlSlug::parse(s).expect("literal slug");
+        let statuses = vec![
+            ControlStatus::Untouched,
+            ControlStatus::AutoDisabled {
+                automation: vec![slug("focus_automatic_continuous")],
+                parked_value: Some(200),
+            },
+            ControlStatus::Sweeping {
+                plan: SweepSpec::All,
+                done: 3,
+                total: 16,
+            },
+            ControlStatus::Calibrated {
+                value: 512,
+                precision: 64,
+                score: Some(1.0),
+                selector: Selector::Human,
+            },
+            ControlStatus::Deferred {
+                reason: "no lens".to_owned(),
+            },
+            ControlStatus::Blocked {
+                reason: BlockedReason::ReadOnly,
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for status in &statuses {
+            let cells = status_cells(status);
+            assert!(
+                seen.insert(cells.state.clone()),
+                "{status:?} renders as {:?}, which is taken",
+                cells.state
+            );
+        }
+        // Six, because D8's vocabulary has six and a seventh must not slip in unrendered.
+        assert_eq!(seen.len(), 6);
+
+        // A single-sample sweep has no spacing to report, and the table must not print a
+        // precision of zero as though it were one a refinement pass could divide down.
+        let single = status_cells(&ControlStatus::Calibrated {
+            value: 1,
+            precision: 0,
+            score: None,
+            selector: Selector::Agent,
+        });
+        assert!(single.precision.contains("single"), "{}", single.precision);
+
+        let mut seen = std::collections::BTreeSet::new();
+        for reason in [
+            BlockedReason::ReadOnly,
+            BlockedReason::Disabled,
+            BlockedReason::InactiveWithoutPartner,
+            BlockedReason::NotSweepable {
+                control_type: "rect".to_owned(),
+            },
+            BlockedReason::Other {
+                detail: "something else".to_owned(),
+            },
+        ] {
+            assert!(
+                seen.insert(blocked_text(&reason)),
+                "{reason:?} duplicates a spelling"
+            );
+        }
+    }
+
+    #[test]
+    fn every_progress_event_has_a_distinct_line_and_a_clamp_shows_at_the_moment_it_happens() {
+        use schema::session::SweepSpec;
+
+        let slug = |s: &str| ControlSlug::parse(s).expect("literal slug");
+        let events = vec![
+            CalibrationProgress::SweepStarted {
+                control: slug("focus_absolute"),
+                plan: SweepSpec::All,
+                total: 16,
+            },
+            CalibrationProgress::ValueSet {
+                control: slug("focus_absolute"),
+                index: 1,
+                total: 16,
+                requested: 42,
+                applied: 42,
+                warnings: Vec::new(),
+            },
+            CalibrationProgress::SampleTaken {
+                control: slug("focus_absolute"),
+                index: 1,
+                total: 16,
+                requested: 42,
+                applied: 42,
+                photo: "photos/focus_absolute/42.jpg".into(),
+                metrics: BTreeMap::new(),
+            },
+            CalibrationProgress::SweepFinished {
+                control: slug("focus_absolute"),
+                samples: 16,
+            },
+            CalibrationProgress::SweepInterrupted {
+                control: slug("focus_absolute"),
+                taken: 3,
+                total: 16,
+                failure: schema::ErrorKind::DeviceGone,
+                detail: "/dev/video0 disappeared".to_owned(),
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for progress in &events {
+            assert!(
+                seen.insert(progress_line(progress)),
+                "{progress:?} duplicates a line"
+            );
+        }
+
+        // PF:6 while it happens: a write the driver moved says so on the bar, not only in
+        // the session file afterwards.
+        let moved = progress_line(&CalibrationProgress::ValueSet {
+            control: slug("focus_absolute"),
+            index: 2,
+            total: 16,
+            requested: 42,
+            applied: 40,
+            warnings: vec![WriteWarning::StepAligned {
+                requested: 42,
+                applied: 40,
+                step: 5,
+            }],
+        });
+        assert!(moved.contains("42 → 40"), "{moved}");
+        // …and an exact write does not decorate itself with an arrow to nowhere.
+        let exact = progress_line(&events[1]);
+        assert!(!exact.contains('→'), "{exact}");
+
+        // The finished line says what a sweep deliberately does *not* do (D8): choose.
+        let finished = progress_line(&events[3]);
+        assert!(finished.contains("nothing selected"), "{finished}");
+    }
+
+    #[test]
+    fn the_progress_bar_template_parses_and_shows_the_line_the_events_produce() {
+        // `Bar::new` falls back to indicatif's default style if this does not parse, and
+        // the default style has no `{msg}` in it — so a broken template would silently
+        // throw away every line `progress_line` composes.
+        indicatif::ProgressStyle::with_template(BAR_TEMPLATE).expect("the bar's own template");
+        assert!(
+            BAR_TEMPLATE.contains("{msg}"),
+            "a bar with no message says a sweep is happening and not what it is doing"
+        );
+    }
+
+    #[test]
+    fn the_json_answer_draws_no_progress_bar_and_the_human_one_does() {
+        // The bar goes to standard error and the document to standard output, so they
+        // cannot collide — but a caller redirecting both into one file would get a document
+        // with a bar in it, and the answer is not to draw one.
+        let quiet = watcher(true);
+        let drawn = watcher(false);
+        assert_eq!(format!("{quiet:?}"), "Quiet");
+        assert!(format!("{drawn:?}").starts_with("Bar"), "{drawn:?}");
+
+        // Both are total: a watcher that panicked on an event would take a sweep with it.
+        let event = ProgressEvent {
+            session: uuid::Uuid::nil(),
+            at: schema::time::Stamp::epoch(),
+            progress: CalibrationProgress::SweepFinished {
+                control: ControlSlug::parse("brightness").expect("literal slug"),
+                samples: 2,
+            },
+        };
+        quiet.event(&event);
+        quiet.finish();
+        drawn.event(&event);
+        drawn.finish();
     }
 }

@@ -22,14 +22,19 @@
 use std::process::ExitCode;
 
 use camino::Utf8Path;
-use cli_core::{Cli, Executor, Output, Photograph, Stream};
+use cli_core::{Cli, Executor, Output, Photograph, Selection, SessionRef, Stream, SweepWatcher};
+use engine::calibrate::{SweepContext, SweepRequest};
+use engine::lifecycle::{self, SessionSpec};
+use engine::store::SessionStore;
 use schema::backend::{BackendKind, Camera, CameraBackend};
-use schema::camera::{CameraId, CameraInfo};
+use schema::camera::{CameraFingerprint, CameraId, CameraInfo};
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug};
 use schema::error::{Error, Result};
 use schema::profile::DeviceProfile;
+use schema::progress::ProgressEvent;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::session::{Session, SessionList, SessionListing, SessionStatus};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::time::Stamp;
 
@@ -134,6 +139,76 @@ impl InProcess {
     ) -> Vec<schema::pairing::AutomationPair> {
         let merged = engine::pairing::merge(schema::pairing::declared_pairs(), measured);
         engine::pairing::applicable(controls, &merged)
+    }
+}
+
+/// The calibration half of the executor (design D8, D9).
+///
+/// Every mutating verb runs inside [`SessionStore::with_lock`] — take, run, release — which
+/// is D9's *daemonless* protocol, and the whole of it: a `wch` that met a lock a daemon
+/// holds is refused with [`Error::StoreLocked`] naming the holder rather than blocking, and
+/// that refusal comes out of the store rather than out of a check written here.
+impl InProcess {
+    /// The session store under this process's XDG state directory (note N2).
+    fn store(&self) -> Result<SessionStore> {
+        SessionStore::from_env(&engine::paths::SystemEnv)
+    }
+
+    /// The session a verb names, loaded.
+    ///
+    /// The two forms are two lookups because they answer two questions (D8, N14): a task
+    /// names the newest session in *this camera's* slot, and a UUID names one session
+    /// wherever it lives — including under another camera, which is what gives
+    /// `calibrate apply`'s fingerprint check something to refuse.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] naming what was asked for when no session answers to
+    /// it: `calibrate start` is the verb that makes one, and a lookup that invented an
+    /// empty session would let `sweep` write to a camera with nothing recording it.
+    fn session_for(
+        store: &SessionStore,
+        fingerprint: &CameraFingerprint,
+        which: &SessionRef,
+    ) -> Result<Session> {
+        let (found, named) = match which {
+            SessionRef::Task(task) => (
+                lifecycle::latest(store, fingerprint, task)?,
+                format!("task={task:?}"),
+            ),
+            SessionRef::Id(id) => (lifecycle::find(store, *id)?, format!("session={id}")),
+        };
+        found.ok_or_else(|| Error::IllegalTransition {
+            from: format!("no_session({named})"),
+            op: "read this session; `wch calibrate start` opens one".to_owned(),
+        })
+    }
+
+    /// A session and the camera it is about to be run against, both resolved.
+    fn open_session(
+        &self,
+        store: &SessionStore,
+        requested: &CameraId,
+        which: &SessionRef,
+    ) -> Result<(Session, Box<dyn Camera>)> {
+        let (info, camera) = self.open(requested)?;
+        let session = InProcess::session_for(store, &info.fingerprint, which)?;
+        Ok((session, camera))
+    }
+}
+
+/// The engine's progress seam, fed from the command surface's.
+///
+/// Two traits with one method because of the thin-client wall (T6): `cli-core` is shared
+/// with `wchc`, which links no engine and cannot name `engine::progress::ProgressSink`.
+/// This is the whole of the bridge — the events on both sides are the same schema DTOs, so
+/// nothing is translated, and P4e will bridge a subscription onto the same watcher.
+#[derive(Debug)]
+struct Watched<'a>(&'a dyn SweepWatcher);
+
+impl engine::progress::ProgressSink for Watched<'_> {
+    fn emit(&self, event: &ProgressEvent) {
+        self.0.event(event);
     }
 }
 
@@ -265,6 +340,184 @@ impl Executor for InProcess {
         Ok(Photograph {
             report: taken.report,
             returned: taken.returned,
+        })
+    }
+
+    fn calibrate_start(
+        &mut self,
+        requested: &CameraId,
+        task: &str,
+        goal: &str,
+        criteria: &[String],
+    ) -> Result<Session> {
+        let (info, mut camera) = self.open(requested)?;
+        let store = self.store()?;
+        store.with_lock(|lock| {
+            let spec = SessionSpec {
+                // The clock enters here, at the composition root: the engine reads none,
+                // and a UUIDv7 *is* a timestamp, which is what makes a session directory
+                // sort chronologically without anything parsing a document (D9).
+                id: uuid::Uuid::now_v7(),
+                fingerprint: info.fingerprint.clone(),
+                task: task.to_owned(),
+                goal: goal.to_owned(),
+                criteria: criteria.to_vec(),
+                tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+            };
+            let mut session = lifecycle::create(&store, lock, &spec, Stamp::now())?;
+            // D3's empirical probe, at session start and nowhere else (N16). It *writes*
+            // to the camera — toggling each automation-shaped control and putting it back
+            // — so it happens while the camera is still where the operator left it, and
+            // what it declined to touch is said out loud.
+            let found = lifecycle::discover_pairs(
+                &store,
+                lock,
+                &mut session,
+                camera.as_mut(),
+                Stamp::now(),
+            )?;
+            report_probe(&found);
+            Ok(session)
+        })
+    }
+
+    fn calibrate_plan(
+        &mut self,
+        requested: &CameraId,
+        which: &SessionRef,
+        controls: &[ControlSlug],
+        order: bool,
+    ) -> Result<Session> {
+        let store = self.store()?;
+        let info = self.resolve(requested)?;
+        let mut session = InProcess::session_for(&store, &info.fingerprint, which)?;
+        store.with_lock(|lock| {
+            if order {
+                // The camera is deliberately not opened: reordering a queue is an edit to a
+                // document, and a caller who wanted to put exposure before focus should not
+                // be refused because something else currently holds the device.
+                lifecycle::commit_state(&store, lock, &mut session, Stamp::now(), |draft, now| {
+                    engine::session::reorder_queue(draft, controls, now)
+                })?;
+            } else {
+                // Drafting asks the *device* what it has and what it will not let this tool
+                // calibrate, so this is where the camera has to open.
+                let mut camera = self.backend.open(&info.id)?;
+                lifecycle::draft(
+                    &store,
+                    lock,
+                    &mut session,
+                    camera.as_mut(),
+                    controls,
+                    Stamp::now(),
+                )?;
+            }
+            Ok(session.clone())
+        })
+    }
+
+    fn calibrate_sweep(
+        &mut self,
+        requested: &CameraId,
+        which: &SessionRef,
+        request: &SweepRequest,
+        watch: &dyn SweepWatcher,
+    ) -> Result<Session> {
+        let store = self.store()?;
+        let (mut session, mut camera) = self.open_session(&store, requested, which)?;
+        let progress = Watched(watch);
+        let clock = engine::settle::MonotonicClock::new();
+        store.with_lock(|lock| {
+            let context = SweepContext {
+                store: &store,
+                lock,
+                clock: &clock,
+                progress: &progress,
+                started_at: Stamp::now(),
+            };
+            engine::calibrate::run(&context, &mut session, camera.as_mut(), request)?;
+            Ok(session.clone())
+        })
+    }
+
+    fn calibrate_status(
+        &mut self,
+        requested: &CameraId,
+        which: &SessionRef,
+    ) -> Result<SessionStatus> {
+        // No lock: reading is not a state write, and a `wch calibrate status` that refused
+        // while a daemon held the lock would be a status verb nobody can use on the machine
+        // the sessions are on.
+        let store = self.store()?;
+        let info = self.resolve(requested)?;
+        let session = InProcess::session_for(&store, &info.fingerprint, which)?;
+        let log = lifecycle::history(&store, &session)?;
+        Ok(SessionStatus { session, log })
+    }
+
+    fn calibrate_select(
+        &mut self,
+        requested: &CameraId,
+        which: &SessionRef,
+        control: &ControlSlug,
+        selection: &Selection,
+    ) -> Result<Session> {
+        let store = self.store()?;
+        let info = self.resolve(requested)?;
+        let mut session = InProcess::session_for(&store, &info.fingerprint, which)?;
+        store.with_lock(|lock| {
+            lifecycle::commit(&store, lock, &mut session, Stamp::now(), |draft, now| {
+                // Whichever branch runs, the *selector* is recorded (D8): a metric names
+                // itself and the score it earned, and a value names whoever claimed it.
+                match selection {
+                    Selection::ByMetric(metric) => {
+                        engine::session::select_by_metric(draft, control, *metric, now)
+                    }
+                    Selection::ByValue { value, selector } => {
+                        engine::session::select_value(draft, control, *value, selector.clone(), now)
+                    }
+                }
+            })?;
+            Ok(session.clone())
+        })
+    }
+
+    fn calibrate_apply(
+        &mut self,
+        requested: &CameraId,
+        which: &SessionRef,
+        partial: bool,
+    ) -> Result<WriteReport> {
+        let store = self.store()?;
+        let (mut session, mut camera) = self.open_session(&store, requested, which)?;
+        store.with_lock(|lock| {
+            lifecycle::apply(
+                &store,
+                lock,
+                &mut session,
+                camera.as_mut(),
+                partial,
+                Stamp::now(),
+            )
+        })
+    }
+
+    fn calibrate_list(&mut self, requested: Option<&CameraId>) -> Result<SessionList> {
+        let store = self.store()?;
+        let found = match requested {
+            Some(id) => store.sessions_for(&self.resolve(id)?.fingerprint)?,
+            None => store.all_sessions()?,
+        };
+        Ok(SessionList {
+            sessions: found
+                .into_iter()
+                .map(|session| SessionListing {
+                    id: session.id,
+                    camera: session.camera,
+                    task_slug: session.task_slug,
+                    path: session.dir,
+                })
+                .collect(),
         })
     }
 

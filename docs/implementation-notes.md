@@ -1283,3 +1283,120 @@ split is redefined to name which descriptor fields may move — the honest fix i
 per-control statement, since `elems` is invariant for every other control on this driver.
 Until then the finding is that a payload's shape is device state, and code that treats it
 as identity is wrong on at least one driver in the tree.
+
+---
+
+## N18 — `log.ndjson` gained `SweepInterrupted`, because "where it stopped" is not "why"
+
+**Doc:** design D9 makes the session directory the inspectable record of a calibration, and
+docs/7 P3d makes `calibrate status` the verb that reads it. Note N16 states the rule
+`SessionEvent` is governed by: the log is the record of what happened *to the device*,
+which is why P3b declined to log queue edits. P3c left the question open in as many words —
+`CalibrationProgress::SweepInterrupted` had no durable counterpart, and the recorded
+`SampleTaken` lines already bound an interruption.
+
+**Repo:** `schema::session::SessionEvent::SweepInterrupted { control, taken, total, failure,
+detail }`, appended by `engine::calibrate::run` on the path that returns the error, through
+`lifecycle::note` — an append with no document change, because the samples that survived
+were each committed as they were taken and the document already says what it needs to.
+
+**Why.** The bound the samples give is a bound on *when*, and the question `calibrate
+status` is asked is *why*. A camera that was unplugged, a sensor that never settled
+\[PF:11\] and a filesystem that filled leave byte-identical session directories: three
+samples of sixteen, a control left `Sweeping`, and a pre-sweep snapshot still armed. Design
+keeps those three apart everywhere else — availability is not capability, and the D13
+registry exists so a caller can act on the difference — and the one place they were
+collapsed was the record an operator reads after the process that saw the failure is gone.
+The live event carries the same fact to whoever was watching; this is the copy that
+survives the terminal.
+
+**What the line does not mean.** Its *absence* is not evidence. A process that was killed
+leaves no line either, which is exactly the case design §6's persisted snapshot exists for.
+A present line means a known reason; an absent one means the reason is not known here, and
+nothing reads it as "the sweep is still running".
+
+**Why the append is best-effort, and why that is not a swallowed error.** The note is
+attempted and its failure is not returned, because the sweep already has a refusal to
+report and the alternative is answering "the disk is full" to somebody whose camera was
+pulled out — the one conversion AGENTS rule 7 forbids. The store that could not take this
+line cannot take the next operation's either, so nothing is hidden for long: the caller
+meets it at its own next write. `emit`'s missing fault menu (N17) is the neighbouring
+decision and is not the same one — that seam cannot fail in a way a sweep may act on, and
+this one can, but not in a way that may displace the failure it is describing.
+
+**Retires when:** a session gains a durable "this sweep is running, owned by that process"
+fact. That would make silence itself readable, and the interruption line would become one
+of three states rather than the only one that speaks.
+
+---
+
+## N19 — `calibrate plan` is the draft, and a control the device will not calibrate is recorded rather than omitted
+
+**Doc:** design D8 says a session holds "an ordered control queue the caller may reorder
+between sweeps" and lists `Blocked { reason }` in the per-control vocabulary; it does not
+say which verb fills either. The skill's step 6 (vendor/v4l2-webcam-skill,
+`references/calibrating.md`) says to write a draft covering **all** the setting names, and
+step 7 says to verify that it does.
+
+**Repo:** `wch calibrate plan <camera> --task …` with no controls named classifies every
+control the camera enumerates: the sweepable ones are queued, and the rest get
+`ControlStatus::Blocked` with the device's reason. Naming controls queues those instead;
+`--order` treats the named controls as a permutation of the existing queue.
+`lifecycle::draft` is the engine half, and a control that already has a status is left
+alone — re-drafting a session mid-run is ordinary, and a draft that re-classified a
+calibrated control would throw away the value somebody chose.
+
+**Why blocked rather than absent.** A draft that silently omitted the read-only controls
+would read as a device that does not have them, and the operator performing the skill's
+step 7 — check the draft against the control list — would find the two disagreeing with no
+way to tell an omission from a device difference. `BlockedReason` is D8's answer and this
+is its first producer; before P3d the variant existed with nothing to write it, which is
+the "typed declaration nothing reads" rubric A8 calls a defect.
+
+**Where each reason comes from.** Nothing here re-derives a rule: `DISABLED` is read off
+the descriptor because it is a device fact D8 names in its own right and the write planner
+deliberately reports it and READ_ONLY as one refusal; "no ordered range" is
+`sweep::plan`'s answer; "read-only" and "INACTIVE with nothing to free it" are
+`pairing::plan`'s. A classifier that restated any of them would be a second copy of a law,
+drifting the first time the original changed. The question is asked with
+`allow_motion = true`, because a control that moves motors is a reason a *sweep* needs a
+flag (design §5) and not a reason the control cannot be calibrated — blocking every PTZ
+control at draft time would refuse the OBSBOT its whole purpose.
+
+**Retires when:** D8 grows an explicit per-control plan on the document (a stored
+`SweepSpec` a later `sweep` reads), at which point drafting and planning become two facts
+and this verb records both.
+
+---
+
+## N20 — `calibrate apply` does not restore, and does not consume the pre-sweep snapshot
+
+**Doc:** design D4 and AGENTS rule 7: sweeps and guarded operations wrap themselves in
+snapshot/restore by default and the tool leaves the camera as it found it unless told to
+keep changes. D8 says `calibrate apply` "replays a session's calibrated values … against a
+fingerprint-matched camera — the skill's calibration script as data instead of Bash".
+
+**Repo:** `lifecycle::apply` performs the guarded write and stops. Nothing is restored
+afterwards, and `Session::pre_snapshot` is left exactly as it was.
+
+**Why.** The two halves of D4's sentence are about different operations. A sweep *borrows*
+the camera — it moves a control to take a photograph and has no interest in where it left
+it — so it restores, and design §6's persisted snapshot is what makes that survive a crash.
+`apply` is the operator saying "leave it like this": it is the skill's step 12, the reason
+the session was recorded at all, and a restore afterwards would undo the only thing the
+verb does. Reading rule 7 as "every write restores" would make the calibration
+unusable by the tool that produced it.
+
+Consuming the snapshot would be the same mistake from the other side. That record describes
+the camera **before the calibration**, and it is the only route back to it; `apply` is when
+an operator is most likely to want that route. So the record stays, and
+`lifecycle::recover` — the same function an ordinary session end and a crash recovery both
+run — is what spends it.
+
+**What still holds.** The write is guarded, so D4's *ordering* is honoured: an automation
+control that owns a calibrated value is switched off first and the report names it in
+`disabled_automation`, because applying a calibration changes more than the controls it
+lists and the caller is entitled to hear so.
+
+**Retires when:** `apply` grows a scope — "apply for this command and put it back after" —
+which is a different verb with a different lifetime, not a flag on this one.

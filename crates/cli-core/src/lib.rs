@@ -44,11 +44,14 @@ use schema::capture::{
 };
 use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::error::{Error, Result};
+use schema::metrics::MetricName;
 use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::session::{Selector, Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
 
 pub use photograph::Photograph;
+pub use render::SweepWatcher;
 
 /// The photo answer, and its bytes when the caller asked for them.
 ///
@@ -67,7 +70,7 @@ mod photograph {
     }
 }
 
-pub use render::{Output, Stream};
+pub use render::{Bar, Output, Quiet, Stream};
 
 /// Drive V4L2 webcams: enumerate, inspect, and capture device profiles.
 #[derive(Debug, Parser)]
@@ -200,6 +203,7 @@ macro_rules! vocabulary_arg {
 
 vocabulary_arg!(TransformArg, Transform, "transform");
 vocabulary_arg!(PhotoFormatArg, PhotoFormat, "format");
+vocabulary_arg!(MetricArg, MetricName, "metric");
 
 /// `CONTROL=VALUE`, as typed on a `set` command line.
 ///
@@ -387,30 +391,406 @@ pub enum Command {
         #[arg(long, value_name = "TRANSFORM", default_value = "none")]
         transform: TransformArg,
 
-        /// The frame size to ask the device for, as `WxH`.
-        #[arg(long, value_name = "WxH")]
-        size: Option<SizeArg>,
+        /// What to ask the device's format negotiation for.
+        #[command(flatten)]
+        stream: StreamArgs,
 
-        /// The pixel format to ask the device for, as a fourcc such as `MJPG`.
-        #[arg(long, value_name = "FOURCC")]
-        pixel_format: Option<String>,
-
-        /// Discard this many frames before taking one \[PF:11\].
-        #[arg(long, value_name = "N", conflicts_with = "settle_for")]
-        skip_frames: Option<u32>,
-
-        /// Discard frames for this long before taking one, in milliseconds.
-        #[arg(long, value_name = "MS")]
-        settle_for: Option<u64>,
-
-        /// How long the whole settle may take, in milliseconds.
-        #[arg(long, value_name = "MS")]
-        settle_deadline: Option<u64>,
+        /// How long to let the sensor settle first.
+        #[command(flatten)]
+        settle: SettleArgs,
     },
+
+    /// Run a calibration session: sweep controls, score the samples, apply the result (D8).
+    #[command(subcommand)]
+    Calibrate(CalibrateCommand),
 
     /// Capture device profiles.
     #[command(subcommand)]
     Profile(ProfileCommand),
+}
+
+/// The format-negotiation flags, shared by every verb that opens a stream.
+///
+/// One declaration, flattened into `photo` and `calibrate sweep`, because the two must ask
+/// the device for the same thing in the same words: a sweep whose `--size` meant something
+/// slightly different from a photo's would produce samples nobody could reproduce with the
+/// photo verb afterwards.
+#[derive(Debug, Clone, Args)]
+pub struct StreamArgs {
+    /// The frame size to ask the device for, as `WxH`.
+    #[arg(long, value_name = "WxH")]
+    pub size: Option<SizeArg>,
+
+    /// The pixel format to ask the device for, as a fourcc such as `MJPG`.
+    #[arg(long, value_name = "FOURCC")]
+    pub pixel_format: Option<String>,
+}
+
+impl StreamArgs {
+    /// The request these flags describe.
+    #[must_use]
+    pub fn request(&self) -> StreamRequest {
+        StreamRequest {
+            pixel_format: self.pixel_format.as_deref().and_then(PixelFormat::parse),
+            width: self.size.map(|s| s.width),
+            height: self.size.map(|s| s.height),
+            interval: None,
+            buffer_count: schema::limits::DEFAULT_BUFFER_COUNT,
+        }
+    }
+}
+
+/// The settle flags, shared by every verb that takes a frame \[PF:11\].
+#[derive(Debug, Clone, Copy, Args)]
+pub struct SettleArgs {
+    /// Discard this many frames before taking one \[PF:11\].
+    #[arg(long, value_name = "N", conflicts_with = "settle_for")]
+    pub skip_frames: Option<u32>,
+
+    /// Discard frames for this long before taking one, in milliseconds.
+    #[arg(long, value_name = "MS")]
+    pub settle_for: Option<u64>,
+
+    /// How long the whole settle may take, in milliseconds.
+    #[arg(long, value_name = "MS")]
+    pub settle_deadline: Option<u64>,
+}
+
+impl SettleArgs {
+    /// The policy these flags describe; the `limits` table decides what they leave unsaid.
+    #[must_use]
+    pub fn policy(&self) -> SettlePolicy {
+        let spec = match (self.skip_frames, self.settle_for) {
+            (Some(frames), _) => SettleSpec::SkipFrames { frames },
+            (None, Some(millis)) => SettleSpec::SettleFor { millis },
+            (None, None) => SettleSpec::default(),
+        };
+        SettlePolicy {
+            spec,
+            deadline_ms: self
+                .settle_deadline
+                .unwrap_or(schema::limits::DEFAULT_SETTLE_DEADLINE_MS),
+        }
+    }
+}
+
+/// Which session a calibrate verb is about.
+///
+/// A (camera, task) pair names the session an operator is working on: D8 says a session
+/// belongs to that pair, and at most one of a task's sessions is open (N14). `--session`
+/// names one by its UUID instead, which is what `calibrate list` prints — the only way to
+/// reach a session recorded against a *different* camera, and therefore the only way the
+/// fingerprint check `apply` performs can ever have something to refuse.
+#[derive(Debug, Clone, Args)]
+#[group(required = true, multiple = false)]
+pub struct SessionArg {
+    /// The task, in the words `calibrate start` recorded.
+    #[arg(long, value_name = "TEXT")]
+    pub task: Option<String>,
+
+    /// The session's UUID, as `calibrate list` prints it.
+    #[arg(long, value_name = "UUID")]
+    pub session: Option<uuid::Uuid>,
+}
+
+/// `wch calibrate …` — the calibration session verbs (design D8).
+#[derive(Debug, Subcommand)]
+pub enum CalibrateCommand {
+    /// Open a session for a camera and a task.
+    Start {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// The task, in your own words: "read text from the DUT display".
+        #[arg(long, value_name = "TEXT")]
+        task: String,
+
+        /// What a good photo looks like for this task.
+        #[arg(long, value_name = "TEXT", default_value = "")]
+        goal: String,
+
+        /// One quality criterion, in priority order. Repeatable.
+        ///
+        /// Recorded because the *selector* needs them (D8) — whether that selector is a
+        /// human, an agent, or a metric, it is judging against something.
+        #[arg(long = "criterion", value_name = "TEXT")]
+        criteria: Vec<String>,
+    },
+
+    /// Draft the control queue: what will be calibrated, in what order.
+    ///
+    /// With no controls named, every control the camera has is classified — the sweepable
+    /// ones queued, the rest recorded `blocked` with the device's reason. That is the
+    /// skill's "cover all the setting names" step, and a control the device will not let
+    /// this tool calibrate is a fact worth writing down rather than an omission.
+    Plan {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Which session.
+        #[command(flatten)]
+        which: SessionArg,
+
+        /// The controls, by slug. Every control on the camera when none are named.
+        #[arg(value_name = "CONTROL")]
+        controls: Vec<String>,
+
+        /// Treat the controls named as the queue's new order (a permutation of it).
+        #[arg(long, requires = "controls")]
+        order: bool,
+    },
+
+    /// Sweep one control: a photo per value, scored.
+    Sweep {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Which session.
+        #[command(flatten)]
+        which: SessionArg,
+
+        /// The control to sweep, by slug.
+        #[arg(value_name = "CONTROL")]
+        control: String,
+
+        /// How to derive the values.
+        #[command(flatten)]
+        plan: PlanArgs,
+
+        /// Allow a sweep that moves motors (design §5: never implicit).
+        #[arg(long)]
+        allow_motion: bool,
+
+        /// The encoding the sample photos are written in.
+        #[arg(long, value_name = "FORMAT", default_value = "jpeg")]
+        photo_format: PhotoFormatArg,
+
+        /// What to ask the device's format negotiation for.
+        #[command(flatten)]
+        stream: StreamArgs,
+
+        /// How long to let the sensor settle before each shot.
+        #[command(flatten)]
+        settle: SettleArgs,
+    },
+
+    /// Where a session stands, and what happened to get it there.
+    Status {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Which session.
+        #[command(flatten)]
+        which: SessionArg,
+    },
+
+    /// Record the value chosen for a control, and who chose it (D8).
+    Select {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Which session.
+        #[command(flatten)]
+        which: SessionArg,
+
+        /// The control, by slug.
+        #[arg(value_name = "CONTROL")]
+        control: String,
+
+        /// Who chose, and how.
+        #[command(flatten)]
+        by: SelectorArgs,
+    },
+
+    /// Write a session's calibrated values back to the camera (D4 ordering).
+    Apply {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Which session.
+        #[command(flatten)]
+        which: SessionArg,
+
+        /// Apply what is decided so far, leaving uncalibrated controls alone.
+        ///
+        /// The only way past an unfinished session. Without it a session with nothing
+        /// chosen, or with queued controls still pending, is refused — a verb that wrote
+        /// nothing and reported success is how a calibration silently does not apply.
+        #[arg(long)]
+        partial: bool,
+    },
+
+    /// Every session on this machine, newest first.
+    List {
+        /// One camera's sessions, by id or unambiguous prefix. All cameras when omitted.
+        #[arg(value_name = "CAMERA")]
+        camera: Option<String>,
+    },
+}
+
+/// How a sweep derives the values it visits (design D8's sweep plans).
+///
+/// Exactly one, and **required**: a sweep is minutes of camera time and, on a PTZ head,
+/// motor travel. A default would make the expensive choice the silent one.
+#[derive(Debug, Clone, Args)]
+#[group(required = true, multiple = false)]
+pub struct PlanArgs {
+    /// Every step from the control's minimum to its maximum.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Every `N`-th value, aligned to the control's own step.
+    #[arg(long, value_name = "N")]
+    pub step: Option<i64>,
+
+    /// This many logarithmically spaced values.
+    #[arg(long, value_name = "N")]
+    pub points: Option<u32>,
+
+    /// Exactly these values, comma-separated.
+    #[arg(long, value_name = "V,V,…", value_delimiter = ',')]
+    pub values: Option<Vec<i64>>,
+}
+
+impl PlanArgs {
+    /// The spec these flags describe.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] if none of them was given, which clap's required group
+    /// has already refused — the arm exists so the conversion has no `unwrap` in it.
+    pub fn spec(&self) -> Result<SweepSpec> {
+        if self.all {
+            return Ok(SweepSpec::All);
+        }
+        if let Some(step) = self.step {
+            return Ok(SweepSpec::Uniform { step });
+        }
+        if let Some(points) = self.points {
+            return Ok(SweepSpec::Log { points });
+        }
+        if let Some(values) = &self.values {
+            return Ok(SweepSpec::Explicit {
+                values: values.clone(),
+            });
+        }
+        Err(Error::IllegalTransition {
+            from: "no_sweep_plan".to_owned(),
+            op: "sweep: pass one of --all, --step, --points or --values".to_owned(),
+        })
+    }
+}
+
+/// Who chose a value, and how (design D8's selector identity).
+///
+/// `--metric` and `--value` are alternatives because they are different claims. A metric
+/// *ranks*: naming one records `metric:<name>` and the score it earned. A value is
+/// *chosen*, and `--by` is required with it because the record has to say whether an agent
+/// looked at the photos or a person did — nothing here may pretend a Laplacian knows what
+/// "text legible on the DUT" means, and a default `--by` is exactly that pretence.
+#[derive(Debug, Clone, Args)]
+#[group(required = true, multiple = true)]
+pub struct SelectorArgs {
+    /// Rank the samples by this metric and take the best.
+    #[arg(long, value_name = "METRIC", conflicts_with_all = ["value", "by"])]
+    pub metric: Option<MetricArg>,
+
+    /// The value chosen, as a sample's *applied* value.
+    #[arg(long, value_name = "N", requires = "by")]
+    pub value: Option<i64>,
+
+    /// Who chose it: `agent` or `human`.
+    #[arg(long, value_name = "WHO", requires = "value")]
+    pub by: Option<ChosenByArg>,
+}
+
+/// What `select` was told to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selection {
+    /// Rank by a metric and take the best.
+    ByMetric(MetricName),
+    /// A value somebody chose, and who.
+    ByValue {
+        /// The value, as a sample's applied value.
+        value: i64,
+        /// Who chose it.
+        selector: Selector,
+    },
+}
+
+impl SelectorArgs {
+    /// The selection these flags describe.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] for a combination clap's group has already refused; the
+    /// arm exists so this conversion has no `unwrap` in it.
+    pub fn selection(&self) -> Result<Selection> {
+        match (self.metric, self.value, self.by) {
+            (Some(metric), None, None) => Ok(Selection::ByMetric(metric.0)),
+            (None, Some(value), Some(by)) => Ok(Selection::ByValue {
+                value,
+                selector: by.selector(),
+            }),
+            _ => Err(Error::IllegalTransition {
+                from: "no_selector".to_owned(),
+                op: "select: pass --metric <NAME>, or --value <N> --by <agent|human>".to_owned(),
+            }),
+        }
+    }
+}
+
+/// `--by`, as clap sees it.
+///
+/// Two spellings, and the third selector D8 names — `metric:<name>` — is deliberately not
+/// among them: a metric is not something a caller can *claim* to be, it is something the
+/// tool computed, and `--metric` is where that is said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChosenByArg {
+    /// An agent reviewed the sample photos and picked one.
+    Agent,
+    /// A human did.
+    Human,
+}
+
+impl ChosenByArg {
+    /// The two choosers a caller may claim to be.
+    pub const ALL: &'static [ChosenByArg] = &[ChosenByArg::Agent, ChosenByArg::Human];
+
+    /// The selector this argument records.
+    #[must_use]
+    pub fn selector(self) -> Selector {
+        match self {
+            ChosenByArg::Agent => Selector::Agent,
+            ChosenByArg::Human => Selector::Human,
+        }
+    }
+}
+
+impl std::str::FromStr for ChosenByArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        // Matched against the schema's own spelling of each selector, so `--by agent` and
+        // the `agent` a session file records are one string rather than two that can drift.
+        ChosenByArg::ALL
+            .iter()
+            .copied()
+            .find(|chooser| chooser.selector().label() == s)
+            .ok_or_else(|| {
+                let known: Vec<String> = ChosenByArg::ALL
+                    .iter()
+                    .map(|chooser| chooser.selector().label())
+                    .collect();
+                format!("unknown chooser {s:?}; known: {}", known.join(", "))
+            })
+    }
 }
 
 impl Command {
@@ -433,11 +813,8 @@ impl Command {
             out,
             format,
             transform,
-            size,
-            pixel_format,
-            skip_frames,
-            settle_for,
-            settle_deadline,
+            stream,
+            settle,
             ..
         } = self
         else {
@@ -477,24 +854,9 @@ impl Command {
             }
         };
 
-        let spec = match (skip_frames, settle_for) {
-            (Some(frames), _) => SettleSpec::SkipFrames { frames: *frames },
-            (None, Some(millis)) => SettleSpec::SettleFor { millis: *millis },
-            (None, None) => SettleSpec::default(),
-        };
-
         Ok(Some(PhotoRequest {
-            stream: StreamRequest {
-                pixel_format: pixel_format.as_deref().and_then(PixelFormat::parse),
-                width: size.map(|s| s.width),
-                height: size.map(|s| s.height),
-                interval: None,
-                buffer_count: schema::limits::DEFAULT_BUFFER_COUNT,
-            },
-            settle: SettlePolicy {
-                spec,
-                deadline_ms: settle_deadline.unwrap_or(schema::limits::DEFAULT_SETTLE_DEADLINE_MS),
-            },
+            stream: stream.request(),
+            settle: settle.policy(),
             transform: transform.0,
             sink,
         }))
@@ -610,6 +972,137 @@ pub trait Executor {
     ///
     /// As [`Executor::info`].
     fn capture_profile(&mut self, camera: &CameraId, capturer: &str) -> Result<DeviceProfile>;
+
+    /// Open a calibration session for a camera and a task (D8).
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::info`], plus [`Error::SessionConflict`] when the slot already holds
+    /// an open session (N14), and whatever the store refuses with —
+    /// [`Error::StoreLocked`] when a daemon owns the state directory (D9).
+    fn calibrate_start(
+        &mut self,
+        camera: &CameraId,
+        task: &str,
+        goal: &str,
+        criteria: &[String],
+    ) -> Result<Session>;
+
+    /// Queue controls for calibration, or reorder the queue.
+    ///
+    /// `controls` empty means every control the camera has. `order` treats the named
+    /// controls as the queue's new order rather than as additions.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::calibrate_start`], plus [`Error::ControlUnknown`] for a slug this
+    /// camera does not have and [`Error::IllegalTransition`] when `order` is not a
+    /// permutation of the queue.
+    fn calibrate_plan(
+        &mut self,
+        camera: &CameraId,
+        which: &SessionRef,
+        controls: &[ControlSlug],
+        order: bool,
+    ) -> Result<Session>;
+
+    /// Sweep one control, reporting progress as it goes (D8).
+    ///
+    /// `watch` is where the progress events go while the sweep runs. It is this crate's
+    /// seam rather than the engine's, because `wchc` links no engine (T6): the binaries
+    /// bridge whichever stream they have onto it, and the rendering happens once, here.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::calibrate_start`], plus the planner's refusals (a control with no
+    /// ordered range, a motion control without `--allow-motion`) and whatever the camera
+    /// said at the sample that stopped it.
+    fn calibrate_sweep(
+        &mut self,
+        camera: &CameraId,
+        which: &SessionRef,
+        request: &SweepRequest,
+        watch: &dyn SweepWatcher,
+    ) -> Result<Session>;
+
+    /// A session's document and its history.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::info`], plus [`Error::SchemaVersionForeign`] for a session another
+    /// build wrote (D9).
+    fn calibrate_status(&mut self, camera: &CameraId, which: &SessionRef) -> Result<SessionStatus>;
+
+    /// Record a control's chosen value and who chose it (D8).
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::calibrate_start`], plus the D8 machine's refusals: a control that
+    /// never swept, a value no sample holds, a metric that cannot rank.
+    fn calibrate_select(
+        &mut self,
+        camera: &CameraId,
+        which: &SessionRef,
+        control: &ControlSlug,
+        selection: &Selection,
+    ) -> Result<Session>;
+
+    /// Write a session's calibrated values back to a camera (D4 ordering).
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::calibrate_start`], plus [`Error::FingerprintMismatch`] naming the
+    /// fields that differ when the camera is not the one the session was recorded against,
+    /// and [`Error::IllegalTransition`] when the session has uncalibrated work and
+    /// `partial` is false.
+    fn calibrate_apply(
+        &mut self,
+        camera: &CameraId,
+        which: &SessionRef,
+        partial: bool,
+    ) -> Result<WriteReport>;
+
+    /// Every session on this machine, or one camera's, newest first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::info`] when a camera is named; otherwise whatever the store says.
+    /// A session whose document this build cannot read still *lists* — listing parses
+    /// nothing (D9).
+    fn calibrate_list(&mut self, camera: Option<&CameraId>) -> Result<SessionList>;
+}
+
+/// Which session a verb is about, resolved from the command line.
+///
+/// The two forms are not interchangeable and the type keeps them apart: a task names the
+/// session for *this* camera, and a UUID names one session wherever it lives — including
+/// under another camera, which is the case `calibrate apply`'s fingerprint check exists
+/// for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionRef {
+    /// The newest session recorded for this camera and task.
+    Task(String),
+    /// The session with this id, whichever camera it belongs to.
+    Id(uuid::Uuid),
+}
+
+impl SessionArg {
+    /// The session these flags name.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] when neither was given, which clap's required group has
+    /// already refused; the arm exists so this conversion has no `unwrap` in it.
+    pub fn which(&self) -> Result<SessionRef> {
+        match (&self.task, self.session) {
+            (Some(task), None) => Ok(SessionRef::Task(task.clone())),
+            (None, Some(id)) => Ok(SessionRef::Id(id)),
+            _ => Err(Error::IllegalTransition {
+                from: "no_session_named".to_owned(),
+                op: "name a session with --task <TEXT> or --session <UUID>".to_owned(),
+            }),
+        }
+    }
 }
 
 /// Run a parsed command against `executor`, writing to `out`.
@@ -676,6 +1169,7 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             let taken = executor.photo(&camera.id()?, &request)?;
             render::photo(&taken.report, taken.returned.as_deref(), cli.json, out)
         }
+        Command::Calibrate(command) => calibrate(command, cli.json, executor, out),
         Command::Profile(ProfileCommand::Capture {
             camera,
             out: destination,
@@ -685,6 +1179,119 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             render::profile(&profile, destination.as_deref(), out)
         }
     }
+}
+
+/// `wch calibrate …`, dispatched.
+///
+/// Its own function rather than seven more arms in [`run`]: the calibration verbs share a
+/// shape — resolve a camera, name a session, hand the answer to a renderer — and the shape
+/// is easier to check when it is not interleaved with the ones that do not.
+fn calibrate<E: Executor>(
+    command: &CalibrateCommand,
+    as_json: bool,
+    executor: &mut E,
+    out: &mut Output,
+) -> Result<()> {
+    match command {
+        CalibrateCommand::Start {
+            camera,
+            task,
+            goal,
+            criteria,
+        } => {
+            let session = executor.calibrate_start(&camera.id()?, task, goal, criteria)?;
+            render::session(&session, as_json, out)
+        }
+        CalibrateCommand::Plan {
+            camera,
+            which,
+            controls,
+            order,
+        } => {
+            let slugs = control_slugs(controls)?;
+            let session =
+                executor.calibrate_plan(&camera.id()?, &which.which()?, &slugs, *order)?;
+            render::session(&session, as_json, out)
+        }
+        CalibrateCommand::Sweep {
+            camera,
+            which,
+            control,
+            plan,
+            allow_motion,
+            photo_format,
+            stream,
+            settle,
+        } => {
+            let request = SweepRequest {
+                control: control_slug(control)?,
+                plan: plan.spec()?,
+                allow_motion: *allow_motion,
+                stream: stream.request(),
+                settle: settle.policy(),
+                photo_format: photo_format.0,
+            };
+            // The progress bar is suspended for the duration of the rendering below, and
+            // it goes to standard error: a sweep's `--json` document shares standard output
+            // with nothing, and a bar drawn into it would make the answer unparsable.
+            let watcher = render::watcher(as_json);
+            let session =
+                executor.calibrate_sweep(&camera.id()?, &which.which()?, &request, &*watcher)?;
+            watcher.finish();
+            render::session(&session, as_json, out)
+        }
+        CalibrateCommand::Status { camera, which } => {
+            let status = executor.calibrate_status(&camera.id()?, &which.which()?)?;
+            render::status(&status, as_json, out)
+        }
+        CalibrateCommand::Select {
+            camera,
+            which,
+            control,
+            by,
+        } => {
+            let session = executor.calibrate_select(
+                &camera.id()?,
+                &which.which()?,
+                &control_slug(control)?,
+                &by.selection()?,
+            )?;
+            render::session(&session, as_json, out)
+        }
+        CalibrateCommand::Apply {
+            camera,
+            which,
+            partial,
+        } => {
+            let report = executor.calibrate_apply(&camera.id()?, &which.which()?, *partial)?;
+            render::writes(&report, as_json, out)
+        }
+        CalibrateCommand::List { camera } => {
+            let id = camera
+                .as_deref()
+                .map(|name| {
+                    CameraId::parse(name).ok_or_else(|| Error::CameraUnknown {
+                        requested: name.to_owned(),
+                    })
+                })
+                .transpose()?;
+            let sessions = executor.calibrate_list(id.as_ref())?;
+            render::sessions(&sessions, as_json, out)
+        }
+    }
+}
+
+/// One control slug, refused by name rather than resolved to the wrong control.
+fn control_slug(name: &str) -> Result<ControlSlug> {
+    ControlSlug::parse(name).ok_or_else(|| Error::ControlUnknown {
+        requested: name.to_owned(),
+        did_you_mean: Vec::new(),
+    })
+}
+
+/// A list of control slugs, all or nothing.
+fn control_slugs(names: &[String]) -> Result<Vec<ControlSlug>> {
+    names.iter().map(|name| control_slug(name)).collect()
 }
 
 /// The caller's directory, for D10's relative-path rule.
@@ -1114,6 +1721,311 @@ mod tests {
             Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "a.jpg", "--size", "640x480"])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn the_calibrate_verbs_parse_the_way_the_agent_guide_will_teach_them() {
+        let cli = Cli::try_parse_checked_from([
+            "wch",
+            "calibrate",
+            "start",
+            "cam:obsbot",
+            "--task",
+            "read text from the DUT display",
+            "--goal",
+            "legible text",
+            "--criterion",
+            "text clarity",
+            "--criterion",
+            "colour accuracy",
+        ])
+        .expect("parses");
+        let Command::Calibrate(CalibrateCommand::Start {
+            task,
+            goal,
+            criteria,
+            ..
+        }) = &cli.command
+        else {
+            panic!("expected calibrate start");
+        };
+        assert_eq!(task, "read text from the DUT display");
+        assert_eq!(goal, "legible text");
+        // Ordered, because D8 says the criteria are ranked and the *selector* reads them.
+        assert_eq!(criteria, &["text clarity", "colour accuracy"]);
+
+        let cli = Cli::try_parse_checked_from([
+            "wch",
+            "calibrate",
+            "apply",
+            "cam:obsbot",
+            "--task",
+            "focus",
+            "--partial",
+        ])
+        .expect("parses");
+        let Command::Calibrate(CalibrateCommand::Apply { partial, which, .. }) = &cli.command
+        else {
+            panic!("expected calibrate apply");
+        };
+        assert!(partial);
+        assert_eq!(
+            which.which().expect("a session"),
+            SessionRef::Task("focus".to_owned())
+        );
+
+        // `--partial` is opt-in: without it the D8 gate is the one that answers.
+        let cli =
+            Cli::try_parse_checked_from(["wch", "calibrate", "apply", "cam:obsbot", "--task", "f"])
+                .expect("parses");
+        let Command::Calibrate(CalibrateCommand::Apply { partial, .. }) = &cli.command else {
+            panic!("expected calibrate apply");
+        };
+        assert!(!partial, "--partial must never be the default");
+
+        // `list` takes an optional camera: every session on the machine, or one camera's.
+        let cli = Cli::try_parse_checked_from(["wch", "calibrate", "list"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Command::Calibrate(CalibrateCommand::List { camera: None })
+        ));
+    }
+
+    #[test]
+    fn a_session_is_named_by_task_or_by_id_and_never_by_neither_or_both() {
+        let id = "019fd0f0-0000-7000-8000-000000000001";
+        let cli =
+            Cli::try_parse_checked_from(["wch", "calibrate", "status", "cam:x", "--session", id])
+                .expect("parses");
+        let Command::Calibrate(CalibrateCommand::Status { which, .. }) = &cli.command else {
+            panic!("expected calibrate status");
+        };
+        assert_eq!(
+            which.which().expect("a session"),
+            SessionRef::Id(id.parse().expect("a uuid"))
+        );
+
+        // Neither, and both: usage errors, because the tool cannot guess which session is
+        // meant and must not pick one.
+        assert!(Cli::try_parse_checked_from(["wch", "calibrate", "status", "cam:x"]).is_err());
+        assert!(
+            Cli::try_parse_checked_from([
+                "wch",
+                "calibrate",
+                "status",
+                "cam:x",
+                "--task",
+                "t",
+                "--session",
+                id,
+            ])
+            .is_err()
+        );
+        // And a UUID that is not one is refused at parse time rather than looked up.
+        assert!(
+            Cli::try_parse_checked_from([
+                "wch",
+                "calibrate",
+                "status",
+                "cam:x",
+                "--session",
+                "the-one-from-yesterday",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn every_sweep_plan_flag_maps_to_the_spec_it_names_and_the_four_are_alternatives() {
+        let spec = |args: &[&str]| -> SweepSpec {
+            let mut argv = vec![
+                "wch",
+                "calibrate",
+                "sweep",
+                "cam:x",
+                "--task",
+                "t",
+                "focus_absolute",
+            ];
+            argv.extend_from_slice(args);
+            let cli = Cli::try_parse_checked_from(argv).expect("parses");
+            let Command::Calibrate(CalibrateCommand::Sweep { plan, .. }) = &cli.command else {
+                panic!("expected calibrate sweep");
+            };
+            plan.spec().expect("a spec")
+        };
+        assert_eq!(spec(&["--all"]), SweepSpec::All);
+        assert_eq!(spec(&["--step", "16"]), SweepSpec::Uniform { step: 16 });
+        assert_eq!(spec(&["--points", "8"]), SweepSpec::Log { points: 8 });
+        assert_eq!(
+            spec(&["--values", "0,64,128"]),
+            SweepSpec::Explicit {
+                values: vec![0, 64, 128]
+            }
+        );
+
+        // A sweep is minutes of camera time and, on a PTZ head, motor travel: it says how
+        // big it is or it does not run. Both failure directions — none of the four, and
+        // two of them.
+        assert!(
+            Cli::try_parse_checked_from([
+                "wch",
+                "calibrate",
+                "sweep",
+                "cam:x",
+                "--task",
+                "t",
+                "focus_absolute",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_checked_from([
+                "wch",
+                "calibrate",
+                "sweep",
+                "cam:x",
+                "--task",
+                "t",
+                "focus_absolute",
+                "--all",
+                "--step",
+                "4",
+            ])
+            .is_err()
+        );
+
+        // Motion is never implicit (design §5), and the flag is what makes it explicit.
+        let cli = Cli::try_parse_checked_from([
+            "wch",
+            "calibrate",
+            "sweep",
+            "cam:x",
+            "--task",
+            "t",
+            "pan_absolute",
+            "--step",
+            "3600",
+            "--allow-motion",
+        ])
+        .expect("parses");
+        let Command::Calibrate(CalibrateCommand::Sweep {
+            allow_motion,
+            settle,
+            ..
+        }) = &cli.command
+        else {
+            panic!("expected calibrate sweep");
+        };
+        assert!(allow_motion);
+        // The settle flags are the photo verb's, flattened: one declaration, so a sweep and
+        // a photo ask the device for the same thing in the same words.
+        assert_eq!(settle.policy(), SettlePolicy::default());
+    }
+
+    #[test]
+    fn the_selector_flags_record_who_chose_and_refuse_the_combinations_that_would_lie() {
+        let selection = |args: &[&str]| -> Result<Selection> {
+            let mut argv = vec![
+                "wch",
+                "calibrate",
+                "select",
+                "cam:x",
+                "--task",
+                "t",
+                "focus_absolute",
+            ];
+            argv.extend_from_slice(args);
+            let cli = Cli::try_parse_checked_from(argv).expect("parses");
+            let Command::Calibrate(CalibrateCommand::Select { by, .. }) = &cli.command else {
+                panic!("expected calibrate select");
+            };
+            by.selection()
+        };
+        assert_eq!(
+            selection(&["--metric", "sharpness"]).expect("a metric ranks"),
+            Selection::ByMetric(MetricName::Sharpness)
+        );
+        assert_eq!(
+            selection(&["--value", "512", "--by", "agent"]).expect("an agent chooses"),
+            Selection::ByValue {
+                value: 512,
+                selector: Selector::Agent
+            }
+        );
+        assert_eq!(
+            selection(&["--value", "512", "--by", "human"]).expect("a human chooses"),
+            Selection::ByValue {
+                value: 512,
+                selector: Selector::Human
+            }
+        );
+
+        // A value with nobody claiming it would record a calibration whose selector was
+        // invented, which is the one thing D8's selector field exists to prevent.
+        assert!(
+            Cli::try_parse_checked_from([
+                "wch",
+                "calibrate",
+                "select",
+                "cam:x",
+                "--task",
+                "t",
+                "focus_absolute",
+                "--value",
+                "512",
+            ])
+            .is_err()
+        );
+        // Nor may a caller *claim* to be a metric: that is something the tool computes.
+        assert!("metric:sharpness".parse::<ChosenByArg>().is_err());
+        assert!("metric".parse::<ChosenByArg>().is_err());
+        // …and the two it does accept are the schema's own spellings.
+        for chooser in ChosenByArg::ALL {
+            assert_eq!(
+                chooser
+                    .selector()
+                    .label()
+                    .parse::<ChosenByArg>()
+                    .expect("known"),
+                *chooser
+            );
+        }
+        // A metric and a value together is two answers to one question.
+        assert!(
+            Cli::try_parse_checked_from([
+                "wch",
+                "calibrate",
+                "select",
+                "cam:x",
+                "--task",
+                "t",
+                "focus_absolute",
+                "--metric",
+                "sharpness",
+                "--value",
+                "512",
+                "--by",
+                "human",
+            ])
+            .is_err()
+        );
+        // And a metric this build does not compute is refused naming the ones it does.
+        let error = Cli::try_parse_checked_from([
+            "wch",
+            "calibrate",
+            "select",
+            "cam:x",
+            "--task",
+            "t",
+            "focus_absolute",
+            "--metric",
+            "vibes",
+        ])
+        .expect_err("vibes is not a metric");
+        for &metric in MetricName::ALL {
+            assert!(error.to_string().contains(metric.as_str()), "{error}");
+        }
     }
 
     #[test]

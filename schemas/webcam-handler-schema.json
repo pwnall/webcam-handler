@@ -2250,6 +2250,48 @@
           "type": "object"
         },
         {
+          "description": "A sweep stopped before its plan did, and why.\n\nThe one event here whose subject is a *refusal*, and it earns its place by what a\nsession directory looks like without it. The recorded `SampleTaken` lines bound\n**when** a sweep stopped — three samples of sixteen and then nothing — and say\nnothing at all about **why**: a camera that was unplugged, a sensor that never\nsettled [PF:11], and a full disk leave byte-identical histories, and design's own\nrule that availability is not capability is exactly the distinction that would be\nlost. The live [`crate::progress::CalibrationProgress::SweepInterrupted`] carries\nthe same fact to whoever was watching; this is the copy that survives the process,\nbecause `calibrate status` is read after the terminal is gone.\n\nIts absence is not evidence of anything: a process that was killed leaves no line\neither (design §6's crash story is the pre-sweep snapshot, not the log). A present\nline means a known reason; an absent one means the reason is not known here.",
+          "properties": {
+            "control": {
+              "$ref": "#/$defs/ControlSlug",
+              "description": "Which control."
+            },
+            "detail": {
+              "description": "The refusal, rendered.",
+              "type": "string"
+            },
+            "event": {
+              "const": "sweep_interrupted",
+              "type": "string"
+            },
+            "failure": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The refusal's discriminant, so a reader can branch without parsing prose."
+            },
+            "taken": {
+              "description": "How many samples were recorded before it stopped.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "total": {
+              "description": "How many the plan held.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "control",
+            "taken",
+            "total",
+            "failure",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A value was chosen.",
           "properties": {
             "control": {
@@ -3415,6 +3457,69 @@
       ],
       "type": "object"
     },
+    "SessionList": {
+      "description": "Every session the store holds, newest first — what `calibrate list` answers.",
+      "properties": {
+        "sessions": {
+          "default": [],
+          "description": "The sessions, newest first by UUIDv7 byte order. Always emitted, empty or not — an\nempty store answers with an empty list, not with a missing key.",
+          "items": {
+            "$ref": "#/$defs/SessionListing"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SessionListing": {
+      "description": "One session in a listing, as the directory tree alone describes it.\n\n**Nothing here is parsed out of a session document**, and that is the property rather\nthan a shortcut: D9 chose UUIDv7 so a listing sorts chronologically without opening a\nfile, so listing costs no parse, cannot fail on the one session whose document is\ncorrupt, and still shows a session written by a build this one cannot read. Reading a\nsession is [`SessionStatus`]'s job, and it is the one that refuses a foreign version.",
+      "properties": {
+        "camera": {
+          "description": "The camera, as the fingerprint slug that names its directory.",
+          "type": "string"
+        },
+        "id": {
+          "description": "The session's identity — the directory's name.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Where it lives.",
+          "type": "string"
+        },
+        "task_slug": {
+          "description": "The task, as the slug that names its directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "camera",
+        "task_slug",
+        "path"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "description": "A session and its history — what `calibrate status` answers.\n\nTwo documents rather than one, and both of them, because they answer different\nquestions and neither can be read off the other. [`Session`] is *where the session\nstands*: which controls are calibrated, at what value, chosen by whom. The log is\n*what happened to get there*, and it holds the facts the document by design does not —\nwhich automation controls were switched off, and, when a sweep stopped early, the\nrefusal that stopped it ([`SessionEvent::SweepInterrupted`]).",
+      "properties": {
+        "log": {
+          "default": [],
+          "description": "Its `log.ndjson`, oldest first, with a torn last line dropped (design D9).\n\nAlways emitted, empty or not: this is an *answer*, and a consumer counting the\nhistory should meet a list with nothing in it rather than a missing key.",
+          "items": {
+            "$ref": "#/$defs/LogEntry"
+          },
+          "type": "array"
+        },
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The session document."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
     "SettlePolicy": {
       "description": "A settle policy: the spec plus the deadline that bounds it.\n\nBoth forms are bounded, because \"skip 10 frames\" on a camera delivering none is a\nhang, and a hang is the failure mode E3 warns about wearing a disguise.",
       "properties": {
@@ -3641,6 +3746,52 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "SweepRequest": {
+      "description": "Everything one sweep needs that is not the session, the camera, or the clock.\n\nA DTO rather than an engine struct because three callers need the same request and two\nof them cannot see the engine: `wch` parses one from a command line through the shared\ncommand surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and\n`webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type\nrather than defining a second one — a request that had to be translated at each seam is\na request three places can disagree about.",
+      "properties": {
+        "allow_motion": {
+          "default": false,
+          "description": "Whether a motorized control may be swept at all (design §5: never implicit).",
+          "type": "boolean"
+        },
+        "control": {
+          "$ref": "#/$defs/ControlSlug",
+          "description": "Which control to sweep."
+        },
+        "photo_format": {
+          "$ref": "#/$defs/PhotoFormat",
+          "default": "jpeg",
+          "description": "Which encoding the sample photos are written in."
+        },
+        "plan": {
+          "$ref": "#/$defs/SweepSpec",
+          "description": "How to derive the values."
+        },
+        "settle": {
+          "$ref": "#/$defs/SettlePolicy",
+          "default": {
+            "deadline_ms": 5000,
+            "spec": {
+              "frames": 10,
+              "kind": "skip_frames"
+            }
+          },
+          "description": "How long to let the sensor settle before each shot [PF:11]."
+        },
+        "stream": {
+          "$ref": "#/$defs/StreamRequest",
+          "default": {
+            "buffer_count": 4
+          },
+          "description": "What to ask the device's format negotiation for, once per sample."
+        }
+      },
+      "required": [
+        "control",
+        "plan"
+      ],
       "type": "object"
     },
     "SweepSpec": {
@@ -4083,10 +4234,13 @@
     "ProgressEvent",
     "RestoreReport",
     "Session",
+    "SessionList",
+    "SessionStatus",
     "SettlePolicy",
     "Sink",
     "Snapshot",
     "StreamRequest",
+    "SweepRequest",
     "Transform",
     "WriteReport",
     "WriteWarning"

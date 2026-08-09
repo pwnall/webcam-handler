@@ -66,6 +66,11 @@ fi
 # `photo` takes a `-o` under a temporary directory: `--json` requires one (the bytes and
 # the document cannot share standard output), and writing outside the tree is what keeps
 # `no-frame-bytes-in-repo.sh` true even though these frames are synthetic.
+# The `calibrate` rows are **ordered**: they are one session, driven from `start` to
+# `apply`, because a calibration verb's answer only exists once the verbs before it have
+# run. That is not a weakness of the check — it is what makes the documents real. The
+# sweep takes one value with the settle disabled, because this gate is about the shape of
+# the answer and a ten-frame settle per sample would buy nothing.
 verbs=(
     "list|CameraList|list"
     "info|CameraDetail|info <camera>"
@@ -75,6 +80,13 @@ verbs=(
     "snapshot|Snapshot|snapshot <camera>"
     "restore|RestoreReport|restore <camera> <snapshot>"
     "photo|PhotoReport|photo <camera> -o <photo>"
+    "calibrate-start|Session|calibrate start <camera> --task gate --goal gate-run"
+    "calibrate-plan|Session|calibrate plan <camera> --task gate <control>"
+    "calibrate-sweep|Session|calibrate sweep <camera> --task gate <control> --values <value> --skip-frames 0"
+    "calibrate-status|SessionStatus|calibrate status <camera> --task gate"
+    "calibrate-select|Session|calibrate select <camera> --task gate <control> --metric sharpness"
+    "calibrate-apply|WriteReport|calibrate apply <camera> --task gate"
+    "calibrate-list|SessionList|calibrate list <camera>"
     "profile-capture|DeviceProfile|profile capture <camera>"
 )
 
@@ -122,6 +134,12 @@ gate_note "writing $control=$value (declared range $control_min..$control_max)"
 # `no-frame-bytes-in-repo.sh` stays true and a failed run leaves nothing behind.
 scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-json-validates.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
+
+# The calibration verbs write a session tree (D9), and it goes in the scratch directory
+# with everything else: sample photos are frames, the repository holds no frames
+# (`no-frame-bytes-in-repo.sh`), and a gate that wrote into the operator's real state
+# directory would put a session called "gate" in front of them every time CI ran.
+export XDG_STATE_HOME="$scratch/state"
 
 # The real checkout, whatever tree is under test — see the note above.
 checkout="$(git rev-parse --show-toplevel)"

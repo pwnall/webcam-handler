@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::camera::CameraFingerprint;
+use crate::capture::{PhotoFormat, SettlePolicy, StreamRequest};
 use crate::control::{ControlSlug, WriteWarning};
+use crate::error::ErrorKind;
 use crate::limits;
 use crate::metrics::MetricName;
 use crate::pairing::AutomationPair;
@@ -45,6 +47,59 @@ pub enum SweepSpec {
     },
 }
 
+/// Everything one sweep needs that is not the session, the camera, or the clock.
+///
+/// A DTO rather than an engine struct because three callers need the same request and two
+/// of them cannot see the engine: `wch` parses one from a command line through the shared
+/// command surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and
+/// `webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type
+/// rather than defining a second one — a request that had to be translated at each seam is
+/// a request three places can disagree about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SweepRequest {
+    /// Which control to sweep.
+    pub control: ControlSlug,
+    /// How to derive the values.
+    pub plan: SweepSpec,
+    /// Whether a motorized control may be swept at all (design §5: never implicit).
+    #[serde(default)]
+    pub allow_motion: bool,
+    /// What to ask the device's format negotiation for, once per sample.
+    #[serde(default)]
+    pub stream: StreamRequest,
+    /// How long to let the sensor settle before each shot \[PF:11\].
+    #[serde(default)]
+    pub settle: SettlePolicy,
+    /// Which encoding the sample photos are written in.
+    #[serde(default = "default_photo_format")]
+    pub photo_format: PhotoFormat,
+}
+
+/// JPEG: the verbatim path when the camera speaks MJPG (E6), which is what makes a sample
+/// photo the camera's own bytes rather than our idea of them.
+const fn default_photo_format() -> PhotoFormat {
+    PhotoFormat::Jpeg
+}
+
+impl SweepRequest {
+    /// A sweep of `control` under `plan`, with the defaults every other field has.
+    ///
+    /// The defaults are the schema's own ([`StreamRequest`], [`SettlePolicy`]), so a
+    /// request built here and one parsed from `{}` describe the same sweep. `allow_motion`
+    /// is `false` because design §5 says a plan that would move motors says so first.
+    #[must_use]
+    pub fn new(control: ControlSlug, plan: SweepSpec) -> SweepRequest {
+        SweepRequest {
+            control,
+            plan,
+            allow_motion: false,
+            stream: StreamRequest::default(),
+            settle: SettlePolicy::default(),
+            photo_format: default_photo_format(),
+        }
+    }
+}
+
 /// Who chose a calibrated value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -58,6 +113,23 @@ pub enum Selector {
     Agent,
     /// A human did.
     Human,
+}
+
+impl Selector {
+    /// The selector as design D8 spells it: `metric:<name>`, `agent`, or `human`.
+    ///
+    /// One home for the spelling, because three surfaces show it — the `calibrate status`
+    /// table, the `Selected` log line a human greps for, and the refusal a caller reads
+    /// when a metric cannot rank — and a selector that read `Metric { name: Sharpness }`
+    /// in one place and `metric:sharpness` in another would be two vocabularies.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Selector::Metric { name } => format!("metric:{name}"),
+            Selector::Agent => "agent".to_owned(),
+            Selector::Human => "human".to_owned(),
+        }
+    }
 }
 
 /// Why a control cannot be calibrated.
@@ -327,6 +399,33 @@ pub enum SessionEvent {
         /// How many samples were actually taken.
         samples: u32,
     },
+    /// A sweep stopped before its plan did, and why.
+    ///
+    /// The one event here whose subject is a *refusal*, and it earns its place by what a
+    /// session directory looks like without it. The recorded `SampleTaken` lines bound
+    /// **when** a sweep stopped — three samples of sixteen and then nothing — and say
+    /// nothing at all about **why**: a camera that was unplugged, a sensor that never
+    /// settled \[PF:11\], and a full disk leave byte-identical histories, and design's own
+    /// rule that availability is not capability is exactly the distinction that would be
+    /// lost. The live [`crate::progress::CalibrationProgress::SweepInterrupted`] carries
+    /// the same fact to whoever was watching; this is the copy that survives the process,
+    /// because `calibrate status` is read after the terminal is gone.
+    ///
+    /// Its absence is not evidence of anything: a process that was killed leaves no line
+    /// either (design §6's crash story is the pre-sweep snapshot, not the log). A present
+    /// line means a known reason; an absent one means the reason is not known here.
+    SweepInterrupted {
+        /// Which control.
+        control: ControlSlug,
+        /// How many samples were recorded before it stopped.
+        taken: u32,
+        /// How many the plan held.
+        total: u32,
+        /// The refusal's discriminant, so a reader can branch without parsing prose.
+        failure: ErrorKind,
+        /// The refusal, rendered.
+        detail: String,
+    },
     /// A value was chosen.
     Selected {
         /// Which control.
@@ -358,6 +457,56 @@ pub struct LogEntry {
     /// What happened.
     #[serde(flatten)]
     pub event: SessionEvent,
+}
+
+/// A session and its history — what `calibrate status` answers.
+///
+/// Two documents rather than one, and both of them, because they answer different
+/// questions and neither can be read off the other. [`Session`] is *where the session
+/// stands*: which controls are calibrated, at what value, chosen by whom. The log is
+/// *what happened to get there*, and it holds the facts the document by design does not —
+/// which automation controls were switched off, and, when a sweep stopped early, the
+/// refusal that stopped it ([`SessionEvent::SweepInterrupted`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionStatus {
+    /// The session document.
+    pub session: Session,
+    /// Its `log.ndjson`, oldest first, with a torn last line dropped (design D9).
+    ///
+    /// Always emitted, empty or not: this is an *answer*, and a consumer counting the
+    /// history should meet a list with nothing in it rather than a missing key.
+    #[serde(default)]
+    pub log: Vec<LogEntry>,
+}
+
+/// One session in a listing, as the directory tree alone describes it.
+///
+/// **Nothing here is parsed out of a session document**, and that is the property rather
+/// than a shortcut: D9 chose UUIDv7 so a listing sorts chronologically without opening a
+/// file, so listing costs no parse, cannot fail on the one session whose document is
+/// corrupt, and still shows a session written by a build this one cannot read. Reading a
+/// session is [`SessionStatus`]'s job, and it is the one that refuses a foreign version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionListing {
+    /// The session's identity — the directory's name.
+    #[schemars(with = "String")]
+    pub id: Uuid,
+    /// The camera, as the fingerprint slug that names its directory.
+    pub camera: String,
+    /// The task, as the slug that names its directory.
+    pub task_slug: String,
+    /// Where it lives.
+    #[schemars(with = "String")]
+    pub path: Utf8PathBuf,
+}
+
+/// Every session the store holds, newest first — what `calibrate list` answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionList {
+    /// The sessions, newest first by UUIDv7 byte order. Always emitted, empty or not — an
+    /// empty store answers with an empty list, not with a missing key.
+    #[serde(default)]
+    pub sessions: Vec<SessionListing>,
 }
 
 /// The directory component a task gets in the session tree (design D9's `<task-slug>`).
@@ -572,6 +721,143 @@ mod tests {
         let json = serde_json::to_value(&sample).expect("serialize");
         assert_eq!(json["requested"], 42);
         assert_eq!(json["applied"], 40);
+    }
+
+    #[test]
+    fn a_sweep_request_parsed_from_nothing_but_its_two_required_fields_is_the_default_sweep() {
+        // The defaults are the schema's own, so a request built in Rust and one that
+        // arrived as `{"control":…,"plan":…}` describe the same sweep — which is what lets
+        // `wch`, P4's wire, and the executor share one type instead of three.
+        let parsed: SweepRequest =
+            serde_json::from_str(r#"{"control":"focus_absolute","plan":{"kind":"all"}}"#)
+                .expect("deserialize");
+        assert_eq!(
+            parsed,
+            SweepRequest::new(slug("focus_absolute"), SweepSpec::All)
+        );
+        assert!(
+            !parsed.allow_motion,
+            "motors are never implicit (design §5)"
+        );
+        assert_eq!(parsed.photo_format, crate::capture::PhotoFormat::Jpeg);
+
+        let json = serde_json::to_string(&parsed).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<SweepRequest>(&json).expect("deserialize"),
+            parsed
+        );
+    }
+
+    #[test]
+    fn every_selector_has_the_spelling_d8_gives_it_and_no_two_share_one() {
+        let selectors = [
+            Selector::Agent,
+            Selector::Human,
+            Selector::Metric {
+                name: MetricName::Sharpness,
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for selector in &selectors {
+            assert!(
+                seen.insert(selector.label()),
+                "{selector:?} duplicates a spelling"
+            );
+        }
+        assert_eq!(Selector::Agent.label(), "agent");
+        assert_eq!(Selector::Human.label(), "human");
+        // The metric's own name, so `metric:<name>` is one string rather than two that
+        // can drift — and every metric gets a distinct one.
+        for &name in MetricName::ALL {
+            assert_eq!(
+                Selector::Metric { name }.label(),
+                format!("metric:{}", name.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupted_sweep_records_its_refusal_where_a_later_reader_finds_it() {
+        // The durable half of the interruption. `taken`/`total` say where it stopped and
+        // `failure` says why — and a device that vanished, a settle that never converged
+        // and a full disk are three different answers, which is the distinction that would
+        // be lost if the history only held the samples that made it.
+        let entry = LogEntry {
+            at: Stamp::epoch(),
+            event: SessionEvent::SweepInterrupted {
+                control: slug("focus_absolute"),
+                taken: 3,
+                total: 16,
+                failure: crate::error::ErrorKind::DeviceGone,
+                detail: "/dev/video0 disappeared".to_owned(),
+            },
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("\"event\":\"sweep_interrupted\""), "{json}");
+        assert!(json.contains("\"failure\":\"device_gone\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<LogEntry>(&json).expect("deserialize"),
+            entry
+        );
+    }
+
+    #[test]
+    fn a_status_document_carries_the_session_and_the_history_that_explains_it() {
+        let status = SessionStatus {
+            session: new_session(
+                Uuid::nil(),
+                fingerprint(),
+                "focus",
+                "sharp text",
+                "0.1.0",
+                Stamp::epoch(),
+            ),
+            log: vec![LogEntry {
+                at: Stamp::epoch(),
+                event: SessionEvent::Started {
+                    goal: "sharp text".to_owned(),
+                },
+            }],
+        };
+        let json = serde_json::to_string(&status).expect("serialize");
+        let back: SessionStatus = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, status);
+        // A session with no history yet is a session with an empty log, not a document
+        // missing a field a consumer has to special-case.
+        let quiet = SessionStatus {
+            log: Vec::new(),
+            ..status
+        };
+        assert_eq!(
+            serde_json::from_str::<SessionStatus>(
+                &serde_json::to_string(&quiet).expect("serialize")
+            )
+            .expect("deserialize"),
+            quiet
+        );
+    }
+
+    #[test]
+    fn a_listing_describes_a_session_with_nothing_a_parse_would_have_told_it() {
+        // Every field here is a directory fact. That is what lets a listing show a session
+        // whose document this build refuses to load.
+        let list = SessionList {
+            sessions: vec![SessionListing {
+                id: Uuid::nil(),
+                camera: "obsbot-tiny-3-3-1-1-0".to_owned(),
+                task_slug: "read-text-from-the-dut-display".to_owned(),
+                path: "/state/sessions/obsbot/read-text/0".into(),
+            }],
+        };
+        let json = serde_json::to_string(&list).expect("serialize");
+        let back: SessionList = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, list);
+        assert_eq!(
+            serde_json::from_str::<SessionList>("{}").expect("an empty store lists nothing"),
+            SessionList {
+                sessions: Vec::new()
+            }
+        );
     }
 
     #[test]

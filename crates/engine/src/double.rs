@@ -133,6 +133,18 @@ impl ScriptedCamera {
         self
     }
 
+    /// The same camera under a different card name.
+    ///
+    /// Its own builder rather than a parameter on [`ScriptedCamera::identified`] because
+    /// the fingerprint's fields are what a mismatch *names* (D13), and a fixture that could
+    /// only change them all at once could not show that the refusal names the ones that
+    /// differ and not the ones that agree.
+    pub(crate) fn carded(mut self, card: &str) -> ScriptedCamera {
+        self.info.card = card.to_owned();
+        self.info.fingerprint.card = card.to_owned();
+        self
+    }
+
     /// The frames `next_frame` will hand out, in order. Running out is a timeout, which
     /// is how a "the camera stopped delivering" test is written without a clock.
     pub(crate) fn with_frames(mut self, frames: Vec<Frame>) -> ScriptedCamera {

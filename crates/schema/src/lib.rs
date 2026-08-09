@@ -65,7 +65,7 @@ pub use control::{Applied, ControlDesc, ControlId, ControlSlug, ControlValue, Wr
 pub use error::{BackendError, Error, ErrorKind, Result};
 pub use profile::DeviceProfile;
 pub use report::{CameraDetail, CameraList, ControlReport, ListHint, WriteReport};
-pub use session::Session;
+pub use session::{Session, SessionList, SessionStatus, SweepRequest};
 pub use snapshot::{RestoreReport, Snapshot};
 pub use time::Stamp;
 

@@ -45,11 +45,11 @@
 //! story; a second door here would be a second chance to get that ordering wrong.
 
 use schema::backend::Camera;
-use schema::capture::{PhotoFormat, PhotoRequest, SettlePolicy, Sink, StreamRequest, Transform};
+use schema::capture::{PhotoRequest, Sink, Transform};
 use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::pairing::AutomationPair;
 use schema::progress::{CalibrationProgress, ProgressEvent};
-use schema::session::{Sample, Session, SessionEvent, SweepSpec};
+use schema::session::{Sample, Session, SessionEvent};
 use schema::time::Stamp;
 use schema::{Applied, Error, Result};
 use uuid::Uuid;
@@ -61,42 +61,11 @@ use crate::sweep::SweepPlan;
 use crate::{capture, lifecycle, photo, session, sweep};
 
 /// Everything one sweep needs that is not the session, the camera, or the clock.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SweepRequest {
-    /// Which control to sweep.
-    pub control: ControlSlug,
-    /// How to derive the values.
-    pub plan: SweepSpec,
-    /// Whether a motorized control may be swept at all (design §5: never implicit).
-    pub allow_motion: bool,
-    /// What to ask the device's format negotiation for, once per sample.
-    pub stream: StreamRequest,
-    /// How long to let the sensor settle before each shot \[PF:11\].
-    pub settle: SettlePolicy,
-    /// Which encoding the sample photos are written in.
-    pub photo_format: PhotoFormat,
-}
-
-impl SweepRequest {
-    /// A sweep of `control` under `plan`, with the defaults every other field has.
-    ///
-    /// The defaults are the schema's own ([`StreamRequest`], [`SettlePolicy`]), so a
-    /// request built here and one parsed from `{}` describe the same sweep. `allow_motion`
-    /// is `false` because design §5 says a plan that would move motors says so first.
-    #[must_use]
-    pub fn new(control: ControlSlug, plan: SweepSpec) -> SweepRequest {
-        SweepRequest {
-            control,
-            plan,
-            allow_motion: false,
-            stream: StreamRequest::default(),
-            settle: SettlePolicy::default(),
-            // JPEG: the verbatim path when the camera speaks MJPG (E6), which is what
-            // makes a sample photo the camera's own bytes rather than our idea of them.
-            photo_format: PhotoFormat::Jpeg,
-        }
-    }
-}
+///
+/// The schema's, not this module's: the same request is typed on a command line (T4),
+/// arrives on P4's wire (D10) and is executed here, and a type each seam translated would
+/// be a request three places can disagree about.
+pub use schema::session::SweepRequest;
 
 /// What a sweep produced.
 #[derive(Debug, Clone, PartialEq)]
@@ -226,11 +195,35 @@ pub fn run(
             Err(error) => {
                 // The samples already recorded stand, and the control stays mid-sweep:
                 // this is a sweep that stopped, not a sweep that failed to happen.
+                let taken = u32::try_from(samples.len()).unwrap_or(u32::MAX);
                 stream.emit(
                     clock,
                     CalibrationProgress::SweepInterrupted {
                         control: request.control.clone(),
-                        taken: u32::try_from(samples.len()).unwrap_or(u32::MAX),
+                        taken,
+                        total,
+                        failure: error.kind(),
+                        detail: error.to_string(),
+                    },
+                );
+                // And the durable half, for the reader who arrives after the terminal is
+                // gone: `calibrate status` shows a control stopped at 3 of 16, and without
+                // this line nothing on disk says whether the camera was unplugged, the
+                // sensor never settled, or the disk filled.
+                //
+                // Best effort **by construction**. The sweep already has a refusal to
+                // report, and answering the caller with the store's instead would say "the
+                // disk is full" to somebody whose camera was pulled out — the one
+                // conversion AGENTS rule 7 forbids. A store that cannot take this line
+                // cannot take the next operation's either, and the caller meets it there.
+                let _ = lifecycle::note(
+                    store,
+                    lock,
+                    session,
+                    stream.at(clock),
+                    SessionEvent::SweepInterrupted {
+                        control: request.control.clone(),
+                        taken,
                         total,
                         failure: error.kind(),
                         detail: error.to_string(),
@@ -468,10 +461,10 @@ mod tests {
     use schema::ErrorKind;
     use schema::backend::CameraBackend;
     use schema::camera::CameraFingerprint;
-    use schema::capture::{SettleSpec, StreamRequest};
+    use schema::capture::{SettlePolicy, SettleSpec, StreamRequest};
     use schema::control::WriteWarning;
     use schema::metrics::MetricName;
-    use schema::session::ControlStatus;
+    use schema::session::{ControlStatus, SweepSpec};
     use testkit::fixtures;
 
     use super::*;

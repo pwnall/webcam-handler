@@ -333,9 +333,45 @@ impl SessionStore {
     /// [`Error::StorageIo`] when a directory that exists cannot be read. A *missing*
     /// tree is not an error: no sessions yet is an answer, not a failure.
     pub fn sessions_for(&self, fingerprint: &CameraFingerprint) -> Result<Vec<SessionRef>> {
-        let base = self.sessions_dir().join(fingerprint.slug());
+        let slug = fingerprint.slug();
+        let mut found = self.under_camera(&self.sessions_dir().join(&slug), &slug)?;
+        // Descending: `Uuid`'s ordering is over its bytes, and a v7's leading 48 bits are
+        // a big-endian millisecond timestamp, so byte order *is* time order.
+        found.sort_by_key(|session| std::cmp::Reverse(session.id));
+        Ok(found)
+    }
+
+    /// Every session this store holds, for every camera, newest first.
+    ///
+    /// The same walk [`SessionStore::sessions_for`] does, one directory level higher, and
+    /// it parses nothing for the same reason: a session written by a build this one cannot
+    /// read still *lists*, and a corrupt document in one camera's tree does not make the
+    /// other cameras' sessions invisible. What the caller gets is where the sessions are,
+    /// which is what `calibrate list` shows and what a lookup by id searches.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StorageIo`] when a directory that exists cannot be read. A missing tree is
+    /// no sessions, which is an answer rather than a failure.
+    pub fn all_sessions(&self) -> Result<Vec<SessionRef>> {
         let mut found = Vec::new();
-        for task_dir in read_dir_or_empty(&base)? {
+        for camera_dir in read_dir_or_empty(&self.sessions_dir())? {
+            let Some(camera) = camera_dir.file_name().map(ToOwned::to_owned) else {
+                continue;
+            };
+            found.extend(self.under_camera(&camera_dir, &camera)?);
+        }
+        found.sort_by_key(|session| std::cmp::Reverse(session.id));
+        Ok(found)
+    }
+
+    /// The session directories under one camera's directory, unsorted.
+    ///
+    /// A directory whose name is not a UUID is not ours; it is skipped rather than
+    /// refused, because an operator's `notes/` beside the sessions must not break listing.
+    fn under_camera(&self, base: &Utf8Path, camera: &str) -> Result<Vec<SessionRef>> {
+        let mut found = Vec::new();
+        for task_dir in read_dir_or_empty(base)? {
             let Some(task_slug) = task_dir.file_name().map(ToOwned::to_owned) else {
                 continue;
             };
@@ -351,14 +387,12 @@ impl SessionStore {
                 }
                 found.push(SessionRef {
                     id,
+                    camera: camera.to_owned(),
                     task_slug: task_slug.clone(),
                     dir: session_dir,
                 });
             }
         }
-        // Descending: `Uuid`'s ordering is over its bytes, and a v7's leading 48 bits are
-        // a big-endian millisecond timestamp, so byte order *is* time order.
-        found.sort_by_key(|session| std::cmp::Reverse(session.id));
         Ok(found)
     }
 
@@ -489,6 +523,10 @@ impl SessionStore {
 pub struct SessionRef {
     /// The session's UUIDv7 — its directory name, and its chronological order.
     pub id: Uuid,
+    /// The camera directory it sits under: the fingerprint slug (D9's
+    /// `<fingerprint-slug>`), taken from the directory name rather than from the
+    /// document, because a listing parses nothing.
+    pub camera: String,
     /// The task directory it sits under.
     pub task_slug: String,
     /// Where it lives.

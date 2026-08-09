@@ -21,6 +21,9 @@ camino.workspace = true
 # No clap: `Cli::parse_checked` lives in the shared command surface, because the rule it
 # enforces beyond clap's own attributes has to hold for `wchc` too (T4).
 serde_json.workspace = true
+# A session's identity is a UUIDv7 the *caller* mints: the engine reads no clock, so the
+# composition root is where "now" enters (design D9).
+uuid.workspace = true
 webcam-handler-cli-core.workspace = true
 webcam-handler-engine.workspace = true
 webcam-handler-fake.workspace = true
