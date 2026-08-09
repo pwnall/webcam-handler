@@ -17,6 +17,19 @@
 #   store.rs     the session directory, atomic writes, the one fd-lock (D9)
 #   metrics.rs   the D8 metric set as pure functions over a luma image
 #
+# P4a added a third crate's worth of the same shape, and widening the floor is adding a
+# line, so three lines were added:
+#
+#   api/codes.rs the D13 -> JSON-RPC code registry and its inverse (`rpc_code`, `typed`)
+#   api/photo.rs the wire photo answer's `bytes_match_the_delivery` predicate
+#   api/wire.rs  the doc-slicing folds the OpenRPC emitter reads (`summary`, `description`)
+#
+# They belong here for the reason the six do: every one takes values and returns values,
+# `webcam-handler-api` starts no runtime and opens nothing (note N5's review-held half),
+# and the crate is where a survivor is a unit test somebody can write today. It was also
+# not a hypothesis — the P4a review found two survivors here by hand before the floor
+# could see them, which is the argument for the widening in one sentence.
+#
 # Every one of them is a fold over values (engine's lib.rs states the property: reads no
 # clock, opens no file, touches no global — store.rs takes its directory as an argument).
 # That is what makes a surviving mutant *actionable* here: if a changed line cannot be
@@ -37,10 +50,16 @@
 #   and the triage would drown the signal from the cores. Named here so the exclusion is a
 #   decision with a date rather than an oversight.
 # - `crates/schema` — mostly derives and data. Its laws are asserted by the battery.
+# - `crates/api/src/lib.rs` — the T5 trait itself. It is a `wire_surface!` invocation and
+#   nineteen doc comments; there is no expression in it to mutate, and the macro's own
+#   expansion is jsonrpsee's. The three modules beside it are where this crate computes.
 #
 # The exclusions are stated as *absence from `examine_globs`* rather than as
 # `exclude_globs`, so widening the floor is adding a line rather than deleting one.
 examine_globs = [
+    "crates/api/src/codes.rs",
+    "crates/api/src/photo.rs",
+    "crates/api/src/wire.rs",
     "crates/engine/src/pairing.rs",
     "crates/engine/src/session.rs",
     "crates/engine/src/settle.rs",

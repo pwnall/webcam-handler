@@ -39,3 +39,6 @@ crates/imaging/src/metrics.rs: replace - with + in sharpness           # [N26] s
 
 # --- the fault cannot be injected [N27] ---
 crates/engine/src/store.rs: replace match guard err.kind() == io::ErrorKind::WouldBlock with true in StoreLock::acquire  # [N27] no hermetic test can make `flock` fail with anything else
+
+# --- equivalent: a delegation whose target is always None today [N37] ---
+crates/api/src/codes.rs: replace <impl std::error::Error for WireError>::source -> Option<&(dyn std::error::Error +'static)> with None  # [N37] no schema::Error variant carries a source, so the delegation and `None` are the same program

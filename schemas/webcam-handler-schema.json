@@ -2569,7 +2569,7 @@
       ]
     },
     "PhotoDelivery": {
-      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports\nhow much is on its way. **The bytes themselves are not in this document**: `wch` streams\nthem to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire\nsurface that needs it (docs/7 puts the sink DTO in `webcam-handler-api`). Carrying an\nunused encoding here would be a dependency nobody reads.",
+      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports\nhow much is on its way. **The bytes themselves are not in this document**: `wch` streams\nthem to standard output, and D10's base64-in-JSON encoding lives with the wire surface\nthat needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report rather\nthan inside this enum. Carrying an unused encoding here would be a dependency nobody\nreads, and it would put base64 in every session file and `--json` document too.",
       "oneOf": [
         {
           "description": "The bytes were handed back to the caller.",

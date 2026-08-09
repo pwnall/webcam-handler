@@ -5,18 +5,20 @@ docs/2 (v1, now under `docs/historical/`). Consumes the design (docs/6); its gat
 criteria are enforced by the gate suite (docs/9) and its review bar by the rubric
 (docs/8). Section references of the form §n.m point into docs/6 unless prefixed.
 
-**What changed from v1, and why.** Three phases are closed, so v1's P0–P2 sections are
-replaced by a closure ledger. The remaining phases are re-cut from four monolithic
-blocks into **session-sized sub-milestones** (P3a, P3b, …), because v1's shape failed in
-a specific, observed way: a phase that lands everything and then gates-and-reviews in
-one stretch runs its closing session out of context mid-review — P2's did exactly that.
-The gate letters G3–G6 and their criteria are unchanged; what changed is that criteria
-now accrete row by row in `scripts/gates/phase-criteria.tsv` as sub-milestones land,
-and the phase-closing review gets a session of its own. Two work items were also added
-on standing instructions v1 had already recorded: the mutation floor docs/9 scheduled
-"before G4, not after" (P3f), and the `wch-priv` narrowing N8 tied to G6 (P6e).
+**What changed from v1, and why.** Three phases were closed when this revision was
+written, so v1's P0–P2 sections are replaced by a closure ledger — which the phases
+closed since then join, one row each, rather than growing sections of their own. The
+remaining phases are re-cut from four monolithic blocks into **session-sized
+sub-milestones** (P3a, P3b, …), because v1's shape failed in a specific, observed way: a
+phase that lands everything and then gates-and-reviews in one stretch runs its closing
+session out of context mid-review — P2's did exactly that. The gate letters G3–G6 and
+their criteria are unchanged; what changed is that criteria now accrete row by row in
+`scripts/gates/phase-criteria.tsv` as sub-milestones land, and the phase-closing review
+gets a session of its own. Two work items were also added on standing instructions v1 had
+already recorded: the mutation floor docs/9 scheduled "before G4, not after" (P3f), and
+the `wch-priv` narrowing N8 tied to G6 (P6e).
 
-## Closure ledger — P0–P2
+## Closure ledger — P0–P3
 
 Recorded here so the plan does not restate what the notes and the criteria table
 already prove. Evidence entries live in `docs/implementation-notes.md`.

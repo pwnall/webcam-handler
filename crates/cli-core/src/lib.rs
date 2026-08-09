@@ -42,14 +42,20 @@ use schema::camera::{CameraId, PixelFormat};
 use schema::capture::{
     PhotoFormat, PhotoRequest, SettlePolicy, SettleSpec, Sink, StreamRequest, Transform,
 };
-use schema::control::{ControlDesc, ControlSlug, ControlValue};
+use schema::control::{ControlDesc, ControlSlug, ControlWrite};
 use schema::error::{Error, Result};
 use schema::metrics::MetricName;
 use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
-use schema::session::{Selector, Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
+use schema::session::{Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
-use schema::vocabulary::closed_vocabulary;
+
+// The wire and the command line name the same session and the same selection, so they are
+// one type in the schema rather than two that drift (design §2.10). Re-exported rather
+// than aliased so `cli_core::SessionRef` — the spelling every `Executor` signature and
+// both binaries already use — keeps meaning something, and so `wchc` can hand what it
+// parsed straight to the T5 client at P4f.
+pub use schema::session::{ChosenBy, Selection, SessionRef};
 
 pub use photograph::Photograph;
 pub use render::SweepWatcher;
@@ -62,12 +68,41 @@ mod photograph {
     use schema::capture::PhotoReport;
 
     /// A photo, and — for a `ReturnBytes` sink — its bytes.
-    #[derive(Debug)]
+    ///
+    /// `Debug` is hand-written for the reason `schema::capture::Frame`'s is: **a frame may
+    /// contain a person** (AGENTS.md; rubric A12). A derived one would print the whole
+    /// JPEG into the first `tracing::debug!(?photograph)` or `format!("{photograph:?}")`
+    /// anybody adds, and nothing could go red on it.
     pub struct Photograph {
         /// What was taken, where it went, and what was done to it.
         pub report: PhotoReport,
         /// The bytes, when the sink asked for them rather than for a file.
         pub returned: Option<Vec<u8>>,
+    }
+
+    impl std::fmt::Debug for Photograph {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            /// The byte count, wearing the only `Debug` a payload may have.
+            ///
+            /// Going through `Option`'s own `Debug` keeps `Some(…)` and `None` apart,
+            /// which is the difference between "a file was written" and "an empty payload
+            /// came back".
+            struct ByteCount(usize);
+            impl std::fmt::Debug for ByteCount {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "<{} bytes>", self.0)
+                }
+            }
+
+            // A frame may contain a person. The count, and never the bytes.
+            f.debug_struct("Photograph")
+                .field("report", &self.report)
+                .field(
+                    "returned",
+                    &self.returned.as_ref().map(|bytes| ByteCount(bytes.len())),
+                )
+                .finish()
+        }
     }
 }
 
@@ -212,13 +247,14 @@ vocabulary_arg!(MetricArg, MetricName, "metric");
 /// (exit 2) rather than a device error (exit 1) — "you typed it wrong" and "the camera is
 /// busy" are different kinds of failure and a script deciding whether to retry needs to
 /// tell them apart.
+///
+/// A newtype over the schema's [`ControlWrite`] for the reason [`BackendKindArg`] is one
+/// over `BackendKind`: "which control, and what value" is one shape, and the wire carries
+/// it (`wch_set` takes `Vec<ControlWrite>`, D10). A second struct with the same two fields
+/// here would be a copy of a rule (design §2.10) and would put a conversion at exactly the
+/// seam `wch` and `wchc` are compared across (P4f's parity gate).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Assignment {
-    /// Which control.
-    pub control: schema::control::ControlSlug,
-    /// The value to write.
-    pub value: schema::control::ControlValue,
-}
+pub struct Assignment(pub ControlWrite);
 
 impl std::str::FromStr for Assignment {
     type Err = String;
@@ -237,10 +273,10 @@ impl std::str::FromStr for Assignment {
         let value = value.parse::<i64>().map_err(|_| {
             format!("{value:?} is not an integer; control values are written as integers")
         })?;
-        Ok(Assignment {
+        Ok(Assignment(ControlWrite {
             control,
             value: schema::control::ControlValue::Int(value),
-        })
+        }))
     }
 }
 
@@ -753,20 +789,6 @@ pub struct SelectorArgs {
     pub by: Option<ChosenByArg>,
 }
 
-/// What `select` was told to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Selection {
-    /// Rank by a metric and take the best.
-    ByMetric(MetricName),
-    /// A value somebody chose, and who.
-    ByValue {
-        /// The value, as a sample's applied value.
-        value: i64,
-        /// Who chose it.
-        selector: Selector,
-    },
-}
-
 impl SelectorArgs {
     /// The selection these flags describe.
     ///
@@ -776,10 +798,10 @@ impl SelectorArgs {
     /// arm exists so this conversion has no `unwrap` in it.
     pub fn selection(&self) -> Result<Selection> {
         match (self.metric, self.value, self.by) {
-            (Some(metric), None, None) => Ok(Selection::ByMetric(metric.0)),
+            (Some(metric), None, None) => Ok(Selection::ByMetric { metric: metric.0 }),
             (None, Some(value), Some(by)) => Ok(Selection::ByValue {
                 value,
-                selector: by.selector(),
+                chosen_by: by.0,
             }),
             _ => Err(Error::IllegalTransition {
                 from: "no_selector".to_owned(),
@@ -789,38 +811,16 @@ impl SelectorArgs {
     }
 }
 
-closed_vocabulary! {
-    /// `--by`, as clap sees it.
-    ///
-    /// Two spellings, and the third selector D8 names — `metric:<name>` — is deliberately
-    /// not among them: a metric is not something a caller can *claim* to be, it is
-    /// something the tool computed, and `--metric` is where that is said.
-    ///
-    /// Generated, because `ALL` is the whole of this flag's accepted vocabulary:
-    /// [`FromStr`](std::str::FromStr) resolves `--by <WHO>` by walking it and builds the
-    /// refusal's `known:` list from it, while [`ChosenByArg::selector`]'s exhaustive match
-    /// forces a new variant to be *mapped* and never forces it into a hand-written array.
-    /// A variant the compiler accepted and the parser could not reach is rubric rule 6's
-    /// hand list wearing a parser table, and `schema::vocabulary`'s own header says so.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ChosenByArg {
-        /// An agent reviewed the sample photos and picked one.
-        Agent,
-        /// A human did.
-        Human,
-    }
-}
-
-impl ChosenByArg {
-    /// The selector this argument records.
-    #[must_use]
-    pub fn selector(self) -> Selector {
-        match self {
-            ChosenByArg::Agent => Selector::Agent,
-            ChosenByArg::Human => Selector::Human,
-        }
-    }
-}
+/// `--by` as clap sees it.
+///
+/// A newtype over the schema's [`ChosenBy`] for the reason [`BackendKindArg`] is one: the
+/// vocabulary belongs to the schema, because the same two spellings are what the wire
+/// carries (D10) and what a session file records, and a second enum here would be a copy
+/// of a rule (design §2.10). `FromStr` resolves `--by <WHO>` by walking `ChosenBy::ALL`
+/// and builds the refusal's `known:` list from the same walk, so a variant the compiler
+/// accepted and the parser could not reach is impossible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChosenByArg(pub ChosenBy);
 
 impl std::str::FromStr for ChosenByArg {
     type Err = String;
@@ -828,12 +828,13 @@ impl std::str::FromStr for ChosenByArg {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         // Matched against the schema's own spelling of each selector, so `--by agent` and
         // the `agent` a session file records are one string rather than two that can drift.
-        ChosenByArg::ALL
+        ChosenBy::ALL
             .iter()
             .copied()
             .find(|chooser| chooser.selector().label() == s)
+            .map(ChosenByArg)
             .ok_or_else(|| {
-                let known: Vec<String> = ChosenByArg::ALL
+                let known: Vec<String> = ChosenBy::ALL
                     .iter()
                     .map(|chooser| chooser.selector().label())
                     .collect();
@@ -984,7 +985,7 @@ pub trait Executor {
     fn set(
         &mut self,
         camera: &CameraId,
-        targets: &[(ControlSlug, ControlValue)],
+        writes: &[ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport>;
 
@@ -1136,20 +1137,6 @@ pub trait Executor {
     fn calibrate_list(&mut self, camera: Option<&CameraId>) -> Result<SessionList>;
 }
 
-/// Which session a verb is about, resolved from the command line.
-///
-/// The two forms are not interchangeable and the type keeps them apart: a task names the
-/// session for *this* camera, and a UUID names one session wherever it lives — including
-/// under another camera, which is the case `calibrate apply`'s fingerprint check exists
-/// for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionRef {
-    /// The newest session recorded for this camera and task.
-    Task(String),
-    /// The session with this id, whichever camera it belongs to.
-    Id(uuid::Uuid),
-}
-
 impl SessionArg {
     /// The session these flags name.
     ///
@@ -1159,8 +1146,8 @@ impl SessionArg {
     /// already refused; the arm exists so this conversion has no `unwrap` in it.
     pub fn which(&self) -> Result<SessionRef> {
         match (&self.task, self.session) {
-            (Some(task), None) => Ok(SessionRef::Task(task.clone())),
-            (None, Some(id)) => Ok(SessionRef::Id(id)),
+            (Some(task), None) => Ok(SessionRef::Task { task: task.clone() }),
+            (None, Some(id)) => Ok(SessionRef::Id { id }),
             _ => Err(Error::IllegalTransition {
                 from: "no_session_named".to_owned(),
                 op: "name a session with --task <TEXT> or --session <UUID>".to_owned(),
@@ -1205,11 +1192,11 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             assignments,
             no_guard,
         } => {
-            let targets: Vec<(ControlSlug, ControlValue)> = assignments
+            let writes: Vec<ControlWrite> = assignments
                 .iter()
-                .map(|a| (a.control.clone(), a.value.clone()))
+                .map(|assignment| assignment.0.clone())
                 .collect();
-            let report = executor.set(&camera.id()?, &targets, !*no_guard)?;
+            let report = executor.set(&camera.id()?, &writes, !*no_guard)?;
             render::writes(&report, cli.json, out)
         }
         Command::Snapshot {
@@ -1462,6 +1449,7 @@ pub fn exit_code(_error: &Error) -> u8 {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory as _;
+    use schema::control::ControlValue;
 
     use super::*;
 
@@ -1592,7 +1580,7 @@ mod tests {
         assert_eq!(
             assignments
                 .iter()
-                .map(|a| (a.control.as_str(), a.value.clone()))
+                .map(|assignment| (assignment.0.control.as_str(), assignment.0.value.clone()))
                 .collect::<Vec<_>>(),
             vec![
                 ("brightness", ControlValue::Int(200)),
@@ -1627,7 +1615,7 @@ mod tests {
         let Command::Set { assignments, .. } = &cli.command else {
             panic!("expected set");
         };
-        assert_eq!(assignments[0].value, ControlValue::Int(-468_000));
+        assert_eq!(assignments[0].0.value, ControlValue::Int(-468_000));
     }
 
     #[test]
@@ -1866,7 +1854,9 @@ mod tests {
         assert!(partial);
         assert_eq!(
             which.which().expect("a session"),
-            SessionRef::Task("focus".to_owned())
+            SessionRef::Task {
+                task: "focus".to_owned()
+            }
         );
 
         // `--partial` is opt-in: without it the D8 gate is the one that answers.
@@ -1895,7 +1885,9 @@ mod tests {
         };
         assert_eq!(
             which.which().expect("a session"),
-            SessionRef::Task("focus".to_owned())
+            SessionRef::Task {
+                task: "focus".to_owned()
+            }
         );
         // …and it needs one, like every other session verb.
         assert!(
@@ -1972,7 +1964,7 @@ mod tests {
                 by.selection().expect("a selection"),
                 Selection::ByValue {
                     value: -3600,
-                    selector: Selector::Agent
+                    chosen_by: ChosenBy::Agent
                 },
                 "{args:?}"
             );
@@ -1990,7 +1982,9 @@ mod tests {
         };
         assert_eq!(
             which.which().expect("a session"),
-            SessionRef::Id(id.parse().expect("a uuid"))
+            SessionRef::Id {
+                id: id.parse().expect("a uuid")
+            }
         );
 
         // Neither, and both: usage errors, because the tool cannot guess which session is
@@ -2132,20 +2126,22 @@ mod tests {
         };
         assert_eq!(
             selection(&["--metric", "sharpness"]).expect("a metric ranks"),
-            Selection::ByMetric(MetricName::Sharpness)
+            Selection::ByMetric {
+                metric: MetricName::Sharpness
+            }
         );
         assert_eq!(
             selection(&["--value", "512", "--by", "agent"]).expect("an agent chooses"),
             Selection::ByValue {
                 value: 512,
-                selector: Selector::Agent
+                chosen_by: ChosenBy::Agent
             }
         );
         assert_eq!(
             selection(&["--value", "512", "--by", "human"]).expect("a human chooses"),
             Selection::ByValue {
                 value: 512,
-                selector: Selector::Human
+                chosen_by: ChosenBy::Human
             }
         );
 
@@ -2174,11 +2170,11 @@ mod tests {
         // (rubric rule 6) — and each member is driven through **clap**, not through
         // `FromStr` alone, so a chooser the type declares and the command line cannot
         // reach fails here rather than at somebody's terminal.
-        for chooser in ChosenByArg::ALL {
+        for chooser in ChosenBy::ALL {
             let label = chooser.selector().label();
             assert_eq!(
                 label.parse::<ChosenByArg>().expect("known"),
-                *chooser,
+                ChosenByArg(*chooser),
                 "{label} does not round-trip through --by's parser"
             );
             assert_eq!(
@@ -2186,7 +2182,7 @@ mod tests {
                     .unwrap_or_else(|error| panic!("--by {label} was refused: {error}")),
                 Selection::ByValue {
                     value: 512,
-                    selector: chooser.selector(),
+                    chosen_by: *chooser,
                 },
                 "--by {label} did not reach the selector the type maps it to"
             );
@@ -2234,6 +2230,70 @@ mod tests {
         for &metric in MetricName::ALL {
             assert!(error.to_string().contains(metric.as_str()), "{error}");
         }
+    }
+
+    #[test]
+    fn photo_bytes_never_reach_a_debug_line() {
+        // Rubric A12 as a test, and the reason `Photograph` hand-writes `Debug`: a frame
+        // may contain a person, so formatting a document that holds one has to be
+        // incapable of printing it. The renderer both binaries share takes one of these,
+        // so a `?photograph` in either of them would print a whole JPEG.
+        use schema::camera::{CameraId, FrameInterval, PixelFormat};
+        use schema::capture::{
+            NegotiatedStream, PhotoDelivery, PhotoFormat, PhotoRendering, PhotoReport,
+            TransformApplication,
+        };
+        use schema::time::Stamp;
+
+        let bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10];
+        let report = PhotoReport {
+            camera: CameraId::parse("cam:test").expect("literal id"),
+            taken_at: Stamp::epoch(),
+            negotiated: NegotiatedStream {
+                pixel_format: PixelFormat::MJPG,
+                width: 640,
+                height: 480,
+                bytes_per_line: 0,
+                size_image: 65_536,
+                interval: FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30,
+                },
+                adjustments: Vec::new(),
+            },
+            rendering: PhotoRendering::Verbatim {
+                source: PixelFormat::MJPG,
+            },
+            transform: TransformApplication::Identity,
+            width: 640,
+            height: 480,
+            frames_settled: 1,
+            delivery: PhotoDelivery::Bytes {
+                format: PhotoFormat::Jpeg,
+                byte_count: 6,
+            },
+        };
+
+        let returned = Photograph {
+            report: report.clone(),
+            returned: Some(bytes.clone()),
+        };
+        let rendered = format!("{returned:?}");
+        assert!(rendered.contains("<6 bytes>"), "{rendered}");
+        // `255, 216, 255` is what a derived `Debug` prints for a JPEG's first three bytes.
+        assert!(
+            !rendered.contains("255, 216"),
+            "frame bytes leaked: {rendered}"
+        );
+
+        // The other variant, so the redaction does not erase the distinction it protects:
+        // "written to a file" and "an empty payload" must still read differently.
+        let to_a_file = Photograph {
+            report,
+            returned: None,
+        };
+        assert!(format!("{to_a_file:?}").contains("None"));
+        assert_ne!(format!("{to_a_file:?}"), rendered);
     }
 
     #[test]

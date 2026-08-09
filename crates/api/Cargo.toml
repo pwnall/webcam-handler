@@ -15,11 +15,13 @@ name = "api"
 workspace = true
 
 [dependencies]
+# The transport encoding, and the one crate in the workspace that may name it: design
+# D10 puts base64-in-JSON here, and `webcam-handler-schema`'s `PhotoDelivery` doc comment
+# says so from the other side ("carrying an unused encoding here would be a dependency
+# nobody reads").
+base64.workspace = true
 jsonrpsee = { workspace = true, features = ["macros", "client-core", "server-core"] }
-
-# `jsonrpsee` is declared before the T5 trait that uses it (P4), because it is what
-# makes `dependency-walls.sh`'s wire-crate wall a live check rather than a vacuous
-# one: it is the edge that drags tokio in, which is the whole subject of note N5.
-# Drop the ignore when src/ actually names it.
-[package.metadata.cargo-machete]
-ignored = ["jsonrpsee"]
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+webcam-handler-schema.workspace = true

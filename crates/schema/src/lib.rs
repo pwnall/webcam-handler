@@ -61,11 +61,16 @@ pub use capture::{
     Frame, NegotiatedStream, PhotoFormat, PhotoReport, PhotoRequest, SettlePolicy, Sink,
     StreamRequest, Transform,
 };
-pub use control::{Applied, ControlDesc, ControlId, ControlSlug, ControlValue, WriteWarning};
+pub use control::{
+    Applied, ControlDesc, ControlId, ControlSlug, ControlValue, ControlWrite, WriteWarning,
+};
 pub use error::{BackendError, Error, ErrorKind, Result};
 pub use profile::DeviceProfile;
-pub use report::{CameraDetail, CameraList, ControlReport, ListHint, WriteReport};
-pub use session::{Session, SessionList, SessionStatus, SweepRequest};
+pub use report::{
+    CameraDetail, CameraList, ControlReport, DiscoveryReport, ListHint, TerminationReport,
+    WriteReport,
+};
+pub use session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 pub use snapshot::{RestoreReport, Snapshot};
 pub use time::Stamp;
 

@@ -37,13 +37,46 @@ use crate::settle::Clock;
 /// JSON document needs an encoding that only the wire surface needs (P4). Here the caller
 /// already has the bytes in memory, so handing them over costs nothing and commits to
 /// nothing.
-#[derive(Debug)]
+///
+/// `Debug` is hand-written for the reason [`schema::capture::Frame`]'s is: **a frame may
+/// contain a person** (AGENTS.md; rubric A12). A derived one prints
+/// `Some([255, 216, 255, …])` — a whole JPEG of whoever was in front of the camera — into
+/// whatever `tracing::debug!(?photograph)` or `.expect(&format!("{photograph:?}"))` a
+/// later sub-milestone adds, and no lint or gate can go red on a line like that. The rule
+/// has four subjects now (`Frame`, `api::photo::Base64Bytes`, and both `Photograph`s) and
+/// four tests; note N36 records why it does not yet have a walkable population.
 pub struct Photograph {
     /// What was taken, where it went, and what was done to it.
     pub report: PhotoReport,
     /// The bytes, for a [`Sink::ReturnBytes`] request. `None` when they were written to a
     /// path — a caller who asked for a file gets a file, not a file and a copy.
     pub returned: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Photograph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// The byte count, wearing the only `Debug` a payload may have.
+        ///
+        /// A shim rather than `format_args!` because the bytes are behind an `Option` and
+        /// a `format_args!` built in a closure cannot outlive it — and going through
+        /// `Option`'s own `Debug` is what keeps `Some(…)`/`None` distinguishable, which is
+        /// the difference between "a file was written" and "an empty payload came back".
+        struct ByteCount(usize);
+        impl std::fmt::Debug for ByteCount {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "<{} bytes>", self.0)
+            }
+        }
+
+        // A frame may contain a person. The count, and never the bytes.
+        f.debug_struct("Photograph")
+            .field("report", &self.report)
+            .field(
+                "returned",
+                &self.returned.as_ref().map(|bytes| ByteCount(bytes.len())),
+            )
+            .finish()
+    }
 }
 
 /// Take one photo (design D5, D6, D10).
@@ -528,6 +561,53 @@ mod tests {
         )
         .expect_err("a camera with no capture node cannot be streamed");
         assert_eq!(error.kind(), ErrorKind::FormatUnsupported);
+    }
+
+    #[test]
+    fn photo_bytes_never_reach_a_debug_line() {
+        // Rubric A12 as a test, and the reason this struct hand-writes `Debug`: a frame may
+        // contain a person, so formatting a document that holds one has to be incapable of
+        // printing it. The photo is a real one off the fake, because the bytes that must
+        // not appear have to be bytes something actually produced.
+        let mut camera = camera_from("chicony-rgb");
+        let taken = take(
+            camera.as_mut(),
+            &request(
+                Sink::ReturnBytes {
+                    format: PhotoFormat::Jpeg,
+                },
+                Transform::None,
+            ),
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        )
+        .expect("a photo");
+        let bytes = taken.returned.clone().expect("a ReturnBytes sink");
+        assert!(bytes.len() > 100, "the fixture has to be worth hiding");
+
+        let rendered = format!("{taken:?}");
+        assert!(
+            rendered.contains(&format!("<{} bytes>", bytes.len())),
+            "{rendered}"
+        );
+        // A JPEG opens `255, 216, 255` in a derived `Debug`'s decimal rendering. Naming
+        // the actual first bytes rather than a constant, so this notices whatever the
+        // fixture happens to hold.
+        let leak = bytes
+            .iter()
+            .take(3)
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(!rendered.contains(&leak), "frame bytes leaked: {rendered}");
+
+        // And the other variant: a photo written to a file has no bytes to hide, and must
+        // still render something a reader can tell apart from "an empty payload".
+        let to_a_file = Photograph {
+            report: taken.report.clone(),
+            returned: None,
+        };
+        assert!(format!("{to_a_file:?}").contains("None"));
     }
 
     #[test]

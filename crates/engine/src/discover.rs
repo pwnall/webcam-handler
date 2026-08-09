@@ -24,7 +24,7 @@
 use schema::backend::Camera;
 use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::error::Result;
-use schema::pairing::{AutomationPair, looks_like_automation};
+use schema::pairing::{AutomationPair, ProbeSkip, looks_like_automation};
 use schema::snapshot::RestoreReport;
 use schema::time::Stamp;
 
@@ -44,7 +44,11 @@ pub struct Discovery {
     /// The pairs this device demonstrated, sorted, every one `Provenance::Measured`.
     pub pairs: Vec<AutomationPair>,
     /// The automation-shaped controls the probe did not toggle, and why.
-    pub skipped: Vec<(ControlSlug, String)>,
+    ///
+    /// A `schema` type rather than a tuple because this is what `discover_pairs` answers
+    /// with on the T5 wire (D10, `schema::report::DiscoveryReport`), and one spelling of
+    /// "what the probe passed over" is the whole of design §2.10 applied here.
+    pub skipped: Vec<ProbeSkip>,
     /// What putting the camera back achieved. Reported rather than assumed.
     pub restored: RestoreReport,
 }
@@ -79,7 +83,7 @@ pub fn pairs(camera: &mut dyn Camera, now: Stamp) -> Result<Discovery> {
     let before_all = snapshot::take(camera, &[], now)?;
 
     let mut found: Vec<AutomationPair> = Vec::new();
-    let mut skipped: Vec<(ControlSlug, String)> = Vec::new();
+    let mut skipped: Vec<ProbeSkip> = Vec::new();
     let candidates: Vec<ControlDesc> = camera
         .controls()?
         .into_iter()
@@ -95,10 +99,10 @@ pub fn pairs(camera: &mut dyn Camera, now: Stamp) -> Result<Discovery> {
         let before = match camera.controls() {
             Ok(before) => before,
             Err(error) => {
-                skipped.push((
-                    candidate.slug.clone(),
-                    format!("the control set could not be read before the toggle: {error}"),
-                ));
+                skipped.push(ProbeSkip {
+                    control: candidate.slug.clone(),
+                    reason: format!("the control set could not be read before the toggle: {error}"),
+                });
                 continue;
             }
         };
@@ -108,16 +112,19 @@ pub fn pairs(camera: &mut dyn Camera, now: Stamp) -> Result<Discovery> {
             .find(|desc| desc.slug == candidate.slug)
             .cloned()
         else {
-            skipped.push((
-                candidate.slug.clone(),
-                "the control disappeared between enumeration and the toggle".to_owned(),
-            ));
+            skipped.push(ProbeSkip {
+                control: candidate.slug.clone(),
+                reason: "the control disappeared between enumeration and the toggle".to_owned(),
+            });
             continue;
         };
 
         match probe_one(camera, &fresh, &before) {
             Ok(pairs) => found.extend(pairs),
-            Err(reason) => skipped.push((candidate.slug.clone(), reason)),
+            Err(reason) => skipped.push(ProbeSkip {
+                control: candidate.slug.clone(),
+                reason,
+            }),
         }
     }
 
@@ -326,11 +333,11 @@ mod tests {
         let found = pairs(&mut camera, Stamp::epoch()).expect("probes");
         assert!(found.pairs.is_empty());
         assert_eq!(found.skipped.len(), 1);
-        assert_eq!(found.skipped[0].0, slug("focus_automatic_continuous"));
+        assert_eq!(found.skipped[0].control, slug("focus_automatic_continuous"));
         assert!(
-            found.skipped[0].1.contains("§5"),
+            found.skipped[0].reason.contains("§5"),
             "{:?}",
-            found.skipped[0].1
+            found.skipped[0].reason
         );
         assert!(
             camera.writes.is_empty(),
@@ -361,7 +368,7 @@ mod tests {
 
         let found = pairs(&mut camera, Stamp::epoch()).expect("probes");
         assert_eq!(found.skipped.len(), 1);
-        assert_eq!(found.skipped[0].0, slug("white_balance_automatic"));
+        assert_eq!(found.skipped[0].control, slug("white_balance_automatic"));
         assert_eq!(
             found
                 .pairs
@@ -498,7 +505,7 @@ mod tests {
             found
                 .skipped
                 .iter()
-                .any(|(slug, _)| slug.as_str() == "white_balance_automatic"),
+                .any(|skip| skip.control.as_str() == "white_balance_automatic"),
             "the candidate that could not be put back must be named: {:?}",
             found.skipped
         );

@@ -1,0 +1,36 @@
+# The D13 error registry's JSON-RPC codes, pinned (design D10, D13).
+#
+# A wire code is a compatibility contract in the same way a serde field name is: a
+# deployed client already knows the value, so a change to one has to be a diff a human
+# reads rather than a test that keeps passing. `codes.rs`'s walk compares this file
+# against `ErrorKind::ALL` in both directions — a kind with no row fails, and a row
+# naming something that is not a kind fails — so it cannot fall behind the registry.
+#
+# The names are each kind's own serde spelling, so this table cannot pin a word the
+# registry does not use. The codes are `api::codes::rpc_code`'s; why the block sits where
+# it does is stated once, on `api::codes::D13_CODES`, and not repeated here.
+#
+# `unimplemented` holds the block's lowest code on purpose: it is transitional (note N6)
+# and P4d deletes it, so P4d raises `D13_CODES.start()` by one and the other eighteen
+# codes stay byte-identical.
+#
+# kind	code
+device_gone	-32012
+busy	-32013
+permission_denied	-32014
+camera_unknown	-32015
+camera_ambiguous	-32016
+control_unknown	-32017
+control_read_only	-32018
+control_inactive	-32019
+format_unsupported	-32020
+settle_timeout	-32021
+fingerprint_mismatch	-32022
+session_conflict	-32023
+illegal_transition	-32024
+schema_version_foreign	-32025
+store_locked	-32026
+holder_gone	-32027
+device_io	-32028
+storage_io	-32029
+unimplemented	-32030

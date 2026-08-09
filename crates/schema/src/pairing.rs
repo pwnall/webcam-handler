@@ -90,6 +90,26 @@ pub struct AutomationPair {
     pub provenance: Provenance,
 }
 
+/// One control the empirical probe declined to toggle, and why.
+///
+/// A named pair rather than a tuple for the reason
+/// [`crate::control::ControlWrite`] is one — it crosses the T5 wire inside
+/// [`crate::report::DiscoveryReport`] (D10), where an array of two strings is a shape a
+/// consumer has to be told about out of band.
+///
+/// The `reason` is free text on purpose. A closed vocabulary here would turn a reason
+/// nobody anticipated into the nearest one that was, and the probe's list of what it
+/// passed over is exactly the place where "we did not look" must not be readable as "we
+/// looked and found nothing" — §5's motor rule is one reason and a device that refused
+/// the toggle is another, and both are discovered rather than designed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProbeSkip {
+    /// Which control.
+    pub control: ControlSlug,
+    /// Why, in the probe's own words.
+    pub reason: String,
+}
+
 /// The declared pairing table.
 ///
 /// Deliberately short. Anything that is not a well-known UVC relationship belongs in

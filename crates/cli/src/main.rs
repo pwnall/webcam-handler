@@ -180,11 +180,11 @@ impl InProcess {
         which: &SessionRef,
     ) -> Result<Session> {
         let (found, named) = match which {
-            SessionRef::Task(task) => (
+            SessionRef::Task { task } => (
                 lifecycle::latest(store, fingerprint, task)?,
                 format!("task={task:?}"),
             ),
-            SessionRef::Id(id) => (lifecycle::find(store, *id)?, format!("session={id}")),
+            SessionRef::Id { id } => (lifecycle::find(store, *id)?, format!("session={id}")),
         };
         let session = found.ok_or_else(|| Error::IllegalTransition {
             from: format!("no_session({named})"),
@@ -241,8 +241,8 @@ impl engine::progress::ProgressSink for Watched<'_> {
 /// went are facts about the run rather than about the camera, and a caller redirecting
 /// stdout should still see them.
 fn report_probe(found: &engine::discover::Discovery) {
-    for (control, reason) in &found.skipped {
-        eprintln!("wch: did not probe {control}: {reason}");
+    for skip in &found.skipped {
+        eprintln!("wch: did not probe {}: {}", skip.control, skip.reason);
     }
     if !found.left_the_camera_alone() {
         let stuck: Vec<String> = found
@@ -327,13 +327,20 @@ impl Executor for InProcess {
     fn set(
         &mut self,
         requested: &CameraId,
-        targets: &[(ControlSlug, schema::ControlValue)],
+        writes: &[schema::control::ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport> {
         let (_, mut camera) = self.open(requested)?;
         let controls = camera.controls()?;
         let pairs = self.pairs_for(&controls, Vec::new());
-        engine::write::set(camera.as_mut(), &pairs, targets, guarded)
+        // The engine's planner takes pairs, and this is the one place the two spellings
+        // meet — see `ControlWrite`'s own note on why the wire spelling stops at the T4
+        // boundary rather than continuing into `engine::pairing` (note N35).
+        let targets: Vec<(ControlSlug, schema::ControlValue)> = writes
+            .iter()
+            .map(|write| (write.control.clone(), write.value.clone()))
+            .collect();
+        engine::write::set(camera.as_mut(), &pairs, &targets, guarded)
     }
 
     fn snapshot(&mut self, requested: &CameraId) -> Result<Snapshot> {
@@ -497,12 +504,16 @@ impl Executor for InProcess {
                 // Whichever branch runs, the *selector* is recorded (D8): a metric names
                 // itself and the score it earned, and a value names whoever claimed it.
                 match selection {
-                    Selection::ByMetric(metric) => {
+                    Selection::ByMetric { metric } => {
                         engine::session::select_by_metric(draft, control, *metric, now)
                     }
-                    Selection::ByValue { value, selector } => {
-                        engine::session::select_value(draft, control, *value, selector.clone(), now)
-                    }
+                    Selection::ByValue { value, chosen_by } => engine::session::select_value(
+                        draft,
+                        control,
+                        *value,
+                        chosen_by.selector(),
+                        now,
+                    ),
                 }
             })?;
             Ok(session)

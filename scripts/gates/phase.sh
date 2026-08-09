@@ -6,9 +6,10 @@
 # nobody can re-run is a criterion nobody will re-check. The criteria live in
 # `phase-criteria.tsv`, one row each; this file is the runner, not the list.
 #
-# A phase with no rows fails. `just gate-g4` today reports that G4 has no criteria yet,
-# which is the truth; a gate that passes because it was asked to check nothing is the
-# defect class this whole suite exists to prevent.
+# A phase with no rows fails, and that is a feature: a gate passing because it was asked
+# to check nothing is the defect class this whole suite exists to prevent. `just gate-g5`
+# and `just gate-g6` report exactly that today, which is the truth about them — criteria
+# accrete row by row, in the commit that lands the thing each row proves.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR

@@ -28,7 +28,7 @@ never a feature constraint). `wch` and `wchc` share one command surface via
 Packages carry the full `webcam-handler-` prefix; directories are short
 (`crates/engine/`); lib names are bare; binaries are `wch`/`wchd`/`wchc`.
 
-Work is phase-gated (docs/7, G0–G6; P0–P2 are closed); each gate is a named, counted,
+Work is phase-gated (docs/7, G0–G6; P0–P3 are closed); each gate is a named, counted,
 re-runnable `just gate-gN` over `scripts/gates/phase-criteria.tsv` — one row per
 criterion, added in the same commit as the thing it proves. Work lands in
 session-sized sub-milestones (docs/7): each ends at a committed boundary with `just ci`

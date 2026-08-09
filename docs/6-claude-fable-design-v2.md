@@ -797,7 +797,8 @@ webcam-handler/
                         #              consumes Box<dyn CameraBackend>, names no backend]
     backends/fake/      # webcam-handler-fake    [pure; dev + test instrument, ships for `wch --backend fake`]
     backends/v4l2/      # webcam-handler-v4l2    [v4l (default features ONLY), kobject-uevent, libc, tracing]
-    api/                # webcam-handler-api     [jsonrpsee macros + schema]
+    api/                # webcam-handler-api     [jsonrpsee macros + schema + serde/serde_json +
+                        #              schemars + base64 (D10's transport encoding, here only)]
     cli-core/           # webcam-handler-cli-core [T4: clap tree, rendering, executor trait]
     cli/                # webcam-handler-cli     (bin wch)  [cli-core + engine + both backends; holds a
                         #              backend factory match]
@@ -893,7 +894,10 @@ mangen, comfy-table 8 (MIT), indicatif 0.18 (MIT), anstream/anstyle (MIT/Apache)
 thiserror 2 / anyhow 1, tracing + tracing-subscriber + tracing-journald (MIT, no
 libsystemd), serde/serde_json, toml 1 (config), schemars 1 (MIT), tempfile
 3, fd-lock 4, uuid 1 (v7), jiff 0.2 (Unlicense/MIT; RFC 3339 strings on disk make it
-swappable), camino 1, humantime 2, sd-notify 0.5 + listenfd 1 (pure-Rust systemd
+swappable), camino 1, humantime 2, base64 0.23 (MIT/Apache; **`webcam-handler-api` only**
+— D10's "base64 in the JSON result" is a transport encoding and this is its one home, so
+`webcam-handler-schema` stays free of it; pinned at P0 with no consumer and adopted at
+P4a when the wire photo answer landed), sd-notify 0.5 + listenfd 1 (pure-Rust systemd
 protocols), kamadak-exif 0.6 (BSD-2, **dev-only**: the independent EXIF reader that
 verifies what little_exif wrote — a gate-commissioned test oracle gets its §2.8 entry at
 commissioning time, docs/9). `directories` was dropped before the scaffold settled [N2]:

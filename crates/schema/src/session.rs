@@ -22,6 +22,7 @@ use crate::metrics::MetricName;
 use crate::pairing::AutomationPair;
 use crate::snapshot::Snapshot;
 use crate::time::Stamp;
+use crate::vocabulary::closed_vocabulary;
 
 /// How to derive the values a sweep visits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -130,6 +131,98 @@ impl Selector {
             Selector::Human => "human".to_owned(),
         }
     }
+}
+
+closed_vocabulary! {
+    /// Who a caller may claim to be when recording a chosen value (design D8).
+    ///
+    /// Two spellings, and the third selector D8 names — `metric:<name>` — is deliberately
+    /// not among them: a metric is not something a caller can *claim* to be, it is
+    /// something the tool computed and scored. On a command line clap's group enforced
+    /// that (`--metric` conflicts with `--by`); on the wire nothing would, so this
+    /// vocabulary makes the lie unrepresentable instead of merely refusable.
+    ///
+    /// Generated, so [`ChosenBy::selector`]'s exhaustive match forces a third claimant to
+    /// be *mapped* rather than quietly accepted, and `ALL` is the whole accepted
+    /// vocabulary for both the flag parser and the wire.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ChosenBy {
+        /// An agent reviewed the sample photos and picked one.
+        Agent,
+        /// A human did.
+        Human,
+    }
+}
+
+impl ChosenBy {
+    /// The selector this claim records.
+    ///
+    /// Exhaustive, so a third claimant has to be given a [`Selector`] rather than
+    /// defaulting into one — and it goes *through* `Selector` rather than carrying its own
+    /// spelling, because [`Selector::label`] is the one home for how a selector is spelled.
+    #[must_use]
+    pub const fn selector(self) -> Selector {
+        match self {
+            ChosenBy::Agent => Selector::Agent,
+            ChosenBy::Human => Selector::Human,
+        }
+    }
+}
+
+/// What `calibrate select` was told to do (design D8).
+///
+/// Lives here rather than in the shared command surface because both surfaces need it and
+/// only one of them may name the other: `webcam-handler-cli-core` is behind the T6 purity
+/// wall and can never depend on `webcam-handler-api`, so a selection the wire carries and
+/// a selection a command line parses have to be one type or two that drift.
+///
+/// Struct variants rather than newtypes because this crate's enums are internally tagged
+/// and serde cannot internally tag a newtype variant wrapping a scalar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Selection {
+    /// Rank the samples by this metric and take the best.
+    ByMetric {
+        /// Which metric.
+        metric: MetricName,
+    },
+    /// A value somebody chose, and who.
+    ByValue {
+        /// The value, as a sample's *applied* value — the one the camera actually held
+        /// \[PF:6\]. Selecting a requested value would name a value no photo was taken at.
+        value: i64,
+        /// Who chose it. A [`ChosenBy`] rather than a [`Selector`], so a caller cannot
+        /// record "a metric chose 42" without any metric having ranked anything.
+        chosen_by: ChosenBy,
+    },
+}
+
+/// Which session a verb is about (design D8, D9).
+///
+/// The two forms are not interchangeable and the type keeps them apart: a task names the
+/// session for *this* camera, and a UUID names one session wherever it lives — including
+/// under another camera, which is the case `calibrate apply`'s fingerprint check exists
+/// for.
+///
+/// Here rather than in the command surface for the reason [`Selection`] is: the wire and
+/// the command line name the same session, and `webcam-handler-cli-core` cannot see
+/// `webcam-handler-api` (T6). Struct variants, and the `id` is a string in the emitted
+/// schema, matching what [`Session::id`] already does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionRef {
+    /// The newest session recorded for this camera and task.
+    Task {
+        /// The task, in the words `calibrate start` recorded.
+        task: String,
+    },
+    /// The session with this id, whichever camera it belongs to.
+    Id {
+        /// The session's UUIDv7.
+        #[schemars(with = "String")]
+        id: Uuid,
+    },
 }
 
 /// Why a control cannot be calibrated.
@@ -874,5 +967,73 @@ mod tests {
         assert!(json.contains("\"control\":\"focus_absolute\""), "{json}");
         let back: LogEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn both_ways_of_naming_a_session_round_trip_and_stay_apart() {
+        let by_task = SessionRef::Task {
+            task: "read the DUT display".to_owned(),
+        };
+        let json = serde_json::to_string(&by_task).expect("serialize");
+        assert_eq!(json, r#"{"kind":"task","task":"read the DUT display"}"#);
+        assert_eq!(
+            serde_json::from_str::<SessionRef>(&json).expect("deserialize"),
+            by_task
+        );
+
+        let id = Uuid::nil();
+        let by_id = SessionRef::Id { id };
+        let json = serde_json::to_string(&by_id).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<SessionRef>(&json).expect("deserialize"),
+            by_id
+        );
+
+        // The claim the type exists to make: the two forms are different questions — one
+        // scoped to this camera, one to the whole store — so a document naming one must
+        // never deserialize into the other.
+        assert_ne!(by_task, by_id);
+        assert!(serde_json::from_str::<SessionRef>(r#"{"kind":"task","id":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn a_selection_records_who_chose_and_cannot_claim_a_metric_did() {
+        let by_metric = Selection::ByMetric {
+            metric: MetricName::Sharpness,
+        };
+        let json = serde_json::to_string(&by_metric).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<Selection>(&json).expect("deserialize"),
+            by_metric
+        );
+
+        for &who in ChosenBy::ALL {
+            let chosen = Selection::ByValue {
+                value: -108_000,
+                chosen_by: who,
+            };
+            let json = serde_json::to_string(&chosen).expect("serialize");
+            assert_eq!(
+                serde_json::from_str::<Selection>(&json).expect("deserialize"),
+                chosen,
+                "{who:?} did not survive the wire"
+            );
+            // One spelling for a selector, wherever it is written: `--by agent`, the
+            // `agent` a session file records, and the `"agent"` on the wire.
+            assert!(
+                json.contains(&format!("\"{}\"", who.selector().label())),
+                "{who:?} spells itself differently on the wire: {json}"
+            );
+        }
+
+        // The inverse, and the reason `ChosenBy` exists rather than `Selector`: a caller
+        // cannot record "a metric chose 42" without a metric having ranked anything. D8's
+        // honesty property is unrepresentable here rather than refused downstream.
+        assert!(
+            serde_json::from_str::<Selection>(
+                r#"{"kind":"by_value","value":42,"chosen_by":"metric"}"#
+            )
+            .is_err()
+        );
     }
 }

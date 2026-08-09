@@ -1362,10 +1362,8 @@ mod tests {
             found
                 .skipped
                 .iter()
-                .any(
-                    |(control, reason)| control.as_str() == "focus_automatic_continuous"
-                        && !reason.is_empty()
-                ),
+                .any(|skip| skip.control.as_str() == "focus_automatic_continuous"
+                    && !skip.reason.is_empty()),
             "the probe passed over a candidate without saying so: {:?}",
             found.skipped
         );

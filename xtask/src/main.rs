@@ -1,15 +1,24 @@
 //! Build-side generation.
 //!
 //! Everything this emits is a **generated artifact**, not a second source of truth: the
-//! Rust types are the schema, and these files are what other tools read. They are
-//! committed so consumers do not need a Rust toolchain, and
+//! Rust types are the schema, the T5 trait is the wire surface, and these files are what
+//! other tools read. They are committed so consumers do not need a Rust toolchain, and
 //! `scripts/gates/schema-artifacts-current.sh` re-runs the emitter and diffs, so a
-//! committed copy cannot drift from the types it documents.
+//! committed copy cannot drift from the types it documents. Nothing in this workspace
+//! reads either file back.
+//!
+//! Two artifacts, two audiences (design D10):
+//!
+//! | File | Describes |
+//! |---|---|
+//! | [`BUNDLE`] | the DTOs, for a consumer validating `--json`, a session file or a profile |
+//! | [`OPENRPC`] | the daemon's method surface, for a consumer speaking JSON-RPC to it |
 //!
 //! `generate` writes them; `generate --out DIR` writes them somewhere else, which is how
 //! the gate compares without touching the tree.
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
@@ -60,6 +69,29 @@ const ARTIFACT_DIR: &str = "schemas";
 /// The bundle's filename.
 const BUNDLE: &str = "webcam-handler-schema.json";
 
+/// The OpenRPC document's filename.
+///
+/// Symmetric with [`BUNDLE`], and deliberately not the bare `openrpc.json`:
+/// `scripts/gates/cases/schema-artifacts-current.cases.sh` seeds that name as its
+/// *orphan* fixture — a committed artifact nothing emits — and an emitter that claimed it
+/// would leave that arm failing for the stale reason instead, which is a different claim
+/// and a gate quietly checking less than it says (note N10).
+const OPENRPC: &str = "webcam-handler-openrpc.json";
+
+/// The OpenRPC specification version this document is written to.
+const OPENRPC_VERSION: &str = "1.3.2";
+
+/// Where the OpenRPC document keeps its schemas, as the JSON pointer `schemars` wants.
+///
+/// OpenRPC puts reusable schemas under `components/schemas` rather than JSON Schema's
+/// `$defs`, so the generator is pointed there and every `$ref` it writes resolves inside
+/// the document. A document whose references pointed at the bundle beside it would be two
+/// files a consumer has to fetch, and one of them could arrive stale on its own.
+const OPENRPC_SCHEMAS: &str = "/components/schemas";
+
+/// Where the OpenRPC document keeps the D13 error registry.
+const OPENRPC_ERRORS: &str = "/components/errors";
+
 fn repo_root() -> Result<Utf8PathBuf> {
     // The manifest directory is `<root>/xtask`; deriving the root from it means this
     // works from any cwd without shelling out to git.
@@ -76,6 +108,15 @@ fn repo_root() -> Result<Utf8PathBuf> {
 /// output, a session file, or a device profile will actually meet. It is deliberately
 /// a list rather than something derived, because "every type in the crate" is not the
 /// same claim and would document internal helpers as if they were contracts.
+///
+/// **`--json` is the whole of the audience here.** A type the wire carries and no `--json`
+/// verb prints — `DiscoveryReport`, `TerminationReport`, `ControlWrite`, `Selection`,
+/// `SessionRef` — is named in the OpenRPC document instead, under `components/schemas`,
+/// which is the document its consumer is reading. Registering it here as well would put a
+/// contract in front of a reader who cannot reach it, and the bundle's own emitted-vs-CLI
+/// check (`scripts/gates/json-validates.sh`, which maps every verb the CLI's help lists to
+/// a bundle type and fails a verb with no row) is what makes "every `--json` answer has a
+/// root" a checkable claim rather than this list's good intentions.
 fn register<T: JsonSchema>(generator: &mut SchemaGenerator, roots: &mut Vec<String>) {
     let _schema = generator.subschema_for::<T>();
     roots.push(T::schema_name().into_owned());
@@ -116,7 +157,8 @@ fn bundle() -> Result<Value> {
     register::<Sink>(&mut generator, &mut roots);
     // The P2 write and photo answers. `PhotoDelivery`, `PhotoRendering`,
     // `TransformApplication`, `SettleSpec`, `Adjustment` and `AutomationPair` arrive as
-    // `$defs` by reachability rather than as roots — a root is a document a verb emits.
+    // `$defs` by reachability rather than as roots — a root is a document a `--json` verb
+    // emits.
     register::<WriteReport>(&mut generator, &mut roots);
     register::<PhotoRequest>(&mut generator, &mut roots);
     register::<PhotoReport>(&mut generator, &mut roots);
@@ -126,7 +168,8 @@ fn bundle() -> Result<Value> {
     register::<Session>(&mut generator, &mut roots);
     register::<LogEntry>(&mut generator, &mut roots);
     // The P3d calibration verbs' answers and the one request they take. `SessionListing`
-    // arrives as a `$def` by reachability; a root is a document a verb emits or accepts.
+    // arrives as a `$def` by reachability; a root is a document a `--json` verb emits or
+    // accepts.
     register::<SweepRequest>(&mut generator, &mut roots);
     register::<SessionStatus>(&mut generator, &mut roots);
     register::<SessionList>(&mut generator, &mut roots);
@@ -158,43 +201,506 @@ fn bundle() -> Result<Value> {
     }))
 }
 
-/// Undo rustdoc's bracket escaping in every `description` the bundle carries.
+/// The OpenRPC document: the T5 trait, its DTOs and the D13 codes it refuses with.
+///
+/// Everything here is *derived*. The method list is `webcam-handler-api`'s `METHODS`,
+/// which that crate declares in the same tokens as the trait itself, so this emitter
+/// cannot describe a method the daemon does not serve or miss one it does — a hand list
+/// here is exactly the drift docs/9 names when it says "a Rust trait does not reify its
+/// methods". Parameter and result schemas come from the Rust types through the same
+/// `schemars` derives the bundle uses. The errors come from the registry: `ErrorKind::ALL`
+/// walked, each code from `api::rpc_code`, each sample from `Error::sample` — no code and
+/// no message is retyped here.
+///
+/// Every method carries the **whole** registry rather than a subset. Which D13 variants a
+/// given operation can actually produce is a fact about the daemon's routing (P4b, P4c),
+/// not about the trait, and a subset invented here would be a claim with nothing behind
+/// it. What the trait does know it says in prose: each method's `# Errors` section is in
+/// its `description`.
+fn openrpc() -> Result<Value> {
+    use schema::error::{Error, ErrorKind};
+
+    // A second generator, pointed at OpenRPC's schema section instead of `$defs`. Two
+    // generators are not two sources of truth: both read the same `schemars` derives on
+    // the same Rust types, and the only thing that differs is where a `$ref` has to point
+    // for each document to stand on its own.
+    let mut generator = SchemaGenerator::new(SchemaSettings::draft2020_12().with(|settings| {
+        settings.definitions_path = OPENRPC_SCHEMAS.into();
+    }));
+
+    let mut errors = serde_json::Map::new();
+    let mut error_refs: Vec<Value> = Vec::new();
+    for &kind in ErrorKind::ALL {
+        let sample = Error::sample(kind);
+        let name = error_component_name(kind)?;
+        error_refs.push(json!({ "$ref": format!("#{OPENRPC_ERRORS}/{name}") }));
+        errors.insert(
+            name,
+            json!({
+                "code": api::rpc_code(kind),
+                // A representative rendering and a representative payload, from the
+                // registry's own walkable population. The real message is per-occurrence —
+                // it is the variant's `Display`, filled in with the device's answer — so a
+                // fixed sentence here would be a second rendering of something D13 says
+                // has exactly one.
+                "message": sample.to_string(),
+                "data": serde_json::to_value(&sample)?,
+            }),
+        );
+    }
+
+    let error_names = d13_wire_names()?;
+    let mut methods: Vec<Value> = Vec::with_capacity(api::METHODS.len());
+    for method in api::METHODS {
+        let mut params: Vec<Value> = Vec::with_capacity(method.params.len());
+        for param in method.params {
+            params.push(json!({
+                "name": param.name,
+                // Asked of the parameter's type, never asserted here. `TypeRef` owns the
+                // question because `crates/api` is where it can be *checked* against the
+                // real `RpcModule` — which is what
+                // `an_optional_parameter_may_be_left_out_and_a_required_one_may_not` does.
+                // A constant `true` here would publish a document declaring invalid a
+                // request the daemon serves, and nothing could notice, because the value
+                // would be the emitter's opinion rather than the type's.
+                "required": !param.ty.admits_absence(),
+                "schema": serde_json::to_value(param.ty.schema(&mut generator))?,
+            }));
+        }
+        methods.push(json!({
+            "name": method.name,
+            "summary": name_d13_errors(&method.summary(), &error_names),
+            "description": name_d13_errors(&method.description(), &error_names),
+            // Named parameters are D10's posture for the whole surface, not a per-method
+            // choice. `by-name` rather than `either` because the server's positional path
+            // is not uniform: an exhausted sequence is not an absent optional, so
+            // `wch_calibrate_list` with `[]` is refused where `wch_info` with `["cam:x"]`
+            // is served. The document commits to the shape that always works.
+            "paramStructure": "by-name",
+            "params": params,
+            "result": {
+                "name": method.result.name(),
+                "required": true,
+                "schema": serde_json::to_value(method.result.schema(&mut generator))?,
+            },
+            "errors": error_refs,
+        }));
+    }
+
+    // The shape of every `data` above, named once instead of nineteen times.
+    let error_data = serde_json::to_value(generator.subschema_for::<Error>())?;
+
+    let definitions = generator.take_definitions(true);
+
+    Ok(json!({
+        "openrpc": OPENRPC_VERSION,
+        "info": {
+            "title": "webcam-handler",
+            // The tool version, not a protocol version: the wire's compatibility contract
+            // is the method names, the parameter names and the D13 codes, and each of
+            // those is a diff in this file when it changes.
+            "version": schema::TOOL_VERSION,
+            "license": { "name": env!("CARGO_PKG_LICENSE") },
+            "description": "The webcam-handler daemon's JSON-RPC surface (design D10, T5), \
+                            generated from the Rust trait and committed as documentation — \
+                            never read back, never a second source of truth. The daemon \
+                            listens on a Unix domain socket (D11), so this document \
+                            describes methods rather than a URL. Errors are the closed D13 \
+                            registry under `components/errors`: `code` from a closed \
+                            numeric range, `message` the error's own rendering, `data` the \
+                            typed error itself.",
+        },
+        "methods": methods,
+        "components": {
+            "errors": errors,
+            "schemas": definitions,
+        },
+        "x-d13-error-data": error_data,
+    }))
+}
+
+/// The key an error kind lands under in `components/errors`.
+///
+/// Its own serde spelling, so the document cannot name a variant the registry does not —
+/// the same string `data`'s `kind` tag carries, and the same one
+/// `crates/api/fixtures/d13-rpc-codes.tsv` pins the code against.
+fn error_component_name(kind: schema::error::ErrorKind) -> Result<String> {
+    match serde_json::to_value(kind)? {
+        Value::String(name) => Ok(name),
+        other => bail!("{kind:?} serializes as {other}, which is not a component name"),
+    }
+}
+
+/// Apply `rewrite` to every `description` and `summary` an artifact carries.
+///
+/// Two keys rather than one because the OpenRPC document puts a method's first sentence in
+/// `summary` and the rest in `description`, so a rule applied to only one of them would
+/// hold for half of every doc comment. A walker taking the rewrite rather than performing
+/// one, because "prose in these files is written for a consumer, not for rustdoc" is a rule
+/// with more than one clause and a second walk would be a second place to state it
+/// differently (design §2.10).
+fn rewrite_prose(value: &mut Value, rewrite: &dyn Fn(&str) -> String) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if matches!(key.as_str(), "description" | "summary")
+                    && let Value::String(text) = child
+                {
+                    *text = rewrite(text);
+                } else {
+                    rewrite_prose(child, rewrite);
+                }
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| rewrite_prose(item, rewrite)),
+        _ => {}
+    }
+}
+
+/// Undo rustdoc's bracket escaping.
 ///
 /// Doc comments write `\[PF:8\]` because rustdoc reads `[PF:8]` as a shortcut reference
 /// link and `-D warnings` turns the unresolved target into an error. The backslashes are
 /// an artifact of that escape, not content: rustdoc renders them away, and a consumer of
-/// this bundle should see the same citation the design documents use.
-fn unescape_doc_brackets(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map.iter_mut() {
-                if key == "description"
-                    && let Value::String(text) = child
-                {
-                    *text = text.replace("\\[", "[").replace("\\]", "]");
-                } else {
-                    unescape_doc_brackets(child);
-                }
-            }
+/// these files should see the same citation the design documents use.
+fn unescape_doc_brackets(text: &str) -> String {
+    text.replace("\\[", "[").replace("\\]", "]")
+}
+
+/// Rewrite D13 citations into the spelling the OpenRPC document keys them under.
+///
+/// A method's doc comment cites a variant the way a Rust reader resolves it —
+/// ``[`schema::Error::SettleTimeout`]``, an intra-doc link — while the document keys the
+/// same error `#/components/errors/settle_timeout`. Every method carries the *whole*
+/// registry by design, so its `# Errors` prose is the only per-method error information a
+/// consumer has, and a citation ending in an identifier that appears nowhere else in the
+/// file is a dead end. The citation is rewritten rather than duplicated: the Rust source
+/// keeps the link a Rust reader can follow, and the document gets the name it can look up.
+///
+/// **Applied to the method prose only**, which is where the mismatch is. The DTO
+/// descriptions in either artifact sit beside the vocabulary itself — `ErrorKind`'s
+/// alternatives *are* `"const": "device_gone"` — so rewriting there would turn a link into
+/// "See `device_gone`" one line under `device_gone`.
+///
+/// `names` maps a variant's Rust spelling to its wire one and is built by walking
+/// `ErrorKind::ALL` — the vocabulary, not a table here — so a variant this cannot rewrite
+/// is one the registry does not have, and is left exactly as written rather than guessed
+/// at.
+fn name_d13_errors(text: &str, names: &BTreeMap<String, String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("[`") {
+        let (before, from_open) = rest.split_at(open);
+        out.push_str(before);
+        let inner_start = &from_open["[`".len()..];
+        let Some(close) = inner_start.find("`]") else {
+            // An unterminated citation is prose, not a citation. Emit the rest verbatim.
+            out.push_str(from_open);
+            return out;
+        };
+        let (inner, after) = inner_start.split_at(close);
+        match d13_variant(inner).and_then(|variant| names.get(variant)) {
+            Some(wire) => out.push_str(&format!("`{wire}`")),
+            None => out.push_str(&format!("[`{inner}`]")),
         }
-        Value::Array(items) => items.iter_mut().for_each(unescape_doc_brackets),
-        _ => {}
+        rest = &after["`]".len()..];
     }
+    out.push_str(rest);
+    out
+}
+
+/// The paths a doc comment resolves the **D13 registry** through.
+///
+/// Three, because three crates write these comments and each reaches the one type
+/// differently: `schema::error::Error` is `Error` inside its own crate, `crate::Error` from
+/// a sibling module, and `schema::Error` from `webcam-handler-api`. Matching any path that
+/// merely *ends* in `::Error` would be wider than the claim — a future `pairing::Error`
+/// with a `Busy` variant would be rewritten into D13's spelling of somebody else's error —
+/// so the set is exact and the inverse arm of
+/// `a_d13_citation_becomes_the_name_the_document_keys_it_under_and_nothing_else_moves` is
+/// what keeps it that way.
+const D13_CITATION_PATHS: &[&str] = &["Error", "crate::Error", "schema::Error"];
+
+/// The variant a D13 citation names.
+///
+/// Anything else — ``[`ControlReport`]``, ``[`Sink::ReturnBytes`]``, another crate's
+/// `Error` — is not a D13 citation and gets `None`, which is what leaves it alone.
+fn d13_variant(citation: &str) -> Option<&str> {
+    let (path, variant) = citation.rsplit_once("::")?;
+    D13_CITATION_PATHS.contains(&path).then_some(variant)
+}
+
+/// Every D13 variant's Rust spelling, mapped to the one the artifacts key it under.
+///
+/// Walked from `ErrorKind::ALL`, which the vocabulary macro generates, so this cannot fall
+/// behind the registry — and neither side of a pair is retyped: the Rust name is the
+/// variant's own `Debug`, and the wire name is [`error_component_name`]'s.
+fn d13_wire_names() -> Result<BTreeMap<String, String>> {
+    schema::error::ErrorKind::ALL
+        .iter()
+        .map(|&kind| Ok((format!("{kind:?}"), error_component_name(kind)?)))
+        .collect()
+}
+
+/// The bytes one generated artifact is committed as.
+///
+/// Pretty-printed with a trailing newline, and with the prose rewritten for the consumer
+/// who reads these files without a Rust toolchain: these files are diffed by a gate and
+/// read by humans, and `serde_json`'s default map is a `BTreeMap`, so object key order is
+/// stable across runs. Arrays are the emitter's own business — `methods` is in the trait's
+/// declaration order and the error list is in `ErrorKind::ALL`'s, so neither can shuffle
+/// between runs and make the gate flap.
+fn artifact_text(mut value: Value) -> Result<String> {
+    rewrite_prose(&mut value, &unescape_doc_brackets);
+    let mut text = serde_json::to_string_pretty(&value)?;
+    text.push('\n');
+    Ok(text)
+}
+
+/// Write one generated artifact.
+///
+/// One helper rather than a write per artifact, because "generated artifacts are
+/// unescaped, pretty-printed and newline-terminated" is a rule about every file the gate
+/// diffs, and a second artifact that restated it could restate it differently.
+fn write_artifact(out_dir: &Utf8Path, name: &str, value: Value) -> Result<()> {
+    let path = out_dir.join(name);
+    std::fs::write(&path, artifact_text(value)?).with_context(|| format!("writing {path}"))?;
+    println!("wrote {path}");
+    Ok(())
 }
 
 fn generate(out_dir: &Utf8Path) -> Result<()> {
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {out_dir}"))?;
 
-    let mut bundle = bundle()?;
-    unescape_doc_brackets(&mut bundle);
-    let bundle = bundle;
-    // Pretty-printed with a trailing newline: these files are diffed by a gate and read
-    // by humans, and serde_json's default map is a BTreeMap, so key order is stable.
-    let mut text = serde_json::to_string_pretty(&bundle)?;
-    text.push('\n');
-
-    let path = out_dir.join(BUNDLE);
-    std::fs::write(&path, text).with_context(|| format!("writing {path}"))?;
-    println!("wrote {path}");
+    write_artifact(out_dir, BUNDLE, bundle()?)?;
+    write_artifact(out_dir, OPENRPC, openrpc()?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use schema::error::{Error, ErrorKind};
+
+    use super::*;
+
+    /// Every artifact this emitter writes, by the name it is committed under.
+    ///
+    /// Walked rather than named per test, so a third artifact joins the suite by being
+    /// emitted rather than by somebody remembering to add it here.
+    fn artifacts() -> Result<Vec<(&'static str, Value)>> {
+        Ok(vec![(BUNDLE, bundle()?), (OPENRPC, openrpc()?)])
+    }
+
+    /// Every `$ref` in `value`, in document order.
+    fn references(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    if key == "$ref"
+                        && let Value::String(target) = child
+                    {
+                        found.push(target.clone());
+                    } else {
+                        references(child, found);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| references(item, found)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn every_reference_a_generated_artifact_emits_resolves_inside_it() {
+        // A committed document is what a consumer without a Rust toolchain validates
+        // against, so a `$ref` that points at nothing — or at a second file they were
+        // never told to fetch — is the artifact failing at the one job it has. The gate
+        // diffs these files; it cannot read them.
+        for (name, document) in artifacts().expect("the artifacts are emitted") {
+            let mut found = Vec::new();
+            references(&document, &mut found);
+            // Not a vacuous pass: both artifacts are almost entirely cross-references, so
+            // a walk that found none would mean the walker, not the document, is broken.
+            assert!(
+                found.len() > 100,
+                "{name} emitted only {} references; the walk is not walking",
+                found.len()
+            );
+
+            for target in &found {
+                let pointer = target
+                    .strip_prefix('#')
+                    .unwrap_or_else(|| panic!("{name} points outside itself: {target}"));
+                assert!(
+                    document.pointer(pointer).is_some(),
+                    "{name} references {target}, which resolves to nothing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_openrpc_document_describes_exactly_the_methods_the_wire_trait_carries() {
+        let document = openrpc().expect("the document is emitted");
+        let methods = document["methods"]
+            .as_array()
+            .expect("methods is an array")
+            .clone();
+
+        // The population is `webcam-handler-api`'s own inventory, which that crate
+        // declares in the same tokens as the trait — so this compares the document with
+        // the wire surface rather than with a second opinion about it. A count on its own
+        // would pass a document that described nineteen of the wrong methods.
+        let names = d13_wire_names().expect("the registry names itself");
+        assert_eq!(methods.len(), api::METHODS.len(), "{methods:?}");
+        for (emitted, method) in methods.iter().zip(api::METHODS) {
+            assert_eq!(emitted["name"], json!(method.name));
+            // Through the citation rewrite, so a first sentence that ever names an error
+            // fails this for the right reason rather than for the spelling.
+            assert_eq!(
+                emitted["summary"],
+                json!(name_d13_errors(&method.summary(), &names))
+            );
+            assert_eq!(
+                emitted["params"]
+                    .as_array()
+                    .expect("params is an array")
+                    .len(),
+                method.params.len(),
+                "{} lost a parameter on the way into the document",
+                method.name
+            );
+            // The result is a named content descriptor, not a bare schema: an OpenRPC
+            // consumer generating a client needs something to call the return value.
+            assert_eq!(emitted["result"]["name"], json!(method.result.name()));
+        }
+    }
+
+    #[test]
+    fn every_d13_variant_reaches_the_document_with_the_code_the_registry_gives_it() {
+        let document = openrpc().expect("the document is emitted");
+        let errors = document["components"]["errors"]
+            .as_object()
+            .expect("the error registry is an object");
+
+        // `ErrorKind::ALL` is generated by the vocabulary macro, so this walk cannot shrink
+        // when a variant is added — and `api::rpc_code` is an exhaustive match, so the
+        // code it answers with is the one the daemon will actually send. Neither number
+        // nor name is retyped in this file.
+        assert_eq!(errors.len(), ErrorKind::ALL.len());
+        for &kind in ErrorKind::ALL {
+            let name = error_component_name(kind).expect("a kind names itself");
+            let emitted = errors
+                .get(&name)
+                .unwrap_or_else(|| panic!("{name} has no entry in the document"));
+            assert_eq!(emitted["code"], json!(api::rpc_code(kind)), "{name}");
+            // The message is the error's own rendering, which is what D13 says crosses the
+            // wire — a document that showed a different sentence would be teaching a
+            // consumer to match on a string nobody sends.
+            assert_eq!(
+                emitted["message"],
+                json!(Error::sample(kind).to_string()),
+                "{name}"
+            );
+            assert_eq!(emitted["data"]["kind"], json!(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_artifacts_are_byte_identical_across_two_runs() {
+        // The gate regenerates and diffs, so an emitter that shuffled a map or a vector
+        // between runs would fail CI at random and teach everybody to re-run it. Object
+        // keys sort themselves (`serde_json`'s map is a `BTreeMap`); the arrays are this
+        // emitter's own, and this is what says so.
+        for ((name, first), (_, second)) in artifacts()
+            .expect("the artifacts are emitted")
+            .into_iter()
+            .zip(artifacts().expect("the artifacts are emitted again"))
+        {
+            assert_eq!(
+                artifact_text(first).expect("the first run renders"),
+                artifact_text(second).expect("the second run renders"),
+                "{name} is not stable across runs"
+            );
+        }
+    }
+
+    #[test]
+    fn rustdoc_escaping_is_undone_in_a_summary_as_well_as_a_description() {
+        // The widening this document needed: an OpenRPC method's first sentence lands in
+        // `summary`, so a citation that fell there would keep the backslashes rustdoc made
+        // us write. The third key is the inverse arm — the rule is about the prose keys,
+        // not about every string in the file, and a `name` that read `[PF:8]` would be a
+        // method nobody could call.
+        let mut value = json!({
+            "summary": "A summary citing \\[PF:8\\].",
+            "description": "A description citing \\[N:10\\].",
+            "name": "left \\[alone\\]",
+        });
+        rewrite_prose(&mut value, &|text| unescape_doc_brackets(text));
+        assert_eq!(value["summary"], json!("A summary citing [PF:8]."));
+        assert_eq!(value["description"], json!("A description citing [N:10]."));
+        assert_eq!(value["name"], json!("left \\[alone\\]"));
+    }
+
+    #[test]
+    fn a_d13_citation_becomes_the_name_the_document_keys_it_under_and_nothing_else_moves() {
+        let names = d13_wire_names().expect("the registry names itself");
+
+        // The three spellings the workspace's doc comments actually use, all rewritten to
+        // the one string a consumer can look up in `components/errors` — measured, not
+        // assumed: those are the prefixes the emitted artifacts carried before this.
+        assert_eq!(
+            name_d13_errors(
+                "[`schema::Error::SettleTimeout`], [`crate::Error::Busy`] and \
+                 [`Error::HolderGone`] refuse it.",
+                &names
+            ),
+            "`settle_timeout`, `busy` and `holder_gone` refuse it."
+        );
+
+        // The inverse arm, and it matters more than the positive one: this rewrite must
+        // touch nothing but D13 citations. A type link, a variant of some *other* enum, and
+        // an unterminated bracket all survive intact — the last one because prose is not
+        // required to be well-formed markdown and an emitter that truncated it would lose
+        // whatever came after.
+        for untouched in [
+            "[`ControlReport`] is the answer.",
+            "[`Sink::ReturnBytes`] hands them back.",
+            "[`schema::Error::NoSuchVariant`] is not in the registry.",
+            "[`crate::pairing::Error::Busy`] is somebody else's Error.",
+            "an unterminated [`citation",
+            "no citation at all",
+        ] {
+            assert_eq!(name_d13_errors(untouched, &names), untouched);
+        }
+    }
+
+    #[test]
+    fn no_method_description_cites_a_d13_variant_the_way_rustdoc_spells_it() {
+        // The whole-document arm: the rewrite above is a string function, and this is what
+        // says it reaches the file. A `schema::Error::SettleTimeout` left in a method's
+        // `# Errors` prose is an identifier a toolchain-less consumer cannot resolve to
+        // anything else in the document — the registry beside it is keyed `settle_timeout`.
+        let document = openrpc().expect("the document is emitted");
+        let methods = document["methods"].as_array().expect("methods is an array");
+        let mut named = 0;
+        for method in methods {
+            for key in ["summary", "description"] {
+                let prose = method[key].as_str().expect("prose is a string");
+                assert!(
+                    !prose.contains("Error::"),
+                    "{} still cites a D13 variant as Rust: {prose}",
+                    method["name"]
+                );
+                named += usize::from(prose.contains("`camera_unknown`"));
+            }
+        }
+        // Not vacuous: the wire spellings are in there, in prose, where the citations used
+        // to be. `camera_unknown` is the one every method's `# Errors` section reaches,
+        // directly or through "As `wch_info`".
+        assert!(named > 0, "no method names an error the document keys");
+    }
 }

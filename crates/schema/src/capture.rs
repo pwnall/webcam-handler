@@ -555,6 +555,35 @@ pub enum Sink {
     },
 }
 
+impl Sink {
+    /// Whether this sink names somewhere the engine can actually address.
+    ///
+    /// D10 says a [`Sink::ServerPath`] is absolute and that clients resolve `-o out.jpg`
+    /// against their **own** cwd before sending. `cli_core::Command::photo_request` is the
+    /// one place that resolution happens, so a sink `wch` built always satisfies this —
+    /// which is exactly why the rule needs a predicate rather than a paragraph. The moment
+    /// a `Sink` can arrive off a socket (P4c routes `wch_photo`) it can arrive relative,
+    /// and the daemon's cwd under systemd is `/`: `{"kind":"server_path","path":"out.jpg"}`
+    /// would silently write `/out.jpg` as the daemon's uid, or refuse naming a path the
+    /// caller never asked for.
+    ///
+    /// A predicate beside the variants, and not a validating constructor, for the reason
+    /// `api::PhotoResponse::bytes_match_the_delivery` is one: the document is built by
+    /// somebody else's code, and a type that could not *represent* the malformed request
+    /// could not refuse it either. `ReturnBytes` is always addressable — there is nowhere
+    /// for it to be wrong.
+    ///
+    /// **Its consumer lands at P4c, with the routing that can meet a request this
+    /// refuses** (note N34). `wch` cannot produce a sink that fails it.
+    #[must_use]
+    pub fn is_addressable(&self) -> bool {
+        match self {
+            Sink::ReturnBytes { .. } => true,
+            Sink::ServerPath { path } => path.is_absolute(),
+        }
+    }
+}
+
 /// Everything one photo needs (design D5, D6, D10).
 ///
 /// Assembled by the caller so `wch photo`, the daemon's `photo` method and a calibration
@@ -580,9 +609,10 @@ pub struct PhotoRequest {
 /// The two variants pair with the two sinks, and each says the thing its caller cannot
 /// otherwise learn: a path answer reports how much was written, and a bytes answer reports
 /// how much is on its way. **The bytes themselves are not in this document**: `wch` streams
-/// them to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire
-/// surface that needs it (docs/7 puts the sink DTO in `webcam-handler-api`). Carrying an
-/// unused encoding here would be a dependency nobody reads.
+/// them to standard output, and D10's base64-in-JSON encoding lives with the wire surface
+/// that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report rather
+/// than inside this enum. Carrying an unused encoding here would be a dependency nobody
+/// reads, and it would put base64 in every session file and `--json` document too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PhotoDelivery {
@@ -1105,6 +1135,38 @@ mod tests {
             Sink::ReturnBytes {
                 format: PhotoFormat::Jpeg
             }
+        );
+    }
+
+    #[test]
+    fn a_server_path_sink_has_to_be_absolute_and_a_bytes_sink_cannot_be_wrong() {
+        // D10's rule, as a predicate rather than a paragraph. Both directions, because a
+        // check that only ever sees absolute paths is a check that cannot discriminate —
+        // and `wch` only ever produces absolute ones, so this arm is the only place the
+        // relative case exists before P4c routes a socket into it.
+        assert!(
+            Sink::ServerPath {
+                path: "/tmp/out.jpg".into()
+            }
+            .is_addressable()
+        );
+        for relative in ["out.jpg", "./out.jpg", "../out.jpg", "sub/dir/out.jpg", ""] {
+            assert!(
+                !Sink::ServerPath {
+                    path: relative.into()
+                }
+                .is_addressable(),
+                "{relative:?} would be resolved against the daemon's cwd, which is /"
+            );
+        }
+        // `ReturnBytes` carries no destination, so there is nothing for it to get wrong.
+        // Asserted rather than assumed: a predicate that answered `false` here would
+        // refuse every `wchc photo` that asked for its bytes back.
+        assert!(
+            Sink::ReturnBytes {
+                format: PhotoFormat::Jpeg
+            }
+            .is_addressable()
         );
     }
 

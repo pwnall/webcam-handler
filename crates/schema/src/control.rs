@@ -657,6 +657,39 @@ impl WriteWarning {
     }
 }
 
+/// One requested write: which control, and the value to put in it.
+///
+/// A named pair rather than a `(ControlSlug, ControlValue)` tuple because this is what
+/// `set` takes on the T5 wire (D10), and a tuple crosses JSON as
+/// `["brightness", {"kind":"int","value":50}]` — positional, unnameable in the emitted
+/// bundle, and a shape a hand-written client has to be told about out of band.
+///
+/// The answer to one of these is an [`Applied`], which is where E4's `{requested,
+/// applied}` pair lives; nothing here records what the device took, because at this point
+/// nothing has asked it.
+///
+/// **How far this spelling reaches, and why it stops there.** It is the shape of a
+/// requested write from the command line inward: `cli_core::Assignment` is a clap newtype
+/// over one of these, and `cli_core::Executor::set` takes a slice of them — so `wch` and
+/// `wchc` hand their shared command surface the *same* value, and P4f's parity gate
+/// compares two paths whose input has one shape. `engine::pairing` and `engine::write`
+/// still take `(ControlSlug, ControlValue)` pairs, and that is a deliberate stop rather
+/// than an oversight: the planner is a pure core on the mutation floor, its callers build
+/// targets inline in dozens of places, and nothing downstream of the executor serializes
+/// anything — a named pair buys a wire document nothing there emits. `crates/cli`'s
+/// `InProcess::set` is the one conversion, in `wch`'s own binary, named in note N35 with
+/// what would retire it. Contrast [`crate::pairing::ProbeSkip`], which *was* pushed all
+/// the way into `engine::discover`: there the tuple had one producer and one consumer, so
+/// one spelling cost four lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ControlWrite {
+    /// Which control.
+    pub control: ControlSlug,
+    /// The value to write. Requested, not applied (E4) — what the device took comes back
+    /// in [`Applied::applied`].
+    pub value: ControlValue,
+}
+
 /// The result of a write: what was asked, what the device actually holds, and why they
 /// differ if they do (design D3/E4).
 ///
@@ -1138,5 +1171,38 @@ mod tests {
             step: 2,
         };
         assert_eq!(r.effective_step(), 2);
+    }
+
+    #[test]
+    fn a_requested_write_names_its_control_and_its_value_rather_than_positioning_them() {
+        // The whole reason this is a struct and not a tuple: the two fields have names on
+        // the wire, so a hand-written client (P5c) reads the document rather than an
+        // agreed ordering. A tuple would serialize as an array and this assertion is what
+        // would go red if somebody "simplified" it back into one.
+        let write = ControlWrite {
+            control: ControlSlug::parse("brightness").expect("literal slug"),
+            value: ControlValue::Int(50),
+        };
+        let json = serde_json::to_string(&write).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"control":"brightness","value":{"kind":"int","value":50}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ControlWrite>(&json).expect("deserialize"),
+            write
+        );
+
+        // A payload value survives the same trip: the descriptor decides whether a
+        // control takes one (design §2.3), so the wire must be able to carry it.
+        let payload = ControlWrite {
+            control: ControlSlug::parse("region_of_interest").expect("literal slug"),
+            value: ControlValue::Bytes(vec![0x00, 0xff]),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<ControlWrite>(&json).expect("deserialize"),
+            payload
+        );
     }
 }

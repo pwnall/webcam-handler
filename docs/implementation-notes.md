@@ -2672,3 +2672,435 @@ where E6 found P3's largest defect, and it is where P3b's count was claimed.
   redundant by it.
 - **Nothing about unviable mutants.** A mutant that does not compile is not evidence about
   the tests; it is evidence that the type system already refused it.
+
+---
+
+## N28 — The T5 trait and its method inventory are one macro declaration, because a Rust trait does not reify its methods
+
+**Doc:** docs/9's method-count-walk row states the constraint and its consequence — "a Rust
+trait does not reify its methods, so 'exhaustive match' is the wrong mechanism and this row
+says the real one", the real one being the registered `RpcModule`'s `method_names()`. docs/8
+Part C repeats it. Neither says what an *emitter* should do, and the plain reading leaves
+xtask holding a table of method names beside the trait it describes.
+
+**Repo:** `crates/api/src/wire.rs` declares `wire_surface!`, a `macro_rules!` that takes the
+T5 methods once and emits both halves — the `#[rpc(server, client, namespace = "wch")]`
+trait the daemon implements and `wchc` consumes, and `pub const METHODS: &[wire::Method]`,
+the population xtask walks to write `schemas/webcam-handler-openrpc.json`. `lib.rs`'s trait
+*is* that macro's argument. A method cannot reach one half and miss the other, because there
+is nowhere to write it twice.
+
+**Why:** `method_names()` is authoritative about names and about nothing else. An OpenRPC
+document needs each method's summary, its whole doc comment including the `# Errors` section,
+its parameter names in signature order, and the Rust types of its parameters and its result —
+so an emitter resting on `method_names()` alone would still carry a second table for all of
+that, which is rubric rule 6's banned hand list in a smaller costume. Generating the trait
+*removes* the second table rather than checking it. The shape is not new here:
+`closed_vocabulary!` already emits an enum and its `ALL` from one source for the same reason,
+and says so in as many words ("A `const ALL: &[Self]` written next to an enum *is* a hand
+list").
+
+**What the macro does not own is checked as two.** The namespace separator belongs to
+jsonrpsee's proc macro, not to us (`jsonrpsee-proc-macros-0.26.0/src/rpc_macro.rs` defaults
+it to `_`), so `METHODS` spells a wire name `concat!("wch", "_", <name>)` — our belief —
+while the registration spells it jsonrpsee's way. That is the one fact about this surface
+genuinely derived twice, and `the_inventory_and_the_registration_describe_the_same_surface`
+compares the two off a real `RpcModule` built by `into_rpc()`. Watched red by changing the
+separator to `"."`: it fails naming all nineteen, and it is the **only** thing that notices —
+the pinned-spelling test reads `method_names()`, so it stays green.
+
+**What this does not pre-empt.** docs/9's row remains P4c's. Its subject is a registered
+*daemon* module compared against the integration-test inventory — "a wire method with no
+test" — a different claim over a different population from "the emitted document describes
+the trait".
+
+**Retires when:** jsonrpsee grows an inventory of its own — a generated method table, or a
+macro that emits its registration as data — at which point this layer wraps something
+upstream already provides.
+
+---
+
+## N29 — The T5 trait lands at nineteen methods, not twenty-one: the two subscriptions wait for P4e
+
+**Doc:** docs/7 P4a says the trait lands "minus the `record_*` methods, which join at P6 with
+their tests" — one subtraction, stated once. D10 counts `subscribe_events` (hotplug) and
+`subscribe_calibration` (per-session progress) among the trait's methods, so a literal
+reading lands twenty-one at P4a.
+
+**Repo:** nineteen. Both subscriptions are absent along with the three `record_*` methods,
+and `crates/api/src/lib.rs`'s "What is not here yet" section names all five and says which
+sub-milestone brings each.
+
+**Why:** a subscription declared at P4a breaks the next two sub-milestones in turn. P4b
+implements the server half of every method the trait carries the day the trait exists, and
+the only stand-in for a subscription whose event source does not exist yet is
+`Error::Unimplemented` — the variant P4d deletes (N6), so P4a would be adding the producer
+P4d is removing. And P4c's method-count walk fails a registered method with no test, which is
+exactly what a subscription nothing can drive would be. Neither cost buys anything: nothing
+produces a hotplug event until P4d lands the uevent source, and nothing bridges a
+`ProgressEvent` onto a socket until P4e lands the delivery semantics docs/7 gives it
+("disconnect-mid-sweep semantics — the sweep continues, the subscription is reaped, both
+asserted"). The plan is what is ambiguous here, not the repo: P4a's sentence subtracts one
+thing and P4e's sentence lands two more, and only one of those readings survives P4b.
+
+**The accounting this changes, recorded so P4c does not rediscover it.** A `#[subscription]`
+registers *two* names, subscribe and unsubscribe. So P4e grows the registered population by
+four rather than two while the trait's own count goes from nineteen to twenty-one, and P6c
+then adds the three `record_*` for D10's complete twenty-four. The pinned-spelling test in
+`crates/api/src/lib.rs` asserts all five absent names by name today, so landing one early is
+a red test rather than a silent widening.
+
+**Retires when:** P4e lands the subscriptions with their delivery semantics. Nothing else
+should.
+
+---
+
+## N30 — `discover_pairs` is a method on the wire and a flag on the command line, and that is one law with two surfaces
+
+**Doc:** D10 lists `discover_pairs` as its own method beside `controls`. The shipped T4
+executor disagrees in writing: `Executor::controls(&mut self, camera, discover_pairs: bool)`,
+whose doc comment says "It is a parameter rather than a second method because the answer has
+the same shape either way", and the command is `wch controls --discover-pairs`.
+
+**Repo:** both, unchanged. T5 carries `wch_controls` and `wch_discover_pairs` as two methods;
+T4 keeps its boolean and its flag.
+
+**Why:** the plan routes them into different sub-milestones — P4b's read verbs are "`list`,
+`info`, `controls`, `get`, `calibrate status/list`" and P4c's mutating list names
+`discover_pairs` — which is only expressible if they are two methods. That split is not
+bookkeeping: the probe **writes to the camera**, toggling automation-shaped controls and
+restoring them afterwards, so a single `controls` method would mean "may or may not move your
+camera depending on a boolean" to a daemon that has to route, permission and count it. The
+CLI flag exists to make exactly that visible at the point a human types it; a method name
+does the same job for a caller who sees only names.
+
+The two surfaces answer to different laws, and neither is a copy of the other: T4's is "a verb
+exists exactly once", T5's is "one method per operation the daemon routes". The engine still
+holds one probe, `engine::discover::pairs`, called from one place in each binary, so design
+§2.10 is satisfied where it actually applies.
+
+**Why the answer is not a `ControlReport` either.** `wch_discover_pairs` returns
+`schema::report::DiscoveryReport` — the control set after the probe, the candidates it
+declined and why, and what putting the camera back achieved. `wch` prints the last two on
+standard error after a probe; a client that could not see them would be running a write with
+its restoration report withheld, which is what AGENTS rule 8 exists to prevent.
+`engine::discover::Discovery::skipped` became `Vec<ProbeSkip>` in the same change, so there is
+one spelling of "what the probe passed over" rather than a tuple on one side and a document on
+the other.
+
+**Retires when:** the daemon stops routing, permissioning or counting per method — at which
+point the split buys nothing and D10's list is worth re-reading.
+
+---
+
+## N31 — A gate selftest arm can go red for the wrong reason, and the harness reports that as green
+
+**Doc:** docs/9's structural rule is "both directions per gate — a predicate with no failing
+case fails the selftest, and one with only failing cases fails it too". Nothing says an arm
+must pin *which* branch it turned red.
+
+**Repo, and the near-miss that forced it:** `selftest.sh`'s verdict for a `fail_case_*` is the
+arm's exit status and nothing else (`if ((status != 0))` → `ok`). Several seeds in
+`schema-artifacts-current.cases.sh` are red under more than one branch — a hand-edited
+artifact is stale whichever artifact it is, and a file the emitter stopped writing is an
+orphan while any hand-edited copy of it is also stale. `fail_case_committed_artifact_nothing_emits`
+seeded `schemas/openrpc.json` specifically, which is the filename the OpenRPC document was
+about to claim: from the moment xtask emitted it, that arm would have gone on exiting non-zero
+while its subject silently became the *stale* branch, and the orphan branch would have had no
+arm proving it can fire. That is note N10's family — a gate green while checking less than it
+claims — reached without anybody editing the gate.
+
+**Repo now:** the arms assert the message. `_red_because <pattern> <command>` returns the
+predicate's status only when it failed *and* said `<pattern>` while failing; a predicate that
+stayed green, or that went red about something else, returns **0** and prints what happened —
+because 0 is how a `fail_case_*` tells this harness to look at it. Measured in all three
+directions: a matching pattern over a red predicate returns its status (3), a wrong pattern
+returns 0 with "the predicate went red, but not because of…", and a green predicate returns 0
+with "the predicate stayed green…". The emitted document was also named
+`webcam-handler-openrpc.json` rather than `openrpc.json`, so the orphan seed keeps a filename
+nothing will ever emit — but it is the message assertion, not the name, that makes that a
+check rather than a hope.
+
+Nothing was weakened to fit: the two pre-existing tree-seeding arms were strengthened the same
+way, and no arm was removed.
+
+**Retires when:** `selftest.sh` learns to take an expected message per arm, at which point the
+helper moves into the harness and stops being a per-case-file convention.
+
+---
+
+## N32 — A selftest arm that builds mutated Rust into the repository's `target/` poisons the repository's build
+
+**Doc:** the selftest's own contract is that cases "never mutate the checkout" —
+`gate_scratch_tree` copies the tree first, and every scratch copy lands under one directory
+the harness removes. E7 records a neighbouring hazard for the mutation floor
+(`copy_target = false`, because a test binary bakes in `CARGO_MANIFEST_DIR` and the corpus
+loader walks its ancestors); this is a different mechanism with the same shape.
+
+**Repo:** the arm docs/9's P4 row commissions — a method's wire name edited in
+`crates/api/src/lib.rs`, the real emitter run over the copy — is the first selftest arm that
+compiles *changed Rust*. The convention it inherited was
+`CARGO_TARGET_DIR="$(gate_root)/target"`, which is what keeps a JSON-seeding arm at seconds
+instead of minutes.
+
+**Why that combination is unsafe, measured.** Cargo decides freshness by mtime, and
+`gate_scratch_tree` copies with `tar -cf - | tar -xf -`, which preserves them: a scratch tree's
+`crates/api/src/lib.rs` carries the *same* mtime as the checkout's, to the second (verified on
+this tree). So a build of the mutated sources landing in the repository's own `target/` is
+reused by the next `cargo run` over the pristine checkout, whose files are no newer than the
+fingerprint that build just wrote. The seeded defect escapes its arm and becomes the
+repository's binary until somebody touches a file — reproduced, and repaired with `touch`,
+before it was designed out. A copy that "never mutates the checkout" mutated its build.
+
+**Repo now:** `_isolated_target_dir <arm>` gives every Rust-editing arm
+`target/gate-selftest/<arm>` — under `target/` so `gate_find`'s pruning keeps the tree-walking
+gates and the scratch copies from paying for it, the same reasoning `.cargo/mutants.toml`
+gives `target/mutants.out`. Measured: 27 s cold, about a second warm, roughly 550 MB. Arms
+that edit only JSON keep the shared directory, because they change no input cargo looks at.
+The selftest carries 101 failing arms after this sub-milestone, up from 97.
+
+**Retires when:** cargo's freshness stops resting on mtimes, or `gate_scratch_tree` starts
+stamping its copies with a fresh time — either would make the shared directory safe again, and
+the second is the cheaper fix if a third Rust-editing arm ever makes the isolation expensive.
+
+---
+
+## N33 — What jsonrpsee's generated server accepts, measured, and what the OpenRPC document therefore says
+
+**Doc:** D10 fixes the surface (`namespace = "wch"`, one trait) and says nothing about
+request shape. docs/7 P4a says nothing either. The choice — named parameters everywhere,
+and what the emitted document declares `required` — was made on a belief about jsonrpsee
+that turned out to be false, and the correction is worth keeping because the belief is the
+kind anybody would form from reading the macro.
+
+**The belief:** that the generated request object carries no serde default, so an
+`Option<T>` parameter needs an explicit `"camera": null` rather than an absent key. It was
+written into two doc comments and into the emitted document's `required: true`.
+
+**The measurement,** against the real `RpcModule` this crate's own tests build with
+`into_rpc()` (jsonrpsee 0.26.0, `wch_calibrate_list`'s `camera: Option<CameraId>`):
+
+| request | answer |
+|---|---|
+| `"params": {}` | served — `camera` arrives as `None` |
+| `"params": {"camera": null}` | served — identical |
+| `"params": []` | **refused**, `-32602 "Invalid params" / "No more params"` |
+| no `params` key at all | **refused**, the same |
+| `wch_info` with `"params": ["cam:x"]` | served |
+| `wch_info` with `"params": {}` | refused, ``missing field `camera` `` |
+
+The by-name path decodes into a `#[derive(Deserialize)]` struct
+(`jsonrpsee-proc-macros-0.26.0/src/render_server.rs`, `decode_map`), and serde resolves a
+missing `Option` field through `serde::__private::de::missing_field`, which visits `None`.
+The absent `#[serde(default)]` never mattered. The positional path uses `optional_next`,
+which answers `Ok(None)` for a *missing* element but not for an *empty array*: `[]` leaves
+the sequence parser looking at `]` with nothing to read.
+
+**Repo:** `"required"` is now `!param.ty.admits_absence()`, and `admits_absence` lives on
+`api::wire::TypeRef` — one home, read off the type's own `schemars` output, because the
+document and the daemon must not answer this differently.
+`an_optional_parameter_may_be_left_out_and_a_required_one_may_not` walks `METHODS` and puts
+the document's claim to the generated server directly: a request with no parameters is
+served exactly when every parameter of that method admits absence. Both directions are in
+one run (`wch_list` and `wch_calibrate_list` are served; the other seventeen are refused),
+and the walk asserts it saw some of each so a uniformly-required surface could not pass it.
+
+**And why the document still says `by-name`.** The server accepts positional requests too,
+but *not uniformly* — the table above shows `wch_info` served positionally while
+`wch_calibrate_list` needs `[null]` rather than `[]`. `"paramStructure": "either"` would
+promise a shape one of the document's own methods rejects. So the document commits to the
+one that always works, and `wire::Param`'s doc no longer claims a positional client is
+"entitled" to anything.
+
+**Retires when:** jsonrpsee's positional path treats an exhausted sequence as an absent
+optional, at which point `"either"` becomes true and the ordering rationale comes back.
+
+---
+
+## N34 — Three P4a predicates and one assembly have no consumer until P4c/P4f, and each says so where it lives
+
+**Doc:** rubric A8 — "a typed declaration nothing reads is a defect" — is the row that
+convicted `Session::pre_snapshot` at G3 (note N23). P4a lands a wire surface with no server
+and no client behind it, so it lands declarations whose readers are two sub-milestones
+away, which is the same shape from a distance.
+
+**Repo:** four of them, each with the gap written on the declaration itself rather than
+implied by its absence:
+
+- `api::photo::PhotoResponse::bytes_match_the_delivery` — a `PhotoResponse` off a socket
+  whose `byte_count` disagrees with its payload. Consumers: the daemon before it sends one
+  (P4c), `wchc` before it turns one into a `cli_core::Photograph` (P4f). `crates/client` is
+  still an empty `main`, so there is nowhere for the call to go today, and a truncated
+  photo is refused by nobody.
+- `schema::capture::Sink::is_addressable` — a relative `Sink::ServerPath` arriving over the
+  wire. `cli_core::Command::photo_request` resolves against the caller's cwd before sending
+  (D10), so `wch` cannot produce one; the daemon's cwd under systemd is `/`, so a
+  hand-written client sending `{"kind":"server_path","path":"out.jpg"}` would have
+  `/out.jpg` written as the daemon's uid. Consumer: P4c's `photo` routing. It landed as a
+  predicate beside the variants rather than as a paragraph in the T5 method's doc, because
+  a paragraph is a thing an implementer has to have read.
+- `api::codes::typed` — the inverse of the error mapping, whose consumer is `wchc`'s
+  decode (P4f). Landed with the mapping deliberately: one home, both directions, in the
+  commit that owns the law.
+- `schema::report::DiscoveryReport`'s `controls` field — not a predicate but the same
+  shape. Two of the three fields come straight from `engine::discover::Discovery`; this one
+  is assembled (`camera.controls()` *after* the probe, then
+  `pairing::applicable(&controls, &merge(declared_pairs(), measured))`), and today that
+  assembly exists once, in `crates/cli`'s `InProcess::controls`. When P4c routes
+  `wch_discover_pairs` it becomes a second copy unless the assembly moves into
+  `engine::discover` first. **That move is P4c's, and this entry is the obligation.** The
+  doc comment used to say the daemon "assembles this field-for-field with nothing
+  translated", which was false for exactly the field that carries the work.
+
+**Why not land the consumers now:** P4a's whole scope discipline (docs/7's risk register)
+is that a sub-milestone that turns out to be two splits rather than stretching. A daemon
+call site requires the daemon (P4b), a client one requires the client (P4f), and inventing
+either here to satisfy A8 would be landing two sub-milestones' work to make a doc comment
+true.
+
+**Retires when:** P4c and P4f land their call sites. Each declaration names which, so the
+review that closes G4 can check them off rather than rediscover them.
+
+---
+
+## N35 — `ControlWrite` reaches the shared command surface and stops; the engine keeps its tuple
+
+**Doc:** design §2.10 — one home per law — and the precedent set three times in this same
+change: `SessionRef`, `Selection` and `ChosenBy` moved out of `webcam-handler-cli-core`
+into `webcam-handler-schema` so the wire and the command line name one type, and
+`ProbeSkip` was pushed all the way into `engine::discover` for the same reason.
+`ControlWrite` did not get the same treatment, and an asymmetry with no note is
+indistinguishable from an oversight.
+
+**Repo:** `ControlWrite` is the shape of a requested write from the command line inward.
+`cli_core::Assignment` is a clap newtype over one (the `BackendKindArg(BackendKind)`
+pattern), and `cli_core::Executor::set` takes `&[ControlWrite]` — so `wch` and `wchc` hand
+their shared surface the same value and P4f's parity gate compares two paths whose input
+has one shape. `engine::write::set`, `engine::pairing::plan` and `plan_unguarded` still
+take `&[(ControlSlug, ControlValue)]`, and `crates/cli`'s `InProcess::set` is the one
+conversion in the tree.
+
+**Why the stop is there.** The rule §2.10 protects is "one spelling of a fact that crosses
+a boundary". The wire is a boundary and the T4 executor is the seam two binaries are
+compared across; `engine::pairing` is neither — it serializes nothing, and a named pair
+buys it no document. Against that, the migration is not free: `pairing.rs` is one of the
+mutation floor's pure cores, its callers build targets inline in about forty places
+including two integration suites, and a large mechanical edit through a mutation-floor file
+is exactly the kind of thing docs/7's risk register says splits a sub-milestone. The
+contrast with `ProbeSkip` is the deciding one: there the tuple had a single producer and a
+single consumer, so one spelling cost four lines.
+
+**Retires when:** `engine::write::set` and `engine::pairing::plan` take `&[ControlWrite]`,
+at which point `InProcess::set`'s conversion goes and this entry with it. A good moment is
+whenever `pairing.rs` is being edited for its own reasons.
+
+---
+
+## N36 — "A frame may contain a person" has four subjects and four tests, and no walkable population
+
+**Doc:** AGENTS.md's privacy section and rubric A12: "Camera frames never enter the
+repository, logs, or error messages." `scripts/gates/no-frame-bytes-in-repo.sh` enforces
+the *repository* clause by content-sniffing committed files. Nothing enforces the *logs and
+error messages* clause, because it is about a `Debug` impl that does not exist yet on a type
+somebody has not written yet.
+
+**Repo:** four types hold raw camera bytes and all four hand-write `Debug` to print a count:
+`schema::capture::Frame` (P1), `api::photo::Base64Bytes` (P4a), `engine::photo::Photograph`
+and `cli_core::Photograph` (both P2, both found deriving `Debug` over
+`returned: Option<Vec<u8>>` by the P4a review). Each has its own
+`…_never_reach_a_debug_line` test, driven by real bytes and asserting the first bytes'
+decimal rendering is absent, so each can go red on its own.
+
+**Why four tests and not one mechanism.** The population is not walkable: "a type that
+holds camera bytes" is not something the compiler, a lint or a `cargo metadata` walk can
+enumerate, and a grep gate over `#[derive(…Debug…)]` near a `Vec<u8>` would be a heuristic
+with false positives across the whole tree — the exact "check that names locations it can
+drift from" docs/9 bans. So the honest statement is that this is four independent tests and
+the fifth type will need a fifth, which is a real gap and is why it is written down.
+
+**What would close it, and why it did not happen here.** A `FrameBytes` newtype in
+`webcam-handler-schema` with the hidden `Debug`, wrapped by `Frame.bytes`, both
+`Photograph.returned` fields and `Base64Bytes`, would make the rule structural: a type
+holding frame bytes could not derive `Debug` over them at all, and the population would be
+"whoever names `FrameBytes`". It touches `Frame.bytes`, which is `pub Vec<u8>` and is read
+directly by `imaging`, `v4l2`, `fake` and their suites — a refactor with its own risk, in a
+commit whose subject is the wire surface.
+
+**Retires when:** the newtype lands and the four tests become one property of one type.
+
+---
+
+## N37 — `WireError::source` is an equivalent mutant today, and the register is what will notice when it stops being one
+
+**Doc:** `.cargo/mutants.toml`'s own rule for the floor's scope, and
+`scripts/mutants-accepted.txt`'s rule for its exceptions: an entry earns its place either
+because no hermetic test can turn the line red, or because the mutant is *equivalent* — no
+input distinguishes the two programs.
+
+**Repo:** `crates/api/src/codes.rs` implements `std::error::Error for WireError` with
+`fn source(&self) -> Option<&(dyn Error + 'static)> { self.0.source() }`. cargo-mutants
+replaces the body with `None` and the whole workspace stays green.
+
+**Why it is equivalent, and why the line stays anyway.** `schema::Error` is a `thiserror`
+enum in which no variant carries a `#[source]` or `#[from]` field, so `self.0.source()` *is*
+`None` for every value there is; the mutant and the original are the same program. The
+delegation is still what the type means: `WireError` is a transparent newtype (`Display`
+delegates too, deliberately — a `source()` answering `Some(&self.0)` would make every chain
+printer render D13's one sentence twice, which is what
+`the_wire_error_adds_no_second_rendering_of_anything` now asserts). Writing `None` instead
+would be writing a coincidence where a relationship belongs.
+
+**And the acceptance is a tripwire, not a shrug.** `scripts/mutants.sh` compares survivors
+against the register **in both directions**: the day a `schema::Error` variant gains a
+source, this mutant becomes killable, the entry stops surviving, and the job fails asking
+for the test. That is the second direction doing exactly the job N15 paid for.
+
+**Retires when:** a D13 variant carries a source of its own.
+
+---
+
+## E8 — The mutation floor's second run, over the scope P4a widened, 2026-08-09
+
+E7 records the floor's commissioning over six files. The P4a adversarial review found two
+survivors in `webcam-handler-api` **by hand** — `photo.rs`'s `(Path, None) => true` arm
+flipped to `false`, and `codes.rs`'s `D13_CODES` range guard deleted, each leaving the
+whole workspace green — which is the argument for a widening in one sentence: the floor
+exists to find exactly those, and it could not see them because the crate was not in
+`examine_globs`.
+
+### The widening
+
+Three lines: `crates/api/src/{codes,photo,wire}.rs`. They belong for the reason the six do —
+each takes values and returns values, and `webcam-handler-api` starts no runtime and opens
+nothing (note N5's review-held half), so a survivor there is a unit test somebody can write
+today. `crates/api/src/lib.rs` is deliberately **not** among them and the scope file says
+why: it is a `wire_surface!` invocation and nineteen doc comments, with no expression to
+mutate.
+
+### The run
+
+**478 mutants in 21 minutes: 409 caught, 11 survived, 58 unviable, 0 timed out**, judged
+by the whole 678-test workspace suite, four parallel jobs on an eight-core machine (about
+2-3 s of incremental build and 8-10 s of test per mutant, both paid 478 times). E7's run
+was 410 mutants over six files in 21 minutes with five jobs; the sixty-eight new ones are
+the wire crate's, and the cost did not move.
+
+The eleven survivors are the ten E7 already triaged (N25's six, N26's three, N27's one) plus
+exactly one new: `WireError::source` delegating to an inner error that never has a source,
+which is equivalent and is recorded as N37. The register comparison runs clean in both
+directions — eleven survivors, eleven acceptances, nothing unexpected and nothing stale.
+
+### What the widening actually bought, measured
+
+Both hand-found survivors are dead, and each was watched red before the fix:
+`an_empty_photo_is_an_answer_rather_than_an_absent_one` now calls the predicate on the
+`ServerPath` answer, and the range guard was **deleted** rather than tested — it could not
+discriminate, because `rpc_code` is total onto `D13_CODES`, so the check it was claimed to
+be was already the one below it. The run also found four more the review had not: three on
+`Base64Bytes::into_inner` and one on `is_empty` (no test read the payload back), and one on
+`SERVER_ERROR_BAND`'s lower bound (`-32099..=-32000` with the minus deleted still contained
+every code anybody asserted). All five are now covered by
+`the_payload_reports_its_own_size_and_hands_the_same_bytes_back` and by the band's own
+both-ends assertion.
+
+**Retires when:** never — this is dated evidence. The next widening writes its own entry.
