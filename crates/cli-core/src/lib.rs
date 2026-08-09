@@ -654,7 +654,19 @@ pub struct PlanArgs {
     pub points: Option<u32>,
 
     /// Exactly these values, comma-separated.
-    #[arg(long, value_name = "V,V,…", value_delimiter = ',')]
+    ///
+    /// `allow_hyphen_values` because **a control value is signed and PTZ ranges are centred
+    /// on zero**: `pan_absolute` is `-468000..=468000` and `hue` is `-180..=180`, so the
+    /// first value of an explicit PTZ sweep normally begins with a minus. Without it clap
+    /// reads `--values -108000,0` as the flag `-1` and refuses with "unexpected argument
+    /// '-1'", which is a parser talking about itself. Found on real hardware during the P3e
+    /// R3 run, where it is the ordinary case rather than an edge one.
+    #[arg(
+        long,
+        value_name = "V,V,…",
+        value_delimiter = ',',
+        allow_hyphen_values = true
+    )]
     pub values: Option<Vec<i64>>,
 }
 
@@ -702,7 +714,10 @@ pub struct SelectorArgs {
     pub metric: Option<MetricArg>,
 
     /// The value chosen, as a sample's *applied* value.
-    #[arg(long, value_name = "N", requires = "by")]
+    ///
+    /// Hyphen-tolerant for the same reason `--values` is: the value being selected is a
+    /// value the camera held, and on a pan or tilt control half of them are negative.
+    #[arg(long, value_name = "N", requires = "by", allow_hyphen_values = true)]
     pub value: Option<i64>,
 
     /// Who chose it: `agent` or `human`.
@@ -1789,6 +1804,75 @@ mod tests {
             cli.command,
             Command::Calibrate(CalibrateCommand::List { camera: None })
         ));
+    }
+
+    #[test]
+    fn a_negative_control_value_survives_the_command_line_in_both_flag_forms() {
+        // Found by the P3e R3 run: `--values -108000,0,108000` was refused with "unexpected
+        // argument '-1' found", because every PTZ range is centred on zero and clap reads a
+        // leading minus as a flag. A tool whose reason for existing includes a pan/tilt head
+        // cannot refuse the half of that head's range that is negative.
+        //
+        // Both forms, because the two are separate clap paths and only the separated one was
+        // broken — a test that used `=` would have stayed green through the defect.
+        for args in [
+            ["--values=-108000,0,108000"].as_slice(),
+            ["--values", "-108000,0,108000"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_checked_from(
+                [
+                    "wch",
+                    "calibrate",
+                    "sweep",
+                    "cam:obsbot",
+                    "pan_absolute",
+                    "--task",
+                    "framing",
+                    "--allow-motion",
+                ]
+                .iter()
+                .copied()
+                .chain(args.iter().copied()),
+            )
+            .unwrap_or_else(|error| panic!("{args:?} must parse: {error}"));
+            let Command::Calibrate(CalibrateCommand::Sweep { plan, .. }) = &cli.command else {
+                panic!("expected calibrate sweep");
+            };
+            assert_eq!(
+                plan.spec().expect("a plan"),
+                SweepSpec::Explicit {
+                    values: vec![-108_000, 0, 108_000]
+                },
+                "{args:?}"
+            );
+        }
+
+        // The same for the value a selector names: it is a value the camera held, and on a
+        // pan control half of those are negative.
+        for args in [
+            ["--value=-3600", "--by", "agent"].as_slice(),
+            ["--value", "-3600", "--by", "agent"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_checked_from(
+                ["wch", "calibrate", "select", "cam:obsbot", "pan_absolute"]
+                    .iter()
+                    .copied()
+                    .chain(["--task", "framing"])
+                    .chain(args.iter().copied()),
+            )
+            .unwrap_or_else(|error| panic!("{args:?} must parse: {error}"));
+            let Command::Calibrate(CalibrateCommand::Select { by, .. }) = &cli.command else {
+                panic!("expected calibrate select");
+            };
+            assert_eq!(
+                by.selection().expect("a selection"),
+                Selection::ByValue {
+                    value: -3600,
+                    selector: Selector::Agent
+                },
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

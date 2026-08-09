@@ -22,10 +22,12 @@
 //! the failure docs/8 Part C names. Which controls a write arm may touch is not decided
 //! here: [`testkit::battery::is_perturbable`] and [`testkit::battery::is_motorized`] are
 //! the same predicates the conformance battery uses, so "may this test move the camera
-//! somebody is pointing at a person" has one answer in the workspace. Nothing in this
-//! file moves a motor; the sweeps that do carry the `hw_motion_` prefix, which
+//! somebody is pointing at a person" has one answer in the workspace. Exactly one arm here
+//! moves a motor — P3e's bounded PTZ sweep — and it carries the `hw_motion_` prefix, which
 //! `smoke-hw` includes by default (owner ruling, 2026-08-08) and excludes under
-//! WCH_NO_MOTION=1 as a named, counted skip.
+//! WCH_NO_MOTION=1 as a named, counted skip. Every other arm in this file excludes
+//! motorized controls by asking [`testkit::battery::is_motorized`], so renaming the motion
+//! arm out of its prefix cannot quietly make the rest of the file move the camera.
 //!
 //! wch-suite: prefix=hw_ recipe=smoke-hw
 
@@ -35,8 +37,9 @@ use std::time::{Duration, Instant};
 use schema::backend::{Camera, CameraBackend};
 use schema::camera::NodeKind;
 use schema::capture::StreamRequest;
-use schema::control::{ControlDesc, ControlType, ControlValue, KnownFlag};
+use schema::control::{ControlDesc, ControlSlug, ControlType, ControlValue, KnownFlag};
 use schema::profile::DeviceProfile;
+use schema::session::{ControlStatus, Selector, SessionEvent, SweepSpec};
 use testkit::{battery, corpus};
 use v4l2::V4l2Backend;
 
@@ -1063,6 +1066,947 @@ fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_
 
     if taken == 0 {
         println!("SKIP: no attached camera could take a photo");
+    }
+}
+
+// ---------------------------------------------------------------- P3: calibration (D8)
+
+/// A control this rung may run a whole calibration session over.
+///
+/// Named in preference order rather than found by predicate, because "a brightness-class
+/// control" is what docs/7 P3e asks for and the three UVC controls that move luma directly
+/// are the population. Everything else about the choice is asked of the same predicates the
+/// battery uses, so a calibration arm can touch nothing a write arm may not.
+fn brightness_class_target(controls: &[ControlDesc]) -> Option<&ControlDesc> {
+    const BRIGHTNESS_CLASS: [&str; 3] = ["brightness", "gamma", "gain"];
+    BRIGHTNESS_CLASS.iter().find_map(|name| {
+        controls.iter().find(|desc| {
+            desc.slug.as_str() == *name
+                && battery::is_perturbable(desc)
+                && !battery::is_motorized(&desc.slug)
+                && !desc.is_inactive()
+                && desc.control_type == ControlType::Integer
+                && desc.range.max > desc.range.min
+        })
+    })
+}
+
+/// A session on a scratch store, started the way the product starts one: create, then probe
+/// the automation pairs empirically and persist the merge (D3, N16).
+///
+/// The scratch store is the caller's to keep alive — dropping it removes the tree, photos
+/// included, which is [design §5](../../../../docs/6-claude-fable-design-v2.md): a frame may
+/// contain a person and test captures live in gitignored scratch directories.
+fn start_session(
+    store: &engine::store::SessionStore,
+    lock: &engine::store::StoreLock,
+    camera: &mut dyn Camera,
+    info: &schema::camera::CameraInfo,
+    task: &str,
+    goal: &str,
+    now: schema::time::Stamp,
+) -> schema::session::Session {
+    let mut session = engine::lifecycle::create(
+        store,
+        lock,
+        &engine::lifecycle::SessionSpec {
+            id: uuid::Uuid::now_v7(),
+            fingerprint: info.fingerprint.clone(),
+            task: task.to_owned(),
+            goal: goal.to_owned(),
+            criteria: vec!["the operator's own eye on the sample photos".to_owned()],
+            tool_version: schema::TOOL_VERSION.to_owned(),
+        },
+        now,
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "{}: a fresh scratch store refused a session: {error}",
+            info.id
+        )
+    });
+
+    let found = engine::lifecycle::discover_pairs(store, lock, &mut session, camera, now)
+        .unwrap_or_else(|error| panic!("{}: pair discovery failed: {error}", info.id));
+    println!(
+        "{}: probe measured {} pair(s), declined {}, left the camera alone: {}",
+        info.id,
+        found.pairs.len(),
+        found.skipped.len(),
+        found.left_the_camera_alone()
+    );
+    session
+}
+
+/// One control's current value, read back off the device.
+fn current_of(camera: &mut dyn Camera, slug: &ControlSlug) -> Option<ControlValue> {
+    values_of(camera).get(slug.as_str()).cloned()
+}
+
+/// Every sample's photo read back off disk, decoded, and its metrics checked for being
+/// numbers in their own domain.
+///
+/// The *content* is never asserted (lighting varies); what is asserted is that the file the
+/// sample points at exists, decodes, and that the scores recorded beside it are finite and
+/// — for the three metrics that are fractions — inside `0.0..=1.0`. A NaN or a 7.3 in a
+/// clipped-highlight fraction is a defect in the imaging half, and a sweep is where it
+/// would first meet a real frame.
+fn check_samples(
+    session_dir: &camino::Utf8Path,
+    control: &ControlSlug,
+    range: &schema::control::ControlRange,
+    plan: &engine::sweep::SweepPlan,
+    samples: &[schema::session::Sample],
+) {
+    assert_eq!(
+        samples.len(),
+        plan.values.len(),
+        "{control}: the sweep took a different number of samples than it planned"
+    );
+    for (sample, requested) in samples.iter().zip(&plan.values) {
+        assert_eq!(sample.requested, *requested, "{control}: sample order");
+        // The read-back came off the device, whatever it says [PF:6].
+        assert!(
+            range.contains(sample.applied),
+            "{control}: the driver reported {} for a control declared {}..={}",
+            sample.applied,
+            range.min,
+            range.max
+        );
+        assert!(
+            sample.photo.is_relative(),
+            "{control}: {} is not relative to the session directory",
+            sample.photo
+        );
+        let photo = session_dir.join(&sample.photo);
+        let bytes = std::fs::read(photo.as_std_path())
+            .unwrap_or_else(|error| panic!("{control}: {photo} could not be read: {error}"));
+        let decoded = image::load_from_memory(&bytes)
+            .unwrap_or_else(|error| panic!("{control}: {photo} does not decode: {error}"));
+        assert!(
+            decoded.width() > 0 && decoded.height() > 0,
+            "{control}: {photo} decoded to nothing"
+        );
+        for (metric, score) in &sample.metrics {
+            assert!(
+                score.is_finite(),
+                "{control}: {metric} scored {score} on a real frame"
+            );
+        }
+        for metric in [
+            schema::metrics::MetricName::ClippedHighlights,
+            schema::metrics::MetricName::ClippedShadows,
+            schema::metrics::MetricName::MeanLuma,
+        ] {
+            let score = sample.metrics.get(&metric).copied().unwrap_or_else(|| {
+                panic!("{control}: sample {} carries no {metric}", sample.applied)
+            });
+            assert!(
+                (0.0..=1.0).contains(&score),
+                "{control}: {metric} is a fraction and scored {score}"
+            );
+        }
+    }
+}
+
+/// The scores one metric earned across a sweep, paired with the value the camera held.
+fn scores(
+    samples: &[schema::session::Sample],
+    metric: schema::metrics::MetricName,
+) -> Vec<(i64, f64)> {
+    samples
+        .iter()
+        .filter_map(|sample| {
+            sample
+                .metrics
+                .get(&metric)
+                .copied()
+                .map(|score| (sample.applied, score))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_restores() {
+    // G3's headline criterion against real optics: start → plan → sweep → select → apply,
+    // and then the camera goes back where the session found it. Everything the executor
+    // does reaches a driver here — the guarded write, the read-back, `S_FMT`/`REQBUFS`/
+    // `STREAMON`/`DQBUF` per sample, the photo, the atomic session writes — and the frames
+    // that are scored came out of a sensor rather than a synthesizer.
+    //
+    // What is claimed about the *pictures* is deliberately narrow (design §3.1): that each
+    // one decodes, that its scores are numbers in their own domain, and one **ordering** —
+    // driving a brightness-class control from the bottom of its range to the top makes the
+    // frame brighter. Nothing here reads a pixel and nothing asserts a particular value:
+    // lighting varies, and the selector's job is to rank what it was given, which is the
+    // property asserted instead.
+    //
+    // Nothing is written into the tree: the session lives in a scratch store that is
+    // removed when this test ends, because a sample photo is a camera frame (rubric A12).
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut sessions = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            println!(
+                "SKIP (partial): {} has no capture node, so a sweep has nothing to photograph",
+                info.id
+            );
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+        let Some(desc) = brightness_class_target(&controls).cloned() else {
+            println!(
+                "SKIP (partial): {} exposes no sweepable brightness-class control",
+                info.id
+            );
+            continue;
+        };
+        let control = desc.slug.clone();
+
+        let temp = engine::store::TempStore::new().expect("a scratch state directory");
+        let lock = temp
+            .store()
+            .lock(engine::store::LockProtocol::PerOperation)
+            .expect("nothing else holds a scratch store");
+        let started = schema::time::Stamp::now();
+        let mut session = start_session(
+            temp.store(),
+            &lock,
+            camera.as_mut(),
+            info,
+            "R3 brightness calibration",
+            "a sample an operator would call correctly exposed",
+            started,
+        );
+
+        // `plan` with nothing named is the draft over the *whole* control set (N19): the
+        // sweepable controls are queued and the rest carry the device's own reason. The
+        // claim that can fail is the one N19 exists for — a control the device enumerates is
+        // recorded, never omitted — and it is asserted against the device's enumeration
+        // rather than against a list.
+        engine::lifecycle::draft(
+            temp.store(),
+            &lock,
+            &mut session,
+            camera.as_mut(),
+            &[],
+            schema::time::Stamp::now(),
+        )
+        .unwrap_or_else(|error| panic!("{}: the draft failed: {error}", info.id));
+        for enumerated in &controls {
+            // Queued *or* recorded with a reason. Those are the two halves of N19's
+            // sentence, and "absent" is the third possibility it exists to forbid.
+            assert!(
+                session.queue.contains(&enumerated.slug)
+                    || session.controls.contains_key(&enumerated.slug),
+                "{}: {} is on the device and the draft neither queued it nor said why not",
+                info.id,
+                enumerated.slug
+            );
+        }
+        assert!(
+            session.queue.contains(&control),
+            "{}: the draft did not queue {control}",
+            info.id
+        );
+        let blocked: Vec<String> = session
+            .controls
+            .iter()
+            .filter_map(|(slug, entry)| match &entry.status {
+                ControlStatus::Blocked { reason } => Some(format!("{slug} ({reason:?})")),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "{}: draft covered {} of the device's {} control(s) — {} queued, {} blocked: {}",
+            info.id,
+            session.queue.len() + blocked.len(),
+            controls.len(),
+            session.queue.len(),
+            blocked.len(),
+            if blocked.is_empty() {
+                "—".to_owned()
+            } else {
+                blocked.join(", ")
+            }
+        );
+
+        // Five values across the declared range, which the planner aligns to the control's
+        // own step. Derived from the device rather than written down: `brightness` is
+        // 0..=255 on one seed camera and 0..=100 on the other.
+        let span = desc.range.max.saturating_sub(desc.range.min);
+        let stride = (span / 4).max(desc.range.effective_step());
+        let before = values_of(camera.as_mut());
+        let progress = engine::progress::Recorder::new();
+        let clock = engine::settle::MonotonicClock::new();
+        let outcome = engine::calibrate::run(
+            &engine::calibrate::SweepContext {
+                store: temp.store(),
+                lock: &lock,
+                clock: &clock,
+                progress: &progress,
+                started_at: schema::time::Stamp::now(),
+            },
+            &mut session,
+            camera.as_mut(),
+            &schema::session::SweepRequest {
+                control: control.clone(),
+                plan: SweepSpec::Uniform { step: stride },
+                allow_motion: false,
+                stream: StreamRequest::default(),
+                settle: schema::capture::SettlePolicy::default(),
+                photo_format: schema::capture::PhotoFormat::Jpeg,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{control}: the sweep failed on {}: {error}", info.id));
+
+        let session_dir = temp.store().session_dir(&session);
+        check_samples(
+            &session_dir,
+            &control,
+            &desc.range,
+            &outcome.plan,
+            &outcome.samples,
+        );
+        assert!(
+            outcome.samples.len() >= 3,
+            "{control}: {} sample(s) is too few to show an ordering",
+            outcome.samples.len()
+        );
+        assert_eq!(
+            progress.sequence().first().copied(),
+            Some("sweep_started"),
+            "the progress stream did not open"
+        );
+        assert_eq!(
+            progress.sequence().last().copied(),
+            Some("sweep_finished"),
+            "the progress stream did not close: {:?}",
+            progress.sequence()
+        );
+        match session.controls.get(&control).map(|entry| &entry.status) {
+            Some(ControlStatus::Sweeping { done, total, .. }) => assert_eq!(
+                (*done, *total),
+                (outcome.taken(), outcome.plan.total()),
+                "{control}: a finished sweep must leave every planned sample recorded"
+            ),
+            other => panic!("{control}: a finished sweep left the control {other:?}"),
+        }
+
+        // The one ordering. `mean_luma` is exactly the metric with no *preference* (it
+        // cannot rank on its own — a selector asking it to is refused), which is why it is
+        // the honest one to make a physical claim with: brighter is not "better", it is what
+        // this control does.
+        let luma = scores(&outcome.samples, schema::metrics::MetricName::MeanLuma);
+        let dimmest = luma
+            .iter()
+            .min_by_key(|(value, _)| *value)
+            .copied()
+            .unwrap_or_else(|| panic!("{control}: no sample carries a mean luma"));
+        let brightest = luma
+            .iter()
+            .max_by_key(|(value, _)| *value)
+            .copied()
+            .unwrap_or_else(|| panic!("{control}: no sample carries a mean luma"));
+        // …with one condition on making it at all, and the condition is about light rather
+        // than about the control. A sensor that received none photographs black at every
+        // brightness — the offset has nothing to lift — and "this control does not brighten
+        // the frame" would then be a claim about a lens cap. `clipped_shadows == 1.0` for
+        // *every* sample is that case and nothing else; anything short of it, and the
+        // ordering is asserted.
+        let lightless = scores(
+            &outcome.samples,
+            schema::metrics::MetricName::ClippedShadows,
+        )
+        .iter()
+        .all(|(_, score)| *score >= 1.0);
+        if lightless {
+            println!(
+                "SKIP (partial): {}: every {control} sample is fully clipped to black, so \
+                 this camera received no light and the brightness ordering was not claimed",
+                info.id
+            );
+        } else {
+            assert!(
+                brightest.1 > dimmest.1,
+                "{}: {control} at {} measured mean luma {:.4} and at {} measured {:.4} — a \
+                 brightness-class control that does not brighten the frame is a finding about \
+                 this device, not a test to tune around",
+                info.id,
+                dimmest.0,
+                dimmest.1,
+                brightest.0,
+                brightest.1
+            );
+        }
+        // The whole curve of every metric, not just the endpoints of one: a rung's output is
+        // meant to be read, and what the scores did *between* the ends is where the next
+        // reader learns something without re-running.
+        for &name in schema::metrics::MetricName::ALL {
+            println!(
+                "{}: swept {control} — {name} {}",
+                info.id,
+                scores(&outcome.samples, name)
+                    .iter()
+                    .map(|(value, score)| format!("{value}:{score:.4}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+
+        // Metrics rank; they do not decide (D8). `rms_contrast` is the directed metric with
+        // something to say about a brightness sweep — a frame driven to either end of the
+        // range loses tonal separation — and the expectation is computed here from the
+        // recorded scores, then the selector is checked against it. Never the other way
+        // round: a test that asks the ranker where its own winner is proves only that it
+        // agrees with itself (N10).
+        let metric = schema::metrics::MetricName::RmsContrast;
+        let ranked = scores(&outcome.samples, metric);
+        let expected = ranked
+            .iter()
+            .copied()
+            .reduce(|best, next| if next.1 > best.1 { next } else { best })
+            .unwrap_or_else(|| panic!("{control}: no sample carries {metric}"));
+        engine::lifecycle::commit(
+            temp.store(),
+            &lock,
+            &mut session,
+            schema::time::Stamp::now(),
+            |draft, now| engine::session::select_by_metric(draft, &control, metric, now),
+        )
+        .unwrap_or_else(|error| panic!("{control}: select failed: {error}"));
+        let selector = Selector::Metric { name: metric };
+        match session.controls.get(&control).map(|entry| &entry.status) {
+            Some(ControlStatus::Calibrated {
+                value,
+                precision,
+                score,
+                selector: recorded,
+            }) => {
+                assert_eq!(
+                    *value, expected.0,
+                    "{control}: the metric ranked {} best and the record says {value}",
+                    expected.0
+                );
+                assert_eq!(*score, Some(expected.1), "{control}: the recorded score");
+                assert_eq!(recorded, &selector, "{control}: the recorded selector");
+                assert!(
+                    *precision > 0,
+                    "{control}: a multi-sample sweep achieved no spacing"
+                );
+            }
+            other => panic!("{control}: select left the control {other:?}"),
+        }
+        // Whether the metric *ranked* anything, said out loud. A directed metric that scores
+        // every sample identically still produces a `Calibrated` record — the tie-break
+        // keeps the earliest sample — and that record reads exactly like a choice somebody
+        // made. It is the shape docs/8 Part C calls a skip wearing a pass, and the only
+        // defence is counting it: this is where a real scene fails to discriminate and says
+        // so, rather than in a green line nobody reads.
+        if ranked.iter().any(|(_, score)| *score != expected.1) {
+            assert!(
+                ranked
+                    .iter()
+                    .any(|(value, score)| *value != expected.0 && *score < expected.1),
+                "{control}: {metric} ranked {} best without any sample scoring below it: {ranked:?}",
+                expected.0
+            );
+        } else {
+            println!(
+                "SKIP (partial): {}: {metric} scored every {control} sample {:.4}, so the \
+                 selection was a tie-break rather than a ranking on this device and scene",
+                info.id, expected.1
+            );
+        }
+        // The selector identity survived to `log.ndjson`, which is the copy that outlives
+        // the process (D9).
+        let log = engine::lifecycle::history(temp.store(), &session)
+            .unwrap_or_else(|error| panic!("{control}: the log could not be read: {error}"));
+        assert!(
+            log.iter().any(|entry| matches!(
+                &entry.event,
+                SessionEvent::Selected { control: chosen, value, selector: recorded }
+                    if chosen == &control && *value == expected.0 && recorded == &selector
+            )),
+            "{control}: no Selected line names {} and {}",
+            expected.0,
+            selector.label()
+        );
+
+        // `--partial` is the only path around uncalibrated controls, and the refusal must
+        // write nothing. Which branch runs is a fact about this device's control set, and
+        // both branches assert.
+        //
+        // "Settled" is restated here rather than asked of the engine because
+        // `session::is_terminal` is private to it. That is a prediction, not a second home
+        // for the rule: if the two ever disagree, this arm fails at its `expect_err` below
+        // instead of passing quietly, which is the direction a duplicated rule should fail
+        // in.
+        let pending = session
+            .queue
+            .iter()
+            .filter(|slug| {
+                !matches!(
+                    session.controls.get(*slug).map(|entry| &entry.status),
+                    Some(ControlStatus::Calibrated { .. } | ControlStatus::Blocked { .. })
+                        | Some(ControlStatus::Deferred { .. })
+                )
+            })
+            .count();
+        if pending > 0 {
+            let held = current_of(camera.as_mut(), &control);
+            let refusal = engine::lifecycle::apply(
+                temp.store(),
+                &lock,
+                &mut session,
+                camera.as_mut(),
+                false,
+                schema::time::Stamp::now(),
+            )
+            .expect_err("a session with pending controls must refuse apply without --partial");
+            assert_eq!(
+                refusal.kind(),
+                schema::ErrorKind::IllegalTransition,
+                "{control}: apply refused with {refusal}"
+            );
+            assert_eq!(
+                current_of(camera.as_mut(), &control),
+                held,
+                "{control}: the refused apply still wrote to the camera"
+            );
+            println!(
+                "{}: apply refused with {pending} control(s) pending, and wrote nothing",
+                info.id
+            );
+        } else {
+            println!(
+                "SKIP (partial): {}: every queued control is settled, so the --partial \
+                 refusal was not exercised on this device",
+                info.id
+            );
+        }
+
+        let report = engine::lifecycle::apply(
+            temp.store(),
+            &lock,
+            &mut session,
+            camera.as_mut(),
+            true,
+            schema::time::Stamp::now(),
+        )
+        .unwrap_or_else(|error| panic!("{control}: apply --partial failed: {error}"));
+        // The applied set is exactly the calibrated controls plus D4's automation
+        // switch-offs — the queued-but-uncalibrated ones absent.
+        let written: BTreeSet<String> = report
+            .writes
+            .iter()
+            .map(|applied| applied.slug.to_string())
+            .collect();
+        let mut expected_written: BTreeSet<String> = session
+            .calibrated()
+            .into_iter()
+            .map(|(slug, _)| slug.to_string())
+            .collect();
+        expected_written.extend(report.disabled_automation.iter().map(ToString::to_string));
+        assert_eq!(
+            written, expected_written,
+            "{control}: apply wrote a set that is not the calibrated controls plus the \
+             automation it had to switch off"
+        );
+        assert_eq!(
+            current_of(camera.as_mut(), &control),
+            Some(ControlValue::Int(expected.0)),
+            "{control}: apply did not leave the camera holding the chosen value"
+        );
+        // N20: applying a calibration is not borrowing the camera, so the record of what it
+        // looked like beforehand is still there.
+        assert!(
+            session.pre_snapshot.is_some(),
+            "{control}: apply consumed the pre-sweep snapshot"
+        );
+        println!(
+            "{}: applied {control}={} (selector {}, score {:.4}), {} write(s), automation off: {:?}",
+            info.id,
+            expected.0,
+            selector.label(),
+            expected.1,
+            report.writes.len(),
+            report.disabled_automation
+        );
+
+        // And back. This is the same call an ordinary session end and a crash recovery both
+        // make (§6), reading the snapshot that was persisted before the sweep's first write.
+        let volatile: BTreeSet<String> = session
+            .pre_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.was_volatile)
+                    .map(|entry| entry.control.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let pairs = session.pairs.clone();
+        let recovery = engine::lifecycle::recover(
+            temp.store(),
+            &lock,
+            &mut session,
+            camera.as_mut(),
+            &pairs,
+            schema::time::Stamp::now(),
+        )
+        .unwrap_or_else(|error| panic!("{control}: the restore failed: {error}"));
+        let restore = recovery
+            .report()
+            .unwrap_or_else(|| panic!("{control}: the session carried no snapshot to put back"));
+        assert!(
+            restore.is_complete(),
+            "{}: the restore reported itself incomplete: {:?}",
+            info.id,
+            restore.unrestored()
+        );
+        assert!(
+            session.pre_snapshot.is_none(),
+            "{control}: a complete recovery must consume the snapshot"
+        );
+        let after = values_of(camera.as_mut());
+        for (slug, was) in &before {
+            if volatile.contains(slug) {
+                continue;
+            }
+            assert_eq!(
+                after.get(slug),
+                Some(was),
+                "{}: {slug} is {:?} and the sweep found it at {was}",
+                info.id,
+                after.get(slug)
+            );
+        }
+        sessions += 1;
+        println!(
+            "{}: calibration session {} — {} sample(s), restore complete, {} control(s) back \
+             where the sweep found them",
+            info.id,
+            session.id,
+            outcome.samples.len(),
+            before.len()
+        );
+    }
+
+    if sessions == 0 {
+        println!(
+            "SKIP: no attached camera offered a brightness-class control and a capture node, \
+             so no calibration session ran"
+        );
+    }
+}
+
+/// Values a motion sweep may visit: a few whole steps either side of where the motor is
+/// now, clamped into the declared range.
+///
+/// Deliberately far smaller than [`schema::limits::MAX_MOTION_SWEEP_SAMPLES`] allows.
+/// The cap is the ceiling §5 puts on a *caller*; what a test should spend is the least
+/// travel that still proves the loop, and the same paragraph's "motors wear" is why. That
+/// the cap is real on this device's own range is asserted separately, by the planner,
+/// without moving anything.
+fn bounded_motion_values(desc: &ControlDesc, from: i64) -> Vec<i64> {
+    let step = desc.range.effective_step();
+    let mut values: Vec<i64> = (-2i64..=2)
+        .filter_map(|k| {
+            step.checked_mul(k)
+                .and_then(|offset| from.checked_add(offset))
+        })
+        .filter(|value| desc.range.contains(*value))
+        .collect();
+    values.dedup();
+    values
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started() {
+    // The one arm in this workspace that moves a physical motor. §5's two halves meet here:
+    // in *testing* motors run by default (owner ruling, 2026-08-08) because an untested
+    // motor is untested code and the OBSBOT is a PTZ device; `WCH_NO_MOTION=1` excludes this
+    // prefix as a named, counted skip for runs where the camera is pointed at someone.
+    //
+    // Three things are asserted and they are different claims:
+    //
+    // 1. **The product never moves a motor implicitly.** `sweep::plan` refuses the same plan
+    //    without `allow_motion`, on this device's own descriptor.
+    // 2. **The motion cap is real on this device's range.** A full-range plan is bounded by
+    //    `limits::MAX_MOTION_SWEEP_SAMPLES`, and the planner *says* which cap trimmed it.
+    //    Asserted from the descriptor, so it costs no travel.
+    // 3. **The motor goes back, and that is checked at the device.** Not from the restore
+    //    report alone — a report is a claim, and the position is what the device says.
+    //
+    // What "the position" means here is narrower than it looks, and \[PF:18\] is why: the
+    // OBSBOT acknowledges an absolute pan the instant the ioctl returns, so the value read
+    // back is the position the head was *commanded* to, not one anybody measured. That is
+    // the strongest statement V4L2 offers on this device — nothing in the control surface
+    // reports mechanism state — and the assertion is written knowing it rather than
+    // pretending otherwise. It is still the assertion worth making: a restore that never
+    // issued the write fails it.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut swept = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+
+        // The motion predicate is the *planner's* — `engine::sweep::is_motion_control` is
+        // what decides which cap applies and whether `--allow-motion` is needed, so a suite
+        // that used a different rule could sweep a motor the product would have refused.
+        let Some(desc) = controls
+            .iter()
+            .find(|desc| {
+                engine::sweep::is_motion_control(&desc.slug)
+                    && battery::is_perturbable(desc)
+                    && !desc.is_inactive()
+                    && desc.control_type == ControlType::Integer
+                    && desc.range.max > desc.range.min
+            })
+            .cloned()
+        else {
+            println!(
+                "SKIP (partial): {} exposes no writable pan/tilt control, so nothing here \
+                 has a motor to move",
+                info.id
+            );
+            continue;
+        };
+        let control = desc.slug.clone();
+        let original = desc
+            .current
+            .clone()
+            .unwrap_or_else(|| panic!("{control}: a perturbable control has a current value"));
+        let home = original
+            .as_int()
+            .unwrap_or_else(|| panic!("{control}: a scalar control read back as {original}"));
+
+        // (1) Never implicit.
+        let refusal = engine::sweep::plan(&desc, &SweepSpec::All, false)
+            .expect_err("a motorized control must refuse a sweep without allow_motion");
+        assert_eq!(
+            refusal.kind(),
+            schema::ErrorKind::IllegalTransition,
+            "{control}: the motion refusal came back as {refusal}"
+        );
+
+        // (2) The cap binds on the range this device actually declares.
+        let step = desc.range.effective_step();
+        let full = engine::sweep::plan(&desc, &SweepSpec::All, true)
+            .unwrap_or_else(|error| panic!("{control}: a full-range plan was refused: {error}"));
+        let unbounded =
+            (i128::from(desc.range.max) - i128::from(desc.range.min)) / i128::from(step) + 1;
+        assert!(
+            full.total() <= schema::limits::MAX_MOTION_SWEEP_SAMPLES,
+            "{control}: a full-range plan holds {} samples against a motion cap of {}",
+            full.total(),
+            schema::limits::MAX_MOTION_SWEEP_SAMPLES
+        );
+        if unbounded > i128::from(schema::limits::MAX_MOTION_SWEEP_SAMPLES) {
+            assert!(
+                full.adjustments.iter().any(|adjustment| matches!(
+                    adjustment,
+                    engine::sweep::SweepAdjustment::Capped { limit, cap, .. }
+                        if *limit == schema::limits::MAX_MOTION_SWEEP_SAMPLES
+                            && *cap == engine::sweep::SampleCap::Motion
+                )),
+                "{control}: every step of {}..={} is {unbounded} samples and the plan holds \
+                 {} without saying the motion cap trimmed it: {:?}",
+                desc.range.min,
+                desc.range.max,
+                full.total(),
+                full.adjustments
+            );
+            println!(
+                "{}: {control} declares {}..={} step {step} — {unbounded} samples at full \
+                 stride, bounded to {} by the motion cap [limits::MAX_MOTION_SWEEP_SAMPLES]",
+                info.id,
+                desc.range.min,
+                desc.range.max,
+                full.total()
+            );
+        } else {
+            assert_eq!(
+                i128::from(full.total()),
+                unbounded,
+                "{control}: a range that fits under the cap must plan every step of itself"
+            );
+            println!(
+                "SKIP (partial): {}: {control}'s whole range is {unbounded} samples, under \
+                 the motion cap of {}, so the cap was not exercised on this device",
+                info.id,
+                schema::limits::MAX_MOTION_SWEEP_SAMPLES
+            );
+        }
+
+        // (3) The sweep itself: a handful of steps either side of home.
+        let values = bounded_motion_values(&desc, home);
+        assert!(
+            values.len() >= 3,
+            "{control}: {} value(s) around {home} is too few to move a motor and come back",
+            values.len()
+        );
+        let travel = values
+            .last()
+            .copied()
+            .unwrap_or(home)
+            .saturating_sub(values.first().copied().unwrap_or(home));
+
+        let temp = engine::store::TempStore::new().expect("a scratch state directory");
+        let lock = temp
+            .store()
+            .lock(engine::store::LockProtocol::PerOperation)
+            .expect("nothing else holds a scratch store");
+        let mut session = start_session(
+            temp.store(),
+            &lock,
+            camera.as_mut(),
+            info,
+            "R3 bounded PTZ sweep",
+            "the sweep loop drives a real motor and gives it back",
+            schema::time::Stamp::now(),
+        );
+
+        let before = values_of(camera.as_mut());
+        let progress = engine::progress::Recorder::new();
+        let clock = engine::settle::MonotonicClock::new();
+        let outcome = engine::calibrate::run(
+            &engine::calibrate::SweepContext {
+                store: temp.store(),
+                lock: &lock,
+                clock: &clock,
+                progress: &progress,
+                started_at: schema::time::Stamp::now(),
+            },
+            &mut session,
+            camera.as_mut(),
+            &schema::session::SweepRequest {
+                control: control.clone(),
+                plan: SweepSpec::Explicit {
+                    values: values.clone(),
+                },
+                allow_motion: true,
+                stream: StreamRequest::default(),
+                settle: schema::capture::SettlePolicy::default(),
+                photo_format: schema::capture::PhotoFormat::Jpeg,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{control}: the motion sweep failed: {error}"));
+
+        check_samples(
+            &temp.store().session_dir(&session),
+            &control,
+            &desc.range,
+            &outcome.plan,
+            &outcome.samples,
+        );
+        assert!(
+            outcome.plan.total() <= schema::limits::MAX_MOTION_SWEEP_SAMPLES,
+            "{control}: the executed plan is not bounded by the motion cap"
+        );
+        // Non-vacuity: a sweep that wrote five values while the motor stayed put would pass
+        // every assertion above and have moved nothing.
+        let held: BTreeSet<i64> = outcome
+            .samples
+            .iter()
+            .map(|sample| sample.applied)
+            .collect();
+        assert!(
+            held.len() > 1,
+            "{control}: every sample came back as the same position {held:?} — the motor did \
+             not move"
+        );
+        // Requested against applied, per sample, in the transcript: whether a motor lands on
+        // the position it was sent to is a fact about this device and D3's whole subject
+        // \[PF:6\], and printing it is how the next reader learns it without re-running.
+        println!(
+            "{}: {control} requested -> applied {}",
+            info.id,
+            outcome
+                .samples
+                .iter()
+                .map(|sample| format!("{}->{}", sample.requested, sample.applied))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert_eq!(
+            progress.sequence().last().copied(),
+            Some("sweep_finished"),
+            "the progress stream did not close: {:?}",
+            progress.sequence()
+        );
+
+        let pairs = session.pairs.clone();
+        let recovery = engine::lifecycle::recover(
+            temp.store(),
+            &lock,
+            &mut session,
+            camera.as_mut(),
+            &pairs,
+            schema::time::Stamp::now(),
+        )
+        .unwrap_or_else(|error| panic!("{control}: the restore failed: {error}"));
+        let restore = recovery
+            .report()
+            .unwrap_or_else(|| panic!("{control}: the session carried no snapshot to put back"));
+        assert!(
+            restore.is_complete(),
+            "{}: the restore reported itself incomplete: {:?}",
+            info.id,
+            restore.unrestored()
+        );
+
+        // The headline: the motor is where it started, read off the device rather than
+        // taken from the report.
+        assert_eq!(
+            current_of(camera.as_mut(), &control),
+            Some(original.clone()),
+            "{}: this test left {control} somewhere other than {original}",
+            info.id
+        );
+        let after = values_of(camera.as_mut());
+        assert_eq!(
+            after.get(control.as_str()),
+            before.get(control.as_str()),
+            "{}: {control} did not come back",
+            info.id
+        );
+        swept += 1;
+        println!(
+            "{}: moved {control} through {:?} — {} sample(s), {travel} units of travel \
+             ({} step(s)), and back to {original}",
+            info.id,
+            values,
+            outcome.samples.len(),
+            travel / step
+        );
+    }
+
+    if swept == 0 {
+        println!("SKIP: no attached camera exposes a motorized control this arm could sweep");
     }
 }
 

@@ -37,7 +37,7 @@ green and the notes current, and the phase review gets its own session.
 ## Read before changing anything
 
 - `docs/implementation-notes.md` — case law: justified deviations as N-entries, hardware
-  behavior as PF-entries (continuing the docs/6 §1.2 registry, PF:1–16), dated evidence
+  behavior as PF-entries (continuing the docs/6 §1.2 registry, PF:1–18), dated evidence
   as append-only E-entries. Do not
   "fix" entries listed there or in §1.2; record new justified deviations as notes. Retire
   an entry only on empirical disproof. Citations of `docs/1`–`docs/5` in older entries

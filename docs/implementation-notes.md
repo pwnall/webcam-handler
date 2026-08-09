@@ -1400,3 +1400,267 @@ lists and the caller is entitled to hear so.
 
 **Retires when:** `apply` grows a scope — "apply for this command and put it back after" —
 which is a different verb with a different lifetime, not a flag on this one.
+
+---
+
+## PF:18 — A PTZ move is acknowledged before it happens: `pan_absolute` reads back the *commanded* position
+
+**Measured** 2026-08-09 on kernel 7.0.0-29-generic, against the OBSBOT Tiny 3
+(`3564:ff02`, `/dev/video4`), while landing P3e's R3 motion arm. Continues the docs/6 §1.2
+registry; cite it as `[PF:18]`.
+
+`pan_absolute` declares `-468000..=468000` step `3600`. Driving it across 216000 units —
+23% of the declared range, and a visible arc on a gimbal — returns from the ioctl in the
+same time as a write to a control with nothing mechanical behind it, and the new value is
+readable immediately:
+
+```
+pan_absolute -> 108000   : write returned in 126 ms   (first open; includes device open)
+pan_absolute -> -108000  : write returned in  21 ms
+pan_absolute -> 0        : write returned in  26 ms
+brightness   -> 60       : write returned in  19 ms   (the no-motor baseline)
+brightness   -> 50       : write returned in  22 ms
+
+after pan_absolute=108000, six successive G_EXT_CTRLS polls: 108000 108000 108000
+                                                             108000 108000 108000
+```
+
+**The head does move** — it is the acknowledgement that is early, not the mechanism that is
+absent. Photographed at three pan positions, the scene the frames measure is different at
+each:
+
+```
+ -108000 -> -108000  luma=0.1160 rms=0.1580 sharp=13.63 shadows=0.4171
+       0 ->       0  luma=0.0986 rms=0.1651 sharp=12.67 shadows=0.5432
+  108000 ->  108000  luma=0.1267 rms=0.1676 sharp=14.80 shadows=0.4063
+```
+
+No head traverses that arc in 21 ms. So `G_EXT_CTRLS` on this control reports where the
+camera was told to point, not where it points.
+
+**What it costs this tool, stated rather than fixed.**
+
+1. **For a motorized control, `{requested, applied}` means requested versus *accepted*, not
+   requested versus *achieved*.** D3's read-back doctrine is unchanged everywhere else —
+   this is the one control class on the seed hardware where the read-back is an
+   acknowledgement rather than a measurement, and PF:6's clamping is still visible through
+   it because clamping happens in the acknowledgement.
+2. **"The motor came back" is a claim about the commanded position.** §5 requires every
+   motion arm to restore what it moved and assert it, and `hw_motion_a_bounded_ptz_sweep_…`
+   does — against the strongest statement V4L2 offers on this device. Nothing in the
+   control surface reports mechanism state, so a stronger assertion would have to be
+   invented, and an invented assertion about a motor is worse than an honest narrow one.
+3. **A motion sweep's settle counts frames \[PF:11\], not motion.** The P3e arm moves one
+   control step per sample and is not exposed to this. A `--all` pan sweep is: the motion
+   cap widens the stride to 32400 units — about 3.5% of the range per sample — and a frame
+   captured while the head is still travelling would be recorded against a position it had
+   not reached. The sample would be labelled with the driver's answer, which would be the
+   commanded value, and nothing downstream could tell.
+
+**Not corpus-shaped.** Like PF:6, this is a behaviour under a write rather than a field in
+a descriptor: the profile records `pan_absolute`'s range, step and flags, and every one of
+them is unchanged. The frames that show the head moving are camera frames and never enter
+the repository (design §3.2, §5), so the evidence for it is this transcript. The
+registry-completeness walk in `corpus_replay.rs` covers PF:1–14, the v1 registry, and is
+left alone here as it was for PF:15–17.
+
+**Retires when:** a device is found whose pan read-back tracks the mechanism — at which
+point "accepted" and "achieved" become distinguishable and the tool can say which it has —
+or a settle policy learns to wait on frame stability for motion controls, which would make
+point 3 a bug rather than a limit.
+
+---
+
+## N21 — A `Calibrated` record does not say whether the metric ranked or merely tied
+
+**Doc:** design D8 says metrics *rank*, they do not decide, and that the `Calibrated`
+record names its `selector` — `metric:<name>`, `agent`, or `human` — precisely so nobody
+pretends a Laplacian knows what "text legible on the DUT" means.
+`engine::session::select_by_metric` implements it: the best-scoring sample wins, ties keep
+the earliest.
+
+**Repo:** unchanged. What landed is the *observation*, and one counted skip in the R3 arm.
+
+**Why.** The first real calibration this project ran (E5) produced, on the Chicony, a sweep
+whose `clipped_highlights` score was `0.0000` for every one of its five samples. The
+selector did exactly what it is specified to do — no sample improved on the first, so the
+first won — and wrote
+
+```
+brightness: Calibrated { value: 0, score: Some(0.0), selector: Metric { name: ClippedHighlights } }
+```
+
+That record is byte-identical in shape to one where a metric genuinely separated five
+samples. From the document, from `calibrate status`, and from the `Selected` log line, a
+tie-break and a ranking look the same. It is the shape docs/8 Part C names — an answer that
+reads as a decision and was not one — and the three ways it arises on real optics are all
+ordinary: a scene with no content in the metric's dimension, a control whose range has a
+dead zone, and a camera whose lens is covered (E5's Chicony was the third).
+
+**What the R3 arm does about it.** It selects with `rms_contrast`, computes the expected
+winner from the recorded scores itself, and then asks whether any sample scored *below* the
+winner. If one did, the ranking is asserted to have discriminated. If none did, the arm
+prints a named partial skip saying the metric scored every sample the same, so the run
+reports "the selection was a tie-break" rather than counting it as a ranking that worked.
+Counting is the whole defence: nothing else distinguishes the two.
+
+**What this is not.** It is not an argument for making ties an error. A tie is a real
+answer — three exposures that clip identically really are indistinguishable to that metric
+— and refusing would leave a session stuck on a control the operator could settle by
+looking. The gap is that the *record* keeps only the winner.
+
+**Retires when:** `ControlStatus::Calibrated` carries the spread the ranking saw — the
+range of scores, or the runner-up's — so a reader can tell a decision from a coin toss
+without the samples in front of them. That is a D8 schema change and a docs/6 amendment,
+not a P3e edit.
+
+---
+
+## E5 — G3 hardware evidence: calibration meets real optics, 2026-08-09
+
+docs/7's P3e asks for the R3 evidence run — a real calibration session on the Chicony RGB
+over a brightness-class control, and a bounded PTZ sweep on the OBSBOT that restores the
+motor position and asserts it — "recorded in the notes with transcripts", under the same
+carve-out G1 and G2 used: *the recipe existing and selecting tests is the gate criterion,
+and the run itself is evidence*. This is that record. Evidence entries are dated and
+appended; they are not amended.
+
+**Host:** kernel 7.0.0-29-generic, x86_64. **Attached:** Chicony `04f2:b83c` (RGB on
+`3-4:1.0`, IR on `3-4:1.2`), OBSBOT Tiny 3 `3564:ff02` on `3-1:1.0`. Six `/dev/video*`
+nodes.
+
+### R3 — `just smoke-hw`, motors included
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 6 capture node(s) present; running test(/(^|::)hw_/)
+    Starting 15 tests across 28 binaries (622 tests skipped)
+     Summary [  21.155s] 15 tests run: 15 passed, 622 skipped
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+The calibration session, on both cameras that offer a brightness-class control:
+
+```
+cam:…-integrated-c: probe measured 2 pair(s), declined 0, left the camera alone: true
+cam:…-integrated-c: draft covered 18 of the device's 18 control(s) — 14 queued, 4 blocked:
+  camera_controls (NotSweepable { control_type: "control_class" }), privacy (ReadOnly),
+  region_of_interest_rectangle (NotSweepable { control_type: "rect" }),
+  user_controls (NotSweepable { control_type: "control_class" })
+cam:…-integrated-c: swept brightness — sharpness          0:0.0803 63:0.2428 126:0.0076 189:1.7370 252:1.6129
+cam:…-integrated-c: swept brightness — clipped_highlights 0:0.0000 63:0.0000 126:0.0000 189:0.0000 252:0.0000
+cam:…-integrated-c: swept brightness — clipped_shadows    0:1.0000 63:1.0000 126:1.0000 189:0.0000 252:0.0000
+cam:…-integrated-c: swept brightness — mean_luma          0:0.0001 63:0.0006 126:0.0000 189:0.1684 252:0.3215
+cam:…-integrated-c: swept brightness — rms_contrast       0:0.0006 63:0.0018 126:0.0001 189:0.0020 252:0.0019
+cam:…-integrated-c: apply refused with 13 control(s) pending, and wrote nothing
+cam:…-integrated-c: applied brightness=189 (selector metric:rms_contrast, score 0.0020),
+  1 write(s), automation off: []
+cam:…-integrated-c: calibration session 019fe59c-534e-7682-9e26-3d99d9735684 — 5 sample(s),
+  restore complete, 16 control(s) back where the sweep found them
+
+SKIP (partial): cam:…-integrated-i exposes no sweepable brightness-class control
+
+cam:obsbot-tiny-3…: probe measured 4 pair(s), declined 1, left the camera alone: true
+cam:obsbot-tiny-3…: draft covered 24 of the device's 24 control(s) — 22 queued, 2 blocked:
+  camera_controls, user_controls (both NotSweepable { control_type: "control_class" })
+cam:obsbot-tiny-3…: swept brightness — sharpness          0:2.1263 25:9.4992 50:22.1370 75:90.5446 100:195.9731
+cam:obsbot-tiny-3…: swept brightness — clipped_highlights 0:0.0000 25:0.0000 50:0.0035 75:0.0038 100:0.0038
+cam:obsbot-tiny-3…: swept brightness — clipped_shadows    0:0.5555 25:0.5140 50:0.4211 75:0.0003 100:0.0000
+cam:obsbot-tiny-3…: swept brightness — mean_luma          0:0.0502 25:0.0833 50:0.1240 75:0.2567 100:0.3717
+cam:obsbot-tiny-3…: swept brightness — rms_contrast       0:0.0763 25:0.1186 50:0.1649 75:0.2543 100:0.3089
+cam:obsbot-tiny-3…: apply refused with 21 control(s) pending, and wrote nothing
+cam:obsbot-tiny-3…: applied brightness=100 (selector metric:rms_contrast, score 0.3089),
+  1 write(s), automation off: []
+cam:obsbot-tiny-3…: calibration session 019fe59c-6a7e-76a2-ba60-bb54ae3fcc60 — 5 sample(s),
+  restore complete, 22 control(s) back where the sweep found them
+```
+
+The PTZ sweep — the first motor this project has ever driven:
+
+```
+SKIP (partial): cam:…-integrated-c exposes no writable pan/tilt control, so nothing here has a motor to move
+SKIP (partial): cam:…-integrated-i exposes no writable pan/tilt control, so nothing here has a motor to move
+cam:obsbot-tiny-3…: pan_absolute declares -468000..=468000 step 3600 — 261 samples at full
+  stride, bounded to 29 by the motion cap [limits::MAX_MOTION_SWEEP_SAMPLES]
+cam:obsbot-tiny-3…: probe measured 4 pair(s), declined 1, left the camera alone: true
+cam:obsbot-tiny-3…: pan_absolute requested -> applied -7200->-7200 -3600->-3600 0->0
+  3600->3600 7200->7200
+cam:obsbot-tiny-3…: moved pan_absolute through [-7200, -3600, 0, 3600, 7200] — 5 sample(s),
+  14400 units of travel (4 step(s)), and back to 0
+```
+
+### R3 — `WCH_NO_MOTION=1 just smoke-hw`
+
+Run both ways, because "the knob excludes the motion arms" and "the exclusion is named and
+counted" are different claims and only running it proves the second:
+
+```
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded by WCH_NO_MOTION=1; unset it to include them
+smoke-hw: 6 capture node(s) present; running test(/(^|::)hw_/) - test(/(^|::)hw_motion_/)
+    Starting 14 tests across 28 binaries (623 tests skipped)
+     Summary [  17.827s] 14 tests run: 14 passed, 623 skipped
+smoke-hw: 6 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 1 named skip(s) before it started
+```
+
+15 with motors, 14 without, and the difference is one named, counted skip rather than a
+smaller number nobody noticed.
+
+### What the run establishes
+
+- **The D8 loop closes against a real camera.** Session create, empirical pair discovery
+  persisted onto the document (N16), a draft covering every control the device enumerates
+  (N19 — 18 of 18 and 24 of 24, with the blocked ones carrying the device's own reason), a
+  five-value guarded sweep with one photo scored and stored per sample, a metric selection
+  recording its selector and score, `apply` refused without `--partial` and *nothing written*
+  to the camera by the refusal, `apply --partial` writing exactly the calibrated set, and
+  the pre-sweep snapshot put back with every control asserted to be where the sweep found
+  it. The photos never entered the tree: each session lives in a temporary store that is
+  removed when the test ends.
+- **`--partial` is load-bearing on real hardware**, not a fixture artefact: a draft over
+  the whole control set leaves 13 controls pending on the Chicony and 21 on the OBSBOT, so
+  the refusal is the ordinary path and the flag is how an operator says they meant it.
+- **The motion cap is real on a real range.** `pan_absolute`'s declared range is 261 samples
+  at full stride and the planner bounds it to 29, naming
+  `limits::MAX_MOTION_SWEEP_SAMPLES` as the cap that did it. The arm then sweeps five
+  values — deliberately far under the cap, because §5's ceiling is what a caller may spend
+  and a test should spend the least travel that proves the loop.
+- **Two open questions from E3 are closed.** E3 listed "Motors — no pan, tilt or zoom
+  control has been written on this machine" under *not established*. Pan is now written,
+  swept, and returned. And calibration, which had only ever run against the fake, has run
+  against two cameras.
+
+### What it does not establish, and one thing it changed
+
+- **Calibration *efficacy* on the Chicony.** That camera photographed a flat field: at every
+  brightness its `rms_contrast` stays under 0.002 and its `clipped_shadows` is exactly
+  1.0000 for the whole lower half of the range, while the OBSBOT in the same room reads
+  0.076–0.309 and 0.555–0.000. Under a forced manual exposure of 1250 the Chicony reaches
+  `mean_luma` 0.4980 with `rms_contrast` still 0.0000 — a uniform field lifting as a whole,
+  which is a covered lens or a featureless surface at close range, not a scene. So the
+  Chicony's transcript demonstrates the *mechanism* end to end and says nothing about
+  focusing on a subject; the OBSBOT's monotone sharpness curve (2.1 → 195.9) is the half of
+  this evidence with a scene behind it. Design §3.3 item 2 already says calibration efficacy
+  on real optics is only demonstrable on R3 — this run demonstrates it on one of the two
+  cameras, and names which.
+- **PF:18** came out of it: `pan_absolute` acknowledges a move before the head has made it,
+  so the read-back is the commanded position rather than a measured one. The motion arm's
+  restore assertion is written knowing that, and says so.
+- **N21** came out of it: the first selection this project ran on real optics used
+  `clipped_highlights`, which scored `0.0000` for all five Chicony samples. The record it
+  produced — `Calibrated { value: 0, score: Some(0.0), selector: metric:clipped_highlights }`
+  — is indistinguishable from one a real ranking produced. The arm now selects with
+  `rms_contrast`, computes the winner itself, and prints a named partial skip when the
+  metric failed to separate any two samples, so a tie-break is counted rather than read as a
+  decision. With that change the Chicony's own sweep produced a genuine interior optimum
+  (189 of 0..=255), which is what a calibration is supposed to look like.
+- **A defect the run found in the command surface, fixed here with its gate:**
+  `wch calibrate sweep --values -108000,0,108000` was refused with "unexpected argument
+  '-1' found", because clap reads a leading minus as a flag. Every PTZ range is centred on
+  zero, so this is the ordinary case for the device class the tool exists to drive, not an
+  edge one. `--values` and `select --value` are now `allow_hyphen_values`, and
+  `a_negative_control_value_survives_the_command_line_in_both_flag_forms` is red without the
+  fix in both the `--flag value` and `--flag=value` forms.
+- **Still one host, one kernel, three cameras** (design §3.3 item 8), and one of the three
+  has nothing in front of it.
