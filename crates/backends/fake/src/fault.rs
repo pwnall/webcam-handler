@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::vocabulary::closed_vocabulary;
+use schema::vocabulary::closed_vocabulary;
 
 closed_vocabulary! {
     /// A fault the fake can be told to exhibit.

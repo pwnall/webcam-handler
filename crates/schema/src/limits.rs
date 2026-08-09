@@ -3,11 +3,35 @@
 //! Every loop over device behavior has a deadline or a cap, and every cap lives here.
 //! A constant nobody reads is a defect (rubric A8), so this module grows with the code
 //! that consumes it rather than ahead of it.
+//!
+//! Design §2.10 also makes this module the home of **path layouts**, so D9's session
+//! tree is spelled once: `webcam-handler-engine::store` composes the names below into
+//! paths, and the CLI and the daemon read the same constants rather than repeating the
+//! strings.
 
 /// The persisted session document version (design D9). Bumped when the on-disk shape
 /// changes; a foreign version is [`crate::Error::SchemaVersionForeign`], never a
 /// best-effort parse.
 pub const SESSION_SCHEMA_VERSION: u32 = 1;
+
+/// The session tree's root inside the state directory (design D9):
+/// `<state dir>/sessions/<fingerprint-slug>/<task-slug>/<uuidv7>/`.
+pub const SESSIONS_DIR: &str = "sessions";
+
+/// The session document inside a session directory (design D9).
+pub const SESSION_FILE: &str = "session.json";
+
+/// The append-only event log inside a session directory (design D9).
+pub const SESSION_LOG_FILE: &str = "log.ndjson";
+
+/// The photo tree inside a session directory: `photos/<control-slug>/` (design D9).
+pub const SESSION_PHOTOS_DIR: &str = "photos";
+
+/// The one advisory lock at the state directory's root (design D9).
+///
+/// A plain name rather than a dotfile: D9's whole posture is that the state directory is
+/// inspectable, and an operator wondering who owns it should see the file that answers.
+pub const STORE_LOCK_FILE: &str = "lock";
 
 /// The device-profile document version (design T3).
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;

@@ -49,7 +49,6 @@
 
 mod camera;
 mod fault;
-mod vocabulary;
 
 pub mod frames;
 

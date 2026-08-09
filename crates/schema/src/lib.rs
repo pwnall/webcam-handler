@@ -19,8 +19,9 @@
 //! | [`profile`] | the captured device profile (T3) |
 //! | [`backend`] | the `CameraBackend`/`Camera` traits and `BackendKind` (T1/T2) |
 //! | [`error`] | the closed error registry (D13) |
-//! | [`limits`] | every cap and deadline (rubric A14) |
+//! | [`limits`] | every cap and deadline, and D9's path layout (rubric A14) |
 //! | [`slug`] | the pinned slug transform (D2) |
+//! | [`vocabulary`] | the generator every closed vocabulary and fault menu is built from |
 //!
 //! ## The doctrine these types encode
 //!
@@ -35,7 +36,7 @@
 //!   `PermissionDenied`, `DeviceGone` and `SettleTimeout` apart.
 #![forbid(unsafe_code)]
 
-mod vocabulary;
+pub mod vocabulary;
 
 pub mod backend;
 pub mod camera;

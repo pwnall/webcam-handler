@@ -336,6 +336,24 @@ pub struct LogEntry {
     pub event: SessionEvent,
 }
 
+/// The directory component a task gets in the session tree (design D9's `<task-slug>`).
+///
+/// One home, because two callers need it and they must agree: [`new_session`] stamps it
+/// onto the document, and the store derives the *path* from the stored value — running
+/// this over an already-derived slug is the identity, and running it over a
+/// hand-edited one (`../../etc`) is what keeps a session file from naming a directory
+/// outside the session tree.
+///
+/// `task` is the operator's free text, so it may slug to nothing; a task still needs a
+/// directory, and `task` is that fallback.
+#[must_use]
+pub fn task_slug(task: &str) -> String {
+    use crate::slug::{Separator, slugify};
+
+    let s = slugify(task, Separator::Hyphen);
+    if s.is_empty() { "task".to_owned() } else { s }
+}
+
 /// Build an empty session for a camera and task.
 #[must_use]
 pub fn new_session(
@@ -346,12 +364,7 @@ pub fn new_session(
     tool_version: &str,
     now: Stamp,
 ) -> Session {
-    use crate::slug::{Separator, slugify};
-
-    let task_slug = {
-        let s = slugify(task, Separator::Hyphen);
-        if s.is_empty() { "task".to_owned() } else { s }
-    };
+    let task_slug = task_slug(task);
     Session {
         schema_version: limits::SESSION_SCHEMA_VERSION,
         id,

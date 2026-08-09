@@ -16,11 +16,17 @@ workspace = true
 
 # The shell's dependencies arrive with the code that reads them — `cargo machete` is part
 # of `just ci`, and a dependency nobody uses is the same defect as a constant nobody reads
-# (rubric A8). P2 adds `webcam-handler-imaging`, which the photo pipeline calls; fd-lock
-# and tracing still wait for the session store (P3) and the daemon (P4).
+# (rubric A8). P2 adds `webcam-handler-imaging`, which the photo pipeline calls; P3a adds
+# fd-lock (D9's one advisory lock) and tempfile (the in-directory temp file
+# `write_json_atomic` renames over its destination). `tempfile` is a normal dependency
+# rather than a dev one because `store::TempStore` — the §2.9 double other crates' tests
+# consume — ships with the library. tracing still waits for the daemon (P4).
 [dependencies]
 camino.workspace = true
+fd-lock.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 uuid.workspace = true
 webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true
@@ -30,7 +36,6 @@ webcam-handler-schema.workspace = true
 # nowhere. The fake is how the engine's own tests get a device that behaves like one.
 [dev-dependencies]
 kamadak-exif.workspace = true
-tempfile.workspace = true
 webcam-handler-fake.workspace = true
 webcam-handler-testkit.workspace = true
 

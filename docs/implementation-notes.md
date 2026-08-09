@@ -945,3 +945,87 @@ nothing as an observation; the `InactiveFlip` fault arm put its ordering asserti
 or lifetime defect in the mmap path, and no case where an availability failure had been
 converted into a capability answer. Sixteen further candidates were refuted, several of them
 by skeptics that built the reviewer's exact device and ran it.
+
+---
+
+## N11 — The state directory's lock file is the one state write that is not atomic
+
+**Doc:** design §2.10 and rubric A5 name `webcam-handler-engine::store::write_json_atomic`
+as the single home for state-directory writes, and call a caller that bypasses it "the same
+defect as a second copy". D9 says the same thing in prose: "writes go through one audited
+`write_json_atomic`".
+
+**Repo:** `<state dir>/lock` is written in place — `open(O_WRONLY|O_TRUNC)`, `write`,
+`fsync` — by `store::write_record`. It is the only write in the state directory that does
+not go through the home, and it lives inside the home's own module.
+
+**Why:** `write_json_atomic` finishes with a `rename`, and a rename replaces the
+destination's **inode**. The advisory lock is an `flock` on an open file description of
+that inode. Renaming a new file over the lock file therefore does not update the lock
+file; it makes the lock file a *different file* that nobody holds, and the next process to
+ask finds it free while the first still believes it is the owner. Atomicity applied to the
+lock would delete the lock.
+
+The in-place write is safe for a narrower reason than atomicity: the record is only ever
+written by the process that already holds the lock, so there is exactly one writer at a
+time. A *reader* — `SessionStore::holder`, and the refusal path in `SessionStore::lock` —
+can still catch it half-written, and that case is handled by not trusting it: an
+unparsable record yields `StoreLocked { holder: None }`, an honestly unidentified holder,
+rather than an invented pid. The record is decoration on a fact the kernel owns; the lock
+is the `flock`, and `holder()` asks the kernel first (a shared `try_read`) so a *stale*
+record left behind by a process that exited can never be reported as a live holder.
+
+`scripts/gates/atomic-write-home.sh` exempts the store module, so this deviation is not
+gate-caught and would not be: the gate's subject is bypasses *outside* the home. It is
+recorded here because a reviewer reading `write_record` should find the reasoning before
+filing the finding.
+
+**Retires when:** nothing retires it. A lock whose file is replaced is not a lock.
+
+---
+
+## N12 — The store's two `fsync`s are the lines no test in this suite can turn red
+
+**Doc:** rubric rule 2 — "for every test: write the buggy implementation" — and AGENTS.md's
+"if a test cannot go red, it is not a test". Design D9 asks for
+`tempfile in-dir → sync_all → rename → fsync parent`.
+
+**Repo:** all four steps are there. Twenty-one buggy implementations were seeded against
+`engine::store` at workspace scope while P3a was written, and nineteen were caught by a
+named test — the destination written before the rename or in place of it, an unparsable
+middle line dropped like a torn tail, a torn last line dropped even when a terminator
+follows it, the version probe skipped or narrowed to newer-only, the session list sorted
+oldest-first, the lock guard dropped instead of held, the holder record never written, the
+holder read without asking the kernel, the task slug and the control slug believed instead
+of derived, the photo path made absolute. **Two survived, and they are the same two lines:
+`temp.as_file().sync_all()` and `fsync_dir(dir)`.** Deleting either leaves the whole
+workspace suite green.
+
+**Why they survive:** each `fsync` buys *durability*, not visibility. The temp file's sync
+keeps the filesystem from ordering the rename ahead of the contents; the directory's sync
+keeps the rename itself from being lost. Both are observable only across a power cut or a
+kernel crash on a filesystem that reorders metadata. A hermetic test cannot produce either,
+and the alternatives were worse: a test that counts syscalls needs `strace` (a runtime
+external binary, which design §2.8 forbids), and a test named for durability that only
+proves the call compiles is the "green plumbing test named for the whole" rubric Part C
+rejects on sight.
+
+The neighbouring property *is* covered, and the distinction is the point:
+`a_write_publishes_a_new_inode_instead_of_overwriting_the_old_one` turns red for an
+implementation that overwrote the destination instead of renaming over it, because *which
+file is published* is observable where *when it reaches the platter* is not.
+
+**Repo, therefore:** `fsyncing_a_directory_is_supported_here_and_its_failure_is_typed`
+proves the two things that *are* checkable — the operation is supported on this filesystem
+(some refuse `fsync` on a read-only directory descriptor), and its failure is a typed
+`StorageIo` rather than a panic — and its name and its comment both say it does not prove
+durability. The two uncovered lines are named here instead of covered by a test that would
+lie about them.
+
+**Retires when:** a crash-consistency rung exists that can cut power to a filesystem
+(a `dm-log-writes` target replayed at arbitrary write boundaries is the usual shape, and
+it needs privileges the test suite does not have), or the mutation floor P3f commissions
+records this survivor as a reasoned acceptance and gains a mechanism this note does not
+anticipate. This entry belongs in design §3.3's structural-gap register at its next
+regeneration; the register is regenerated rather than accreted, so it is recorded here in
+the meantime.

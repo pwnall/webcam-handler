@@ -4,8 +4,8 @@
 //! wrapped in a thin imperative shell (camera actors, the session store, capture sinks).
 //! The engine takes backends as `Box<dyn CameraBackend>` values and names none of them.
 //!
-//! Every module here is a fold over values: it reads no clock, opens no file, touches no
-//! global. That is what makes the hard parts testable without a camera — the settle
+//! Every pure core here is a fold over values: it reads no clock, opens no file, touches
+//! no global. That is what makes the hard parts testable without a camera — the settle
 //! policy's deadline is an argument, the pairing planner's device state is a slice of
 //! [`schema::ControlDesc`], and the session state machine's "now" arrives as a
 //! [`schema::Stamp`]. Where a seam is unavoidable it is a trait with a real
@@ -26,6 +26,7 @@
 //! | [`capture`] | start, settle, one frame, stop — with the stop on every exit (D5) |
 //! | [`photo`] | the photo assembly and the file sinks (D6, D10) |
 //! | [`discover`] | empirical pair discovery, by toggling and diffing INACTIVE (D3, PF:3) |
+//! | [`store`] | the session directory, atomic state writes, and the one fd-lock (D9) |
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
@@ -42,5 +43,6 @@ pub mod resolve;
 pub mod session;
 pub mod settle;
 pub mod snapshot;
+pub mod store;
 pub mod sweep;
 pub mod write;
