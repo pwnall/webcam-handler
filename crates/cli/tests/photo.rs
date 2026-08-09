@@ -1,4 +1,4 @@
-//! `wch photo` end to end, against the fake backend (docs/2 G2).
+//! `wch photo` end to end, against the fake backend (docs/7 G2).
 //!
 //! G2 names this suite by what it must prove: a photo whose **EXIF reads back through an
 //! independent reader**, and a photo from the **GREY-format chicony-ir profile**, because
@@ -11,7 +11,7 @@
 //! D10 says, and puts the bytes where it said it did.
 //!
 //! **The writer and the reader share no code.** `little_exif` writes and `kamadak-exif`
-//! reads, which is docs/4's answer to write-only EXIF: a writer that returns `Ok` having
+//! reads, which is docs/9's answer to write-only EXIF: a writer that returns `Ok` having
 //! produced a segment no reader accepts passes every test that trusts it.
 //!
 //! Every photo lands in a scratch directory. A frame may contain a person (rubric A12) —

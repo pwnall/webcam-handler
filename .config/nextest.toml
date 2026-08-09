@@ -18,7 +18,7 @@
 #
 # A test group with one thread is the smallest thing that models the real constraint. The
 # alternative — teaching each test to tolerate `Busy` — would make every hardware test
-# able to pass by doing nothing, which is exactly the "skip reads as pass" failure docs/3
+# able to pass by doing nothing, which is exactly the "skip reads as pass" failure docs/8
 # Part C names.
 #
 # ## Why the filter is the suite prefixes

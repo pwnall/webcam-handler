@@ -3,7 +3,7 @@
 //! `corpus/profiles/` stays uniformly tool-captured (design §3.2), and real captures do
 //! not exist until P1 — so P0 needs one document that carries every PF-derived edge at
 //! once and lives with the testkit instead of in the corpus. This is it
-//! (`crates/testkit/fixtures/synthetic-basic.json`), and docs/2 P0 commissions it by
+//! (`crates/testkit/fixtures/synthetic-basic.json`), and docs/7 P0 commissions it by
 //! name.
 //!
 //! **Why the JSON is generated rather than typed.** A hand-typed fixture drifts from the
@@ -67,7 +67,7 @@ pub fn load_synthetic_basic() -> Result<DeviceProfile> {
 ///
 /// Every value here is a fixture with a citation, not a plausible number: the ranges,
 /// menu holes and out-of-range values are the ones the design-phase probes measured
-/// (docs/1 §1.2), transplanted onto one synthetic device so a single load exercises them
+/// (docs/6 §1.2), transplanted onto one synthetic device so a single load exercises them
 /// all.
 #[must_use]
 pub fn synthetic_basic() -> DeviceProfile {
@@ -487,7 +487,7 @@ mod tests {
         );
     }
 
-    /// A fixture nobody reads is not coverage (docs/3 rule 3). This is the test that
+    /// A fixture nobody reads is not coverage (docs/8 rule 3). This is the test that
     /// reads it — from disk, so the serde contract is what is being asserted and not the
     /// constructor's memory of it.
     #[test]

@@ -15,7 +15,7 @@
 //! 2. **Brightness is a linear gain** from [`BRIGHTNESS_GAIN_AT_MINIMUM_PERCENT`] at the
 //!    control's minimum to that plus [`BRIGHTNESS_GAIN_SPAN_PERCENT`] at its maximum.
 //!
-//! Rule 1 is what keeps a calibration test off docs/3 Part C's "the fake validating the
+//! Rule 1 is what keeps a calibration test off docs/8 Part C's "the fake validating the
 //! fake" list: the expectation comes from the *profile* — read that control's default —
 //! and never from asking the synthesizer where its own peak is.
 //!

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# `--json` output validates against the committed JSON Schema bundle (docs/2 G1).
+# `--json` output validates against the committed JSON Schema bundle (docs/7 G1).
 #
 # `schema-artifacts-current.sh` proves the bundle still describes the Rust *types*. This
 # proves the other half: that what the binary actually prints is one of those types. The
@@ -172,7 +172,7 @@ for row in "${verbs[@]}"; do
     # checkable core is enforced directly — every required property present, and no
     # property the schema does not declare. That catches the envelope-and-timestamp defect
     # this gate exists for; types, formats, nested shapes and array element schemas go
-    # unchecked, and docs/4's recorded-limits section says so.
+    # unchecked, and docs/9's recorded-limits section says so.
     if ! jq -e --slurpfile doc <(printf '%s' "$output") --arg def "$name" '
         .["$defs"][$ARGS.named.d] as $schema
         | ($doc[0]) as $value

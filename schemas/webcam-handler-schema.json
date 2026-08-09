@@ -1579,7 +1579,7 @@
           "description": "The operation exists in the contract and this build does not perform it yet.\n\nEmphatically **not** a capability answer (E3): the device was never asked. A\nhalf-built backend has to say something when a trait method it has not reached\nis called, and every other choice is worse — a panic breaks the \"plugging in a\nwebcam cannot panic the library\" rule, and reusing [`Error::DeviceIo`] would\nblame the kernel for our own schedule. See note N6.",
           "properties": {
             "arrives_in": {
-              "description": "The phase that lands it, in docs/2's spelling (`P2`).",
+              "description": "The phase that lands it, in docs/7's spelling (`P2`).",
               "type": "string"
             },
             "kind": {
@@ -2400,7 +2400,7 @@
       ]
     },
     "PhotoDelivery": {
-      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports\nhow much is on its way. **The bytes themselves are not in this document**: `wch` streams\nthem to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire\nsurface that needs it (docs/2 puts the sink DTO in `webcam-handler-api`). Carrying an\nunused encoding here would be a dependency nobody reads.",
+      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports\nhow much is on its way. **The bytes themselves are not in this document**: `wch` streams\nthem to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire\nsurface that needs it (docs/7 puts the sink DTO in `webcam-handler-api`). Carrying an\nunused encoding here would be a dependency nobody reads.",
       "oneOf": [
         {
           "description": "The bytes were handed back to the caller.",

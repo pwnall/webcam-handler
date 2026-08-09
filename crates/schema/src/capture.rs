@@ -581,7 +581,7 @@ pub struct PhotoRequest {
 /// otherwise learn: a path answer reports how much was written, and a bytes answer reports
 /// how much is on its way. **The bytes themselves are not in this document**: `wch` streams
 /// them to standard output, and D10's base64-in-JSON encoding lands at P4 with the wire
-/// surface that needs it (docs/2 puts the sink DTO in `webcam-handler-api`). Carrying an
+/// surface that needs it (docs/7 puts the sink DTO in `webcam-handler-api`). Carrying an
 /// unused encoding here would be a dependency nobody reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]

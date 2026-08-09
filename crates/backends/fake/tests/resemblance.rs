@@ -361,7 +361,7 @@ fn a_second_handle_sees_the_first_handles_writes() {
 
 #[test]
 fn the_focus_optimum_is_the_profiles_declared_default() {
-    // The independence this test exists for (docs/3 Part C, "the fake validating the
+    // The independence this test exists for (docs/8 Part C, "the fake validating the
     // fake"): the expectation is read out of the *document*, and the model is then asked
     // whether it agrees.
     let backend = backend();

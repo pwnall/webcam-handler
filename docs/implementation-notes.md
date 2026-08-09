@@ -1,10 +1,19 @@
 # webcam-handler — Implementation notes
 
-Case law. Recorded, justified deviations from docs/1–5 land here as numbered **N-entries**;
-new hardware behavior lands here as **PF-entries continuing the docs/1 §1.2 registry**.
-Reviews do not re-report an entry; they retire one only on empirical disproof.
+Case law. Recorded, justified deviations from the doc series land here as numbered
+**N-entries**; new hardware behavior lands here as **PF-entries continuing the design's
+§1.2 registry**. Reviews do not re-report an entry; they retire one only on empirical
+disproof.
 
 Each entry states: what the doc says, what the repo does, why, and what would retire it.
+
+**Doc series versioning (2026-08-08):** docs/6–10 (v2) supersede docs/1–5 (v1, now under
+`docs/historical/`; v2 preserves v1's section and registry numbering, so the citations
+below still resolve). The v2 revision absorbed the design- and gate-facing halves of the
+entries below and PF:13–16 into the current docs; each absorbed entry carries an
+**Absorbed:** line naming the new home. Absorption does not retire an entry — these
+remain the measurement record and the reasoning of record. Entries dated before this
+line cite docs/1–5; later entries cite docs/6–10.
 
 ---
 
@@ -32,6 +41,8 @@ proves to cost more than it buys (measured in suppressions written, not in irrit
 twelve, and `scripts/gates/unsafe-scope.sh` asserts each root carries it — so the copies
 are gate-checked, not trusted.
 
+**Absorbed (2026-08-08):** docs/9 Part 1 documents `[workspace.lints]` as the policy home; this entry remains the reasoning of record.
+
 ---
 
 ## N2 — `directories` is not used; the two XDG paths are ours
@@ -53,6 +64,8 @@ worse trade than owning thirty lines.
 **Retires when:** `directories` sheds `option-ext` (upstream has an open issue about it),
 or the tool grows a real need for cross-platform path conventions.
 
+**Absorbed (2026-08-08):** docs/6 §2.8 carries the drop and the `option-ext` ban.
+
 ---
 
 ## N3 — `std::thread::sleep` is banned workspace-wide, not just in tests
@@ -67,6 +80,8 @@ one) take a narrow `#[expect(clippy::disallowed_methods, reason = "…")]`.
 — `grep` finds every exception and each carries a reason; a test-only ban is not.
 
 **Retires when:** clippy grows per-target `disallowed-methods`.
+
+**Absorbed (2026-08-08):** docs/9 Part 1 documents the workspace-global ban.
 
 ---
 
@@ -98,6 +113,8 @@ in does not compile.
 **Retires when:** nothing retires it; docs/1 D13 should absorb these four at its next
 revision. Recorded here rather than edited into the design because the design is v1 and
 this is repo case law (docs/2's standing conventions).
+
+**Absorbed (2026-08-08):** docs/6 D13 carries the four variants.
 
 ---
 
@@ -146,6 +163,8 @@ the gate grew.
 wire surface stops being jsonrpsee. Re-run the table above on any jsonrpsee bump; if a
 version makes the original wall satisfiable, delete the exemption and this note.
 
+**Absorbed (2026-08-08):** docs/6 §2.8 and docs/9's dependency-walls row carry the api wall; the bump-triggered re-measurement is a docs/7 post-plan row.
+
 ---
 
 ## PF:13 — `bus_info` is per-USB-device, not per-logical-camera
@@ -183,6 +202,8 @@ USB ids: Chicony `04f2:b83c` serial `"0001"`; OBSBOT `3564:ff02`, no serial — 
 
 **Retires when:** never, unless the kernel starts reporting per-interface `bus_info`. It
 becomes corpus at P1, where the three committed profiles pin these node tables.
+
+**Absorbed (2026-08-08):** docs/6 §1.2 and D1; this entry remains the measurement record.
 
 ---
 
@@ -228,6 +249,8 @@ rows left. The variant is therefore scheduled to become unconstructed.
 **Retires when:** P4 closes and no crate constructs it. At that point deleting the variant
 is a one-line change that the exhaustive `Error::kind` match will drive.
 
+**Absorbed (2026-08-08):** docs/6 D13/§2.3 document the transitional variant; docs/7 P4d schedules the deletion. The retirement condition stands unchanged.
+
 ---
 
 ## PF:14 — A UVC camera's VideoStreaming interface never has a V4L2 binding
@@ -271,6 +294,8 @@ test asserts that a host with V4L2 nodes diagnoses nothing.
 
 **Retires when:** `uvcvideo` starts binding nodes to the VideoStreaming interface, or the
 diagnosis moves to a source that reports driver binding directly.
+
+**Absorbed (2026-08-08):** docs/6 §1.2 and D1; this entry remains the measurement record.
 
 ---
 
@@ -318,6 +343,8 @@ had — a requirement in the design that cannot otherwise be met.
 
 **Retires when:** nothing retires it; docs/1 §2.3 should absorb the method at its next
 revision, as N4 says of the four error variants.
+
+**Absorbed (2026-08-08):** docs/6 §2.3 carries `diagnose` in T1.
 
 ---
 
@@ -443,6 +470,8 @@ from its caller. That would not *increase* the privilege — `exec` already gran
 it would add a second, quieter route to it, one that reads like a safe utility in a shell
 history.
 
+**Absorbed (2026-08-08):** docs/6 §2.13 summarizes this entry and docs/7 P6e carries the G6 reckoning; this entry remains the full record, and the owner rulings live here.
+
 ---
 
 ## E2 — The R2 rung's first execution, 2026-08-08
@@ -546,6 +575,8 @@ metadata nodes. Regression-tested by
 `hw_a_node_that_implements_no_control_ioctl_answers_empty_rather_than_erroring`, which
 lives in the crate rather than in `tests/` because the bug is only reachable through a node
 `open` would never pick on hardware that also has a capture node.
+
+**Absorbed (2026-08-08):** docs/6 §1.2 and §2.5; this entry remains the measurement record.
 
 ---
 
@@ -694,6 +725,8 @@ outcome would need the same standard of evidence this one had.
 **Retires when:** nothing retires it; docs/1 D4 should absorb it at its next revision, as
 N4 says of the four error variants.
 
+**Absorbed (2026-08-08):** docs/6 D4 carries the four-outcome vocabulary.
+
 ---
 
 ## PF:16 — `little_exif` cannot write EXIF into a JPEG that uses restart intervals
@@ -743,6 +776,8 @@ frames, and camera frames never enter the repository (rubric A12).
 because our splice would then be a redundancy rather than a fix. It is not obviously worth
 removing even then: the splice is thirty lines and it keeps a parse of device-supplied bytes
 inside code this project's rules apply to.
+
+**Absorbed (2026-08-08):** docs/6 §1.2 and D6; this entry remains the measurement record.
 
 ---
 
@@ -858,6 +893,8 @@ notices if a nextest release changes the shape again.
 **Retires when:** nothing retires it. The general lesson is worth keeping in front of
 whoever writes the next gate: *the inverse arm must be driven by the thing under test, not
 by a model of it.* Where a stub is unavoidable, one arm should still run the real thing.
+
+**Absorbed (2026-08-08):** docs/8 rule 6 and docs/9's third structural rule carry the lesson.
 
 ---
 

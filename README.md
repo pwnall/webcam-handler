@@ -7,8 +7,9 @@ run calibration sessions that record what worked.
 Everything happens in-process. No `v4l2-ctl`, no `ffmpeg`, no external binaries at
 runtime — the tool links Rust libraries and talks to the kernel itself.
 
-**Status: under construction.** The architecture is settled (`docs/1`), the work is
-phase-gated (`docs/2`), and this README grows a usage section when `wch` grows verbs.
+**Status: under construction.** The architecture is settled (`docs/6`), the work is
+phase-gated (`docs/7`; P0–P2 are closed), and this README grows a usage section when
+`wch` grows verbs.
 
 ## Deliverables
 

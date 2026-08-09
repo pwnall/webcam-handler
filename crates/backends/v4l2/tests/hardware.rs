@@ -1,7 +1,7 @@
-//! R3 — the real-hardware rung (design §3.1, docs/2 G1).
+//! R3 — the real-hardware rung (design §3.1, docs/7 G1).
 //!
 //! Every test here carries the ignore attribute by construction: shared CI has no camera,
-//! and that is this plan's largest honest hole (docs/4's recorded limits). `just smoke-hw`
+//! and that is this plan's largest honest hole (docs/9's recorded limits). `just smoke-hw`
 //! runs them on a machine that has one, and the results are recorded as evidence in
 //! `docs/implementation-notes.md`.
 //!
@@ -19,7 +19,7 @@
 //!
 //! **Writes, and §5's motor rule.** P2 adds arms that change the camera's state, and
 //! every one of them puts it back and *asserts* that it did — a restore by assumption is
-//! the failure docs/3 Part C names. Which controls a write arm may touch is not decided
+//! the failure docs/8 Part C names. Which controls a write arm may touch is not decided
 //! here: [`testkit::battery::is_perturbable`] and [`testkit::battery::is_motorized`] are
 //! the same predicates the conformance battery uses, so "may this test move the camera
 //! somebody is pointing at a person" has one answer in the workspace. Nothing on this
@@ -348,7 +348,7 @@ fn perturbable_target(controls: &[ControlDesc]) -> Option<(ControlDesc, ControlV
 /// Write `value`, then put `desc` back where it was and assert that it went.
 ///
 /// The restoration is the assertion, not the cleanup: §5 says a suite restores what it
-/// touched, and docs/3 Part C says a restore nobody checked is a promise rather than a
+/// touched, and docs/8 Part C says a restore nobody checked is a promise rather than a
 /// fact.
 fn write_and_restore(
     camera: &mut dyn Camera,
@@ -583,7 +583,7 @@ fn hw_switching_an_automation_control_moves_its_partners_inactive_bit() {
         if freed.is_empty() {
             // Not a pass. The arm's whole subject is that the flag tracks the automation
             // control, and a toggle that moved nothing made no claim about it — counting
-            // it as an observation would be a skip wearing a pass (docs/3 Part C).
+            // it as an observation would be a skip wearing a pass (docs/8 Part C).
             println!(
                 "SKIP (partial): {}: switching {} off freed no control's INACTIVE bit, so \
                  PF:3 was not exercised on this device",

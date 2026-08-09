@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# R3 — the real-hardware rung (design §3.1, docs/2 G1/G2).
+# R3 — the real-hardware rung (design §3.1, docs/7 G1/G2).
 #
 # These suites are `#[ignore]`d and CI-independent: shared CI has no camera, and that is
-# this plan's largest honest hole (docs/4's recorded limits). They run on demand, on a
+# this plan's largest honest hole (docs/9's recorded limits). They run on demand, on a
 # machine with a camera attached, and their results are recorded as evidence in
 # docs/implementation-notes.md with transcripts — they never gate CI.
 #
@@ -29,7 +29,7 @@ skips=0
 #
 # nextest has no runtime-skip concept: a hardware test on a machine without that hardware
 # passes, and a pass is indistinguishable from a claim actually made. That is "skip == pass
-# in a costume" (docs/3 Part C) unless somebody counts them — so the tests print a line
+# in a costume" (docs/8 Part C) unless somebody counts them — so the tests print a line
 # beginning `SKIP` when they decline to claim something, `--success-output final` makes
 # those lines visible for passing tests too, and this function turns them into the named,
 # counted skips the rest of the suite already reports.
@@ -70,7 +70,7 @@ else
 fi
 
 # `grep` exits non-zero on zero matches, and zero matches is the expected P0 answer —
-# the exact `pipefail` trap docs/4 names, handled rather than tripped over.
+# the exact `pipefail` trap docs/9 names, handled rather than tripped over.
 suite_size="$({ grep -rlE "fn[[:space:]]+${prefix}" "$root/crates" --include='*.rs' 2>/dev/null || true; } | wc -l)"
 if ((suite_size == 0)); then
     skip "no test named ${prefix}* exists yet: the V4L2 backend lands at P1, and the hardware suites land with it"

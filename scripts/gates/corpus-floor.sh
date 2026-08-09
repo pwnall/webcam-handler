@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Dead corpus: a committed device profile nobody replays (design §3.2, docs/4 P1 row).
+# Dead corpus: a committed device profile nobody replays (design §3.2, docs/9 P1 row).
 #
 # A profile is expensive — it takes hardware somebody has, at a kernel version somebody
 # ran — and it is committed precisely so the behaviour it records outlives the machine. A

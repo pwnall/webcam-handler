@@ -1,4 +1,4 @@
-//! The committed corpus, replayed (design §3.2, docs/4's "PF regression fixtures loaded").
+//! The committed corpus, replayed (design §3.2, docs/9's "PF regression fixtures loaded").
 //!
 //! Two claims, and the second is the interesting one.
 //!
@@ -84,13 +84,13 @@ fn declared_skips(profile: &DeviceProfile) -> BTreeMap<BatteryArm, String> {
 #[test]
 fn the_corpus_is_not_empty() {
     // The floor under every other test in this file. An empty corpus would make each of
-    // them vacuously green, which is precisely the failure docs/4's derived-population
+    // them vacuously green, which is precisely the failure docs/9's derived-population
     // rule exists to prevent.
     let count = corpus::count().expect("the corpus directory reads");
     assert!(
         count > 0,
         "corpus/profiles/ holds no profiles; the three probe-era captures land at P1 \
-         (docs/2) and every claim below is vacuous without them"
+         (docs/7) and every claim below is vacuous without them"
     );
 }
 
@@ -192,7 +192,7 @@ fn the_corpus_was_captured_from_hardware_rather_than_from_the_fake() {
 
 /// One probe finding, and how to see it in a captured document.
 struct PfFinding {
-    /// The citation, as docs/1 §1.2 numbers it.
+    /// The citation, as docs/6 §1.2 numbers it.
     id: &'static str,
     /// What the finding says, in one line.
     claim: &'static str,

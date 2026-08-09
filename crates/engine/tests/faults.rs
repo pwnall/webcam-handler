@@ -1,4 +1,4 @@
-//! The engine's answer to every fault the fake can script (design §2.9, docs/2 G2).
+//! The engine's answer to every fault the fake can script (design §2.9, docs/7 G2).
 //!
 //! The backend conformance battery asks whether a *backend* behaves; this asks whether the
 //! **engine** does, when the backend behaves badly on purpose. Those are different

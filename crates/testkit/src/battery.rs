@@ -1,4 +1,4 @@
-//! The backend conformance battery (design §2.11 step 4; docs/4 "The battery").
+//! The backend conformance battery (design §2.11 step 4; docs/9 "The battery").
 //!
 //! Every T1/T2 implementation runs this suite, and passing it is what "the backend is
 //! done" means. The arms are the doctrine made executable: enumeration groups nodes by
@@ -14,7 +14,7 @@
 //! *declared* skip with a written reason, and the accounting is checked **both
 //! directions**: an arm that ran while it was declared skipped is a failure (the
 //! declaration is stale, and stale declarations are how a suite quietly stops testing
-//! anything), an arm that did not run without a declaration is a failure (docs/3 Part C:
+//! anything), an arm that did not run without a declaration is a failure (docs/8 Part C:
 //! "skip == pass, in any costume"), and a declared skip with an empty reason is a failure
 //! (a skip nobody can read is a skip nobody can audit).
 //!
@@ -673,7 +673,7 @@ fn probe_clamp(camera: &mut dyn Camera, desc: &ControlDesc, log: &mut ArmLog<'_>
         }
     }
 
-    // Leave the camera as we found it, and assert that we did (docs/3 Part C:
+    // Leave the camera as we found it, and assert that we did (docs/8 Part C:
     // "restoration by assumption").
     match camera.set(desc.id, ControlValue::Int(original)) {
         Ok(applied) => log.require(applied.applied == ControlValue::Int(original), || {
@@ -1366,7 +1366,7 @@ mod tests {
 
     #[test]
     fn an_arm_that_did_not_run_without_a_declaration_is_a_failure() {
-        // "Skip == pass, in any costume" (docs/3 Part C). An undeclared skip is the
+        // "Skip == pass, in any costume" (docs/8 Part C). An undeclared skip is the
         // costume.
         let report = run(&StubBackend::empty(), &BTreeMap::new());
 
@@ -1390,7 +1390,7 @@ mod tests {
     #[test]
     fn a_declared_skip_with_an_empty_reason_is_a_failure() {
         // A reason nobody wrote is a reason nobody can audit, and the counted-skip
-        // discipline (docs/3 rule 3) is only worth anything if the count comes with
+        // discipline (docs/8 rule 3) is only worth anything if the count comes with
         // words.
         let mut skips = skips_for_a_deviceless_backend();
         skips.insert(BatteryArm::FaultMenu, "   ".to_owned());

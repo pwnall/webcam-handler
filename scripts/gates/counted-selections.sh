@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Every phase-gate test selection selects more than zero tests (rubric rule 3, docs/4).
+# Every phase-gate test selection selects more than zero tests (rubric rule 3, docs/9).
 #
 # The predecessor's costliest gate failure was not a gate that went red — it was a gate
 # whose test filter had quietly stopped matching anything and stayed green for months. A
@@ -9,7 +9,7 @@
 # The population is the `tests` rows of `phase-criteria.tsv`, so a criterion added there
 # is covered here without anybody remembering to add it twice.
 #
-# The `grep -c` trap docs/4 names is avoided by construction: nothing here pipes into a
+# The `grep -c` trap docs/9 names is avoided by construction: nothing here pipes into a
 # counter whose zero-match exit status could be swallowed. `cargo nextest list`'s exit
 # status is captured explicitly, and a build failure or a malformed filterset is a
 # failure of this gate rather than a zero that looks like an answer.
@@ -59,7 +59,7 @@ count_matched() {
           | select(.value["filter-match"].status == "matches") ] | length'
 }
 
-# The (package, binary) pairs the matched tests live in — docs/4 asks selections to be
+# The (package, binary) pairs the matched tests live in — docs/9 asks selections to be
 # compared as pairs, and a suite with no *matching* testcase matched nothing.
 count_suites() {
     jq '[ .. | objects | select(has("testcases"))

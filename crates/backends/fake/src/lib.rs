@@ -32,7 +32,7 @@
 //! battery — which is backend-agnostic and knows nothing about this crate — runs in
 //! `tests/battery.rs` from P0 (design G0).
 #![forbid(unsafe_code)]
-// docs/4's "device/request-driven paths" lint set. Every path in this crate answers a
+// docs/9's "device/request-driven paths" lint set. Every path in this crate answers a
 // request or replays device data, so the whole crate is inside it. `not(test)` because a
 // test asserting an invariant with `.expect("literal fixture")` is stating a
 // precondition, not risking a device.

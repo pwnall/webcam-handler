@@ -101,9 +101,10 @@ undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"
 multiple_unsafe_ops_per_block = "deny"
 # Suppressions are `#[expect(.., reason = "..")]`, narrowest scope (rubric B11).
-# docs/4 writes these two under `cfg_attr(not(test), ..)`; a `[workspace.lints]` table
+# Gates v1 wrote these two under `cfg_attr(not(test), ..)`; a `[workspace.lints]` table
 # cannot express cfg, and one home for the lint policy beats one exemption for tests —
-# recorded as N1 in docs/implementation-notes.md. The effect is strictly stronger.
+# recorded as N1 in docs/implementation-notes.md, absorbed into docs/9 Part 1. The
+# effect is strictly stronger.
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 

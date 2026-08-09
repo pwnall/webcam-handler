@@ -12,7 +12,7 @@
 //! ## Provenance is not optional
 //!
 //! `corpus/images/` holds generated fixtures only, and the gate that enforces it
-//! (docs/4 `no-frame-bytes-in-repo.sh`) tells a synthetic fixture from a camera frame by
+//! (docs/9 `no-frame-bytes-in-repo.sh`) tells a synthetic fixture from a camera frame by
 //! the `generated-by` marker this module stamps. **Any image file written from these
 //! generators goes through [`provenanced_png_gray8`] or [`provenanced_png_rgb8`]** — a
 //! bare [`crate::encode::png_gray8`] produces a file the gate must reject, and rightly

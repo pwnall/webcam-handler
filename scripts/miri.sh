@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Miri over the unsafe-adjacent pure units (design §2.5, docs/4 Part 2).
+# Miri over the unsafe-adjacent pure units (design §2.5, docs/9 Part 2).
 #
 # **Miri cannot cross an ioctl.** It covers the half of the V4L2 sys module that is pure:
 # the raw-struct-to-`ControlDesc` decode functions, written as functions over captured
@@ -32,7 +32,7 @@ skip() {
 }
 
 # `grep` exits non-zero on zero matches, and zero matches is the expected P0 answer —
-# the exact `pipefail` trap docs/4 names, handled rather than tripped over.
+# the exact `pipefail` trap docs/9 names, handled rather than tripped over.
 suite_size="$({ grep -rl "$marker" "$root/crates" --include='*.rs' 2>/dev/null || true; } | wc -l)"
 if ((suite_size == 0)); then
     skip "no ${marker} unit exists yet: the raw ioctl layer and its pure decode functions land at P1"

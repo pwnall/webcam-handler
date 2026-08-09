@@ -290,7 +290,7 @@ impl CameraArg {
 }
 
 /// The verbs. P1 landed the read half, P2 the write and capture halves; calibration,
-/// the daemon and recording arrive with their phases (docs/2).
+/// the daemon and recording arrive with their phases (docs/7).
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// List the cameras attached to this machine.

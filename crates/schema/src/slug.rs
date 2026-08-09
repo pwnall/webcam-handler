@@ -61,7 +61,7 @@ mod tests {
     use super::*;
 
     /// The names on the seed hardware, plus the shapes that make the transform
-    /// ambiguous if it is not pinned. These are the fixtures docs/1 D2 promises.
+    /// ambiguous if it is not pinned. These are the fixtures docs/6 D2 promises.
     #[test]
     fn control_slugs_match_the_v4l2_ctl_spelling() {
         let cases = [

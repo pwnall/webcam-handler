@@ -71,10 +71,10 @@ gate_checked "${#rules[@]}" "off-origin patterns"
 gate_require_nonzero "${#rules[@]}" "off-origin patterns"
 
 if ((assets == 0)); then
-    # docs/4 Part 2 commissions the arm that makes an empty asset directory a failure —
+    # docs/9 Part 2 commissions the arm that makes an empty asset directory a failure —
     # it lands at P5 with the assets themselves. Until then the emptiness is printed and
     # counted, so nobody reads this gate's green as "the assets were checked".
-    gate_skip 0 "web asset files under $web_suffix/ — the client's HTML/CSS/JS lands at P5, and docs/4 Part 2 commissions the non-vacuity arm with it"
+    gate_skip 0 "web asset files under $web_suffix/ — the client's HTML/CSS/JS lands at P5, and docs/9 Part 2 commissions the non-vacuity arm with it"
 else
     gate_checked "$((assets * ${#rules[@]}))" "(asset file, off-origin pattern) pairs across $assets asset file(s)"
 fi

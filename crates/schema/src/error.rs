@@ -258,7 +258,7 @@ pub enum Error {
     Unimplemented {
         /// The trait method or verb that was called.
         operation: String,
-        /// The phase that lands it, in docs/2's spelling (`P2`).
+        /// The phase that lands it, in docs/7's spelling (`P2`).
         arrives_in: String,
     },
 }

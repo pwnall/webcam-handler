@@ -2,7 +2,7 @@
 #
 # The phase gate: `./scripts/gates/phase.sh g0`, which is what `just gate-g0` runs.
 #
-# Named, counted and re-runnable, because docs/2's standing convention says a criterion
+# Named, counted and re-runnable, because docs/7's standing convention says a criterion
 # nobody can re-run is a criterion nobody will re-check. The criteria live in
 # `phase-criteria.tsv`, one row each; this file is the runner, not the list.
 #

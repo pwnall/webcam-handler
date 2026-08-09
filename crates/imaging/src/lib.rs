@@ -31,10 +31,10 @@
 //! Rubric A12: no error message this crate produces contains frame bytes. Lengths,
 //! dimensions and format names only.
 #![forbid(unsafe_code)]
-// docs/4's "device/request-driven paths" lint set. Every path in this crate is
+// docs/9's "device/request-driven paths" lint set. Every path in this crate is
 // frame-driven, so the whole crate is inside it. `not(test)` because a test asserting an
 // invariant with `.expect("literal fixture")` is stating a precondition, not risking a
-// device; docs/4 writes the same carve-out.
+// device; docs/9 writes the same carve-out.
 #![cfg_attr(
     not(test),
     deny(

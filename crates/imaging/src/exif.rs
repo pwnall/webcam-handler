@@ -16,7 +16,7 @@
 //!
 //! ## Read back, never assumed
 //!
-//! docs/4 names write-only EXIF as a defect class: a writer that returns `Ok` having
+//! docs/9 names write-only EXIF as a defect class: a writer that returns `Ok` having
 //! produced a segment no reader accepts passes every test that trusts it. Every field
 //! this module writes is read back in tests with `kamadak-exif`, an independent
 //! implementation that shares no code with the writer.
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn every_stamped_field_reads_back_through_an_independent_reader() {
-        // docs/4's "EXIF read-back" gate as a test: the writer returning `Ok` proves
+        // docs/9's "EXIF read-back" gate as a test: the writer returning `Ok` proves
         // nothing about whether any reader can find what it claims to have written.
         let stamped = stamp_jpeg(&sample_jpeg(), &metadata(Transform::Rot90)).expect("stamp");
         let data = read_back(&stamped);

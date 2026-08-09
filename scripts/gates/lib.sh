@@ -1,6 +1,6 @@
 # Shared helpers for the webcam-handler gate predicates.
 #
-# docs/4's structural rule is that a gate written to close a defect is not itself tested
+# docs/9's structural rule is that a gate written to close a defect is not itself tested
 # against its own inverse, and the second arm is where it fails. `selftest.sh` proves the
 # second arm by pointing a predicate at a *mutated copy* of the tree, so no predicate may
 # assume it is looking at the checkout it lives in: every path resolves under
@@ -92,7 +92,7 @@ gate_finish() {
 
 # --------------------------------------------------------------- tree traversal
 #
-# Populations are derived by walking the tree, never transcribed (docs/4's second
+# Populations are derived by walking the tree, never transcribed (docs/9's second
 # structural rule). `target/`, `.git/` and `vendor/` are excluded everywhere: the first
 # two are not source, and `vendor/v4l2-webcam-skill/` is a read-only upstream reference
 # this project does not own.
@@ -134,9 +134,9 @@ gate_metadata() {
 # The predicate population is the directory listing minus the harness. Neither
 # `run-all.sh` nor `selftest.sh` keeps a list, so a predicate added to the directory is
 # run and self-tested without anybody remembering to register it — which is the failure
-# docs/4's derived-population rule exists to prevent.
+# docs/9's derived-population rule exists to prevent.
 #
-# The harness names *are* a list, and that is the bootstrap limit docs/4 records: the
+# The harness names *are* a list, and that is the bootstrap limit docs/9 records: the
 # selftest cannot test the harness. It is closed as far as it can be — each name is
 # asserted to exist, so a rename fails loudly instead of quietly promoting a harness file
 # into the population it drives.

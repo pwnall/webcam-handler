@@ -6,7 +6,7 @@
 //!
 //! ## What has landed, and what has not
 //!
-//! P1 landed the **read path** (docs/2): enumeration, the control model, and the format
+//! P1 landed the **read path** (docs/7): enumeration, the control model, and the format
 //! tree. P2 adds the **write and capture paths** — `set` with the read-back D3 requires,
 //! and mmap streaming with the format negotiation D5 requires. **Hotplug is the last one
 //! left**, and it arrives at P4 with the daemon's uevent socket. The T2 trait is total, so
@@ -32,7 +32,7 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// docs/4's "device/request-driven paths" lint set. Every path in this crate answers a
+// docs/9's "device/request-driven paths" lint set. Every path in this crate answers a
 // request or reads a device, so the whole crate is inside it.
 #![cfg_attr(
     not(test),

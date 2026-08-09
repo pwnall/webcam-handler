@@ -440,7 +440,7 @@ impl FakeCamera {
     /// A *stated* property of the model (see [`crate::frames`]): the optimum is the focus
     /// control's declared default. A calibration test reads that default out of the
     /// profile and expects the peak there, rather than asking the synthesizer where its
-    /// own peak is — which would be the fake validating the fake (docs/3 Part C).
+    /// own peak is — which would be the fake validating the fake (docs/8 Part C).
     #[must_use]
     pub fn focus_optimum(&self) -> Option<i64> {
         let knob = lock(&self.state).knob(frames::FOCUS_CONTROL_SLUG)?;

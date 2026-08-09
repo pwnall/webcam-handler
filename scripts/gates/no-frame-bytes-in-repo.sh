@@ -18,7 +18,7 @@
 #      a webcam commonly offers, so a fixture that exceeds the cap is either a frame or a
 #      fixture that should have been generated smaller.
 #
-# Honest limit, recorded in docs/4 and design §3.3 item 6: this sniffs *known* formats. A
+# Honest limit, recorded in docs/9 and design §3.3 item 6: this sniffs *known* formats. A
 # frame inside an unrecognised container passes, and review carries that half.
 set -euo pipefail
 

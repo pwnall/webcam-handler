@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Prove every gate predicate can go red — the rule the whole suite is built around
-# (docs/4): *a gate written to close a defect is not itself tested against its own
+# (docs/9): *a gate written to close a defect is not itself tested against its own
 # inverse, and the second arm is where it fails.*
 #
 # The table is the directory listing (`gate_predicates`), never a hand-maintained list.

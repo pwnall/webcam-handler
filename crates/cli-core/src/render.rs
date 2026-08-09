@@ -1325,7 +1325,7 @@ mod tests {
         // type this table must spell, and one it does not name is `Unknown`, whose
         // rendering carries the raw value and is therefore distinct by construction. A
         // hand-written list here would silently stop covering a variant added to
-        // `from_raw` — which is the drift docs/4's derived-population rule exists to stop.
+        // `from_raw` — which is the drift docs/9's derived-population rule exists to stop.
         let named: Vec<ControlType> = (0..=0x0110u32)
             .map(ControlType::from_raw)
             .filter(|t| !matches!(t, ControlType::Unknown { .. }))

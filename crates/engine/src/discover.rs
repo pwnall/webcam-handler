@@ -11,7 +11,7 @@
 //! Every toggle is a write, and a probe that left a camera with its white balance on
 //! manual would be a probe nobody could run twice. So it snapshots first, restores last,
 //! and reports what the restore achieved — because a restore nobody checked is a promise
-//! (docs/3 Part C). The restore runs even when the probe fails part way, for the same
+//! (docs/8 Part C). The restore runs even when the probe fails part way, for the same
 //! reason [`crate::capture`]'s stream guard does.
 //!
 //! ## What it declines to touch, it names

@@ -13,7 +13,7 @@
 # where a bypass would live.
 #
 # Honest limit: a file that receives the state path as an argument and never names it is
-# invisible here. docs/4 records the same limit, and the P3 widening row adds the arm
+# invisible here. docs/9 records the same limit, and the P3 widening row adds the arm
 # that runs over the real home once the session store exists.
 set -euo pipefail
 
@@ -76,9 +76,9 @@ gate_checked "$scanned" "Rust source files scanned"
 gate_require_nonzero "$scanned" "Rust source files"
 
 if ((reaching == 0)); then
-    # Not a pass dressed up as one: the population is printed and counted, and docs/4's
+    # Not a pass dressed up as one: the population is printed and counted, and docs/9's
     # P3 widening row is the commitment that makes it non-empty.
-    gate_skip 0 "Rust files that name the state directory — the session store lands at P3 (docs/4 Part 2, 'Store bypass gate widened'); until then this predicate can only prove that nothing bypasses a home that does not exist"
+    gate_skip 0 "Rust files that name the state directory — the session store lands at P3 (docs/9 Part 2, 'Store bypass gate widened'); until then this predicate can only prove that nothing bypasses a home that does not exist"
 else
     gate_checked "$reaching" "Rust files that name the state directory"
 fi

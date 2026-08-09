@@ -19,7 +19,7 @@
 //! - **Miri has a real population.** [`decode`]'s units are pure functions over captured
 //!   byte fixtures, so `scripts/miri.sh` executes the decoding half of this module
 //!   without a device. Miri cannot cross an ioctl, and this is the split that gives it
-//!   something true to say (docs/4's recorded limit).
+//!   something true to say (docs/9's recorded limit).
 //! - **Union reads stop being an obligation.** `v4l2_querymenu`'s union is two readings
 //!   of the same 32 bytes; choosing between them by control type is a decoding decision
 //!   made over a byte slice, not an `unsafe` field access that has to prove which arm was

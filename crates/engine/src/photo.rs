@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn a_jpeg_photo_carries_exif_an_independent_reader_can_read_back() {
-        // docs/4 names write-only EXIF as a defect class: a writer that returns `Ok`
+        // docs/9 names write-only EXIF as a defect class: a writer that returns `Ok`
         // having produced a segment no reader accepts passes every test that trusts it.
         // `kamadak-exif` shares no code with `little_exif`, which is the whole point.
         let mut camera = camera_from("chicony-rgb");

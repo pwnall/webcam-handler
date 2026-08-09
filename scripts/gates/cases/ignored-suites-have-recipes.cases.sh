@@ -1,6 +1,6 @@
 # Both-direction cases for `ignored-suites-have-recipes.sh`.
 #
-# Both halves are seeded, as docs/4 requires: an `#[ignore]`d test that no suite claims,
+# Both halves are seeded, as docs/9 requires: an `#[ignore]`d test that no suite claims,
 # and a suite declaration whose recipe does not exist or does not run the script that
 # declared it.
 #

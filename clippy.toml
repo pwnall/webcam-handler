@@ -1,4 +1,4 @@
-# Lint gates (docs/4). `disallowed-*` entries are the by-name bans; module-scoped
+# Lint gates (docs/9). `disallowed-*` entries are the by-name bans; module-scoped
 # levels (unwrap/expect/panic/indexing/as) live at the crate roots that need them.
 
 disallowed-methods = [

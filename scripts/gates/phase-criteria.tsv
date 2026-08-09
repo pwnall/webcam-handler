@@ -1,11 +1,11 @@
-# The phase-gate criteria (docs/2, G0-G6). One row per criterion; adding a criterion is
+# The phase-gate criteria (docs/7, G0-G6). One row per criterion; adding a criterion is
 # adding a line. Tab-separated:
 #
 #   phase     the gate it belongs to: g0 .. g6
 #   kind      `tests`   — a cargo-nextest filterset, run with --no-tests=fail
 #             `command` — a command run from the repository root
 #   selection the filterset or the command
-#   what      what the criterion establishes, in the words docs/2 uses
+#   what      what the criterion establishes, in the words docs/7 uses
 #
 # Two readers: `phase.sh` runs the rows for one phase and counts them, and
 # `counted-selections.sh` proves every `tests` row still selects more than zero tests —
@@ -21,7 +21,7 @@ g0	tests	package(webcam-handler-imaging)	metric ordering tests over synthetic fi
 g0	tests	package(webcam-handler-engine)	the engine pure cores and the inverse fixtures each one refuses
 g0	tests	package(webcam-handler-fake)	the fake passes the backend conformance battery (design 2.11)
 g0	tests	package(webcam-handler-testkit)	the battery and the corpus loader hold their own invariants
-g1	command	cargo clippy --locked --offline --workspace --all-targets -- -D warnings	zero clippy violations across the workspace, tests included (docs/2 G1 says so and nothing ran it)
+g1	command	cargo clippy --locked --offline --workspace --all-targets -- -D warnings	zero clippy violations across the workspace, tests included (docs/7 G1 says so and nothing ran it)
 g1	command	cargo deny --offline check bans licenses sources	zero cargo-deny violations: the allowlist and every named ban
 g1	command	./scripts/gates/run-all.sh	every shipped gate predicate green over the tree, the P1 additions included
 g1	command	./scripts/gates/selftest.sh	every shipped gate predicate red on its own inverse, counted, both directions

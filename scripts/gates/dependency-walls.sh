@@ -26,7 +26,7 @@
 # Only *normal* dependency edges count. A dev-dependency does not ship (that wall is
 # `testkit-is-dev-only.sh`) and a build-dependency does not link into the artifact.
 #
-# Honest limit, restated from docs/4: this predicate reads declared edges and greps
+# Honest limit, restated from docs/9: this predicate reads declared edges and greps
 # source. A backend leaking V4L2 semantics through stringly-typed values rather than
 # types is invisible to it, and the *behavioral* halves of T6 (which crate touches the
 # filesystem, `/dev`, the state dir) are review-held.

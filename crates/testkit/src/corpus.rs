@@ -3,12 +3,12 @@
 //! `corpus/profiles/` holds T3 profiles captured by the tool from real hardware,
 //! committed with provenance and immutable once committed. Tests read them through here
 //! so that "which profiles exist" is always a `find` over the directory and never a list
-//! somebody maintains — docs/4's second structural rule, and the reason the corpus-floor
+//! somebody maintains — docs/9's second structural rule, and the reason the corpus-floor
 //! gate (P1) can count what it covers.
 //!
 //! **A profile that fails to parse is a loud failure, not a skipped file.** A loader that
 //! shrugged at a malformed profile would turn corpus rot into a green run, which is
-//! docs/3 Part C's "skip == pass" wearing a filesystem.
+//! docs/8 Part C's "skip == pass" wearing a filesystem.
 //!
 //! The hand-authored minimal-repro profile is deliberately *not* here — it lives in
 //! [`crate::fixtures`], so this directory stays uniformly tool-captured (§3.2).

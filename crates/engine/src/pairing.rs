@@ -19,7 +19,7 @@
 //! So [`validate`] is written as an independent walk — simulate the device, replay the
 //! plan, refuse the first write made under live automation — and the inverse fixtures in
 //! this module's tests hand it plans that *do* get it wrong, so its ability to say no is
-//! demonstrated rather than assumed (rubric B3, docs/4 "Guarded-set inverse").
+//! demonstrated rather than assumed (rubric B3, docs/9 "Guarded-set inverse").
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1065,7 +1065,7 @@ mod tests {
 
     #[test]
     fn the_validator_rejects_a_plan_that_omits_the_switch_off() {
-        // docs/4's "Guarded-set inverse", built by hand: this is exactly the plan a
+        // docs/9's "Guarded-set inverse", built by hand: this is exactly the plan a
         // planner with the guard removed would emit, and the validator must refuse it.
         // Without this test, the property test below asserts with a function nobody has
         // seen say no.
