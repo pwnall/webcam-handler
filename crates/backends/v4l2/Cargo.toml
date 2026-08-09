@@ -22,6 +22,9 @@ v4l.workspace = true
 webcam-handler-schema.workspace = true
 
 [dev-dependencies]
+# The R3 photo arm decodes its own output rather than trusting the magic bytes, and writes
+# it to a scratch directory rather than into the tree (rubric A12).
+image.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 webcam-handler-engine.workspace = true

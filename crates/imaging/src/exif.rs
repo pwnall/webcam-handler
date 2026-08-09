@@ -99,10 +99,130 @@ pub fn stamp_jpeg(jpeg: &[u8], metadata: &CaptureMetadata) -> Result<Vec<u8>> {
     tags.set_tag(ExifTag::CreateDate(captured_at.clone()));
     tags.set_tag(ExifTag::ModifyDate(captured_at));
 
-    let mut out = jpeg.to_vec();
-    tags.write_to_vec(&mut out, FileExtension::JPEG)
+    // The APP1 segment, built without the writer ever seeing our file — see
+    // [`splice_app1`] for why that separation is load-bearing.
+    let app1 = tags
+        .as_u8_vec(FileExtension::JPEG)
         .map_err(|err| imaging_failure(OP, err.to_string()))?;
+    splice_app1(jpeg, &app1)
+}
+
+/// Put `app1` into `jpeg` immediately after the SOI, dropping any EXIF already there.
+///
+/// ## Why this is ours and not the writer's
+///
+/// `little_exif 0.6.23`'s own JPEG path walks the **whole file** byte by byte looking for
+/// `0xFF <marker>` pairs — including inside the entropy-coded scan. That is not a place
+/// markers live: a literal `0xFF` in compressed data is byte-stuffed as `FF 00`, and a
+/// file using restart intervals contains `FF D0`–`FF D7` throughout its scan. The walker
+/// reads the two bytes after each as a segment length, gets a number out of the image
+/// data, and seeks past the end — `failed to fill whole buffer`.
+///
+/// Measured on the Chicony, which sets a restart interval (`FFDD`): **nine of forty**
+/// frames failed, varying with the scene, because whether a garbage length happens to land
+/// inside the buffer depends on what the sensor was looking at. A photo verb that works
+/// two times in three is worse than one that never works, because the failures look like
+/// the camera's fault. Recorded as PF:16.
+///
+/// ## Why the fix is small
+///
+/// Every JPEG segment *before* the start-of-scan is a well-formed `FF <marker> <u16 len>`,
+/// and `SOS` is where that stops being true. So the walk stops at `SOS`, which is also the
+/// only region an APP1 can legally occupy — and the entropy-coded data, the part this
+/// function must not misread, is copied verbatim and never parsed. That is E6's promise
+/// restated as an implementation: stamping rewrites the header and cannot touch a pixel.
+fn splice_app1(jpeg: &[u8], app1: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(jpeg.len() + app1.len());
+    out.extend_from_slice(jpeg.get(..2).unwrap_or_default());
+    out.extend_from_slice(app1);
+
+    // Walk the header segments, copying everything except an existing EXIF APP1. Two
+    // EXIF segments in one file is undefined, and the camera's describes the same
+    // capture less accurately than ours.
+    let mut at = 2usize;
+    while let Some(segment) = next_segment(jpeg, at) {
+        match segment {
+            Segment::Standalone { end } => {
+                out.extend_from_slice(jpeg.get(at..end).unwrap_or_default());
+                at = end;
+            }
+            Segment::Sized { marker, body, end } => {
+                let is_exif = marker == APP1
+                    && jpeg
+                        .get(body..body.saturating_add(EXIF_SIGNATURE.len()))
+                        .is_some_and(|prefix| prefix == EXIF_SIGNATURE);
+                if !is_exif {
+                    out.extend_from_slice(jpeg.get(at..end).unwrap_or_default());
+                }
+                at = end;
+            }
+            // The scan, and everything after it — copied without a single byte being
+            // interpreted, which is the whole point.
+            Segment::ScanBegins => break,
+        }
+    }
+    out.extend_from_slice(jpeg.get(at..).unwrap_or_default());
     Ok(out)
+}
+
+/// `APP1`, the marker EXIF lives in.
+const APP1: u8 = 0xe1;
+/// `SOS` — after this, the bytes are compressed image data and not markers.
+const SOS: u8 = 0xda;
+/// The six bytes that make an APP1 segment an *EXIF* one rather than, say, XMP.
+const EXIF_SIGNATURE: &[u8] = b"Exif\0\0";
+
+/// One step of the header walk.
+enum Segment {
+    /// A marker with no length field (`RSTn`, `TEM`).
+    Standalone { end: usize },
+    /// A marker with a `u16` length.
+    Sized {
+        marker: u8,
+        /// Where the segment's payload starts, after the marker and the length.
+        body: usize,
+        /// Where the next segment starts.
+        end: usize,
+    },
+    /// The start of scan. The walk stops here.
+    ScanBegins,
+}
+
+/// The segment at `at`, or `None` when the buffer does not hold one.
+///
+/// Total by construction: every arithmetic step is checked and every slice is `get`. The
+/// input is a camera's bitstream, which is device data and therefore attacker-shaped
+/// (rubric B10) — a segment claiming a length past the end of the buffer must end the
+/// walk, not index past it.
+fn next_segment(jpeg: &[u8], at: usize) -> Option<Segment> {
+    if *jpeg.get(at)? != 0xff {
+        return None;
+    }
+    let marker = *jpeg.get(at.checked_add(1)?)?;
+    match marker {
+        SOS => Some(Segment::ScanBegins),
+        // `RSTn` and `TEM` carry no length. They do not appear in a header, but a walk
+        // that assumed so would misread one rather than stopping.
+        0xd0..=0xd9 | 0x01 => Some(Segment::Standalone {
+            end: at.checked_add(2)?,
+        }),
+        _ => {
+            let high = u16::from(*jpeg.get(at.checked_add(2)?)?);
+            let low = u16::from(*jpeg.get(at.checked_add(3)?)?);
+            let length = usize::from((high << 8) | low);
+            // A length below 2 does not include its own field, which is a segment that
+            // cannot exist; both that and a length past the end end the walk.
+            let end = at.checked_add(2)?.checked_add(length.max(2))?;
+            if length < 2 || end > jpeg.len() {
+                return None;
+            }
+            Some(Segment::Sized {
+                marker,
+                body: at.checked_add(4)?,
+                end,
+            })
+        }
+    }
 }
 
 /// The camera identity and negotiated format, as one line.
@@ -376,6 +496,143 @@ mod tests {
         let before = decode::decode_jpeg(&original, 64, 48).expect("decode");
         let after = decode::decode_jpeg(&stamped, 64, 48).expect("decode");
         assert_eq!(before, after);
+    }
+
+    /// A JPEG whose entropy-coded scan contains byte sequences that *look* like markers.
+    ///
+    /// Hand-built, because our own encoder does not emit restart intervals and the frames
+    /// that exposed the defect are camera frames, which never enter the repository (rubric
+    /// A12). Every byte after `SOS` here is scan data by construction — including
+    /// `FF D0` (a restart marker) and `FF 00 FF FF` (a stuffed literal followed by two
+    /// bytes that read as a 65535-byte length).
+    ///
+    /// It is not a decodable image and does not need to be: this fixture's subject is the
+    /// *parser*, and the parser's contract is that it never looks at these bytes.
+    fn jpeg_with_marker_shaped_scan_bytes() -> Vec<u8> {
+        let mut out = vec![0xff, 0xd8];
+        // A `DRI` segment, which is what tells a reader restart markers are coming — the
+        // Chicony sets one, which is why its frames contained them.
+        out.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x10]);
+        // A minimal `SOF0`, so the header is not merely a DRI.
+        out.extend_from_slice(&[
+            0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11, 0x00,
+        ]);
+        // `SOS`, after which nothing is a marker.
+        out.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]);
+        out.extend_from_slice(&[0x12, 0x34, 0x56]);
+        out.extend_from_slice(&[0xff, 0xd0]); // a restart marker
+        out.extend_from_slice(&[0x78, 0x9a]);
+        out.extend_from_slice(&[0xff, 0x00, 0xff, 0xff]); // a stuffed 0xFF, then "length 65535"
+        out.extend_from_slice(&[0xbc, 0xde]);
+        out.extend_from_slice(&[0xff, 0xd9]);
+        out
+    }
+
+    #[test]
+    fn a_scan_full_of_marker_shaped_bytes_is_stamped_without_being_parsed() {
+        // The PF:16 regression, forever. A stamper that walks past `SOS` reads a length
+        // out of the image data and runs off the end of the buffer — which is what
+        // `little_exif`'s own JPEG path does, and why nine of forty frames from the
+        // Chicony failed to stamp before this.
+        let original = jpeg_with_marker_shaped_scan_bytes();
+        let stamped = stamp_jpeg(&original, &metadata(Transform::None))
+            .expect("a scan is not a place markers live");
+
+        let offset = scan_offset(&original).expect("the fixture has a scan");
+        let scan = original.get(offset..).expect("in range");
+        assert!(
+            stamped.ends_with(scan),
+            "the bytes after SOS were touched; they are image data, not structure"
+        );
+        assert!(
+            stamped.starts_with(&[0xff, 0xd8, 0xff, 0xe1]),
+            "the APP1 goes immediately after the SOI"
+        );
+
+        // And it is real EXIF, read back by the independent implementation — a splice
+        // that produced an unreadable segment would satisfy every assertion above.
+        let mut cursor = std::io::Cursor::new(stamped);
+        let exif = exif::Reader::new()
+            .read_from_container(&mut cursor)
+            .expect("the spliced segment is readable EXIF");
+        assert!(
+            exif.get_field(Tag::Make, In::PRIMARY).is_some(),
+            "the tags survived the splice"
+        );
+    }
+
+    #[test]
+    fn an_exif_segment_the_camera_wrote_is_replaced_rather_than_joined() {
+        // Two EXIF segments in one file is undefined, and a reader picks one arbitrarily.
+        // Stamping a photo that already carries EXIF must leave exactly one — ours.
+        let once = stamp_jpeg(&sample_jpeg(), &metadata(Transform::None)).expect("stamp");
+        let twice = stamp_jpeg(&once, &metadata(Transform::Rot90)).expect("re-stamp");
+
+        assert_eq!(
+            count_app1_exif(&twice),
+            1,
+            "re-stamping left more than one EXIF segment"
+        );
+        // …and the *second* stamp is the one that survived.
+        let mut cursor = std::io::Cursor::new(twice);
+        let exif = exif::Reader::new()
+            .read_from_container(&mut cursor)
+            .expect("readable");
+        assert_eq!(
+            exif.get_field(Tag::Orientation, In::PRIMARY)
+                .expect("orientation")
+                .value
+                .get_uint(0),
+            Some(6),
+            "the newer stamp must win"
+        );
+    }
+
+    /// How many EXIF APP1 segments a file's *header* holds.
+    fn count_app1_exif(jpeg: &[u8]) -> usize {
+        let mut at = 2usize;
+        let mut found = 0usize;
+        while let Some(segment) = next_segment(jpeg, at) {
+            match segment {
+                Segment::ScanBegins => break,
+                Segment::Standalone { end } => at = end,
+                Segment::Sized { marker, body, end } => {
+                    if marker == APP1
+                        && jpeg
+                            .get(body..body + EXIF_SIGNATURE.len())
+                            .is_some_and(|p| p == EXIF_SIGNATURE)
+                    {
+                        found += 1;
+                    }
+                    at = end;
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_segment_claiming_more_bytes_than_the_file_holds_ends_the_walk() {
+        // A camera's bitstream is device data (rubric B10). A header segment whose length
+        // runs past the end must stop the walk rather than index past it — and the file
+        // still gets its stamp, because the bytes after the bad segment are copied
+        // verbatim rather than interpreted.
+        let mut truncated = vec![0xff, 0xd8];
+        truncated.extend_from_slice(&[0xff, 0xe0, 0xff, 0xff]); // APP0, "length 65535"
+        truncated.extend_from_slice(&[0x00, 0x01, 0x02]);
+        assert!(next_segment(&truncated, 2).is_none());
+
+        let stamped = stamp_jpeg(&truncated, &metadata(Transform::None))
+            .expect("a malformed header is not a reason to lose the photo");
+        assert!(stamped.starts_with(&[0xff, 0xd8, 0xff, 0xe1]));
+        assert!(
+            stamped.ends_with(&[0xff, 0xe0, 0xff, 0xff, 0x00, 0x01, 0x02]),
+            "everything the walk could not interpret is copied through"
+        );
+
+        // A zero length is the same class of lie and gets the same answer.
+        let zero = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x00];
+        assert!(next_segment(&zero, 2).is_none());
     }
 
     #[test]

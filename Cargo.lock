@@ -1879,6 +1879,7 @@ name = "webcam-handler-v4l2"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "image",
  "libc",
  "serde_json",
  "tempfile",

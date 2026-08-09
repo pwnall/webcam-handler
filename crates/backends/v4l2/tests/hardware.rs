@@ -866,3 +866,211 @@ fn hw_a_stream_honours_a_size_the_camera_offers_and_reports_one_it_does_not() {
 /// Enough frames to see the driver recycle its buffers, and few enough not to make
 /// `just smoke-hw` a coffee break. The default buffer count is four.
 const FRAMES_PER_HARDWARE_CYCLE: u32 = 6;
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_snapshot_perturb_restore_round_trip_leaves_every_control_where_it_started() {
+    // D4's inverse property on real hardware, and the arm that makes every other
+    // write-touching test on this rung safe to run: if this is broken, "restores what it
+    // touched" is a promise nothing keeps.
+    //
+    // Compared against a *re-read* of the device rather than against the snapshot's own
+    // values, because the snapshot is what is under test — checking it against itself
+    // would pass on a restore that did nothing.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut round_trips = 0usize;
+    for info in &cameras {
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let controls = camera
+            .controls()
+            .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
+        let pairs = engine::pairing::applicable(&controls, &schema::pairing::declared_pairs());
+
+        let Some((target, perturbed)) = perturbable_target(&controls) else {
+            println!(
+                "SKIP (partial): {} exposes no safely perturbable control",
+                info.id
+            );
+            continue;
+        };
+
+        let before = values_of(camera.as_mut());
+        let snapshot = engine::snapshot::take(camera.as_mut(), &pairs, schema::time::Stamp::now())
+            .unwrap_or_else(|error| panic!("{}: snapshot failed: {error}", info.id));
+        assert!(
+            !snapshot.entries.is_empty(),
+            "{}: a snapshot of nothing restores nothing",
+            info.id
+        );
+
+        camera
+            .set(target.id, perturbed.clone())
+            .unwrap_or_else(|error| panic!("{}: perturbing failed: {error}", info.id));
+        assert_ne!(
+            values_of(camera.as_mut()).get(target.slug.as_str()),
+            before.get(target.slug.as_str()),
+            "{}: the perturbation did not move {} — this arm would pass vacuously",
+            info.id,
+            target.slug
+        );
+
+        let report = engine::snapshot::restore(camera.as_mut(), &pairs, &snapshot)
+            .unwrap_or_else(|error| panic!("{}: restore failed: {error}", info.id));
+        let after = values_of(camera.as_mut());
+
+        // Every control the snapshot recorded is back. Volatile ones are excluded by the
+        // report, not by this comparison: their value is the device's to choose, and
+        // demanding it be identical would be asserting the device is not what it says.
+        let volatile: BTreeSet<String> = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.was_volatile)
+            .map(|entry| entry.control.to_string())
+            .collect();
+        for entry in &snapshot.entries {
+            if volatile.contains(entry.control.as_str()) {
+                continue;
+            }
+            let slug = entry.control.as_str();
+            assert_eq!(
+                after.get(slug),
+                before.get(slug),
+                "{}: {slug} is {:?} and started at {:?}",
+                info.id,
+                after.get(slug),
+                before.get(slug)
+            );
+        }
+        assert!(
+            report.is_complete(),
+            "{}: the restore reported itself incomplete: {:?}",
+            info.id,
+            report.unrestored()
+        );
+        round_trips += 1;
+        println!(
+            "{}: snapshot({}) → perturb {} → restore, every control back",
+            info.id,
+            snapshot.entries.len(),
+            target.slug
+        );
+    }
+
+    if round_trips == 0 {
+        println!("SKIP: no attached camera offered a control this arm could perturb");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_bytes() {
+    // The whole P2 stack on real hardware in one arm: negotiate, settle, capture, render,
+    // stamp. What is asserted is the photo's agreement with its *own* report — never its
+    // content, because lighting varies and a test that reads pixels fails on somebody
+    // else's desk.
+    //
+    // E6's byte-fidelity claim is checked where it can be: an MJPG source must produce a
+    // verbatim rendering, and the stamped file's entropy-coded scan must still be the
+    // camera's. Nothing is written into the tree (rubric A12) — a frame may contain a
+    // person, and on this rung it will.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let mut taken = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            println!("SKIP (partial): {} has no capture node", info.id);
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+
+        let path = camino::Utf8PathBuf::from_path_buf(
+            scratch
+                .path()
+                .join(format!("{}.jpg", info.fingerprint.bus_path)),
+        )
+        .expect("a utf-8 scratch dir");
+        let photo = engine::photo::take(
+            camera.as_mut(),
+            &schema::capture::PhotoRequest {
+                stream: StreamRequest::default(),
+                settle: schema::capture::SettlePolicy::default(),
+                transform: schema::capture::Transform::None,
+                sink: schema::capture::Sink::ServerPath { path: path.clone() },
+            },
+            &engine::settle::MonotonicClock::new(),
+            schema::time::Stamp::now(),
+        )
+        .unwrap_or_else(|error| panic!("{}: the photo failed: {error}", info.id));
+        let report = photo.report;
+
+        let bytes = std::fs::read(&path).expect("the photo was written");
+        assert_eq!(
+            u64::try_from(bytes.len()).expect("fits"),
+            report.delivery.byte_count(),
+            "{}: the reported byte count is not the file's",
+            info.id
+        );
+
+        // Decodable at the size the report claims — the one assertion that catches a
+        // frame handed on with the wrong dimensions, which is how a decoder reads past a
+        // buffer.
+        let decoded = image::load_from_memory(&bytes)
+            .unwrap_or_else(|error| panic!("{}: the photo does not decode: {error}", info.id));
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (report.width, report.height),
+            "{}: the photo's size disagrees with its own report",
+            info.id
+        );
+
+        if report.negotiated.pixel_format.is_compressed() {
+            assert!(
+                report.rendering.is_verbatim(),
+                "{}: an MJPG source must pass through, not re-encode [E6]: {:?}",
+                info.id,
+                report.rendering
+            );
+        }
+        taken += 1;
+        println!(
+            "{}: {} {}x{} → {} bytes, {}",
+            info.id,
+            report.negotiated.pixel_format,
+            report.width,
+            report.height,
+            report.delivery.byte_count(),
+            if report.rendering.is_verbatim() {
+                "the camera's own bytes [E6]"
+            } else {
+                "re-encoded"
+            }
+        );
+    }
+
+    if taken == 0 {
+        println!("SKIP: no attached camera could take a photo");
+    }
+}
+
+/// Every control's current value, by slug — the reading a restore is compared against.
+fn values_of(camera: &mut dyn Camera) -> std::collections::BTreeMap<String, ControlValue> {
+    camera
+        .controls()
+        .map(|controls| {
+            controls
+                .into_iter()
+                .filter_map(|desc| Some((desc.slug.to_string(), desc.current?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}

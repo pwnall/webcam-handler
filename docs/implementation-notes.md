@@ -635,3 +635,185 @@ by the adversarial review that followed, and the narrowing belongs next to the e
   profiles; the hardware twin arrives at P2 with the write path.
 - **Frame capture.** `PF:9`'s in-process MJPEG capture was demonstrated during the design
   probe, not by this build.
+
+---
+
+## N9 — D4's restore vocabulary gained a fourth outcome, because the common success looked like a failure
+
+**Doc:** design D4 defines snapshot/restore and its ordering; `schema::snapshot`'s
+`RestoreOutcome` had three variants — `Restored`, `AlreadyCorrect`, `Unrestorable` — and
+`UnrestorableReason::StillInactive` for "the control is still INACTIVE after its automation
+partner was handled".
+
+**Repo:** a fourth outcome,
+
+```rust
+OwnedByAutomation { control: ControlSlug, automation: Option<ControlSlug> }
+```
+
+counted as **complete** by `RestoreReport::is_complete`.
+
+**Why, and the evidence.** The first hardware run of `wch controls --discover-pairs`
+measured both of the Chicony's real pairs, recorded `auto_exposure`'s off position by name
+rather than by index (PF:2's rule, honoured), put the camera back exactly where it started
+— and then said:
+
+```
+wch: the probe could not put 2 control(s) back:
+     exposure_time_absolute, white_balance_temperature
+```
+
+Both were exactly where they started. The reasoning is arithmetic once written down:
+
+1. The snapshot recorded `white_balance_temperature` as INACTIVE, because
+   `white_balance_automatic` was on.
+2. It recorded `white_balance_automatic` as **on**, because it was.
+3. Restore writes the automation control back to on, which re-engages the partner.
+4. The partner is INACTIVE again, so the second pass cannot write it.
+
+On any device whose INACTIVE flag follows its automation control's value — which is every
+device PF:3 describes — that is the *ordinary* outcome of every guarded write's restore.
+`is_complete()` returning false for it would have made the field meaningless: a report that
+cries failure on the common success is a report people stop reading, and P3's calibration
+sweeps would have produced one on every run.
+
+**Why this is completion rather than re-litigation.** D4's promise is "leave the camera as
+you found it", and a control whose owner is back *is* as we found it — its value is that
+automation's to choose, exactly as it was at snapshot time. The old vocabulary could only
+say "we failed", which was false. The new variant says what happened and names the owner.
+
+`StillInactive` is kept, and now means the thing it always said: a control that was **ours**
+when the snapshot was taken and is owned by automation now. That is a real change we could
+not undo. Telling the two apart is why `engine::snapshot::restore` defers on the device's
+*present* state as well as on the snapshot's record of it.
+
+**What it does not do:** it is not a general "partially restored" channel. A control that
+could not be written for any other reason is still `Unrestorable`, and a second benign
+outcome would need the same standard of evidence this one had.
+
+**Retires when:** nothing retires it; docs/1 D4 should absorb it at its next revision, as
+N4 says of the four error variants.
+
+---
+
+## PF:16 — `little_exif` cannot write EXIF into a JPEG that uses restart intervals
+
+**Measured** 2026-08-08 on kernel 7.0.0-29-generic against the docs/1 §1.2 seed hardware,
+with `little_exif 0.6.23`. Continues the docs/1 §1.2 registry; cite it as `[PF:16]`.
+
+`wch photo` failed on roughly one Chicony frame in three:
+
+```
+wch: stamp EXIF onto JPEG failed: failed to fill whole buffer
+```
+
+Forty consecutive frames captured off `/dev/video0` and stamped in a loop: **nine failed**,
+at sizes from 26 KB to 101 KB, interleaved with successes. Nothing about the failures was
+structural — the failing and succeeding frames carried an identical marker sequence
+(`DQT DQT SOF0 DHT×4 DRI SOS`), so the difference was in the compressed data itself.
+
+**The cause.** `little_exif`'s JPEG path (`src/jpg.rs`, `clear_metadata`) walks the **whole
+file** byte by byte looking for `0xFF <marker>` pairs, and reads the two bytes after each as
+a segment length. That is valid in a JPEG's header and invalid in its scan:
+
+- a literal `0xFF` in entropy-coded data is byte-stuffed as `FF 00`, and
+- the Chicony emits a `DRI` segment, so its scan is punctuated with restart markers
+  `FF D0`–`FF D7`.
+
+Either way the walker reads a "length" out of the image data. Whether that length happens to
+land inside the buffer depends on what the sensor was looking at, which is exactly why the
+failure rate varied with the scene rather than with the code.
+
+**Consequence:** `imaging::exif::stamp_jpeg` no longer lets the writer see our file.
+`Metadata::as_u8_vec` builds the APP1 segment — which needs no knowledge of the file at all
+— and `splice_app1` inserts it after the SOI itself, walking only the header and **stopping
+at `SOS`**. The entropy-coded data is copied verbatim and never interpreted, which is E6's
+byte-fidelity promise restated as an implementation.
+
+The walk is also the place a camera's bitstream is treated as device data (rubric B10): a
+header segment whose length runs past the end of the buffer ends the walk rather than
+indexing past it, and the file still gets stamped.
+
+**Regression-tested by** `a_scan_full_of_marker_shaped_bytes_is_stamped_without_being_parsed`
+in `crates/imaging/src/exif.rs`, over a hand-built JPEG whose scan contains `FF D0` and
+`FF 00 FF FF`. Hand-built rather than committed: the frames that exposed this are camera
+frames, and camera frames never enter the repository (rubric A12).
+
+**Retires when:** `little_exif` stops parsing past `SOS` — worth re-checking on any bump,
+because our splice would then be a redundancy rather than a fix. It is not obviously worth
+removing even then: the splice is thirty lines and it keeps a parse of device-supplied bytes
+inside code this project's rules apply to.
+
+---
+
+## E3 — G2 hardware evidence, 2026-08-08
+
+docs/2's G2 asks for the dev-machine hardware run to be recorded in the notes, with the same
+carve-out G1 used: the recipe existing and selecting tests is the gate criterion, and the run
+itself is evidence. This is that record. Evidence entries are dated and appended; they are
+not amended.
+
+**Host:** kernel 7.0.0-29-generic, x86_64. **Attached:** Chicony `04f2:b83c` (RGB on
+`3-4:1.0`, IR on `3-4:1.2`), OBSBOT Tiny 3 `3564:ff02` on `3-1:1.0`.
+
+### R3 — `just smoke-hw`
+
+```
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded; set WCH_ALLOW_MOTION=1 to include them
+smoke-hw: 6 capture node(s) present; running test(/(^|::)hw_/) - test(/(^|::)hw_motion_/)
+     Summary [   7.143s] 13 tests run: 13 passed, 497 skipped
+```
+
+What the thirteen establish, in the words they printed:
+
+```
+cam:…-integrated-c: brightness 128 -> 129 (read back from the device)
+cam:obsbot-tiny-3…: brightness 50 -> 51 (read back from the device)
+cam:…-integrated-c: PF:6 live — brightness took 255 for a write of 1255,
+  warnings [Clamped { requested: 1255, applied: 255, range: 0..=255 }]
+cam:obsbot-tiny-3…: PF:6 live — brightness took 100 for a write of 1100
+cam:…-integrated-c: PF:3 live — switching white_balance_automatic off freed
+  white_balance_temperature
+cam:…-integrated-c: privacy is read-only and said so
+cam:…-integrated-c: snapshot(15) → perturb brightness → restore, every control back
+cam:obsbot-tiny-3…: snapshot(22) → perturb brightness → restore, every control back
+cam:…-integrated-c: streamed MJPG at 1280x720 (30 fps), two cycles, 6 frames each
+cam:…-integrated-i: streamed GREY at 640x360 (15 fps), two cycles, 6 frames each
+cam:obsbot-tiny-3…: streamed MJPG at 1920x1080 (30 fps), two cycles, 6 frames each
+cam:…-integrated-c: D5 live — 3x3 negotiated to 1280x720, and reported as adjusted
+cam:…-integrated-c: MJPG 1280x720 → 95458 bytes, the camera's own bytes [E6]
+cam:…-integrated-i: GREY 640x360 → 16106 bytes, re-encoded
+cam:obsbot-tiny-3…: MJPG 1920x1080 → 150962 bytes, the camera's own bytes [E6]
+```
+
+**Two P1 open questions are now closed.** The P1 evidence entry listed "the PF:6 clamp
+behaviour on real hardware" and "frame capture" under *not established by any of the above*.
+Both are above, on two devices each.
+
+Four partial skips, all named and all the same shape: the Chicony IR camera exposes three
+controls and none of them is a writable scalar, and neither it nor the OBSBOT has an enabled
+non-motorized boolean automation control to toggle. The arms that need one say so rather
+than passing quietly.
+
+### R2 — `just rung-vivid-managed`
+
+```
+rung-vivid: vivid is loaded; running test(/(^|::)vivid_/)
+     Summary [   2.051s] 7 tests run: 7 passed, 503 skipped
+8 control write(s) went out and read back through the driver
+cam:vivid: two stream cycles through the real ioctl path
+1 node(s) refused a second concurrent stream as Busy
+```
+
+The three new arms are the P2 half of what E2 said R2 buys: a control surface far wider than
+the seed hardware's, met by code that had never seen it.
+
+### Not established by any of the above
+
+- **Motors.** `hw_motion_*` is still empty and still excluded by default. No pan, tilt or
+  zoom control has been written on this machine, and §5 keeps it that way until a sweep
+  needs it (P3).
+- **Hotplug.** `CameraBackend::watch` is the one remaining `Unimplemented` row; the uevent
+  socket arrives at P4.
+- **A second host.** Everything here is one machine, one kernel, three cameras. The corpus
+  and the vivid rung are what stand in for the rest, and neither is a substitute.
