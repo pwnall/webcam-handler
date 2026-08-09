@@ -474,6 +474,74 @@ fn two_cameras_on_one_usb_device_stay_two_profiles_with_one_bus_info() {
 }
 
 #[test]
+fn one_camera_with_two_capture_nodes_is_in_the_corpus_as_one_document() {
+    // PF:19, which — like PF:13 — is a claim about a *shape* rather than about a control,
+    // and so is asserted here rather than from the v1 registry table above. The Dell
+    // U3224KB/A drives two USB Streaming output terminals off one sensor, so its group
+    // holds two capture nodes and two metadata nodes; the finding is that this is one
+    // camera, and the corpus is where that is written down as a device answer.
+    //
+    // Red in both the ways that matter: if the profile is dropped, no document carries the
+    // shape and the finding goes back to being prose; if a future capture split it into two
+    // documents, they would share a `bus_path` and the fingerprint check below catches it.
+    let profiles = corpus::load_all().expect("the corpus parses");
+
+    let multi: Vec<(&str, &DeviceProfile)> = profiles
+        .iter()
+        .filter(|(_, p)| {
+            p.invariant
+                .info
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::VideoCapture)
+                .count()
+                > 1
+        })
+        .filter_map(|(path, p)| path.file_stem().map(|stem| (stem, p)))
+        .collect();
+    assert!(
+        !multi.is_empty(),
+        "no committed profile holds a group with two capture nodes, so PF:19 is asserted \
+         from prose rather than from a device"
+    );
+
+    let mut by_bus_path: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, profile) in &profiles {
+        *by_bus_path
+            .entry(profile.invariant.info.fingerprint.bus_path.as_str())
+            .or_default() += 1;
+    }
+    for (stem, profile) in multi {
+        let bus_path = profile.invariant.info.fingerprint.bus_path.as_str();
+        assert_eq!(
+            by_bus_path.get(bus_path).copied(),
+            Some(1),
+            "{stem}: {bus_path} appears in more than one profile — a second capture node \
+             has been captured as a second camera [PF:19]"
+        );
+        // The secondary node is *listed*, not dropped: `nodes` is the record of the
+        // device's shape, and a capture that kept only the streamable one would erase the
+        // finding while still parsing.
+        println!(
+            "PF:19: {stem} — {} node(s), {} of them capture, streaming {}",
+            profile.invariant.info.nodes.len(),
+            profile
+                .invariant
+                .info
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::VideoCapture)
+                .count(),
+            profile
+                .invariant
+                .info
+                .capture_node()
+                .map_or("nothing", |n| n.path.as_str())
+        );
+    }
+}
+
+#[test]
 fn the_greyscale_camera_is_in_the_corpus_because_grayscale_is_not_optional() {
     // D6's "grayscale is not optional" needs a device that offers nothing else, and the
     // Chicony IR camera is it. G2 makes a photo from this profile a criterion, so losing

@@ -314,10 +314,20 @@ pub struct CameraInfo {
 }
 
 impl CameraInfo {
-    /// The node frames come from: the group member with `VIDEO_CAPTURE` capabilities.
+    /// The node frames come from: the **first** group member with `VIDEO_CAPTURE`
+    /// capabilities, in the node order enumeration produced (numeric, `sysfs.rs`).
     ///
     /// `None` for a group of metadata-only nodes, which is a real shape — the camera is
     /// listed, and streaming it is a typed refusal rather than a surprise.
+    ///
+    /// **Why "first" rather than "the"** \[PF:19\]: a group may hold more than one capture
+    /// node. The Dell U3224KB/A drives two USB Streaming output terminals off one camera
+    /// sensor, so `uvcvideo` registers two capture nodes (plus two metadata nodes) against
+    /// its single VideoControl interface — one camera, four nodes, two of them streamable.
+    /// V4L2 offers nothing that ranks them: `device_caps` is identical, and only opening
+    /// each and comparing format trees tells the full-resolution stream from the 640×480
+    /// secondary. So the rule is positional and stated rather than implied, and every node
+    /// stays listed in [`CameraInfo::nodes`] — nothing is hidden, one is chosen.
     #[must_use]
     pub fn capture_node(&self) -> Option<&DeviceNode> {
         self.nodes.iter().find(|n| n.kind == NodeKind::VideoCapture)
@@ -460,8 +470,11 @@ impl FrameSize {
     /// offers a whole range, and treating it as its maximum alone — which
     /// [`FrameSize::max_dimensions`] does, correctly, for the question *it* answers — makes
     /// a device that can deliver 640×480 exactly report 1920×1080 and call it an
-    /// adjustment. No seed camera is stepwise, which is why nothing noticed: the two
-    /// Chicony nodes and the OBSBOT all enumerate discrete sizes.
+    /// adjustment. No camera this project has met is stepwise, which is why nothing
+    /// noticed: the two Chicony nodes, the OBSBOT and the Dell U3224KB/A enumerate
+    /// discrete sizes and nothing else — the 34 size entries in `corpus/profiles/`, plus
+    /// the Dell's second capture node checked directly (2026-08-09), every one
+    /// `V4L2_FRMSIZE_TYPE_DISCRETE`. The branch below is still exercised only by fixtures.
     ///
     /// The result is rounded *down* to the entry's step and clamped to its minimum, because
     /// a driver takes the grid it declared and reporting an off-grid size as agreed would
@@ -695,6 +708,74 @@ mod tests {
             NodeKind::Other {
                 device_caps: 0x0400_0000
             }
+        );
+    }
+
+    /// A camera whose nodes are described by `(path, device_caps)`, in the given order.
+    fn grouped(nodes: &[(&str, u32)]) -> CameraInfo {
+        CameraInfo {
+            id: CameraId::parse("cam:test").expect("literal id"),
+            fingerprint: CameraFingerprint {
+                bus_path: "2-3.4.1.1:1.0".to_owned(),
+                usb_id: None,
+                card: "Test".to_owned(),
+                driver: "uvcvideo".to_owned(),
+                serial: None,
+            },
+            card: "Test".to_owned(),
+            driver: "uvcvideo".to_owned(),
+            bus_info: "usb-test".to_owned(),
+            nodes: nodes
+                .iter()
+                .map(|(path, device_caps)| DeviceNode {
+                    path: Utf8PathBuf::from(*path),
+                    kind: NodeKind::from_device_caps(*device_caps),
+                    device_caps: *device_caps,
+                    capabilities: 0x84a0_0001,
+                })
+                .collect(),
+            backend: crate::backend::BackendKind::V4l2,
+        }
+    }
+
+    #[test]
+    fn a_group_with_two_capture_nodes_picks_the_first_and_keeps_the_other_listed() {
+        // PF:19 — the Dell U3224KB/A's measured topology: one camera sensor, two USB
+        // Streaming output terminals, four nodes on one VideoControl interface, two of
+        // them streamable. `capture_node()` has to answer *something*, and the rule is
+        // positional; what must never happen is the second node disappearing, because
+        // `nodes` is where the shape of the device is recorded.
+        let dell = grouped(&[
+            ("/dev/video6", CAP_VIDEO_CAPTURE),
+            ("/dev/video7", CAP_META_CAPTURE),
+            ("/dev/video8", CAP_VIDEO_CAPTURE),
+            ("/dev/video9", CAP_META_CAPTURE),
+        ]);
+        assert_eq!(
+            dell.capture_node().expect("it has a capture node").path,
+            "/dev/video6"
+        );
+        assert_eq!(
+            dell.nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::VideoCapture)
+                .count(),
+            2,
+            "the second capture node must stay in the node list"
+        );
+
+        // The inverse direction: the choice is the node order's, so reversing it moves
+        // the answer. A `capture_node()` that had quietly grown a preference — the
+        // largest `device_caps`, the lowest path, the last match — fails here.
+        let reversed = grouped(&[
+            ("/dev/video8", CAP_VIDEO_CAPTURE),
+            ("/dev/video9", CAP_META_CAPTURE),
+            ("/dev/video6", CAP_VIDEO_CAPTURE),
+            ("/dev/video7", CAP_META_CAPTURE),
+        ]);
+        assert_eq!(
+            reversed.capture_node().expect("a capture node").path,
+            "/dev/video8"
         );
     }
 

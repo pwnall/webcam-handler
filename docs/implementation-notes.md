@@ -1664,3 +1664,269 @@ smaller number nobody noticed.
   fix in both the `--flag value` and `--flag=value` forms.
 - **Still one host, one kernel, three cameras** (design §3.3 item 8), and one of the three
   has nothing in front of it.
+
+### Amendment, 2026-08-09: the Chicony's lens was covered, and it no longer is
+
+The transcripts above are as-run and stand: on 2026-08-09 the Chicony RGB camera really did
+photograph a flat field, and every number recorded for it is what it measured. This
+amendment records what changed and what the change lets the same run say — appended rather
+than folded in, the way E1's amendments are, because the point of a transcript is that it
+was true once.
+
+**What changed in the world.** The entry above inferred, from `rms_contrast` never rising
+above 0.002 and `clipped_shadows` sitting at exactly 1.0000 across the lower half of the
+brightness range, "a covered lens or a featureless surface at close range, not a scene". The
+inference was right: the camera had a physical lens blinder over it. The blinder has been
+removed. Nothing in the tool, the tests or the corpus changed for this; the sweep below is
+the same arm running the same plan against the same control on the same kernel.
+
+A third camera — the Dell U3224KB/A \[PF:19\] — was also attached between the two runs, so
+the suite now walks four logical cameras instead of three and ten `/dev/video*` nodes
+instead of six.
+
+### R3 — `just smoke-hw`, motors included, three cameras attached
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+    Starting 15 tests across 28 binaries (626 tests skipped)
+     Summary [  48.851s] 15 tests run: 15 passed, 626 skipped
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+The Chicony's brightness sweep, with nothing in front of the lens:
+
+```
+cam:…-integrated-c: probe measured 2 pair(s), declined 0, left the camera alone: true
+cam:…-integrated-c: draft covered 18 of the device's 18 control(s) — 14 queued, 4 blocked:
+  camera_controls (NotSweepable { control_type: "control_class" }), privacy (ReadOnly),
+  region_of_interest_rectangle (NotSweepable { control_type: "rect" }),
+  user_controls (NotSweepable { control_type: "control_class" })
+cam:…-integrated-c: swept brightness — sharpness          0:3.9823 63:11.8826 126:16.2084 189:16.3432 252:12.5131
+cam:…-integrated-c: swept brightness — clipped_highlights 0:0.0000 63:0.0000 126:0.0000 189:0.0000 252:0.6189
+cam:…-integrated-c: swept brightness — clipped_shadows    0:0.7489 63:0.0962 126:0.0004 189:0.0000 252:0.0000
+cam:…-integrated-c: swept brightness — mean_luma          0:0.0120 63:0.2179 126:0.4528 189:0.6987 252:0.9414
+cam:…-integrated-c: swept brightness — rms_contrast       0:0.0134 63:0.0804 126:0.1170 189:0.1181 252:0.1134
+cam:…-integrated-c: apply refused with 13 control(s) pending, and wrote nothing
+cam:…-integrated-c: applied brightness=189 (selector metric:rms_contrast, score 0.1181),
+  1 write(s), automation off: []
+cam:…-integrated-c: calibration session 019fe5ed-ccf5-7a12-80ed-7cf35f0cfa0d — 5 sample(s),
+  restore complete, 16 control(s) back where the sweep found them
+```
+
+Beside it, the other two, for the comparison the original entry drew:
+
+```
+cam:obsbot-tiny-3…: swept brightness — sharpness          0:1.8505 25:8.4847 50:19.6604 75:76.0378 100:133.7970
+cam:obsbot-tiny-3…: swept brightness — clipped_highlights 0:0.0000 25:0.0000 50:0.0026 75:0.0027 100:0.0027
+cam:obsbot-tiny-3…: swept brightness — clipped_shadows    0:0.4539 25:0.3504 50:0.1525 75:0.0000 100:0.0000
+cam:obsbot-tiny-3…: swept brightness — mean_luma          0:0.0439 25:0.0916 50:0.1403 75:0.2883 100:0.4200
+cam:obsbot-tiny-3…: swept brightness — rms_contrast       0:0.0558 25:0.1072 50:0.1466 75:0.2248 100:0.2666
+cam:obsbot-tiny-3…: applied brightness=100 (selector metric:rms_contrast, score 0.2666)
+
+cam:dell-u3224kb…: swept brightness — sharpness           0:20.8620 63:35.7764 126:55.3860 189:121.0135 252:136.1497
+cam:dell-u3224kb…: swept brightness — clipped_highlights  0:0.0000 63:0.0000 126:0.0000 189:0.0000 252:0.0000
+cam:dell-u3224kb…: swept brightness — clipped_shadows     0:0.0906 63:0.0756 126:0.0437 189:0.0200 252:0.0059
+cam:dell-u3224kb…: swept brightness — mean_luma           0:0.3022 63:0.3866 126:0.4565 189:0.5991 252:0.7059
+cam:dell-u3224kb…: swept brightness — rms_contrast        0:0.1404 63:0.1699 126:0.1920 189:0.2396 252:0.2640
+cam:dell-u3224kb…: applied brightness=252 (selector metric:rms_contrast, score 0.2640)
+```
+
+### R3 — `WCH_NO_MOTION=1 just smoke-hw`, unchanged in kind
+
+```
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded by WCH_NO_MOTION=1; unset it to include them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/) - test(/(^|::)hw_motion_/)
+    Starting 14 tests across 28 binaries (627 tests skipped)
+     Summary [  34.468s] 14 tests run: 14 passed, 627 skipped
+smoke-hw: 6 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 1 named skip(s) before it started
+```
+
+15 with motors and 14 without, as before; the difference is still one named, counted skip.
+
+### What the uncovered run establishes that the covered one could not
+
+- **`rms_contrast` ranks this camera's samples, and the ranking has something behind it.**
+  Five distinct scores spanning 0.0134 to 0.1181 — an order of magnitude — where the covered
+  run spanned 0.0001 to 0.0020. The selection is an interior optimum at 189 of 0..=255, with
+  252 scoring **below** it (0.1134 < 0.1181) rather than beside it. The original entry's
+  `rms_contrast` row also happened to peak at 189, and its winning margin over 252 was
+  0.0001; that is the difference between a ranking and an ordering of noise, and only the
+  second run can tell them apart.
+- **The physical claim the arm makes is now a claim about a scene.** `mean_luma` runs 0.0120
+  → 0.9414 monotonically, and `clipped_highlights` becomes non-zero (0.6189) at the top of
+  the range while `clipped_shadows` falls to 0.0000 — a frame with content in it being
+  driven from underexposed to blown out. Under the blinder, `mean_luma` moved too (0.0001 →
+  0.3215) because a uniform field lifts as a whole; what it could not do was *clip at one
+  end and not the other*.
+- **`sharpness` now has an interior maximum** (16.34 at 189, falling to 12.51 at 252), which
+  is a lens looking at something. The covered run's sharpness row was 0.0803 / 0.2428 /
+  0.0076 / 1.7370 / 1.6129 — two orders of magnitude smaller and not ordered.
+- **Design §3.3 item 2 — "calibration efficacy on real optics is only demonstrable on R3" —
+  is now demonstrated on three cameras rather than one.** The original entry named which of
+  the two had a scene behind it; all three now do.
+
+### What it still does not establish
+
+- **N21's distinction resolved as "ranked" in *both* runs, and that is worth saying plainly.**
+  The counter the arm carries asks whether any sample scored below the winner; it fires only
+  on an exact tie. A flat field that produces five scores differing in the fourth decimal
+  passes it, which is what happened on 2026-08-09 before the blinder came off. So this run
+  does not *retire* N21 and does not resolve it in a way the previous run had not — it
+  confirms that N21's counter measures tie-versus-not, not signal-versus-noise, and that the
+  `Calibrated` record still carries no spread. N21's "retires when" is unchanged.
+- **The "fully lightless camera" guard has never fired, on either run.** P3e added it for
+  the case `clipped_shadows == 1.0` at *every* sample; the Chicony under its blinder was
+  1.0000 at three samples of five and 0.0000 at the other two, so the guard did not fire
+  then either, and with the blinder off the metric never reaches 1.0 on any camera. Its
+  `else` branch — the `mean_luma` ordering assertion — is the one that has run every time,
+  so nothing here is vacuous; what is true is that the guard is a standing allowance for a
+  condition this host has never presented, and it is left in place rather than deleted
+  because a covered lens is exactly the desk a contributor might run this on. Recorded so
+  that "the guard exists" is not mistaken for "the guard was exercised".
+- **Nothing about the metrics' agreement with a human.** `rms_contrast` picked 189; whether
+  an operator would call that sample correctly exposed is what D8's `selector` field exists
+  to keep separate, and no human ranked these samples.
+- **Still one host, one kernel** (design §3.3 item 8) — but now three cameras, four logical
+  cameras, ten nodes, and none of them with anything in front of it.
+
+---
+
+## PF:19 — One camera can own two capture nodes: a UVC device with two output terminals on one sensor
+
+**Measured** 2026-08-09 on kernel 7.0.0-29-generic, against the Dell U3224KB/A 4K Webcam
+(`413c:c03d`, interface `2-3.4.1.1:1.0`), the day it was attached. Continues the docs/6 §1.2
+registry; cite it as `[PF:19]`.
+
+PF:7 says nodes group by USB interface, and one USB device can host several logical cameras.
+Both halves hold. What does not hold is the inference the codebase had drawn from them —
+that a group with two capture nodes is two cameras that grouping failed to separate. This
+device is one camera with two capture nodes:
+
+```
+/dev/video6  device_caps 0x04200001  capture   NV12/YUYV/MJPG, 13 sizes, up to 3840x2160
+/dev/video7  device_caps 0x04a00000  metadata  UVCH + UVCM
+/dev/video8  device_caps 0x04200001  capture   NV12 640x480 only, one size
+/dev/video9  device_caps 0x04a00000  metadata  UVCH + UVCM
+
+all four hang off ONE interface: /sys/.../2-3.4.1.1/2-3.4.1.1:1.0/video4linux/
+```
+
+Its USB descriptors say why. There is a single Camera Sensor input terminal (ID 1) feeding a
+single processing unit (ID 3) and extension unit (ID 2), and **two** USB Streaming output
+terminals (IDs 4 and 5) taking their input from it. Each output terminal gets its own
+VideoStreaming interface (`:1.1` with `bTerminalLink 4`, `:1.2` with `bTerminalLink 5`), and
+`uvcvideo` registers a capture node and a metadata node per streaming interface — all of
+them children of the one VideoControl interface, which is the grouping key. One sensor, two
+streams, four nodes, one control set.
+
+**What it costs this tool, stated rather than fixed.**
+
+1. **"Two capture nodes in a group" was an assertion, and it was wrong.** The R3 arm
+   `hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability` asserted
+   `carrying.len() <= 1` with the message "the group is two cameras, not one". It went red
+   on this device the first time the rung met it — which is the rung working. The claim that
+   replaces it is the one a caller actually depends on: `capture_node()` answers the
+   **first** node carrying `VIDEO_CAPTURE`, in node order. The multi-capture case is now
+   printed as a live observation and its absence as a named partial skip, the way PF:13's
+   counter-example already was.
+2. **The tie-break is positional because V4L2 offers nothing else.** Both nodes report
+   identical `device_caps` (`0x04200001`), identical `QUERYCAP` card, driver and `bus_info`
+   strings, and identical `capabilities`. Only opening each and comparing format trees
+   distinguishes the full-resolution stream from the 640×480 secondary, and enumeration does
+   not open nodes for their formats. On this device the first node is the full one, and that
+   is `uvcvideo` registering streaming interfaces in descriptor order — a convention, not a
+   guarantee. The rule is now written down in `CameraInfo::capture_node` and in
+   `enumerate::representative` rather than implied by the singular in a doc comment.
+3. **The second stream is listed but not reachable.** `CameraInfo::nodes` carries all four,
+   so nothing is hidden and `wch info` shows them; but T1/T2 have no vocabulary for "stream
+   the other node", so the 640×480 secondary cannot be opened through this tool. Naming a
+   node as a capture target is a design change (T1's `open` takes a `CameraId`), not a bug
+   fix, and it is not made here.
+4. **T3 captures the camera, not each node.** The committed profile records all four nodes
+   and one format tree — the one `capture_node()` selected. A profile of this device is
+   therefore silent about what `/dev/video8` offers; the raw `ENUM_FMT` walk above is the
+   only record of it.
+
+**Corpus.** `corpus/profiles/dell-u3224kb.json`, captured by `wch profile capture` before
+anything wrote to the device. `one_camera_with_two_capture_nodes_is_in_the_corpus_as_one_document`
+asserts the shape from that document and fails if it is dropped or split;
+`four_nodes_with_two_capture_members_are_one_camera_not_two` and
+`a_second_capture_node_does_not_become_a_second_camera_alongside_the_others` pin the pure
+grouping against the measured topology; `a_group_with_two_capture_nodes_picks_the_first_and_keeps_the_other_listed`
+pins the tie-break and its inverse. The registry-completeness walk in `corpus_replay.rs`
+covers PF:1–14, the v1 registry, and is left alone here as it was for PF:15–18.
+
+**Retires when:** a device is found whose two capture nodes are distinguishable from their
+descriptors alone — at which point "first" can become a rule with a reason — or T1 grows a
+way to name a node, at which point the second stream stops being invisible and this becomes
+a feature note rather than a limit.
+
+---
+
+## PF:20 — `pan_absolute`, `tilt_absolute` and `zoom_absolute` are not evidence of a motor
+
+**Measured** 2026-08-09 on kernel 7.0.0-29-generic, against the Dell U3224KB/A 4K Webcam
+(`413c:c03d`, `/dev/video6`). Continues the docs/6 §1.2 registry; cite it as `[PF:20]`.
+
+A camera built into a monitor bezel enumerates the same three motion controls the OBSBOT
+gimbal does:
+
+```
+pan_absolute    int  -144000..144000  step 3600  default 0    current 0
+tilt_absolute   int  -144000..144000  step 3600  default 0    current 0
+zoom_absolute   int      100..500     step 1     default 100  current 100
+```
+
+Nothing in the control surface separates these from the OBSBOT gimbal's. The slugs are the
+same, the types are the same, the flag words are the same (`0x1000`, `has_which_min_max`
+only), and pan and tilt differ from the OBSBOT's only in magnitude — ±144000 arc-seconds
+against ±468000 and ±324000. (`zoom_absolute` is the one that looks different: 100..500
+against the OBSBOT's 0..100, which reads as a percentage scaled by a hundred. It is a shape,
+not a mechanism.)
+
+Both of this workspace's motor predicates therefore fire on it, and they are different
+predicates: `testkit::battery::is_motorized` — pan/tilt/zoom/focus/roll, which keeps every
+non-motion test arm off all three — and `engine::sweep::is_motion_control`, which is
+pan/tilt only and is what makes the product demand `--allow-motion` and apply
+`limits::MAX_MOTION_SWEEP_SAMPLES`. So the tool treats this device exactly as it treats a
+gimbal: the `hw_motion_` arm swept its pan, and the cap bound its 81-sample full-range plan
+to 27.
+
+```
+cam:dell-u3224kb…: pan_absolute declares -144000..=144000 step 3600 — 81 samples at full
+  stride, bounded to 27 by the motion cap [limits::MAX_MOTION_SWEEP_SAMPLES]
+cam:dell-u3224kb…: pan_absolute requested -> applied -7200->-7200 -3600->-3600 0->0
+  3600->3600 7200->7200
+```
+
+**What is and is not established.** That the controls exist, accept writes, read back what
+they were sent \[PF:18\], and restore. **Not** whether anything mechanical moves: this device
+is embedded in a display and its pan is far more likely to be a crop inside a 4K sensor than
+a head on a bearing, but V4L2 reports no mechanism state (that is PF:18's whole subject), so
+the tool cannot tell and neither can this entry. The finding is precisely that it *cannot* —
+the control vocabulary UVC gives us describes an effect, not an actuator.
+
+**What it costs this tool, stated rather than fixed.** Design §5's motor rules — the sweep
+caps, `--allow-motion`, `WCH_NO_MOTION=1` — are keyed on the slug, so they now apply to a
+device that may have nothing to wear out. That is the right direction to be wrong in: the
+cost of treating digital PTZ as mechanical is a needless flag and a bounded sweep, and the
+cost of the reverse is driving somebody's gimbal into its end stop. No change is made, and
+none should be made on the strength of a guess about a lens the tool cannot see.
+
+It does cost `WCH_NO_MOTION=1` some of its meaning: AGENTS names it "for runs where the
+camera points at a person", and on this device excluding the `hw_motion_` arm may exclude
+nothing physical at all. The knob still does what it says — it excludes the suites that
+*could* move a motor — and it cannot do better while the mechanism is unreadable.
+
+**Not corpus-shaped as a *behaviour*, but the descriptors are:** the three controls, their
+ranges and their flags are in `corpus/profiles/dell-u3224kb.json`, which is what makes "a
+non-gimbal camera declares pan/tilt/zoom" a device answer rather than a claim. What no
+profile can carry is the absence of a motor.
+
+**Retires when:** a control, a UVC descriptor field or a kernel property distinguishes
+digital windowing from mechanical PTZ — UVC's `CT_DIGITAL_WINDOW_CONTROL` is the obvious
+candidate and `uvcvideo` exposes no V4L2 control for it on this kernel — at which point
+design §5 could key its motor rules on the mechanism rather than on the name.

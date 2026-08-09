@@ -11,6 +11,13 @@
 //! `video3`, while the RGB camera's are `video0` and `video1`, and only the capability
 //! word says which is which \[PF:7\].
 //!
+//! **A group may hold more than one capture node** \[PF:19\], and that is still one
+//! camera. The Dell U3224KB/A hangs four nodes off its single VideoControl interface —
+//! two capture, two metadata — because its one sensor feeds two USB Streaming output
+//! terminals. So "two capture nodes in a group" is not evidence the grouping collapsed two
+//! cameras, and [`representative`] takes the first rather than asserting there is only one
+//! (design §2.5, `CameraInfo::capture_node`).
+//!
 //! The grouping itself is a pure function of the node list — [`group`] takes values and
 //! returns values — so the rule is testable without a device, and the tests below pin it
 //! against the measured topology of the seed hardware.
@@ -104,10 +111,14 @@ pub(crate) fn group(nodes: &[ProbedNode]) -> Vec<CameraInfo> {
 
 /// The node whose `QUERYCAP` answer describes the camera.
 ///
-/// The capture node when there is one, else the first — a metadata-only group is a real
-/// shape, and it is listed rather than hidden so that streaming it can be a typed refusal
-/// instead of a camera that mysteriously does not exist. `None` only for an empty group,
-/// which [`group`] does not construct.
+/// The **first** capture node when there is one, else the first member — a metadata-only
+/// group is a real shape, and it is listed rather than hidden so that streaming it can be
+/// a typed refusal instead of a camera that mysteriously does not exist. `None` only for
+/// an empty group, which [`group`] does not construct.
+///
+/// "First" is load-bearing on a device with two capture nodes \[PF:19\]: they carry
+/// identical `device_caps` and identical `QUERYCAP` strings, so nothing here can rank
+/// them, and the choice is the node order's — numeric, from `sysfs.rs`.
 fn representative<'a>(members: &[&'a ProbedNode]) -> Option<&'a ProbedNode> {
     members
         .iter()
@@ -306,6 +317,92 @@ mod tests {
             .find(|c| c.card.ends_with('I'))
             .expect("the IR camera");
         assert_eq!(ir.capture_node().expect("capture node").path, "/dev/video2");
+    }
+
+    /// The Dell U3224KB/A's four nodes, with the *topology* exactly as measured
+    /// 2026-08-09 \[PF:19\]: one VideoControl interface, one camera sensor, two USB
+    /// Streaming output terminals, so two capture nodes and two metadata nodes.
+    ///
+    /// The `usb_id` is [`node`]'s fixed one and is not this device's: nothing in
+    /// [`group`] reads it, and the committed profile is where the identity fields are
+    /// pinned against the hardware.
+    fn dell_hardware() -> Vec<ProbedNode> {
+        let iface = "2-3.4.1.1:1.0";
+        let bus = "usb-0000:00:0d.0-3.4.1.1";
+        ["/dev/video6", "/dev/video7", "/dev/video8", "/dev/video9"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, dev)| {
+                node(
+                    dev,
+                    iface,
+                    "Dell U3224KB/A 4K Webcam",
+                    bus,
+                    if index % 2 == 0 {
+                        CAPTURE_CAPS
+                    } else {
+                        METADATA_CAPS
+                    },
+                    Some("E909E889F981"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn four_nodes_with_two_capture_members_are_one_camera_not_two() {
+        // PF:19. The inference this pins down is the *inverse* of PF:7's: one USB device
+        // can host several cameras, but two capture nodes on one interface are not two
+        // cameras — they are two streams of one. Splitting them would list a camera that
+        // does not exist, give it a fingerprint identical to its sibling's, and let
+        // `calibrate apply` replay a session onto "the other one".
+        let cameras = group(&dell_hardware());
+        assert_eq!(cameras.len(), 1, "one interface is one camera");
+
+        let dell = &cameras[0];
+        assert_eq!(dell.nodes.len(), 4, "every node stays attributed");
+        assert_eq!(
+            dell.nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::VideoCapture)
+                .map(|n| n.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/dev/video6", "/dev/video8"]
+        );
+        assert_eq!(
+            dell.nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::MetaCapture)
+                .map(|n| n.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/dev/video7", "/dev/video9"]
+        );
+        // And the one the tool will stream is the first, named rather than assumed.
+        assert_eq!(
+            dell.capture_node().expect("a capture node").path,
+            "/dev/video6"
+        );
+    }
+
+    #[test]
+    fn a_second_capture_node_does_not_become_a_second_camera_alongside_the_others() {
+        // The same claim at the scale the machine actually has: ten nodes, three USB
+        // devices, four cameras. A grouping that split the Dell would answer five, and a
+        // grouping that merged on `bus_info` would answer three [PF:7, PF:13, PF:19].
+        let mut nodes = seed_hardware();
+        nodes.extend(dell_hardware());
+        let cameras = group(&nodes);
+        assert_eq!(
+            cameras
+                .iter()
+                .map(|c| c.fingerprint.bus_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["3-4:1.0", "3-4:1.2", "3-1:1.0", "2-3.4.1.1:1.0"]
+        );
+        assert_eq!(
+            cameras.iter().map(|c| c.nodes.len()).collect::<Vec<_>>(),
+            vec![2, 2, 2, 4]
+        );
     }
 
     #[test]

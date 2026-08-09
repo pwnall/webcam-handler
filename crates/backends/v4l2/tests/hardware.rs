@@ -272,6 +272,7 @@ fn hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability() {
     let mut bus_paths = BTreeSet::new();
     let mut by_bus_info: std::collections::BTreeMap<&str, usize> =
         std::collections::BTreeMap::new();
+    let mut multi_capture = Vec::new();
     for info in &cameras {
         assert!(
             bus_paths.insert(info.fingerprint.bus_path.clone()),
@@ -307,12 +308,38 @@ fn hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability() {
             carrying.len(),
             info.capture_node().map(|n| n.path.as_str())
         );
-        assert!(
-            carrying.len() <= 1,
-            "{}: {} nodes claim VIDEO_CAPTURE; the group is two cameras, not one",
-            info.id,
-            carrying.len()
-        );
+        // …and *which* one it answered, which is the half that used to be written as
+        // `carrying.len() <= 1` — "two capture nodes in a group means the grouping
+        // collapsed two cameras". That inference is false [PF:19]: the Dell U3224KB/A
+        // feeds two USB Streaming output terminals from one sensor and registers two
+        // capture nodes against one VideoControl interface. The claim that survives is
+        // the documented tie-break — `capture_node()` is the *first* capture node in node
+        // order — which is what a caller depends on and what a silent change to the rule
+        // would break.
+        if let Some(chosen) = info.capture_node() {
+            assert_eq!(
+                Some(chosen.path.as_str()),
+                carrying.first().map(|node| node.path.as_str()),
+                "{}: capture_node() answered {} and the first node carrying \
+                 VIDEO_CAPTURE is {:?}",
+                info.id,
+                chosen.path,
+                carrying.first().map(|node| node.path.as_str())
+            );
+        }
+        if carrying.len() > 1 {
+            multi_capture.push(format!(
+                "{} ({} capture node(s): {}, streaming {})",
+                info.id,
+                carrying.len(),
+                carrying
+                    .iter()
+                    .map(|node| node.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                info.capture_node().map_or("nothing", |n| n.path.as_str())
+            ));
+        }
     }
 
     if let Some((bus_info, count)) = by_bus_info.iter().find(|(_, count)| **count > 1) {
@@ -324,6 +351,19 @@ fn hw_nodes_group_by_interface_and_capture_nodes_are_found_by_capability() {
         println!(
             "SKIP (partial): no two attached cameras share a bus_info, so PF:13's \
              counter-example is not exercised on this host"
+        );
+    }
+
+    if multi_capture.is_empty() {
+        println!(
+            "SKIP (partial): every attached camera has at most one capture node, so \
+             PF:19's counter-example is not exercised on this host"
+        );
+    } else {
+        println!(
+            "PF:19 confirmed live: {} — one camera, several streamable nodes, and the \
+             first is the one the tool drives",
+            multi_capture.join("; ")
         );
     }
 }
