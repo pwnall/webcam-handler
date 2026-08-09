@@ -641,6 +641,132 @@ mod tests {
     }
 
     #[test]
+    fn the_cap_widens_the_stride_by_a_stated_factor_and_reports_the_count_it_started_from() {
+        // The test above asserts the cap's *shape* — under the limit, still spanning the
+        // range — and P3f's mutation run showed that shape is nearly free: six mutations
+        // of the capping arithmetic (the sample count off by one either way, the rounding
+        // that picks the factor, the factor itself) left it green. What pins the
+        // arithmetic is the answer, stated exactly.
+        //
+        // 10 001 values at step 1 against a cap of 256: the smallest whole factor that
+        // fits is ceil(10001 / 256) = 40, and a stride of 40 spans [0, 10 000] in 251
+        // samples. Every number below is derivable from those two lines, which is the
+        // point — a reader can check them, and no mutation of the derivation keeps them.
+        let desc = control("exposure_time_absolute", 0, 10_000, 1);
+        let planned = plan(&desc, &SweepSpec::All, false).expect("a plannable sweep");
+        assert_eq!(planned.values.len(), 251);
+        assert_eq!(planned.values.first(), Some(&0));
+        assert_eq!(planned.values.last(), Some(&10_000));
+        assert_eq!(planned.precision, 40);
+        assert_eq!(
+            planned.adjustments,
+            vec![SweepAdjustment::Capped {
+                requested: 10_001,
+                planned: 251,
+                limit: limits::MAX_SWEEP_SAMPLES,
+                cap: SampleCap::Total,
+            }],
+            "the caller is told what it asked for as well as what it got"
+        );
+    }
+
+    #[test]
+    fn a_sweep_of_exactly_the_cap_is_not_a_capped_sweep() {
+        // The boundary the cap is written at. Loosening `requested > limit` to `>=` costs
+        // nothing in values — the factor comes out as 1 — and adds a `Capped` adjustment
+        // to a sweep that was never trimmed, which is the tool telling the operator their
+        // request was cut when it was not. P3f's run found it; this is the fixture that
+        // notices, and its twin one value further on is what stops it passing vacuously.
+        let exact = control("brightness", 0, 255, 1);
+        let planned = plan(&exact, &SweepSpec::All, false).expect("a plannable sweep");
+        assert_eq!(
+            u32::try_from(planned.values.len()),
+            Ok(limits::MAX_SWEEP_SAMPLES)
+        );
+        assert_eq!(planned.values.last(), Some(&255));
+        assert!(
+            planned.adjustments.is_empty(),
+            "a sweep that fits was not trimmed: {:?}",
+            planned.adjustments
+        );
+
+        let one_more = control("brightness", 0, 256, 1);
+        let planned = plan(&one_more, &SweepSpec::All, false).expect("a plannable sweep");
+        assert_eq!(
+            planned.adjustments,
+            vec![SweepAdjustment::Capped {
+                requested: 257,
+                planned: 129,
+                limit: limits::MAX_SWEEP_SAMPLES,
+                cap: SampleCap::Total,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_strided_plan_is_bounded_by_its_stride_and_never_by_the_ceiling() {
+        // The capping loop carries a second bound — `values.len() < ceiling` — behind the
+        // widened stride, and the claim is that it never fires: `factor = ceil(requested /
+        // limit)` already brings the count under the limit, so the loop always runs out of
+        // *range* first. That claim is why one of P3f's survivors is accepted as equivalent
+        // rather than covered (note N25), so it is checked rather than asserted: over every
+        // range and step below, the plan holds exactly as many values as its own recorded
+        // stride implies, which a truncating ceiling would make impossible.
+        //
+        // It also states the neighbouring invariant the same note leans on: no plan
+        // contains a repeated value, which is what makes `precision_of`'s positive-gap
+        // filter unreachable.
+        let mut checked = 0_u32;
+        for min in [-468_000_i64, -100, -1, 0, 1, 100, 4_096] {
+            for span in [
+                0_i64, 1, 2, 7, 31, 255, 256, 257, 511, 512, 1_023, 10_000, 100_000, 936_000,
+            ] {
+                for step in [1_i64, 2, 3, 7, 16, 3_600] {
+                    let desc = control("brightness", min, min.saturating_add(span), step);
+                    for spec in [
+                        SweepSpec::All,
+                        SweepSpec::Uniform { step: 1 },
+                        SweepSpec::Uniform { step: 1_000 },
+                    ] {
+                        let planned = plan(&desc, &spec, false).expect("a plannable sweep");
+                        checked = checked.saturating_add(1);
+                        assert!(
+                            u32::try_from(planned.values.len())
+                                .is_ok_and(|total| total <= limits::MAX_SWEEP_SAMPLES),
+                            "{min}..{} step {step} {spec:?}: {} values",
+                            desc.range.max,
+                            planned.values.len()
+                        );
+                        // `precision` is the stride only once there are two values to have
+                        // a gap between; a one-sample plan reports the control's own step
+                        // instead, and there is nothing for a ceiling to truncate anyway.
+                        if planned.values.len() > 1 {
+                            let stride = i128::from(planned.precision);
+                            let implied =
+                                (i128::from(desc.range.max) - i128::from(min)) / stride + 1;
+                            assert_eq!(
+                                i128::try_from(planned.values.len()).expect("a plan this size"),
+                                implied,
+                                "{min}..{} step {step} {spec:?}: the ceiling truncated a plan \
+                                 the stride had already bounded",
+                                desc.range.max
+                            );
+                        }
+                        for window in planned.values.windows(2) {
+                            assert!(
+                                window.first() != window.get(1),
+                                "{min}..{} step {step} {spec:?}: a repeated value",
+                                desc.range.max
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 7 * 14 * 6 * 3, "the population is what it claims");
+    }
+
+    #[test]
     fn a_motion_control_needs_permission_and_then_gets_the_smaller_cap() {
         // Design §5: motors wear, and a sweep never moves them as an implicit default.
         let desc = control("pan_absolute", -468_000, 468_000, 3_600);
@@ -759,6 +885,130 @@ mod tests {
         // The inverse: one point is a real, if minimal, sweep.
         let one = plan(&desc, &SweepSpec::Log { points: 1 }, false).expect("plannable");
         assert_eq!(one.values, vec![1]);
+    }
+
+    #[test]
+    fn a_log_sweep_is_geometric_and_the_geometry_starts_where_the_shift_puts_it() {
+        // Five mutations of `log_spaced`'s three set-up lines — the shift's sign, its
+        // direction, which end it is added to, and the ratio itself — survived the whole
+        // workspace suite in P3f's run, because the tests around them ask for shape
+        // (increasing, no NaN, front-loaded) and every one of those wrecks produces
+        // *something* increasing. What they cannot produce is the right values.
+        //
+        // A strictly positive range takes no shift at all, so the ratio is max/min and the
+        // samples are the geometric ladder between them: 100 × 100^(i/4).
+        let positive = control("exposure_time_absolute", 100, 10_000, 1);
+        let planned = plan(&positive, &SweepSpec::Log { points: 5 }, false).expect("plannable");
+        assert_eq!(planned.values, vec![100, 316, 1_000, 3_162, 10_000]);
+        // The precision is the *smallest* gap, which for a geometric ladder is the first
+        // one — and it is a difference, not a sum. A plan that starts away from zero is
+        // what tells those two apart; every other fixture in this file starts at 0, where
+        // `second - first` and `second + first` agree on the first pair.
+        assert_eq!(planned.precision, 216);
+
+        // A range containing zero is shifted to start at 1 and shifted back afterwards, so
+        // there is no logarithm of a non-positive number anywhere. Twelve points asked for
+        // is twelve samples delivered: every one of the mutations above collapses this to
+        // three or fewer by driving the ladder to NaN, which rounds to a single repeated
+        // value.
+        let crossing = control("zoom_continuous", -100, 100, 1);
+        let planned = plan(&crossing, &SweepSpec::Log { points: 12 }, false).expect("plannable");
+        assert_eq!(
+            planned.values.len(),
+            12,
+            "twelve points, twelve distinct samples: {:?}",
+            planned.values
+        );
+        assert_eq!(planned.values.first(), Some(&-100));
+        assert_eq!(planned.values.last(), Some(&100));
+    }
+
+    #[test]
+    fn a_log_sweep_of_exactly_the_cap_is_not_a_capped_sweep() {
+        // The same boundary as the strided cap's, on the other planner: `points > limit`
+        // loosened to `>=` reports a trim that did not happen.
+        let wide = control("exposure_time_absolute", 0, 100_000, 1);
+        let planned = plan(
+            &wide,
+            &SweepSpec::Log {
+                points: limits::MAX_SWEEP_SAMPLES,
+            },
+            false,
+        )
+        .expect("plannable");
+        assert!(
+            !planned
+                .adjustments
+                .iter()
+                .any(|adjustment| matches!(adjustment, SweepAdjustment::Capped { .. })),
+            "asking for exactly the cap is not being capped: {:?}",
+            planned.adjustments
+        );
+    }
+
+    #[test]
+    fn an_explicit_list_that_fits_is_not_reported_as_trimmed_and_one_that_does_not_says_by_how_much()
+     {
+        // `before > values.len()` decides whether a `Capped` adjustment is recorded, and
+        // P3f's run flipped it three ways with the workspace green: two of them tell every
+        // caller their list was trimmed when it was not, and the third stays silent when
+        // it was. Both directions, because a false report and a missing one are the same
+        // defect seen from either side.
+        let desc = control("brightness", 0, 100_000, 1);
+        let fits = plan(
+            &desc,
+            &SweepSpec::Explicit {
+                values: vec![0, 500, 1_000],
+            },
+            false,
+        )
+        .expect("plannable");
+        assert_eq!(fits.values, vec![0, 500, 1_000]);
+        assert!(
+            fits.adjustments.is_empty(),
+            "nothing was clamped, aligned, dropped or trimmed: {:?}",
+            fits.adjustments
+        );
+
+        let long: Vec<i64> = (0..1_000).map(|value| value * 100).collect();
+        let planned = plan(&desc, &SweepSpec::Explicit { values: long }, false).expect("plannable");
+        assert_eq!(
+            u32::try_from(planned.values.len()),
+            Ok(limits::MAX_SWEEP_SAMPLES)
+        );
+        assert!(
+            planned.adjustments.contains(&SweepAdjustment::Capped {
+                requested: 1_000,
+                planned: limits::MAX_SWEEP_SAMPLES,
+                limit: limits::MAX_SWEEP_SAMPLES,
+                cap: SampleCap::Total,
+            }),
+            "{:?}",
+            planned.adjustments
+        );
+
+        // How many collapsed is a subtraction, and the fixture has to be able to say so:
+        // five requested values landing on two samples is three dropped, and 5/2 is two.
+        // The existing clamp-and-align fixture drops one out of four, where a subtraction
+        // and a division agree — which is why P3f's run could turn one into the other with
+        // the workspace green.
+        let coarse = control("brightness", 0, 100, 7);
+        let collapsing = plan(
+            &coarse,
+            &SweepSpec::Explicit {
+                values: vec![0, 1, 2, 3, 50],
+            },
+            false,
+        )
+        .expect("plannable");
+        assert_eq!(collapsing.values, vec![0, 49]);
+        assert!(
+            collapsing
+                .adjustments
+                .contains(&SweepAdjustment::Deduplicated { dropped: 3 }),
+            "{:?}",
+            collapsing.adjustments
+        );
     }
 
     #[test]

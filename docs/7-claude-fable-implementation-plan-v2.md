@@ -41,7 +41,10 @@ exist because of it.
   uevent bind needs it (§8 item 10) and G6 consumes the answer.
 - The `wch-priv` powers are broader than demonstrated need, time-boxed to the plan; P6e
   executes the narrowing ruling (N8).
-- The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.
+- ~~The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.~~
+  **Discharged 2026-08-09**: `just mutants` over the six pure cores, its survivors triaged,
+  and the schedule mechanised as the `g4` row of `phase-criteria.tsv` rather than left as
+  a date. Evidence E7; posture, cadence and cost in docs/9's gaps register.
 
 ## Standing conventions, in force from P0 — v2 restatement
 

@@ -185,6 +185,14 @@ smoke-hw:
 miri:
     ./scripts/miri.sh
 
+# The mutation floor over the pure cores (docs/7 P3f). Hours, not minutes — it rebuilds
+# the workspace once per mutant — so it is a rung and a G4 criterion, never a `just ci`
+# step. cargo-mutants is a dev tool: without it the recipe reports a named, counted skip.
+# Extra arguments reach cargo-mutants, which is how a triage session narrows a re-run
+# (`just mutants -F store.rs`); the scope itself lives in `.cargo/mutants.toml`.
+mutants *args:
+    ./scripts/mutants.sh {{args}}
+
 # Regenerate committed generated artifacts (JSON Schema bundle, OpenRPC, completions,
 # man pages). `schema-artifacts-current.sh` proves the committed copies match.
 generate:

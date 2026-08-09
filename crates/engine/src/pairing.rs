@@ -953,6 +953,47 @@ mod tests {
     }
 
     #[test]
+    fn each_of_the_two_ways_to_be_a_suggestion_is_the_only_way_for_one_fixture() {
+        // `suggestions` has two rules — substring containment either way, and a shared
+        // prefix of four characters or more — and the test above reaches both with one
+        // fixture: "brightnes" is a substring of "brightness" *and* shares nine
+        // characters with it. So either rule could be deleted with the workspace green,
+        // and P3f's mutation run deleted each in turn and watched nothing happen.
+        //
+        // These two fixtures separate them. Each is reachable by exactly one rule, so
+        // each rule is now pinned by a case the other cannot answer.
+        let controls = vec![
+            integer("white_balance_temperature", 4_600, 0),
+            integer("exposure_time_absolute", 156, 0),
+            integer("gain", 8, 0),
+        ];
+
+        // Containment only: "white_balance_temperature" contains "balance", and the two
+        // share no first character at all.
+        let by_containment = plan(&controls, &[], &[(slug("balance"), ControlValue::Int(1))])
+            .expect_err("no such control");
+        assert_eq!(
+            by_containment,
+            Error::ControlUnknown {
+                requested: "balance".to_owned(),
+                did_you_mean: vec![slug("white_balance_temperature")],
+            }
+        );
+
+        // Shared prefix only: "expose_me" and "exposure_time_absolute" share "expos" and
+        // neither contains the other.
+        let by_prefix = plan(&controls, &[], &[(slug("expose_me"), ControlValue::Int(1))])
+            .expect_err("no such control");
+        assert_eq!(
+            by_prefix,
+            Error::ControlUnknown {
+                requested: "expose_me".to_owned(),
+                did_you_mean: vec![slug("exposure_time_absolute")],
+            }
+        );
+    }
+
+    #[test]
     fn one_automation_control_shared_by_two_targets_is_switched_off_once() {
         let controls = vec![
             auto_exposure(3),
@@ -1017,6 +1058,138 @@ mod tests {
             ]
         );
         validate(&controls, &pairs, &plan).expect("valid");
+    }
+
+    #[test]
+    fn a_partner_a_nested_guard_puts_back_is_cleared_again_rather_than_refused() {
+        // The switch-off loop re-reads after every write instead of walking the partner
+        // list once, and its bound is `round > partner_count` — one round of slack past
+        // "one round per partner". Nothing exercised the slack, so tightening the bound to
+        // `round == partner_count` left the whole workspace green (P3f's mutation run).
+        //
+        // This is the shape that needs it, and it is the shape the loop's own comment
+        // describes: `manual`'s two partners are `auto_a` and `auto_b`, and clearing
+        // `auto_b` requires parking `auto_a` at 7 first — which puts `auto_a` back on for
+        // `manual`. Two partners, three rounds of work, and the third round is the one the
+        // tightened bound refuses.
+        let controls = vec![
+            integer("manual", 100, 0),
+            integer("auto_a", 5, 0),
+            integer("auto_b", 5, 0),
+        ];
+        let pairs = vec![
+            AutomationPair {
+                manual: slug("manual"),
+                automation: slug("auto_a"),
+                off: AutomationOff::Value { value: 0 },
+                provenance: Provenance::Measured,
+            },
+            AutomationPair {
+                manual: slug("manual"),
+                automation: slug("auto_b"),
+                off: AutomationOff::Value { value: 0 },
+                provenance: Provenance::Measured,
+            },
+            AutomationPair {
+                manual: slug("auto_b"),
+                automation: slug("auto_a"),
+                off: AutomationOff::Value { value: 7 },
+                provenance: Provenance::Measured,
+            },
+        ];
+        let plan = plan(
+            &controls,
+            &pairs,
+            &[(slug("manual"), ControlValue::Int(42))],
+        )
+        .expect("a converging pair set has a plan");
+        assert_eq!(
+            plan.writes
+                .iter()
+                .map(|w| (w.control.as_str(), w.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("auto_a", ControlValue::Int(0)),
+                ("auto_a", ControlValue::Int(7)),
+                ("auto_b", ControlValue::Int(0)),
+                ("auto_a", ControlValue::Int(0)),
+                ("manual", ControlValue::Int(42)),
+            ],
+            "the fourth write is `auto_a` going off for the second time, which is the \
+             round a bound of `round == partner_count` would refuse"
+        );
+        // And the plan is still a guarded one: the validator reads the same board.
+        validate(&controls, &pairs, &plan).expect("valid");
+        assert_eq!(
+            plan.disabled_automation(),
+            vec![slug("auto_a"), slug("auto_b")],
+            "each partner is recorded once, however many times it was written"
+        );
+    }
+
+    #[test]
+    fn a_guard_chain_exactly_at_the_depth_bound_plans_and_one_link_deeper_is_refused() {
+        // `MAX_GUARD_DEPTH` is a number, and until this test the only thing asserting
+        // anything about it was the cycle below — which refuses at *any* bound, so
+        // narrowing `depth > MAX_GUARD_DEPTH` to `depth >= MAX_GUARD_DEPTH` left the
+        // workspace green (P3f's mutation run). Both directions here, driven by chain
+        // length: the last link is emitted at depth == chain length.
+        fn chain(links: usize) -> (Vec<ControlDesc>, Vec<AutomationPair>) {
+            let names: Vec<String> = (0..=links).map(|i| format!("g{i}")).collect();
+            let controls = names.iter().map(|n| boolean(n, 1)).collect();
+            let pairs = names
+                .windows(2)
+                .map(|w| AutomationPair {
+                    manual: slug(&w[0]),
+                    automation: slug(&w[1]),
+                    off: AutomationOff::Value { value: 0 },
+                    provenance: Provenance::Measured,
+                })
+                .collect();
+            (controls, pairs)
+        }
+
+        let (controls, pairs) = chain(MAX_GUARD_DEPTH);
+        let at_the_bound = plan(&controls, &pairs, &[(slug("g0"), ControlValue::Int(1))])
+            .expect("a chain exactly at the bound is plannable");
+        assert_eq!(
+            at_the_bound
+                .writes
+                .iter()
+                .map(|w| w.control.as_str())
+                .collect::<Vec<_>>(),
+            (0..=MAX_GUARD_DEPTH)
+                .rev()
+                .map(|i| format!("g{i}"))
+                .collect::<Vec<_>>(),
+            "the deepest link is switched off first and the target is written last"
+        );
+        validate(&controls, &pairs, &at_the_bound).expect("valid");
+
+        let (controls, pairs) = chain(MAX_GUARD_DEPTH + 1);
+        let err = plan(&controls, &pairs, &[(slug("g0"), ControlValue::Int(1))])
+            .expect_err("one link past the bound has no plan");
+        assert_eq!(err.kind(), ErrorKind::IllegalTransition);
+        assert!(err.to_string().contains("guard_depth_exceeded"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_plan_says_it_is_empty_and_a_plan_with_a_write_does_not() {
+        // `WritePlan::is_empty` has no caller in this workspace — P3f's mutation run found
+        // it by replacing the body with `true` and watching nothing go red. It is exercised
+        // rather than deleted, which is the ruling E6 made for `calibrate::applied_value`'s
+        // producerless refusals: a public predicate on a public type is contract, and the
+        // cheap way to keep contract honest is to assert it.
+        assert!(WritePlan::default().is_empty());
+        let controls = vec![integer("brightness", 128, 0)];
+        let plan = plan(
+            &controls,
+            &[],
+            &[(slug("brightness"), ControlValue::Int(200))],
+        )
+        .expect("a plannable write");
+        assert_eq!(plan.writes.len(), 1);
+        assert!(!plan.is_empty());
     }
 
     #[test]

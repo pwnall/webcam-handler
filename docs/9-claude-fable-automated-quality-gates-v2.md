@@ -141,7 +141,7 @@ this table is the commissioning record).
 | ~~**Vivid sweep arm**~~ | P3c | **landed and executed**: `vivid_a_calibration_sweep_sets_settles_captures_and_scores_through_the_real_ioctl_path` plans three step-aligned values from the driver's own range, writes them guarded, settles, captures, scores and records — probing the automation pairs first and restoring through the persisted pre-sweep snapshot afterwards, with the swept control's return asserted. Eight `vivid_*` tests green on `just rung-vivid-managed`, 0 skips. It also produced PF:17: `vivid`'s `u8_pixel_array` reshapes with the negotiated format, so the arm asserts the *control it swept* came back rather than that the whole restore report is complete | a sweep loop proven only against the fake's model of a driver |
 | ~~**R3 calibration and motion arms**~~ | P3e | **landed and executed**: `hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_restores` runs start → plan → sweep → select → apply → restore against every attached camera that offers a brightness-class control, and `hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started` is the one arm in the workspace that drives a motor — bounded to a few steps either side of home, asserting the planner's motion cap on the device's own range and the head's return at the device. `just smoke-hw` runs 15 tests green; `WCH_NO_MOTION=1` drops it to 14 with the exclusion as a named, counted skip. Evidence E5, and it produced PF:18 and N21 | calibration proven only against the fake's model of a camera; a motor nobody ever drove |
 | ~~**Two gate populations widened at the P3 review**~~ | P3 review | **landed**: `json-validates.sh`'s verb population now recurses one level — for each top-level verb it scrapes `wch <verb> --help` and requires a row named `<verb>-<sub>` for every leaf, with an *exact* row match instead of the prefix match that let one `calibrate-start` row answer for the whole seven-verb subtree; a selftest arm deletes one `calibrate-*` row from a copy of the predicate and asserts it goes red. `atomic-write-home.sh`'s raw-write pattern gained `File::options(` and `File::create_new(` — std's own aliases for `OpenOptions::new()` and `File::create()` — with a fail arm for each: two byte-identical bypasses used to get opposite verdicts on how the open was spelled | the third and fourth instance of note N10's family — a gate green while checking less than it claims. Before the fix six of the seven verbs P3d landed could vanish from the gate with it still green |
-| **Mutation floor** | P3f | a `cargo-mutants`-class job over the pure cores, `just mutants`, survivors triaged to missing tests or recorded acceptances — the "before G4, not after" schedule v1 recorded, now a docs/7 milestone | tests that execute the cores without constraining them |
+| ~~**Mutation floor**~~ | P3f | **landed and run**: `just mutants` → `scripts/mutants.sh` over `cargo-mutants`, scoped by `.cargo/mutants.toml` to the six pure cores (`engine::{pairing, session, settle, store, sweep}`, `imaging::metrics`) and judged by the **whole workspace suite** per AGENTS rule 2. Survivors are compared against `scripts/mutants-accepted.txt` **in both directions** — an unlisted survivor fails the job, and so does a listed one that has stopped surviving, because an acceptance nobody re-checks is how N15's mistake gets made twice. The scope's exclusions are stated as absence from `examine_globs`, each with its reason, so widening the floor is adding a line. First-run numbers, cost and triage: evidence E7; posture and cadence in the gaps below | tests that execute the cores without constraining them |
 | **T5 method-count walk** | P4c | the registered `RpcModule`'s `method_names()` — built from the real server, which is what the compiler enforces — compared against the integration-test inventory; derived from the running registration, never a hand list (a Rust trait does not reify its methods, so "exhaustive match" is the wrong mechanism and this row says the real one) | a wire method with no test |
 | **Schema-artifacts gate widened** | P4a | `schema-artifacts-current.sh` learns the OpenRPC bundle when the T5 trait and its xtask emission land | OpenRPC drift from the wire trait |
 | **Netlink hostile-bytes fixtures** | P4d | malformed, truncated, and flood packet fixtures against the uevent parser (rubric B10: a packet is attacker-shaped input); the R3 hotplug arm cycles `uvcvideo` via the blessed helper with all cameras closed (§3.3 item 9) and is evidence-recorded | a parser that trusts the kernel socket; hotplug proven only against scripted fakes |
@@ -202,15 +202,42 @@ this table is the commissioning record).
   helper's real boundary is "who has an account on this machine" (§2.13, N8); no gate
   can defend against a second session as the same user, and this line keeps the gate's
   green from being read as a security review of `crates/priv/`.
-- **Mutation testing is scheduled, not landed.** docs/7 P3f commissions the job before
-  G4, on v1's recorded schedule; until it lands, "the tests constrain the cores" rests
-  on rubric rule 2 discipline alone.
+- ~~**Mutation testing is scheduled, not landed**~~ — **retired 2026-08-09**. `just mutants`
+  is the job docs/7 P3f commissioned; its first run and the triage of every survivor are
+  evidence entry E7. What the retirement leaves behind is a posture, a cadence and three
+  limits, and they belong here rather than in a commit message:
+  - **Posture: not a `just ci` step, and a G4 criterion.** The job rebuilds the workspace
+    and runs all 643 tests once per mutant: 410 mutants took **21m17s** of wall clock on
+    five parallel jobs (8-core machine, build
+    trees in a `tmpfs` `$TMPDIR` — on disk the same run is an order of magnitude slower,
+    measured). `just ci` costs minutes and must stay that way, so the floor is a rung. It
+    is not left to memory either: `phase-criteria.tsv` carries a `g4` row running
+    `./scripts/mutants.sh`, which is docs/7's "before G4, not after" made re-runnable.
+    **Cadence: before a phase gate closes, and after any change to the six files in
+    scope.** cargo-mutants is a dev tool — `just ci` never requires it, and the recipe
+    reports a named, counted skip on a machine without it.
+  - **The floor is six files, and the imperative shell is not in it.** `.cargo/mutants.toml`
+    names what is out and why: the unsafe V4L2 edge (only decidable against a device — R2,
+    R3 and Miri own that half), the CLI renderers (survivors there say "the golden output is
+    not byte-asserted", which is a decision docs/6 already made), and `engine`'s shell
+    modules — `lifecycle`, `calibrate`, `discover`, `capture`, `photo`, `snapshot`, `write`.
+    The last exclusion is the load-bearing one, and it is a deferral rather than a
+    judgement: E6's largest P3 finding was in `lifecycle`, and the seeded-defect campaigns
+    of P3b/P3c/P3d ran against those same shell modules, so **this job did not reproduce
+    their counts and does not claim to** — the populations barely intersect. The one that
+    does intersect is P3a's, against `engine::store`, and E7 records what the tool found
+    there against what P3a's commit message claimed.
+  - **A recorded acceptance is a claim about the fault that can be injected, not about a
+    class of property** [S:N15]. `scripts/mutants-accepted.txt` is checked in both
+    directions for exactly that reason: a mutant that becomes killable turns the job red
+    until its entry is deleted and its test written.
 
 ## Coverage map — rubric gate → enforcement
 
 | Rubric rule/principle | Enforced by |
 |---|---|
 | Rule 6 (gates can go red — inverse arms driven by the real tool) | `selftest.sh`, table-driven, both directions, derived population, real-tool arms where stubs stand in [S:N10] |
+| Rule 2 (a test that cannot go red is not a test) | `selftest.sh`'s inverse arms for the gates; for the pure cores, `just mutants` — a machine that writes the buggy implementation 410 ways and reports the lines nothing noticed [S:E7]; elsewhere the seeded-defect campaign each sub-milestone records in its commit |
 | Rule 3 (CI executes what it claims) | `counted-selections.sh`, `--no-tests=fail`, `ignored-suites-have-recipes.sh`, skip accounting on vivid/oracle rungs |
 | A2/A3 (device authority, represent unknown) | battery control-model arms + PF corpus fixtures + the `query_controls` lint ban |
 | A5 (one home) | `atomic-write-home.sh`, `dependency-walls.sh`, T5 method walk, CLI parity gate |

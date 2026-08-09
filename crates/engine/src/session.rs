@@ -868,6 +868,71 @@ mod tests {
     }
 
     #[test]
+    fn a_control_with_two_automation_partners_records_both_and_records_each_once() {
+        // D4 restores what a sweep switched off, and `ControlStatus::AutoDisabled`'s list
+        // is the record it restores from — so a list that is short is a control left under
+        // automation the operator did not choose. Nothing asserted the list's *contents*
+        // until P3f's mutation run found two ways to empty it with the workspace green:
+        // dropping the arm that carries the existing list forward (the second partner
+        // replaces the first) and deleting the `!` in the contains check (nothing is ever
+        // pushed at all).
+        let mut session = fixture();
+        let exposure = slug("exposure_time_absolute");
+        auto_disabled(
+            &mut session,
+            &exposure,
+            &slug("auto_exposure"),
+            Some(3),
+            later(),
+        )
+        .expect("legal from untouched");
+        let event = auto_disabled(
+            &mut session,
+            &exposure,
+            &slug("iso_sensitivity_auto"),
+            Some(1),
+            later(),
+        )
+        .expect("a second partner is legal from auto-disabled");
+        assert_eq!(
+            event,
+            SessionEvent::AutomationDisabled {
+                manual: exposure.clone(),
+                automation: slug("iso_sensitivity_auto"),
+            },
+            "the event names the partner this call switched off, not the list so far"
+        );
+
+        // Switching the same partner off again is the caller repeating itself: one entry.
+        auto_disabled(
+            &mut session,
+            &exposure,
+            &slug("auto_exposure"),
+            Some(3),
+            later(),
+        )
+        .expect("idempotent");
+
+        let Some(ControlStatus::AutoDisabled {
+            automation,
+            parked_value,
+        }) = session.controls.get(&exposure).map(|entry| &entry.status)
+        else {
+            panic!("not auto-disabled: {:?}", session.controls.get(&exposure));
+        };
+        assert_eq!(
+            automation,
+            &vec![slug("auto_exposure"), slug("iso_sensitivity_auto")],
+            "both partners, in the order they were switched off, each once"
+        );
+        assert_eq!(
+            *parked_value,
+            Some(3),
+            "the latest parked value is the record"
+        );
+    }
+
+    #[test]
     fn automation_cannot_be_disabled_under_a_running_sweep() {
         // Changing what governs a control mid-sweep invalidates every sample already
         // taken, and the samples do not say which side of the change they are on.
@@ -1047,6 +1112,41 @@ mod tests {
             panic!("not calibrated");
         };
         assert_eq!(*value, 0, "ties must not depend on iteration order");
+
+        // The same rule on the other side of the preference, because it is a *second*
+        // comparison in the source and it was pinned by nothing: loosening `score <
+        // incumbent` to `<=` for a lower-is-better metric left the workspace green in
+        // P3f's mutation run, and a tie would then have been broken by whichever sample
+        // came last.
+        let mut lower = fixture();
+        let exposure = slug("exposure_time_absolute");
+        enqueue(&mut lower, &exposure, later());
+        begin_sweep(&mut lower, &exposure, &SweepSpec::All, 3, later()).expect("legal");
+        for (value, clipped) in [(100_i64, 0.30_f64), (200, 0.02), (300, 0.02)] {
+            record_sample(
+                &mut lower,
+                &exposure,
+                sample(value, &[(MetricName::ClippedHighlights, clipped)]),
+                later(),
+            )
+            .expect("legal");
+        }
+        select_by_metric(
+            &mut lower,
+            &exposure,
+            MetricName::ClippedHighlights,
+            later(),
+        )
+        .expect("clipping ranks");
+        let Some(ControlStatus::Calibrated { value, .. }) =
+            lower.controls.get(&exposure).map(|entry| &entry.status)
+        else {
+            panic!("not calibrated");
+        };
+        assert_eq!(
+            *value, 200,
+            "a lower-is-better tie must keep the earliest sample too"
+        );
     }
 
     #[test]

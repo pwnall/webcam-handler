@@ -167,6 +167,28 @@ fn a_torn_line_is_dropped_or_refused_by_where_it_is() {
     drop(arranged);
     temp.store_mut().clear_faults();
 
+    // **The tear is a partial record, and that is asserted rather than assumed.** Every
+    // other assertion in this test reads the log through `load_log`, and through
+    // `load_log` an entry that was never written and an entry that was written torn and
+    // dropped look identical. So a fault that quietly stopped tearing — writing nothing,
+    // or a single `{` — would leave this test green while the loader stopped meeting the
+    // bytes the fixture exists to hand it. P3f's mutation run found exactly that:
+    // truncating to `len % 2` instead of `len / 2` survived the whole workspace suite.
+    // A fixture that has stopped producing the condition it is named for is "skip reads
+    // as pass" in a fault-menu costume.
+    let mut whole = serde_json::to_vec(&entry("brightness")).expect("serializable");
+    whole.push(b'\n');
+    let raw = std::fs::read(dir.join(limits::SESSION_LOG_FILE).as_std_path()).expect("readable");
+    let first_terminator = raw
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .expect("the whole entry before the tear is terminated");
+    assert_eq!(
+        &raw[first_terminator + 1..],
+        &whole[..whole.len() / 2],
+        "the tear must be the first half of the entry that was being appended"
+    );
+
     // A torn *last* line is a crash mid-append, and D9 drops it. The event before it
     // survives: dropping the tail must not lose the history.
     let loaded = temp

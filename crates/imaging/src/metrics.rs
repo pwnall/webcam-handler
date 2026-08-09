@@ -381,5 +381,92 @@ mod tests {
         // Smaller than the Laplacian kernel: reported as zero, not as border artifacts.
         assert!(sharpness(&fixtures::checkerboard(2, 2, 1)).abs() < f64::EPSILON);
         assert!(sharpness(&fixtures::checkerboard(3, 3, 1)) > 0.0);
+
+        // **Either** axis, not both. The square fixtures above are answered the same way
+        // by `width < 3 || height < 3` and by `width < 3 && height < 3`, so P3f's mutation
+        // run swapped the connective and nothing went red — a 2×64 strip would then have
+        // been "measured" out of two rows of border extension.
+        assert!(sharpness(&fixtures::checkerboard(2, 64, 1)).abs() < f64::EPSILON);
+        assert!(sharpness(&fixtures::checkerboard(64, 2, 1)).abs() < f64::EPSILON);
+        assert!(sharpness(&fixtures::checkerboard(64, 64, 1)) > 0.0);
+    }
+
+    #[test]
+    fn the_laplacian_response_sums_to_zero_whatever_the_image_is() {
+        // Recorded here because three surviving mutants rest on it (note N26): the mean of
+        // the response is what `sharpness` subtracts, and if that mean is always exactly
+        // zero then `sum / n`, `sum * n`, `sum % n` and `v - mean` versus `v + mean` are
+        // all the same arithmetic. They are, and this is the fixture that says so — and
+        // that turns red the day the filter's border handling changes, at which point
+        // those three acceptances become killable and must be deleted.
+        //
+        // The population is chosen to be the hardest case for the claim: a single bright
+        // pixel at each of the nine positions of a 3×3, corners and edges included, so the
+        // border replication is asked the question from every direction.
+        for y in 0..MIN_LAPLACIAN_EXTENT {
+            for x in 0..MIN_LAPLACIAN_EXTENT {
+                let mut image = GrayImage::new(MIN_LAPLACIAN_EXTENT, MIN_LAPLACIAN_EXTENT);
+                image.put_pixel(x, y, image::Luma([u8::MAX]));
+                let response = imageproc::filter::laplacian_filter(&image);
+                let sum: i64 = response.as_raw().iter().map(|v| i64::from(*v)).sum();
+                assert_eq!(sum, 0, "a dot at ({x}, {y}) summed to {sum}");
+            }
+        }
+        // And on the fixtures the rest of this module measures.
+        for image in [
+            fixtures::text_like(64, 48),
+            fixtures::gradient(64, 48),
+            fixtures::checkerboard(64, 48, 8),
+            fixtures::speckle(64, 48, 7),
+        ] {
+            let response = imageproc::filter::laplacian_filter(&image);
+            let sum: i64 = response.as_raw().iter().map(|v| i64::from(*v)).sum();
+            assert_eq!(sum, 0);
+        }
+    }
+
+    #[test]
+    fn sharpness_is_the_variance_of_the_laplacian_and_not_some_neighbouring_moment() {
+        // Every other assertion about `sharpness` in this module is an *ordering* — sharp
+        // above blurry, and rightly so, because a Laplacian variance has units and only
+        // its ordering means anything to a sweep. But an ordering is cheap to satisfy:
+        // P3f's mutation run divided the sum of squares by the sample count the wrong way
+        // round and every ordering test in this file stayed green, because scaling a
+        // metric by n² reorders nothing.
+        //
+        // So the statistic is stated once, independently: the response comes from the same
+        // filter, and the variance is written out here rather than called. That is a second
+        // implementation of the arithmetic under test, not a second copy of the code. The
+        // three mutations of the *mean* that the same run reported are a different case,
+        // and note N26 is where they are argued rather than covered.
+        let image = fixtures::text_like(64, 48);
+        let response = imageproc::filter::laplacian_filter(&image);
+        let values: Vec<f64> = response.as_raw().iter().map(|v| f64::from(*v)).collect();
+        let n = f64::from(u32::try_from(values.len()).expect("a fixture this size fits"));
+        let mean = values.iter().sum::<f64>() / n;
+        let variance = values
+            .iter()
+            .map(|value| (value - mean) * (value - mean))
+            .sum::<f64>()
+            / n;
+
+        let measured = sharpness(&image);
+        assert!(
+            (measured - variance).abs() <= variance * 1e-9,
+            "{measured} is not the variance {variance} of the Laplacian response"
+        );
+
+        // And the buggy implementation, so the equality above is known to be pinning
+        // something. The mean is zero (the test above says why), so the arithmetic this
+        // fixture *can* distinguish is the divisor: a sum of squares multiplied by the
+        // sample count instead of divided by it is the same ordering and a different
+        // number, which is exactly what an ordering test cannot see.
+        let with_the_wrong_divisor = values.iter().map(|value| value * value).sum::<f64>() * n;
+        assert!(
+            with_the_wrong_divisor > variance,
+            "{with_the_wrong_divisor} vs {variance}: multiplying by the sample count must \
+             not give the same answer as dividing by it, or the assertion above proves \
+             nothing"
+        );
     }
 }

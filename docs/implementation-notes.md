@@ -1030,6 +1030,26 @@ anticipate. This entry belongs in design §3.3's structural-gap register at its 
 regeneration; the register is regenerated rather than accreted, so it is recorded here in
 the meantime.
 
+### Amendment, 2026-08-09: the mutation floor landed, and it neither retires nor reaches this
+
+The second clause above named P3f. P3f has landed (E7), and the answer is that it does
+**not** retire this entry, for two reasons worth separating.
+
+**The claim was reproduced, for the first time since it was written.** Deleting
+`fsync_dir(dir)` from `write_json_atomic_scripted` leaves 642 tests run, 642 passed;
+deleting the temp file's `sync_all()` leaves 642 tests run, 642 passed. Both at workspace
+scope, on the current tree.
+
+**But the tool cannot express either mutation.** cargo-mutants replaces function bodies and
+flips operators; it does not delete a statement. `replace fsync_dir -> Result<()> with
+Ok(())` is generated and is *caught*, by
+`fsyncing_a_directory_is_supported_here_and_its_failure_is_typed` — which asserts the typed
+failure and says in its own comment that it does not prove durability. So a green mutation
+run over `store.rs` must never be read as a re-confirmation of this note. What the floor
+did find in the same module is eight other survivors, seven of them ordinary uncovered
+lines with tests now written; that is a fact about the 2026-08-09 seeded-defect campaign's
+completeness, not about these two lines.
+
 ---
 
 ## N13 — The store refuses to write a document it could not read back
@@ -1144,6 +1164,27 @@ the class of property, and this pair is the counter-example that keeps the claim
 **Retires when:** nothing retires it; it is a note about why a neighbouring line *is*
 covered, and it belongs beside N12 when design §3.3's structural-gap register is next
 regenerated.
+
+### Amendment, 2026-08-09: the same lesson, twice more, from the mutation floor
+
+E7's triage produced two more instances, both of which began as "no test can reach this"
+and neither of which survived the second look.
+
+- `pairing::Planner::emit`'s switch-off loop is bounded by `round > partner_count` — one
+  round of slack past the "one round per partner" its own comment claims — and tightening
+  it to `round == partner_count` looked unobservable, because consistent pair data converges
+  within one round per partner and inconsistent data raises the same `ControlInactive`
+  either way. It is observable: a device where clearing one partner *puts another back*
+  (the case the loop's comment describes) needs three rounds for two partners, and
+  `a_partner_a_nested_guard_puts_back_is_cleared_again_rather_than_refused` is that fixture.
+- `LockRecord::for_this_process`'s `-1` fallback could become `1` — `init`'s pid — and no
+  test can reach it, because a process cannot choose its own pid. The fault was not
+  unreachable; the *seam* was missing. `pid_or_unknown(raw: u32)` takes the value, and the
+  branch is one assertion away. "Pure cores take values" is not only a design preference;
+  it is the difference between a line nothing can watch and a line one assertion can.
+
+Ten survivors were accepted in that run (N25, N26, N27), and each was written only after
+this question had been asked of it.
 
 ---
 
@@ -2255,3 +2296,379 @@ refinement still share one `ControlSession`, so `select_by_metric` ranks their u
 `sampled_precision` strides across two grids (N22 says so and says why it is a D8 question);
 `--keep` has no producer because the restore is a verb rather than a default (N23); and the
 coverage gaps listed above are the next review's starting point rather than this one's work.
+
+---
+
+## N25 — Five accepted mutants in the planners are equivalent, not uncovered
+
+**Doc:** rubric rule 2 — for every test, the buggy implementation — and note N12, which
+records lines this suite cannot turn red. docs/7 P3f asks every surviving mutant to become
+a test or a **reasoned** acceptance, and N15 is the standing warning that "no test can kill
+this" is usually a claim about the fault you thought to inject.
+
+**Repo:** five survivors of the first mutation-floor run (E7) are accepted, and all five
+are accepted on the *strongest* available ground: no input distinguishes the two programs.
+That is a different claim from N12's — N12's `fsync`s make a real difference nothing in a
+hermetic test can observe; these make no difference at all.
+
+Four of them are one story: **`sweep::strided` and `sweep::subsample` are written total for
+a `limit` of zero, and their only callers pass 256 or 32** (`limits::MAX_SWEEP_SAMPLES`,
+`limits::MAX_MOTION_SWEEP_SAMPLES`). Every guard that exists for `limit == 0` is therefore
+unreachable, and mutating it changes nothing:
+
+| Mutant | Why it is equivalent |
+|---|---|
+| `replace && with \|\| in strided` | `capped \|\| limit_count > 0` is always true, and when `capped` is false the factor comes out as exactly 1 — `requested_count` is at least 1, so `div_euclid` is 0 and `rem_euclid` is not, or the two are equal and `div_euclid` is 1. A stride multiplied by 1 is the stride. |
+| `replace > with >= in strided` (the `limit_count > 0` guard) | `limit_count` is 256 or 32. Both spellings are true. |
+| `replace < with <= in strided` (the `values.len() < ceiling` guard) | The stride widening already bounds the count: `factor = ceil(requested / limit)` gives `limit × factor ≥ requested > span/stride`, so `floor(span / (stride × factor)) + 1 ≤ limit`. The loop always runs out of range before it runs out of ceiling, so the guard never binds. |
+| `replace \|\| with && in subsample` | `count <= limit \|\| limit == 0`: with `limit` positive the second disjunct is dead, and when `count <= limit` the loop the mutant falls into re-picks every element in order and `dedup` puts the list back exactly as it was. |
+
+The fifth is the same shape one function along: **`replace > with >= in precision_of`**, and
+its twin **`replace > with >= in sampled_precision`** in `engine::session`. Both filter
+gaps to the positive ones, and in both the input has already been made duplicate-free —
+`session::sampled_precision` sorts and `dedup`s its own input; every `SweepPlan` reaches
+`precision_of` with distinct values (`strided` is strictly increasing, `log_spaced`
+`dedup`s, `explicit` inserts through a `BTreeSet` and `subsample` `dedup`s). A gap between
+two distinct integers is at least 1, so `gap > 0` and `gap >= 0` accept the same set.
+
+**The two structural claims are checked, not asserted.**
+`a_strided_plan_is_bounded_by_its_stride_and_never_by_the_ceiling` plans 1 764 sweeps —
+seven minima from -468 000 to 4 096, fourteen spans from 0 to 936 000, six device steps,
+three specs — and asserts of each that it holds exactly as many values as its own recorded
+stride implies (which a truncating ceiling makes impossible) and that no value repeats
+(which is what makes the positive-gap filters unreachable). If a future change makes either
+claim false, that test goes red before the acceptances do.
+
+**What makes these acceptances rather than gaps** is that the *lines* are covered and only
+the unreachable *edges* are not. The same run caught `replace > with ==` and
+`replace > with <` on `sampled_precision`'s filter — both make it reject everything, the
+recorded precision collapses to zero, and
+`precision_comes_from_what_the_camera_held_not_from_the_plan` turns red. It caught
+`replace > with >=` on `strided`'s *cap* comparison one line above the guard accepted here,
+because `a_sweep_of_exactly_the_cap_is_not_a_capped_sweep` was written for it. The
+acceptance register keys survivors by file and description rather than by line, so it
+compares **multisets**: two mutants sharing a key need two lines, and one of a pair
+regressing turns the job red rather than hiding behind its sibling's entry.
+
+**The alternative considered, and declined.** Making `limit` a `NonZeroU32` would delete
+three of these guards and the mutants with them, and deduplicating inside `precision_of`
+would delete the other two. Both are changes to shipped code made to satisfy a measurement,
+and both remove a total function's defence against a future caller. This repository has the
+opposite precedent only where the redundancy was a *second representation of a fact*
+(`store::parse_log` retired a flag that could not change an outcome); a guard against a
+precondition is not that.
+
+**Retires when:** a caller passes `limit == 0`, or a planner stops deduplicating its output
+— at which point these become ordinary uncovered lines and the register's both-direction
+check turns `just mutants` red until the entries are deleted and the tests written.
+
+---
+
+## N26 — `sharpness` cannot see its own mean, because a Laplacian response sums to zero
+
+**Doc:** as N25. This is the third kind of accepted survivor: not a guard on an unreachable
+input, but arithmetic whose operand is always the identity.
+
+**Repo:** `imaging::metrics::sharpness` is the variance of a 3×3 Laplacian response — it
+takes the mean of the response and then the mean of the squared deviations from it. The
+mutation floor (E7) reports three survivors inside that calculation:
+`sum / n` → `sum * n`, `sum / n` → `sum % n`, and `value - mean` → `value + mean`.
+
+**Why all three are equivalent: the response sums to exactly zero, always.** The Laplacian
+kernel sums to zero, and `imageproc`'s border replication distributes the taps so that the
+total weight on every input pixel — corner and edge included — is zero as well. So
+`sum == 0`, and therefore `0 / n`, `0 * n` and `0 % n` are the same number, and adding zero
+is the same as subtracting it.
+
+**This is a claim about a dependency, so it is a test rather than a paragraph.**
+`the_laplacian_response_sums_to_zero_whatever_the_image_is` asserts it over the population
+that would break it if anything could: a single bright pixel at each of the nine positions
+of a 3×3, which asks the border replication the question from every direction, plus the
+four fixtures the rest of the module measures. An `imageproc` release that changes the
+border handling turns *that* test red, and these three mutants become killable the same
+day — at which point the register's both-direction check turns `just mutants` red until
+their entries are deleted.
+
+**What is covered, and it is the neighbouring line.** The fourth mutation of the same
+calculation — dividing the sum of squares by the sample count the wrong way round — is
+*not* accepted: it survives every ordering test in the module (scaling a metric by n²
+reorders nothing), and `sharpness_is_the_variance_of_the_laplacian_and_not_some_neighbouring_moment`
+was written for it, stating the statistic independently rather than asserting a rank.
+
+**Retires when:** the response stops summing to zero — a different filter, a different
+border rule, a different library.
+
+---
+
+## N27 — The store lock's `WouldBlock` arm is the only `flock` failure a test can arrange
+
+**Doc:** AGENTS rule 7 — EBUSY/ENODEV/EPERM/timeout stay distinct from "the camera can't",
+and no code or test converts one into the other. `StoreLock::acquire` applies the same rule
+to the filesystem: a lock somebody else holds is `Error::StoreLocked`, and any *other*
+failure of the lock call is `Error::StorageIo`.
+
+**Repo:** the mutation floor (E7) reports
+`replace match guard err.kind() == io::ErrorKind::WouldBlock with true` as a survivor. With
+it, every `flock` failure becomes "somebody else holds it" — an availability answer given
+for an availability failure of a different kind, which is a smaller error than the ones
+that rule usually catches but the same shape.
+
+**Why it survives, and why that is an acceptance rather than a gap.** The arm below it
+needs `try_write` to fail with something other than `EWOULDBLOCK`, and a hermetic test
+cannot arrange one. `EBADF` needs a descriptor this code owns and has closed; `EINTR` needs
+a signal delivered inside the syscall; `ENOLCK` needs the kernel out of lock records; a
+filesystem that does not implement `flock` at all needs a mount this suite may not make.
+The store's fault menu deliberately arranges the *real* thing for the case it can — a
+second `flock` from an independent open file description — and that is `EWOULDBLOCK` by
+construction, so the seam that exists cannot produce the fault this line distinguishes.
+
+This is N12's family rather than N25's: the two programs really do differ, and the
+difference is invisible because the input that reveals it cannot be produced here.
+
+**What was declined.** A fifth `StoreFault` variant could script a non-`WouldBlock` lock
+failure. It is not added, for the reason design §2.9 gives the fault menus generally and E5
+gives the fake: a menu entry for a failure nobody has observed is a fake capability, and the
+right time to add it is the day a filesystem is seen doing it — as a fault variant with a
+fixture, the way a PF entry lands.
+
+**Retires when:** a real filesystem is observed answering `flock` with anything but
+`EWOULDBLOCK` here, or the lock acquisition grows a seam for its own syscall.
+
+
+---
+
+## E7 — The mutation floor's first run, 2026-08-09
+
+docs/7 P3f commissioned a `cargo-mutants`-class job over the pure cores "before G4, not
+after", and said the triage rather than the wiring would be the work. It was. This entry
+is the first run's record: what the job is, what it cost, every survivor and what became
+of it, and the two claims from E6's coverage gaps that it was pointed at.
+
+### The job
+
+`just mutants` runs `scripts/mutants.sh` over `cargo-mutants` 27.1.0. The scope is
+`.cargo/mutants.toml` — six files, transcribed from docs/7's sentence: the guarded-write
+planner (`engine::pairing`), the sweep planner (`engine::sweep`), the calibration state
+machine (`engine::session`), the settle policy (`engine::settle`), the session store
+(`engine::store`) and the D8 metric set (`imaging::metrics`). Judgement is the **whole
+workspace suite** (`test_workspace = true`), which is AGENTS rule 2's "mutations verify at
+workspace scope" rather than a choice: at 643 tests in about three seconds the
+honest option is also the cheap one, and a mutant that only its own crate's unit tests
+catch is a weaker result than this project claims.
+
+Survivors are compared against `scripts/mutants-accepted.txt` in both directions. An
+unlisted survivor fails the job; so does a listed one that has stopped surviving, because
+the register would otherwise be exactly the thing N15 warns about — an acceptance nobody
+re-checks.
+
+**One correctness hazard, recorded because it costs a day to diagnose.** The build
+directories must not share `target/` with the checkout. A test binary bakes in
+`CARGO_MANIFEST_DIR`, this repo's corpus loader walks that path's ancestors looking for
+`corpus/profiles` (`crates/testkit/src/corpus.rs`), and a binary compiled in a scratch tree
+and cached into ours fails every corpus-loading test with "no ancestor directory contains
+corpus/profiles" — which looks exactly like a real defect and is not. `copy_target = false`
+is the guard; the cure for a cache already poisoned is `cargo clean -p <pkg>`, never a code
+change.
+
+### What it cost
+
+**410 mutants in 21 minutes and 17 seconds** of wall clock, on an eight-core machine: five
+parallel jobs (what the build root could hold, which the script works out and says), each
+one rebuilding the workspace and running all 643 tests. Per mutant that is roughly two to
+six seconds of build and nine to fourteen of test — the build is incremental, the test run
+is not, and both are paid 410 times. `just ci` on the same machine is minutes. That ratio
+is the whole argument for the posture docs/9 records: a rung and a phase-close criterion,
+never a CI step.
+
+Three operational findings sit behind that number, and each is in `scripts/mutants.sh`
+rather than only here:
+
+- **Debug info off.** `just ci`'s own `target/` on this machine is 34 GiB, almost all of it
+  DWARF for the workspace's test binaries, and each job gets a whole copy. The first
+  attempt filled a 16 GiB `tmpfs` `/tmp` and had to be abandoned — one build directory had
+  reached 6.1 GiB on its own. `CARGO_PROFILE_{DEV,TEST}_DEBUG=0` brings a build directory
+  to about 1.5 GiB and makes the links, which are most of the wall clock, much cheaper. It
+  cannot change a verdict: it changes what a backtrace can say, not what a test asserts.
+- **Build directories on `tmpfs`, not on the disk that holds `target/`.** Measured both
+  ways on the same tree: about seven mutants a minute in `$TMPDIR`, under one a minute on
+  disk. Concurrent cargo builds are I/O bound long before they are CPU bound.
+- **The job count is what the build root can hold, not what the machine has cores.** The
+  script does the `df` and says so — on this machine, five jobs rather than eight.
+
+### What it found
+
+**410 mutants generated: 350 caught, 50 unviable, 10 survivors — and every one of the ten
+is a recorded acceptance.** `just mutants` exits 0 on that. The 50 unviable are evidence
+about the type system rather than about the tests: the mutation did not compile.
+
+One test landed after that run's build directories were copied
+(`a_strided_plan_is_bounded_by_its_stride_and_never_by_the_ceiling`, which is evidence for
+N25 rather than a killer), so the register was re-checked against the final tree on its own:
+`just mutants -F <the ten accepted, by description>` selects fifteen mutants — the ten and
+the five that share a key with one of them — and answers *ten missed, five caught*, which
+is the register exactly. The five same-key siblings being caught is the point of comparing
+multisets rather than sets.
+
+That is the tree *after* the triage, which is the work docs/7 predicted. Across this
+session's passes the floor surfaced **forty-eight distinct survivors**: seven in
+`pairing` (four, then three more once the first four were killed and the fixtures that
+had been covering two rules at once stopped), four in `session`, one in `settle`, eight in
+`store`, twenty-three in `sweep` and five in `metrics`. **Thirty-eight became tests and
+ten became recorded acceptances.**
+
+**Thirty-eight became tests.** Seventeen new tests and four extended ones, each watched red
+on its mutant and green on the clean tree before it was kept. The ones worth naming, because
+they are defects rather than thin coverage:
+
+- **An availability failure reported as "nothing here", twice, in the store.** `load_log`
+  and `read_dir_or_empty` each return "empty" for exactly one errno — a file or directory
+  that is *absent*. Widen either guard to every failure and a state directory that exists
+  and cannot be read becomes "this session has done nothing" and "this camera has never
+  been calibrated". The second is the worse one: `calibrate start` would then open a second
+  session beside the one it could not see, which is what `SessionConflict` exists to
+  prevent (N14). Both are now driven by a real kernel refusal rather than a scripted one —
+  `log.ndjson` as a directory is `EISDIR`, `sessions/` as a file is `ENOTDIR`, neither
+  needing a privilege or a `chmod` (the trick N15 uses, for the same reason).
+- **A fault fixture that could stop producing its fault.** `StoreFault::TornLogLine`
+  truncates the line to half its length; truncating it to `len % 2` — nothing, or a single
+  `{` — leaves every assertion in `a_torn_line_is_dropped_or_refused_by_where_it_is` green,
+  because through `load_log` an entry that was never written and an entry that was written
+  torn and dropped are the same answer. The test now reads the bytes and asserts the tear
+  is the first half of the entry. A fixture that has quietly stopped producing the condition
+  it is named for is "skip reads as pass" in a fault-menu costume.
+- **The lock record could name nobody, and every message would still read as though it
+  did.** Inverting one `!` makes `comm` `None` on every record; the suite could not tell
+  "somebody holds the lock" from "wch (pid 1234) holds it", which is the entire reason the
+  record exists. And `-1` — the pid fallback that must never name a real process — could
+  become `1`. That one needed a change to shipped code to become testable: the conversion
+  is now `LockRecord::pid_or_unknown(raw: u32)`, a value rather than a call, because a
+  process cannot choose its own pid. It is the engine's own rule (pure cores take values)
+  applied to one line, and it is the only product change this session made.
+- **The whole capping arithmetic of the sweep planner was unpinned.** Nine mutations of
+  `strided` — the sample count off by one either way, the rounding that chooses the widening
+  factor, the factor itself, the boundary at which the cap fires — survived a suite that
+  asserted the cap's *shape* (under the limit, still spanning the range) and never its
+  answer. Five more in `log_spaced`: the shift that moves a zero-crossing range up to 1
+  before taking logarithms could be inverted, negated, applied to the wrong end, or the
+  ratio inverted, and every one of those still produces something increasing that starts at
+  the minimum. What pins them is the answer stated exactly: 10 001 values at step 1 under a
+  cap of 256 is a stride of 40 and 251 samples, and a five-point log sweep of [100, 10 000]
+  is `[100, 316, 1000, 3162, 10000]`.
+- **Three "was it trimmed?" comparisons that reported a trim that never happened.** An
+  explicit list that fits was one mutation away from telling every caller it had been
+  capped, and `note_dedup`'s `dropped` count was a subtraction that a division agreed with
+  on the only fixture that reached it (4 → 3 is one either way; 5 → 2 is three or two).
+- **A stuck clock.** `MonotonicClock::now_ms` replaced by `0` left the whole workspace
+  green: the only test of it asserted that it does not run *backwards*, which any constant
+  satisfies. A settle against a stuck clock never expires, so PF:11's wedged driver would
+  hold an actor thread forever instead of raising `SettleTimeout`. It is now compared
+  against an independent `Instant`, spun on rather than slept on (N3 bans `sleep`).
+- **The guarded-write planner's two bounds and both of its suggestion rules.** A chain of
+  automation controls exactly at `MAX_GUARD_DEPTH` had nothing asserting it plans — only a
+  cycle, which is refused at any bound. The switch-off loop's one round of slack past "one
+  round per partner" had no fixture that needed it, and the fixture that does is the shape
+  the loop's own comment describes: clearing one partner puts another back. And
+  `suggestions`' two rules — substring containment, and a shared prefix of four or more —
+  were both reachable by the one fixture that tested either, so either could be deleted.
+- **`ControlStatus::AutoDisabled`'s list could be empty or hold only the last partner**,
+  and D4 restores from that list. Two mutations, one test, and the test is the first thing
+  in the suite to assert the list's *contents*.
+- **A tie under a lower-is-better metric.** "Ties keep the earliest sample" was asserted for
+  the higher-is-better comparison only; the second comparison, three lines away, was pinned
+  by nothing.
+
+**Ten became recorded acceptances**, in three families and none of them for convenience:
+five equivalent mutants in the planners (N25), three in `sharpness` where the operand is
+always zero (N26), and one lock-acquisition guard whose distinguishing fault no hermetic
+test can inject (N27). N26's argument is a claim about a dependency, so it is carried by a
+test that turns red the day it stops being true.
+
+### The G3 headline criterion, mutated at the fixture instead of the code
+
+E6 recorded that nobody had ever mutated the fake's peak and watched G3's headline test go
+red. Done here, in both of the two places the claim rests on, at workspace scope.
+
+**The fake's optimum moved.** `fake::frames::focus_optimum` is `default.clamp(min, max)`;
+replaced with `(default / 2).clamp(min, max)`, the synthetic camera's frames become
+sharpest at 256 where the committed fixture declares 512. **Seven tests go red** out of
+625, and the headline one is among them by value rather than by accident:
+
+```
+FAIL webcam-handler-engine::sweep a_scripted_session_calibrates_focus_at_the_optimum_the_fixture_declares
+  left:  Selected { control: focus_absolute, value: 256, selector: Metric { Sharpness } }
+  right: Selected { control: focus_absolute, value: 512, selector: Metric { Sharpness } }
+FAIL webcam-handler-engine::sweep the_optimum_wins_and_every_other_sample_loses
+FAIL webcam-handler-fake::resemblance frames_are_sharpest_at_the_focus_optimum_stated_by_the_profile
+FAIL webcam-handler-fake::resemblance the_focus_optimum_is_the_profiles_declared_default
+FAIL webcam-handler-fake frames::tests::sharpness_peaks_at_the_optimum_and_falls_off_either_side
+FAIL webcam-handler-fake frames::tests::blur_grows_with_distance_from_the_optimum_in_both_directions
+FAIL webcam-handler-fake frames::tests::the_optimum_is_the_declared_default_and_nothing_is_blurred_there
+```
+
+So the physics is validated in the direction that matters: a wrong optimum fails, and it
+fails at the *selection*, not merely at the fake's own unit tests.
+
+**The fixture's declaration moved.** Editing `focus_absolute`'s `default` from 512 to 600
+in the committed `crates/testkit/fixtures/synthetic-basic.json` turns **two** tests red —
+`the_fixture_declares_the_optimum_this_suite_states` and testkit's
+`the_committed_document_matches_the_constructor` — and leaves the sweep assertions green.
+That is not a gap, it is the design working: the fake reads the fixture's default, so both
+sides of the physics move together and only the anchor notices. The suite's own header says
+so ("edit either side and this fails before any sweep runs"), and this is the run that
+checks it rather than believing it. It also bounds what the sweep tests prove: they pin
+*that the sweep finds the fake's peak*, and the anchor is the only thing pinning *where
+the fake's peak is*.
+
+### The seeded-defect counts in the P3 commit messages
+
+E6 recorded that nobody had reproduced them. This job is the right instrument for exactly
+one of the four, and saying which is more useful than producing a number for all of them.
+
+**P3a's claim is the one in scope, and it splits in two.** Its commit message says
+"twenty-one buggy implementations were seeded at workspace scope; nineteen were caught",
+and names the two survivors as `temp.as_file().sync_all()` and the parent `fsync_dir` —
+the pair note N12 records.
+
+- **The survivor half reproduces exactly.** Deleting `fsync_dir(dir)` from
+  `write_json_atomic_scripted` leaves **642 tests run, 642 passed**. Deleting the temp
+  file's `sync_all()` leaves **642 tests run, 642 passed**. Both were re-run here, at
+  workspace scope, on the current tree. N12 stands, independently reproduced for the first
+  time since it was written.
+- **The completeness half does not.** The same module the campaign was seeded against
+  yielded eight survivors to the tool, seven of which are ordinary uncovered lines with
+  ordinary tests now written for them — including two conversions of an availability
+  failure into a capability answer (`load_log` and `read_dir_or_empty` reporting *no
+  history* for a file or directory that exists and cannot be read) and a fault fixture that
+  could stop tearing the log line it exists to tear while every assertion around it stayed
+  green. Twenty-one hand-seeded defects is a campaign, not a census, and this is what the
+  difference looks like.
+
+**The tool cannot express N12's own mutant, and that is worth recording.** cargo-mutants
+replaces function bodies and flips operators; it does not delete a *statement*. So
+`replace fsync_dir -> Result<()> with Ok(())` is generated and **caught** — by
+`fsyncing_a_directory_is_supported_here_and_its_failure_is_typed`, which asserts the typed
+failure — while the mutation N12 is actually about, deleting the *call* from
+`write_json_atomic`, is not in the tool's vocabulary at all. A green mutation run over
+`store.rs` is therefore not a re-confirmation of N12; the two paragraphs above are.
+
+**P3b, P3c and P3d are out of this job's reach**, and the honest answer is that this
+session neither confirms nor refutes them. Their seventeen, ten and fourteen seeded
+defects were aimed at `engine::lifecycle`, `engine::calibrate`/`engine::progress`, and
+`cli-core`'s calibrate verbs — none of which is in the floor's scope
+(`.cargo/mutants.toml` says why the imperative shell is out, and says it is a deferral).
+Widening the floor to `engine::lifecycle` is the single highest-value next probe: it is
+where E6 found P3's largest defect, and it is where P3b's count was claimed.
+
+### What this run does not establish
+
+- **Nothing outside the six files.** The imperative shell — `lifecycle`, `calibrate`,
+  `discover`, `capture`, `photo`, `snapshot`, `write` — the CLI renderers, the daemon and
+  the V4L2 edge are all unmeasured by it. `.cargo/mutants.toml` says why each is out; the
+  shell exclusion is a deferral, and it is the one worth revisiting first.
+- **Nothing about mutants the tool does not generate.** cargo-mutants replaces function
+  bodies with default values and flips binary operators. A defect of *omission* — a
+  missing arm, an unwritten field, a call that should exist and does not — is not in its
+  vocabulary, and the seeded-defect campaigns each sub-milestone runs are not made
+  redundant by it.
+- **Nothing about unviable mutants.** A mutant that does not compile is not evidence about
+  the tests; it is evidence that the type system already refused it.

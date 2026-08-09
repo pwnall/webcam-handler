@@ -1,0 +1,89 @@
+# cargo-mutants configuration — the P3f mutation floor (docs/7 P3f, docs/9 Part 2).
+#
+# The job asks one question the rest of the suite cannot: do the tests *constrain* the
+# pure cores, or merely execute them? `just mutants` (scripts/mutants.sh) is the entry
+# point; this file is the scope, and the scope is the whole design decision.
+#
+# ## What is in scope, and why exactly this
+#
+# docs/7 P3f names the population: "the pure cores — planners, state machine, settle,
+# metrics, store logic". Those are six files, and `examine_globs` below is that sentence
+# transcribed:
+#
+#   pairing.rs   the guarded-write planner and its inverse validator (D3)
+#   sweep.rs     the sweep planner (D8)
+#   session.rs   the calibration state machine (D8)
+#   settle.rs    the settle policy state machine (D5)
+#   store.rs     the session directory, atomic writes, the one fd-lock (D9)
+#   metrics.rs   the D8 metric set as pure functions over a luma image
+#
+# Every one of them is a fold over values (engine's lib.rs states the property: reads no
+# clock, opens no file, touches no global — store.rs takes its directory as an argument).
+# That is what makes a surviving mutant *actionable* here: if a changed line cannot be
+# noticed, the missing test is a unit test somebody can write today, not a rig.
+#
+# ## What is out of scope, and why
+#
+# - `crates/backends/v4l2/src/sys/` — the unsafe ioctl edge. A mutant there is only
+#   decidable against a device, so every survivor would be an R2/R3 finding wearing a
+#   CI costume. Miri and the vivid rung own that half (docs/9's recorded limits).
+# - `cli-core::render`, `crates/cli`, `crates/web` — rendering. Mutating a column width
+#   or a plural produces survivors by the hundred that say only "the golden output is not
+#   byte-asserted", which is a decision docs/6 already made deliberately.
+# - `engine::calibrate`, `engine::lifecycle`, `engine::discover`, `engine::capture`,
+#   `engine::photo`, `engine::snapshot`, `engine::write` — the imperative shell. These are
+#   in scope for a *later* widening, not for the floor: they are where the tests are
+#   integration-shaped, so a survivor there needs a seam argument before it needs a test,
+#   and the triage would drown the signal from the cores. Named here so the exclusion is a
+#   decision with a date rather than an oversight.
+# - `crates/schema` — mostly derives and data. Its laws are asserted by the battery.
+#
+# The exclusions are stated as *absence from `examine_globs`* rather than as
+# `exclude_globs`, so widening the floor is adding a line rather than deleting one.
+examine_globs = [
+    "crates/engine/src/pairing.rs",
+    "crates/engine/src/session.rs",
+    "crates/engine/src/settle.rs",
+    "crates/engine/src/store.rs",
+    "crates/engine/src/sweep.rs",
+    "crates/imaging/src/metrics.rs",
+]
+
+# AGENTS.md rule 2: "Mutations verify at workspace scope." A mutant that only the
+# mutated crate's own unit tests catch is a weaker result than this repo claims, and a
+# mutant that only an integration test in `crates/cli` catches is still caught. The
+# workspace suite is 625 tests in ~3s, so the honest option is also the cheap one.
+test_workspace = true
+
+# nextest is what `just ci` runs, so it is what the floor runs. Anything else would let
+# the mutation result and the CI result disagree about which tests exist.
+test_tool = "nextest"
+
+# `--locked` everywhere (AGENTS.md, "Docs and dependencies") and offline by construction,
+# like `just ci`. The build directory is a copy of this tree; the lockfile travels with it.
+additional_cargo_args = ["--locked", "--offline"]
+
+# Do NOT copy `target/` into the build directories, and do not let the build directories
+# write into ours. The two trees must not share a target dir: a test binary caches
+# `CARGO_MANIFEST_DIR` from wherever it was compiled, and this repo's corpus loader walks
+# ancestors of that path looking for `corpus/profiles` (crates/testkit/src/corpus.rs), so
+# a binary built in a scratch tree and cached into ours fails every corpus test with
+# "no ancestor directory contains corpus/profiles" — a failure that looks exactly like a
+# real defect and is not. Observed during P3f. `false` is also cargo-mutants' default;
+# it is written out because the default is the load-bearing part.
+copy_target = false
+
+# The corpus travels because it is committed and `gitignore = true` only skips ignored
+# files — but `.git` itself does not, and nothing in the suite shells out to git.
+copy_vcs = false
+
+# The report lands in `target/mutants.out/`, not at the repository root.
+#
+# A run leaves a per-mutant log, a diff and a build transcript — hundreds of files. Two
+# gates walk the whole tree (`no-frame-bytes-in-repo.sh` content-sniffs every file in it,
+# and `gates/lib.sh`'s `gate_scratch_tree` tars a copy of it for each failing selftest
+# arm), and both prune `target/`. Leaving the report at the root would put a regenerable
+# build artifact into every one of those walks and copies, which is `just ci` paying for a
+# rung it does not run. The durable half of a run is committed
+# (`scripts/mutants-accepted.txt` and the notes entry); this directory is not.
+output = "target"

@@ -21,6 +21,8 @@
 //!   belongs to the policy, not to `DQBUF`.
 
 use std::cell::Cell;
+#[cfg(test)]
+use std::time::Duration;
 use std::time::Instant;
 
 use schema::capture::{SettlePolicy, SettleSpec};
@@ -398,5 +400,31 @@ mod tests {
         let first = clock.now_ms();
         let second = clock.now_ms();
         assert!(second >= first, "{second} < {first}");
+    }
+
+    #[test]
+    fn the_monotonic_clock_advances_with_real_time() {
+        // The test above is satisfied by a clock stuck at any constant, and P3f's mutation
+        // run proved it: replacing `now_ms` with `0` left the whole workspace green. A
+        // stuck clock is not a cosmetic defect here — `expired` is `waited_ms >= deadline`,
+        // so a settle against it never times out, and PF:11's wedged driver holds the actor
+        // thread forever instead of raising `SettleTimeout`.
+        //
+        // The reading is therefore compared against an *independent* clock. Spun on rather
+        // than slept on: `std::thread::sleep` is banned workspace-wide (note N3), and this
+        // is a measurement of elapsed time rather than a synchronisation between two
+        // things — the loop cannot finish early and cannot hang, because its condition is
+        // the passage of the time it is waiting for.
+        const OBSERVED: u64 = 5;
+        let clock = MonotonicClock::new();
+        let independently = Instant::now();
+        while independently.elapsed() < Duration::from_millis(OBSERVED) {
+            std::hint::spin_loop();
+        }
+        let reading = clock.now_ms();
+        assert!(
+            reading >= OBSERVED,
+            "{OBSERVED} ms of real time passed and the clock reports {reading} ms"
+        );
     }
 }

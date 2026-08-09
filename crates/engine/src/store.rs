@@ -796,16 +796,28 @@ impl LockRecord {
     #[must_use]
     pub fn for_this_process(protocol: LockProtocol) -> LockRecord {
         LockRecord {
-            // `std::process::id` is a `u32` and a pid is an `i32`; a pid that does not fit
-            // is not a pid, and reporting one nobody can look up is worse than reporting
-            // none. `-1` never names a process.
-            pid: i32::try_from(std::process::id()).unwrap_or(-1),
+            pid: LockRecord::pid_or_unknown(std::process::id()),
             comm: fs::read_to_string("/proc/self/comm")
                 .ok()
                 .map(|comm| comm.trim().to_owned())
                 .filter(|comm| !comm.is_empty()),
             protocol,
         }
+    }
+
+    /// A raw pid as the record's `i32`, or `-1` when it does not fit.
+    ///
+    /// `std::process::id` is a `u32` and a pid is an `i32`; a pid that does not fit is not
+    /// a pid, and reporting one nobody can look up is worse than reporting none. `-1`
+    /// never names a process, where any positive fallback names one somebody would then go
+    /// and look for.
+    ///
+    /// **A value, not a call**, so that branch is reachable from a test: a process cannot
+    /// choose its own pid, and P3f's mutation run found `-1` could become `1` with the
+    /// whole workspace green. The engine's own rule — pure cores take values — is what
+    /// makes the difference between a line nothing can watch and a line one assertion can.
+    fn pid_or_unknown(raw: u32) -> i32 {
+        i32::try_from(raw).unwrap_or(-1)
     }
 
     /// This record as the D13 registry's holder type.
@@ -1542,6 +1554,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_log_that_exists_and_cannot_be_read_refuses_instead_of_reporting_no_history() {
+        // "Absent is empty" is one errno wide. Widening the guard to *every* read failure
+        // turns a permission problem, a mount that went away or a damaged file into "this
+        // session has done nothing" — an availability failure reshaped into a capability
+        // answer, which is the conversion AGENTS rule 7 forbids, and here it is silent.
+        // P3f's mutation run replaced the `NotFound` guard with `true` and the whole
+        // workspace stayed green, because the only case anybody had built was the one the
+        // guard is for.
+        //
+        // The fault is a real kernel refusal rather than a scripted one: `log.ndjson` is a
+        // *directory*, so `read` is `EISDIR` for every user including root — no `chmod`,
+        // no privilege assumption (the same trick note N15 uses, for the same reason).
+        let temp = TempStore::new().expect("a temp dir");
+        let dir = temp.root().join("sessions/unreadable");
+        fs::create_dir_all(dir.join(limits::SESSION_LOG_FILE).as_std_path())
+            .expect("a directory where a file belongs");
+
+        let err = temp
+            .store()
+            .load_log(&dir)
+            .expect_err("a log that exists and cannot be read is not an empty log");
+        assert_eq!(err.kind(), ErrorKind::StorageIo);
+        let Error::StorageIo { errno, .. } = err else {
+            panic!("the refusal must carry the kernel's own number");
+        };
+        // And the number is the kernel's, asked for here rather than transcribed as a
+        // second believed constant (note N10): reading any directory answers with it.
+        let from_the_kernel = fs::read(temp.root().as_std_path())
+            .expect_err("a directory is not a file")
+            .raw_os_error();
+        assert!(
+            from_the_kernel.is_some(),
+            "the kernel gave no errno for reading a directory"
+        );
+        assert_eq!(errno, from_the_kernel);
+    }
+
     /// The malformed fixtures, as bytes. Each one is a shape a crash or an editor
     /// actually produces, and each has an asserted outcome.
     #[test]
@@ -2022,6 +2072,87 @@ mod tests {
                 "{protocol:?} duplicates a name"
             );
         }
+
+        // And what each one *renders as* is that name. Both `Display` impls are one line,
+        // and P3f's mutation run replaced each body with `Ok(())` — every message that
+        // interpolates a fault or a protocol would have carried an empty string where the
+        // name belongs — with nothing in the workspace red. A name nobody prints and a
+        // name that prints as nothing are the same name to a reader.
+        for &fault in StoreFault::ALL {
+            assert_eq!(format!("{fault}"), fault.as_str());
+        }
+        for &protocol in LockProtocol::ALL {
+            assert_eq!(format!("{protocol}"), protocol.as_str());
+        }
+    }
+
+    #[test]
+    fn the_lock_record_names_this_process_by_pid_and_by_comm() {
+        // `an_unidentifiable_holder_is_reported_as_unidentified` covers the record that
+        // cannot be read. Nothing covered the record that can, so P3f's mutation run
+        // inverted the emptiness filter on `comm` — making *every* record carry
+        // `comm: None` — with the workspace green. "Somebody holds the lock" and "wch
+        // (pid 1234) holds the lock" were indistinguishable to the suite, and the whole
+        // reason the record exists is the difference between them.
+        let record = LockRecord::for_this_process(LockProtocol::HeldForLifetime);
+        assert_eq!(record.protocol, LockProtocol::HeldForLifetime);
+        assert_eq!(record.pid, LockRecord::pid_or_unknown(std::process::id()));
+        assert!(record.pid > 0, "this process has a pid");
+
+        // The expectation is read from `/proc`, not from a belief about what this test
+        // binary is called.
+        let from_proc = fs::read_to_string("/proc/self/comm")
+            .expect("Linux, which this project targets")
+            .trim()
+            .to_owned();
+        assert!(!from_proc.is_empty(), "/proc/self/comm named nothing");
+        assert_eq!(record.comm.as_deref(), Some(from_proc.as_str()));
+        assert_eq!(record.holder().comm.as_deref(), Some(from_proc.as_str()));
+    }
+
+    #[test]
+    fn a_pid_too_large_for_the_record_is_minus_one_rather_than_a_plausible_process() {
+        // The fallback's whole job is to be un-lookupable. `1` is `init`.
+        assert_eq!(LockRecord::pid_or_unknown(u32::MAX), -1);
+        assert_eq!(
+            LockRecord::pid_or_unknown(u32::try_from(i32::MAX).expect("i32::MAX fits a u32") + 1),
+            -1
+        );
+        assert_eq!(LockRecord::pid_or_unknown(4_194_304), 4_194_304);
+    }
+
+    #[test]
+    fn a_session_tree_that_cannot_be_listed_refuses_instead_of_reporting_no_sessions() {
+        // The same one-errno-wide guard as `load_log`'s, on the listing path, and the
+        // consequence is worse: an unreadable state directory reads as "this camera has
+        // never been calibrated", so `calibrate start` opens a second session beside the
+        // one it could not see — which is what `SessionConflict` exists to prevent (N14).
+        // P3f's mutation run widened the guard to every failure and the workspace stayed
+        // green.
+        //
+        // Real kernel refusal again: `sessions/` is a *file*, so `read_dir` is `ENOTDIR`
+        // for every user including root.
+        let temp = TempStore::new().expect("a temp dir");
+        fs::write(
+            temp.store().sessions_dir().as_std_path(),
+            b"not a directory",
+        )
+        .expect("writable");
+
+        assert_eq!(
+            temp.store()
+                .all_sessions()
+                .expect_err("a tree that exists and cannot be read is not an empty tree")
+                .kind(),
+            ErrorKind::StorageIo
+        );
+        assert_eq!(
+            temp.store()
+                .sessions_for(&fingerprint("Integrated Camera", "usb-0000:00:14.0-4"))
+                .expect_err("the same answer, asked per camera")
+                .kind(),
+            ErrorKind::StorageIo
+        );
     }
 
     #[test]

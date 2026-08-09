@@ -1,0 +1,41 @@
+# Mutants this project has looked at and accepted (docs/7 P3f, docs/9 Part 2).
+#
+# `scripts/mutants.sh` compares the survivors of a run against this file in BOTH
+# directions: a survivor that is not here fails the job, and a line here that no longer
+# survives also fails it. The second direction is the one that matters — note N15 records
+# a survivor first believed unkillable that a better-chosen fault killed, and an
+# acceptance nobody re-checks is how that mistake gets made twice.
+#
+# **An entry earns its place by an argument, and there are exactly two admissible ones.**
+# Either no *hermetic* test can turn the line red — the effect is only observable across a
+# power cut, say — or the mutant is **equivalent**: no input at all distinguishes the two
+# programs, which is a fact about the function rather than about the test suite. The
+# argument lives in `docs/implementation-notes.md` as an N-entry, cited on the line below.
+# "Writing the test is tedious" is not an argument, and neither is "nothing calls it".
+#
+# Format: one mutant per line, exactly as `cargo mutants` names it but with the `:LINE:COL`
+# removed — line numbers move when a file is edited above them, and an acceptance keyed to
+# a line number would silently stop matching the mutant it was written for.
+#
+# Two mutants in one file can share a key: `replace > with >=` twice in one function is two
+# different comparisons. The comparison is therefore over **multisets** — two survivors
+# sharing a key need two lines here — so accepting one of a pair cannot silently accept the
+# other. Where that matters below, the comment says which one is meant.
+#
+#   <path>: <what the mutant does>            # [N-entry] one-line reason
+
+# --- equivalent: a guard whose precondition the callers make impossible [N25] ---
+crates/engine/src/session.rs: replace > with >= in sampled_precision   # [N25] the values are sorted and deduplicated first, so every gap is at least 1
+crates/engine/src/sweep.rs: replace > with >= in precision_of          # [N25] every plan reaches it with distinct values, so every gap is at least 1
+crates/engine/src/sweep.rs: replace && with || in strided              # [N25] `limit` is never 0, and the factor is 1 whenever the cap did not fire
+crates/engine/src/sweep.rs: replace > with >= in strided               # [N25] the `limit_count > 0` guard; `limit` is 256 or 32. NOT the cap comparison one line above, which is caught
+crates/engine/src/sweep.rs: replace < with <= in strided               # [N25] the widened stride already bounds the count, so the ceiling never binds
+crates/engine/src/sweep.rs: replace || with && in subsample            # [N25] `limit` is never 0, and the branch it falls into re-picks the same list
+
+# --- equivalent: the operand is always the identity [N26] ---
+crates/imaging/src/metrics.rs: replace / with % in sharpness           # [N26] the Laplacian response sums to exactly 0, so every spelling of the mean is 0
+crates/imaging/src/metrics.rs: replace / with * in sharpness           # [N26] the mean again. NOT the variance's divisor further down, which is caught
+crates/imaging/src/metrics.rs: replace - with + in sharpness           # [N26] subtracting a zero mean and adding it are the same arithmetic
+
+# --- the fault cannot be injected [N27] ---
+crates/engine/src/store.rs: replace match guard err.kind() == io::ErrorKind::WouldBlock with true in StoreLock::acquire  # [N27] no hermetic test can make `flock` fail with anything else

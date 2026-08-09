@@ -137,6 +137,13 @@ green and the notes current, and the phase review gets its own session.
 - Gate selftests prove both directions, and the inverse arm is driven by the thing
   under test, not a stub of it; where a stub is unavoidable, one arm still runs the
   real tool (rubric rule 6, paid for by N10).
+- The mutation floor (`just mutants`) is where "the tests constrain the cores" stops
+  being a claim: a `cargo-mutants` run over the planners, the state machine, settle, the
+  store and metrics, scoped in `.cargo/mutants.toml`. Every survivor is a new test or a
+  reasoned acceptance in `scripts/mutants-accepted.txt` citing its N-entry, and the
+  register is checked both ways — an acceptance that stopped surviving fails the job. A
+  dev tool and a G4 criterion, hours not minutes; never a `just ci` step, and its absence
+  is a named, counted skip.
 - No `sleep` as synchronization — settle logic runs on a stepped clock in tests.
 - The browser half is asserted in a real browser: the pinned Playwright/Chromium rung
   (design §3.1 R1-web) self-skips counted without node — node is never a build
