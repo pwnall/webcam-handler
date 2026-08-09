@@ -310,9 +310,11 @@ impl · `review` human/agent judgment, no mechanical gate yet.
       covers what it cannot (frames smuggled into unrecognized containers, §3.3 item 6).
       `CI` `review`
 - [ ] No frame bytes in logs or error messages at any level. `review` `test`
-- [ ] R3 suites are `#[ignore]`d, recipe-named, restore what they touch, and skip
-      motor-moving sweeps without `WCH_ALLOW_MOTION=1` (the as-built spelling of v1's
-      `--allow-motion`). `CI` `test`
+- [ ] R3 suites are `#[ignore]`d, recipe-named, and restore what they touch — motor
+      positions included. Motor-moving suites (`hw_motion_*`) run by default (owner
+      ruling, 2026-08-08 — design §5 carries the test/product split) and honor
+      `WCH_NO_MOTION=1` as a named, counted exclusion; the product's `--allow-motion`
+      posture is unchanged and reviewed as before. `CI` `test`
 - [ ] Killing a device holder is a distinct explicit command; nothing kills as a
       fallback. `review`
 - [ ] The `Privacy` control is honored, never worked around [PF:12]. `review`

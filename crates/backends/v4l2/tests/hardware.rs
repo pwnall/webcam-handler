@@ -22,9 +22,10 @@
 //! the failure docs/8 Part C names. Which controls a write arm may touch is not decided
 //! here: [`testkit::battery::is_perturbable`] and [`testkit::battery::is_motorized`] are
 //! the same predicates the conformance battery uses, so "may this test move the camera
-//! somebody is pointing at a person" has one answer in the workspace. Nothing on this
-//! rung moves a motor at all; the `hw_motion_` prefix `smoke-hw` excludes by default is
-//! reserved for the sweeps that do.
+//! somebody is pointing at a person" has one answer in the workspace. Nothing in this
+//! file moves a motor; the sweeps that do carry the `hw_motion_` prefix, which
+//! `smoke-hw` includes by default (owner ruling, 2026-08-08) and excludes under
+//! WCH_NO_MOTION=1 as a named, counted skip.
 //!
 //! wch-suite: prefix=hw_ recipe=smoke-hw
 

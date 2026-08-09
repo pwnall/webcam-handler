@@ -124,8 +124,10 @@ green and the notes current, and the phase review gets its own session.
   asserted against the probe record of the profile it replays. A fake capability no real
   device exhibits is a bug in the fake.
 - Hardware suites (`#[ignore]`d, recipe-named): assert invariants and metric *orderings*,
-  never pixel content; restore what they touch and assert it; motor-moving sweeps only
-  under `WCH_ALLOW_MOTION=1`. The `hw_`/`vivid_` suites serialize in the one-thread
+  never pixel content; restore what they touch and assert it — motor positions
+  included. Motor-moving suites (`hw_motion_*`) run by default (owner ruling,
+  2026-08-08); `WCH_NO_MOTION=1` excludes them, counted and named, for runs where the
+  camera points at a person. The `hw_`/`vivid_` suites serialize in the one-thread
   `exclusive-device` nextest group — one streamer per node is the kernel's rule; never
   run two hardware rungs concurrently.
 - The vivid rung reaches paths the attached cameras cannot (77 controls, compound
@@ -153,7 +155,10 @@ green and the notes current, and the phase review gets its own session.
   Weakening either is an owner decision, not a convenience fix.
 - Killing a process that holds the camera is an explicit command naming its target,
   never a fallback. The hardware `Privacy` control is honored, never worked around.
-- PTZ motors wear: sweeps are bounded and never move motors as an implicit default.
+- PTZ motors wear: sweeps are bounded by the `limits` caps everywhere. In *tests*
+  motors run by default (owner ruling, 2026-08-08; `WCH_NO_MOTION=1` opts out); in the
+  *product* a plan that would move motors still says so first (`--allow-motion` —
+  design §5 carries the split).
 - `wch-priv` (dev-only, root-equivalent — design §2.13, note N8): its boundary is the
   `0700` file mode, checked every `just ci`. Never widen its verbs to take
   caller-supplied module names or paths without amending N8; it refuses to unload

@@ -73,8 +73,11 @@ Carried, with the mechanisms that now exist named:
   browser). The vivid arms run anywhere the module is loadable via
   `just rung-vivid-managed`. All hardware suites — `hw_` and `vivid_` — serialize in
   the one-thread `exclusive-device` nextest group (§3.1): one streamer per node is the
-  kernel's rule, not a suite inconvenience. Motor-moving suites stay behind
-  `WCH_ALLOW_MOTION=1` and are never gate criteria.
+  kernel's rule, not a suite inconvenience. Motor-moving suites (`hw_motion_*`) run
+  with the rest of R3 by default (owner ruling, 2026-08-08 — §5 carries the split:
+  test default motors-on, product default motors-off); `WCH_NO_MOTION=1` excludes them
+  as a named, counted skip for runs where the camera is pointed at someone, and motor
+  sweeps stay bounded by the `limits` caps.
 
 ## P3 — Calibration
 
@@ -147,11 +150,12 @@ schema-validation rows.
 ### P3e — G3 close
 
 **Lands:** any criteria rows not yet accreted; the R3 evidence run — a real calibration
-session on the Chicony RGB over a safe non-motor control (brightness-class), sweep,
+session on the Chicony RGB over a brightness-class control *and* a bounded PTZ sweep on
+the OBSBOT (motors run by default in testing — the §5 ruling; the sweep restores the
+motor position and asserts it), sweep,
 select, apply, restore asserted, recorded in the notes with transcripts (the G1/G2
 carve-out: the recipe existing and selecting tests is the criterion; the run is
-evidence). Motors stay excluded; a PTZ sweep behind `WCH_ALLOW_MOTION=1` is optional
-evidence, never a criterion.
+evidence).
 
 **Then, in its own session:** the adversarial review over the P3 diff; confirmed
 findings fixed in a follow-up commit; a dated evidence entry; rubric reconciliation
@@ -423,8 +427,11 @@ outcome in the notes. This is a plan step, not a memory.
 - **P5's browser matrix is Chrome by owner ruling** (§2.7): protocol tests plus the
   Playwright/Chromium rung; Firefox/Safari defects land as notes and are fixed only
   when free.
-- **Motor-moving tests stay opt-in** even within R3 (`WCH_ALLOW_MOTION=1`), so a
-  careless `just smoke-hw` cannot physically sweep a camera pointed at someone (§5).
+- **Motor-moving tests run by default** (owner ruling, 2026-08-08 — §5). The accepted
+  residual risk is a `just smoke-hw` physically sweeping a camera pointed at someone;
+  the mitigations are the `WCH_NO_MOTION=1` opt-out, the `limits` motion caps, and
+  restore-and-assert on every motion arm. The ruling is one script default plus one §5
+  paragraph, so reversing it is a one-commit revert if it proves wrong.
 - **Kernel/driver variance remains the standing unknown** — P1's highest-variance work
   is done, but every remaining phase still meets the kernel somewhere (P4's netlink,
   P6's frame timing). The buffer is unchanged: PF findings land as notes + corpus the

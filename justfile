@@ -174,7 +174,8 @@ rung-vivid-managed:
     trap '{{priv_bin}} vivid down || true' EXIT
     ./scripts/rung-vivid.sh
 
-# Opt-in; motor-moving sweeps excluded unless WCH_ALLOW_MOTION=1.
+# Motor-moving suites included by default (owner ruling, 2026-08-08); WCH_NO_MOTION=1
+# excludes them for runs where the camera is pointed at someone.
 #
 # R3 — real hardware, on the ignore-attributed suites.
 smoke-hw:

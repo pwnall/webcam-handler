@@ -7,9 +7,12 @@
 # machine with a camera attached, and their results are recorded as evidence in
 # docs/implementation-notes.md with transcripts — they never gate CI.
 #
-# **Motors wear** (design §5). Sweeps that move a pan/tilt/zoom motor are excluded unless
-# WCH_ALLOW_MOTION=1, and the exclusion is by name: a motor-moving test is called
-# `hw_motion_*`. Moving a motor is never an implicit default.
+# **Motors run by default** (owner ruling, 2026-08-08; design §5). The rung exercises
+# every control the hardware has, pan/tilt/zoom motors included — an untested motor is
+# untested code, and the OBSBOT is a PTZ device. The knob is opt-OUT: WCH_NO_MOTION=1
+# excludes the motor-moving suites (named by the `hw_motion_*` prefix) for runs where
+# the camera is pointed at someone; the exclusion is a named, counted skip. Motor sweeps
+# stay bounded by the `limits` caps, and every arm restores what it moved.
 #
 # Like every auto-skipping rung, this one reports a named, counted skip rather than
 # exiting quietly.
@@ -61,12 +64,13 @@ skip() {
     printf 'smoke-hw: SKIP %s — %s\n' "$skips" "$*"
 }
 
-if [[ "${WCH_ALLOW_MOTION:-0}" == "1" ]]; then
-    selection="test(/(^|::)${prefix}/)"
-    printf 'smoke-hw: WCH_ALLOW_MOTION=1 — motor-moving suites are included\n'
-else
+if [[ "${WCH_NO_MOTION:-0}" == "1" ]]; then
     selection="test(/(^|::)${prefix}/) - test(/(^|::)${motion_prefix}/)"
-    skip "motor-moving suites (${motion_prefix}*) are excluded; set WCH_ALLOW_MOTION=1 to include them"
+    skip "motor-moving suites (${motion_prefix}*) are excluded by WCH_NO_MOTION=1; unset it to include them"
+else
+    selection="test(/(^|::)${prefix}/)"
+    printf 'smoke-hw: motor-moving suites (%s*) are included — set WCH_NO_MOTION=1 to exclude them\n' \
+        "$motion_prefix"
 fi
 
 # `grep` exits non-zero on zero matches, and zero matches is the expected P0 answer —

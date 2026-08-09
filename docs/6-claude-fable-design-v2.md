@@ -52,6 +52,7 @@ names its source, so a reviewer can check the absorption against the record:
 | The R2 rung has executed, gained write/stream arms, and serializes with R3; §3.1 restates what its green proves | §3.1 | E2, E3 (notes) |
 | The structural-gap register is regenerated: single-host evidence and the mid-stream device-loss limit join it | §3.3 | E3 (notes), N8 |
 | The PF registry runs PF:1–16; PF:13–16 were measured during implementation | §1.2 | notes |
+| Testing exercises every control by default, motors included; `WCH_NO_MOTION=1` is the opt-out, and the product's `--allow-motion` posture is unchanged | §5 | owner ruling, 2026-08-08 |
 
 ## TL;DR
 
@@ -1167,9 +1168,17 @@ motors, and the user's privacy:
   to record.
 - **Leave the camera as found.** Every sweep/guarded operation restores state by default
   (D4); R3 test suites assert restoration. `--keep` is the explicit exception.
-- **Motors wear.** PTZ sweeps are bounded (per-sweep sample caps in `webcam-handler-schema::limits`),
-  and pan/tilt sweeps never run as an implicit default — a calibration plan that would
-  move motors says so before executing.
+- **Motors wear, and the two halves of the rule differ (owner ruling, 2026-08-08).** PTZ
+  sweeps are bounded everywhere (per-sweep sample caps in
+  `webcam-handler-schema::limits`, with the smaller motion cap). In the *product*, a
+  motor never moves as an implicit default: a calibration plan that would move motors
+  says so before executing, behind `--allow-motion`. In *testing*, the default is the
+  opposite: the R3 rung exercises every control the hardware has, motors included — an
+  untested motor is untested code, and the OBSBOT is a PTZ device — with
+  `WCH_NO_MOTION=1` as the opt-out for runs where the camera is pointed at someone (a
+  named, counted skip), and every motion arm restoring the position it moved. The
+  ruling is deliberately cheap to reverse: it lives in `scripts/smoke-hw.sh`'s default
+  and this paragraph, nowhere else.
 - **Busy devices belong to someone.** EBUSY diagnosis names holders (D13); terminating a
   holder is the distinct explicit `terminate-holder` command (D10), which names both the
   camera and the pid, refuses if the pid no longer holds the device, and is never a
