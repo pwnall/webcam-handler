@@ -176,15 +176,27 @@ impl SessionStore {
     /// advisory lock, and a law expressed as a parameter cannot be forgotten the way a
     /// law expressed as a doc comment can.
     ///
-    /// The document is written exactly as handed over, `schema_version` included. A
-    /// store that silently corrected the version would make [`Error::SchemaVersionForeign`]
-    /// unreachable, and the version field's whole job is to be believed.
+    /// The document's `schema_version` is checked and never corrected. The version field's
+    /// whole job is to be believed, so a document carrying a foreign one is **refused**
+    /// rather than silently rewritten to this build's — but it is also refused rather than
+    /// written, because a store that persisted it would produce a file the tool cannot
+    /// read back, and "everything this tool writes, it can load" is the property D9's
+    /// versioned load is for (note N13). The [`StoreFault::ForeignSchemaVersion`] fixture
+    /// still writes a real foreign document; it just no longer does it by handing one to
+    /// this method.
     ///
     /// # Errors
     ///
+    /// [`Error::SchemaVersionForeign`] when the document is not at this build's version.
     /// [`Error::StorageIo`] for any filesystem failure, carrying the real `errno` where
     /// the kernel supplied one.
     pub fn save_session(&self, _lock: &StoreLock, session: &Session) -> Result<Utf8PathBuf> {
+        if session.schema_version != limits::SESSION_SCHEMA_VERSION {
+            return Err(Error::SchemaVersionForeign {
+                found: session.schema_version,
+                supported: limits::SESSION_SCHEMA_VERSION,
+            });
+        }
         let dir = self.session_dir(session);
         let path = dir.join(limits::SESSION_FILE);
         match self.scripted {
@@ -1151,6 +1163,53 @@ mod tests {
     }
 
     #[test]
+    fn a_document_this_build_could_not_read_back_is_refused_rather_than_written() {
+        // Note N13. The store writes what it is handed, and P3b is the first caller that
+        // could hand it a version — so the one home checks it once instead of every
+        // lifecycle path checking it separately and one of them forgetting. Without this,
+        // a session whose `schema_version` was edited (or carried forward from a load that
+        // will exist one day) persists as a file `load_session` refuses: the tool's own
+        // write, unreadable by the tool.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut ahead = session(uuid_v7(15), "focus");
+        ahead.schema_version = limits::SESSION_SCHEMA_VERSION.saturating_add(1);
+
+        let err = temp
+            .store()
+            .save_session(&lock, &ahead)
+            .expect_err("this build cannot read that back");
+        assert_eq!(
+            err,
+            Error::SchemaVersionForeign {
+                found: limits::SESSION_SCHEMA_VERSION.saturating_add(1),
+                supported: limits::SESSION_SCHEMA_VERSION,
+            }
+        );
+        assert!(
+            !temp
+                .store()
+                .session_dir(&ahead)
+                .join(limits::SESSION_FILE)
+                .exists(),
+            "the refusal wrote the document anyway"
+        );
+
+        // Both directions, and the refusal is about the version and nothing else: the same
+        // document at this build's version lands and reads back.
+        let mut supported = ahead.clone();
+        supported.schema_version = limits::SESSION_SCHEMA_VERSION;
+        let dir = temp
+            .store()
+            .save_session(&lock, &supported)
+            .expect("a supported version");
+        assert_eq!(
+            temp.store().load_session(&dir).expect("readable"),
+            supported
+        );
+    }
+
+    #[test]
     fn an_interrupted_write_leaves_the_destination_untouched() {
         // Atomicity, proven rather than asserted: the first document is on disk, the
         // second write is interrupted after its bytes are written and synced and before
@@ -1516,12 +1575,24 @@ mod tests {
         let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
 
         for found in [0_u32, limits::SESSION_SCHEMA_VERSION.saturating_add(7)] {
-            let mut session = session(uuid_v7(40), "focus");
-            session.schema_version = found;
-            let dir = temp
-                .store()
-                .save_session(&lock, &session)
-                .expect("writable");
+            // Built from bytes rather than by handing `save_session` a foreign document,
+            // which it now refuses (note N13). The subject here is the *loader*, and the
+            // fixture it has to meet is a real file written by a build that is not this
+            // one — so the version is edited in the serialized form, exactly where another
+            // build's would differ.
+            let session = session(uuid_v7(40), "focus");
+            let dir = temp.store().session_dir(&session);
+            let serde_json::Value::Object(mut document) =
+                serde_json::to_value(&session).expect("serializable")
+            else {
+                panic!("a session document is a JSON object");
+            };
+            document.insert("schema_version".to_owned(), serde_json::Value::from(found));
+            write_json_atomic(
+                &dir.join(limits::SESSION_FILE),
+                &serde_json::Value::Object(document),
+            )
+            .expect("writable");
             let err = temp
                 .store()
                 .load_session(&dir)

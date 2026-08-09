@@ -19,6 +19,7 @@
 //! | [`settle`] | the settle policy state machine (D5) |
 //! | [`sweep`] | the sweep planner (D8) |
 //! | [`session`] | the calibration state machine (D8) |
+//! | [`lifecycle`] | wiring that machine to the store: create, resume, the persisted pre-sweep snapshot, recovery (D8, D9, §6) |
 //! | [`profile`] | assembling a T3 device profile, and the invariant/state split |
 //! | [`resolve`] | turning a typed id or prefix into the camera it names (D1) |
 //! | [`mod@write`] | executing a write plan, and reporting one that stopped part way (D3) |
@@ -35,6 +36,7 @@ mod refusal;
 
 pub mod capture;
 pub mod discover;
+pub mod lifecycle;
 pub mod pairing;
 pub mod paths;
 pub mod photo;

@@ -1029,3 +1029,118 @@ records this survivor as a reasoned acceptance and gains a mechanism this note d
 anticipate. This entry belongs in design §3.3's structural-gap register at its next
 regeneration; the register is regenerated rather than accreted, so it is recorded here in
 the meantime.
+
+---
+
+## N13 — The store refuses to write a document it could not read back
+
+**Doc:** design D9 says every JSON file carries `schema_version` from day one and that a
+foreign one is a typed refusal, and it says so about the *load*. Nothing in D9 constrains
+the write.
+
+**Repo:** `SessionStore::save_session` now refuses a `Session` whose `schema_version` is
+not this build's, with the same `Error::SchemaVersionForeign { found, supported }` the
+load produces. P3a's version of it wrote whatever it was handed.
+
+**Why.** P3a's permissiveness was deliberate and its reasoning was sound as far as it
+went: a store that *corrected* the version would make `SchemaVersionForeign` unreachable,
+and the field's whole job is to be believed. But "do not correct it" and "write it
+anyway" are different rules, and the second one lets a caller persist a file the tool
+cannot read — the tool's own write, refused by the tool's own loader, in a directory
+whose entire premise is that an agent or a human can pick it up later. P3b is the first
+caller that could do it (a lifecycle path that carried a loaded version forward, or a
+test fixture that edited one), so the check lands with the first caller rather than after
+a session directory has been made unreadable by the thing that wrote it.
+
+Refusing rather than correcting keeps both halves of the original reasoning: the version
+is still believed, and it is still the loader that decides what this build can read —
+`save_session` asks the same question with the same constants and gives the same answer.
+
+**What it cost.** Two fixtures were built by handing `save_session` a foreign document,
+and they are now built from bytes: `a_foreign_schema_version_is_refused_in_both_directions`
+edits `schema_version` in the *serialized* form and publishes it through
+`write_json_atomic`, which is where another build's document would differ anyway, and the
+`StoreFault::ForeignSchemaVersion` arrangement already bumped the version inside the store
+rather than at its caller, so it did not change at all. The fixture is more honest for it:
+the loader now meets a file it did not write, which is the case it exists for.
+
+**Retires when:** the tool supports more than one session schema version at once — at
+which point "this build's version" stops being a single number and both the guard and the
+loader need the same replacement.
+
+---
+
+## N14 — What `SessionConflict` means, and why an unreadable session refuses rather than yields
+
+**Doc:** design D8 says a session belongs to a (camera fingerprint, task) pair. D9's
+layout puts every session under `<fingerprint-slug>/<task-slug>/<uuidv7>/`, so one task
+slug holds many sessions. D13 lists `SessionConflict` and does not say what conflicts.
+
+**Repo:** `engine::lifecycle` fills the blank in three parts.
+
+1. **A task slug holds a history; at most one of its sessions is open.**
+   `lifecycle::is_open` is `queue.is_empty() || !session.is_settled()` — a session with an
+   empty queue is open (it was created a moment ago), and one with a queue is open until
+   every queued control has reached a D8 terminal state. `Session::is_settled` alone would
+   not do: it answers `true` for the empty queue, vacuously, so `calibrate start` twice in
+   a row would leave two empty session directories where one session was meant.
+2. **`create` conflicts with the open session, and names it.** The refusal carries the
+   session's uuid in `SessionConflict::detail`, because "resume that one instead" is only
+   actionable if the caller is told which one. A settled slot takes a new session, which is
+   what makes the many-uuids-per-task layout mean something.
+3. **`resume` looks at the newest session in the slot and no further**, and a document it
+   cannot read is a refusal — `SchemaVersionForeign` or `StorageIo` — rather than a reason
+   to hand back the one before it.
+
+**Why (3) is the uncomfortable one.** It means a session written by a newer build blocks
+`create` for that (camera, task) until it is moved aside, and that is deliberate: the two
+failures are not symmetric. Skipping past an unreadable document answers "nothing is open
+here" without knowing it, and two live sessions sweeping one camera — each with its own
+pre-sweep snapshot, the second's recording the first's mid-calibration state — is exactly
+what `SessionConflict` exists to prevent, and what `restore` cannot undo afterwards.
+Quietly resuming an *older* session is the same mistake wearing a friendlier face: the
+operator asked for the work in progress and got somebody else's finished work. A refusal
+that names a version is a thing an operator can act on; a wrong session is not.
+
+The escape is ordinary and does not need a flag at this phase: a different task starts a
+different slot, and the session tree is a directory an operator can move. If P3d's
+`calibrate start` grows a `--force`, this note is what it has to argue with.
+
+**What is not decided here:** nothing detects a *concurrent* live session inside one open
+slot, because nothing needs to — the state lock (D9) is what keeps two processes from
+interleaving writes, and a session document records no owning pid. If a future phase wants
+"this session is being swept right now, by that process", it is a new fact and needs its
+own field, not a reinterpretation of this one.
+
+**Retires when:** D8 grows an explicit close/abandon verb, at which point "open" becomes a
+recorded state rather than a derived one and part 1 above is replaced by reading it.
+
+---
+
+## N15 — Which of `persist`'s two writes goes first is checkable; which of the store's two `fsync`s lands is not
+
+**Doc:** rubric rule 2 — for every test, the buggy implementation — and note N12, which
+recorded the store's two `fsync`s as the lines no hermetic test can turn red.
+
+**Repo:** `engine::lifecycle::persist` writes `session.json` first and appends to
+`log.ndjson` second, and `the_document_goes_down_before_the_line_that_describes_it` turns
+red when the two are swapped.
+
+**Why it is recorded.** The ordering has the same *shape* as N12's fsyncs — it only
+matters across a crash between two steps — so the honest expectation was another
+acceptance. It is not one, and the difference is worth stating because it is the test that
+makes it: the two writes fail independently, and a fixture that fails exactly one of them
+distinguishes the orders. `log.ndjson` is replaced by a **directory**, so `O_APPEND` on it
+is `EISDIR` from the real kernel for every user including root — no `chmod`, no privilege
+assumption, no scripted store fault. Correct order: the document is on disk and the log
+append refuses. Swapped: the append refuses first and the document never lands, and the
+test sees the state before the transition.
+
+The fsyncs stay uncovered for the reason N12 gives — their effect is visible only across a
+power cut, and neither is a *second* write whose failure can be arranged. "Unobservable in
+a hermetic test" turned out to be a claim about the fault that can be injected, not about
+the class of property, and this pair is the counter-example that keeps the claim narrow.
+
+**Retires when:** nothing retires it; it is a note about why a neighbouring line *is*
+covered, and it belongs beside N12 when design §3.3's structural-gap register is next
+regenerated.
