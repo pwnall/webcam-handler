@@ -491,7 +491,7 @@ outcome in the notes. This is a plan step, not a memory.
 | Control-change events (`VIDIOC_SUBSCRIBE_EVENT`) | live control sync in the web UI | §2.5, §8.4 |
 | AV1 encode feature (rav1e) | a real offline-transcode/timelapse need | D7 L2 |
 | `wch` auto-forward to daemon | refusal friction observed in real use | §8.7 |
-| Session GC | a full disk | §8.8 |
+| Session GC | ~~a full disk~~ — **fired twice, 2026-08-09 and 2026-08-10, and neither firing was ours** (note N55): a `tmpfs` build root filled under the mutation floor while the whole session store was 904 KiB. Still uncommissioned, deliberately. The row stays, and N55 argues the trigger should be re-phrased against a quantity a program can evaluate — and that the *measurement* should land before the policy, since nothing today reports the session store's size | §8.8, N55 |
 | Cross-session query store (SQLite) | queries at scale | §7 |
 | Audio | a license-clean path appears | §8.2 |
 | Re-run N5's jsonrpsee measurement | any jsonrpsee bump — delete the api tokio exemption if the original wall becomes satisfiable | §2.8, note N5 |

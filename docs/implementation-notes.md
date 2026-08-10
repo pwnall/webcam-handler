@@ -5529,3 +5529,180 @@ that run was judged by, and the boundary re-run's 835 is what this commit is jud
 evidence entry that quietly updates its own numbers stops being evidence.
 
 **Retires when:** never — this is dated evidence. The next widening writes its own entry.
+
+## N54 — P4d was two sub-milestones wearing one name, and the review's *falling* false-positive rate is how you can tell
+
+**Believed:** that a sub-milestone is the right size when it is one session's work, and that
+docs/7's "split-don't-stretch" rule is enough to keep it there. The plan's own risk register
+says so: "The residual risk is a sub-milestone mis-sized anyway; the notes record splits so
+sizing improves." This entry is that record, written because P4d did not split and should
+have.
+
+**True:** P4d was mis-sized at the moment it was *written into the plan*, not at the moment
+it was executed, and the reason is visible in its own sentence. Its "Lands" clause carries
+four items:
+
+1. the AF_NETLINK uevent socket, `kobject-uevent` parsing, subsystem filter, debounce,
+   re-enumeration, and `CameraBackend::watch` on the real backend;
+2. **the measurement** — bind `NETLINK_KOBJECT_UEVENT` unprivileged and record whether N8's
+   `CAP_NET_ADMIN` grant was ever needed;
+3. **the deletion** of `Error::Unimplemented`, a cross-cutting change touching the schema,
+   the error registry, the wire code block, a backend's pinned surface, two committed
+   artifacts, three documents and a standing debt;
+4. and — inherited, from a different sub-milestone — note N39's socket-directory hardening.
+
+Those four share a *topic*: they are all kernel-facing, or near enough to look it. They do
+not share a *story*. Contrast the two before it. P4b was "a daemon skeleton" and every
+clause served it; P4c was "route the whole surface" and every clause served that. P4d is
+"the things left over that touch the kernel", which is an inventory, not a milestone. **A
+sub-milestone assembled by what the code touches will always look coherent to its author
+and behave like two to whoever runs it**, because the coupling that made it one bullet is a
+coupling between files rather than between decisions.
+
+### What it cost, measured
+
+Orchestration wall-clock across the four P4 sub-milestones, same shape of harness each
+time, same reviewer count:
+
+| | P4a | P4b | P4c | **P4d** |
+|---|---|---|---|---|
+| agent hours | 4.7 | 5.3 | 5.5 | **7.3** |
+| tool calls | 1309 | 1334 | 1426 | **1663** |
+| findings | 25 | 24 | 23 | **17** |
+| findings rejected as not-real | 3 | 1 | 1 | **0** |
+
+P4d is a third longer than the longest of the other three, and that is the *cheap* half of
+the cost. The expensive half is below.
+
+### The tell, which points the other way from intuition
+
+**P4d's review produced the fewest findings and rejected none of them.** Every one of the
+seventeen was real. Across P4a-P4c the same reviewer harness had produced more findings and
+been wrong about several — a reviewer with a small diff reaches for marginal claims, and
+some of those claims are wrong.
+
+The tempting reading is "P4d was reviewed better". The likelier reading is the opposite: a
+reviewer facing a diff of 48 files, a new unsafe-adjacent edge, a wire-contract deletion and
+a hardware rung **never runs out of real material**, so it never has to reach — and it also
+never gets to the *end*. A zero false-positive rate on a large diff is not a quality signal;
+it is a **saturation** signal, and it says the review stopped for lack of budget rather than
+for lack of defects. The three sub-milestones that produced wrong findings were the three
+whose reviewers had read everything and were down to guessing.
+
+That is falsifiable and nobody has falsified it: it predicts that splitting a large
+sub-milestone in two and reviewing each half raises the total finding count *and* the
+false-positive rate. Worth measuring the next time a split happens, rather than believing
+this paragraph.
+
+### The other costs, named so the next plan can price them
+
+- **Terminal verification multiplied.** P4d ended owing `just ci`, `just smoke-hw`,
+  `just rung-vivid-managed` and the mutation floor — because it touched the daemon, the
+  hardware path, the sysfs walk and a floor-scoped file. Two agents tried the floor and
+  neither finished; one reported it unrun while an earlier agent had in fact completed it
+  and written E10 with real numbers. Nobody was lying and the disagreement was structural:
+  a sub-milestone with four terminal rungs has four chances to end in an ambiguous state.
+- **Inherited debt rode along.** N39's hardening had nothing to do with hotplug. It was
+  scheduled into P4d because P4d was "the one that needs syscalls", which is again a
+  file-shaped reason. Debts should land where their *subject* lands, or in a sub-milestone
+  of their own.
+- **Contract-file claims propagated.** Two statements written into the scratch contract
+  during P4d were wrong and reached a draft: a debounce window sized off a single timing
+  sample, and "three orders of magnitude to spare" on a receive buffer that measurement put
+  at about sixteen times. Both were caught, both by re-measuring rather than by re-reading.
+  A larger sub-milestone gives a wrong intermediate claim more room to travel before
+  anything meets it.
+
+### What the next plan revision should do
+
+Not "make sub-milestones smaller" — that is unfalsifiable advice. Specifically:
+
+1. **Size by story, not by subsystem.** If a sub-milestone's "Lands" clause needs the word
+   "and" between two things that a reviewer would hold in mind separately, it is two. P4d
+   splits cleanly at the seam: *hotplug* (the socket, the parse, the filter, the debounce,
+   the watch, the fixtures, the R3 arm) and *the deletion* (`Unimplemented`, its surfaces,
+   its wire code, its documents). The measurement belongs with hotplug because hotplug is
+   what needs the socket; N39 belongs wherever the socket directory is next opened.
+2. **Count terminal rungs at planning time.** A sub-milestone owing more than two of
+   {`just ci`, `smoke-hw`, `rung-vivid-managed`, the mutation floor, an R3 evidence run} is
+   a sub-milestone whose *ending* is as expensive as its middle, and the plan should say so
+   in the "Proves" clause rather than discovering it.
+3. **Never schedule an inherited debt into a sub-milestone for a file-shaped reason.**
+
+**Doc:** docs/7's "Milestones are session-sized" convention and its risks section are the
+subjects; this entry is the observation they asked for. The gate letters and criteria are
+untouched — this is about how work is *cut*, not about what it must prove.
+
+**Retires when:** never by disproof; it is superseded if a later plan revision adopts the
+sizing rule above and a subsequent sub-milestone still behaves this way, which would mean
+the rule is wrong and the cause is elsewhere.
+
+## N55 — The session-GC trigger fired, and firing it proved the trigger cannot tell what fired it
+
+**Believed:** docs/7's post-plan trigger table commissions session garbage collection on
+**"a full disk"** (design §8.8, §7's deferral). The reasoning was sound and deliberately
+lazy: calibration sessions accumulate photos, nobody knows the real growth rate, and
+guessing a retention policy before anybody has a full disk is how you get a policy that
+deletes the wrong thing. So the trigger waits for the world to answer.
+
+**True — the trigger fired twice, and it should not have.** Both events are recorded here
+because "a full disk" is exactly what happened, and a trigger that fires is a trigger that
+gets recorded whatever the reader thinks of it afterwards:
+
+- **2026-08-09, during P4c.** `scripts/mutants.sh` aborted with `Disk quota exceeded`
+  writing to `/tmp`. The build root was a 16 GiB `tmpfs` and cargo-mutants gives each job a
+  whole tree with its own build directory.
+- **2026-08-10, during P4d.** The mutation floor's first attempt died on `ENOSPC` at five
+  jobs, same build root, same cause.
+
+**Neither was session data, and this is the part worth the entry.** Measured on the machine
+that filled, the same day:
+
+| | size |
+|---|---|
+| `~/.local/state/webcam-handler` (the entire session store, five sessions) | **904 KiB** |
+| `target/` | 79 GiB |
+| root filesystem | 85% used, 102 GiB free |
+
+Session GC, run at its most aggressive, would have freed **904 kilobytes** against a
+shortfall measured in gigabytes. The disk that filled was a `tmpfs` scratch directory that
+the product does not write to and the design does not model.
+
+### The finding: the trigger names a symptom, so it cannot name its own cause
+
+"A full disk" is an observation about a *machine*. Session growth is a fact about *this
+program*. Any cause fills a disk — a build tree, a core dump, someone else's container
+images — so a symptom-shaped trigger fires on all of them and discriminates none. It has
+two failure modes and this is the first one: it fires spuriously, and whoever reads it has
+to do the measurement the trigger should have described. The second is worse and follows
+from the first: a trigger that has cried wolf gets read past, so the one time session data
+*is* the cause, the firing looks like the last two.
+
+**And the measurement that would settle it does not exist.** Nothing in the product reports
+the size of the session store — not `wch calibrate list`, not the store module, not a gate.
+That is the real gap this firing exposed. If session data ever does fill a disk, nobody will
+be able to tell that it did, because the quantity the trigger is about is not one anything
+measures. The deferral was reasonable; deferring the *instrumentation* with it was not, and
+that is a cheaper thing to land than a retention policy.
+
+### What this does and does not commission
+
+It does **not** commission session GC. Two spurious firings are not evidence that sessions
+grow, and building a retention policy on this record would be building it on a `tmpfs` that
+had nothing to do with us — the exact mistake §7 deferred the work to avoid.
+
+What it argues for, for the owner and the next plan revision:
+
+1. **Re-phrase the trigger in terms of the quantity it means**: "the session store exceeds
+   *N*", or "a session store larger than the media it holds" — something a program can
+   evaluate, not something a human has to attribute after the fact.
+2. **Land the measurement before the policy.** A size in `calibrate list`'s answer, or a
+   store method with a test, costs little and turns the trigger from a story into a number.
+   Until then the trigger is unevaluable in the direction that matters.
+3. Keep the row in docs/7 — it is still uncommissioned. It now carries a pointer here, so
+   the next firing starts from a measurement rather than from this paragraph.
+
+**Doc:** docs/7's post-plan trigger table, row "Session GC"; design §7 and §8.8.
+
+**Retires when:** the trigger is re-phrased against a measurable quantity, or session GC is
+commissioned on evidence that sessions are what filled something.
