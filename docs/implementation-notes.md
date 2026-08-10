@@ -3360,6 +3360,30 @@ this daemon cannot traverse, so `bind` fails with `EACCES`. **P4d owns the decis
 the unprivileged-bind measurement (design §8 item 10, note N8) already puts a syscall-level
 question on the table.
 
+### Amendment, 2026-08-10: it was never a decision, and two of the three facts above were
+### already true when this was written
+
+The owner ruled (§2.8) that adopting a crate which clears the licence bar is applying the
+bar rather than moving it, so there is no decision here to own — only work. Worse for this
+entry: the two facts that would have made that obvious were already in the tree when it was
+written. `rustix` 1.1.4 has been in `Cargo.lock` transitively since before P4b, and
+`deny.toml` has carried `Apache-2.0 WITH LLVM-exception` since P0 with the comment
+"precautionary: rustix offers it as one OR-alternative" — somebody anticipated this exact
+adoption and left the door open. So "adding `rustix` or `libc` to the daemon is a §2.8
+registry change" was wrong twice over: not a registry change, and not new supply chain.
+
+What survives is the choice between the two, and its ground is the sentence above rather
+than licensing: `rustix` is a *safe* wrapper, so `openat`/`fstat`/bind-relative-to-a-dirfd
+land without an `unsafe` block in a crate that forbids them and without moving the boundary
+`unsafe-scope.sh` asserts. `libc` would give the same syscalls and the same licence and
+would need the daemon to stop being `#![forbid(unsafe_code)]`, which is a real design change
+and not this one.
+
+**The lesson, which is why this amendment is longer than the fix.** The entry deferred on a
+ground it had not checked, and the check was two `grep`s. A deferral is a claim, and an
+unverified one outlives whatever created it — this is note N15's family (an acceptance
+nobody re-checks) wearing a scheduling costume rather than a testing one.
+
 **Retires when:** P4e lands the orderly exit. Unlinking on the way out is still not a
 substitute for this — a daemon that is killed never runs its exit path — so the rule stays;
 what changes is that the leftover becomes the exception rather than the rule.
@@ -4152,7 +4176,14 @@ explicit command naming its target" into a way to kill everything the daemon can
 holder can exit, be reaped, and have its pid recycled onto an unrelated process. This cannot
 be closed from user space without `pidfd_open(2)` + `pidfd_send_signal(2)`, which signal a
 *process* rather than a number and which need a syscall wrapper this workspace does not
-link. Four things bound it, and the method's doc says all four rather than claiming it away:
+link. **Amended 2026-08-10:** the wrapper is reachable and this is schedulable work rather
+than a limitation. `rustix` 1.1.4 is already in `Cargo.lock` and already allowlisted, and
+`rustix::process::{pidfd_open, pidfd_send_signal}` are both safe functions behind its
+`process` feature (verified in the pinned source, not assumed). The owner ruling of
+2026-08-09 (§2.8) makes taking that edge routine. It is still not P4c's — this entry's
+four bounds are what P4c shipped and they stand — but the reason it was not done is now
+"nobody scheduled it", which is a different sentence from "it cannot be done", and only
+one of those two is true. Four things bound it, and the method's doc says all four rather than claiming it away:
 Linux recycles pids in increasing order up to `pid_max` (2^22 on a modern default), so the
 window is "enough processes forked to wrap the counter" rather than "the next fork"; the
 re-verification narrows it from a whole request — an enumeration and an ioctl per node — to a
@@ -4427,7 +4458,14 @@ that replaces the path between them wins a race and still parks the thread. Clos
 the `open` itself to be non-blocking — `O_NONBLOCK` through `OpenOptionsExt::custom_flags`
 plus an `fstat` on the descriptor — and the flag's numeric value is not the same on every
 Linux architecture, so getting it honestly means a `libc` edge in a crate that has none or a
-constant this project would be guessing. It is **P4e's**, with the bound on a submitted
+constant this project would be guessing. **Amended 2026-08-10:** there is a third way this
+missed, and it is the good one. `rustix::fs::OFlags::NONBLOCK` carries the per-architecture
+value for us and `rustix` is already in `Cargo.lock` and already allowlisted, so the flag
+needs neither a guess nor an `unsafe` block — the objection above was to *guessing a
+constant*, and a safe wrapper that knows it answers the objection completely. The owner
+ruling of 2026-08-09 (§2.8) makes the edge routine. The deferral stands on its remaining
+ground alone, which is the honest one: closing this race properly wants the actor-command
+bound too, and shipping half of it would trade a wedge for a leak. It is **P4e's**, with the bound on a submitted
 command that N42 already deferred there: "an enqueue that waits with a bound where
 `CameraActor::submit` has only a `try_send`" is the same missing mechanism, and an actor
 command that cannot outlive a deadline makes the residual race a refusal rather than a wedge.

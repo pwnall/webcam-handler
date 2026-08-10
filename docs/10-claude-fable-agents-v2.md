@@ -194,6 +194,11 @@ green and the notes current, and the phase review gets its own session.
   registry); versions pinned at adoption; no git dependencies; `v4l` default features
   only; `image` with `default-features = false, features = ["png", "jpeg"]`; majors
   current at adoption; MSRV one fact, sync-asserted; `--locked` everywhere.
+  **Adopting a crate that clears that bar is not an escalation** (owner ruling,
+  2026-08-09 — §2.8): judge the licence and whether it looks solid, take it, and say what
+  you concluded. Moving the bar — a new allowlist entry, a lifted ban, an unpinned
+  version — is the owner's. Never defer work on the ground that it "needs a dependency
+  decision".
 - Build deps (bindgen, libclang, kernel headers) are acceptable; runtime external
   binaries are not (ffprobe/mpv appear only as test oracles). The web client vendors or
   hand-writes everything — no CDN, no npm.

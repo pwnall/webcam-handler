@@ -54,9 +54,14 @@ exist because of it.
 - The daemon's socket directory is checked as an inode rather than a name (symlink refused,
   base verified, `(st_dev, st_ino)` re-checked before the bind), but the last window —
   holding the directory as a *descriptor* and binding relative to it, which is also what
-  would let it compare `st_uid` with `geteuid()` — needs a syscall wrapper the workspace
-  does not link, so it is a §2.8 dependency decision. P4d owns it, beside the
-  unprivileged-bind measurement (N39, N8).
+  would let it compare `st_uid` with `geteuid()` — needs a syscall wrapper. P4d owns it,
+  beside the unprivileged-bind measurement (N39, N8). **No longer blocked on a decision**
+  (owner ruling 2026-08-09, §2.8): `rustix` 1.1.4 is already in `Cargo.lock` transitively
+  and `Apache-2.0 WITH LLVM-exception` is already allowlisted *for it by name*, so P4d
+  takes a direct edge to something already vendored and already blessed. `rustix` rather
+  than `libc` because the constraint was never the licence — it is that the daemon is
+  `#![forbid(unsafe_code)]`, and a safe wrapper closes the window without moving the
+  unsafe boundary `unsafe-scope.sh` asserts.
 - `CAP_NET_ADMIN` was granted on an unverified prediction; P4d measures whether the
   uevent bind needs it (§8 item 10) and G6 consumes the answer.
 - D12's `wait` flag — "a second capture request queues or is refused with `Busy` per its

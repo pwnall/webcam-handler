@@ -879,6 +879,18 @@ features stay off everywhere (localhost/UDS daemon): this also keeps `webpki-roo
 (CDLA-Permissive-2.0, off-allowlist) out of the tree — add it to the allowlist only if TLS
 ever becomes real.
 
+**Who decides an adoption** (owner ruling, 2026-08-09). Adopting a crate is *applying* the
+bar above, not changing it: if the licence is on the allowlist and the crate looks
+reasonably solid, take it and say what you concluded. It is not an escalation and does not
+wait for a session boundary. What remains the owner's is anything that moves the bar
+itself — a new allowlist entry, a ban lifted, a version unpinned, a git dependency — and
+the difference is exactly that one applies a rule and the other rewrites it. The ruling
+was issued after two adoptions were escalated mid-plan (`base64` at P4a, a syscall wrapper
+deferred from P4b), and it retires the *reason* those were deferred, not the work: three
+entries said "this needs a dependency decision" where they should have said "this needs
+doing" (N39, N48, N51). A deferral whose stated ground has evaporated is how a debt
+outlives the thing that created it.
+
 Core picks, as verified 2026-08-07 (versions are pins-at-adoption, not commitments):
 `v4l` 0.14 (MIT; semi-dormant — pinned, wrapped behind T1/T2, with `v4l2r` 0.0.8 (MIT,
 active, AOSP-integrated) recorded as the migration target if it dies), `kobject-uevent`
