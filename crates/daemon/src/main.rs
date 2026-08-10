@@ -160,8 +160,15 @@ async fn run(args: &Args) -> Result<()> {
     //
     // A second `SessionStore` over the directory this process already owns, which is what
     // that type is for: "cheap to build and cheap to clone-by-rebuilding — it owns a path,
-    // not a handle". The *lock* stays in `state`, which is the one handle there is.
-    let wchd = Wchd::new(backend, SessionStore::new(state.store().root()));
+    // not a handle". The *lock* is the one `state` took at startup, shared rather than
+    // retaken: `flock` denies a second open file description in this process exactly as it
+    // denies another's, so a daemon that took a second would answer its own clients
+    // `StoreLocked` naming its own pid (`daemon::state`'s header).
+    let wchd = Wchd::new(
+        backend,
+        SessionStore::new(state.store().root()),
+        state.token(),
+    );
     // D12's other half. The handle is dropped rather than held: dropping a `JoinHandle`
     // detaches the task, and this build has nothing to say about when housekeeping ends —
     // it ends with the runtime, which ends with the process. P4e owns stopping it in an

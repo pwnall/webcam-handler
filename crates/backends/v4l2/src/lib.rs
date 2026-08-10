@@ -20,9 +20,16 @@
 //!
 //! | Module | Owns |
 //! |---|---|
-//! | `sys` | ioctls, mmap, the bounded wait, and the pure byte-to-schema decoding Miri executes |
+//! | `sys` | ioctls, mmap, the bounded wait, `kill(2)`, and the pure byte-to-schema decoding Miri executes |
 //! | `sysfs` | the node list and the bus-interface topology, read without udev |
 //! | `enumerate` | the pure grouping rule: nodes to cameras \[PF:7, PF:13\] |
+//! | [`holders`] | who has a node open, and asking one of them to let go (design §5) |
+//!
+//! [`holders`] is the one module here that is **public and not about V4L2**: it is a
+//! `/proc` walk plus a `SIGTERM`, and it lives in this crate because a [`schema::Error::Busy`]
+//! refusal has to name the process and because this is the only crate that may say
+//! `unsafe`. `wchd` reaches it by name to route `terminate_holder` (design D10, note N48);
+//! nothing else outside this crate does.
 //!
 //! Nothing above `src/sys/` names a kernel type; `scripts/gates/dependency-walls.sh` holds
 //! that line for the rest of the workspace by refusing `v4l::` outside this crate.
@@ -46,7 +53,7 @@
 )]
 
 mod enumerate;
-mod holders;
+pub mod holders;
 mod sys;
 mod sysfs;
 
@@ -879,12 +886,14 @@ fn unimplemented_here(operation: &str, arrives_in: &str) -> Error {
 /// The methods **of this backend** that answer [`Error::Unimplemented`], and the phase
 /// each waits for. Pinned by a test, so a phase cannot land without emptying its rows.
 ///
-/// One surface, not the build's only one. Note N6 makes this "the one list of methods that
-/// answer it" for the T1/T2 seam; P4b added a second instance of the same mechanism for the
-/// wire surface — `webcam-handler-daemon::server::unrouted`, whose thirteen rows P4c
-/// empties — and note **N43** records why a second pinned list is a schedule rather than an
-/// escape hatch. A reader auditing how much is left before the variant itself can go (N6's
-/// retirement condition) has to count both.
+/// One surface, and now the build's **only** one. Note N6 makes this "the one list of
+/// methods that answer it" for the T1/T2 seam; P4b added a second instance of the same
+/// mechanism for the wire surface — `webcam-handler-daemon::server::unrouted`, thirteen
+/// rows — and P4c routed all of them, so that list and its producer are gone (note
+/// **N43**, which records why a second pinned list was a schedule rather than an escape
+/// hatch and what replaced its assertion). A reader auditing how much is left before the
+/// variant itself can go (N6's retirement condition) now has one row to count, and P4d
+/// takes it with the hotplug watch.
 #[must_use]
 pub fn unimplemented_surface() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([("CameraBackend::watch", HOTPLUG_PHASE)])

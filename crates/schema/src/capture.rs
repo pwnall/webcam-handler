@@ -11,6 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{CameraId, FormatInfo, FrameInterval, PixelFormat};
+use crate::error::{Error, Result};
 use crate::limits;
 use crate::time::Stamp;
 use crate::vocabulary::closed_vocabulary;
@@ -573,13 +574,68 @@ impl Sink {
     /// could not refuse it either. `ReturnBytes` is always addressable — there is nowhere
     /// for it to be wrong.
     ///
-    /// **Its consumer lands at P4c, with the routing that can meet a request this
-    /// refuses** (note N34). `wch` cannot produce a sink that fails it.
+    /// **Its consumer landed at P4c**: `daemon::server::addressable` asks this before the
+    /// `photo` handler resolves a camera, so a request no build was going to honour costs
+    /// nobody a descriptor, and the refusal it raises is `Error::IllegalTransition` naming
+    /// the path (notes N34 and N46). `wch` still cannot produce a sink that fails it, which
+    /// is why the both-directions test for the rule lives here rather than there.
     #[must_use]
     pub fn is_addressable(&self) -> bool {
         match self {
             Sink::ReturnBytes { .. } => true,
             Sink::ServerPath { path } => path.is_absolute(),
+        }
+    }
+
+    /// The encoding this sink asks for, or a refusal naming what this build writes.
+    ///
+    /// One home for a rule that used to have its two halves in two crates. The *decision* —
+    /// `.png` means PNG, and a path with no extension at all is a JPEG — lived in
+    /// `engine::photo::sink_format`, and the *refusal* for an extension this build cannot
+    /// write lived in `cli_core::Command::photo_request`, where it ran while parsing a
+    /// command line. The engine's comment said as much out loud: "an unknown one never
+    /// reaches here — the CLI refuses it while building the sink". That sentence stopped
+    /// being true the moment a `Sink` could arrive off a socket, because `wchd` links no
+    /// `cli-core`: `{"kind":"server_path","path":"/tmp/x.webp"}` produced JPEG bytes in a
+    /// file named `.webp`, and a delivery reporting a path whose extension lies about its
+    /// contents. Both surfaces call this now, so the refusal holds wherever a request comes
+    /// from.
+    ///
+    /// A path with **no** extension is a JPEG rather than a refusal, and that arm is kept
+    /// exactly as it was: it is a filename the caller chose and we do not get to rename it.
+    ///
+    /// This and [`Sink::is_addressable`] stay two questions — *in what encoding* and
+    /// *where* — because they have different answers about who may ask. Every caller has to
+    /// know the encoding; only a caller that can receive a path from somewhere else has to
+    /// check that it is absolute.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] when the path's extension names an encoding this build
+    /// does not write, naming both the extension that was typed and the three that are
+    /// written — the list derived from [`PhotoFormat::ALL`] rather than spelled out.
+    /// Deliberately **not** [`Error::FormatUnsupported`]: that variant is the camera saying
+    /// what it cannot offer, and `.webp` is not the camera's fault (E3). Note **N46**
+    /// records the pick and the one it shares it with.
+    pub fn writable_format(&self) -> Result<PhotoFormat> {
+        match self {
+            Sink::ReturnBytes { format } => Ok(*format),
+            Sink::ServerPath { path } => match path.extension() {
+                None => Ok(PhotoFormat::Jpeg),
+                Some(extension) => {
+                    PhotoFormat::from_extension(extension).ok_or_else(|| Error::IllegalTransition {
+                        from: format!("unwritable_extension({extension})"),
+                        op: format!(
+                            "write a photo to {path}; this build writes {}",
+                            PhotoFormat::ALL
+                                .iter()
+                                .map(|format| format!(".{}", format.extension()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    })
+                }
+            },
         }
     }
 }
@@ -1168,6 +1224,65 @@ mod tests {
             }
             .is_addressable()
         );
+    }
+
+    #[test]
+    fn a_sinks_format_comes_from_its_extension_and_an_unwritable_one_is_refused() {
+        // Moved here from `engine::photo::sink_format`, whose comment used to answer the
+        // unknown-extension case with "the CLI refuses it while building the sink" — true
+        // until a socket could build one, and the whole of debt D-1. The three accepted
+        // arms are the ones that were already asserted; the fourth is the one that used to
+        // fall through to `unwrap_or(PhotoFormat::Jpeg)` and write JPEG bytes into a file
+        // named `.webp`.
+        for (path, expected) in [
+            ("/tmp/a.jpg", PhotoFormat::Jpeg),
+            ("/tmp/a.jpeg", PhotoFormat::Jpeg),
+            ("/tmp/a.JPG", PhotoFormat::Jpeg),
+            ("/tmp/a.png", PhotoFormat::Png),
+            ("/tmp/a.ppm", PhotoFormat::Ppm),
+            ("/tmp/a.pgm", PhotoFormat::Ppm),
+            // No extension: the caller named this file and we do not get to rename it.
+            ("/tmp/photo", PhotoFormat::Jpeg),
+        ] {
+            assert_eq!(
+                Sink::ServerPath { path: path.into() }
+                    .writable_format()
+                    .unwrap_or_else(|err| panic!("{path}: {err}")),
+                expected,
+                "{path}"
+            );
+        }
+
+        // The refusal, and what it has to say. Not `FormatUnsupported`: the camera offered
+        // nothing and was not asked (E3) — the request named an encoding this build does
+        // not write.
+        let error = Sink::ServerPath {
+            path: "/tmp/x.webp".into(),
+        }
+        .writable_format()
+        .expect_err("webp is not one of the three");
+        assert_eq!(error.kind(), crate::ErrorKind::IllegalTransition);
+        assert_ne!(error.kind(), crate::ErrorKind::FormatUnsupported);
+        let rendered = error.to_string();
+        assert!(rendered.contains("webp"), "the extension typed: {rendered}");
+        assert!(rendered.contains("/tmp/x.webp"), "the path: {rendered}");
+        for format in PhotoFormat::ALL {
+            assert!(
+                rendered.contains(format.extension()),
+                "the formats it does write: {rendered}"
+            );
+        }
+
+        // A `ReturnBytes` sink names its encoding outright, so there is nothing to guess
+        // and nothing to refuse — every format is one this build writes.
+        for &format in PhotoFormat::ALL {
+            assert_eq!(
+                Sink::ReturnBytes { format }
+                    .writable_format()
+                    .expect("a format this build names is a format this build writes"),
+                format
+            );
+        }
     }
 
     #[test]

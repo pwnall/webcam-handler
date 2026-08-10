@@ -24,7 +24,7 @@
 use std::fmt;
 
 use schema::backend::Camera;
-use schema::control::{ControlSlug, ControlValue};
+use schema::control::{ControlSlug, ControlValue, ControlWrite};
 use schema::error::{Error, Result};
 use schema::pairing::AutomationPair;
 use schema::report::WriteReport;
@@ -132,6 +132,41 @@ pub fn set(
         pairing::plan_unguarded(&controls, targets)?
     };
     execute(camera, &plan).map_err(Error::from)
+}
+
+/// Set the values a caller asked for, against the pair set **this device is in now**.
+///
+/// [`set`] takes the pair set as a parameter, because the calibration sweep has one it
+/// computed for its own reasons. Every *other* caller has the same three lines in front of
+/// it — read the controls, ask [`pairing::in_effect`] which relationships this device
+/// actually exhibits, and turn the wire's [`ControlWrite`]s into the planner's targets — and
+/// that composition is a rule rather than plumbing: which pair set a write plans against
+/// decides whether an automation control is switched off first, and two copies of it are two
+/// opinions about what a camera's automation looks like. It had two authors as `wch set` and
+/// `wch_set` landed, which is what this exists to stop (AGENTS "One home per law").
+///
+/// `Vec::new()` for the measured pairs is part of the rule and not an omission: measuring
+/// pairs writes to the camera, so a `set` that measured would be performing D3's probe on
+/// its way to a write nobody asked to be preceded by one. `wch_discover_pairs` is the verb
+/// that measures (note N30), and what it produces is carried in the session document a
+/// calibration plans against.
+///
+/// The [`ControlWrite`] conversion is here rather than at each root for note **N35**'s
+/// reason: the wire spelling stops before [`crate::pairing`], and where it stops is a fact
+/// with one home.
+///
+/// # Errors
+///
+/// As [`set`], plus whatever the camera says when asked for its controls.
+pub fn set_requested(
+    camera: &mut dyn Camera,
+    writes: &[ControlWrite],
+    guarded: bool,
+) -> Result<WriteReport> {
+    let pairs = pairing::in_effect(&camera.controls()?, Vec::new());
+    let targets: Vec<(ControlSlug, ControlValue)> =
+        writes.iter().map(ControlWrite::target).collect();
+    set(camera, &pairs, &targets, guarded)
 }
 
 /// Assemble the report, taking the disabled-automation list from the *plan*.

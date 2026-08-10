@@ -90,13 +90,22 @@ impl std::fmt::Debug for Photograph {
 ///
 /// The device's, from starting the stream or waiting for a frame;
 /// [`schema::Error::SettleTimeout`] when the sensor did not settle in time;
-/// [`schema::Error::StorageIo`] when the sink's path could not be written.
+/// [`schema::Error::StorageIo`] when the sink's path could not be written;
+/// [`schema::Error::IllegalTransition`] from [`Sink::writable_format`] when the sink names
+/// an encoding this build does not write.
 pub fn take(
     camera: &mut dyn Camera,
     request: &PhotoRequest,
     clock: &dyn Clock,
     now: Stamp,
 ) -> Result<Photograph> {
+    // First, before anything is asked of the device. The refusal is about the *request* —
+    // a sink naming an encoding this build does not write — so paying a `STREAMON`, the
+    // whole settle budget and a `DQBUF` before making it would mean a frame of whoever is
+    // in front of the lens was captured for a request that was never going to be honoured
+    // (debt D-1, note N46). `from_capture` asks again, because it is also reached directly
+    // by the sweep; asking twice is one rule asked twice and not two rules.
+    request.sink.writable_format()?;
     // Read *before* the stream starts. A control read is an ioctl on the same fd, and the
     // values that describe a photo are the ones in effect when it was taken — asking
     // after the frame would report values a caller could have changed in between.
@@ -121,8 +130,9 @@ pub fn take(
 /// # Errors
 ///
 /// As [`take`], minus the capture's: [`schema::Error::FormatUnsupported`] for a source
-/// format outside D6's set, and [`schema::Error::StorageIo`] when the sink's path could
-/// not be written.
+/// format outside D6's set, [`schema::Error::StorageIo`] when the sink's path could not be
+/// written, and [`schema::Error::IllegalTransition`] when the sink names an encoding this
+/// build does not write.
 pub fn from_capture(
     camera: &dyn Camera,
     captured: &capture::Capture,
@@ -132,7 +142,13 @@ pub fn from_capture(
 ) -> Result<Photograph> {
     let camera_id = camera.info().id.clone();
     let fingerprint = camera.info().fingerprint.clone();
-    let format = sink_format(&request.sink);
+    // The sink decides the encoding, and the sink is also what refuses one this build
+    // cannot write — `Sink::writable_format` is that one home, beside the variants, because
+    // the rule has to hold for a request a socket built as much as for one a command line
+    // did (note N46, debt D-1). A caller that can refuse earlier should: `wchd` validates
+    // the sink before it opens a camera, and `wch` refuses while parsing. This is the
+    // backstop for whoever does neither.
+    let format = request.sink.writable_format()?;
     let photo = imaging::photo::render(&captured.frame, format, request.transform)?;
 
     let bytes = if format == PhotoFormat::Jpeg {
@@ -173,22 +189,6 @@ pub fn from_capture(
         },
         returned,
     })
-}
-
-/// Which encoding a sink wants.
-fn sink_format(sink: &Sink) -> PhotoFormat {
-    match sink {
-        Sink::ReturnBytes { format } => *format,
-        // The extension is the request. An unknown one never reaches here — the CLI
-        // refuses it while building the sink, where the message can name the three
-        // formats this build writes — so a path that got this far is one of them, and
-        // JPEG is the answer for the only other case there is: a path with no extension
-        // at all, which is a filename the caller chose and we should not rename.
-        Sink::ServerPath { path } => path
-            .extension()
-            .and_then(PhotoFormat::from_extension)
-            .unwrap_or(PhotoFormat::Jpeg),
-    }
 }
 
 /// The control values in effect, for the photo's own record.
@@ -279,8 +279,18 @@ mod tests {
     /// The fake replaying a committed profile — the modules whose subject is realistic
     /// device behaviour use it, and a photo is exactly that.
     fn camera_from(profile: &str) -> Box<dyn Camera> {
+        watched_camera_from(profile).1
+    }
+
+    /// The same, with the backend kept so its counters can be read.
+    ///
+    /// `FakeBackend::streams_started()` is the only thing that can tell "refused before the
+    /// stream started" from "refused after a frame was captured and thrown away", and a
+    /// test named for the first must be able to see it — the file it exists in is otherwise
+    /// free to assert the weaker claim forever.
+    fn watched_camera_from(profile: &str) -> (std::sync::Arc<FakeBackend>, Box<dyn Camera>) {
         let profile = testkit::corpus::load(profile).expect("a committed profile");
-        let backend = FakeBackend::from_profile(profile).expect("replays");
+        let backend = std::sync::Arc::new(FakeBackend::from_profile(profile).expect("replays"));
         let id = backend
             .enumerate()
             .expect("enumerate")
@@ -288,7 +298,8 @@ mod tests {
             .next()
             .expect("one camera")
             .id;
-        backend.open(&id).expect("opens")
+        let camera = backend.open(&id).expect("opens");
+        (backend, camera)
     }
 
     #[test]
@@ -611,27 +622,66 @@ mod tests {
     }
 
     #[test]
-    fn a_sinks_format_comes_from_its_extension_and_a_bare_path_stays_a_jpeg() {
-        for (path, expected) in [
-            ("/tmp/a.jpg", PhotoFormat::Jpeg),
-            ("/tmp/a.jpeg", PhotoFormat::Jpeg),
-            ("/tmp/a.png", PhotoFormat::Png),
-            ("/tmp/a.ppm", PhotoFormat::Ppm),
-            ("/tmp/a.pgm", PhotoFormat::Ppm),
-            // No extension: the caller named this file and we do not get to rename it.
-            ("/tmp/photo", PhotoFormat::Jpeg),
-        ] {
-            assert_eq!(
-                sink_format(&Sink::ServerPath { path: path.into() }),
-                expected,
-                "{path}"
-            );
-        }
+    fn a_sink_naming_an_encoding_this_build_cannot_write_is_refused_before_a_stream_starts() {
+        // Debt D-1, from the engine's side. The rule and its two directions live on
+        // `schema::capture::Sink::writable_format`, which is where both surfaces call it;
+        // what is asserted here is that this pipeline *asks*, and *when* — the refusal has
+        // to reach a caller who came in through the engine rather than through a command
+        // line, and it has to arrive before the camera is streamed.
+        //
+        // `streams_started()` is what makes the name of this test checkable. `!path.exists()`
+        // alone is true of a build that opened the device, negotiated a format, spent the
+        // whole settle budget and dequeued a frame of whoever was in front of the lens
+        // before refusing — which is what this pipeline did until the check was hoisted to
+        // `take`'s first statement.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("shot.webp"))
+            .expect("utf-8 temp dir");
+        let (backend, mut camera) = watched_camera_from("chicony-rgb");
+        assert_eq!(backend.streams_started(), 0, "opening is not streaming");
+        let error = take(
+            camera.as_mut(),
+            &request(Sink::ServerPath { path: path.clone() }, Transform::None),
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        )
+        .expect_err("webp is not one of the three this build writes");
+
+        assert_eq!(error.kind(), ErrorKind::IllegalTransition);
+        assert!(!path.exists(), "a refused photo was written anyway");
         assert_eq!(
-            sink_format(&Sink::ReturnBytes {
-                format: PhotoFormat::Ppm
-            }),
-            PhotoFormat::Ppm
+            backend.streams_started(),
+            0,
+            "the refusal arrived after a frame had been captured"
+        );
+
+        // The twin, over the same directory: the extensions this build does write still
+        // land, so the arm above refuses `.webp` rather than refusing paths.
+        for format in PhotoFormat::ALL {
+            let written = camino::Utf8PathBuf::from_path_buf(
+                dir.path().join(format!("shot.{}", format.extension())),
+            )
+            .expect("utf-8 temp dir");
+            take(
+                camera.as_mut(),
+                &request(
+                    Sink::ServerPath {
+                        path: written.clone(),
+                    },
+                    Transform::None,
+                ),
+                &SteppedClock::new(0),
+                Stamp::epoch(),
+            )
+            .unwrap_or_else(|err| panic!("{written}: {err}"));
+            assert!(written.exists(), "{written}");
+        }
+        // And the counter moves for the requests this build does honour, so the zero above
+        // is a zero this fake would otherwise have left behind.
+        assert_eq!(
+            backend.streams_started(),
+            u64::try_from(PhotoFormat::ALL.len()).expect("three fits"),
+            "one stream per honoured request"
         );
     }
 }

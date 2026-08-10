@@ -676,9 +676,12 @@ impl WriteWarning {
 /// still take `(ControlSlug, ControlValue)` pairs, and that is a deliberate stop rather
 /// than an oversight: the planner is a pure core on the mutation floor, its callers build
 /// targets inline in dozens of places, and nothing downstream of the executor serializes
-/// anything — a named pair buys a wire document nothing there emits. `crates/cli`'s
-/// `InProcess::set` is the one conversion, in `wch`'s own binary, named in note N35 with
-/// what would retire it. Contrast [`crate::pairing::ProbeSkip`], which *was* pushed all
+/// anything — a named pair buys a wire document nothing there emits. The conversion to
+/// the planner's spelling is [`ControlWrite::target`], which is on the type rather than at
+/// its call sites because P4c gave it a second caller: `wch set` and `wchd`'s `wch_set`
+/// both cross this boundary, and two spellings of "which fields of a requested write are
+/// the target" is how the two surfaces P4f compares start to differ. Note N35 carries the
+/// rest. Contrast [`crate::pairing::ProbeSkip`], which *was* pushed all
 /// the way into `engine::discover`: there the tuple had one producer and one consumer, so
 /// one spelling cost four lines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -688,6 +691,18 @@ pub struct ControlWrite {
     /// The value to write. Requested, not applied (E4) — what the device took comes back
     /// in [`Applied::applied`].
     pub value: ControlValue,
+}
+
+impl ControlWrite {
+    /// The same write in the spelling `engine::pairing` and `engine::write` take.
+    ///
+    /// One home for the boundary described above. It clones rather than consuming because
+    /// both callers hold a borrowed slice — a `set` refused by the planner still has to be
+    /// able to name what was asked for.
+    #[must_use]
+    pub fn target(&self) -> (ControlSlug, ControlValue) {
+        (self.control.clone(), self.value.clone())
+    }
 }
 
 /// The result of a write: what was asked, what the device actually holds, and why they

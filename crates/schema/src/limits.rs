@@ -109,6 +109,30 @@ pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 /// stopping the daemon, which is precisely the complaint D12 exists to answer. A human
 /// working at a terminal issues their next command inside thirty seconds, and has stopped
 /// caring about the camera long before they switch applications.
+///
+/// **Measured from when a command *starts*, plus one sweep cadence** (note N45). The actor
+/// reads no clock, so the stamp is taken on the way in and this timeout runs from there. For
+/// a command shorter than the timeout that is the same thing as measuring from the end, and
+/// for a command *longer* than it — `wch_calibrate_sweep` is minutes of camera time — the
+/// deadline is already long past when the command returns. `engine::actor` grants exactly
+/// one extra pass in that case: `engine::actor`'s `Live::used_since_sweep` makes the first
+/// idle pass after a completed command decline, and the next one closes.
+///
+/// So the honest accounting is two sentences rather than one. A **short** command's camera
+/// closes thirty to thirty-five seconds after it — the passes between the command and its
+/// deadline spend the grace, so the first pass at or past the deadline closes. A **long**
+/// one's closes one to two [`CAMERA_IDLE_SWEEP_MS`] cadences after it returns — five to ten
+/// seconds, not thirty — because a grace of one *pass* is not a second timeout. That is
+/// deliberate and it is what N45's clock-free shape buys: the failure the note was opened
+/// for is "an immediate close on the very next pass", and what a long command gets instead
+/// is a whole cadence in which a client that is still working can issue its next verb. A
+/// client that pauses longer than that pays a fresh `open` and the driver's first-frame
+/// settle \[PF:11\], exactly as one that pauses thirty seconds after a short command does;
+/// buying more would mean giving the actor a clock, which reverses `engine::actor`'s central
+/// decision and needs a `SteppedClock` that is deliberately not `Sync`.
+/// `engine::actor`'s own suite is where both halves are pinned — a short command still
+/// closing on the first pass at its deadline, a long one declining once and closing on the
+/// pass after — driven from these two constants rather than from a literal.
 pub const CAMERA_IDLE_CLOSE_MS: u64 = 30_000;
 
 /// How often the daemon asks every open camera whether it has gone idle.
@@ -120,8 +144,11 @@ pub const CAMERA_IDLE_CLOSE_MS: u64 = 30_000;
 /// Deliberately shorter than the timeout, and by a whole factor rather than a hair. Since
 /// `engine::actor::Idle::expired` reaches its deadline with `>=`, the first pass at or
 /// after the deadline is the one that closes: a camera therefore closes **within one
-/// cadence of its deadline** — thirty to thirty-five seconds after the last command, not
-/// "some multiple of thirty".
+/// cadence of its deadline**, not "some multiple of thirty". For a command shorter than
+/// [`CAMERA_IDLE_CLOSE_MS`] that is thirty to thirty-five seconds after it. For one longer
+/// than the timeout it is *this* cadence that measures the wait rather than the timeout —
+/// see [`CAMERA_IDLE_CLOSE_MS`], where the two cases are priced; the number here is what
+/// N45's grace is worth, which is why the two sentences live one screen apart.
 ///
 /// The cost is one mutex read per *actor* every five seconds, plus one acknowledgement per
 /// camera that is actually about to close. Per actor rather than per open camera, because
@@ -190,6 +217,47 @@ pub const DEFAULT_BUFFER_COUNT: u32 = 4;
 /// hundred processes is less readable than one listing none. Four is enough to say "these
 /// have it" and short enough to read in a terminal.
 pub const MAX_HOLDERS_REPORTED: usize = 4;
+
+/// How long `terminate_holder` waits before answering whether the node is still held.
+///
+/// `SIGTERM` is a **request**, and it is asynchronous: `kill(2)` returns once the signal is
+/// queued, not once the target has acted on it. So a re-check taken immediately would
+/// answer `still_held: true` for almost every process that is about to exit, and a field
+/// that is nearly always `true` is a field nobody reads —
+/// [`crate::report::TerminationReport::still_held`] exists precisely so a caller can tell
+/// "signalled, device now free" from "signalled, still held" without guessing.
+///
+/// **This is the one place the daemon waits to learn something, and it is bounded because
+/// it cannot be event-driven.** A process this one did not fork leaves no event a Unix
+/// process can wait on without `pidfd_open(2)`, which this workspace does not link, so the
+/// honest mechanism is a bounded poll: walk, and if the node is still held, wait
+/// [`TERMINATE_RECHECK_POLL_MS`] and walk again until this budget is spent. It ends the
+/// moment the fact changes, so the usual cost is one poll interval rather than this number.
+///
+/// A quarter of a second is chosen from what it sits between: shorter and a process that
+/// exits promptly is still reported as holding the node, which is the failure this constant
+/// exists to prevent; longer and a caller who asked to free a camera is left waiting on a
+/// process that has plainly decided to ignore the signal, which `still_held: true` is the
+/// answer for.
+pub const TERMINATE_RECHECK_MS: u64 = 250;
+
+/// How often `terminate_holder` re-reads the holder walk inside
+/// [`TERMINATE_RECHECK_MS`].
+///
+/// Each poll is a walk of the process table, so this bounds the work as well as the wait:
+/// one walk immediately and one after each of the ten waits this budget buys — **eleven
+/// walks**, not a spin. The number is arithmetic over these two constants rather than a
+/// third one, and `daemon::server::recheck_walks` is where it is computed and asserted, so
+/// this sentence cannot drift away from the loop. Twenty-five milliseconds is well under the
+/// scheduling latency a signalled process takes to die, so the common case still costs one
+/// walk and no wait at all.
+pub const TERMINATE_RECHECK_POLL_MS: u64 = 25;
+
+// Checked where both numbers are, for `CAMERA_IDLE_SWEEP_MS`'s reason: a poll interval at
+// least as long as the budget would make the "bounded poll" one immediate walk with the
+// wait after it, and a zero interval is a spin against `/proc`.
+const _: () =
+    assert!(TERMINATE_RECHECK_POLL_MS > 0 && TERMINATE_RECHECK_POLL_MS < TERMINATE_RECHECK_MS);
 
 /// The most buffers one stream may ask the driver to allocate.
 ///

@@ -39,6 +39,8 @@
 //! lifetime hold survivable for the operator sitting at the same machine: `wch calibrate
 //! status` and `wch calibrate list` keep working while `wchd` runs.
 
+use std::sync::Arc;
+
 use engine::paths::Env;
 use engine::store::{LockProtocol, SessionStore, StoreLock};
 use schema::Result;
@@ -54,7 +56,14 @@ use schema::Result;
 #[must_use = "dropping this releases the state directory, which is the daemon's to hold"]
 pub struct OwnedState {
     store: SessionStore,
-    lock: StoreLock,
+    /// Behind an `Arc` because two things hold it and one of them outlives this value's
+    /// scope: `main` keeps `OwnedState` so the release happens in an order it wrote, and
+    /// [`crate::server::Wchd`] — which jsonrpsee moves into an `Arc` of its own — needs the
+    /// same token for every mutating calibrate verb. Two `StoreLock`s over one directory is
+    /// not an option: `flock` denies a second open file description in this process exactly
+    /// as it denies another's, so the second would be refused
+    /// [`schema::Error::StoreLocked`] naming this daemon's own pid.
+    lock: Arc<StoreLock>,
 }
 
 impl OwnedState {
@@ -81,7 +90,7 @@ impl OwnedState {
     /// file cannot be opened.
     pub fn take(env: &dyn Env) -> Result<OwnedState> {
         let store = SessionStore::from_env(env)?;
-        let lock = store.lock(LockProtocol::HeldForLifetime)?;
+        let lock = Arc::new(store.lock(LockProtocol::HeldForLifetime)?);
         Ok(OwnedState { store, lock })
     }
 
@@ -100,6 +109,22 @@ impl OwnedState {
     #[must_use]
     pub fn lock(&self) -> &StoreLock {
         &self.lock
+    }
+
+    /// The same token, for the request handlers that outlive this scope's borrow.
+    ///
+    /// [`crate::server::Wchd`] is moved into jsonrpsee's own `Arc` by `into_rpc()` and
+    /// answers requests for as long as the server does, so it cannot borrow from a local in
+    /// `main` — and it must not take a lock of its own (see this module's header). This is
+    /// the whole of the difference between the two accessors: same lock, same file
+    /// description, one of them shareable.
+    ///
+    /// A clone is not a second hold. `flock` is a property of the open file description,
+    /// and `Arc` does not duplicate one; the release still happens when the *last* handle
+    /// goes, which is why `main` drops the server before it drops this value.
+    #[must_use]
+    pub fn token(&self) -> Arc<StoreLock> {
+        Arc::clone(&self.lock)
     }
 }
 

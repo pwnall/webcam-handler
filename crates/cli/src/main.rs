@@ -24,12 +24,13 @@ use std::process::ExitCode;
 use cli_core::{Cli, Executor, Output, Photograph, Selection, SessionRef, Stream, SweepWatcher};
 use engine::calibrate::{SweepContext, SweepRequest};
 use engine::lifecycle::{self, SessionSpec};
-use engine::store::{SessionStore, StoreLock};
+use engine::store::SessionStore;
 use schema::backend::{BackendKind, Camera, CameraBackend};
-use schema::camera::{CameraFingerprint, CameraId, CameraInfo};
+use schema::camera::{CameraId, CameraInfo};
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug};
 use schema::error::Result;
+use schema::pairing::ProbeSkip;
 use schema::profile::DeviceProfile;
 use schema::progress::ProgressEvent;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
@@ -114,55 +115,16 @@ impl InProcess {
 /// is D9's *daemonless* protocol, and the whole of it: a `wch` that met a lock a daemon
 /// holds is refused with [`schema::Error::StoreLocked`] naming the holder rather than blocking, and
 /// that refusal comes out of the store rather than out of a check written here.
+///
+/// Which session a verb means, and what a verb about to change one has to hold to read it,
+/// are [`lifecycle::session_for`]'s and [`lifecycle::session_to_update`]'s — both moved into
+/// the engine when the daemon acquired the same verbs over the wire, because two copies of
+/// "which session did you mean" is how the check P3 found implemented once out of three
+/// times gets re-implemented twice.
 impl InProcess {
     /// The session store under this process's XDG state directory (note N2).
     fn store(&self) -> Result<SessionStore> {
         SessionStore::from_env(&engine::paths::SystemEnv)
-    }
-
-    /// The session a verb names, loaded, and checked against the camera it names.
-    ///
-    /// The law is [`lifecycle::session_for`]'s — a task names the newest session in this
-    /// camera's slot, a UUID names one session wherever it lives, and either way the
-    /// fingerprint has to agree (D8, N14). It moved into the engine when the daemon
-    /// acquired the same verb over the wire: two copies of "which session did you mean"
-    /// is how the check that P3 found implemented once out of three times gets
-    /// re-implemented twice.
-    ///
-    /// # Errors
-    ///
-    /// As [`lifecycle::session_for`].
-    fn session_for(
-        store: &SessionStore,
-        fingerprint: &CameraFingerprint,
-        which: &SessionRef,
-    ) -> Result<Session> {
-        lifecycle::session_for(store, fingerprint, which)
-    }
-
-    /// The same, for a verb that is about to change something.
-    ///
-    /// The [`StoreLock`] is **proof, not a parameter**. D9's daemonless protocol is a
-    /// read-modify-write under one advisory lock, and `SessionStore` expresses "under the
-    /// lock" as a `&StoreLock` argument on every mutating method exactly so the discipline
-    /// cannot be forgotten — but that argument can only guard the *write*. Each mutating
-    /// calibrate verb used to load the session document immediately before `with_lock` and
-    /// then commit a draft cloned from that pre-lock read, so only the write half of the
-    /// cycle was protected: two concurrent `wch` processes whose windows overlapped could both
-    /// exit 0 with one of them silently republishing the other's document without its
-    /// samples. Requiring the token here means a caller that has not taken the lock cannot
-    /// perform the read at all, which is the one kind of hold that does not decay.
-    ///
-    /// # Errors
-    ///
-    /// As [`InProcess::session_for`].
-    fn session_to_update(
-        store: &SessionStore,
-        _lock: &StoreLock,
-        fingerprint: &CameraFingerprint,
-        which: &SessionRef,
-    ) -> Result<Session> {
-        InProcess::session_for(store, fingerprint, which)
     }
 }
 
@@ -186,13 +148,19 @@ impl engine::progress::ProgressSink for Watched<'_> {
 /// The `--json` document carries the *pairs*; what a probe declined and how the restore
 /// went are facts about the run rather than about the camera, and a caller redirecting
 /// stdout should still see them.
-fn report_probe(found: &engine::discover::Discovery) {
-    for skip in &found.skipped {
+///
+/// Takes the two facts rather than a probe result, because its two callers hold them in
+/// two shapes: `controls --discover-pairs` has a whole
+/// [`schema::report::DiscoveryReport`] — the document `wchd`'s `wch_discover_pairs`
+/// answers, where these two fields are on the wire so a socket client is not running a
+/// write with its restoration report withheld (N30) — and `calibrate start` has the
+/// [`engine::discover::Discovery`] the session probe returned.
+fn report_probe(skipped: &[ProbeSkip], restored: &RestoreReport) {
+    for skip in skipped {
         eprintln!("wch: did not probe {}: {}", skip.control, skip.reason);
     }
-    if !found.left_the_camera_alone() {
-        let stuck: Vec<String> = found
-            .restored
+    if !restored.is_complete() {
+        let stuck: Vec<String> = restored
             .unrestored()
             .iter()
             .map(ToString::to_string)
@@ -220,23 +188,22 @@ impl Executor for InProcess {
 
     fn controls(&mut self, requested: &CameraId, discover_pairs: bool) -> Result<ControlReport> {
         let (info, mut camera) = self.open(requested)?;
-        // The probe first, because it writes: the control set reported afterwards is the
-        // one the camera is actually in, and reading before the probe would describe a
-        // device the caller no longer has.
-        let measured = if discover_pairs {
-            let found = engine::discover::pairs(camera.as_mut(), Stamp::now())?;
-            report_probe(&found);
-            found.pairs
-        } else {
-            Vec::new()
-        };
+        if discover_pairs {
+            // The probe writes, and the document it produces is assembled in the engine —
+            // probe first, read the control set afterwards, merge declared with measured.
+            // `wchd`'s `wch_discover_pairs` answers that whole document; this surface shows
+            // its `controls` and prints the other two fields on standard error. Two authors
+            // of one assembly is what note N34 booked the move against.
+            let found = engine::discover::report(camera.as_mut(), Stamp::now())?;
+            report_probe(&found.skipped, &found.restored);
+            return Ok(found.controls);
+        }
         let controls = camera.controls()?;
         Ok(ControlReport {
             // The declared table (D3) narrowed to the relationships this device can
-            // exhibit, merged with anything the probe measured. Every pair carries its own
-            // provenance, and measured beats declared (E1) — so a caller reading `--json`
-            // can tell a nomination from an observation without asking how it was made.
-            pairs: engine::pairing::in_effect(&controls, measured),
+            // exhibit. Nothing measured: measuring writes to the camera, and that is the
+            // flag above (note N30).
+            pairs: engine::pairing::in_effect(&controls, Vec::new()),
             camera: info.id,
             controls,
         })
@@ -257,30 +224,21 @@ impl Executor for InProcess {
         guarded: bool,
     ) -> Result<WriteReport> {
         let (_, mut camera) = self.open(requested)?;
-        let controls = camera.controls()?;
-        let pairs = engine::pairing::in_effect(&controls, Vec::new());
-        // The engine's planner takes pairs, and this is the one place the two spellings
-        // meet — see `ControlWrite`'s own note on why the wire spelling stops at the T4
-        // boundary rather than continuing into `engine::pairing` (note N35).
-        let targets: Vec<(ControlSlug, schema::ControlValue)> = writes
-            .iter()
-            .map(|write| (write.control.clone(), write.value.clone()))
-            .collect();
-        engine::write::set(camera.as_mut(), &pairs, &targets, guarded)
+        // The composition — which pair set this write plans against, and where the wire's
+        // `ControlWrite` stops (note N35) — is the engine's, because `wchd`'s `wch_set`
+        // reaches the same rule and a second author for it is two opinions about what a
+        // camera's automation looks like.
+        engine::write::set_requested(camera.as_mut(), writes, guarded)
     }
 
     fn snapshot(&mut self, requested: &CameraId) -> Result<Snapshot> {
         let (_, mut camera) = self.open(requested)?;
-        let controls = camera.controls()?;
-        let pairs = engine::pairing::in_effect(&controls, Vec::new());
-        engine::snapshot::take(camera.as_mut(), &pairs, Stamp::now())
+        engine::snapshot::take_in_effect(camera.as_mut(), Stamp::now())
     }
 
     fn restore(&mut self, requested: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
         let (_, mut camera) = self.open(requested)?;
-        let controls = camera.controls()?;
-        let pairs = engine::pairing::in_effect(&controls, Vec::new());
-        engine::snapshot::restore(camera.as_mut(), &pairs, snapshot)
+        engine::snapshot::restore_in_effect(camera.as_mut(), snapshot)
     }
 
     fn photo(&mut self, requested: &CameraId, request: &PhotoRequest) -> Result<Photograph> {
@@ -318,7 +276,10 @@ impl Executor for InProcess {
                 task: task.to_owned(),
                 goal: goal.to_owned(),
                 criteria: criteria.to_vec(),
-                tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+                // The schema crate's reading of one fact, not this binary's: `wchd` records
+                // provenance into the same documents, and two readings of "which tool
+                // version wrote this" could disagree.
+                tool_version: schema::TOOL_VERSION.to_owned(),
             };
             let mut session = lifecycle::create(&store, lock, &spec, Stamp::now())?;
             // D3's empirical probe, at session start and nowhere else (N16). It *writes*
@@ -332,7 +293,7 @@ impl Executor for InProcess {
                 camera.as_mut(),
                 Stamp::now(),
             )?;
-            report_probe(&found);
+            report_probe(&found.skipped, &found.restored);
             Ok(session)
         })
     }
@@ -347,7 +308,7 @@ impl Executor for InProcess {
         let store = self.store()?;
         let info = self.resolve(requested)?;
         store.with_lock(|lock| {
-            let mut session = InProcess::session_to_update(&store, lock, &info.fingerprint, which)?;
+            let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             if order {
                 // The camera is deliberately not opened: reordering a queue is an edit to a
                 // document, and a caller who wanted to put exposure before focus should not
@@ -387,7 +348,7 @@ impl Executor for InProcess {
         let progress = Watched(watch);
         let clock = engine::settle::MonotonicClock::new();
         store.with_lock(|lock| {
-            let mut session = InProcess::session_to_update(&store, lock, &info.fingerprint, which)?;
+            let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             let context = SweepContext {
                 store: &store,
                 lock,
@@ -423,23 +384,11 @@ impl Executor for InProcess {
         let store = self.store()?;
         let info = self.resolve(requested)?;
         store.with_lock(|lock| {
-            let mut session = InProcess::session_to_update(&store, lock, &info.fingerprint, which)?;
-            lifecycle::commit(&store, lock, &mut session, Stamp::now(), |draft, now| {
-                // Whichever branch runs, the *selector* is recorded (D8): a metric names
-                // itself and the score it earned, and a value names whoever claimed it.
-                match selection {
-                    Selection::ByMetric { metric } => {
-                        engine::session::select_by_metric(draft, control, *metric, now)
-                    }
-                    Selection::ByValue { value, chosen_by } => engine::session::select_value(
-                        draft,
-                        control,
-                        *value,
-                        chosen_by.selector(),
-                        now,
-                    ),
-                }
-            })?;
+            let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
+            // The `Selection` match is the engine's, beside the two transitions it chooses
+            // between: `wchd`'s `wch_calibrate_select` crosses the same boundary, and a
+            // second copy is a second chance to record a selector no metric earned.
+            lifecycle::select(&store, lock, &mut session, control, selection, Stamp::now())?;
             Ok(session)
         })
     }
@@ -453,7 +402,7 @@ impl Executor for InProcess {
         let store = self.store()?;
         let (info, mut camera) = self.open(requested)?;
         store.with_lock(|lock| {
-            let mut session = InProcess::session_to_update(&store, lock, &info.fingerprint, which)?;
+            let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             lifecycle::apply(
                 &store,
                 lock,
@@ -473,25 +422,12 @@ impl Executor for InProcess {
         let store = self.store()?;
         let (info, mut camera) = self.open(requested)?;
         store.with_lock(|lock| {
-            let mut session = InProcess::session_to_update(&store, lock, &info.fingerprint, which)?;
-            // The pair set comes off the *session*, where the probe wrote it at `calibrate
-            // start` (N16): D4's restore ordering is automation-first, and a restore that
-            // planned against a pair set the sweep did not guard with would put the camera
-            // back in an order the writes it is undoing never used.
-            let pairs = session.pairs.clone();
-            let recovery = lifecycle::recover(
-                &store,
-                lock,
-                &mut session,
-                camera.as_mut(),
-                &pairs,
-                Stamp::now(),
-            )?;
-            // No snapshot is not a failure: it is what running this twice looks like, and
-            // an empty report is the honest shape for "nothing was written".
-            Ok(recovery.report().cloned().unwrap_or(RestoreReport {
-                outcomes: Vec::new(),
-            }))
+            let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
+            // `lifecycle::restore` rather than `recover` plus two decisions written here:
+            // which pair set a restore plans against (the session's, N16) and what "no
+            // snapshot" means (not a failure) are rules, and `wchd`'s `wch_calibrate_restore`
+            // answers the same verb.
+            lifecycle::restore(&store, lock, &mut session, camera.as_mut(), Stamp::now())
         })
     }
 
@@ -515,39 +451,15 @@ impl Executor for InProcess {
             camera.as_mut(),
             &engine::profile::CaptureContext {
                 captured_at: schema::time::Stamp::now(),
-                kernel: kernel_release(),
-                tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+                // Both host facts read where they have one home: the kernel release moved
+                // beside the field it fills when `wchd` acquired this verb, and the tool
+                // version is the schema crate's, so a profile captured over a socket and
+                // one captured on a command line carry the same provenance.
+                kernel: engine::profile::kernel_release(),
+                tool_version: schema::TOOL_VERSION.to_owned(),
                 capturer: capturer.to_owned(),
                 backend: self.backend.kind(),
             },
         )
-    }
-}
-
-/// `uname -r`, for the profile's provenance.
-///
-/// Read from `/proc/sys/kernel/osrelease` rather than by running `uname`: design §1 bans
-/// runtime external binaries, and this is one line of a pseudo-file. A host without
-/// `/proc` records the absence rather than a guess.
-fn kernel_release() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/osrelease")
-        .map(|text| text.trim().to_owned())
-        .unwrap_or_else(|_| "(unknown)".to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_kernel_release_is_read_without_running_a_program() {
-        // Design §1: no runtime external binaries. On this host the file is there; on a
-        // host without /proc the absence is recorded rather than guessed at.
-        let release = kernel_release();
-        assert!(!release.is_empty());
-        if std::path::Path::new("/proc/sys/kernel/osrelease").exists() {
-            assert_ne!(release, "(unknown)");
-            assert!(!release.contains('\n'), "{release:?} was not trimmed");
-        }
     }
 }

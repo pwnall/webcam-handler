@@ -19,11 +19,47 @@ use crate::slug::{Separator, slugify};
 /// Reproducible across runs while the attached topology is unchanged, and stable for one
 /// engine's lifetime even across replug. Never persisted as identity — that is
 /// [`CameraFingerprint`]'s job.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct CameraId(String);
+
+/// Hand-written rather than derived, because a derived one is a wildcard (note **N50**).
+///
+/// A derived `Deserialize` over a `#[serde(transparent)]` newtype accepts **any** string,
+/// `""` included, while [`CameraId::parse`] refuses an empty body — and resolution is a
+/// *prefix* match by design ([`resolve_prefix`]: `cam:obsbot` finds `cam:obsbot-tiny-3`),
+/// so every id starts with the empty string. On a command line `cli_core::CameraArg::id()`
+/// catches it; off a socket nothing did, so `{"camera": ""}` resolved silently to **the
+/// only camera** on a one-camera host — on every method that names a camera, `wch_set` and
+/// `wch_photo` and the calibrate verbs included. That is a wildcard nobody designed, and the
+/// one home for "what is a camera id" is this type's own constructor, so this is where the
+/// wire has to go through it.
+///
+/// The rationale lives on the `impl` rather than on the type, and that is not a style
+/// choice: `schemars` publishes a type's doc comment as the `description` of its node in
+/// `schemas/webcam-handler-schema.json`, so a paragraph up there would move a committed
+/// bundle. This one moves nothing — `JsonSchema` is a separate derive over unchanged
+/// attributes and still emits `{"type": "string"}` — which is the claim
+/// `scripts/gates/schema-artifacts-current.sh` checks and the reason this half of the debt
+/// could land without its own commit.
+impl<'de> Deserialize<'de> for CameraId {
+    fn deserialize<D>(deserializer: D) -> Result<CameraId, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        // Through the constructor, which is the whole point: a value that reaches a
+        // handler is one `CameraId::parse` would have made, so `cam:` stays optional on
+        // input and always present on output and an empty body is refused here rather than
+        // becoming a prefix of everything two crates later.
+        CameraId::parse(&raw).ok_or_else(|| {
+            serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&raw),
+                &"a camera id with a body, like `cam:integrated-camera` or `integrated-camera`",
+            )
+        })
+    }
+}
 
 /// The prefix every camera id carries, so an id is recognizable in isolation.
 pub const CAMERA_ID_PREFIX: &str = "cam:";
@@ -688,6 +724,49 @@ mod tests {
         assert_eq!(
             resolve_prefix(&ids, "cam:webcam"),
             PrefixMatch::Unique(ids[0].clone())
+        );
+    }
+
+    #[test]
+    fn an_empty_camera_id_is_refused_off_the_wire_rather_than_matching_every_camera() {
+        // Note **N50**. The two directions have to be one test, because what makes the
+        // refusal worth having is *why* an empty id is dangerous rather than merely
+        // meaningless: resolution is a prefix match, so the empty string is a prefix of
+        // every id and a derived `Deserialize` turned `{"camera": ""}` into "the only
+        // camera on this host" — silently, on every method that names one.
+        let ids = assign_ids(&cards(&["Integrated Camera: Integrated C"]));
+        assert_eq!(
+            resolve_prefix(&ids, ""),
+            PrefixMatch::Unique(ids[0].clone()),
+            "the wildcard this refusal exists to keep off the wire"
+        );
+
+        let refused = serde_json::from_str::<CameraId>(r#""""#)
+            .expect_err("an empty body is not a camera id");
+        assert!(
+            refused.to_string().contains("camera id"),
+            "the refusal has to name what it wanted: {refused}"
+        );
+        // `cam:` on its own is the same absence wearing the prefix.
+        assert!(serde_json::from_str::<CameraId>(r#""cam:""#).is_err());
+
+        // And the directions a real client sends, including the one the CLI's own
+        // `CameraArg` accepts: the prefix is optional on input and always present on
+        // output, which is `CameraId::parse`'s rule and now the wire's. Both spellings are
+        // derived from the id the assignment produced rather than written down, so this
+        // stays true the day the slug rule changes.
+        for spelling in [ids[0].as_str(), ids[0].body()] {
+            assert_eq!(
+                serde_json::from_str::<CameraId>(&format!("\"{spelling}\""))
+                    .unwrap_or_else(|err| panic!("{spelling}: {err}")),
+                ids[0]
+            );
+        }
+        // Round-trip, because a document this build wrote has to be one it can read back.
+        let rendered = serde_json::to_string(&ids[0]).expect("a string");
+        assert_eq!(
+            serde_json::from_str::<CameraId>(&rendered).expect("what we just wrote"),
+            ids[0]
         );
     }
 

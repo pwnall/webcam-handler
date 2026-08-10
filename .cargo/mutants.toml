@@ -54,6 +54,15 @@
 #   merits, but the file it lives in also owns a thread, a registry and a bounded queue,
 #   whose survivors would each need a rig. Split the fold out, or widen to the file and
 #   accept the triage — either is a decision somebody should make on purpose.
+#   **Made on purpose at P4c, and the answer is still no.** P4c changed when a camera is
+#   idle (note N45's clock-free shape), and the change did *not* land in the fold: the
+#   flag it added is raised by `Thread::publish` under the same mutex as `busy`, taken by
+#   `CameraActor::sweep`'s filter and cleared by `Liveness`'s drop guard, which is
+#   thread-and-registry code and not two numbers. So widening to the file would import
+#   exactly the triage this paragraph warns about, and splitting `Idle` out would move a
+#   fold whose arithmetic P4c did not touch. Both directions of the new behaviour have a
+#   test in `engine::actor` and both go red when the filter's take is neutered; that is
+#   what carries it until somebody splits the module for its own reasons.
 # - `crates/schema` — mostly derives and data. Its laws are asserted by the battery.
 # - `crates/api/src/lib.rs` — the T5 trait itself. It is a `wire_surface!` invocation and
 #   nineteen doc comments; there is no expression in it to mutate, and the macro's own

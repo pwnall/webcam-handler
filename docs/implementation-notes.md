@@ -2079,6 +2079,23 @@ fake replays a profile into a fresh device per process and cannot show a value s
 between two `wch` runs. That the camera physically goes back is the engine suites' claim and
 the R3 rung's, and both already make it.
 
+### What replaces the stderr line for a client that has no stderr, P4c
+
+The sentence above — "the sweep names the command" — is printed by `wch` on standard error,
+and a client on the other end of a socket cannot see standard error. That is the same shape
+of gap note N30 wrote `DiscoveryReport` for, so it was checked when P4c routed
+`wch_calibrate_sweep` rather than assumed. **The fact is already on the wire and needs
+nothing added:** the sweep answers with the `Session` document itself, and
+`Session::pre_snapshot` is a field on it that is present exactly when a snapshot is armed
+and absent after `calibrate_restore` spends it. `crates/daemon/tests/calibrate_verbs.rs`
+asserts both ends of that over a socket.
+
+What is not on the wire is the *rendering*, which is right: a wire field a client reads and
+a sentence a person reads are different things, and the sentence belongs to `wchc` (P4f),
+built from the same field rather than from a second copy of the rule. Recorded here because
+"a verb nobody knows about" is this note's own failure mode, and a client told nothing would
+have been the daemon's instance of it.
+
 **Retires when:** either the snapshot becomes sweep-scoped (at which point D4's sentence is
 implementable as written and this verb becomes `--keep`'s inverse), or D8 grows the explicit
 close/abandon verb N14 names in its own retirement clause — at which point ending a session
@@ -2958,8 +2975,43 @@ call site requires the daemon (P4b), a client one requires the client (P4f), and
 either here to satisfy A8 would be landing two sub-milestones' work to make a doc comment
 true.
 
-**Retires when:** P4c and P4f land their call sites. Each declaration names which, so the
-review that closes G4 can check them off rather than rediscover them.
+**Discharged, row by row.** The fourth row — the `DiscoveryReport` assembly — was
+discharged at **P4c**, in the step that routed the control-shaped mutating verbs, and
+*before* the daemon had a call site rather than after: the assembly is now
+`engine::discover::report`, which probes, re-reads the control set the camera is in
+afterwards, and merges declared with measured through `pairing::in_effect`. `crates/cli`'s
+`InProcess::controls` and `daemon::server::discover_pairs` both call it and neither
+assembles anything, and `engine::lifecycle::discover_pairs` — which had been writing
+`applicable(controls, &merge(declared_pairs(), …))` by hand, a *third* spelling nobody had
+noticed — collapsed onto the same function in the same change. Two tests hold it: the
+engine's own, which latches a toggle so a report built from a control set read *before* the
+probe describes a device that no longer exists, and the daemon's, which compares
+`wch_discover_pairs`'s whole answer against the one engine call. A daemon that assembled it
+itself with the measured pairs dropped goes red on both.
+
+The **second and third rows went with `photo`**, in P4c's next step, and they landed in the
+two places the entry named rather than in one convenient one:
+
+- `schema::capture::Sink::is_addressable` is called by `daemon::server::addressable`, which
+  runs **before** the handler resolves a camera. Refusing early is the whole value —
+  `FakeBackend::opens()` is still zero after the refusal, which is what the daemon suite
+  asserts, so a request this build was never going to honour costs nobody a descriptor. The
+  refusal is `Error::IllegalTransition` naming the path and saying it has to be absolute;
+  note **N46** records the pick. Deleting the call turns the daemon suite red on the
+  refusal *and* on the descriptor count.
+- `api::photo::PhotoResponse::bytes_match_the_delivery` is called by
+  `daemon::server::photo_response`, as the last statement before the answer is returned, so
+  there is exactly one place it can be skipped. Its own unit test feeds a hand-built
+  `Photograph` whose delivery and payload disagree — reachable because `Photograph`'s
+  fields are `pub` and nothing else in the workspace can build the disagreement — and the
+  daemon suite asserts the predicate again from the *client* side on every photo answer it
+  receives, which is the half `wchc` will do at P4f.
+
+One row remains, and it still names its sub-milestone: `api::codes::typed`'s client-side
+consumer is P4f's `wchc`.
+
+**Retires when:** P4f lands its call site. Each declaration names which, so the review that
+closes G4 can check them off rather than rediscover them.
 
 ---
 
@@ -2977,8 +3029,29 @@ indistinguishable from an oversight.
 pattern), and `cli_core::Executor::set` takes `&[ControlWrite]` — so `wch` and `wchc` hand
 their shared surface the same value and P4f's parity gate compares two paths whose input
 has one shape. `engine::write::set`, `engine::pairing::plan` and `plan_unguarded` still
-take `&[(ControlSlug, ControlValue)]`, and `crates/cli`'s `InProcess::set` is the one
-conversion in the tree.
+take `&[(ControlSlug, ControlValue)]`.
+
+**Amended at P4c, when the boundary got its second crossing.** Routing `wch_set` gave the
+conversion a second caller — `crates/cli`'s `InProcess::set` and
+`daemon::server::set` — and a four-line `map` written twice is how the two surfaces P4f
+compares start to differ. The conversion is now **`ControlWrite::target`**, a method on the
+type beside the fields it reads; the entry below is otherwise unchanged, because moving the
+boundary itself is still the large mechanical edit it was. So the stop is in the same place
+and there is one spelling of where it is.
+
+**Amended again by the P4c review, which found the method was not enough.** `target` gave the
+four-line `map` one home and the *three-line assembly the map sits inside* was still written
+twice — read the controls, `pairing::in_effect(&controls, Vec::new())`, convert, call
+`write::set` — once in `crates/cli`'s `InProcess::set` and once in `daemon::server::set`, with
+`snapshot` and `restore` copied the same way beside them. That composition is a rule and not
+plumbing: which pair set a write plans against decides whether an automation control is
+switched off first, and `Vec::new()` for the measured pairs is itself a decision (measuring
+writes to the camera — note N30). Both roots now call `engine::write::set_requested`,
+`engine::snapshot::take_in_effect` and `engine::snapshot::restore_in_effect`, which is where
+`target` is called from too. The three wrappers are in `write.rs` and `snapshot.rs` rather
+than in `pairing.rs` on purpose: `pairing` is a pure core in the mutation floor's scope and
+takes values, so a function there that takes a `&mut dyn Camera` would be the wrong kind of
+thing in the wrong file.
 
 **Why the stop is there.** The rule §2.10 protects is "one spelling of a fact that crosses
 a boundary". The wire is a boundary and the T4 executor is the seam two binaries are
@@ -2991,8 +3064,9 @@ contrast with `ProbeSkip` is the deciding one: there the tuple had a single prod
 single consumer, so one spelling cost four lines.
 
 **Retires when:** `engine::write::set` and `engine::pairing::plan` take `&[ControlWrite]`,
-at which point `InProcess::set`'s conversion goes and this entry with it. A good moment is
-whenever `pairing.rs` is being edited for its own reasons.
+at which point `ControlWrite::target` and its two call sites go and this entry with them.
+A good moment is whenever `pairing.rs` is being edited for its own reasons — which P4c was
+not, and is why the amendment above is a method on the type rather than the migration.
 
 ---
 
@@ -3520,8 +3594,52 @@ the composition root that owns a registry, which is the sub-milestone that route
 verbs. Until then `limits::CAMERA_IDLE_CLOSE_MS`'s reader is `Cameras::new`, which is the
 shipped default rather than a number the daemon repeats.
 
+**Where it stands after P4c routed `wch_photo`, and the flag's re-deferral.** The capture
+verb is routed, so the half of D12 that exists is now reachable over the wire and asserted
+there: two photo requests in flight against one camera reach one actor, share one
+descriptor, and produce two *sequential* streams — the fake refuses a second `start_stream`
+while one is running (its own resemblance suite pins that both ways), so "both answered" is
+the assertion and a handler that had opened its own descriptor could not pass it.
+
+The **flag itself is re-deferred to P4e**, deliberately and with a reason, because
+discharging it here would have been three changes wearing one name:
+
+1. *A committed wire shape.* Nothing in the schema is called `wait`; `PhotoRequest` is
+   `{stream, settle, transform, sink}`. Adding a field moves
+   `schemas/webcam-handler-schema.json` **and** `schemas/webcam-handler-openrpc.json`, which
+   is the class of edit the P4a methods spec told D-4 and D-5 to keep out of a ride-along
+   commit — and docs/7 P4c's own "Lands" sentence never names `wait`. Only D12 and this
+   entry do.
+2. *New actor machinery.* `CameraActor::submit` is a `try_send` on a bounded
+   `SyncSender` and has no blocking-with-deadline path at all, so `wait: true` is not a
+   branch — it is an enqueue that waits, plus the bound AGENTS requires of anything that
+   waits, in `engine::actor`, from a sub-milestone whose subject is a transport.
+3. *A command-line spelling, or an argued absence of one.* `wch photo --wait` is a T4 verb
+   change, and P4c has no CLI budget; declaring the flag wire-only would be a second
+   spelling of a request field, which §2.10 dislikes.
+
+The A8 objection that kept it out of P4b does not reappear at P4e: by then a capture verb
+has a producer, and P4e already owns the concurrency semantics of a client that goes away
+mid-operation, which is the same question from the other end.
+
+What is *not* deferred is the behaviour a caller meets today, and the two halves of it are
+asserted in two different places, which is worth saying exactly rather than in one breath.
+**The queue** — a second request reaching the same actor and being served after the first
+rather than beside it — is asserted **over the wire**, by the two-photos test above.
+**The bound, and the refusal past it** — the ninth request for one camera while a command
+holds the thread — is asserted at the **actor**
+(`one_camera_runs_one_command_at_a_time_and_says_so_when_the_queue_is_full`) and nowhere
+else, because filling a nine-deep queue over a socket needs the actor's one thread held from
+inside a handler, which is a fixture for the sub-milestone that owns long-running requests
+rather than one to build for a claim the engine already proves at the layer that makes it.
+So a client that sends a ninth verb for one camera during a `calibrate_sweep` gets
+`Error::Busy` with an empty holder list — availability, not capability (E3), and the empty
+list is the paragraph below — and P4c is the first build where anybody can meet it. That
+is stated here rather than tested twice.
+
 **Retires when:** a daemon status reaches the wire — which is a T5 method, so a docs/7
-sub-milestone has to want one — or P4c lands the capture verb and with it the `wait` flag.
+sub-milestone has to want one — or **P4e** lands the `wait` flag with the enqueue that
+honours it.
 
 ---
 
@@ -3568,14 +3686,62 @@ matters:
 
 **What is asserted, and where.** `daemon::server`'s tests check the partition against
 `api::METHODS`, check that every row renders as a D13 refusal naming its operation and its
-phase, and call all thirteen methods with arguments that would be valid — so the refusal
-comes from the body rather than from parameter parsing, and a body naming the wrong operation
-is red. `crates/daemon/tests/read_verbs.rs` then checks that one of them survives the wire as
-`-32030` with its payload intact, recovered client-side through `api::codes::typed`.
+phase, and call every method still on the unrouted side with arguments that would be valid —
+so the refusal comes from the body rather than from parameter parsing, and a body naming the
+wrong operation is red. `crates/daemon/tests/read_verbs.rs` then checks that one of them
+survives the wire as `-32030` with its payload intact, recovered client-side through
+`api::codes::typed`.
 
-**Retires when:** P4c routes the mutating half. `unrouted()` returns an empty map, the
-producer is unreachable, and both go — which is a diff the same commit has to make anyway,
-because its own test asserts the map is empty of the methods it just routed.
+**Where it stood.** P4c routed in steps. The first moved the five control-shaped mutating
+verbs across (`set`, `snapshot`, `restore`, `discover_pairs`, `profile_capture`); the second
+moved `photo`, leaving seven — `wch_terminate_holder` and the six `calibrate_*` verbs that
+write. Nothing about the mechanism changed while that lasted: the pin was the routed list,
+the map was derived from it, and the assertions walked the whole of whichever half they were
+about, so the counts moved in one diff or not at all.
+
+### Retired at P4c, and what replaced the assertion
+
+The third step routed the remaining seven. `unrouted()`, `unimplemented()` and
+`ROUTING_PHASE` are **deleted**, and with them the three tests that walked them
+(`the_routed_and_unrouted_halves_together_are_the_whole_wire_surface`,
+`an_unrouted_method_names_itself_and_the_phase_that_lands_it`, and
+`every_unrouted_method_refuses_with_its_own_name`).
+
+**`ROUTED` stays**, and the claim inverted rather than went. While a method could be
+unrouted the assertion was a *partition* — this list, plus `api::METHODS` minus this list,
+covers the surface and overlaps nowhere — which is what stopped a twentieth method falling
+into neither. With the second half empty what is left is the **equality**, and it is the
+claim a client actually depends on:
+`the_pinned_routing_is_the_whole_wire_surface_and_nothing_answers_unimplemented` asserts
+`ROUTED` *is* `api::METHODS`, pinned at the nineteen `crates/api` pins the trait at (note
+N29), with the set non-empty so two empty sets cannot compare equal and say nothing. A
+twentieth method breaks it just as loudly as it broke the partition.
+
+Two suites moved with it. `read_verbs.rs`'s fifth refusal — a registered method answering
+`-32030` with its phase intact — is **gone**, because there is no such method; the claim it
+carried is now `calibrate_verbs.rs`'s `no_calibrate_verb_answers_store_locked_or_unimplemented`,
+which is the same assertion over a walk of the whole calibrate half rather than over one
+verb standing for the rest.
+
+**Retires when:** now. The only place in the **shipped** tree where this variant is still
+the answer to a caller is `webcam-handler-v4l2::unimplemented_surface()`'s one row,
+`CameraBackend::watch`, which P4d deletes along with the variant — N6's scheduled death,
+with both surfaces empty by then as planned.
+
+Two other constructions of the variant exist and are neither producers nor obstacles,
+counted here so that the sentence above stays exact rather than approximately true (a grep
+finds all three):
+
+- `schema::Error::sample(ErrorKind::Unimplemented)` — the representative value the
+  registry walks (`Error::sample`'s own doc: "the RPC code mapping, the CLI renderer, and
+  the schema emitter all need a walkable population"). It is a value of every kind by
+  construction, not a refusal anybody receives, and it goes when the kind does.
+- `engine::profile`'s `StubCamera`, inside that module's `#[cfg(test)]` block, which
+  answers every `Camera` method it is not testing with
+  `Unimplemented { operation: "StubCamera", arrives_in: "never" }`. A test double saying
+  "not this one" is not a phase schedule; `arrives_in: "never"` is the double saying so.
+  It predates P4c (it is in the tree at P4b's commit) and P4d will have to give it a
+  different refusal when the variant goes.
 
 ---
 
@@ -3671,4 +3837,608 @@ therefore has to be argued against the timeout rather than bolted beside it.
 test the deadline already has — a command shorter than the timeout still closes on the
 first sweep past it, a command longer than the timeout does not close immediately after it.
 
-**Retires when:** that test exists.
+### Discharged at P4c, by the clock-free shape
+
+**What landed: shape B.** `engine::actor::Live` gained one boolean, `used_since_sweep`.
+`Thread::publish` raises it under the same mutex as `busy`, before the work runs;
+`CameraActor::sweep`'s published-state filter takes it and declines *once*;
+`Liveness::drop` lowers it with `open` and `busy`, for the same reason those fall on an
+unwind — a dead actor claiming a command had just finished would postpone one pass on a
+camera this process no longer holds.
+
+**Why shape A lost, measured against the tree rather than against the note.** Giving the
+actor a clock reverses this module's central decision (N41, and `engine::actor`'s header
+spends two paragraphs on it) — but the disqualifying cost is smaller and sharper than that:
+`engine::settle::Clock` has no `Send + Sync` bound, `SteppedClock` is **deliberately** not
+`Sync` ("a stepped clock shared across threads is a race dressed as a fixture"), and a
+`MonotonicClock` the actor constructed itself would put the post-command stamp somewhere no
+test can reach. So the fix would have been untestable without either a new thread-safe clock
+type and a widened bound at every `Clock` call site, or a test that waits — and waiting is
+the rule that produced the caller-supplies-the-time design in the first place. A fix whose
+proof needs the thing the design exists to avoid is the wrong fix.
+
+**The ordering inside the filter is the whole reason a short command costs nothing.** The
+flag is consulted *before* the deadline, so the ordinary passes that happen between a short
+command and its deadline spend the grace and there is none left when the deadline arrives —
+`an_idle_camera_closes_and_the_next_use_opens_it_again` keeps passing unchanged, which is
+N45's first direction. A long command gets no such passes (every one of them saw `busy`),
+so its grace is still there for the pass that follows it, which is the case this entry is
+about. The flag is read in the *filter* rather than in the thread because it is published
+under the mutex the filter already takes: reading it there costs nothing and does not turn
+every long command into a queue round trip, which is the property `CameraActor::sweep`'s own
+paragraph exists to preserve.
+
+**The cost, argued against the timeout rather than bolted beside it — and it is one *pass*,
+not one timeout.** The first version of this paragraph, and of `CAMERA_IDLE_CLOSE_MS`'s doc,
+said the effective close became "30–35 s measured from when a command *ends*". That was
+wrong by a factor of six, and the P4c review caught it: `used_since_sweep` is a boolean taken
+by `std::mem::take`, so a completed command buys exactly one declined pass — one
+`CAMERA_IDLE_SWEEP_MS`, five seconds — and for a command *longer* than the timeout the
+deadline is already long past when it returns, so the camera closes on the **second** pass
+after the command ends, five to ten seconds later rather than thirty to thirty-five. The
+committed test says so and always did (`sweep(9_000)` declines, `sweep(9_001)` closes,
+against a 1 000 ms timeout); the prose had drifted away from it in the one paragraph a reader
+would go to for the number.
+
+What the shape actually buys, stated so it can be argued: a long command gets **one whole
+housekeeping cadence** in which a client that is still working can issue its next verb,
+instead of an immediate close on the very next pass. That is the failure this entry was
+opened for — "a sweep that completes is followed by an idle close within one cadence" — and
+one cadence of grace is what removes it. A client that pauses longer than that still pays a
+fresh `open` and the driver's first-frame settle \[PF:11\], exactly as a client that pauses
+thirty seconds after a *short* command does; the two are then the same rule with the same
+five-second slack rather than two rules.
+
+Buying a whole timeout back was considered and rejected twice over. Making
+`used_since_sweep` a counter of `CAMERA_IDLE_CLOSE_MS / CAMERA_IDLE_SWEEP_MS` passes would
+put the daemon's *cadence* inside the actor, which is a number the actor is never told —
+`Cameras::with_idle_timeout` takes the timeout and nothing takes the cadence — so the grace
+would become "however often somebody happens to sweep", which is worse than a small grace:
+`an_idle_camera_closes_and_the_next_use_opens_it_again` sweeps twice and would never close.
+Re-stamping `Idle` from the declining pass's own `at` is clock-free and exact for a long
+command, and it postpones a **short** command's close by a whole timeout as well, for a case
+that never needed it. The one-pass shape is the one that costs a short command nothing, and
+`CAMERA_IDLE_CLOSE_MS`'s and `CAMERA_IDLE_SWEEP_MS`'s docs now price the two cases
+separately rather than in one sentence that is true of neither.
+
+**The tests, both directions, nothing waiting for anything.**
+`a_command_longer_than_the_timeout_is_not_closed_by_the_pass_that_follows_it` stamps a
+command at 0 and sweeps at 9 000 against a 1 000 ms timeout — nine times the timeout, and
+still open — then sweeps at 9 001 and it closes, which is the "one cadence, not a second
+timeout" half. `a_long_commands_grace_is_one_sweep_cadence_and_not_a_second_timeout` is the
+arm the corrected accounting owes: the same shape driven by the two *shipped* constants, so
+the sentence "five to ten seconds, not thirty" is asserted against the numbers it is about
+and goes red if either the shape or the constants move under it. `a_pass_that_runs_during_a_long_command_does_not_spend_its_grace` holds the
+actor's one thread with a command the test releases by channel and takes four passes while
+it is provably held, because a pass that consumed the grace mid-command would leave N45
+undischarged on the only verb it is about. Both fail against the unfixed actor, measured by
+neutering the filter's take.
+
+Two daemon tests moved with the behaviour and say so where they are:
+`an_idle_camera_is_closed_by_a_pass_at_the_millisecond_it_is_given` now asserts the
+declining pass before the closing one, and
+`the_driver_the_daemon_spawns_closes_an_idle_camera_with_nobody_asking` spends the grace
+itself so that what it asserts about the *driver* is still one tick and one close.
+
+**Retires when:** now. The entry stays as the record of which shape was taken and why.
+
+---
+
+## N46 — A photo's sink is refused with `IllegalTransition`, twice, and the rule lives on the type both times
+
+**Doc:** D13 is a **closed** registry — `ErrorKind` and its `ALL` are generated, and "a
+twentieth variant does not compile until the round-trip, rendering, and RPC-code walks all
+know it" — so a refusal with no obvious variant is a decision to record rather than a
+variant to invent. Two of them arrived together when P4c routed `wch_photo`, and no document
+in the series says which variant either should be.
+
+**The two refusals.** Both are about a `schema::capture::Sink`, and both exist because a
+`Sink` can now be built by something other than `cli_core::Command::photo_request`:
+
+1. **A relative `Sink::ServerPath`.** `schema::capture::Sink::is_addressable` is the
+   predicate (note N34); `wch` and `wchc` resolve `-o` against the caller's cwd before
+   sending (D10), so only a hand-written client can produce one, and this daemon's working
+   directory under systemd is `/`.
+2. **An extension this build cannot write.** Debt D-1: `engine::photo::sink_format`
+   documented its own correctness as "the CLI refuses it while building the sink", which
+   stopped being true the moment a socket could build one — `wchd` links no `cli-core`, so
+   `{"kind":"server_path","path":"/tmp/x.webp"}` produced JPEG bytes in a file named
+   `.webp` and a `PhotoDelivery::Path` whose extension lied about its contents.
+
+**The pick: `Error::IllegalTransition` for both.** The alternatives and why each lost:
+
+| Candidate | Why it lost |
+|---|---|
+| **`IllegalTransition` (chosen)** | `cli_core::Command::photo_request` already used it for refusal 2, so this keeps one refusal with one spelling rather than making the same mistake answer differently depending on which surface met it. Its rendering — "cannot {op} from state {from}" — carries both halves a caller acts on: what was typed, and what this build accepts. |
+| `FormatUnsupported` | Explicitly forbidden by E3 and by the sentence cli-core already carries: that variant is the *camera* saying what it cannot offer, and `.webp` is not the camera's fault. |
+| `StorageIo` | Names a path, but implies the filesystem was consulted. It was not — both refusals happen before anything is opened, which is the point of them. |
+| `DeviceIo` | Blames the kernel for a request nobody could honour, which is N6's argument applied here. |
+| A new D13 variant | A design change to a closed registry, not an implementation choice, and one that would move the code registry, the round-trip walk and `fixtures/d13-rpc-codes.tsv` for two refusals that fit an existing variant. |
+
+**The honest cost of the pick, stated rather than left to a reviewer.** `IllegalTransition`'s
+own doc says "The calibration state machine refused a transition (design D8)", and neither
+of these is the D8 machine. So the variant now carries two families: D8's transitions and
+"the request names something this build cannot do". That is a widening, and it is the reason
+this entry exists; the alternative was a nineteenth-variant edit to a closed registry in a
+sub-milestone whose subject is a transport. If a later phase splits the variant, these two
+call sites and `cli_core`'s are the population.
+
+**Where each rule lives, which is not the same as where each is asked.** Both rules are on
+the type, beside the variants they constrain:
+
+- `Sink::writable_format()` owns the *decision* (`.png` is PNG, no extension at all is a
+  JPEG) and the *refusal*, and it replaced both `engine::photo::sink_format` and the inline
+  check in `cli_core::Command::photo_request`. Three callers now: `cli-core` while parsing,
+  `daemon::server::addressable` before opening a camera, and `engine::photo::from_capture`
+  where the answer is actually used. That third one is a backstop and not a duplicate — it
+  is what a caller who did neither of the first two gets.
+- `Sink::is_addressable()` stays a `bool`, and `daemon::server::addressable` spells the
+  refusal. It is asked in exactly one place because it is a *transport* rule: `wch` cannot
+  produce a sink that fails it, and putting the check inside `engine::photo` would make the
+  daemon's "no camera was opened" assertion pass for the wrong reason.
+
+**Retires when:** never, as a rule — but the widening above retires if D13 ever grows a
+variant for "the request asks for something this build does not do", at which point the
+three call sites move together.
+
+---
+
+## N47 — A daemon holding one `flock` is not serialized against itself, so the session edit is serialized in the process
+
+**Doc:** design D9 gives the state directory one advisory lock and two protocols over it —
+"the daemon holds it exclusively for its lifetime; a daemonless `wch` takes it per mutating
+operation". `engine::store` expresses "under the lock" as a `&StoreLock` argument on every
+mutating method, and `engine::lifecycle::session_to_update` extends the same proof to the
+*read*, because a read-modify-write whose read is outside the hold is only half protected.
+The doc on that function records the defect it was written for: "two concurrent `wch`
+processes whose windows overlapped could both exit 0 with one of them silently
+republishing the other's document without its samples."
+
+**The gap the wire crossing opens, which the in-process path did not have.** `flock` is a
+property of an *open file description*, and it does not exclude its holder from itself. A
+`wch` process takes the lock per operation, so two of them genuinely serialize. `wchd` takes
+one at startup and holds it until it exits, and every request task legitimately has a
+`&StoreLock` — so nothing in D9 stops two of them interleaving. The per-camera actor does
+not close it either: `wch_calibrate_plan { order: true }` and `wch_calibrate_select` open no
+camera at all (reordering a queue is an edit to a document, and the values a selection
+chooses between were photographed during the sweep), so they touch no actor and nothing
+orders them against anything.
+
+Concretely, and this is the shape the test drives: a `wch_calibrate_sweep` commits a sample
+per value from inside the actor closure, each commit publishing a draft cloned from the
+sweep's own in-memory `Session`. A `calibrate_plan --order` arriving mid-sweep reads the
+document, permutes the queue and publishes — and the sweep's next commit overwrites it with
+a document whose queue predates the edit. Both clients get `Ok`; one of them is lied to.
+
+**Repo:** `daemon::server::Inner::sessions` is a `tokio::sync::Mutex<Arc<StoreLock>>`, and
+`Wchd::editing_sessions` is the only way to reach the token. That shape rather than a
+`Mutex<()>` beside the token is the whole design: the guard *is* the right to edit, so a
+handler that wants the lock has already taken the exclusion by the time it can name one.
+There is no second path — `daemon::state::OwnedState::token` hands its `Arc` to `Wchd::new`
+and to nothing else.
+
+| Candidate | Why it lost |
+|---|---|
+| **A `tokio::sync::Mutex` holding the token (chosen)** | Structural: the type makes "one session edit at a time" the only spelling of a session edit. Awaiting it parks no thread, so a request behind a minutes-long sweep is a suspended future exactly like one behind a camera's actor. Lock ordering is one-directional — this first, the actor's queue second — so there is no inversion to reason about. |
+| Refuse rather than wait, as `wch` does | This is the *parity* answer and it is unavailable: the refusal `wch` gets is `StoreLocked` naming the holder, and the holder here is this daemon. `daemon::state`'s header spends a paragraph on why a client told to "use wchc" by the `wchd` it is talking to is worse than a wait. |
+| A compare-and-set on the document | A real fix and a bigger one: `Session` carries no version, so this is a committed schema change plus a new refusal for a caller whose edit lost a race. It would also be the right answer for a *multi-process* future that D9 does not currently have. |
+| Nothing, with an argument | Available only if the interleaving were safe, and it is not: two of the verbs never touch an actor. |
+
+**The cost, stated rather than discovered.** `wch_calibrate_sweep` holds the mutex for the
+whole sweep — minutes of camera time — so a `wch_calibrate_select` against an *unrelated*
+session waits for it. That is a coarser lock than the problem needs (per session, or a
+compare-and-set, would both be finer), and it is the same coarseness `wch` has, arrived at
+differently: `InProcess::calibrate_sweep` runs the whole sweep inside `store.with_lock`, so
+a concurrent `wch` is refused for the same duration. The bound is the sweep's own
+(`limits::MAX_SWEEP_SAMPLES`) plus the client's request timeout, which the T5 method's doc
+already tells a client to raise or disable.
+
+**The test, and what it does and does not claim.**
+`a_queue_edit_cannot_interleave_with_a_sweep_that_is_rewriting_the_same_session` runs a real
+sweep through a backend decorator that gates every `Camera::set`, so "the sweep is inside a
+write, with its pre-sweep snapshot already on disk" is an observation rather than a duration.
+It fires the reorder there, lets exactly one write through, waits for the next — a whole
+sample, including the commit that publishes the document — and asserts the reorder has *not*
+completed, then that both changes survive.
+
+The green direction is certain: the mutex makes `is_finished()` false, rather than the
+scheduler happening not to get to it. The red direction is **measured, not guaranteed** —
+replacing the guard with a bare `Arc::clone` of the token turns the run red on the first
+assertion, which is how it was checked. The gate is armed only after `calibrate_start`,
+because that verb's probe writes to the camera too and gating it would hold the setup rather
+than the sweep.
+
+**Retires when:** the session document carries a version and the store does a compare-and-set,
+at which point the exclusion can narrow to one session and the refusal for a lost race
+becomes representable. Nothing in docs/7 schedules that; this entry is the record that the
+coarse answer was chosen on purpose.
+
+---
+
+## N48 — `terminate_holder` reuses the V4L2 backend's `/proc` walk, and its `kill(2)` lives beside it
+
+**Doc:** AGENTS.md — "Killing a process that holds the camera is an explicit command naming
+its target, never a fallback." Design §5 — "terminating a holder is the distinct explicit
+`terminate-holder` command (D10), which names both the camera and the pid, refuses if the
+pid no longer holds the device, and is never a fallback behavior of anything else." D13
+gives it `HolderGone { pid }`; `schema::report::TerminationReport` and the one-member
+`TerminationSignal` give it an answer shape. What no document says is **where the code
+lives**, and P4c had to answer that twice: for the diagnosis and for the signal.
+
+**The diagnosis.** It exists once, as `webcam-handler-v4l2::holders::of` — the `/proc/*/fd`
+walk that lets an `Error::Busy` refusal name the process instead of describing the problem.
+P4c promoted the module to `pub` and the daemon calls it by name. The alternatives:
+
+| Candidate | Why it lost |
+|---|---|
+| **Promote `v4l2::holders` to `pub` (chosen)** | Smallest diff, no new dependency edge — `wchd` already links the V4L2 backend at its composition root — and the walk stays in one place. The cost is a layering statement: the daemon reaches past `CameraBackend` for a fact that is about the *host* rather than about a camera, and the module's own header now says so. |
+| Move the walk into `webcam-handler-engine` | Cleanest layering on paper — a `/proc` walk is not V4L2 — but it inverts an existing edge: `crates/backends/v4l2` does not depend on `crates/engine`, and adding that is a §2.8 decision with a dependency-wall diff, for a module whose only two callers are a `Busy` refusal and this verb. |
+| Widen T1 with a holder method | Makes a `/proc` concept part of the backend contract every backend must implement, including the fake — and a `FakeBackend` that invented a holder would be "a fake capability no real device exhibits", which AGENTS calls a bug in the fake. T1/T2 are also on the settled list. |
+| A daemon-local walk | The third copy in the workspace, and the one with no argument behind it. Note N8 already spends the deliberate-duplication budget on `wch-priv::modules::video_holders`, which answers a *different* question ("is any camera in use") and is not merged because merging would drag the product's crate graph inside a root-capable boundary. |
+
+**The signal.** Nothing in this workspace sends one, `kill(2)` has no safe `std` wrapper
+(`std::process::Child::kill` signals a process this one forked, which a camera's holder is
+not), and running `/bin/kill` is banned (design §1: no runtime external binaries). So it is
+`unsafe { libc::kill(pid, SIGTERM) }` in a new `crates/backends/v4l2/src/sys/signal.rs` —
+the one directory in the workspace where `scripts/gates/unsafe-scope.sh` permits the token,
+and the one already holding the other half of this verb. The alternative was a permissive
+syscall crate (`rustix`, Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; `nix`, MIT),
+which would have put the code where it belongs at the price of a §2.8 registry entry, a
+`deny.toml` row, a pin, and a transitive tree — for **two** calls. The smell that signalling
+is not V4L2 is real and is answered the same way `holders`' own header answers it: the walk
+is not V4L2 either, diagnosis and the one action available on a diagnosis belong together,
+and splitting them would put the two halves of one verb in two crates.
+
+**The `unsafe` block's obligation is thin, and it is stated thinly.** `kill(2)` takes two
+integers by value and returns an integer: no pointer, no borrow, no allocation. The whole of
+the obligation is that the kernel is willing to interpret both arguments, which it is — it
+answers `ESRCH`/`EINVAL`/`EPERM` rather than misbehaving. The one interpretation that is a
+*hazard* rather than an error is refused above the block: `kill(2)` reads `0` as every
+process in the caller's process group, `-1` as every process this uid may signal, and
+anything below that as a process group, so a non-positive pid off a socket would turn "an
+explicit command naming its target" into a way to kill everything the daemon can reach.
+`a_pid_that_is_not_one_process_is_refused_before_the_syscall` is that arm.
+
+**The safety properties, and where each one is enforced.**
+
+1. **Naming, not searching.** The request carries `{camera, pid}`; nothing chooses a victim,
+   widens to a process group, or picks "the first holder". `holders` has no
+   "signal the holders of this node" function, because that is the shape a fallback takes.
+2. **Never a fallback.** No other method signals anything when it meets `Error::Busy`.
+   Asserted twice, because a test can only witness the verbs it drives:
+   `four_verbs_that_want_the_device_meet_a_busy_one_without_signalling_anything` refuses
+   `Busy` through four verbs on a camera whose node a child process holds and finds the child
+   alive afterwards — four of eighteen, and its name now says so — while
+   `scripts/gates/kill-is-never-a-fallback.sh` makes the claim over the whole tree: the
+   signal has one home in the backend and exactly one caller outside it. The P4c review is
+   why the second exists; a `Busy` retry added to `wch_photo` would have left the first green.
+3. **Verified holding, immediately before the signal.** `holders::holds(pid, node)` and the
+   `kill` are the two statements of one blocking closure, with no `await` between them.
+4. **One signal, chosen by the product.** `SIGTERM` only, from a closed one-member
+   vocabulary; `SIGKILL` is not representable and no wire field could ask for it.
+5. **Never this daemon.** A camera this daemon has open is a camera this daemon holds, so on
+   real hardware its own pid *is* in the walk. `daemon::server::not_this_daemon` refuses it
+   with `IllegalTransition` — not `HolderGone`, which would be a lie, and not
+   `PermissionDenied`, which would send an operator looking for a privilege problem. The
+   other end of the sentence is already in `engine::actor`, whose own `Busy` refusals carry
+   an empty holder list so a client never reads the pid out of an answer.
+6. **Under-reporting refuses rather than guesses — but the *cap* must not be what refuses.**
+   The walk sees only what this uid may see, so a pid that genuinely holds the node can be
+   invisible, and the answer is then `HolderGone`: that occasionally refuses a kill somebody
+   was entitled to, and it is the correct direction, because the alternative is signalling on
+   the strength of a walk that did not see the target. What the P4c review found is that the
+   first implementation ran the same argument off the *bounded* list as well: `holders::of`
+   stops at `limits::MAX_HOLDERS_REPORTED` so that a `Busy` refusal stays readable, and the
+   handler looked the pid up in that list before signalling. A browser holds one node from
+   several processes and `/proc`'s iteration order is not stable, so the fifth holder of
+   `/dev/video0` was answered `HolderGone { pid }` — false, and with no pid a caller could
+   name to free the camera, which is the verb at its least usable in the one situation it
+   exists for. `holders::holds`'s own doc had described the opposite arrangement since it was
+   written ("a pid past `limits::MAX_HOLDERS_REPORTED` in the walk's order is one the walk
+   would not mention and this still finds"), so the name and the call graph disagreed —
+   rubric A11. The gate is now `holders::holder(pid, node)`, the per-pid question, which is
+   *stronger* evidence than membership in a truncated walk rather than weaker; `of` attaches
+   nothing to this verb any more. `a_holder_past_the_reporting_cap_can_still_be_named_and_signalled`
+   forks `MAX_HOLDERS_REPORTED + 1` holders, picks the one the walk did not mention, and
+   asserts it is signalled and the others are not.
+7. **Requested is not applied.** `still_held: true` is a success answer. Nothing escalates on
+   it — no second signal, no `SIGKILL`, no retry loop.
+8. **`EPERM` stays `PermissionDenied`.** A process this uid may not signal is an availability
+   answer, and converting it into "the process is gone" is exactly the conversion E3 and
+   AGENTS rule 7 forbid. `ESRCH` *is* `HolderGone`, because that is the pid-reuse race
+   landing where the caller already has to handle it.
+
+**The race that remains, and what bounds it.** Between the re-verification and `kill(2)` the
+holder can exit, be reaped, and have its pid recycled onto an unrelated process. This cannot
+be closed from user space without `pidfd_open(2)` + `pidfd_send_signal(2)`, which signal a
+*process* rather than a number and which need a syscall wrapper this workspace does not
+link. Four things bound it, and the method's doc says all four rather than claiming it away:
+Linux recycles pids in increasing order up to `pid_max` (2^22 on a modern default), so the
+window is "enough processes forked to wrap the counter" rather than "the next fork"; the
+re-verification narrows it from a whole request — an enumeration and an ioctl per node — to a
+few instructions; `SIGTERM` asks rather than compels, so a wrongly addressed one is
+survivable for a process that handles it; and the caller named the number.
+
+**`still_held` is the one place this daemon waits to learn something.** `kill(2)` returns
+when the signal is queued, so an immediate re-walk would report almost every process that is
+about to exit as still holding the camera — and a field that is nearly always `true` is a
+field nobody reads, which defeats the reason it exists. A process this one did not fork
+leaves no event a Unix process can wait on, so the mechanism is a bounded poll:
+`limits::TERMINATE_RECHECK_MS` of budget spent `limits::TERMINATE_RECHECK_POLL_MS` at a
+time, ending the moment the fact changes. It is about the **node**, not about the pid, which
+is what the field says — so a camera this daemon has open reports `still_held: true` until
+D12's idle close lets go of it.
+
+**The rule this is measured against is AGENTS' "no `sleep` as synchronization, anywhere",**
+and the distinction it turns on is what the waiting is *for*. The banned shape waits for
+work this process controls — a settle, a deadline, a reply — and every one of those runs on
+a caller-supplied `now_ms` or a paused clock, which is why nothing else in this workspace
+waits. Here the fact belongs to a process this one did not start and cannot observe, and the
+answer being waited for is a **field on the response** rather than a step in a protocol: the
+poll is the measurement, not the coordination. Two things keep it from being the banned
+shape wearing an argument — it is bounded by a `limits` constant with the number's reasoning
+beside it, and it ends on the fact rather than on the clock, so the ordinary cost is one
+interval. **`still_held: false` says "nothing this uid can see holds it", which is as far as
+`/proc` goes** — the same under-reporting point 6 is about, from the reporting side rather
+than the signalling side. The conservative reading is not available here and the asymmetry is
+deliberate: a walk of a node nobody holds is *also* empty, so answering `true` on an empty
+walk would make the field constant, which is the failure `TERMINATE_RECHECK_MS` exists to
+prevent. Point 6 takes the conservative direction because its answer decides an *action*;
+this one describes one.
+
+**Which arm the wait's duration is safe for, corrected.** This entry used to say "the test
+does not depend on the wait's duration for anything", which is true of the `still_held: true`
+arm and was false of the other: over a socket, `false` requires the forked child to have
+received `SIGTERM` and left `/proc/<pid>/fd` inside `TERMINATE_RECHECK_MS` of **wall** clock,
+which on a loaded runner is a race and would have been the one duration-dependent assertion
+in a workspace whose rule is that nothing synchronises on a sleep. The P4c review found it
+and the integration suite no longer makes it. Both directions are pinned where the clock is
+an argument instead — `daemon::server`'s
+`a_still_held_answer_is_immediate_when_nothing_holds_the_node_and_bounded_when_something_does`
+runs on a paused clock and asserts the *exact* elapsed reading: zero for a node nobody holds,
+`TERMINATE_RECHECK_MS` for one this process holds throughout, and zero again once it lets go.
+The `true` direction over the wire stays, because a second holder the suite owns and holds
+open for the whole call is arranged rather than raced.
+
+**The walk count the constant states.** `TERMINATE_RECHECK_POLL_MS`'s doc prices the work
+against a large process table, and it said "ten walks" while the loop performed eleven — one
+immediately and one after each of the ten waits the budget buys. Off by one in the one number
+a reader would use, which is rubric B11's class. The loop now runs `recheck_walks()` times,
+that function is where the arithmetic lives, and
+`the_walks_one_still_held_answer_costs_are_the_number_the_constant_states` asserts it against
+both constants so the sentence cannot drift again.
+
+**How it is tested without signalling a stranger.** The fake replays real-looking node paths,
+and on a developer's laptop `/dev/video0` is a path a real program may hold — so the suite
+doctors one field of the committed profile and points the capture node at a file inside its
+own throw-away directory. The holder is a child process the test forks and is willing to
+lose (`crates/engine/tests/crash_recovery.rs`'s construction, announcing on a pipe and
+blocking on another, so nothing sleeps). The `HolderGone` direction is asserted against **the
+test process's own pid** — alive, signallable, and not a holder — which is the only pid it
+is safe to be wrong about: a build that signalled it would take the runner down loudly rather
+than pass quietly. `still_held: true` is arranged by a second holder the test owns, itself,
+rather than by a child that ignores `SIGTERM`, because setting a signal disposition needs
+`unsafe` that no test in this workspace may write.
+
+**Not landed, and named so the absence is counted.** `terminate_holder` has **no T4 verb**.
+`schema::report`'s own header already says the answer type belongs to a verb "whose verb has
+no command-line spelling yet", which is why it is in the OpenRPC document rather than the
+JSON Schema bundle. Adding one would move `json-validates.sh`'s population (derived from
+`wch --help`) and P4f's parity population, and docs/7 P4c's list is a wire list. So the
+method is reachable only by a client that speaks raw JSON-RPC until somebody schedules the
+CLI spelling.
+
+**Retires when:** never as a rule. The `unsafe` block retires if this workspace ever adopts a
+permissive syscall crate for another reason, at which point `sys/signal.rs` becomes a
+two-line forward and `holders` can move to the engine in the same diff.
+
+---
+
+## N49 — The method-count walk drives the surface itself, because a shared test module has to be used in full by every binary that includes it
+
+**Doc:** docs/9 Part 2's **T5 method-count walk** row (P4c): "the registered `RpcModule`'s
+`method_names()` … compared against the integration-test inventory; derived from the running
+registration, never a hand list", failing on "a wire method with no test". Rubric B6 says the
+same from the review side, and docs/7 P4c adds "Every method exercised over the fake". Note
+**N28** fixes the population: "a registered *daemon* module compared against the
+integration-test inventory … a different claim over a different population from 'the emitted
+document describes the trait'".
+
+**What landed.** `crates/daemon/tests/method_surface.rs`. The registered side is
+`method_names()` off the `Methods` value the fixture serves, built by the generated
+`into_rpc()` over a real `Wchd`. The exercised side is recorded at the transport: a
+`Recording` wrapper around the shared `Wire` writes down the method name the **generated
+client** handed it, on the way past, whether the call is answered or refused. Neither side
+is a list. What is unavoidably written by hand is the *sequence of calls* — a Rust trait does
+not reify its methods, so nothing can walk one and invent arguments for it — and that
+sequence is exactly what the comparison protects: a twentieth method nobody calls leaves the
+recorded set one short.
+
+**The alternative, and why it lost.** The stronger shape is for the census to drive the
+*behavioural* suites' own exercise functions (`read_verbs::read_verbs`,
+`mutating_verbs::mutating_verbs`, `calibrate_verbs::calibrate_through`), so that "exercised"
+means "reached by a call whose answer somebody asserts" rather than "reached by a call". It
+lost to a mechanical fact, measured rather than assumed:
+
+> `crates/daemon/tests/support/*.rs` are `#[path]`-included, so every binary that includes
+> one compiles **all** of it, and `dead_code` is per item per binary — down to individual
+> struct fields. Measured on this toolchain: a `PartialEq` derive counts as a field read and
+> a `Debug` derive explicitly does not ("`Deb` has a derived impl for the trait `Debug`, but
+> this is intentionally ignored during dead code analysis"). `#[expect(dead_code, reason=…)]`
+> cannot paper over it either, because the expectation would be *unfulfilled* in the binaries
+> that do use the item, which is itself an error.
+
+So a shared driver module must be used in full — every function, every field — by each of
+the four binaries that includes it. Moving the three drivers there would have forced the
+census to consume every helper the three suites own (`Targets::read_only`, `Refusals`,
+`Shape`, the fingerprint walk) or forced those suites to be restructured around it, which is
+a large diff in three carefully-argued files to buy a property the shared *fixture* already
+buys most of. The rule bit twice earlier in P4c — it is why `Ask` no longer carries session
+references, and why `terminate_holder`'s tests live in `mutating_verbs.rs` rather than in a
+binary of their own — and this entry is where it is written down.
+
+**The cost, stated rather than discovered.** The walk counts calls, not depth: a twentieth
+method could be landed with a census call, a shallow assertion and no behavioural test. Three
+things push back and none of them is a proof.
+
+1. The census's answer record has **one field per method** and every field is read by an
+   assertion, so an answer nobody looked at is `dead_code` and does not build. That makes
+   "call it and ignore it" a compile failure rather than a review finding.
+2. `discriminating_refusals` asks the same client for three things that are not there and
+   requires three *different* typed refusals, so a fixture that had degraded into refusing
+   everything cannot keep the count green.
+3. The behavioural depth has its own `g4` rows — `binary(read_verbs)`,
+   `binary(mutating_verbs)`, `binary(calibrate_verbs)` — so "this verb has a test" is a
+   claim with a second reader.
+
+The four limits go in docs/9's gaps register beside the struck row, because that is where
+this suite records what a green does not mean.
+
+**Measured red, both directions the row names.** A twentieth method added to the trait and
+implemented on `Wchd` but not driven fails the comparison naming it
+(`… "wch_snapshot", "wch_terminate_holder", "wch_twentieth"` against a set of nineteen). A
+daemon whose registration is missing a method the suite drives fails *earlier* — at the
+call, as `Call(ErrorObject { code: MethodNotFound })` — because an unregistered method
+answers `-32601` rather than an answer, which is why the assertion's second direction is a
+sentence about what the equality means rather than a failure anybody will read.
+
+**Retires when:** never as a rule; the walk is the row. It is amended if the four limits
+change — in particular if P4e's subscriptions land, because a `#[subscription]` registers
+*two* names and a subscription nothing can drive is exactly what this row fails (note N29
+says so).
+
+**One arm removed by the P4c review, and it is worth recording why.** The walk shipped with a
+loop under the equality that dropped each registered name from the recorded set in turn and
+asserted the shortened set differed — sold, in the gate row, as "the comparison proven able to
+go red by dropping each registered name from it in turn". It could not fail for any input:
+after `assert_eq!(exercised, registered)` the two sets *are* one set, so removing a member
+always succeeds and a proper subset is never equal to its superset. A tautology under a
+comparison is worse than no arm at all, because it reads as a second guard and a later edit
+that weakened the comparison would leave it green. The equality is the row, its red-ness was
+demonstrated by deleting a call from `every_method` and watching it name the missing method,
+and the non-vacuity that loop was reaching for is now the assertion that the registered set
+has nineteen members — the number `crates/api` pins the trait at.
+
+---
+
+## N50 — `CameraId` deserializes through its constructor, because the empty string is a prefix of every camera
+
+**Doc:** D1 makes camera resolution a **prefix** match — "`cam:obsbot` for
+`cam:obsbot-tiny-3`" — and says an ambiguous prefix names its candidates rather than choosing
+one. The P4a methods contract recorded the hole as **D-4** and docs/7 carried it as a standing
+debt: `CameraId` and `ControlSlug` are `#[serde(transparent)]` newtypes whose derived
+`Deserialize` accepts `""` while `parse`/`from_slug` refuse it — "on a command line
+`CameraArg::id()` catches it, off a socket nothing does".
+
+**Repo, before this.** `schema::camera::resolve_prefix(ids, "")` finds no exact match and then
+keeps every id, because every string starts with the empty one. On a **two**-camera host that
+is `CameraAmbiguous`; on the single-webcam laptop that is this product's ordinary deployment
+it is `PrefixMatch::Unique` — the emptiest possible prefix *chooses*, which is the one thing
+D1 says a prefix may not do. P4c is the commit that put it on `wch_set`, `wch_photo`,
+`wch_terminate_holder`, `wch_profile_capture` and the eight `calibrate_*` verbs, i.e. on every
+path that writes to a camera or opens a session against one.
+
+**Why it landed here rather than staying deferred, which is a correction to docs/7.** The
+standing debt bundled this with `PixelFormat`'s wire spelling and deferred both with one
+reason: "each moves a committed bundle, so each wants its own commit and a gate diff rather
+than a ride-along". That is true of `PixelFormat` and **false of this half**, which the P4c
+review noticed and which is cheap to disprove rather than argue: `Deserialize` and
+`JsonSchema` are separate derives over the same attributes, so replacing the derived one with
+a hand impl changes which strings are *accepted* and not what the type *emits*.
+`./scripts/gates/schema-artifacts-current.sh` is green with both committed artifacts
+byte-identical, which is the disproof.
+
+One thing had to move to keep that true, and it is worth knowing: `schemars` publishes a
+type's doc comment as the `description` of its node in the bundle, so the paragraph arguing
+this belongs on the `impl` and not on `CameraId`. Writing it above the struct moved
+`schemas/webcam-handler-schema.json` and the gate said so immediately.
+
+**What did not land, deliberately.** `ControlSlug`'s empty case is left as it is. docs/7 calls
+it honest and it is: an empty slug lands on `ControlUnknown`, which names the control the
+caller did not give and suggests the ones this camera has. Nothing chooses on its behalf,
+which is the whole of what made the `CameraId` half a defect.
+
+**The tests, both directions.**
+`schema::camera::an_empty_camera_id_is_refused_off_the_wire_rather_than_matching_every_camera`
+asserts the wildcard it is about *first* — `resolve_prefix(&ids, "")` really is `Unique` on a
+one-camera host — then the refusal, then the two spellings a real client sends and a
+round-trip, both derived from the assigned id rather than written down.
+`daemon::mutating_verbs::an_empty_camera_id_is_refused_rather_than_naming_the_only_camera`
+sends `{"camera": ""}` as **raw JSON over the socket**, because the generated client takes a
+typed `CameraId` and cannot produce the request the defect is about — which is the defect, in
+one sentence — and asserts `-32602` from three methods with `FakeBackend::opens()` still zero.
+Both go red against the derived impl.
+
+**Retires when:** now for this half. docs/7's standing debt keeps the `PixelFormat` row with
+the reason that actually applies to it.
+
+---
+
+## N51 — A photo's `ServerPath` must name a regular file, because `std::fs::write` blocks on a fifo inside the actor's one thread
+
+**Doc:** the T5 trait's `wch_photo` states the posture and it is settled: "A `ServerPath` sink
+is a write primitive: any client that can call this can write a file anywhere the daemon's uid
+can. That is deliberate and it is exactly what D11's authentication model covers." AGENTS is
+equally settled about the other side: "Camera frames never enter the repository, logs, or
+error messages", and "Bounded everything".
+
+**Repo, before this.** `engine::photo::write_photo` is `std::fs::write(path, bytes)`, which
+opens with `O_WRONLY|O_CREAT|O_TRUNC` and no `O_NONBLOCK`. On a fifo that `open` blocks until
+a reader appears. `daemon::server::addressable` asked whether the path was absolute and whether
+its extension named an encoding this build writes; neither question is *what the path is*. So
+P4c re-checked the extension a socket can send and did not re-check the **type of file** a
+socket can name — which is debt D-1's own shape one layer down.
+
+**What that costs, measured rather than argued.** The write runs inside the closure
+`Wchd::on_camera_with_state` hands to the camera's actor thread, and nothing bounds a submitted
+command: `CameraActor::submit` is a `try_send` and the daemon awaits the oneshot with no
+timeout. A blocked command leaves `Live::busy` raised, and `CameraActor::sweep` reads `busy`
+first, so D12's idle close can never fire either. One `mkfifo /tmp/x.jpg` and one `wch_photo`
+therefore park that camera's thread for the life of the process: the request never answers,
+the next `CAMERA_COMMAND_QUEUE_DEPTH` requests queue and every one after that is `Busy`
+forever, the descriptor is held open, and the operator's webcam is unusable by any other
+application until `wchd` is restarted. Reproduced by disabling the check and running the new
+test, which does not return.
+
+The second shape is quieter and worse: `/dev/stdout` is an absolute path ending in nothing a
+`PhotoFormat` refuses, and under systemd it is the journal. A camera frame in the logs is not
+a bound this project trades away.
+
+**The refusal, and where it lives.** `addressable` grew a third rule: a `ServerPath` whose
+existing target is not a regular file is `Error::IllegalTransition`, naming the path and what
+it is. `IllegalTransition` for note N46's reason — it is the request naming a destination this
+build will not write, in the same family as the other two sink refusals — even though it is the
+one that does stat a path. It follows symlinks (`metadata`, not `symlink_metadata`), because a
+symlink to a regular file is an ordinary destination and it is the *target* that decides
+whether the write blocks; that reading is also what refuses `/dev/stdout`. A path that does not
+exist is fine: `std::fs::write` creates a regular file, which is the case the rule protects.
+Because it stats, the handler runs it on the blocking pool rather than on a runtime worker —
+a `stat` is fast until the path is on a hung mount.
+
+**Where it does *not* live, and why.** Not in `engine::photo`. `write_photo`'s own doc argues
+that a temp-file-plus-rename would "silently break the case where that path is a fifo or
+`/dev/stdout`", and for `wch` that is a real feature: a person typed the path, and Ctrl-C
+exists. What changed is the caller, not the engine — the daemon has no Ctrl-C, no timeout on a
+submitted command, and a journal. So the rule is the *transport's*, beside the other two rules
+only a socket can break, and `wch photo -o /dev/stdout` is untouched.
+
+**What is left, and who owns it.** The check is a `stat` followed by an `open`, so a client
+that replaces the path between them wins a race and still parks the thread. Closing that needs
+the `open` itself to be non-blocking — `O_NONBLOCK` through `OpenOptionsExt::custom_flags`
+plus an `fstat` on the descriptor — and the flag's numeric value is not the same on every
+Linux architecture, so getting it honestly means a `libc` edge in a crate that has none or a
+constant this project would be guessing. It is **P4e's**, with the bound on a submitted
+command that N42 already deferred there: "an enqueue that waits with a bound where
+`CameraActor::submit` has only a `try_send`" is the same missing mechanism, and an actor
+command that cannot outlive a deadline makes the residual race a refusal rather than a wedge.
+docs/7's standing debts carry it.
+
+**The test.** `a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_is_touched`
+sends a photo to a fifo (made with `mkfifo(1)`, because this crate is
+`#![forbid(unsafe_code)]` and `libc` is confined to the V4L2 backend) and to a directory,
+asserts the typed refusal names both the path and what it is, asserts `FakeBackend::opens()`
+is still zero, and then takes a photo to a real path through the same camera — which is the
+assertion the wedge would break, and the line a blocked build never reaches.
+
+**Retires when:** P4e bounds an actor command; this entry then records the layered answer
+rather than a whole one.

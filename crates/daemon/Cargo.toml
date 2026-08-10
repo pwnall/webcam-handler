@@ -55,6 +55,11 @@ tracing.workspace = true
 # `env-filter` so an operator can raise the level with `RUST_LOG` on a process that is
 # meant to keep running; design §2.6's journald layer waits for the systemd work (P4e).
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# A session's identity is a UUIDv7 the *caller* mints: the engine reads no clock, so the
+# composition root is where "now" enters (design D9). Promoted from a dev-dependency when
+# P4c routed `wch_calibrate_start`, which is the same reason `crates/cli` carries it — the
+# two roots that can open a session are the two that mint an id.
+uuid.workspace = true
 webcam-handler-api.workspace = true
 webcam-handler-engine.workspace = true
 webcam-handler-fake.workspace = true
@@ -77,6 +82,5 @@ serde_json.workspace = true
 # advancing a paused clock is how a test talks about a deadline without waiting for one —
 # the same doctrine `engine::settle`'s stepped clock states, applied to the runtime's own.
 tokio = { workspace = true, features = ["io-util", "test-util"] }
-uuid.workspace = true
 webcam-handler-testkit.workspace = true
 

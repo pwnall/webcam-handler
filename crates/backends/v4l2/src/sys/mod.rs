@@ -29,7 +29,7 @@
 //!
 //! ## The residual `unsafe`, counted
 //!
-//! Nine blocks and one `unsafe impl`, one obligation each
+//! Ten blocks and one `unsafe impl`, one obligation each
 //! (`clippy::multiple_unsafe_ops_per_block` is denied, so that is enforced rather than
 //! claimed):
 //!
@@ -45,6 +45,7 @@
 //! | `mmap::Mapping::drop` | the address and length are the ones `mmap` returned, unmapped once |
 //! | `unsafe impl Send for mmap::Mapping` | the region is owned exclusively and is not thread-affine |
 //! | `wait::readable` | one live `pollfd`, and a count of one to match |
+//! | [`signal::term`] | two integers by value: the whole obligation is that the pid names one process, which is refused above the block |
 //!
 //! Two movements worth recording. P2's **write** path added two ioctls and *removed* a
 //! block: reads and writes of an `ext_ctrls` header carry the identical obligation, so
@@ -63,6 +64,9 @@ pub(crate) mod fields;
 pub(crate) mod ioctl;
 pub(crate) mod mmap;
 pub(crate) mod payload;
+/// `kill(2)`, which is not V4L2 and is here because this is the only directory in the
+/// workspace where the token `unsafe` is allowed. Its own header carries the argument.
+pub(crate) mod signal;
 pub(crate) mod wait;
 
 use std::os::raw::c_int;

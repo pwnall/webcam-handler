@@ -148,6 +148,25 @@ pub fn read(path: &camino::Utf8Path) -> Result<DeviceProfile> {
         .map_err(|error| unreadable(format!("is not a device profile: {error}")))
 }
 
+/// `uname -r`, for a [`CaptureContext`]'s provenance.
+///
+/// Read from `/proc/sys/kernel/osrelease` rather than by running `uname`: design §1 bans
+/// runtime external binaries, and this is one line of a pseudo-file. A host without
+/// `/proc` records the absence rather than a guess.
+///
+/// It lives beside the field it fills rather than in a composition root, because P4c gave
+/// it a second one: `wch profile capture` and `wchd`'s `wch_profile_capture` write the same
+/// document, and two readings of one host fact could disagree about what `"(unknown)"`
+/// means. It is *not* part of [`CaptureContext`]'s construction, because the rest of that
+/// value — the clock, the tool version, who asked — is the caller's to supply and this is
+/// the only field a host can answer for itself.
+#[must_use]
+pub fn kernel_release() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .map(|text| text.trim().to_owned())
+        .unwrap_or_else(|_| "(unknown)".to_owned())
+}
+
 /// Only the field that decides whether the rest may be read.
 ///
 /// The same probe `crate::store` uses on a session document, spelled again rather than
@@ -434,5 +453,19 @@ mod tests {
         let profile = capture(&mut stub(Vec::new()), &fake_context).expect("captures");
         assert_eq!(profile.provenance.backend, BackendKind::Fake);
         assert_eq!(profile.schema_version, limits::PROFILE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn the_kernel_release_is_read_without_running_a_program() {
+        // Design §1: no runtime external binaries. On this host the file is there; on a
+        // host without /proc the absence is recorded rather than guessed at. The test
+        // moved here with the function, from `crates/cli`'s binary, when P4c gave the
+        // provenance field a second author.
+        let release = kernel_release();
+        assert!(!release.is_empty());
+        if std::path::Path::new("/proc/sys/kernel/osrelease").exists() {
+            assert_ne!(release, "(unknown)");
+            assert!(!release.contains('\n'), "{release:?} was not trimmed");
+        }
     }
 }

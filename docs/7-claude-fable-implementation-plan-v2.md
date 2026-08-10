@@ -37,17 +37,20 @@ exist because of it.
 
 **Standing debts carried into this plan**, each already recorded where it arose:
 
-- `Error::Unimplemented` has two pinned producer surfaces, not one. `webcam-handler-v4l2::unimplemented_surface()`
-  has its last row (`CameraBackend::watch`), and P4b added thirteen more in
-  `daemon::server::unrouted()` — the methods the T5 trait forces the daemon to register
-  before P4c routes them. That is N6's mechanism instantiated a second time and recorded
-  as such (N43): the list is derived from `api::METHODS` minus the routed six, its size and
-  contents are pinned, and P4c cannot land without emptying it. P4d still deletes the
-  variant (N6's scheduled death), and by then both surfaces are empty.
-- The camera actor's idle deadline is stamped when a command *starts*, so the first verb
-  that can run longer than the timeout is followed by an immediate idle close; P4c lands
-  that verb (`calibrate sweep`) and owns the fix, whose two possible shapes and their costs
-  are in N45.
+- ~~`Error::Unimplemented` has two pinned producer surfaces, not one.~~ **Discharged at
+  P4c.** `webcam-handler-v4l2::unimplemented_surface()` still has its last row
+  (`CameraBackend::watch`); the thirteen P4b added in `daemon::server::unrouted()` are gone
+  with the map, the producer and the phase constant, because P4c routed the whole surface.
+  N43 records what replaced the assertion: while a method could be unrouted the claim was a
+  *partition* over `api::METHODS`, and it is now the equality — the pinned routing list *is*
+  `api::METHODS`, so a twentieth method still cannot land unrouted and unremarked. P4d
+  deletes the variant (N6's scheduled death) with one surface left to empty rather than two.
+- ~~The camera actor's idle deadline is stamped when a command *starts*.~~ **Discharged at
+  P4c**, by N45's clock-free shape: the actor declines the first idle pass after a command
+  completes, which costs one sweep cadence and needs no clock — the other shape would have
+  reversed N41 and needed a `SteppedClock` that is deliberately not `Sync`, making the fix
+  untestable without a wait. Both directions have a test, and `CAMERA_IDLE_CLOSE_MS`'s doc
+  carries the one-cadence overshoot beside the number it prices.
 - The daemon's socket directory is checked as an inode rather than a name (symlink refused,
   base verified, `(st_dev, st_ino)` re-checked before the bind), but the last window —
   holding the directory as a *descriptor* and binding relative to it, which is also what
@@ -56,6 +59,49 @@ exist because of it.
   unprivileged-bind measurement (N39, N8).
 - `CAP_NET_ADMIN` was granted on an unverified prediction; P4d measures whether the
   uevent bind needs it (§8 item 10) and G6 consumes the answer.
+- D12's `wait` flag — "a second capture request queues or is refused with `Busy` per its
+  `wait` flag" — is **re-deferred from P4c to P4e**, with its reason recorded (N42). P4c
+  routes the capture verb, so the half of D12 that exists is reachable over the wire and
+  asserted there: two photos in flight against one camera reach one actor, share one
+  descriptor, and stream sequentially, and a caller past
+  `limits::CAMERA_COMMAND_QUEUE_DEPTH` is refused. The flag that chooses between the two is
+  three changes wearing one name — a field on a committed wire shape (nothing in the schema
+  is called `wait`, so both bundles move), an enqueue that waits with a bound where
+  `CameraActor::submit` has only a `try_send`, and a command-line spelling or an argued
+  absence of one. P4e already owns the concurrency semantics of a client that goes away
+  mid-operation, which is the same question from the other end, and P4c's own "Lands"
+  sentence never names the flag.
+- `terminate_holder` reached the wire at P4c with **no command-line spelling**, and the
+  absence is counted rather than assumed (N48). `schema::report`'s header had already put
+  `TerminationReport` in the OpenRPC document rather than the JSON Schema bundle for that
+  reason. A T4 verb would move two derived gate populations — `json-validates.sh`'s, scraped
+  from `wch --help`, and P4f's parity population — so until a sub-milestone wants the verb
+  the method is reachable only by a client that speaks raw JSON-RPC. Nothing here schedules
+  it.
+- ~~The empty `CameraId` a hand-written client can send is a wildcard on every method that
+  names a camera.~~ **Discharged at P4c** (note **N50**), and the reason it had been deferred
+  was wrong: this half was bundled with `PixelFormat`'s and both were put off because "each
+  moves a committed bundle". `Deserialize` and `JsonSchema` are separate derives, so routing
+  the first through `CameraId::parse` changes which strings are accepted and not what the type
+  emits — `./scripts/gates/schema-artifacts-current.sh` is green with both artifacts
+  byte-identical, which is the disproof rather than the argument. `ControlSlug`'s empty case
+  stays as it is and stays honest: it lands on `ControlUnknown`, and nothing chooses on the
+  caller's behalf.
+- `PixelFormat` crosses the wire as its four bytes where the CLI spells it `MJPG`, on `photo`
+  and `calibrate_sweep` both — raised against the T5 surface at P4a, reachable by a
+  hand-written client since P4c. The fix is a line, and this one really does move a committed
+  bundle: `serde` and `schemars` both describe the field, so the emitted JSON Schema and the
+  OpenRPC document change together. It wants its own commit and a gate diff rather than a
+  ride-along, and nothing here schedules it.
+- A `Sink::ServerPath` naming a **fifo** is refused by a `stat`, and a client that replaces the
+  path between the `stat` and the write still parks the camera's actor thread (note **N51**).
+  P4c closed the reachable shape — `mkfifo /tmp/x.jpg` plus one `wch_photo` used to wedge a
+  camera until `wchd` restarted, and `/dev/stdout` used to put a frame in the journal — and
+  the residual race needs the *open* to be non-blocking, whose flag has no portable spelling
+  reachable from a crate that does not link `libc`. **P4e** owns it, with the bound on a
+  submitted command that N42 already deferred there: `CameraActor::submit` has only a
+  `try_send` and nothing times an actor command out, which is the same missing mechanism, and
+  a command that cannot outlive a deadline turns the residual race into a refusal.
 - The `wch-priv` powers are broader than demonstrated need, time-boxed to the plan; P6e
   executes the narrowing ruling (N8).
 - ~~The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.~~

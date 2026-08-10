@@ -111,6 +111,25 @@ pub fn take(camera: &mut dyn Camera, pairs: &[AutomationPair], now: Stamp) -> Re
     })
 }
 
+/// Record every writable control, against the pair set **this device is in now**.
+///
+/// [`take`] takes the pair set as a parameter, because a calibration has one it computed
+/// for its own reasons. Every other caller composes the same two lines in front of it, and
+/// that composition is a rule rather than plumbing — which relationships a snapshot calls
+/// automation decides D4's restore *order*, so two copies of it are two opinions about what
+/// a camera's automation looks like. It had two authors as `wch snapshot` and `wch_snapshot`
+/// landed, which is what this exists to stop (AGENTS "One home per law").
+///
+/// `now` stays an argument, because the engine reads no clock.
+///
+/// # Errors
+///
+/// As [`take`].
+pub fn take_in_effect(camera: &mut dyn Camera, now: Stamp) -> Result<Snapshot> {
+    let pairs = pairing::in_effect(&camera.controls()?, Vec::new());
+    take(camera, &pairs, now)
+}
+
 /// Put a snapshot back (design D4).
 ///
 /// The report's outcomes are in the order the writes were *attempted*:
@@ -200,6 +219,22 @@ pub fn restore(
     }
 
     Ok(RestoreReport { outcomes })
+}
+
+/// Put a snapshot back, against the pair set **this device is in now**.
+///
+/// [`take_in_effect`]'s argument, from the other end of D4, and the reason it matters more
+/// here than there: the snapshot arrived from somewhere else — over a socket, out of a file
+/// a caller wrote — and a caller's document does not get to say what *this* camera's
+/// automation looks like. The pair set is read off the device at restore time, so the
+/// ordering D4 specifies is planned against the machine the writes are going to.
+///
+/// # Errors
+///
+/// As [`restore`].
+pub fn restore_in_effect(camera: &mut dyn Camera, snapshot: &Snapshot) -> Result<RestoreReport> {
+    let pairs = pairing::in_effect(&camera.controls()?, Vec::new());
+    restore(camera, &pairs, snapshot)
 }
 
 /// The slugs the device reports INACTIVE at this instant.

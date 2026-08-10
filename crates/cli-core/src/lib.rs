@@ -853,11 +853,13 @@ impl Command {
     ///
     /// # Errors
     ///
-    /// [`Error::IllegalTransition`] when the output path's extension names an encoding
-    /// this build does not write, naming both the extension and the three it does.
-    /// Refused here rather than downstream, and deliberately *not* as
-    /// `FormatUnsupported`: that variant is the camera saying what it cannot offer, and
-    /// `.webp` is not the camera's fault (E3).
+    /// [`Error::IllegalTransition`] from [`Sink::writable_format`] when the output path's
+    /// extension names an encoding this build does not write, naming both the extension
+    /// and the three it does. Raised *here* — while a command line is being parsed, before
+    /// anything opens a camera — but decided on the type, because `wchd` links no
+    /// `cli-core` and the same refusal has to hold for a sink a socket built (note N46,
+    /// debt D-1). Deliberately not `FormatUnsupported`: that variant is the camera saying
+    /// what it cannot offer, and `.webp` is not the camera's fault (E3).
     pub fn photo_request(&self, cwd: &camino::Utf8Path) -> Result<Option<PhotoRequest>> {
         let Command::Photo {
             out,
@@ -879,28 +881,15 @@ impl Command {
                 } else {
                     cwd.join(path)
                 };
-                if let Some(extension) = absolute.extension()
-                    && PhotoFormat::from_extension(extension).is_none()
-                {
-                    // Not `FormatUnsupported`: that variant is the *camera* saying what it
-                    // does not offer, and blaming a webcam for `.webp` is exactly the
-                    // availability-versus-capability confusion E3 exists to prevent. This
-                    // is a usage refusal, and it names both halves — the extension that
-                    // was typed and the three this build writes — because an error that
-                    // says neither leaves the caller to guess.
-                    return Err(Error::IllegalTransition {
-                        from: format!("unwritable_extension({extension})"),
-                        op: format!(
-                            "write a photo to {absolute}; this build writes {}",
-                            PhotoFormat::ALL
-                                .iter()
-                                .map(|f| format!(".{}", f.extension()))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    });
-                }
-                Sink::ServerPath { path: absolute }
+                let sink = Sink::ServerPath { path: absolute };
+                // Asked, not repeated. The refusal for an extension this build cannot
+                // write is `Sink`'s, beside the variants, so `wch photo -o a.webp` and a
+                // socket sending `{"kind":"server_path","path":"/tmp/a.webp"}` are refused
+                // by one rule with one message. What is local to this surface is only
+                // *when*: at parse time, before a camera is opened, which is why the answer
+                // it produces is discarded and the error is not.
+                sink.writable_format()?;
+                sink
             }
         };
 

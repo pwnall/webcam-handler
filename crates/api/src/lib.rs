@@ -258,7 +258,11 @@ wire_surface! {
         /// rather than resolve against its own working directory, which under systemd is `/`.
         /// That rule is not restated here as prose to be remembered: it is
         /// [`schema::capture::Sink::is_addressable`], beside the variants it constrains, and
-        /// the routing that lands at P4c calls it.
+        /// the routing that landed at P4c calls it — before it resolves a camera, so a sink
+        /// this server cannot address costs nobody a descriptor. Its sibling
+        /// [`schema::capture::Sink::writable_format`] is asked at the same moment and is the
+        /// reason a path named `.webp` is a refusal rather than JPEG bytes in a file whose
+        /// name says otherwise.
         ///
         /// A `ServerPath` sink is a write primitive: any client that can call this can write a
         /// file anywhere the daemon's uid can. That is deliberate and it is exactly what D11's
@@ -270,7 +274,12 @@ wire_surface! {
         ///
         /// As `wch_info`, plus [`schema::Error::SettleTimeout`] \[PF:11\],
         /// [`schema::Error::FormatUnsupported`] when the camera offers nothing that was asked
-        /// for, and [`schema::Error::StorageIo`] from the sink.
+        /// for, [`schema::Error::StorageIo`] from the sink, and
+        /// [`schema::Error::IllegalTransition`] for a sink this server will not honour at all
+        /// — a `ServerPath` that is not absolute, or one whose extension names an encoding
+        /// this build does not write, naming the three it does. Deliberately not
+        /// `FormatUnsupported`: the camera declined nothing, and `.webp` is not its fault
+        /// (E3, note N46).
         #[method(name = "photo")]
         async fn photo(
             &self,

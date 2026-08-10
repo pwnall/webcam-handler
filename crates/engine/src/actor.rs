@@ -66,8 +66,9 @@
 //! D12's other half — "a second capture request queues or is refused with `Busy` per its
 //! `wait` flag" — lands here as the mechanism only: the command queue *is* the queue, and
 //! a caller that arrives past [`limits::CAMERA_COMMAND_QUEUE_DEPTH`] is refused with
-//! [`Error::Busy`]. The `wait` flag that chooses between the two has no producer until a
-//! capture verb is routed, which is P4c's; note N42 is the obligation.
+//! [`Error::Busy`]. The flag that chooses between the two is **P4e's**: it needs an enqueue
+//! that waits with a bound, which [`CameraActor::submit`]'s `try_send` is not, and a wire
+//! field nothing in the schema carries. Note N42 records the re-deferral and its reasons.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,11 +146,14 @@ enum Command {
 /// for anything.
 ///
 /// The stamp is taken when a command **starts**, so `last_used_ms` means "when the last
-/// command was issued" and not "when the device was last touched". Nothing this build
-/// routes can take longer than the timeout, so the two readings are the same reading here;
-/// the first verb that can is P4c's `wch_calibrate_sweep`, after which a long command
-/// completes and is followed by an idle close within one cadence. Note **N45** carries the
-/// obligation, what a fix costs, and why it is P4c's rather than this sub-milestone's.
+/// command was issued" and not "when the device was last touched" — the actor reads no
+/// clock, so "when did the work finish" is not a number it has. For a command longer than
+/// the timeout, which is what `wch_calibrate_sweep` is, that would mean the camera is idle
+/// by its own deadline the instant the command returns and the descriptor goes away on the
+/// next pass. What closes that is not here and is not arithmetic: `Live::used_since_sweep`
+/// makes the *first* pass after a completed command decline, which costs one sweep cadence
+/// and needs no clock. Note **N45** carries the two shapes that were priced and why this is
+/// the one that landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Idle {
     /// How long unused is long enough.
@@ -232,6 +236,35 @@ struct Live {
     /// [`Cameras::sweep`] is why it matters: a housekeeping pass that blocked on one
     /// camera would leave every other camera open for as long as that one was busy.
     busy: bool,
+    /// Whether a command has needed the device since the last idle pass looked.
+    ///
+    /// Note **N45**'s fix, and the whole of it. [`Idle`] measures from when a command
+    /// *started*, because that is the only reading the actor is given (see this module's
+    /// "why every command carries the time"), so a command that ran longer than the timeout
+    /// is expired the moment it returns and would be closed by the very next pass — the
+    /// client's next verb then pays a fresh `open` and the driver's first-frame settle
+    /// \[PF:11\], every time, for every long operation.
+    ///
+    /// A boolean is enough because a *pass* is the evidence the deadline is missing: this
+    /// is raised by [`Thread::publish`] under the same lock as `busy`, and
+    /// [`CameraActor::sweep`] takes it and declines once. A pass that arrives while the
+    /// command is still running sees `busy` and never reaches it, so the flag survives to
+    /// the first pass after the work is done — which is exactly the pass that must not
+    /// close a camera whose last command has only just let go of it.
+    ///
+    /// The cost, which [`limits::CAMERA_IDLE_CLOSE_MS`] states beside the timeout and which
+    /// is **one pass, not one timeout**: a completed command buys a single declined sweep,
+    /// so a command longer than the timeout closes one to two
+    /// [`limits::CAMERA_IDLE_SWEEP_MS`] cadences after it returns rather than on the very
+    /// next pass. A short command pays nothing at all, because the passes between it and its
+    /// deadline spend the grace before the deadline arrives. Buying a whole timeout back
+    /// instead would need the actor to know when the work finished, which is a clock — the
+    /// alternative shape N45 priced, and it reverses this module's central decision and
+    /// needs a `SteppedClock` that is deliberately not `Sync` ("a race dressed as a
+    /// fixture"). Re-stamping [`Idle`] from the declining pass's own `at` is the third shape
+    /// and it is worse than either: it would postpone a *short* command's close by a whole
+    /// timeout as well, for a case that never needed it.
+    used_since_sweep: bool,
     /// The idle deadline, which is also the home of "when was it last used".
     idle: Idle,
 }
@@ -279,6 +312,10 @@ impl CameraActor {
         let live = Arc::new(Mutex::new(Live {
             open: false,
             busy: false,
+            // Nothing has used the device yet, so there is no grace to grant: an actor that
+            // was spawned and never asked for anything closes nothing, and the first pass
+            // that finds it open will have a command behind it.
+            used_since_sweep: false,
             idle: Idle::new(after_ms, now_ms),
         }));
         let alive = Arc::new(AtomicBool::new(true));
@@ -423,6 +460,15 @@ impl CameraActor {
     /// the read and the send, in which case this waits for that command — a race with a
     /// window of a few instructions, against a caller who by definition wants the camera.
     ///
+    /// **A pass that finds a command has completed since the last one declines, once**, and
+    /// takes `Live::used_since_sweep` with it. That is note **N45**'s fix and it is here
+    /// rather than in the thread on purpose: the flag is published under this same lock,
+    /// before the work runs, so reading it costs the mutex this pass already takes and a
+    /// long command does not earn a queue round trip per pass — which is the property the
+    /// paragraph above exists to preserve. A pass that runs *during* the command sees
+    /// `busy` first and never reaches the flag, so a sweep of a long command cannot spend
+    /// the grace the command has not finished needing.
+    ///
     /// # Errors
     ///
     /// [`Error::DeviceGone`] when the thread has left *while its published state still
@@ -431,8 +477,20 @@ impl CameraActor {
     /// answers `false`, which is true: it closed nothing on this pass.
     pub fn sweep(&self, at: Millis) -> Result<bool> {
         {
-            let live = lock(&self.live);
-            if !live.open || live.busy || !live.idle.expired(at) {
+            let mut live = lock(&self.live);
+            if !live.open || live.busy {
+                return Ok(false);
+            }
+            // Before the deadline is consulted, and that ordering is what keeps a *short*
+            // command closing on the first pass past its deadline: the passes that happen
+            // between a short command and its deadline spend the grace, so by the time the
+            // deadline arrives there is none left. A long command gets no such passes —
+            // every one of them saw `busy` — so its grace is still here, which is the case
+            // N45 is about.
+            if std::mem::take(&mut live.used_since_sweep) {
+                return Ok(false);
+            }
+            if !live.idle.expired(at) {
                 return Ok(false);
             }
         }
@@ -572,6 +630,11 @@ impl Thread {
         let mut live = lock(&self.live);
         live.open = open;
         live.busy = true;
+        // Raised here, with `busy`, rather than in `finished`: a pass that arrives while
+        // the work is running must not be able to spend the grace the command has not
+        // finished earning, and the cheapest way to guarantee that is for the flag to be up
+        // for the whole of the command rather than for the instant after it (note N45).
+        live.used_since_sweep = true;
         live.idle.used(at);
     }
 
@@ -592,7 +655,7 @@ impl Thread {
 /// A drop guard rather than a line after the loop, because the case it exists for is the
 /// loop *not* reaching its end: the most popular V4L2 crate panics on a control type this
 /// kernel emits \[PF:1\], so "a backend panicked" is a measured failure mode and not a
-/// hypothetical. Unwinding runs destructors, so both flags fall on that path too, and the
+/// hypothetical. Unwinding runs destructors, so every flag falls on that path too, and the
 /// next request for that camera gets a fresh actor instead of a handle nobody answers.
 ///
 /// **`open` falls here for the same reason `alive` does, and it is not bookkeeping
@@ -616,6 +679,10 @@ impl Drop for Liveness {
             let mut live = lock(&self.live);
             live.open = false;
             live.busy = false;
+            // For `open`'s reason, one step further: a dead actor claiming that a command
+            // had just finished would postpone one housekeeping pass on a camera this
+            // process no longer holds — a grace granted to work that is not coming back.
+            live.used_since_sweep = false;
         }
         self.alive.store(false, Ordering::Release);
     }
@@ -689,6 +756,19 @@ impl Cameras {
     /// Whatever the backend refuses enumeration with.
     pub fn enumerate(&self) -> Result<Vec<CameraInfo>> {
         self.backend.enumerate()
+    }
+
+    /// Which backend this registry drives (T1).
+    ///
+    /// The third and last forward, for [`Cameras::enumerate`]'s reason: a process holding a
+    /// registry needs no other handle on the backend, and this is the one fact about it
+    /// that is not a question about a camera. `profile_capture` writes it into a document's
+    /// provenance, where "a profile captured from the fake backend would be circular
+    /// corpus" is the whole point of the field — so a daemon that guessed instead of asking
+    /// would be signing a corpus entry with a name it made up.
+    #[must_use]
+    pub fn backend_kind(&self) -> schema::backend::BackendKind {
+        self.backend.kind()
     }
 
     /// What `list` answers, assembled where D1's rule lives.
@@ -896,6 +976,12 @@ mod tests {
     fn an_idle_camera_closes_and_the_next_use_opens_it_again() {
         // Driven entirely by the millisecond the sweep carries: no clock is read anywhere
         // in this test and nothing waits for one.
+        //
+        // This is also N45's *first* direction: a command shorter than the timeout still
+        // closes on the first pass at or past its deadline. The grace note N45 buys is
+        // spent by the pass below at 1_499 — which is what a short command's cadence of
+        // passes does with it, and why the fix costs a long operation one cadence and a
+        // short one nothing.
         let (backend, cameras, info) = one_camera(1_000);
         let actor = cameras.actor(&info, 0).expect("a thread can be spawned");
         actor.ask(500, controls).expect("the fake opens");
@@ -933,6 +1019,141 @@ mod tests {
         actor.ask(2_000, controls).expect("it opens again");
         assert_eq!((backend.opens(), backend.closes()), (2, 1));
         assert!(actor.activity().open);
+    }
+
+    #[test]
+    fn a_command_longer_than_the_timeout_is_not_closed_by_the_pass_that_follows_it() {
+        // Note **N45**'s second direction, and the one that fails against the unfixed
+        // actor: the idle deadline is stamped when a command *starts*, so a command that
+        // ran longer than the timeout is already expired when it returns and the very next
+        // housekeeping pass would take the descriptor away — after which the client's next
+        // verb pays a fresh `open` and the driver's first-frame settle \[PF:11\], every
+        // time, for every long operation. `wch_calibrate_sweep` is minutes of camera time,
+        // so this is the ordinary case for it rather than a corner.
+        //
+        // "Longer than the timeout" is expressed the way everything else here is — by the
+        // milliseconds the caller hands in — because the actor reads no clock: the command
+        // is stamped at 0 and the first pass afterwards asks about 9_000, which is nine
+        // times the timeout. Nothing sleeps and nothing waits.
+        let (backend, cameras, info) = one_camera(1_000);
+        let actor = cameras.actor(&info, 0).expect("a thread can be spawned");
+        actor.ask(0, controls).expect("the fake opens");
+        assert_eq!((backend.opens(), backend.closes()), (1, 0));
+
+        assert_eq!(
+            cameras.sweep(9_000),
+            Vec::new(),
+            "the pass immediately after a long command closed the camera it had just \
+             finished using"
+        );
+        assert!(actor.activity().open, "the descriptor went away");
+        assert_eq!(backend.closes(), 0);
+
+        // One cadence, not a second timeout: the grace is a single pass, so the *next* one
+        // closes. A fix that made the camera immortal until it was used again would pass
+        // the assertion above and fail this one.
+        assert_eq!(cameras.sweep(9_001), vec![info.id.clone()]);
+        assert_eq!(backend.closes(), 1);
+
+        // And the grace is per command rather than per actor: using the camera again arms
+        // it again, so a second long command gets the same one pass and no more.
+        actor.ask(9_002, controls).expect("it opens again");
+        assert_eq!(
+            cameras.sweep(20_000),
+            Vec::new(),
+            "the second command's pass"
+        );
+        assert_eq!(cameras.sweep(20_001), vec![info.id.clone()]);
+        assert_eq!((backend.opens(), backend.closes()), (2, 2));
+    }
+
+    #[test]
+    fn a_long_commands_grace_is_one_sweep_cadence_and_not_a_second_timeout() {
+        // The arithmetic [`limits::CAMERA_IDLE_CLOSE_MS`]'s doc states, asserted against the
+        // shipped numbers rather than against a literal — because the sentence it makes is
+        // about *those* numbers ("five to ten seconds, not thirty") and a test with its own
+        // timeout could not notice when they moved.
+        //
+        // The test above proves the shape with a millisecond of slack; this one prices it.
+        // It is worth its own arm because the earlier reading of the fix said the grace was
+        // worth a whole [`limits::CAMERA_IDLE_CLOSE_MS`] and nothing could go red on the
+        // difference.
+        let (backend, cameras, info) = one_camera(limits::CAMERA_IDLE_CLOSE_MS);
+        let actor = cameras.actor(&info, 0).expect("a thread can be spawned");
+        actor.ask(0, controls).expect("the fake opens");
+
+        // A `wch_calibrate_sweep`, in the only terms the actor has: stamped when it started
+        // and returning ten timeouts later. Every housekeeping pass in between saw `busy`
+        // (the arm below this one is where that is proven), so the grace is intact.
+        let ended = limits::CAMERA_IDLE_CLOSE_MS * 10;
+        assert_eq!(
+            cameras.sweep(ended + limits::CAMERA_IDLE_SWEEP_MS),
+            Vec::new(),
+            "the first pass after a long command took the descriptor away"
+        );
+        assert_eq!(
+            cameras.sweep(ended + 2 * limits::CAMERA_IDLE_SWEEP_MS),
+            vec![info.id.clone()],
+            "the grace outlasted one pass, so it is not one pass"
+        );
+        assert_eq!(backend.closes(), 1);
+
+        // And the reading the docs used to make: had the grace been worth a second timeout,
+        // the camera would still be open here. It is not, and the two constants are what
+        // make that a difference somebody can see — checked where they are, because two
+        // numbers that had stopped being distinguishable would make the assertions above
+        // pass for a reason nobody meant.
+        const {
+            assert!(2 * limits::CAMERA_IDLE_SWEEP_MS < limits::CAMERA_IDLE_CLOSE_MS);
+        }
+    }
+
+    #[test]
+    fn a_pass_that_runs_during_a_long_command_does_not_spend_its_grace() {
+        // The interaction that makes the fix work rather than merely exist. A sweep is
+        // minutes of camera time and the daemon's housekeeping runs every five seconds, so
+        // *dozens* of passes happen while the command is running — if any of them consumed
+        // the grace, the pass after the command would close the camera and N45 would be
+        // undischarged on the only verb it is about.
+        //
+        // The actor's one thread is held by the first command for the whole of this test's
+        // middle, which is what makes "during" an observation rather than a hope.
+        let (backend, cameras, info) = one_camera(1_000);
+        let actor = cameras.actor(&info, 0).expect("a thread can be spawned");
+        actor.ask(0, controls).expect("the fake opens");
+
+        let (started, holding) = mpsc::sync_channel::<()>(1);
+        let (release, held) = mpsc::sync_channel::<()>(1);
+        actor
+            .submit(1, move |_device| {
+                let _ = started.send(());
+                // Ends when this test says so, never when a duration passes.
+                let _ = held.recv();
+                answering(|| {})
+            })
+            .expect("an empty queue");
+        holding.recv().expect("the actor is inside the command");
+
+        // Every one of these sees `busy` and answers from the published state — which is
+        // also why they cost nothing and why they cannot reach the flag.
+        for at in [2_000, 3_000, 4_000, 5_000] {
+            assert_eq!(cameras.sweep(at), Vec::new(), "closed a camera in use");
+        }
+        assert_eq!(backend.closes(), 0);
+
+        drop(release);
+        // The command has to be *finished*, not merely released, before the pass below
+        // means anything: `ask` returns after the actor has published that it is between
+        // commands, so this is the synchronisation and not a guess.
+        actor.ask(6_000, controls).expect("the queue drained");
+
+        assert_eq!(
+            cameras.sweep(60_000),
+            Vec::new(),
+            "the passes taken while the command was running spent its grace"
+        );
+        assert_eq!(cameras.sweep(60_001), vec![info.id.clone()]);
+        assert_eq!(backend.closes(), 1);
     }
 
     #[test]
@@ -1152,6 +1373,12 @@ mod tests {
             .expect("an empty queue");
         holding.recv().expect("the wedged camera holds its thread");
 
+        // B's own grace, spent (note N45): the pass that follows a completed command
+        // declines once. It also asks A, which is the point — this call returning is the
+        // assertion, and it would already have hung here if a busy actor were consulted
+        // through its queue.
+        assert_eq!(cameras.sweep(1_999), Vec::new());
+
         // The whole assertion is that this call returns, and returns with B in it. A pass
         // that asked A would still be inside `answer.recv()` when this test timed out.
         assert_eq!(cameras.sweep(2_000), vec![healthy.id.clone()]);
@@ -1369,7 +1596,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![used.id.clone()]
         );
-        assert_eq!(cameras.sweep(150), vec![used.id]);
+        // Two passes, because the first after a command declines (note N45). The camera
+        // that was never used has no grace to spend and closes nothing either way.
+        assert_eq!(cameras.sweep(150), Vec::new());
+        assert_eq!(cameras.sweep(151), vec![used.id]);
         assert!(cameras.activity().iter().all(|activity| !activity.open));
     }
 

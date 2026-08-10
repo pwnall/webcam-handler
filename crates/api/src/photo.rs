@@ -149,14 +149,15 @@ impl PhotoResponse {
     /// socket, so it can be built by somebody else's code, and a type that could not
     /// *represent* the disagreement could not refuse it either.
     ///
-    /// **Nothing in the shipped tree calls this yet, and that is a dated gap rather than a
-    /// property.** Its consumers are the daemon, which refuses a `PhotoResponse` it is
-    /// about to send that disagrees with itself (P4c), and `wchc`, which refuses one it
-    /// received before turning it into a `cli_core::Photograph` (P4f) — neither exists at
-    /// P4a, and `crates/client` is still an empty `main`. Until then a truncated payload
-    /// is refused by nobody, so the sentence above describes what this is *for*, not what
-    /// the tree currently does. Note N34 records the obligation so the consumer's absence
-    /// is counted rather than assumed.
+    /// **One of its two consumers landed at P4c** and the other is still owed.
+    /// `daemon::server::photo_response` calls this as the last statement before an answer
+    /// leaves the process, so there is exactly one place a daemon can skip it, and a
+    /// document that disagrees with itself is refused as `Error::DeviceIo` — ours, not the
+    /// device's. The one still owed is `wchc`, which will call it on a response it
+    /// *received* before turning it into a `cli_core::Photograph` (P4f); until then a
+    /// truncated payload is refused by the sender and by nobody on the receiving end.
+    /// Note N34 records both call sites so the remaining absence is counted rather than
+    /// assumed.
     #[must_use]
     pub fn bytes_match_the_delivery(&self) -> bool {
         match (&self.report.delivery, &self.bytes) {

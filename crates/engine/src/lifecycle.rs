@@ -246,6 +246,38 @@ pub fn session_for(
     Ok(session)
 }
 
+/// The same, for a verb that is about to change something.
+///
+/// The [`StoreLock`] is **proof, not a parameter**. D9's daemonless protocol is a
+/// read-modify-write under one advisory lock, and [`SessionStore`] expresses "under the
+/// lock" as a `&StoreLock` argument on every mutating method exactly so the discipline
+/// cannot be forgotten — but that argument can only guard the *write*. Each mutating
+/// calibrate verb used to load the session document immediately before `with_lock` and then
+/// commit a draft cloned from that pre-lock read, so only the write half of the cycle was
+/// protected: two concurrent `wch` processes whose windows overlapped could both exit 0
+/// with one of them silently republishing the other's document without its samples.
+/// Requiring the token here means a caller that has not taken the lock cannot perform the
+/// read at all, which is the one kind of hold that does not decay.
+///
+/// **It is here rather than at a composition root because there are two of them.** `wch`
+/// takes D9's per-operation lock and `wchd` holds D9's lifetime lock, and the discipline is
+/// the same discipline; a copy at each surface is a copy that can be dropped from one. Note
+/// that the token proves nothing about a *daemon's* concurrency with itself — `flock` does
+/// not exclude the holder from itself, so `wchd` serializes its own request tasks in the
+/// process (note N47) and passes the one token it has held since startup.
+///
+/// # Errors
+///
+/// As [`session_for`].
+pub fn session_to_update(
+    store: &SessionStore,
+    _lock: &StoreLock,
+    fingerprint: &CameraFingerprint,
+    which: &schema::session::SessionRef,
+) -> Result<Session> {
+    session_for(store, fingerprint, which)
+}
+
 /// What `calibrate status` answers: a session's document and its history.
 ///
 /// [`session_for`] plus [`history`], and it is one function because it is one verb with two
@@ -459,6 +491,38 @@ pub fn note(
     )
 }
 
+/// Record a control's chosen value and who chose it (design D8).
+///
+/// The one place [`schema::session::Selection`] — the vocabulary the wire and the command
+/// line both spell a choice in — becomes one of the state machine's two transitions. It is
+/// a function rather than a `match` at each surface because the rule inside it is not the
+/// dispatch: **whichever branch runs, the selector is recorded**, so a metric names itself
+/// and the score it earned and a value names whoever claimed it. A second copy of the match
+/// is a second chance to record "a metric chose 42" with no metric having ranked anything,
+/// which is exactly what [`schema::session::ChosenBy`] exists to make unrepresentable.
+///
+/// # Errors
+///
+/// The D8 machine's [`Error::IllegalTransition`]: a control that never swept, a value no
+/// sample holds, a metric that cannot rank. Whatever the store refuses with.
+pub fn select(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &mut Session,
+    control: &ControlSlug,
+    selection: &schema::session::Selection,
+    now: Stamp,
+) -> Result<SessionEvent> {
+    commit(store, lock, session, now, |draft, now| match selection {
+        schema::session::Selection::ByMetric { metric } => {
+            crate::session::select_by_metric(draft, control, *metric, now)
+        }
+        schema::session::Selection::ByValue { value, chosen_by } => {
+            crate::session::select_value(draft, control, *value, chosen_by.selector(), now)
+        }
+    })
+}
+
 /// Publish a draft: the document first, then the caller's value, then the log line.
 ///
 /// The order is chosen for what a crash between the steps leaves behind. Document then
@@ -530,10 +594,11 @@ pub fn discover_pairs(
 ) -> Result<Discovery> {
     let found = discover::pairs(camera, now)?;
     let controls = camera.controls()?;
-    let merged = pairing::applicable(
-        &controls,
-        &pairing::merge(schema::pairing::declared_pairs(), found.pairs.clone()),
-    );
+    // The one composition of "the pairs in effect for this device", not a third spelling of
+    // it: the declared table merged with what this probe measured, narrowed to what this
+    // camera has, with measured winning (E1). The control set is read *after* the probe, so
+    // it describes the camera the session is about to sweep.
+    let merged = pairing::in_effect(&controls, found.pairs.clone());
 
     let measured = found.pairs.len();
     let skipped = found.skipped.len();
@@ -930,6 +995,40 @@ pub fn recover(
         }),
     )?;
     Ok(Recovery::Restored { report })
+}
+
+/// What the `calibrate restore` verb answers, on both surfaces (note N23).
+///
+/// [`recover`] with the two decisions its callers would otherwise each make, and both of
+/// them are rules rather than plumbing:
+///
+/// - **Which pair set.** The session's, where the probe wrote it at `calibrate start`
+///   (N16). D4's restore ordering is automation-first, and a restore planned against the
+///   pair set the *device* reports now would put the camera back in an order the writes it
+///   is undoing never used. `recover` takes the list as a parameter because the recovery a
+///   crashed run performs has to be able to pass one it read off disk; a verb has no such
+///   freedom, and this is where the verb's answer is fixed.
+/// - **No snapshot is not a failure.** It is what running this twice looks like — the T5
+///   method's own doc says so out loud — and an empty report is the honest
+///   shape for "nothing was written". A surface that turned [`Recovery::NothingPersisted`]
+///   into a refusal would make the second half of "leave the camera as you found it"
+///   something a caller has to be careful about.
+///
+/// # Errors
+///
+/// As [`recover`].
+pub fn restore(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &mut Session,
+    camera: &mut dyn Camera,
+    now: Stamp,
+) -> Result<RestoreReport> {
+    let pairs = session.pairs.clone();
+    let recovery = recover(store, lock, session, camera, &pairs, now)?;
+    Ok(recovery.report().cloned().unwrap_or(RestoreReport {
+        outcomes: Vec::new(),
+    }))
 }
 
 #[cfg(test)]

@@ -1,9 +1,17 @@
 //! The one JSON-RPC-over-`AF_UNIX` client this crate's tests use.
 //!
-//! Shared by both socket suites — `uds.rs`, which asserts the transport itself, and
-//! `read_verbs.rs`, which asserts what the daemon answers over it — because a second copy
-//! of the framing would be a second opinion about what the daemon speaks, in the two files
-//! most likely to disagree about it.
+//! Shared by every suite that reaches the socket — five binaries: `uds.rs`, which asserts the
+//! transport itself, and `read_verbs.rs`, `mutating_verbs.rs`, `calibrate_verbs.rs` and
+//! `method_surface.rs`, which assert what the daemon answers over it (the last four through
+//! `support/wire.rs`) — because a second copy of the framing would be a second opinion about
+//! what the daemon speaks, in the files most likely to disagree about it.
+//!
+//! **Who includes this is load-bearing, which is why the list above is a list** (note
+//! **N49**). A `#[path]`-included module is compiled into *every* binary that includes it and
+//! this workspace builds warnings as errors, so an item used by only some of them is a
+//! `dead_code` failure in the rest. Adding a consumer therefore means every item here has to
+//! be used by it, and adding an item means every existing consumer has to use it — which is
+//! also why these three headers name their includers rather than saying "the suites".
 //!
 //! ## Why it is hand-written
 //!

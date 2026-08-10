@@ -25,6 +25,7 @@ use schema::backend::Camera;
 use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::error::Result;
 use schema::pairing::{AutomationPair, ProbeSkip, looks_like_automation};
+use schema::report::{ControlReport, DiscoveryReport};
 use schema::snapshot::RestoreReport;
 use schema::time::Stamp;
 
@@ -59,6 +60,48 @@ impl Discovery {
     pub fn left_the_camera_alone(&self) -> bool {
         self.restored.is_complete()
     }
+}
+
+/// Probe this camera and answer the whole [`DiscoveryReport`] the T5 wire and `wch
+/// controls --discover-pairs` both show.
+///
+/// **The assembly, not just the probe.** Two of the report's three fields are
+/// [`Discovery`]'s own and move verbatim; `controls` is built here, and building it has
+/// three rules inside it that a second copy would be free to get wrong:
+///
+/// 1. the probe runs **first**, because it writes — the control set reported afterwards is
+///    the one the camera is actually in, and reading before the probe would describe a
+///    device the caller no longer has;
+/// 2. the pair set is [`pairing::in_effect`], so the declared table (D3) is narrowed to
+///    this device and merged with what the probe measured, with measured winning (E1);
+/// 3. every pair carries its own provenance, so a reader can tell a nomination from an
+///    observation without asking how the report was made.
+///
+/// It lives here rather than at each composition root because P4c gave it a second caller.
+/// `crates/cli`'s `InProcess::controls` had it alone; routing `wch_discover_pairs` would
+/// have made the daemon a second author of the same document, and "the two surfaces
+/// disagree about the provenance on their pairs" is what note N34 booked this move
+/// against. `wch` still prints [`Discovery`]'s other two facts on standard error — they
+/// are on the report, so a socket client sees what a terminal user sees.
+///
+/// `now` is an argument because the engine reads no clock.
+///
+/// # Errors
+///
+/// As [`pairs`], plus whatever the camera says when asked for its control set after the
+/// probe put it back.
+pub fn report(camera: &mut dyn Camera, now: Stamp) -> Result<DiscoveryReport> {
+    let found = pairs(camera, now)?;
+    let controls = camera.controls()?;
+    Ok(DiscoveryReport {
+        controls: ControlReport {
+            pairs: pairing::in_effect(&controls, found.pairs),
+            camera: camera.info().id.clone(),
+            controls,
+        },
+        skipped: found.skipped,
+        restored: found.restored,
+    })
 }
 
 /// Toggle each automation-shaped control and record which manual controls it frees
@@ -583,6 +626,98 @@ mod tests {
                 .iter()
                 .all(|p| p.provenance == Provenance::Measured),
             "everything a probe returns is measured, by definition"
+        );
+    }
+
+    #[test]
+    fn the_report_reads_the_control_set_after_the_probe_and_merges_what_it_measured() {
+        // The assembly note N34 moved here, and the three rules inside it. The double
+        // latches: `white_balance_automatic`'s toggle sticks and its undo is refused, so
+        // the camera the report describes is *not* the camera the probe started with —
+        // which is exactly the difference between reading the control set before the probe
+        // and reading it after.
+        let mut camera = ScriptedCamera::new(vec![
+            boolean("white_balance_automatic", 0),
+            integer("white_balance_temperature", 46),
+            integer("brightness", 50),
+        ])
+        .on_write(
+            "white_balance_automatic",
+            OnWrite::LatchesInactive(vec!["white_balance_temperature"]),
+        );
+
+        let report = report(&mut camera, Stamp::epoch()).expect("probes");
+
+        // 1. Read after the probe: the latched control is INACTIVE in the report, and a
+        //    read taken before the toggle would have said it was not.
+        let latched = report
+            .controls
+            .controls
+            .iter()
+            .find(|desc| desc.slug == slug("white_balance_temperature"))
+            .expect("the camera has it");
+        assert!(
+            latched.is_inactive(),
+            "the control set was read before the probe wrote"
+        );
+        assert_eq!(report.controls.camera, camera.info().id);
+
+        // 2. Declared and measured merged, narrowed to this device: the declared table
+        //    nominates both spellings of the white-balance automation control and this
+        //    camera has one, so a report carrying an inapplicable pair would mean the
+        //    merge ran without `applicable`.
+        assert!(!report.controls.pairs.is_empty());
+        let present: Vec<&str> = report
+            .controls
+            .controls
+            .iter()
+            .map(|desc| desc.slug.as_str())
+            .collect();
+        for pair in &report.controls.pairs {
+            assert!(present.contains(&pair.manual.as_str()), "{pair:?}");
+            assert!(present.contains(&pair.automation.as_str()), "{pair:?}");
+        }
+
+        // 3. The other two fields are the probe's own, unmodified — including the failure
+        //    to put the camera back, which is what a socket client would otherwise never
+        //    see (N30, AGENTS rule 8).
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|skip| skip.control == slug("white_balance_automatic")),
+            "{:?}",
+            report.skipped
+        );
+        assert!(
+            !report.restored.is_complete(),
+            "a probe that could not undo its own toggle reported a clean restore"
+        );
+    }
+
+    #[test]
+    fn a_report_from_a_camera_that_couples_nothing_still_describes_the_camera() {
+        // The inverse of the arm above, so "the report carries measured pairs" is not a
+        // sentence about a function that always finds some: nothing here couples, so every
+        // pair on the report is `Declared`, and the control set and the camera id are still
+        // there.
+        let mut camera = ScriptedCamera::new(vec![
+            boolean("white_balance_automatic", 0),
+            integer("white_balance_temperature", 46),
+        ]);
+
+        let report = report(&mut camera, Stamp::epoch()).expect("probes");
+        assert_eq!(report.controls.controls.len(), 2);
+        assert!(report.skipped.is_empty());
+        assert!(report.restored.is_complete());
+        assert!(
+            report
+                .controls
+                .pairs
+                .iter()
+                .all(|pair| pair.provenance == Provenance::Declared),
+            "a camera that demonstrated nothing produced a measured pair: {:?}",
+            report.controls.pairs
         );
     }
 
