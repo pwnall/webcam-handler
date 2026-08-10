@@ -4480,3 +4480,66 @@ assertion the wedge would break, and the line a blocked build never reaches.
 
 **Retires when:** P4e bounds an actor command; this entry then records the layered answer
 rather than a whole one.
+
+## N52 — The mutation floor's verdict moved with `nproc`, and the branch that did it had never fired
+
+**Believed:** that `just mutants` measures the tests. The job's whole claim is that a
+surviving mutant is a missing test, and `scripts/mutants.sh` compares survivors against
+`scripts/mutants-accepted.txt` in both directions so neither an unlisted survivor nor a
+stale acceptance can pass unnoticed (E7).
+
+**True:** it measures the tests *and the machine*, and until P4c nobody could have known,
+because the branch that mixes them in had never executed. `scripts/mutants.sh` counts a
+timed-out mutant as a survivor — deliberately, and correctly, since a mutant that hangs is
+not a mutant that was proven killed; the concatenation of `missed.txt` and `timeout.txt` is
+right there in the script. But P3f's first run produced **zero** timeouts (E7: 410 mutants)
+and P4a's widened run produced zero as well (E8: 478). A branch with no observations behind
+it is a claim, and this one was load-bearing.
+
+cargo-mutants times each mutant at `baseline × timeout_multiplier`, floored by
+`minimum_test_timeout` (default 20s). This workspace's baseline suite is about 3s, so
+`3 × 5 = 15` sat under the floor and every mutant got 20 seconds. The baseline is timed
+**once, alone**. Every mutant afterwards runs beside `jobs - 1` concurrent cargo builds on
+one disk. Those are different conditions, and the distance between them grows with every
+test the workspace gains — which P4b and P4c grew by a daemon, four integration suites and
+real sockets.
+
+**Measured**, same tree, same commit, one variable changed:
+
+| jobs | test-timeout floor | timeouts | survivors | acceptances | verdict |
+|---|---|---|---|---|---|
+| 8 | 20s (tool default) | 34 | 42 | 11 | **FAIL** — 31 with no acceptance |
+| 4 | 180s | 0 | 11 | 11 | **PASS** — register clean both ways |
+
+All thirty-one were in `imaging/src/metrics.rs`, and every one of them was caught once it
+was given time to finish. Two things make that the worse direction of failure rather than
+the harmless one. First, it is the *inverse* of what the floor exists to detect: the job
+reported thirty-one missing tests that were not missing, over a file whose tests P3f had
+already triaged. Second, a gate that cries wolf does not get believed — it gets re-run at
+`-j1` until it agrees, and the run after that is the one where a real survivor is waved
+through as "probably the timeout thing again". This entry exists so that reflex has a
+written answer.
+
+**Changed:** `.cargo/mutants.toml` pins `minimum_test_timeout = 180.0`, with the table
+above in the comment beside it. A floor and not a `timeout_multiplier`, because the
+multiplier scales the *baseline*, and the baseline is exactly the measurement that does not
+know about contention — no multiple of an unloaded 3s describes a loaded one. The timeout
+still counts as a survivor, so an infinite-loop mutant is caught by the same mechanism as
+before; it now costs three minutes to catch instead of twenty seconds, which is affordable
+in a job that runs for half an hour and is the right side to be wrong on.
+
+**Not changed, and why.** `scripts/mutants.sh`'s `per_job_gib=3` survived scrutiny: one
+build tree was measured at 2.5 GiB during this triage, so the estimate is sound. The P4c
+run that died with "Disk quota exceeded" did so because the build root was a 16 GiB `tmpfs`
+that other work filled *after* the script's one-shot `df` — the check samples free space
+once at start and cannot see what arrives later. Left alone rather than padded on a guess;
+`WCH_MUTANTS_BUILD_ROOT` already exists for exactly this and pointing it at a real
+filesystem is the fix an operator has.
+
+**Doc:** AGENTS.md "no skip that reads as pass" has a sibling this entry names — no
+*failure* that reads as a finding. Both are the same rule: a gate's output must mean what
+it says, and an environmental verdict wearing a defect's clothes costs the suite its
+credibility just as surely as the reverse.
+
+**Retires when:** never by disproof; it retires as history if the floor ever stops counting
+a timeout as a survivor, which would need its own argument.

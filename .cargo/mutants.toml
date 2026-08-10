@@ -110,6 +110,33 @@ copy_target = false
 # files — but `.git` itself does not, and nothing in the suite shells out to git.
 copy_vcs = false
 
+# The test timeout is pinned, because the autoset one makes the verdict depend on how
+# loaded the machine was.
+#
+# cargo-mutants times each mutant's test run at `baseline x timeout_multiplier`, floored by
+# `minimum_test_timeout` — whose default is 20s, and which is what this workspace was
+# actually running under, because the baseline suite takes about 3s and 3x5 is below the
+# floor. The baseline is measured **once, alone**; every mutant afterwards runs against
+# `jobs - 1` concurrent cargo builds on the same disk. Those are not the same conditions,
+# and the gap between them grows with every test the workspace adds.
+#
+# Measured on this machine, same tree, same commit, one variable changed (note N52):
+#
+#   8 jobs, 20s floor:  34 timeouts -> 42 survivors -> FAIL, 31 with no acceptance
+#   4 jobs, 180s floor:  0 timeouts -> 11 survivors -> PASS, register clean both ways
+#
+# Every one of those 31 was in `imaging/src/metrics.rs` and every one of them was killed
+# when given time to finish. So the job reported thirty-one missing tests that were not
+# missing — the exact inverse of the failure this floor exists to catch, and the more
+# dangerous direction to leave unfixed, because a gate that cries wolf gets re-run with
+# `-j1` until it agrees rather than believed.
+#
+# 180s is chosen against the *slow* side: a real hang now costs three minutes instead of
+# twenty seconds, which is affordable in a job that already runs for half an hour, and
+# `scripts/mutants.sh` still counts a timeout as a survivor, so the mechanism that catches
+# an infinite-loop mutant is untouched — it just stops firing on healthy ones.
+minimum_test_timeout = 180.0
+
 # The report lands in `target/mutants.out/`, not at the repository root.
 #
 # A run leaves a per-mutant log, a diff and a build transcript — hundreds of files. Two
