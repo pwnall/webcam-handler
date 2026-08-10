@@ -16,7 +16,20 @@ workspace = true
 
 [dependencies]
 camino.workspace = true
+# The uevent packet *parser*, and nothing else: the socket, the bind, the group choice
+# and the read loop are ours (design §2.5, and `src/sys/uevent.rs`'s header says which
+# half is which). Its `netlink-sys` edge is a dev-dependency of that crate, so nothing
+# of it ships here.
+kobject-uevent.workspace = true
 libc.workspace = true
+# `net`, and only `net`: the `NETLINK_KOBJECT_UEVENT` socket, its `bind` and its `recv`.
+# A safe wrapper whose `sockaddr_nl` is bindgen output, which is why the hotplug edge adds
+# no `unsafe` block. The bounded `poll` *under* the socket is **not** rustix's — it is the
+# one `libc::poll` block in `src/sys/wait.rs`, which P4d generalised rather than replaced,
+# and it is registered as a row in `src/sys/mod.rs`. `event` was enabled here for a while
+# on the strength of that misreading and read by nothing; features unify across the build
+# graph, so an unused one is compiled for the daemon too.
+rustix = { workspace = true, features = ["net"] }
 # Default features ONLY: the `libv4l` feature links LGPL libv4l (design §2.8).
 v4l.workspace = true
 webcam-handler-schema.workspace = true

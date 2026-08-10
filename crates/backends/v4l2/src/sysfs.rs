@@ -68,6 +68,40 @@ pub(crate) fn nodes() -> Result<Vec<SysfsNode>> {
 
 /// [`nodes`] against an arbitrary class directory, so the tests can build one.
 pub(crate) fn nodes_in(class_dir: &Utf8Path) -> Result<Vec<SysfsNode>> {
+    Ok(node_names_in(class_dir)?
+        .into_iter()
+        .map(|name| node_from(&class_dir.join(&name), name))
+        .collect())
+}
+
+/// Every V4L2 node's `/dev` path, in numeric node order, **without opening a file**.
+///
+/// The hotplug watch's reading of the tree (`crate::watch::SysfsNodes`), and the reason it
+/// is not [`nodes`]: a watch only ever emits node paths, so the `canonicalize` of each
+/// node's `device` link and the three attribute reads under it — forty filesystem
+/// operations on this desk's ten nodes — would be work whose every result the watch throws
+/// away, issued on the path a hotplug burst provokes and against a tree that is mid-move.
+/// This is the `read_dir` on its own.
+///
+/// It shares [`node_names_in`] with [`nodes_in`] rather than re-spelling the `video` filter
+/// and the numeric sort, so the two readings cannot come to disagree about which entries
+/// are nodes.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`], on [`nodes`]'s terms.
+pub(crate) fn node_paths() -> Result<Vec<Utf8PathBuf>> {
+    Ok(node_names_in(Utf8Path::new(CLASS_DIR))?
+        .iter()
+        .map(|name| dev_path(name))
+        .collect())
+}
+
+/// The `videoN` entries the kernel lists, in numeric node order.
+///
+/// The one walk of the class directory: everything above decorates these, and nothing else
+/// decides what counts as a node.
+fn node_names_in(class_dir: &Utf8Path) -> Result<Vec<String>> {
     let entries = match std::fs::read_dir(class_dir) {
         Ok(entries) => entries,
         // No directory means no V4L2 subsystem loaded, which is "no cameras" rather than
@@ -76,7 +110,7 @@ pub(crate) fn nodes_in(class_dir: &Utf8Path) -> Result<Vec<SysfsNode>> {
         Err(error) => return Err(storage_error(class_dir, &error)),
     };
 
-    let mut nodes = Vec::new();
+    let mut names = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| storage_error(class_dir, &error))?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -85,15 +119,15 @@ pub(crate) fn nodes_in(class_dir: &Utf8Path) -> Result<Vec<SysfsNode>> {
         if !name.starts_with("video") {
             continue;
         }
-        let link = class_dir.join(&name);
-        nodes.push(node_from(&link, name));
+        names.push(name);
     }
-    nodes.sort_by(|a, b| {
-        node_order(&a.name)
-            .cmp(&node_order(&b.name))
-            .then(a.name.cmp(&b.name))
-    });
-    Ok(nodes)
+    names.sort_by(|a, b| node_order(a).cmp(&node_order(b)).then(a.cmp(b)));
+    Ok(names)
+}
+
+/// The `/dev` path a node name means. One home, because both readings compose it.
+fn dev_path(name: &str) -> Utf8PathBuf {
+    Utf8PathBuf::from(format!("/dev/{name}"))
 }
 
 /// Describe one node from its `/sys/class/video4linux/<name>` entry.
@@ -110,7 +144,7 @@ fn node_from(link: &Utf8Path, name: String) -> SysfsNode {
     let usb_dir = interface_dir.as_deref().and_then(Utf8Path::parent);
 
     SysfsNode {
-        dev_path: Utf8PathBuf::from(format!("/dev/{name}")),
+        dev_path: dev_path(&name),
         name,
         interface,
         usb_id: usb_dir.and_then(usb_id),
@@ -392,6 +426,44 @@ mod tests {
         let nodes = nodes_in(&fs.class_dir()).expect("reads");
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "video0");
+    }
+
+    #[test]
+    fn the_cheap_node_listing_and_the_full_one_agree_on_the_population() {
+        // Two readings of one directory that must never disagree about which entries are
+        // nodes: the hotplug watch takes the cheap one (`node_paths`, a `read_dir` and
+        // nothing else) and `enumerate` takes the full one (`nodes_in`, which follows each
+        // `device` link and reads ids and a serial). They agree here because they share
+        // `node_names_in` — the filter and the numeric sort have one home — and this is
+        // what would go red if either grew its own copy.
+        let fs = FakeSysfs::new();
+        fs.add("video10", "1-1", "1-1:1.0", &[("serial", "abc")]);
+        fs.add("video2", "1-1", "1-1:1.0", &[]);
+        fs.add("video1", "3-4", "3-4:1.2", &[]);
+        std::fs::write(fs.class_dir().join("v4l-subdev0").as_std_path(), b"")
+            .expect("a subdev entry");
+
+        let full: Vec<Utf8PathBuf> = nodes_in(&fs.class_dir())
+            .expect("reads")
+            .into_iter()
+            .map(|node| node.dev_path)
+            .collect();
+        let cheap: Vec<Utf8PathBuf> = node_names_in(&fs.class_dir())
+            .expect("reads")
+            .iter()
+            .map(|name| dev_path(name))
+            .collect();
+
+        assert_eq!(
+            cheap,
+            vec![
+                Utf8PathBuf::from("/dev/video1"),
+                Utf8PathBuf::from("/dev/video2"),
+                Utf8PathBuf::from("/dev/video10"),
+            ],
+            "numeric order, `/dev` paths, and no `v4l-subdev0`"
+        );
+        assert_eq!(cheap, full);
     }
 
     /// Build a `/sys/bus/usb/devices`-shaped directory.

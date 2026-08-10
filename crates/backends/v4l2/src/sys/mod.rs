@@ -2,9 +2,16 @@
 //!
 //! Every `unsafe` block in the workspace lives under this directory, and
 //! `scripts/gates/unsafe-scope.sh` derives that claim from the tree rather than trusting
-//! it. What is here: an owned file descriptor, an aligned payload buffer, and the typed
-//! ioctl calls. What is deliberately *not* here: any interpretation of what the kernel
-//! said.
+//! it. What is here: an owned file descriptor, an aligned payload buffer, the typed
+//! ioctl calls, and — since P4d — the uevent netlink socket. What is deliberately *not*
+//! here: any interpretation of what the kernel said.
+//!
+//! **The rule is "kernel-facing", not "says `unsafe`".** docs/7 P4d places the uevent
+//! socket "inside `src/sys/` like every unsafe **or kernel-facing** edge", and design
+//! §2.5 says the same. [`uevent`] contains no `unsafe` block at all, because `rustix` is
+//! a safe wrapper whose `sockaddr_nl` comes from `linux-raw-sys` (bindgen output over the
+//! kernel UAPI headers, which is what "no hand-declared kernel structs" asks for). It
+//! belongs here anyway, and the count below is unchanged by it.
 //!
 //! ## The shape, and why it is this shape
 //!
@@ -29,12 +36,13 @@
 //!
 //! ## The residual `unsafe`, counted
 //!
-//! Ten blocks and one `unsafe impl`, one obligation each
+//! Eleven blocks and one `unsafe impl`, one obligation each
 //! (`clippy::multiple_unsafe_ops_per_block` is denied, so that is enforced rather than
 //! claimed):
 //!
 //! | Where | Obligation |
 //! |---|---|
+//! | [`Fd::as_fd`] | the descriptor is open for the whole of the borrow, which elision ties to `&self` |
 //! | [`payload::Payload::bytes`] | every byte of the buffer is initialized |
 //! | [`payload::Payload::bytes_mut`] | the same, with the exclusive borrow the mutable slice needs |
 //! | `ioctl::call` | the pointer is valid and correctly sized for the request's declared width |
@@ -44,8 +52,24 @@
 //! | `mmap::Mapping::bytes` | the slice lies inside a region that is still mapped |
 //! | `mmap::Mapping::drop` | the address and length are the ones `mmap` returned, unmapped once |
 //! | `unsafe impl Send for mmap::Mapping` | the region is owned exclusively and is not thread-affine |
-//! | `wait::readable` | one live `pollfd`, and a count of one to match |
+//! | `wait::until_readable` | one live `pollfd`, and a count of one to match |
 //! | [`signal::term`] | two integers by value: the whole obligation is that the pid names one process, which is refused above the block |
+//!
+//! P4d added a kernel-facing module — [`uevent`] — and **no row for it**, which is the
+//! whole argument for reaching for `rustix` rather than `libc` at a new edge: the same
+//! socket written with `libc` would have cost four blocks (`socket`,
+//! `OwnedFd::from_raw_fd`, `bind`, `recv`) and a `sockaddr_nl` that a third-party crate
+//! maintains by hand. It also generalised `wait::readable` into `wait::until_readable`
+//! rather than adding a second `poll` wrapper beside it — one obligation, still stated
+//! once, now discharged for two kinds of descriptor.
+//!
+//! The **one row P4d did add** is [`Fd::as_fd`], and it is a row that bought a type: the
+//! generalised wrapper first took a bare `RawFd`, whose doc argued that a stale number was
+//! harmless because `poll` answers `POLLNVAL`. That is true of a *closed* descriptor and
+//! false of a *reused* one, which is the case a multi-threaded daemon actually produces.
+//! Taking a `BorrowedFd` moves the obligation onto the compiler for the socket (an
+//! `OwnedFd` borrows itself) and states it exactly once, here, for the device node — which
+//! is strictly better than a paragraph asserting a borrow the signature did not make.
 //!
 //! Two movements worth recording. P2's **write** path added two ioctls and *removed* a
 //! block: reads and writes of an `ext_ctrls` header carry the identical obligation, so
@@ -67,8 +91,12 @@ pub(crate) mod payload;
 /// `kill(2)`, which is not V4L2 and is here because this is the only directory in the
 /// workspace where the token `unsafe` is allowed. Its own header carries the argument.
 pub(crate) mod signal;
+/// The `NETLINK_KOBJECT_UEVENT` socket. Kernel-facing rather than unsafe — see the
+/// header. `crate::watch` is its one caller.
+pub(crate) mod uevent;
 pub(crate) mod wait;
 
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::raw::c_int;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -78,9 +106,9 @@ pub(crate) use payload::Payload;
 
 /// An open device node.
 ///
-/// Closes on drop. The `v4l` crate's `open`/`close` are safe wrappers, so this type needs
-/// no `unsafe` of its own — it lives here because the fd it owns is the capability every
-/// block below spends.
+/// Closes on drop. The `v4l` crate's `open`/`close` are safe wrappers, so this type's only
+/// `unsafe` is the one that hands the descriptor out as a borrow — it lives here because
+/// the fd it owns is the capability every block below spends.
 #[derive(Debug)]
 pub(crate) struct Fd {
     fd: c_int,
@@ -108,7 +136,17 @@ impl Fd {
         }
         // O_NONBLOCK is deliberately absent: enumeration ioctls do not block, and the
         // streaming path (P2) wants a blocking DQBUF bounded by its own deadline.
-        match v4l::v4l2::open(path.as_std_path(), libc::O_RDWR) {
+        //
+        // O_CLOEXEC is deliberately *present*, and it has to be said here because
+        // `v4l::v4l2::open` passes its flags straight to `open(2)` and adds nothing
+        // (checked in the pinned 0.14.0 source). A `/dev/video*` descriptor is the
+        // exclusive-access capability D12 rests on and the thing `wch-priv`'s interlock
+        // counts holders of, so leaking one into a child — this crate's own R3 arm spawns
+        // `wch-priv uvcvideo cycle`, and `modprobe` execs further — would make the helper
+        // refuse an unload while naming a process that is not the real holder. Same
+        // argument `sys::uevent` states for the netlink socket, on the more valuable
+        // descriptor.
+        match v4l::v4l2::open(path.as_std_path(), libc::O_RDWR | libc::O_CLOEXEC) {
             Ok(fd) => Ok(Fd {
                 fd,
                 path: path.to_owned(),
@@ -139,6 +177,20 @@ impl Fd {
             fd,
             path: Utf8PathBuf::from("<test descriptor>"),
         }
+    }
+}
+
+impl AsFd for Fd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: `borrow_raw` asks for two things, and both hold by construction. The
+        // descriptor is open for the borrow's whole life: `self.fd` is what
+        // `v4l::v4l2::open` returned to this value and to nothing else, `Fd` never hands
+        // out ownership, its `Drop` is the only close, and elision ties the returned
+        // lifetime to `&self` — so it cannot be closed under the borrow and its number
+        // cannot have been reused. And it is never `-1`: `Fd::open` answers `Err` on that
+        // value before a `Fd` exists, and `from_raw_for_test` is handed a descriptor a
+        // socket pair produced.
+        unsafe { BorrowedFd::borrow_raw(self.fd) }
     }
 }
 
@@ -199,5 +251,28 @@ mod tests {
         let error = Fd::open(Utf8Path::new("/dev/video\u{0}0"))
             .expect_err("a path with an interior NUL cannot be opened");
         assert!(matches!(error, Error::DeviceGone { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_device_descriptor_is_not_inherited_by_anything_this_process_execs() {
+        // `v4l::v4l2::open` hands its flags to `open(2)` unchanged, so `O_CLOEXEC` is
+        // ours to pass or to forget — and this is the descriptor it matters most for. A
+        // `/dev/video*` held across an `exec` makes every child a camera holder, which is
+        // what `wch-priv`'s unload interlock counts: the R3 hotplug arm spawns
+        // `wch-priv uvcvideo cycle`, `modprobe` execs further, and a leaked node would
+        // have the helper refuse the unload while naming a process that never opened a
+        // camera. Asserted off `F_GETFD` rather than off the flags argument, for
+        // `the_socket_directory_is_created_private`'s reason: the argument is what was
+        // requested and the descriptor is what was applied (AGENTS rule 5).
+        //
+        // `/dev/null` and not a camera: this is a property of `Fd::open`, and a suite that
+        // needed a webcam attached to state it would state it on one machine in ten.
+        let fd = Fd::open(Utf8Path::new("/dev/null"))
+            .expect("/dev/null is on every Linux this crate builds for");
+        let flags = rustix::io::fcntl_getfd(fd.as_fd()).expect("F_GETFD on our own descriptor");
+        assert!(
+            flags.contains(rustix::io::FdFlags::CLOEXEC),
+            "a device node opened without O_CLOEXEC leaks into every child: {flags:?}"
+        );
     }
 }

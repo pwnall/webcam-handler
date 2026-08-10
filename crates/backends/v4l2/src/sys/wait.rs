@@ -10,12 +10,35 @@
 //! fold over `(frame arrived, what time is it)` on a steppable clock (design D5), and it
 //! stays pure precisely because the blocking read is somebody else's problem. This module
 //! is that somebody.
+//!
+//! ## One poll, two descriptors
+//!
+//! P4d gave this module a second caller: the uevent netlink socket
+//! ([`super::uevent`]) waits on exactly the same law — turn a caller's deadline into a
+//! bounded `poll` — and a second copy of the millisecond arithmetic below would be a
+//! second opinion about what an already-spent deadline means. So [`until_readable`] is
+//! the wrapper and [`readable`] is the *video node's* reading of its answer: a hangup on
+//! a `/dev/video*` node is [`Error::DeviceGone`], and a hangup on a netlink socket is
+//! not, which is a decision about the descriptor rather than about `poll`.
 
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::time::Instant;
 
 use schema::error::{Error, Result};
 
 use super::Fd;
+
+/// What a bounded wait saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ready {
+    /// Nothing to read before the deadline. An answer, not a failure (E3).
+    Timeout,
+    /// There is something to read.
+    Readable,
+    /// The descriptor reported `POLLHUP` or `POLLNVAL`. What that *means* is the
+    /// caller's to say.
+    HangUp,
+}
 
 /// Wait until `fd` has a buffer ready, or until `deadline`.
 ///
@@ -30,6 +53,42 @@ use super::Fd;
 /// `poll` failure that is not an interruption. `EINTR` is retried against the same
 /// deadline rather than surfaced: a signal is not news about the camera.
 pub(crate) fn readable(fd: &Fd, deadline: Instant) -> Result<bool> {
+    match until_readable(fd.as_fd(), "poll", deadline)? {
+        Ready::Timeout => Ok(false),
+        Ready::Readable => Ok(true),
+        // `POLLHUP` on a video node is a camera that left. Reporting it here rather than
+        // letting `DQBUF` answer `ENODEV` a moment later costs nothing and keeps the
+        // diagnosis at the layer that saw it.
+        Ready::HangUp => Err(Error::DeviceGone {
+            path: fd.path().to_owned(),
+        }),
+    }
+}
+
+/// Wait until `fd` is readable, or until `deadline`, without deciding what that means.
+///
+/// `operation` names the call in an [`Error::DeviceIo`], so a failed wait says which
+/// descriptor it was waiting on rather than the bare word `poll`.
+///
+/// The descriptor is a [`BorrowedFd`] and **not** a `RawFd`, which is the compiler
+/// carrying an obligation rather than this comment carrying it. A raw number says nothing
+/// about whether the descriptor it names is still open, and "closed" is not the hazard —
+/// *reused* is: the kernel hands out the lowest free descriptor, so a stale number polls
+/// whatever was opened next and answers about that, cheerfully and wrongly. A borrow
+/// cannot outlive the thing it borrows, so both callers ([`readable`], holding a `&Fd`,
+/// and [`super::uevent::UeventSocket::wait_readable`], holding its own `OwnedFd`) are
+/// sound by signature instead of by inspection.
+///
+/// # Errors
+///
+/// [`Error::DeviceIo`] for a `poll` failure that is not an interruption. `EINTR` is
+/// retried against the same deadline rather than surfaced: a signal is not news about the
+/// thing being waited on.
+pub(crate) fn until_readable(
+    fd: BorrowedFd<'_>,
+    operation: &str,
+    deadline: Instant,
+) -> Result<Ready> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         // A deadline already spent means "do not block", not "block forever": `poll` reads
@@ -42,7 +101,7 @@ pub(crate) fn readable(fd: &Fd, deadline: Instant) -> Result<bool> {
         let timeout = i32::try_from(millis).unwrap_or(i32::MAX);
 
         let mut pollfd = libc::pollfd {
-            fd: fd.raw(),
+            fd: fd.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
@@ -60,27 +119,31 @@ pub(crate) fn readable(fd: &Fd, deadline: Instant) -> Result<bool> {
                 continue;
             }
             return Err(Error::DeviceIo {
-                operation: "poll".to_owned(),
+                operation: operation.to_owned(),
                 errno: error.raw_os_error(),
                 message: error.to_string(),
             });
         }
         if ret == 0 {
-            return Ok(false);
+            return Ok(Ready::Timeout);
         }
 
-        // `POLLHUP` on a video node is a camera that left. Reporting it here rather than
-        // letting `DQBUF` answer `ENODEV` a moment later costs nothing and keeps the
-        // diagnosis at the layer that saw it.
+        // Checked before readability, deliberately: a descriptor that is both readable
+        // and hung up has news the caller must not miss behind one last read.
         if pollfd.revents & (libc::POLLHUP | libc::POLLNVAL) != 0 {
-            return Err(Error::DeviceGone {
-                path: fd.path().to_owned(),
-            });
+            return Ok(Ready::HangUp);
         }
         // `POLLERR` is what a V4L2 node raises for a dequeued buffer carrying an error
         // flag, among other things; it is not on its own a reason to stop, and the caller
         // finds out what it meant by dequeuing.
-        return Ok(pollfd.revents & (libc::POLLIN | libc::POLLERR) != 0);
+        if pollfd.revents & (libc::POLLIN | libc::POLLERR) != 0 {
+            return Ok(Ready::Readable);
+        }
+        // Woken for a revent nobody asked about. Spelling it `Timeout` rather than
+        // inventing a fourth answer keeps the caller's two cases two, and it is what this
+        // function did before it had a name for the middle: the deadline still bounds the
+        // caller, because the loop above is not re-entered.
+        return Ok(Ready::Timeout);
     }
 }
 
@@ -138,6 +201,42 @@ mod tests {
             readable(&quiet, Instant::now() + Duration::from_secs(1)),
             Ok(true),
             "a socket with a byte waiting is readable"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_whose_far_end_is_gone_reports_a_hangup_before_it_reports_readability() {
+        // `Ready::HangUp`'s only producer on a camera is a USB unplug mid-stream, which
+        // no test can arrange (design §3.3 item 9 keeps that fake-only). A socket pair
+        // can: closing the far end makes the near end report `POLLIN | POLLHUP`
+        // together, which is exactly the ordering this function has to get right — a
+        // wait that answered "readable" first would hand the caller one last read and
+        // lose the news that the device left.
+        use std::os::fd::IntoRawFd as _;
+
+        let (near, far) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        drop(far);
+        // Ownership moves into `Fd` first and the borrow is taken from it, which is the
+        // signature's whole point: there is no way to ask this question about a number
+        // nobody owns.
+        let node = Fd::from_raw_for_test(near.into_raw_fd());
+
+        assert_eq!(
+            until_readable(
+                node.as_fd(),
+                "poll",
+                Instant::now() + Duration::from_secs(1)
+            ),
+            Ok(Ready::HangUp)
+        );
+
+        // …and the video node's reading of that answer is the one D13 variant it can be.
+        assert!(
+            matches!(
+                readable(&node, Instant::now() + Duration::from_secs(1)),
+                Err(Error::DeviceGone { .. })
+            ),
+            "a hung-up node is a camera that left"
         );
     }
 }

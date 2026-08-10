@@ -14,12 +14,25 @@ set -euo pipefail
 
 # The selection: the two `sys` modules that make no syscall.
 #
-# `decode` is the pure byte-to-schema half. `payload` holds two of this crate's six
-# `unsafe` blocks — the ones viewing an initialized buffer as bytes — and they are exactly
-# what Miri exists to check here, so leaving them out (as an earlier selection did) meant
-# the job covered only safe code. The other four blocks are the ioctl calls in
-# `sys::ioctl`, which Miri cannot cross; `sys::tests` opens a device node and is excluded
-# for the same reason.
+# `decode` is the pure byte-to-schema half. `payload` holds the two blocks that view an
+# initialized buffer as bytes, and they are exactly what Miri exists to check here — so
+# leaving them out (as an earlier selection did) meant the job covered only safe code. No
+# count of the rest is written here: `crates/backends/v4l2/src/sys/mod.rs` carries the
+# residual-`unsafe` register and `scripts/gates/unsafe-scope.sh` reconciles it against the
+# tree both ways, so a second tally in this comment would be a number nobody checks. What
+# is true of every block *not* selected is the reason: they sit behind an `ioctl`, an
+# `mmap`, a `poll`, a `kill` or a descriptor a device node opened, and Miri crosses none of
+# those. `sys::tests` is excluded for that reason too — it opens a device node.
+#
+# **P4d's uevent parser is deliberately not here, and that is a decision rather than an
+# oversight.** `hotplug::trigger` is a pure fold over bytes, so it looks like it belongs —
+# but this job's population is "unsafe-adjacent", and `hotplug` is adjacent to no `unsafe`
+# at all: `sys::uevent` is written with `rustix`, a safe wrapper, so the whole hotplug edge
+# contains zero blocks. There is no aliasing, provenance or initialisation question for
+# Miri to answer about a `&[u8]` that `std` produced. What that parser needs is *coverage*
+# of hostile shapes, and it has it — seven committed fixtures and a twenty-thousand-round
+# fixed-seed walk — which under Miri would cost minutes and prove the same thing. The
+# mutation floor examines it instead (`.cargo/mutants.toml`).
 selection='package(webcam-handler-v4l2) and (test(/^sys::decode/) or test(/^sys::payload/))'
 marker='sys::decode'
 

@@ -52,12 +52,15 @@
 //!    not here still stops the count — the intended direction — but this row is not a
 //!    workspace-wide coverage claim and must not be read as one.
 //! 3. **It cannot see "registered but still refusing".** A build where every method
-//!    answered `Error::Unimplemented` would pass this walk, because they were called and
-//!    they answered. The walk is only meaningful paired with `daemon::server`'s own
+//!    answered a refusal would pass this walk, because they were called and they answered.
+//!    The walk is only meaningful paired with `daemon::server`'s own
 //!    `the_pinned_routing_is_the_whole_wire_surface_and_nothing_answers_unimplemented` and
-//!    with `calibrate_verbs.rs`'s `no_calibrate_verb_answers_store_locked_or_unimplemented`
-//!    (note **N43**). The success assertions below are the third leg: a method that refused
-//!    would not produce the answer this file reads.
+//!    with `calibrate_verbs.rs`'s `no_calibrate_verb_answers_store_locked` (note **N43**).
+//!    The refusal that used to make this concrete — `Error::Unimplemented`, a method saying
+//!    "not built yet" — no longer exists in the registry (note **N6**, retired at P4d), so
+//!    the limit is now about *any* refusal rather than about that one. The success
+//!    assertions below are the third leg: a method that refused would not produce the
+//!    answer this file reads.
 //! 4. **It cannot catch a rename.** The client and the server are two expansions of *one*
 //!    declaration, so a changed `#[method(name = …)]` moves both sides together and this
 //!    comparison stays green. That is `crates/api`'s pinned-spelling test's job

@@ -12,8 +12,8 @@
 //! landed in steps: the five control-shaped verbs (`set`, `snapshot`, `restore`,
 //! `discover_pairs`, `profile_capture`), then `photo`, and finally `terminate_holder` and
 //! the six `calibrate_*` verbs that write. So [`ROUTED`] is the whole nineteen-method
-//! surface, and the map of methods answering [`schema::Error::Unimplemented`] is gone with
-//! the producer that filled it (note **N43**: "P4c cannot land without emptying it").
+//! surface, and the map of methods answering `Error::Unimplemented` is gone with the
+//! producer that filled it (note **N43**: "P4c cannot land without emptying it").
 //!
 //! [`ROUTED`] stays anyway, and what it is worth is smaller than it used to be, so it is
 //! stated rather than implied: it is a **second deliberate transcription** of a
@@ -22,8 +22,10 @@
 //! a twentieth method landing *unrouted* is not this list — `wire_surface!` declares the
 //! trait and `api::METHODS` from one source, so a twentieth method fails to compile
 //! `impl WchRpcServer for Wchd` until it is implemented. The compiler owns that law; this
-//! constant owns the spelling. After P4c the variant's only producer left in the workspace
-//! is `webcam-handler-v4l2::unimplemented_surface()`, which P4d deletes.
+//! constant owns the spelling. P4c left one producer of the variant in the workspace,
+//! P4d's hotplug watch took it, and P4d then deleted the variant itself — so "no method on
+//! this surface answers `Unimplemented`" is no longer a property of this module's routing
+//! but a shape the D13 registry cannot express (note **N6**, retired).
 //!
 //! ## Where the answers come from
 //!
@@ -1678,9 +1680,16 @@ mod tests {
         // This assertion is half of a pair, and the other half is in
         // `tests/method_surface.rs`. docs/9's method-count walk proves every registered
         // method is *driven and answers*; it cannot tell an answer from a refusal that
-        // arrived promptly, so a build where all nineteen answered `Unimplemented` would
-        // pass it. What this test proves is that there is no such half of the surface at
-        // all. Neither is worth much without the other, which is why each says so.
+        // arrived promptly, so a build where all nineteen answered a "not yet" refusal
+        // would pass it. What this test proves is that there is no such half of the
+        // surface at all. Neither is worth much without the other, which is why each says
+        // so.
+        //
+        // The second half of this test's name has outlived the variant it names, and that
+        // is deliberate rather than stale: P4d deleted `Error::Unimplemented` (note N6),
+        // so "nothing answers it" went from a claim this partition carried to a shape the
+        // registry cannot express. The name is kept because the claim it makes is still
+        // true and is now stronger; what can still go red here is the equality above.
     }
 
     #[test]

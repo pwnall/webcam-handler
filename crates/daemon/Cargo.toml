@@ -45,6 +45,15 @@ clap = { workspace = true, features = ["derive"] }
 # so this edge adds no feature to the shared `jsonrpsee` node (note N38).
 jsonrpsee = { workspace = true, features = ["server-core"] }
 jsonrpsee-server.workspace = true
+# The `*at` family and `geteuid`, for note N39's socket-directory hardening: the directory
+# is held as a descriptor, `fstat`ed, and the socket bound relative to it, so what was
+# checked and what is served from are provably one inode rather than one name. `fs` for
+# `openat`/`fstat`/`statat`/`mkdirat`/`unlinkat`, `net` for `socket_with`/`bind`/`listen`
+# over `AF_UNIX`, `process` for `geteuid`. **`rustix` and not `libc`** because this crate
+# is `#![forbid(unsafe_code)]` and stays that way — rustix is a safe wrapper, so the
+# hardening lands without moving the boundary `unsafe-scope.sh` asserts (note N39's
+# 2026-08-10 amendment).
+rustix = { workspace = true, features = ["fs", "net", "process"] }
 # `net` for `UnixListener`, `macros` for `select!` and `#[tokio::main]`, `sync` for the
 # `oneshot` a request hands to a camera actor, `time` for the idle-sweep cadence, and the
 # multi-threaded runtime because a connection task and the accept loop are concurrent by

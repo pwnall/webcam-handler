@@ -38,32 +38,42 @@ exist because of it.
 **Standing debts carried into this plan**, each already recorded where it arose:
 
 - ~~`Error::Unimplemented` has two pinned producer surfaces, not one.~~ **Discharged at
-  P4c.** `webcam-handler-v4l2::unimplemented_surface()` still has its last row
-  (`CameraBackend::watch`); the thirteen P4b added in `daemon::server::unrouted()` are gone
-  with the map, the producer and the phase constant, because P4c routed the whole surface.
-  N43 records what replaced the assertion: while a method could be unrouted the claim was a
-  *partition* over `api::METHODS`, and it is now the equality — the pinned routing list *is*
-  `api::METHODS`, so a twentieth method still cannot land unrouted and unremarked. P4d
-  deletes the variant (N6's scheduled death) with one surface left to empty rather than two.
+  P4c, and the variant itself is gone at P4d.** P4c routed the whole T5 surface, taking
+  `daemon::server::unrouted()`, its producer and its phase constant with it; N43 records
+  what replaced the assertion (the *partition* over `api::METHODS` became the equality, so
+  a twentieth method still cannot land unrouted and unremarked). P4d's uevent watch emptied
+  the last row of `webcam-handler-v4l2::unimplemented_surface()`, and the variant, the
+  list, its pinned test and D13's lowest RPC code were **deleted** — N6's scheduled death,
+  taken by the exhaustive `Error::kind()` match exactly as N6 predicted. The registry is
+  eighteen variants and `D13_CODES` is `-32029..=-32012`; no other code moved.
 - ~~The camera actor's idle deadline is stamped when a command *starts*.~~ **Discharged at
   P4c**, by N45's clock-free shape: the actor declines the first idle pass after a command
   completes, which costs one sweep cadence and needs no clock — the other shape would have
   reversed N41 and needed a `SteppedClock` that is deliberately not `Sync`, making the fix
   untestable without a wait. Both directions have a test, and `CAMERA_IDLE_CLOSE_MS`'s doc
   carries the one-cadence overshoot beside the number it prices.
-- The daemon's socket directory is checked as an inode rather than a name (symlink refused,
-  base verified, `(st_dev, st_ino)` re-checked before the bind), but the last window —
-  holding the directory as a *descriptor* and binding relative to it, which is also what
-  would let it compare `st_uid` with `geteuid()` — needs a syscall wrapper. P4d owns it,
-  beside the unprivileged-bind measurement (N39, N8). **No longer blocked on a decision**
-  (owner ruling 2026-08-09, §2.8): `rustix` 1.1.4 is already in `Cargo.lock` transitively
-  and `Apache-2.0 WITH LLVM-exception` is already allowlisted *for it by name*, so P4d
-  takes a direct edge to something already vendored and already blessed. `rustix` rather
-  than `libc` because the constraint was never the licence — it is that the daemon is
-  `#![forbid(unsafe_code)]`, and a safe wrapper closes the window without moving the
-  unsafe boundary `unsafe-scope.sh` asserts.
-- `CAP_NET_ADMIN` was granted on an unverified prediction; P4d measures whether the
-  uevent bind needs it (§8 item 10) and G6 consumes the answer.
+- ~~The daemon's socket directory is checked as an inode rather than a name, but the last
+  window — holding the directory as a *descriptor* and binding relative to it — needs a
+  syscall wrapper.~~ **Discharged at P4d** with `rustix` 1.1.4 (`fs`, `net`, `process`), no
+  `unsafe` block and no `deny.toml` change. The directory is opened
+  `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, `fstat`ed, checked for mode **and** `st_uid`
+  against `geteuid()`, and held open; the `statat`, the `unlinkat` and the bind all go
+  through that descriptor. The literal ask turned out to be unreachable — Linux has no
+  `bindat(2)` — so the bind goes through `/proc/self/fd/<dirfd>/wchd.sock`, which is the
+  dirfd-relative bind spelled the way Linux offers it and was measured to land in the
+  checked inode after a directory swap. Substitution is now *defeated* rather than
+  detected. The residual is written into N39's amendment: `/proc` must be mounted (there is
+  a named `warn!` fallback), and `$XDG_RUNTIME_DIR` itself is still resolved by name once.
+- ~~`CAP_NET_ADMIN` was granted on an unverified prediction; P4d measures whether the
+  uevent bind needs it (§8 item 10) and G6 consumes the answer.~~ **Measured at P4d, and
+  the prediction is disproved** (PF:21): on kernel `7.0.0-29-generic` a process with an
+  empty effective capability set binds `NETLINK_KOBJECT_UEVENT` group 1 *and receives* a
+  whole `uvcvideo` cycle — 56 packets, `ENOBUFS` never raised, measured three times. Both
+  halves are separate claims and both were taken; the R3 arm (E9) is the second one running
+  through this workspace's own socket rather than a probe. N8's row carries the amendment.
+  **P4d does not re-bless**: the narrowing is still G6's (P6e), which now has a fact to
+  execute on instead of a prediction — `cap_sys_module` is untouched, because `modprobe`
+  still needs it.
 - D12's `wait` flag — "a second capture request queues or is refused with `Busy` per its
   `wait` flag" — is **re-deferred from P4c to P4e**, with its reason recorded (N42). P4c
   routes the capture verb, so the half of D12 that exists is reachable over the wire and
@@ -255,7 +265,8 @@ Transport around the proven core. Gate **G4** criteria are v1's, distributed bel
 **Lands:** `webcam-handler-api`: the jsonrpsee `#[rpc(server, client)]` trait — minus
 the `record_*` methods, which join at P6 with their tests (D10 completes there and G6
 says so) — over schema DTOs; the D13→RPC-code mapping as one exhaustive match (nineteen
-codes; P4d shrinks it to eighteen); the two-variant sink DTO semantics
+codes at P4a; P4d shrank it to eighteen by deleting the lowest, as arranged); the
+two-variant sink DTO semantics
 (`ReturnBytes`/`ServerPath`, client-side cwd resolution before sending); xtask OpenRPC
 emission, with `schema-artifacts-current.sh` widened to the OpenRPC bundle (docs/9 P4
 row). N5's wall for this crate — tokio allowed, no axum/hyper/tower-http — is already
@@ -339,8 +350,11 @@ derived from the T4 verb list with local-only verbs named, never silently exempt
 ### P4g — G4 close
 
 **Lands:** remaining criteria rows, counted; R3 evidence — the daemon against the real
-cameras: a photo over UDS, a calibrate sweep over UDS with live `wchc` progress, the
-P4d hotplug cycle — recorded in the notes. **Then, in its own session:** the
+cameras: a photo over UDS, a calibrate sweep over UDS with live `wchc` progress —
+recorded in the notes. The **hotplug cycle is already recorded**, as note E9 at P4d, with
+the transcript and the two mutants that arm was watched failing; G4's own entry cites it
+rather than re-running it, because a transcript written twice is two transcripts nobody
+can tell apart. **Then, in its own session:** the
 adversarial review; fixes; evidence entry; rubric reconciliation (the per-gate cadence
 docs/8 Part E schedules — this appends G4's instance to its record).
 

@@ -32,12 +32,15 @@
 //! wch-suite: prefix=hw_ recipe=smoke-hw
 
 use std::collections::BTreeSet;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use schema::backend::{Camera, CameraBackend};
+use camino::{Utf8Path, Utf8PathBuf};
+use schema::backend::{Camera, CameraBackend, HotplugEvent};
 use schema::camera::NodeKind;
 use schema::capture::StreamRequest;
 use schema::control::{ControlDesc, ControlSlug, ControlType, ControlValue, KnownFlag};
+use schema::limits;
 use schema::profile::DeviceProfile;
 use schema::session::{ControlStatus, Selector, SessionEvent, SweepSpec};
 use testkit::{battery, corpus};
@@ -2048,6 +2051,422 @@ fn hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started() {
     if swept == 0 {
         println!("SKIP: no attached camera exposes a motorized control this arm could sweep");
     }
+}
+
+/// The blessed privileged helper, or the named skip that says why this host cannot cycle.
+///
+/// Two of this arm's four preconditions live here and the other two are asked for
+/// separately ([`no_camera_holders`] and [`attached`]), because they are genuinely
+/// different diagnoses: "there is no helper", "the helper is not blessed", "somebody holds
+/// a camera" and "there is no camera" send an operator to four different places, and one
+/// message covering all four would name none of them.
+///
+/// The address is *computed* rather than written down: `crates/backends/v4l2` and
+/// `crates/backends/fake` sit at different depths and cargo-mutants builds the tree
+/// somewhere else entirely, so a `../../../.wch-bin` would be right in exactly one of
+/// those places.
+fn cycling_helper() -> Option<Utf8PathBuf> {
+    let helper = match corpus::repo_root() {
+        Ok(root) => root.join(".wch-bin/wch-priv"),
+        Err(error) => {
+            println!(
+                "SKIP: the repository root could not be located ({error}), so the blessed helper cannot be either"
+            );
+            return None;
+        }
+    };
+    if !helper.is_file() {
+        println!(
+            "SKIP: no blessed helper at .wch-bin/wch-priv; run `just bless` (sudo once) — \
+             this arm cannot cycle a driver without it"
+        );
+        return None;
+    }
+
+    // `doctor` is capability-free by design ("asking is not doing", pinned by the helper's
+    // own `status_verbs_work_without_a_blessing`), so this probe is cheap and changes
+    // nothing. It does perform an ambient raise when the binary is blessed, which is the
+    // point: a green line means delegation has been *exercised* rather than predicted.
+    let doctor = match Command::new(helper.as_std_path()).arg("doctor").output() {
+        Ok(output) => output,
+        Err(error) => {
+            println!("SKIP: {helper} could not be run ({error})");
+            return None;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    match stdout
+        .lines()
+        .find(|line| line.contains("can delegate to a child:"))
+    {
+        Some(line) if line.contains("yes") => Some(helper),
+        Some(line) => {
+            println!(
+                "SKIP: {helper} is present but not blessed (`just bless`); doctor says:{}",
+                line.trim_start_matches(|c: char| c != ':')
+            );
+            None
+        }
+        None => {
+            println!(
+                "SKIP: {helper} answered `doctor` without a delegation line, so this arm \
+                 cannot tell whether a cycle would work"
+            );
+            None
+        }
+    }
+}
+
+/// `true` when the helper can see nobody holding a camera open.
+///
+/// The interlock is the helper's, not ours: `uvcvideo cycle` refuses while any process
+/// holds a `/dev/video*` open, and AGENTS says to design around that rather than fight it.
+/// So this asks first and declines the claim rather than reaching for `--force`, which is
+/// an operator affordance ("you know the holder is your own stuck test") and never a test
+/// affordance.
+///
+/// The helper's own honesty caveat applies and is repeated in the skip: an empty holder
+/// list is "we saw nobody", not "nobody is there" — `/proc/<pid>/fd` is unreadable for
+/// other users' processes. That is why the helper's interlock stays the authority even
+/// after this returns `true`.
+fn no_camera_holders(helper: &Utf8Path) -> bool {
+    let status = match Command::new(helper.as_std_path())
+        .args(["uvcvideo", "status", "--json"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            println!("SKIP: {helper} could not report the uvcvideo status ({error})");
+            return false;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    // `crates/priv`'s holder scan is deliberately not the product's `holders.rs`, and a
+    // third walk of `/proc` here would be a third opinion about the same question
+    // (design §2.10, note N48). Ask the helper; parse its answer.
+    let Ok(report) = serde_json::from_str::<serde_json::Value>(stdout.trim()) else {
+        println!(
+            "SKIP: {helper} answered `uvcvideo status --json` with {stdout:?}, which is not JSON"
+        );
+        return false;
+    };
+    if report["loaded"] != serde_json::Value::Bool(true) {
+        println!(
+            "SKIP: uvcvideo is not loaded on this host, so there is no driver to cycle \
+             (`{helper} exec /usr/sbin/modprobe uvcvideo` loads it)"
+        );
+        return false;
+    }
+    let holders = report["holders"].as_array().map_or(0, Vec::len);
+    if holders > 0 {
+        println!(
+            "SKIP: {holders} process(es) hold a camera open ({}); the uvcvideo interlock \
+             refuses a cycle and this arm does not force it",
+            report["holders"]
+        );
+        return false;
+    }
+    true
+}
+
+/// Every V4L2 node the kernel lists right now, as `/dev/videoN`.
+///
+/// Read here rather than through `V4l2Backend::enumerate` for two reasons. It is the
+/// population the watch actually diffs — `enumerate` drops a whole group when one member
+/// is unreadable, so its node list is a *subset* and an accounting identity built on it
+/// would fail for a reason that has nothing to do with hotplug. And it is an independent
+/// reading: a claim about the watch's events stated in terms of the same code the watch
+/// uses would be circular, which is the rule `fixtures/README.md` states as "a fixture
+/// produced by the code under test proves nothing".
+fn listed_video_nodes() -> BTreeSet<Utf8PathBuf> {
+    let mut nodes = BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir("/sys/class/video4linux") else {
+        return nodes;
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str()
+            && name.starts_with("video")
+        {
+            nodes.insert(Utf8PathBuf::from(format!("/dev/{name}")));
+        }
+    }
+    nodes
+}
+
+/// Whether `events` carries a removal that is followed by an arrival.
+///
+/// The claim is an *ordering*, not a census: a cycle takes the nodes away and brings them
+/// back, and the watch has to say so in that order. See the arm for why the counts are not
+/// asserted.
+fn a_removal_then_an_arrival(events: &[HotplugEvent]) -> bool {
+    let first_removal = events
+        .iter()
+        .position(|event| matches!(event, HotplugEvent::Removed { .. }));
+    match first_removal {
+        Some(index) => events
+            .iter()
+            .skip(index)
+            .any(|event| matches!(event, HotplugEvent::Added { .. })),
+        None => false,
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached and the blessed helper; run with `just smoke-hw`"]
+fn hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_real_watch() {
+    // docs/7 P4d's R3 arm, and the *only* place `V4l2Backend::watch` meets a real kernel
+    // event rather than a committed packet. The parser's own claims are proven by the
+    // fixtures under `fixtures/uevent-*.bin`, which run everywhere; this arm proves the
+    // other half — that the socket, the group, the filter and the debounce are wired to a
+    // kernel that is actually broadcasting.
+    //
+    // **Which half of device loss this proves, and which half stays the fake's.** Design
+    // §3.3 item 9: *mid-stream device loss is fake-only on real hardware.* The helper
+    // refuses to unload `uvcvideo` while any `/dev/video*` is open, so a camera that dies
+    // **while a stream is running** cannot be arranged here at all — that stays
+    // `Fault::DeviceGone` on the fake, modelled rather than measured. What this arm
+    // proves is the half the interlock permits: with every camera **closed**, a driver
+    // cycle produces removals and arrivals through the real watch. The arm therefore
+    // never opens a camera after its first enumeration and never streams a frame, which
+    // is not politeness — it is the precondition that lets the cycle happen at all.
+    //
+    // **The watch is opened before the cycle, deliberately.** A subscription opened after
+    // `modprobe -r` has already run misses the removal half and nothing replays it. That
+    // this is *possible* is a fact worth naming: the watch's descriptor is an AF_NETLINK
+    // socket and not a `/dev/video*` one, so holding it open does not make this process a
+    // camera holder and does not trip the interlock the arm is about to run under.
+    let Some(helper) = cycling_helper() else {
+        return;
+    };
+    let Some((backend, before)) = attached() else {
+        return;
+    };
+    // Fingerprints, never node numbers: a cycle releases ten minors at once and the kernel
+    // re-allocates them in registration order, so `/dev/video0` is not a name that means
+    // anything across the unload. `bus_path` is what survives a replug, which is the whole
+    // reason a fingerprint exists.
+    let before_cameras: BTreeSet<String> = before
+        .iter()
+        .map(|info| info.fingerprint.bus_path.clone())
+        .collect();
+    let before_nodes = listed_video_nodes();
+    println!(
+        "before: {} camera(s) on {} node(s): {}",
+        before_cameras.len(),
+        before_nodes.len(),
+        before_cameras
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    // Asked as late as possible, because the answer is about *now*: the enumeration above
+    // opened every node for `QUERYCAP` and closed each one again, and this is the check
+    // that says so from outside this process.
+    if !no_camera_holders(&helper) {
+        return;
+    }
+
+    let mut watch = backend
+        .watch()
+        .unwrap_or_else(|error| panic!("watch() failed on a host with cameras: {error}"));
+
+    // Spawned rather than run to completion, and that is the arm's central design point.
+    // The watch reports the *difference* between two readings of the node tree (note
+    // N53), so a cycle that has already finished when the first poll happens is
+    // invisible — the tree it left behind is the tree it started with. A subscriber sees
+    // a cycle by watching while it happens, so that is what this does.
+    let mut child = Command::new(helper.as_std_path())
+        .args(["uvcvideo", "cycle"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("could not run {helper}: {error}"));
+
+    // Two readings — the removals, then the arrivals — each bounded by the debounce's own
+    // ceiling, and one more of the same for scheduling this arm does not control. Nothing
+    // here sleeps: `next_event`'s deadline is the wait, which is the bound the trait
+    // declares and the battery measures.
+    let overall = Instant::now() + Duration::from_millis(limits::HOTPLUG_MAX_DEFERRAL_MS * 3);
+    let mut events: Vec<HotplugEvent> = Vec::new();
+    let mut exit = None;
+    // Two consecutive empty slices, each one quiet window long, is how "the burst is over"
+    // is decided without a sleep and without asking the watch about its own insides: any
+    // burst still armed when the first slice began became due inside it, so a second empty
+    // slice means the socket had nothing left to say. Draining to quiet rather than
+    // stopping at the first arrival is what lets the accounting identity below be stated
+    // at all — a subscriber that stopped early would hold a half-applied tree.
+    const QUIET_SLICES_THAT_END_A_BURST: u32 = 2;
+    let mut quiet_slices = 0;
+    while Instant::now() < overall {
+        // A slice rather than the whole budget, so the loop gets to look at the child
+        // between polls. `Ok(None)` at a slice's end is an answer and not a failure (E3).
+        let slice = (Instant::now() + Duration::from_millis(limits::HOTPLUG_QUIET_MS)).min(overall);
+        match watch.next_event(slice) {
+            Ok(Some(event)) => {
+                println!("  event: {event:?}");
+                events.push(event);
+                quiet_slices = 0;
+            }
+            Ok(None) => quiet_slices += 1,
+            Err(error) => {
+                panic!("next_event() at a deadline returned {error}; a timeout is Ok(None) (E3)")
+            }
+        }
+        if exit.is_none() {
+            exit = child.try_wait().expect("the cycle's exit status");
+        }
+        match exit {
+            // A refusal is not a hotplug failure — no event is coming, so stop waiting for
+            // one and let the reporting below decide whether it is a skip or a defect.
+            Some(status) if !status.success() => break,
+            Some(_)
+                if quiet_slices >= QUIET_SLICES_THAT_END_A_BURST
+                    && a_removal_then_an_arrival(&events) =>
+            {
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("could not collect {helper}'s output: {error}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().chain(stderr.lines()) {
+        println!("  cycle: {line}");
+    }
+
+    if !output.status.success() {
+        // Availability is not capability (AGENTS rule 7): a desk that got busy between the
+        // holder check and the unload is a busy desk, not a broken watch. Anything else is
+        // a failure, because it means the helper could not do what it says it does.
+        assert!(
+            stderr.contains("refusing to unload uvcvideo"),
+            "{helper} uvcvideo cycle exited {:?}:\n{stderr}",
+            output.status.code()
+        );
+        println!(
+            "SKIP: a camera was opened between this arm's holder check and the unload, so \
+             the helper's interlock refused the cycle; this arm never passes --force"
+        );
+        return;
+    }
+    // `cycle` exits 0 with a warning when the unload did not take, so the exit status is
+    // not evidence that anything disappeared — the helper's own struct says as much
+    // ("if false, the unload did not take effect and nothing was proved").
+    if stdout.contains("the nodes never went away") {
+        println!(
+            "SKIP: the unload did not take effect on this host, so this run has nothing to \
+             say about a node disappearing"
+        );
+        return;
+    }
+
+    // Shapes, never counts. The debounce coalesces a burst and the *turn* — the first
+    // arrival after a run of removals — is what ends it (note N53), so the reading that
+    // reports the removals happens while the driver is still re-registering nodes. How
+    // many of the ten are back at that instant is a race with `modprobe`, and asserting a
+    // number would be asserting a scheduling coincidence. What is not a coincidence is
+    // the ordering and the provenance: something that was here left, and something
+    // arrived after it.
+    assert!(
+        a_removal_then_an_arrival(&events),
+        "a uvcvideo cycle produced {} event(s) through the real watch, which is not a \
+         removal followed by an arrival: {events:?}",
+        events.len()
+    );
+    let removed: Vec<&Utf8PathBuf> = events
+        .iter()
+        .filter_map(|event| match event {
+            HotplugEvent::Removed { path } => Some(path),
+            HotplugEvent::Added { .. } => None,
+        })
+        .collect();
+    let added: Vec<&Utf8PathBuf> = events
+        .iter()
+        .filter_map(|event| match event {
+            HotplugEvent::Added { path } => Some(path),
+            HotplugEvent::Removed { .. } => None,
+        })
+        .collect();
+    for path in &removed {
+        assert!(
+            before_nodes.contains(*path),
+            "the watch reported {path} leaving, and it was never here: {before_nodes:?}"
+        );
+        assert!(
+            !path.as_str().is_empty(),
+            "a hotplug event named an empty path"
+        );
+    }
+    println!(
+        "cycle seen through watch: {} removal(s), {} arrival(s) — {} then {}",
+        removed.len(),
+        added.len(),
+        removed.first().map_or("-", |path| path.as_str()),
+        added.first().map_or("-", |path| path.as_str())
+    );
+
+    // The claim the counts cannot make, and the one a subscriber actually depends on: a
+    // caller that started from the node list this arm read before the cycle and applied
+    // every event the watch delivered arrives at the node list the kernel has now. That is
+    // "the socket is a trigger, not a source of truth" (note N53) stated as an outcome —
+    // it holds however many packets were dropped, coalesced or renumbered along the way,
+    // and it is what would go red if the diff ever emitted an event the tree does not
+    // support.
+    let mut tracked = before_nodes.clone();
+    for event in &events {
+        match event {
+            HotplugEvent::Removed { path } => {
+                tracked.remove(path);
+            }
+            HotplugEvent::Added { path } => {
+                tracked.insert(path.clone());
+            }
+        }
+    }
+    let now_listed = listed_video_nodes();
+    assert_eq!(
+        tracked,
+        now_listed,
+        "applying the watch's {} event(s) to the pre-cycle node list does not reproduce \
+         the kernel's own listing",
+        events.len()
+    );
+
+    // "Leave the camera as you found it" (AGENTS rule 8) covers the driver too, and this
+    // is the assertion that keeps a bad cycle from leaving the desk dark quietly. The
+    // recovery is named in the message rather than attempted here: `cycle` has already
+    // run its own reload, so a second one is not more likely to work, and reaching for a
+    // root-equivalent `exec` inside a test is a bigger hammer than this arm is allowed.
+    let after = backend.enumerate().unwrap_or_else(|error| {
+        panic!(
+            "the cameras did not come back after a uvcvideo cycle ({error}). Recover with \
+             `{helper} exec /usr/sbin/modprobe uvcvideo`, then `{helper} uvcvideo status`"
+        )
+    });
+    let after_cameras: BTreeSet<String> = after
+        .iter()
+        .map(|info| info.fingerprint.bus_path.clone())
+        .collect();
+    assert_eq!(
+        after_cameras, before_cameras,
+        "the cycle did not put every camera back. Recover with `{helper} exec \
+         /usr/sbin/modprobe uvcvideo`, then `{helper} uvcvideo status`"
+    );
+    println!(
+        "after: {} camera(s) back on the same {} bus path(s)",
+        after_cameras.len(),
+        before_cameras.len()
+    );
+
+    // Dropped before the arm returns, so the next test in the one-thread `exclusive-device`
+    // group does not inherit a socket with a burst still queued on it.
+    drop(watch);
 }
 
 /// Every control's current value, by slug — the reading a restore is compared against.

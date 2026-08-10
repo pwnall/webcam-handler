@@ -16,3 +16,6 @@ mis = "mis"
 # "parameters", which we do not get to correct: the names come out of bindgen and appear
 # in the offsets derived from it.
 parm = "parm"
+# `/proc/<pid>/status`'s `CapInh:` line, quoted verbatim in a measurement transcript
+# \[PF:21\]. A transcript that was corrected is not a transcript.
+Inh = "Inh"

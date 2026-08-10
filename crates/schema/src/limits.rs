@@ -55,6 +55,31 @@ pub const DAEMON_SOCKET_FILE: &str = "wchd.sock";
 /// like.
 pub const MAX_UNIX_SOCKET_PATH_BYTES: usize = 107;
 
+/// The kernel's accept queue depth for the daemon's Unix socket.
+///
+/// Ours because the socket is ours: `tokio::net::UnixListener::bind` chose 1024 for us
+/// until note N39's hardening made the daemon create, `bind` and `listen` the descriptor
+/// itself, and an inherited number behind a socket this project owns is exactly what
+/// AGENTS' "bounded everything" is about. 1024 was Linux's `SOMAXCONN` answer to a public
+/// TCP service; this is a per-user daemon behind a 0700 directory, and the queue only has
+/// to absorb the clients that arrive between two turns of the accept loop.
+///
+/// It is deliberately larger than [`DAEMON_MAX_CONNECTIONS`]: the backlog bounds callers
+/// *waiting to be accepted* and the cap bounds callers *being served*, so equalising them
+/// would make a client that connects while the daemon is at its cap meet an `ECONNREFUSED`
+/// from the kernel instead of the accept loop's own bounded queue.
+pub const DAEMON_LISTEN_BACKLOG: i32 = 64;
+
+// Checked where both numbers are, in `CAMERA_IDLE_SWEEP_MS`'s shape, because the paragraph
+// above is an argument about the *pair* and nothing else reads them together: tune
+// `DAEMON_MAX_CONNECTIONS` up to jsonrpsee's own default of 100, or trim the backlog to
+// "bound it harder", and everything still compiles while a client connecting at the cap
+// meets the kernel's `ECONNREFUSED` instead of the accept loop's queue — the one outcome
+// the ordering exists to prevent. The `as` is safe by construction: the left conjunct
+// establishes the value is positive, so the widening cannot change it.
+const _: () =
+    assert!(DAEMON_LISTEN_BACKLOG > 0 && DAEMON_LISTEN_BACKLOG as u32 > DAEMON_MAX_CONNECTIONS);
+
 /// The most connections the daemon serves at once.
 ///
 /// jsonrpsee's own default is 100 and this is not it: a per-user daemon behind a 0700
@@ -317,3 +342,81 @@ pub const MAX_FRAME_SIZES_PER_FORMAT: u32 = 256;
 
 /// The most frame intervals one size may enumerate. The OBSBOT's 1080p offers ten.
 pub const MAX_FRAME_INTERVALS_PER_SIZE: u32 = 256;
+
+/// The buffer one uevent netlink datagram is read into, in bytes.
+///
+/// The kernel builds every uevent inside its own `UEVENT_BUFFER_SIZE` (2048 bytes) and
+/// broadcasts it as one datagram, so this is four times the largest packet the sender can
+/// emit. It is a bound rather than a guess: a datagram longer than the buffer is reported
+/// by `MSG_TRUNC` and **dropped whole** rather than parsed from a prefix, because half a
+/// packet is a different thing from a packet and must not be spelled the same way (rubric
+/// B10 — a packet off a kernel socket is attacker-shaped input).
+///
+/// Read by `webcam-handler-v4l2`'s uevent socket, which is also where the oversize
+/// refusal is asserted in both directions.
+pub const UEVENT_PACKET_BYTES: usize = 8 * 1024;
+
+/// The most uevent datagrams one *drain* takes off the socket before it hands control back
+/// to the loop above it — one pass, **not** one `HotplugWatch::next_event` call.
+///
+/// One `uvcvideo` cycle broadcast 56 packets on this host, three times running \[PF:21\],
+/// so one pass reads a whole cycle. What is left over is not lost: it stays queued on the
+/// socket, which is readable again immediately.
+///
+/// **What bounds one `next_event` is the caller's deadline, not this.** That is worth
+/// stating because the opposite is the natural reading of a constant with this name.
+/// `next_event` loops — drain, decide what changed, wait — until it has an event or the
+/// deadline arrives, so a broadcast storm from a neighbouring subsystem is read for as long
+/// as the caller was willing to wait. That is the behaviour the watch wants rather than an
+/// omission: datagrams nobody reads are datagrams the kernel eventually throws away, which
+/// arrives as `ENOBUFS` and costs a trigger, so draining a storm is work the watch has to
+/// do. The bound that makes it safe is the deadline the trait already declares (rubric
+/// A14), and the deadline is asserted in both directions where `next_event` lives.
+///
+/// Read by `webcam-handler-v4l2`'s hotplug watch: its flood test drives more packets than
+/// this through one drain and asserts the drain stopped here, and a second arm drives the
+/// same flood through `next_event` and asserts every packet was read and the deadline was
+/// still honoured.
+pub const MAX_UEVENTS_PER_DRAIN: u32 = 64;
+
+/// How quiet the uevent socket must go before a burst of triggers is treated as finished,
+/// in milliseconds.
+///
+/// **PF:19 is why this exists**: one physical camera owns two capture nodes (the Dell owns
+/// four), so one plug is several uevents and re-enumerating per packet would be several
+/// scans of a tree that is still moving. What this window actually has to bridge is the gap
+/// between the nodes of *one camera*, and measured on this host \[PF:21\] that was at most
+/// **30.2 ms**. 250 ms clears it many times over.
+///
+/// **It does not try to separate a driver cycle's removes from its adds, because no number
+/// does.** The same captures put the largest gap *inside* the remove phase at **93.6 ms**
+/// (the Dell goes, then the USB3 devices ~94 ms later) and the pause from the last remove
+/// to the first add at **98.5 ms** in one cycle and 119.0 ms in another — five milliseconds
+/// apart in the worse case, and all of them `modprobe` timings rather than bounds. A window
+/// picked between them splits the remove phase in two; a window above them coalesces a
+/// whole cycle into one reading whose diff is empty. Note N53 has the table and the
+/// reasoning; what ends a burst early is the turn rule below, not this number.
+///
+/// It is **not** load-bearing for correctness, and that is deliberate: the watch reports the
+/// difference between successive readings of the node tree, so a window that is too short
+/// costs extra readings and a window that is too long coalesces more of a burst — neither
+/// can invent an event or leave the watch out of step with the tree. What keeps a *driver
+/// cycle* from coalescing into "nothing happened" is not this number but the turn rule in
+/// `webcam-handler-v4l2`'s debounce: a trigger that reverses the burst's direction ends it
+/// immediately.
+pub const HOTPLUG_QUIET_MS: u64 = 250;
+
+/// The longest a hotplug re-reading may be deferred by a trigger stream that never goes
+/// quiet, in milliseconds.
+///
+/// [`HOTPLUG_QUIET_MS`] alone is a hang wearing a debounce costume: a failing hub or a
+/// flaky cable produces an add/remove stream with no pause in it, and a quiet-only rule
+/// would defer the reading forever. This is the ceiling that makes the deferral bounded
+/// (rubric A14) — the reading happens this long after the *first* trigger of a burst
+/// however busy the socket stays.
+pub const HOTPLUG_MAX_DEFERRAL_MS: u64 = 2_000;
+
+// Checked where both numbers are, for `CAMERA_IDLE_SWEEP_MS`'s reason: a ceiling at or
+// below the quiet window would fire first every time, which would make the quiet window
+// unreachable code rather than a policy.
+const _: () = assert!(HOTPLUG_QUIET_MS > 0 && HOTPLUG_QUIET_MS < HOTPLUG_MAX_DEFERRAL_MS);

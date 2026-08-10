@@ -74,6 +74,13 @@ listenfd = "1.0.2"
 little_exif = "0.6.23"
 png = "0.18.1"
 rust-embed = "8.12.0"
+# Safe wrappers for the syscalls `std` does not expose: the `NETLINK_KOBJECT_UEVENT`
+# socket P4d's hotplug watch binds, and the `*at` family the daemon's socket directory
+# needs (note N39). Chosen over `libc` because it is *safe* — the daemon is
+# `#![forbid(unsafe_code)]` and must stay that way, and in the V4L2 backend it keeps a
+# kernel-facing edge from adding `unsafe` blocks. Already in `Cargo.lock` transitively
+# (fd-lock, tempfile, crossterm) and its licence already named on deny.toml's allowlist.
+rustix = "1.1.4"
 schemars = "1.2.2"
 sd-notify = "0.5.0"
 serde = { version = "1.0.229", features = ["derive"] }

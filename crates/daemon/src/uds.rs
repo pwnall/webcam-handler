@@ -65,14 +65,38 @@
 //! to serve from a directory anyone else can walk into.
 //!
 //! Because that one check carries the whole auth model, it is made about an **inode** and
-//! not about a name: the directory is `lstat`ed rather than `stat`ed (a symlink is
-//! refused, not followed), `$XDG_RUNTIME_DIR` itself is required to exist rather than
-//! created, and [`SocketDir::bind`] re-reads the directory and compares `(st_dev, st_ino)`
-//! with what [`SocketDir::prepare`] checked, so the object that was found private and the
-//! object bound into are provably the same one. Note **N39** has the measurements that
-//! forced each of those.
+//! not about a name — and since note **N39**'s hardening it is made about a *descriptor*,
+//! which is the strongest form of that available on Linux. [`SocketDir::prepare`] opens the
+//! directory with `SOCKET_DIR_OFLAGS` (so "is a directory" and "is not a symlink" are the
+//! kernel's refusals rather than a `lstat` somebody could race — that constant's doc says
+//! which flag refuses which, because under `O_PATH` the obvious reading is wrong), `fstat`s
+//! *that descriptor*, requires `$XDG_RUNTIME_DIR` to exist rather than creating it, checks
+//! the mode **and the owner** against `geteuid()`, and holds the descriptor open for the
+//! daemon's life. [`SocketDir::bind`] then binds relative to it. Note **N39** has the
+//! measurements that forced each of those, and its 2026-08-10 amendment carries what is
+//! still open.
+//!
+//! ## Why the bind is relative to a descriptor, and how, given that Linux has no `bindat`
+//!
+//! `bind(2)` takes a `sockaddr_un` whose `sun_path` the kernel resolves from the process's
+//! root and cwd. There is no `bindat(2)` to pass a `dirfd` to, in rustix or in libc or in a
+//! hand-written syscall — so the literal shape N39 asked for does not exist. Two things do:
+//!
+//! - `fchdir` then bind a relative name. **Rejected:** the working directory is
+//!   process-global, and changing it inside a multi-threaded tokio daemon is a data race
+//!   with every other thread's relative path for the duration of the call.
+//! - Bind `/proc/self/fd/<dirfd>/wchd.sock`. `/proc/self/fd` entries are *magic links*:
+//!   resolution through one jumps to the dentry the descriptor holds instead of re-walking
+//!   a stored name. That is the dirfd-relative bind, spelled the way Linux offers it, and
+//!   it was measured on this host (note N39's amendment) — a directory swapped for another
+//!   between the check and the bind leaves the socket in the **checked** inode, and a
+//!   checked directory that is *removed* fails the bind closed with `ENOENT`.
+//!
+//! The one thing that path needs is `/proc` mounted. When it is not, [`SocketDir::bind`]
+//! falls back to binding by name and says so at `warn` naming what is no longer protected —
+//! a silent downgrade of an authentication model is worse than the window it hides.
 
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use engine::paths::Env;
@@ -80,6 +104,9 @@ use engine::store::{LockProtocol, StoreLock};
 use jsonrpsee_server::{
     BatchRequestConfig, Methods, Server, ServerConfig, ServerHandle, stop_channel,
 };
+use rustix::fs::{AtFlags, Mode, OFlags};
+use rustix::io::Errno;
+use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use schema::limits;
 use schema::{Error, Result};
 use tokio::net::{UnixListener, UnixStream};
@@ -94,21 +121,49 @@ pub const SOCKET_DIR_MODE: u32 = 0o700;
 /// The mode bits a directory's permissions carry — everything below the type bits.
 const MODE_BITS: u32 = 0o7777;
 
+/// How the socket directory and the base above it are opened, in one place because the
+/// combination is the security property and not a spelling.
+///
+/// **`O_DIRECTORY` is the flag that refuses a symlink here, and `O_NOFOLLOW` is what makes
+/// it do so.** Measured on this host: `O_PATH | O_NOFOLLOW` on a symlink to a directory
+/// *succeeds* and hands back a descriptor to the link itself (`st_mode` `0o120777`) —
+/// `open(2)` says so explicitly for that pair — so `O_NOFOLLOW` alone is not the guard it
+/// looks like under `O_PATH`. Adding `O_DIRECTORY` turns that success into `ENOTDIR`,
+/// which is the errno
+/// [`tests::a_symlinked_socket_directory_is_refused_however_private_its_target_is`] pins.
+/// Neither flag may be dropped: without `O_NOFOLLOW` the open follows the link and checks
+/// the target, and without `O_DIRECTORY` it opens the link and checks *that*.
+///
+/// `O_PATH` asks for no read permission and is enough for `fstat`, `statat`, `mkdirat`,
+/// `unlinkat` and the `/proc/self/fd` bind; `O_CLOEXEC` because the daemon spawns nothing
+/// that should inherit its socket directory.
+const SOCKET_DIR_OFLAGS: OFlags = OFlags::DIRECTORY
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::PATH);
+
 /// The runtime directory the daemon serves its socket from, once its mode is known good.
 ///
 /// Holding this value is the evidence that the check happened: [`SocketDir::bind`] is the
 /// only way to get a listener out of this module, and it takes `&self`, so a socket
 /// cannot be bound in a directory nobody looked at.
-#[derive(Debug, Clone)]
+///
+/// **Not `Clone`**, because an `OwnedFd` is not: the descriptor *is* the checked object, so
+/// a copy would either duplicate it or (worse) tempt somebody to rebuild the value from the
+/// path and lose the guarantee. Nobody cloned it — `main.rs`, `tests/uds.rs` and
+/// `tests/support/fixture.rs` each `prepare` their own — and an `Arc<OwnedFd>` is the
+/// answer if that ever changes.
+#[derive(Debug)]
 pub struct SocketDir {
     path: Utf8PathBuf,
-    /// The directory this value's mode was read off, as the kernel identifies it.
+    /// The checked directory itself, held open for the daemon's life.
     ///
-    /// A path is a name and names are re-resolved; `(st_dev, st_ino)` is the object. It is
-    /// carried so [`SocketDir::bind`] can prove that the directory it binds into is the
-    /// one [`SocketDir::prepare`] found private, rather than trusting that the name still
-    /// leads there.
-    identity: (u64, u64),
+    /// A path is a name and names are re-resolved; a descriptor is the object. This is what
+    /// [`SocketDir::bind`] binds relative to, so "the directory whose mode and owner were
+    /// asserted" and "the directory the socket lands in" are one inode rather than two
+    /// readings of one name. Opened `O_PATH`, which asks for no read permission and is
+    /// enough for `fstat`, `statat`, `unlinkat` and the `/proc/self/fd` bind.
+    dir: OwnedFd,
 }
 
 impl SocketDir {
@@ -135,15 +190,33 @@ impl SocketDir {
     /// closed. The refusal names the directory and the mode found, because "permission
     /// posture wrong" is only actionable if it says what to fix.
     ///
-    /// ## Why the check is about an inode and not about a path
+    /// ## Why the check is about a descriptor and not about a path
     ///
     /// `std::fs::metadata` follows symlinks and `DirBuilder::recursive(true)` is happy to
     /// find one where it wanted to create a directory, so a `webcam-handler` that is a
     /// **symlink to** a 0700 directory passed the mode check while the socket was bound
     /// wherever the link pointed — and the link can be re-pointed afterwards. Measured on
-    /// this tree, both halves (note N39). So the leaf is `lstat`ed and a symlink is a
-    /// refusal, and [`SocketDir::bind`] re-checks the inode it was told about rather than
-    /// re-resolving the name.
+    /// this tree, both halves (note N39).
+    ///
+    /// The repair is not a better `lstat`. Every check made through a *name* is a check on
+    /// whatever that name meant at the instant it was made, so the question is only how
+    /// small the window is. `SOCKET_DIR_OFLAGS` closes it properly: the open itself
+    /// refuses a symlink and a non-directory — `ENOTDIR` from the kernel rather than
+    /// something this code has to notice — and the descriptor that comes back **is** the
+    /// object, so every later question (mode, owner, what is inside it, where the socket
+    /// goes) is asked of it and cannot be answered about something else. *Which* flag does
+    /// that work is not obvious and is written down where the flags are: under `O_PATH` it
+    /// is `O_DIRECTORY`, and `O_NOFOLLOW` is what leaves it a symlink to refuse.
+    ///
+    /// ## Why the owner is checked
+    ///
+    /// `st_uid` against `geteuid()`, which is the check N39 recorded as absent by omission.
+    /// The ordinary non-root case is nearly self-refuting — a 0700 directory belonging to
+    /// somebody else is one this process cannot traverse, so the bind would fail `EACCES`
+    /// anyway — but "nearly" is doing work there: a daemon running as root traverses
+    /// anything, so a root `wchd` pointed at a *user's* `$XDG_RUNTIME_DIR` would happily
+    /// serve the camera from a directory that user can replace at will. That is the case
+    /// this refuses, and it costs one comparison on a `Stat` already read.
     ///
     /// ## Why `$XDG_RUNTIME_DIR` must already exist
     ///
@@ -160,79 +233,72 @@ impl SocketDir {
     ///
     /// [`Error::StorageIo`] when `$XDG_RUNTIME_DIR` is unset, empty or relative (that
     /// refusal is `engine::paths`'s and names the variable), when it does not exist or is
-    /// not a directory, when the socket directory cannot be created or read, when it is a
-    /// symlink or not a directory, or when its mode is not [`SOCKET_DIR_MODE`].
+    /// not a directory, when the socket directory cannot be created or opened, when it is a
+    /// symlink or not a directory, when its mode is not [`SOCKET_DIR_MODE`], or when it is
+    /// owned by somebody other than this process's effective user.
     pub fn prepare(env: &dyn Env) -> Result<SocketDir> {
         let path = engine::paths::runtime_dir(env)?;
-        let base = path.parent().unwrap_or(&path).to_owned();
-
-        let found =
-            std::fs::symlink_metadata(base.as_std_path()).map_err(|err| Error::StorageIo {
-                path: base.clone(),
-                errno: err.raw_os_error(),
-                message: format!(
-                    "{err} — $XDG_RUNTIME_DIR names the per-user directory the platform \
-                 promises is private and cleaned at logout (D11), so a daemon that made \
-                 one would be inventing the promise rather than resting on it; a missing \
-                 one means this process is not in a login session"
-                ),
-            })?;
-        if found.file_type().is_symlink() || !found.is_dir() {
+        // Split into "the directory the platform promised" and "the one component this
+        // daemon owns", both off the one path `engine::paths` composed, so neither is a
+        // second spelling of `engine::paths::APP_DIR`. A path with no final component is
+        // not something `runtime_dir` can produce — it joins `APP_DIR` — so the refusal
+        // below is unreachable rather than defensive, and it is written as a refusal
+        // instead of an `unwrap` because a panic in the composition root is a daemon that
+        // does not start and does not say why.
+        let (Some(base), Some(leaf)) = (path.parent(), path.file_name()) else {
             return Err(Error::StorageIo {
-                path: base,
+                path: path.clone(),
                 errno: None,
-                message: "is not a directory (or is a symlink to one), and \
-                          $XDG_RUNTIME_DIR must be the platform's own per-user directory \
-                          — the daemon's socket permissions rest on what it promises (D11)"
+                message: "has no final component, so there is no directory for the daemon \
+                          to own under $XDG_RUNTIME_DIR (D11)"
                     .to_owned(),
             });
-        }
+        };
+        let (base, leaf) = (base.to_owned(), leaf.to_owned());
 
-        match std::fs::DirBuilder::new()
-            .recursive(false)
-            .mode(SOCKET_DIR_MODE)
-            .create(path.as_std_path())
-        {
+        // [`SOCKET_DIR_OFLAGS`] is the whole of "exists, is a directory, is not a symlink"
+        // — asked of the kernel in the open itself rather than of a `lstat` whose answer
+        // could be stale by the next call. Which flag refuses what is stated where the
+        // constant is, because under `O_PATH` the obvious reading of `O_NOFOLLOW` is wrong.
+        let base_fd = rustix::fs::open(base.as_std_path(), SOCKET_DIR_OFLAGS, Mode::empty())
+            .map_err(|errno| Error::StorageIo {
+                path: base.clone(),
+                errno: Some(errno.raw_os_error()),
+                message: format!(
+                    "{errno} — $XDG_RUNTIME_DIR names the per-user directory the platform \
+                     promises is private and cleaned at logout (D11), so a daemon that \
+                     made one would be inventing the promise rather than resting on it; a \
+                     missing one means this process is not in a login session, and a \
+                     symlinked or non-directory one is not the platform's promise either"
+                ),
+            })?;
+
+        match rustix::fs::mkdirat(&base_fd, leaf.as_str(), dir_mode()) {
             Ok(()) => {}
             // Already there is the ordinary case and says nothing about the mode, which
             // is what the read-back below is for.
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(storage_io(&path, &err)),
+            Err(Errno::EXIST) => {}
+            Err(errno) => return Err(errno_io(&path, errno)),
         }
 
-        let found =
-            std::fs::symlink_metadata(path.as_std_path()).map_err(|err| storage_io(&path, &err))?;
-        if found.file_type().is_symlink() || !found.is_dir() {
-            return Err(Error::StorageIo {
-                path,
-                errno: None,
-                message: "is a symlink or is not a directory, and the daemon's socket \
-                          directory has to be a directory this process can see the mode \
-                          of — a link's target can be re-pointed between the check and \
-                          the bind, so what is checked is the directory itself (D11)"
-                    .to_owned(),
-            });
-        }
-
-        let mode = found.permissions().mode() & MODE_BITS;
-        if mode != SOCKET_DIR_MODE {
-            return Err(Error::StorageIo {
-                path,
-                errno: None,
+        let dir = rustix::fs::openat(&base_fd, leaf.as_str(), SOCKET_DIR_OFLAGS, Mode::empty())
+            .map_err(|errno| Error::StorageIo {
+                path: path.clone(),
+                errno: Some(errno.raw_os_error()),
                 message: format!(
-                    "is mode {mode:04o}, and the daemon's socket directory must be \
-                     {SOCKET_DIR_MODE:04o} — filesystem permissions are the only thing \
-                     authenticating this socket (D11), so serving from a directory \
-                     another account can walk into would be serving the camera to them; \
-                     fix the mode and start again"
+                    "{errno} — is a symlink, or is not a directory, or cannot be opened. \
+                     The daemon holds its socket directory as a descriptor and opens it \
+                     O_NOFOLLOW | O_DIRECTORY, so a symlink is refused by the kernel as \
+                     ENOTDIR rather than followed (a link's target can be re-pointed \
+                     between the check and the bind); what is checked is the directory \
+                     itself (D11)"
                 ),
-            });
-        }
+            })?;
 
-        Ok(SocketDir {
-            path,
-            identity: (found.dev(), found.ino()),
-        })
+        let found = rustix::fs::fstat(&dir).map_err(|errno| errno_io(&path, errno))?;
+        check_mode_and_owner(&path, &found)?;
+
+        Ok(SocketDir { path, dir })
     }
 
     /// The directory, mode already asserted.
@@ -282,29 +348,39 @@ impl SocketDir {
     /// operator's file because it sits where we want to bind is a data-loss bug wearing a
     /// cleanup routine.
     ///
-    /// ## Why the directory is checked twice
+    /// ## Why the directory is checked again, and what that is now worth
     ///
-    /// [`SocketDir::prepare`] read a mode; this binds a socket. Between the two the name
-    /// can come to mean a different object — an attacker who owns the *parent* can
-    /// `rename` a directory or a symlink into place, and unlink/rename permission is a
-    /// property of the parent rather than of the child. So the directory is read again
-    /// here and its `(st_dev, st_ino)` and mode compared with what `prepare` found: the
-    /// object that was proved private and the object bound into are the same inode, or
-    /// this refuses. That does not close the window between this check and `bind(2)`
-    /// itself — closing it needs a directory descriptor and a `bind` relative to it,
-    /// which needs a syscall wrapper this workspace does not link (note N39 carries the
-    /// obligation) — but it turns "checked a different object" from the default into a
-    /// race somebody has to win.
+    /// [`SocketDir::prepare`] read a mode and an owner; this binds a socket. Everything
+    /// below happens through [`SocketDir`]'s held descriptor — the `statat` for a leftover
+    /// socket, the `unlinkat` that removes it, and the bind itself — so "an attacker who
+    /// owns the *parent* renames a directory into place between the two" is no longer a
+    /// race this has to win: renaming a name does not move a descriptor, and the socket
+    /// lands in the inode whose mode and owner were asserted. Measured, both halves (note
+    /// N39's amendment).
+    ///
+    /// The `fstat` re-check that remains is therefore about the inode's *own* mutability
+    /// rather than about which inode it is: a `chmod 0777` on the checked directory between
+    /// `prepare` and here is still a refusal, and that is a question about the right object,
+    /// which is what N39's bullet list was complaining about.
+    ///
+    /// ## What [`limits::MAX_UNIX_SOCKET_PATH_BYTES`] protects now
+    ///
+    /// Not this bind. The address bound is `/proc/self/fd/<n>/wchd.sock`, about 25 bytes,
+    /// so it cannot overflow `sun_path` however deep `$XDG_RUNTIME_DIR` is. The check stays
+    /// because the **client** connects by the real name, and a socket a client cannot
+    /// address is a daemon that starts and serves nobody — so the refusal is on the caller's
+    /// behalf and its message says so, or the check reads as dead code to the next reviewer.
     ///
     /// # Errors
     ///
     /// [`Error::StorageIo`] when the lock is not held for the daemon's lifetime, when the
-    /// socket directory is no longer the one whose mode was asserted, when the composed
-    /// path is longer than the kernel's `sun_path`, when something that is not a socket
-    /// already occupies the path, or when the unlink or the `bind` fails.
+    /// socket directory is no longer at the mode and owner that were asserted, when the
+    /// path a client would have to use is longer than the kernel's `sun_path`, when
+    /// something that is not a socket already occupies the path, or when the unlink, the
+    /// `socket`, the `bind` or the `listen` fails.
     ///
-    /// Must be called from inside a tokio runtime: `tokio::net::UnixListener::bind` is
-    /// not `async`, but it registers the descriptor with the reactor.
+    /// Must be called from inside a tokio runtime: registering the descriptor with the
+    /// reactor needs one.
     pub fn bind(&self, held: &StoreLock) -> Result<UnixListener> {
         let socket = self.socket_path();
         self.still_the_directory_that_was_checked()?;
@@ -329,22 +405,32 @@ impl SocketDir {
                 errno: None,
                 message: format!(
                     "is {} bytes long and a Unix socket path may be at most {} — \
-                     $XDG_RUNTIME_DIR is too deep for a socket to live under",
+                     $XDG_RUNTIME_DIR is too deep for a client to reach a socket under. \
+                     The daemon binds through a descriptor and would not have tripped on \
+                     the length itself; this refusal is on behalf of the `wchc` that would \
+                     have to connect by this name and could not",
                     socket.as_str().len(),
                     limits::MAX_UNIX_SOCKET_PATH_BYTES
                 ),
             });
         }
 
-        match std::fs::symlink_metadata(socket.as_std_path()) {
-            Ok(existing) if existing.file_type().is_socket() => {
+        // Relative to the descriptor, not to the name: what is inspected and unlinked is
+        // what is inside the directory whose mode and owner were asserted, whatever the
+        // name now leads to.
+        match rustix::fs::statat(
+            &self.dir,
+            limits::DAEMON_SOCKET_FILE,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Ok(existing) if is_socket(&existing) => {
                 tracing::info!(
                     socket = %socket,
                     "removing a socket left by a dead daemon; this process holds the state lock, \
                      so no live daemon owns it"
                 );
-                std::fs::remove_file(socket.as_std_path())
-                    .map_err(|err| storage_io(&socket, &err))?;
+                rustix::fs::unlinkat(&self.dir, limits::DAEMON_SOCKET_FILE, AtFlags::empty())
+                    .map_err(|errno| errno_io(&socket, errno))?;
             }
             Ok(_) => {
                 return Err(Error::StorageIo {
@@ -355,36 +441,193 @@ impl SocketDir {
                         .to_owned(),
                 });
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(storage_io(&socket, &err)),
+            Err(Errno::NOENT) => {}
+            Err(errno) => return Err(errno_io(&socket, errno)),
         }
 
-        UnixListener::bind(socket.as_std_path()).map_err(|err| storage_io(&socket, &err))
+        let address = self.bind_address(&socket);
+        self.bind_listener(&socket, &address)
     }
 
-    /// Refuse unless the path still leads to the inode whose mode was asserted.
+    /// Which address `bind(2)` will be given, as a value.
+    ///
+    /// A value and not a `String` because the choice is the security property: the magic
+    /// link is what makes the bind land in the inode `prepare` checked, and binding by name
+    /// is the downgrade note N39's residual 1 names. Returning the two apart is what lets
+    /// [`SocketDir::bind`] warn on exactly one of them, and what lets a test drive the arm a
+    /// host with `/proc` mounted can never produce.
+    fn bind_address(&self, socket: &Utf8Path) -> BindAddress {
+        match self.relative_address() {
+            Some(address) => BindAddress::ThroughTheDescriptor(address),
+            None => BindAddress::ByName(socket.to_string()),
+        }
+    }
+
+    /// Create, bind and listen on the socket at `address`.
+    ///
+    /// Ours rather than `tokio::net::UnixListener::bind`'s because the address has to be
+    /// composed from a descriptor — see this module's header for why `/proc/self/fd` *is*
+    /// the dirfd-relative bind on Linux, and why `fchdir` is not. `SocketFlags::NONBLOCK`
+    /// is set at creation because `tokio::net::UnixListener::from_std` checks it and
+    /// refuses a blocking descriptor (`tokio-1.53.1/src/net/unix/listener.rs`), and
+    /// `CLOEXEC` because this process spawns nothing that should inherit the daemon's
+    /// listening socket.
+    ///
+    /// `address` is a parameter rather than something this reads for itself, for the reason
+    /// [`Accepting`] is a trait: the fallback arm cannot be produced on a host that has
+    /// `/proc` mounted, and a branch no test can reach is a branch that is only correct
+    /// until somebody edits it. `socket` stays alongside it because it is what the *errors*
+    /// name — an operator needs the path they configured, not `/proc/self/fd/7/wchd.sock`.
+    fn bind_listener(&self, socket: &Utf8Path, address: &BindAddress) -> Result<UnixListener> {
+        // Said here rather than at the decision, so the warning and the bind it describes
+        // cannot come apart: a downgraded bind is exactly the set of binds that announced
+        // themselves (note N39's residual 1 — "never a silent downgrade").
+        if let BindAddress::ByName(_) = address {
+            tracing::warn!(
+                socket = %socket,
+                "/proc is not mounted, so the socket is bound by name rather than through \
+                 the checked directory's descriptor; the directory's mode and owner were \
+                 still asserted, but the window between that check and the bind is open"
+            );
+        }
+        let address =
+            SocketAddrUnix::new(address.as_str()).map_err(|errno| errno_io(socket, errno))?;
+
+        let listener = rustix::net::socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+            None,
+        )
+        .map_err(|errno| errno_io(socket, errno))?;
+        rustix::net::bind(&listener, &address).map_err(|errno| errno_io(socket, errno))?;
+        rustix::net::listen(&listener, limits::DAEMON_LISTEN_BACKLOG)
+            .map_err(|errno| errno_io(socket, errno))?;
+
+        let listener = std::os::unix::net::UnixListener::from(listener);
+        UnixListener::from_std(listener).map_err(|err| storage_io(socket, &err))
+    }
+
+    /// `/proc/self/fd/<dirfd>/wchd.sock`, or `None` when `/proc` is not mounted.
+    ///
+    /// Asked here rather than assumed, because the answer decides whether the bind is
+    /// protected: a container without procfs gets today's behaviour and a `warn!` naming
+    /// what is not being protected (note N39's residual 1), never a silent downgrade.
+    fn relative_address(&self) -> Option<String> {
+        let magic = format!(
+            "/proc/self/fd/{}/{}",
+            self.dir.as_fd().as_raw_fd(),
+            limits::DAEMON_SOCKET_FILE
+        );
+        // The directory the magic link lives in, not the socket: the socket is what is
+        // about to be created, so its absence is the ordinary case and says nothing about
+        // whether procfs is there.
+        let parent = format!("/proc/self/fd/{}", self.dir.as_fd().as_raw_fd());
+        rustix::fs::statat(rustix::fs::CWD, parent.as_str(), AtFlags::empty())
+            .ok()
+            .map(|_| magic)
+    }
+
+    /// Refuse unless the checked directory is still at the mode and owner it was checked at.
+    ///
+    /// Asked of the *descriptor*, so this is no longer "is the name still the same object" —
+    /// the descriptor answers that by construction. What it catches is the inode changing
+    /// under itself: a `chmod` or a `chown` between [`SocketDir::prepare`] and
+    /// [`SocketDir::bind`] leaves the socket's authentication model weaker than the one that
+    /// was asserted, and D11's posture is to err closed.
+    ///
+    /// **There is no `(st_dev, st_ino)` comparison here, deliberately.** Before N39's
+    /// hardening the identity was re-read and compared, because binding by *name* could
+    /// land in a different object; since the bind goes through this descriptor, substitution
+    /// is defeated structurally rather than detected — and two `fstat`s of one open
+    /// descriptor cannot disagree, so a comparison between them is an arm no input reaches
+    /// and no test can turn red (rubric A8). The two checks that remain both have a red
+    /// direction, driven by
+    /// [`tests::a_socket_directory_re_permissioned_between_the_check_and_the_bind_is_refused`]
+    /// and [`tests::a_socket_directory_owned_by_somebody_else_is_refused`].
     fn still_the_directory_that_was_checked(&self) -> Result<()> {
-        let found = std::fs::symlink_metadata(self.path.as_std_path())
-            .map_err(|err| storage_io(&self.path, &err))?;
-        let mode = found.permissions().mode() & MODE_BITS;
-        if found.file_type().is_symlink()
-            || !found.is_dir()
-            || (found.dev(), found.ino()) != self.identity
-            || mode != SOCKET_DIR_MODE
-        {
-            return Err(Error::StorageIo {
-                path: self.path.clone(),
-                errno: None,
-                message: format!(
-                    "is not the directory whose mode was asserted at startup any more \
-                     (now mode {mode:04o}); something replaced it between the check and \
-                     the bind, and the socket's whole authentication model is that \
-                     directory's privacy (D11), so nothing is bound here"
-                ),
-            });
-        }
-        Ok(())
+        let found = rustix::fs::fstat(&self.dir).map_err(|errno| errno_io(&self.path, errno))?;
+        check_mode_and_owner(&self.path, &found)
     }
+}
+
+/// The address the daemon's socket is bound at, and how much protection that spelling
+/// carries.
+///
+/// See [`SocketDir::bind_address`]. The distinction exists so the downgrade cannot happen
+/// silently: the two spellings are different values, `bind` warns on one of them, and a
+/// test can hand either to [`SocketDir::bind_listener`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BindAddress {
+    /// `/proc/self/fd/<dirfd>/wchd.sock` — the dirfd-relative bind, spelled the way Linux
+    /// offers it. The socket lands in the inode whose mode and owner were asserted.
+    ThroughTheDescriptor(String),
+    /// The socket's real path. `/proc` is not mounted, so the check-to-bind window that
+    /// note N39 closed is open again on this host.
+    ByName(String),
+}
+
+impl BindAddress {
+    /// The address as `bind(2)` wants it.
+    fn as_str(&self) -> &str {
+        match self {
+            BindAddress::ThroughTheDescriptor(address) | BindAddress::ByName(address) => address,
+        }
+    }
+}
+
+/// Whether a `stat` describes a socket.
+///
+/// Through rustix's own `S_IFMT` decode rather than a mask written here, because
+/// `std::os::unix::fs::FileTypeExt` wants a `std::fs::Metadata` this code deliberately no
+/// longer has — everything is asked of the descriptor now.
+fn is_socket(found: &rustix::fs::Stat) -> bool {
+    rustix::fs::FileType::from_raw_mode(found.st_mode) == rustix::fs::FileType::Socket
+}
+
+/// The mode [`SocketDir::prepare`] creates the directory with.
+fn dir_mode() -> Mode {
+    Mode::from_bits_truncate(SOCKET_DIR_MODE)
+}
+
+/// D11's two facts about the socket directory, asked of one `stat` in one place.
+///
+/// One home for both, because [`SocketDir::prepare`] and [`SocketDir::bind`] ask exactly
+/// the same question of exactly the same descriptor and a second copy would be a second
+/// opinion (design §2.10).
+fn check_mode_and_owner(path: &Utf8Path, found: &rustix::fs::Stat) -> Result<()> {
+    let mode = found.st_mode & MODE_BITS;
+    if mode != SOCKET_DIR_MODE {
+        return Err(Error::StorageIo {
+            path: path.to_owned(),
+            errno: None,
+            message: format!(
+                "is mode {mode:04o}, and the daemon's socket directory must be \
+                 {SOCKET_DIR_MODE:04o} — filesystem permissions are the only thing \
+                 authenticating this socket (D11), so serving from a directory \
+                 another account can walk into would be serving the camera to them; \
+                 fix the mode and start again"
+            ),
+        });
+    }
+
+    let owner = found.st_uid;
+    let ours = rustix::process::geteuid().as_raw();
+    if owner != ours {
+        return Err(Error::StorageIo {
+            path: path.to_owned(),
+            errno: None,
+            message: format!(
+                "is owned by uid {owner} and this daemon runs as uid {ours} — a directory \
+                 somebody else owns is one they can replace or re-permission under a \
+                 running daemon, and filesystem permissions are the only thing \
+                 authenticating this socket (D11). A root daemon traverses a 0700 \
+                 directory belonging to a user without noticing, which is exactly the case \
+                 this refuses"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// A running server, and the reason it will eventually stop.
@@ -645,8 +888,28 @@ fn storage_io(path: &Utf8Path, err: &std::io::Error) -> Error {
     }
 }
 
+/// The same, for the syscalls that come back as a rustix [`Errno`] rather than an
+/// [`std::io::Error`].
+///
+/// A second spelling of one law would be a finding; this is the same law reached through a
+/// different error type, and it exists so `errno` is carried rather than flattened into the
+/// message — the D13 registry has a field for it and a caller that has to parse a string to
+/// find `ENOENT` is a caller nobody gave an errno to.
+fn errno_io(path: &Utf8Path, errno: Errno) -> Error {
+    Error::StorageIo {
+        path: path.to_owned(),
+        errno: Some(errno.raw_os_error()),
+        message: std::io::Error::from(errno).to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // The tests still read and set modes through `std::fs`, deliberately: the subject is
+    // what `SocketDir` does to a directory on disk, and asking through the same API the
+    // code under test uses would let a shared misreading of `st_mode` pass twice.
+    use std::os::unix::fs::PermissionsExt;
+
     use engine::paths::{MapEnv, TempRuntimeDir};
     use engine::store::TempStore;
     use jsonrpsee_server::RpcModule;
@@ -732,11 +995,11 @@ mod tests {
 
     #[test]
     fn a_symlinked_socket_directory_is_refused_however_private_its_target_is() {
-        // The hole this check exists to close, and the reason the mode is read with
-        // `lstat`. `create_dir_all` is happy to find a symlink where it wanted a directory
-        // (it falls back to `is_dir()`, which follows), and `metadata` reports the
-        // *target's* mode — so a `webcam-handler` symlinked at a 0700 directory passed the
-        // whole of D11's check while the socket was bound wherever the link pointed. The
+        // The hole this check exists to close, and the reason the directory is opened
+        // `O_NOFOLLOW`. `create_dir_all` is happy to find a symlink where it wanted a
+        // directory (it falls back to `is_dir()`, which follows), and `metadata` reports
+        // the *target's* mode — so a `webcam-handler` symlinked at a 0700 directory passed
+        // the whole of D11's check while the socket was bound wherever the link pointed. The
         // link can then be re-pointed at a 0777 directory before the bind, by whoever owns
         // the parent, which on the many hosts that synthesise `$XDG_RUNTIME_DIR` under
         // `/tmp` is not necessarily us (note N39).
@@ -761,12 +1024,46 @@ mod tests {
             .expect_err("a link to a private directory is not a private directory");
         assert_eq!(err.kind(), ErrorKind::StorageIo);
         assert!(err.to_string().contains("symlink"), "{err}");
+        // The refusal is the *kernel's*, not a branch here: `O_NOFOLLOW | O_DIRECTORY`
+        // makes a symlink `ENOTDIR` in the `openat` itself, so there is no window between
+        // "we checked it is not a link" and "we used it". The errno is carried rather than
+        // flattened into prose, which is what makes that checkable.
+        let Error::StorageIo { errno, .. } = &err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(*errno, Some(Errno::NOTDIR.raw_os_error()), "{err}");
         assert!(
             !target
                 .join(limits::DAEMON_SOCKET_FILE)
                 .as_std_path()
                 .exists(),
             "the refusal happened before anything was bound"
+        );
+
+        // …and *which* flag did the refusing, measured rather than assumed, because the
+        // obvious reading is wrong. Under `O_PATH` a symlink with `O_NOFOLLOW` **opens** —
+        // `open(2)` says the descriptor then refers to the link itself — so `O_DIRECTORY`
+        // is the flag carrying D11's whole authentication model here. Dropping it (for a
+        // better "not a directory" diagnosis, say) would leave this open succeeding on a
+        // link, and only the accident that a Linux symlink is always 0777 would still
+        // refuse it.
+        let link = base.join("webcam-handler");
+        let without_directory = rustix::fs::open(
+            link.as_std_path(),
+            SOCKET_DIR_OFLAGS.difference(OFlags::DIRECTORY),
+            Mode::empty(),
+        )
+        .expect("O_PATH | O_NOFOLLOW opens a symlink rather than refusing it");
+        let found = rustix::fs::fstat(&without_directory).expect("a descriptor to the link");
+        assert_eq!(
+            rustix::fs::FileType::from_raw_mode(found.st_mode),
+            rustix::fs::FileType::Symlink,
+            "O_NOFOLLOW under O_PATH was expected to hand back the link itself"
+        );
+        assert!(
+            SOCKET_DIR_OFLAGS.contains(OFlags::DIRECTORY)
+                && SOCKET_DIR_OFLAGS.contains(OFlags::NOFOLLOW),
+            "both flags are load-bearing: NOFOLLOW leaves a symlink to refuse and DIRECTORY refuses it"
         );
     }
 
@@ -798,20 +1095,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_socket_directory_replaced_between_the_check_and_the_bind_is_refused() {
-        // `prepare` read a mode off an inode; `bind` creates a socket at a *name*. An
-        // attacker who owns the parent can make the name mean something else in between —
-        // `rename` is a property of the parent directory, not of the child — so the
-        // directory is read again and matched against the one whose mode was asserted.
-        // Without that, D11's whole authentication model is a check on an object the
-        // daemon may no longer be serving from.
+    async fn a_socket_directory_substituted_between_the_check_and_the_bind_is_defeated() {
+        // N39's scenario, and the claim it has now: `prepare` checked an inode and `bind`
+        // used to create a socket at a *name*, so an attacker who owns the parent could
+        // make the name mean something else in between — `rename` is a property of the
+        // parent directory, not of the child. The old repair was to notice
+        // (`(st_dev, st_ino)` re-read and compared), which left the window between the
+        // notice and `bind(2)` open. The repair now is that there is nothing to notice:
+        // the directory is held as a descriptor and the bind goes through it, so renaming
+        // a *name* does not move the socket.
         let store = TempStore::new().expect("a state directory");
         let held = daemon_lock(&store);
         let runtime = TempRuntimeDir::new().expect("a temporary directory");
         let dir = SocketDir::prepare(&runtime.env()).expect("a fresh runtime directory");
 
-        // The same name, a different directory — and private, so that what is refused is
-        // the *substitution* rather than the mode.
+        // The same name, a different directory — and private, so that what is being
+        // tested is the *substitution* rather than the mode. The checked directory is
+        // moved aside rather than removed, so the assertion can say where the socket
+        // actually went instead of only that the bind failed.
+        let moved_aside = runtime.base().join("moved-aside");
+        let substitute = runtime.base().join("substitute");
+        std::fs::create_dir(substitute.as_std_path()).expect("ours to make");
+        std::fs::set_permissions(
+            substitute.as_std_path(),
+            std::fs::Permissions::from_mode(SOCKET_DIR_MODE),
+        )
+        .expect("ours to chmod");
+        std::fs::rename(dir.path().as_std_path(), moved_aside.as_std_path())
+            .expect("the parent is ours");
+        std::fs::rename(substitute.as_std_path(), dir.path().as_std_path())
+            .expect("the parent is ours");
+
+        let listener = dir
+            .bind(&held)
+            .expect("a descriptor does not follow a rename");
+        drop(listener);
+
+        assert!(
+            is_a_socket(&moved_aside.join(limits::DAEMON_SOCKET_FILE)),
+            "the socket did not land in the directory whose mode and owner were asserted"
+        );
+        assert!(
+            !dir.socket_path().as_std_path().exists(),
+            "the socket landed in the directory the attacker substituted — this is the \
+             defect note N39 was about, and binding by name is how it happens"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_socket_directory_removed_between_the_check_and_the_bind_fails_closed() {
+        // The other half of the substitution scenario, and the one where "defeated" is not
+        // available: a directory that is *unlinked* rather than moved leaves the daemon
+        // holding a descriptor to an inode with no name, so there is nowhere to put a
+        // socket. That must be a refusal and not a bind into whatever now answers to the
+        // name — measured on this host (note N39's amendment: "bind into a DELETED
+        // directory: errno=2").
+        let store = TempStore::new().expect("a state directory");
+        let held = daemon_lock(&store);
+        let runtime = TempRuntimeDir::new().expect("a temporary directory");
+        let dir = SocketDir::prepare(&runtime.env()).expect("a fresh runtime directory");
+
         let substitute = runtime.base().join("substitute");
         std::fs::create_dir(substitute.as_std_path()).expect("ours to make");
         std::fs::set_permissions(
@@ -825,13 +1168,102 @@ mod tests {
 
         let err = dir
             .bind(&held)
-            .expect_err("the directory whose mode was asserted is gone");
+            .expect_err("the checked directory has no name any more");
         assert_eq!(err.kind(), ErrorKind::StorageIo);
-        assert!(err.to_string().contains("asserted at startup"), "{err}");
         assert!(
             !dir.socket_path().as_std_path().exists(),
             "a socket was bound in a directory nobody checked"
         );
+    }
+
+    #[tokio::test]
+    async fn a_socket_directory_re_permissioned_between_the_check_and_the_bind_is_refused() {
+        // What the re-check is still for, now that substitution is defeated rather than
+        // detected: the checked inode's *own* mode can change under a running daemon, and
+        // a `chmod 0777` between `prepare` and `bind` would leave the socket's whole
+        // authentication model weaker than the one that was asserted. A descriptor sees
+        // the inode's current mode, so this is a question about the right object — which
+        // is what note N39's bullet list was complaining about.
+        let store = TempStore::new().expect("a state directory");
+        let held = daemon_lock(&store);
+        let runtime = TempRuntimeDir::new().expect("a temporary directory");
+        let dir = SocketDir::prepare(&runtime.env()).expect("a fresh runtime directory");
+
+        std::fs::set_permissions(
+            dir.path().as_std_path(),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .expect("ours to chmod");
+
+        let err = dir
+            .bind(&held)
+            .expect_err("0777 is not the mode that was asserted");
+        assert_eq!(err.kind(), ErrorKind::StorageIo);
+        assert!(err.to_string().contains("0777"), "{err}");
+        assert!(
+            !dir.socket_path().as_std_path().exists(),
+            "a socket was bound in a directory anyone can walk into"
+        );
+
+        // The other direction, on the same descriptor: put the mode back and the same
+        // call serves, so the refusal is about the mode and not about having asked twice.
+        std::fs::set_permissions(
+            dir.path().as_std_path(),
+            std::fs::Permissions::from_mode(SOCKET_DIR_MODE),
+        )
+        .expect("ours to chmod");
+        drop(dir.bind(&held).expect("0700 is the mode that was asserted"));
+    }
+
+    #[test]
+    fn a_socket_directory_owned_by_somebody_else_is_refused() {
+        // The check note N39 recorded as "absent by omission rather than by argument",
+        // driven the only way an unprivileged test can drive it: the *predicate* is the
+        // subject, because arranging a directory owned by another uid needs privileges
+        // this suite does not have and must not acquire (note N44 is the precedent — the
+        // other-uid half of the UDS row is a shell predicate for exactly this reason).
+        //
+        // So the fixture is a `Stat` with one field moved, and the arms are both
+        // directions: our own uid passes, and a uid that is not ours is refused with a
+        // message that names both. `geteuid() + 1` cannot collide with us and cannot
+        // wrap — a uid of `u32::MAX` is `(uid_t)-1`, which no process runs as.
+        let runtime = TempRuntimeDir::new().expect("a temporary directory");
+        let dir = SocketDir::prepare(&runtime.env()).expect("a fresh runtime directory");
+        let ours = rustix::fs::stat(dir.path().as_std_path()).expect("it was just made");
+
+        check_mode_and_owner(dir.path(), &ours).expect("a directory this process owns");
+
+        let mut theirs = ours;
+        theirs.st_uid = rustix::process::geteuid().as_raw() + 1;
+        let err =
+            check_mode_and_owner(dir.path(), &theirs).expect_err("a directory somebody else owns");
+        assert_eq!(err.kind(), ErrorKind::StorageIo);
+        let rendered = err.to_string();
+        assert!(rendered.contains(&theirs.st_uid.to_string()), "{rendered}");
+        assert!(
+            rendered.contains(&rustix::process::geteuid().as_raw().to_string()),
+            "{rendered}"
+        );
+        // And the mode is still checked when the owner is wrong's neighbour is right: the
+        // two refusals are separate, so one cannot stand in for the other.
+        let mut wrong_mode = ours;
+        wrong_mode.st_mode = (ours.st_mode & !MODE_BITS) | 0o755;
+        assert!(
+            check_mode_and_owner(dir.path(), &wrong_mode)
+                .expect_err("0755 is not 0700")
+                .to_string()
+                .contains("0755")
+        );
+    }
+
+    /// Whether a path names a socket, asked through `std::fs` rather than through the
+    /// module's own `is_socket` — a test that reused the code under test's decode would
+    /// pass on a shared misreading of `S_IFMT`.
+    fn is_a_socket(path: &Utf8Path) -> bool {
+        use std::os::unix::fs::FileTypeExt;
+
+        std::fs::symlink_metadata(path.as_std_path())
+            .is_ok_and(|found| found.file_type().is_socket())
     }
 
     #[test]
@@ -874,13 +1306,127 @@ mod tests {
              about the file that is left"
         );
 
-        let listener = dir.bind(&held).expect("the leftover socket is stale");
-        assert_eq!(
-            listener
-                .local_addr()
-                .ok()
-                .and_then(|addr| addr.as_pathname().map(std::path::Path::to_path_buf)),
-            Some(dir.socket_path().into_std_path_buf())
+        let _listener = dir.bind(&held).expect("the leftover socket is stale");
+
+        // Asked of a *client*, not of `local_addr()`. Since note N39's hardening the
+        // address passed to `bind(2)` is `/proc/self/fd/<n>/wchd.sock` — the dirfd-relative
+        // spelling Linux offers, this module's header says why — so `local_addr()` reports
+        // that magic path and is no longer the way to ask where the socket is. What a
+        // reader of this test wants to know is that a client which knows only D11's name
+        // reaches this listener, and connecting is the assertion that says so; it would go
+        // red if the socket had landed in any other inode.
+        std::os::unix::net::UnixStream::connect(dir.socket_path().as_std_path()).unwrap_or_else(
+            |err| {
+                panic!("a client cannot reach {}: {err}", dir.socket_path());
+            },
+        );
+        assert!(
+            is_a_socket(&dir.socket_path()),
+            "{} is not a socket",
+            dir.socket_path()
+        );
+    }
+
+    /// A `tracing` writer a test can read back.
+    ///
+    /// Thread-local through [`tracing::subscriber::with_default`], so it captures this
+    /// test's events and no other test's — `logging::install` deliberately runs only from
+    /// `main` for the same reason.
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturedLog {
+        fn rendered(&self) -> String {
+            let bytes = self.0.lock().expect("nothing panicked holding this");
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("nothing panicked holding this")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLog;
+
+        fn make_writer(&'a self) -> CapturedLog {
+            self.clone()
+        }
+    }
+
+    /// Run `body` with everything it logs captured.
+    fn capturing<T>(body: impl FnOnce() -> T) -> (T, String) {
+        let captured = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, body);
+        (value, captured.rendered())
+    }
+
+    #[tokio::test]
+    async fn a_bind_by_name_still_serves_and_says_that_it_is_the_unprotected_spelling() {
+        // Note N39's residual 1: `/proc/self/fd` needs `/proc`, and a minimal container
+        // without procfs falls back to binding by name. That arm cannot be produced on a
+        // host that has `/proc` mounted — which is every host this suite runs on — so
+        // without the address being a parameter it is a branch nothing has ever executed,
+        // in the module whose whole subject is that a check nobody drives is a check
+        // nobody has. Same argument as `Accepting`, one function along.
+        let store = TempStore::new().expect("a state directory");
+        let held = daemon_lock(&store);
+        let runtime = TempRuntimeDir::new().expect("a temporary directory");
+        let dir = SocketDir::prepare(&runtime.env()).expect("a fresh runtime directory");
+        let socket = dir.socket_path();
+
+        // The fallback arm: the address is the real name, and the bind must still produce
+        // a listener a client reaches by D11's path.
+        let (listener, logged) = capturing(|| {
+            dir.bind_listener(&socket, &BindAddress::ByName(socket.to_string()))
+                .expect("binding by name is the fallback, not a failure")
+        });
+        std::os::unix::net::UnixStream::connect(socket.as_std_path())
+            .unwrap_or_else(|err| panic!("a client cannot reach {socket}: {err}"));
+        assert!(is_a_socket(&socket), "{socket} is not a socket");
+        assert!(
+            logged.contains("WARN"),
+            "the downgrade was silent: {logged:?}"
+        );
+        assert!(logged.contains("/proc is not mounted"), "{logged:?}");
+        drop(listener);
+        std::fs::remove_file(socket.as_std_path()).expect("ours to remove");
+
+        // The other direction, and the reason the assertion above can go red: the ordinary
+        // spelling binds through the descriptor and says nothing, because there is nothing
+        // to warn about. `bind` is the caller under test here — it is what chooses.
+        let (listener, logged) = capturing(|| dir.bind(&held).expect("nothing is in the way"));
+        assert!(
+            !logged.contains("WARN"),
+            "a protected bind warned about itself: {logged:?}"
+        );
+        drop(listener);
+
+        // …and the choice itself is a value rather than a side effect, so which spelling a
+        // host got is a thing a test can name. `/proc` is mounted here, so this is the
+        // protected one.
+        assert!(
+            matches!(
+                dir.bind_address(&socket),
+                BindAddress::ThroughTheDescriptor(address)
+                    if address.starts_with("/proc/self/fd/")
+            ),
+            "{:?}",
+            dir.bind_address(&socket)
         );
     }
 

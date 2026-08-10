@@ -10,9 +10,10 @@
 # registry does not use. The codes are `api::codes::rpc_code`'s; why the block sits where
 # it does is stated once, on `api::codes::D13_CODES`, and not repeated here.
 #
-# `unimplemented` holds the block's lowest code on purpose: it is transitional (note N6)
-# and P4d deletes it, so P4d raises `D13_CODES.start()` by one and the other eighteen
-# codes stay byte-identical.
+# P4d deleted `unimplemented` (note N6, retired). It held the block's lowest code,
+# `-32030`, on purpose, so its deletion was one row leaving this table and one endpoint
+# moving on `D13_CODES` — every other line below is byte-identical to the P4c file, which
+# is the whole of what the arrangement bought and is checkable with `git diff`.
 #
 # kind	code
 device_gone	-32012
@@ -33,4 +34,3 @@ store_locked	-32026
 holder_gone	-32027
 device_io	-32028
 storage_io	-32029
-unimplemented	-32030

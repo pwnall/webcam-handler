@@ -35,11 +35,47 @@
 # That is what makes a surviving mutant *actionable* here: if a changed line cannot be
 # noticed, the missing test is a unit test somebody can write today, not a rig.
 #
+# P4d added one more line, and it is the first from a *backend*:
+#
+#   v4l2/hotplug.rs  what one uevent packet is worth to the watch, and the debounce fold
+#
+# It is in scope for the same reason and against the same exclusion below: `sys/uevent.rs`
+# is the socket and stays out, while `hotplug.rs` takes a byte slice (and, for the
+# debounce, `Instant`s the caller supplies) and returns a value. It opens nothing, reads
+# no clock and makes no syscall, so a survivor here is a unit test somebody can write
+# today over a committed packet fixture. Writing the exclusion down was not optional —
+# this file's own header rules out silence — and the answer is "in".
+#
+# **It earned its keep on the first run over it**, which is the argument for widening a
+# floor rather than trusting a file because its tests look thorough. 36 mutants, one
+# survivor: `Tracker::next_deadline` replaced with `None`. `Debounce::next_deadline` is
+# asserted four ways one module down, but nothing asserted that the `Tracker` *forwards*
+# it and nothing asserted the consequence — a watch that never wakes early hands a settled
+# burst to its caller at the caller's deadline instead of at the burst's, so a subscriber
+# offered a generous deadline waits all of it for an event that was ready in a quarter of
+# a second. It is neither equivalent nor unkillable, so it is not in
+# `scripts/mutants-accepted.txt`: `watch::tests::a_settled_burst_is_reported_when_it_
+# settles_and_not_when_the_caller_gives_up` kills it, watched failing at 10.01s against a
+# hand-applied copy of the mutant before it was called done.
+#
 # ## What is out of scope, and why
 #
-# - `crates/backends/v4l2/src/sys/` — the unsafe ioctl edge. A mutant there is only
+# - `crates/backends/v4l2/src/sys/` — the unsafe ioctl edge, and since P4d the uevent
+#   socket beside it. A mutant there is only
 #   decidable against a device, so every survivor would be an R2/R3 finding wearing a
-#   CI costume. Miri and the vivid rung own that half (docs/9's recorded limits).
+#   CI costume. Miri and the vivid rung own that half (docs/9's recorded limits). The
+#   split is deliberate and is why the packet *decision* lives outside `src/sys/` in
+#   `hotplug.rs`: putting it in the socket module would have taken a pure fold out of the
+#   floor's reach.
+# - `crates/backends/v4l2/src/watch.rs` — the third piece of the same edge, and the only
+#   one that is not a fold: it reads `Instant::now()`, calls `poll` and `recv`, and joins
+#   `hotplug`'s decisions to `sys::uevent`'s syscalls. Its mutants are decidable, but only
+#   against a socket and a clock — a mutated `budget` or a mutated deadline comparison is
+#   a *timing* survivor, which is the class note N52 records this floor being bad at.
+#   Everything it does that can be decided from values was deliberately pushed one module
+#   down into `hotplug.rs`, so what is left here is exactly what does not belong.
+#   Its own tests still assert every one of those behaviours over a datagram pair, and
+#   nine hand-written mutants were watched failing before the module landed.
 # - `cli-core::render`, `crates/cli`, `crates/web` — rendering. Mutating a column width
 #   or a plural produces survivors by the hundred that say only "the golden output is not
 #   byte-asserted", which is a decision docs/6 already made deliberately.
@@ -74,6 +110,7 @@ examine_globs = [
     "crates/api/src/codes.rs",
     "crates/api/src/photo.rs",
     "crates/api/src/wire.rs",
+    "crates/backends/v4l2/src/hotplug.rs",
     "crates/engine/src/pairing.rs",
     "crates/engine/src/session.rs",
     "crates/engine/src/settle.rs",

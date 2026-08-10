@@ -219,33 +219,48 @@ mod tests {
         }
 
         fn get(&mut self, _id: ControlId) -> Result<ControlValue> {
-            Err(unsupported())
+            Err(not_this_double("get"))
         }
 
         fn set(&mut self, _id: ControlId, _value: ControlValue) -> Result<Applied> {
-            Err(unsupported())
+            Err(not_this_double("set"))
         }
 
         fn start_stream(
             &mut self,
             _request: &schema::capture::StreamRequest,
         ) -> Result<schema::capture::NegotiatedStream> {
-            Err(unsupported())
+            Err(not_this_double("start_stream"))
         }
 
         fn next_frame(&mut self, _deadline: Instant) -> Result<schema::capture::Frame> {
-            Err(unsupported())
+            Err(not_this_double("next_frame"))
         }
 
         fn stop_stream(&mut self) -> Result<()> {
-            Err(unsupported())
+            Err(not_this_double("stop_stream"))
         }
     }
 
-    fn unsupported() -> Error {
-        Error::Unimplemented {
-            operation: "StubCamera".to_owned(),
-            arrives_in: "never".to_owned(),
+    /// What this double answers to the `Camera` methods its subject does not reach.
+    ///
+    /// It used to answer `Error::Unimplemented { arrives_in: "never" }`, and note N43
+    /// flagged that as the wrong shape while the variant still existed — "a test double
+    /// saying 'not this one' is not a phase schedule". P4d deleted the variant (N6), so
+    /// the replacement had to be chosen rather than inherited, and three of the registry's
+    /// eighteen are ruled out by law: a panic breaks the "plugging in a webcam cannot
+    /// panic the library" rule, `FormatUnsupported` would be a capability answer about a
+    /// device that was never asked (E3), and `DeviceIo` would blame a kernel that is not
+    /// in this test at all.
+    ///
+    /// [`Error::IllegalTransition`] is what is left and it is also what is meant: *this
+    /// object does not do that*, named with the operation attempted. `cli-core`'s
+    /// `unreachable_photo` already uses it for the same shape of refusal, so this is the
+    /// registry's existing vocabulary for it rather than a new reading of a variant.
+    fn not_this_double(op: &str) -> Error {
+        Error::IllegalTransition {
+            from: "stub_camera".to_owned(),
+            op: op.to_owned(),
         }
     }
 

@@ -28,9 +28,12 @@
 //! - **A session belongs to (camera fingerprint, task)** and every mutating verb refuses on
 //!   a mismatch *naming the fields that differ* (rubric B5, S:E6). A check implemented in
 //!   one verb is a check the other verbs walk around, so the walk here is over all of them.
-//! - **Nothing answers `Unimplemented` any more** (note **N43**). These six were the last
-//!   rows in the map, and the assertion that the map is empty is `daemon::server`'s own;
-//!   what this suite adds is the same claim from the wire, across the whole surface.
+//! - **No verb answers `StoreLocked`** — see the walk's own comment. It used to be two
+//!   absences: `Unimplemented` was the other, and note **N43** turned on these six being
+//!   the last rows in the map. P4d deleted that variant (note **N6**), so the second claim
+//!   stopped being writable here and became structural — the registry has no such member
+//!   to answer with. The suite is one claim lighter and says so rather than letting a
+//!   sentence stand for an assertion that is gone.
 //!
 //! ## Progress, and the honest gap
 //!
@@ -710,8 +713,8 @@ async fn every_mutating_calibrate_verb_refuses_another_cameras_session_naming_th
 }
 
 #[tokio::test]
-async fn no_calibrate_verb_answers_store_locked_or_unimplemented() {
-    // Two claims that are both absences, so both need a walk.
+async fn no_calibrate_verb_answers_store_locked() {
+    // An absence, so it needs a walk.
     //
     // **`StoreLocked`** is the trap `daemon::state`'s header exists for: the daemon holds
     // one advisory lock for its lifetime, and a handler that reached for D9's *daemonless*
@@ -719,10 +722,14 @@ async fn no_calibrate_verb_answers_store_locked_or_unimplemented() {
     // advising it to use `wchc` against the daemon it is already talking to. It does not
     // hang, which is why a test is the only thing that catches it.
     //
-    // **`Unimplemented`** is note N43's retirement. These six verbs were the last rows in
-    // the map `daemon::server::unrouted()` derived; the map is gone, and after this
-    // sub-milestone the variant's only producer left in the workspace is
-    // `webcam-handler-v4l2::unimplemented_surface()`, which P4d deletes.
+    // This walk **used to carry a second absence** and no longer does. `Unimplemented` was
+    // note N43's retirement — these six verbs were the last rows in the map
+    // `daemon::server::unrouted()` derived — and P4d deleted the variant itself (note N6),
+    // so `assert_ne!(error.kind(), ErrorKind::Unimplemented)` is a line that no longer
+    // compiles. The claim did not weaken, it moved: the D13 registry has eighteen members
+    // and none of them means "not built yet", so no verb here or anywhere can answer it.
+    // The loss is that this suite no longer *checks* it from the wire, which is written
+    // down here rather than left to evaporate with the assertion.
     let fixture = Fixture::start();
     let (camera, wire, asked) = ask(&fixture);
     let controls = fixture.controls();
@@ -820,8 +827,6 @@ async fn no_calibrate_verb_answers_store_locked_or_unimplemented() {
     for (code, error) in &refused {
         assert_ne!(error.kind(), ErrorKind::StoreLocked, "{error}");
         assert_ne!(*code, rpc_code(ErrorKind::StoreLocked), "{error}");
-        assert_ne!(error.kind(), ErrorKind::Unimplemented, "{error}");
-        assert_ne!(*code, rpc_code(ErrorKind::Unimplemented), "{error}");
     }
     // Not vacuous: the walk really did meet refusals, and more than one kind of them.
     assert_eq!(refused.len(), 8);

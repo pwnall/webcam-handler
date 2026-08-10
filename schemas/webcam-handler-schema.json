@@ -1585,29 +1585,6 @@
             "message"
           ],
           "type": "object"
-        },
-        {
-          "description": "The operation exists in the contract and this build does not perform it yet.\n\nEmphatically **not** a capability answer (E3): the device was never asked. A\nhalf-built backend has to say something when a trait method it has not reached\nis called, and every other choice is worse — a panic breaks the \"plugging in a\nwebcam cannot panic the library\" rule, and reusing [`Error::DeviceIo`] would\nblame the kernel for our own schedule. See note N6.",
-          "properties": {
-            "arrives_in": {
-              "description": "The phase that lands it, in docs/7's spelling (`P2`).",
-              "type": "string"
-            },
-            "kind": {
-              "const": "unimplemented",
-              "type": "string"
-            },
-            "operation": {
-              "description": "The trait method or verb that was called.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "operation",
-            "arrives_in"
-          ],
-          "type": "object"
         }
       ]
     },
@@ -1702,11 +1679,6 @@
         {
           "const": "storage_io",
           "description": "See [`Error::StorageIo`].",
-          "type": "string"
-        },
-        {
-          "const": "unimplemented",
-          "description": "See [`Error::Unimplemented`].",
           "type": "string"
         }
       ]

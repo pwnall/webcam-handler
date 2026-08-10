@@ -26,7 +26,9 @@
 //! is a wire promise nothing keeps. `subscribe_events` (hotplug) and
 //! `subscribe_calibration` (per-session progress) join at P4e with their delivery
 //! semantics, for the same reason — a subscription the daemon cannot yet deliver would
-//! have to be answered with `Error::Unimplemented`, which is the variant P4d deletes.
+//! have needed a refusal saying so, and the registry no longer has one: P4d deleted
+//! `Error::Unimplemented` (note N6, retired), so "declared before it can be exercised" is
+//! now a shape this build cannot express rather than one it merely avoids.
 //!
 //! ## Errors on the wire
 //!

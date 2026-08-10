@@ -251,6 +251,75 @@ is a one-line change that the exhaustive `Error::kind` match will drive.
 
 **Absorbed (2026-08-08):** docs/6 D13/§2.3 document the transitional variant; docs/7 P4d schedules the deletion. The retirement condition stands unchanged.
 
+### Retired at P4d, 2026-08-10 — the condition was met, and this is what it cost
+
+The condition above named its own mechanism, so the retirement follows it rather than
+narrating around it. `CameraBackend::watch` on the V4L2 backend was the last producer; P4d's
+uevent socket landed it (note N53), `unimplemented_surface()` had no rows left, and the
+variant was deleted — `ErrorKind::Unimplemented`, `Error::Unimplemented`, the `kind()` and
+`sample()` arms, and the RPC code. **The registry is eighteen variants.**
+
+**"A one-line change the exhaustive match will drive" was nearly right, and the part that was
+right is the part that mattered.** It was not one line — the variant, the kind, two match
+arms, an RPC code, a fixture row and three tests — but **every one of those was found by the
+compiler**, not by a grep and not by a reviewer: `Error::kind()`, `Error::sample()`,
+`api::codes::rpc_code`, `schema`'s `an_unfinished_operation_blames_the_build_rather_than_the_device`
+and `calibrate_verbs.rs`'s two `assert_ne!`s each stopped compiling until they were dealt
+with, which is exactly what `codes.rs`'s header says the match-over-`ErrorKind` exists to buy.
+Nothing that *derives* from the registry needed a hand edit at all — `xtask`'s OpenRPC error
+emitter, `cli-core`'s exit-code walk and `codes.rs`'s own round-trip walks read
+`ErrorKind::ALL` and followed the deletion silently, and the two `schemas/` artifacts
+regenerated to 122 deleted lines and **zero added ones**. That is the payoff of "one home per
+law" (§2.10), and it is worth stating because a deletion is where a second hand-maintained
+list surfaces if there is one. There was not one.
+
+**The wire cost was one endpoint.** P4a placed the variant on `-32030` deliberately, the
+lowest code in D13's block, so that its deletion could raise `D13_CODES.start()` to `-32029`
+and move nothing else. That is what happened: `crates/api/fixtures/d13-rpc-codes.tsv` lost one
+row and no other byte, and the eighteen codes a P4c client already knows are unchanged.
+`deleting_the_lowest_variant_in_the_registry_moved_one_endpoint_and_no_code_at_all` asserts it
+against a hand-written transcription of the P4c table — a hand list on purpose, because the
+committed fixture moves *with* the registry and so could never notice both sides being
+renumbered together.
+
+**What the schedule cost overall.** Five backend methods answered it at P1 (this entry's own
+count), four of them landed at P2, and thirteen T5 methods joined at P4b (N43) — so the peak
+was fourteen methods across two pinned surfaces, both empty by the time the variant went.
+Every producer was retired by a *landing* rather than by a rewrite, which is what the two
+pinned lists were for: each phase had to edit a test that counted them. N4's warning — that a
+registry gains escape hatches — did not come true here, and the mechanism that stopped it was
+those lists, not the reviewers.
+
+**Two producers were not deletions, and both are recorded rather than absorbed:**
+
+- **`engine::profile`'s `#[cfg(test)] StubCamera`** — the one N43 flagged and left for P4d.
+  It now answers `Error::IllegalTransition { from: "stub_camera", op }`, naming the method
+  attempted. Three of the surviving eighteen were ruled out by law before the pick: a panic
+  breaks PF:1's rule, `FormatUnsupported` is a capability answer about a device that was
+  never asked (E3), and `DeviceIo` blames a kernel that is not in that test at all. This is
+  the same family N46 chose `IllegalTransition` for — "the request names something this
+  object does not do" — so **N46's population is now four call sites, not three**, and its
+  retirement clause ("at which point the three call sites move together") should be read
+  with this one added.
+- **`daemon::tests::calibrate_verbs`'s walk** lost one of its two absence claims, because
+  `assert_ne!(error.kind(), ErrorKind::Unimplemented)` is a line that no longer compiles. The
+  test is now `no_calibrate_verb_answers_store_locked`. **The suite checks one thing fewer**,
+  and that is written into the test's own comment, its module header and `phase-criteria.tsv`
+  rows 106 and 107 rather than left to evaporate with the assertion: the claim did not
+  weaken (no verb can answer a variant that does not exist) but it stopped being *checked*
+  from the wire, and a criterion row describing an assertion that is gone is note N10's
+  family.
+
+**One name was deliberately kept.** `daemon::server`'s
+`the_pinned_routing_is_the_whole_wire_surface_and_nothing_answers_unimplemented` still names
+the variant. Its assertion — `ROUTED` *is* `api::METHODS` — is untouched and can still go
+red, the second half of its name is now *more* true than when it was written, and N43 cites
+the name in an entry that is case law rather than prose to be tidied. The test's own comment
+says all of that, so a reader who greps the deleted variant lands on an explanation instead
+of a puzzle.
+
+**Retires when:** now.
+
 ---
 
 ## PF:14 — A UVC camera's VideoStreaming interface never has a V4L2 binding
@@ -366,7 +435,7 @@ each of them was, until now, gated on a human typing a sudo password:
 |---|---|
 | The R2 rung | `vivid` is a kernel module. As of P1 the suite had **never executed** (entry E1) purely because nothing could load it. |
 | `Error::DeviceGone` and P4 hotplug against real hardware | A laptop camera is soldered down. Cycling `uvcvideo` is the only way to make one disappear. |
-| The P4 uevent socket | Binding `NETLINK_KOBJECT_UEVENT` needs `CAP_NET_ADMIN`. *Unverified* — the probe was blocked — so this capability is granted ahead of proof, which is recorded here rather than discovered later. |
+| The P4 uevent socket | ~~Binding `NETLINK_KOBJECT_UEVENT` needs `CAP_NET_ADMIN`. *Unverified* — the probe was blocked — so this capability is granted ahead of proof, which is recorded here rather than discovered later.~~ **Disproved 2026-08-10 — see the amendment below and \[PF:21\].** |
 
 **Why §1 is not violated:** §1's rule is about the product. `wch-priv` never ships, is
 never a dependency of a product crate (gate-asserted), and its `modprobe` subprocess is a
@@ -427,7 +496,9 @@ then, with these questions:
 1. **Which capabilities were actually spent?** If `CAP_NET_ADMIN` was never needed — if P4's
    uevent socket turns out to bind unprivileged on this kernel, which was never tested —
    drop it. A capability granted "in case" and never used is the easiest thing in this
-   whole design to remove and the easiest to forget.
+   whole design to remove and the easiest to forget. **Answered at P4d: it was never
+   needed. See the amendment below and \[PF:21\]; question 1 now has a fact instead of a
+   condition.**
 2. **Was `exec` used for anything but delegating to a test process?** If not, the closed
    verb vocabulary that was offered and declined becomes available at no cost: the one
    argument that defeated it was that only a wrapper can put a capability *inside* a test
@@ -469,6 +540,33 @@ Two things follow, both of which outlive the bug:
 from its caller. That would not *increase* the privilege — `exec` already grants root — but
 it would add a second, quieter route to it, one that reads like a safe utility in a shell
 history.
+
+### Amendment, 2026-08-10: the `CAP_NET_ADMIN` prediction is disproved
+
+The row above was this note's one *unverified* claim, and it said so. P4d measured it, and
+it is wrong: `socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT)` and `bind` with
+`nl_pid = 0, nl_groups = 1` both succeed on kernel `7.0.0-29-generic` from a process whose
+effective capability set is empty, and the same process then received all fifty-six
+packets of a `uvcvideo` cycle. `lib/kobject_uevent.c` registers the protocol with
+`NL_CFG_F_NONROOT_RECV`, which exempts group membership from the check the prediction
+assumed. \[PF:21\] carries the transcripts, the packet shape and the limits.
+
+Three consequences, and only the first two are P4d's:
+
+1. **Nothing in `crates/backends/v4l2/src/sys/uevent.rs` asks for a capability**, and its
+   own test asserts the absence of `CAP_NET_ADMIN` before it asserts the bind, so a run
+   under a blessed wrapper fails rather than passing without measuring.
+2. **P4d's R3 hotplug arm runs unprivileged**, binding its own socket and spawning
+   `wch-priv uvcvideo cycle` as a subprocess. There is no managed `wch-priv exec` recipe
+   for it, and the argument that bought `exec` — "only a wrapper can put `CAP_NET_ADMIN`
+   inside a *test process*" — is not exercised by hotplug. That is evidence for **G6
+   question 2** as well as question 1.
+3. **The narrowing itself is not done here.** docs/6 §2.13 says "the trigger to narrow or
+   delete is G6" and docs/7 P6e owns the execution; P4d records the truth and hands it
+   over. When P6e runs, the blessing is `cap_sys_module` — `modprobe` still needs it, and
+   nothing measured here touches that half. The one thing that could bring
+   `CAP_NET_ADMIN` back is `SO_RCVBUFFORCE`, which does need it; nothing in this project
+   uses it, and PF:21 says what would have to change for that to stop being true.
 
 **Absorbed (2026-08-08):** docs/6 §2.13 summarizes this entry and docs/7 P6e carries the G6 reckoning; this entry remains the full record, and the owner rulings live here.
 
@@ -2770,6 +2868,18 @@ a red test rather than a silent widening.
 **Retires when:** P4e lands the subscriptions with their delivery semantics. Nothing else
 should.
 
+### Amendment, 2026-08-10: the stand-in this entry argued against no longer exists
+
+The argument above turns on "the only stand-in for a subscription whose event source does not
+exist yet is `Error::Unimplemented` — the variant P4d deletes (N6), so P4a would be adding the
+producer P4d is removing". P4d has now deleted it. The reasoning is unchanged and the
+conclusion is *stronger*: declaring a subscription before P4e can deliver on it no longer has
+even a bad answer available, because the D13 registry's eighteen members contain nothing that
+means "not built yet". P4e should read the sentence as history, and should not go looking for
+the variant when it lands `subscribe_events` — the event source is the thing that has to exist
+first, which is what this entry said all along and what P4d's uevent socket (note N53) now
+provides.
+
 ---
 
 ## N30 — `discover_pairs` is a method on the wire and a flag on the command line, and that is one law with two surfaces
@@ -3384,9 +3494,156 @@ ground it had not checked, and the check was two `grep`s. A deferral is a claim,
 unverified one outlives whatever created it — this is note N15's family (an acceptance
 nobody re-checks) wearing a scheduling costume rather than a testing one.
 
+### Amendment, 2026-08-10: the window is closed, and the literal ask was unreachable
+
+Landed at P4d with `rustix` 1.1.4, three features (`fs`, `net`, `process`), **no `unsafe`
+block** and no change to `deny.toml`. `SocketDir::prepare` now opens the directory
+`O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_PATH`, `fstat`s *that descriptor*, checks the mode
+**and `st_uid` against `geteuid()`**, and holds the descriptor for the daemon's life;
+`SocketDir::bind` does its `statat`, its `unlinkat` and its bind through the same
+descriptor. `SocketDir` loses `#[derive(Clone)]` — an `OwnedFd` is not `Clone` and nobody
+cloned it.
+
+**The literal ask does not exist, and that is a fact about Linux rather than about rustix.**
+`bind(2)` takes a `sockaddr_un` whose `sun_path` is resolved from the process's root and
+cwd, and there is **no `bindat(2)`** — checked in the pinned rustix source
+(`net/socket.rs`'s `bind` takes one address and no `dirfd`; `SocketAddrUnix` has exactly
+three constructors, none taking a descriptor) and true of `libc` and of a hand-written
+syscall for the same reason. Two things do exist:
+
+- `fchdir(dirfd)` then bind a relative name. **Rejected:** the working directory is
+  process-global, so changing it inside a multi-threaded tokio daemon is a data race with
+  every other thread's relative path for the duration of the call.
+- **`bind("/proc/self/fd/<dirfd>/wchd.sock")`.** procfs `fd` entries are *magic links*:
+  resolution through one jumps to the dentry the descriptor holds rather than re-walking a
+  stored name. This is the dirfd-relative bind, spelled the way Linux offers it. Measured
+  on this host, 2026-08-10, with an independent Python probe rather than with this code:
+
+  ```
+  O_RDONLY|O_DIRECTORY   bind(/proc/self/fd/3/wchd.sock) OK; len=25; socket? True; dir st_uid=1000 mode=0700 ino=9041806
+  O_PATH|O_DIRECTORY     bind(/proc/self/fd/3/wchd.sock) OK; len=25; socket? True; dir st_uid=1000 mode=0700 ino=9041806
+  after the swap: path …/webcam-handler -> ino 9041809, fd still -> ino 9041806
+  bind via /proc/self/fd landed in the attacker's dir: False; in the checked inode: True
+  bind into a DELETED directory: errno=2 No such file or directory
+  ```
+
+  The third line is the whole point: the name was replaced with a *different directory*
+  between the check and the bind — this entry's exact scenario — and the socket still landed
+  in the inode whose mode was asserted. A checked directory that is **removed** instead
+  fails closed with `ENOENT`. The composed path is 25 bytes against `sun_path`'s 108, and
+  `O_PATH` (no read permission asked for) is enough.
+
+**What the claim became, which is not what it was.** The substitution scenario is now
+*defeated* rather than *detected*, and the tests say so in their names:
+`a_socket_directory_substituted_between_the_check_and_the_bind_is_defeated` asserts the
+socket landed in the moved-aside checked directory and **not** in the attacker's,
+`…_removed_…_fails_closed` covers the unlink case, and
+`…_re_permissioned_…_is_refused` is what the surviving `fstat` re-check is for — the
+inode's own mode changing under a running daemon, which is a question about the right object
+rather than about which object. The owner check is driven as a predicate over a `Stat` with
+one field moved, both directions, because arranging a directory owned by another uid needs
+privileges this suite must not acquire (note N44's precedent).
+
+**Four consequences, written down rather than discovered:**
+
+1. **A `listen` backlog is now ours.** `tokio::net::UnixListener::bind` chose 1024;
+   creating the socket ourselves means naming the number, so
+   `limits::DAEMON_LISTEN_BACKLOG` is 64 with its own doc and `bind` reads it. AGENTS'
+   "bounded everything" applied to a bound we had been inheriting.
+2. **`local_addr()` stopped being the way to ask where the socket is.** It reports the
+   address passed to `bind(2)`, which is now `/proc/self/fd/<n>/wchd.sock`. The test that
+   used it asks a real `UnixStream::connect` on D11's own path instead — which is the
+   claim it was standing in for and is strictly stronger.
+3. **`MAX_UNIX_SOCKET_PATH_BYTES` kept its check and changed its meaning.** The bind is 25
+   bytes and cannot overflow `sun_path` however deep `$XDG_RUNTIME_DIR` is; the *client*
+   connects by the real name, so the 107-byte refusal is now on the client's behalf. Its
+   message says so, or the next reviewer reads it as dead code and deletes it.
+4. **`(st_dev, st_ino)` demoted from mechanism to diagnostic.** The descriptor is the
+   object now; the pair is carried so a refusal can name which inode was checked.
+
+**The honest residual, after all of that:**
+
+1. **It needs `/proc` mounted.** A minimal container without procfs cannot use the magic
+   link, and `SocketDir::bind` falls back to binding by name — with a `tracing::warn!` that
+   names what is no longer being protected. A silent downgrade of an authentication model
+   is worse than the window it hides. Not exercised on this desk (`/proc` is mounted), so
+   this is a guard that exists rather than a guard that has fired.
+2. **The base directory is still resolved by name, once.** `open` of `$XDG_RUNTIME_DIR`
+   walks a path, and an attacker owning *its* parent can swap it between the environment
+   read and the open. Closing that needs a component-by-component `openat` walk from `/`
+   with `O_NOFOLLOW` at each step, or `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)`
+   which rustix exposes as `rustix::fs::openat2`. One syscall of window against a path
+   walk; stated rather than done, and `openat2` is the named way to do it if it ever is.
+3. **The uid check is `geteuid()`, deliberately.** A root daemon serving a root-owned
+   runtime directory passes; a root daemon pointed at a *user's* runtime directory is now
+   refused, which is the case this entry said "nothing here makes".
+4. **The socket inode's own mode is still unasserted**, and the paragraph above argues at
+   length that this is correct rather than an omission. Nothing here changes it.
+
+### Amendment, 2026-08-10: which flag closes the window, and residual 1 driven
+
+Three corrections out of the P4d adversarial review, all inside the amendment above.
+
+**1. `O_NOFOLLOW` was not what refused the symlink, and the file said twice that it was.**
+`prepare`'s doc said "`O_NOFOLLOW` makes a symlink `ELOOP` from the kernel", and the
+refusal message said the directory is opened "`O_NOFOLLOW`, so a symlink is refused by the
+kernel rather than followed". Both are false **for this flag combination**, and `open(2)`
+says so outright: with `O_PATH` and `O_NOFOLLOW` together the call *succeeds* and returns a
+descriptor referring to the symbolic link. Re-measured on this host, 2026-08-10, with an
+independent probe against the C API:
+
+```
+O_PATH|O_NOFOLLOW              -> OPENED st_mode=0o120777 islnk=True
+O_PATH|O_NOFOLLOW|O_DIRECTORY  -> FAILED errno=20 ENOTDIR
+O_NOFOLLOW (no O_PATH)         -> FAILED errno=40 ELOOP
+O_PATH|O_DIRECTORY             -> OPENED st_mode=0o40775 islnk=False   (the target)
+```
+
+So under `O_PATH` it is **`O_DIRECTORY`** that refuses a symlink, spelled `ENOTDIR` — which
+is the errno `a_symlinked_socket_directory_is_refused_however_private_its_target_is` already
+asserted, one comment away from the prose that contradicted it. `O_NOFOLLOW` is still
+load-bearing: without it the open follows the link and checks the *target*. Neither may be
+dropped, and the reason a maintainer would drop `O_DIRECTORY` — a better diagnosis for "the
+path exists but is a regular file" — was exactly what the false rationale invited.
+
+The repair is not only prose. The four flags are one named constant, `SOCKET_DIR_OFLAGS`,
+whose doc states which flag does which job; and the symlink test now *measures* it, opening
+the same link with `SOCKET_DIR_OFLAGS.difference(OFlags::DIRECTORY)` and asserting the open
+succeeds on an `S_IFLNK` inode. Dropping `O_DIRECTORY` turns that test red rather than
+leaving the mode check (`0o120777` ≠ `0700`) as the last accidental line of defence.
+
+**2. Consequence 4 above is withdrawn: `(st_dev, st_ino)` is gone.** Demoting the pair to a
+diagnostic left a comparison between two `fstat`s of *one open descriptor*, which cannot
+disagree — an open descriptor pins its inode, and `st_dev` cannot change. It was an arm no
+input reaches and no test can turn red, in a module whose subject is that a check nobody
+drives is a check nobody has, and the same P4d commit deleted three unreachable arms one
+crate over for that reason (`hotplug::refusal`). `SocketDir` loses the field;
+`still_the_directory_that_was_checked` is now the `fstat` plus `check_mode_and_owner` that
+does have both directions driven. **Substitution is defeated structurally and no longer
+detected**, which the module header already said correctly and the field's own doc did not.
+
+**3. Residual 1 is now a branch a test drives.** "A guard that exists rather than a guard
+that has fired" was honest and was also unnecessary: nothing could make `relative_address`
+return `None` on a host with `/proc` mounted, so the fallback bind and its `warn!` had never
+executed anywhere. The address is
+now a value — `BindAddress::{ThroughTheDescriptor, ByName}` — chosen by `bind` and *passed*
+to `bind_listener`, which is the seam the `Accepting` trait already is one function along.
+`a_bind_by_name_still_serves_and_says_that_it_is_the_unprotected_spelling` drives both arms:
+the fallback binds a socket a real `UnixStream::connect` reaches by D11's own path and emits
+the `WARN`, and the ordinary spelling binds through the descriptor and says nothing.
+Silencing the warning turns it red, so "never a silent downgrade" is checked rather than
+stated. `MAX_UNIX_SOCKET_PATH_BYTES` needs no second arm: `bind` refuses on the length
+*before* it chooses a spelling, so both spellings meet the same check. `/proc` being mounted
+is still true of every host this suite runs on, and this is still a branch driven by a test
+rather than one that has ever run in anger; what changed is that it is no longer written
+blind.
+
 **Retires when:** P4e lands the orderly exit. Unlinking on the way out is still not a
 substitute for this — a daemon that is killed never runs its exit path — so the rule stays;
-what changes is that the leftover becomes the exception rather than the rule.
+what changes is that the leftover becomes the exception rather than the rule. The
+descriptor half of this entry has **retired**: what was "still open" is closed, with
+residuals 1 — now a branch tests drive, per correction 3 above — and 2 as the honest
+remainder.
 
 ---
 
@@ -3766,6 +4023,21 @@ finds all three):
   "not this one" is not a phase schedule; `arrives_in: "never"` is the double saying so.
   It predates P4c (it is in the tree at P4b's commit) and P4d will have to give it a
   different refusal when the variant goes.
+
+### Amendment, 2026-08-10: what P4d did with the two constructions above
+
+Both are gone, in the two different ways this entry predicted, and N6's retirement stanza
+carries the reasoning. The `sample` arm went with the kind. The `StubCamera` answers
+`Error::IllegalTransition { from: "stub_camera", op }` — the family N46 already picked that
+variant for, with the method attempted in `op` so the double names *which* thing it does not
+do rather than only that it does not.
+
+One sentence in the section above is now history rather than instruction: the claim that
+`read_verbs.rs`'s fifth refusal "is now `calibrate_verbs.rs`'s
+`no_calibrate_verb_answers_store_locked_or_unimplemented`" no longer holds, because that
+half of the walk stopped compiling with the variant. The test is
+`no_calibrate_verb_answers_store_locked` and the absence it used to check is now structural.
+The transcript above stands as what was true at P4c.
 
 ---
 
@@ -4543,3 +4815,717 @@ credibility just as surely as the reverse.
 
 **Retires when:** never by disproof; it retires as history if the floor ever stops counting
 a timeout as a survivor, which would need its own argument.
+
+---
+
+## PF:21 — The uevent socket needs no privilege: `NETLINK_KOBJECT_UEVENT` binds *and delivers* to an unprivileged process
+
+**Measured** 2026-08-10 on kernel `7.0.0-29-generic` (x86_64), as uid 1000 with
+`CapEff: 0000000000000000` — no effective capability at all. Continues the docs/6 §1.2
+registry; cite it as `[PF:21]`. This is design §8 item 10's question, answered, and it is
+the measurement docs/7 P4d schedules ("bind `NETLINK_KOBJECT_UEVENT` *unprivileged first*
+on this kernel and record the answer in the notes").
+
+Taken with an independent Python probe against the C API, not with this project's own
+socket module — the house rule that a fixture produced by the code under test proves
+nothing (PF:15 was measured the same way).
+
+### The bind
+
+```
+socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT)
+
+kernel 7.0.0-29-generic  uid=1000 euid=1000
+  CapInh: 0000000800000000     (CAP_WAKE_ALARM, inherited from the shell)
+  CapPrm: 0000000000000000
+  CapEff: 0000000000000000
+  CapBnd: 000001ffffffffff
+  bind(nl_pid=0, nl_groups=1): OK, getsockname=(1863593, 1)
+  bind(nl_pid=0, nl_groups=2): OK, getsockname=(2582951618, 2)
+  bind(nl_pid=0, nl_groups=3): OK, getsockname=(2332564595, 3)
+  SO_RCVBUF default: 212992
+  unprivileged multicast sendto(group=1): errno=1 (EPERM) Operation not permitted
+```
+
+**The bind is free**, for the kernel's own broadcast group (1), for udev's rebroadcast
+group (2), and for both. The kernel side of why: `lib/kobject_uevent.c` registers the
+protocol with `NL_CFG_F_NONROOT_RECV`, which is precisely the flag that exempts group
+membership from `netlink_bind`'s `CAP_NET_ADMIN` check. `NONROOT_SEND` is **not** set,
+which the last line measures from userspace: a non-root local user cannot forge a uevent
+into this socket, by multicast or by unicast to another netlink port.
+
+### The delivery, which is a different claim
+
+Binding is a permission fact; receipt needs an event. One `wch-priv uvcvideo cycle` with
+every camera closed, with the same unprivileged listener bound to group 1:
+
+```
+capture: uid=1000 CapEff=0000000000000000 sockname=(1895300, 1)
+[0001] +    0.00ms  290B            usb unbind   …/2-3.4.1.1:1.2
+[0003] +    0.54ms  294B    video4linux remove   …/2-3.4.1.1:1.0/video4linux/video6
+…
+[0052] +  332.68ms  288B    video4linux add      …/2-3.4.1.1:1.0/video4linux/video9
+[0056] +  336.42ms   87B         module add      /module/uvcvideo
+capture: 56 packet(s); burst width 336.42ms
+```
+
+56 packets, all of them received by a process with an empty capability set, none lost
+(`ENOBUFS` never fired inside the default 212992-byte receive buffer). By subsystem and
+action:
+
+| subsystem | remove/unbind | add/bind |
+|---|---|---|
+| `video4linux` | 10 | 10 |
+| `usb` | 9 | 9 |
+| `module` | 4 | 4 |
+| `media` | 4 | 4 |
+| `drivers` | 1 | 1 |
+
+**Ten `video4linux` removes and ten adds for four cameras**, which is PF:19's arithmetic
+generalised and is why a subsystem filter and a debounce are both load-bearing: thirty-six
+of the fifty-six packets are not ours, and the twenty that are describe four cameras.
+
+Two numbers P4d's debounce is sized against rather than guessed at:
+
+- **The whole burst is 336 ms wide.** The largest gap between consecutive *packets* is
+  93.8 ms; the largest gap between consecutive `video4linux` packets is **119 ms** — the
+  pause between the last `remove` (188.94 ms) and the first `add` (307.90 ms), which is
+  `modprobe` being re-run. A quiet-window shorter than that fires *between* the removes
+  and the adds and reports a machine with no cameras on it, which is the flapping the
+  debounce exists to prevent. **It is one sample and not a bound** — see the second cycle
+  below, which measured the same gap 20 ms shorter.
+- **Node numbers survived this cycle** (`video0`…`video9`, same interfaces, same four
+  cameras) but nothing may depend on that: ten minors are released at once and the kernel
+  re-allocates in registration order.
+
+### A second cycle, and the one number that moved
+
+Run again the same day, same host, same four cameras, with a fresh unprivileged listener
+and no code between the socket and the log. It is here because a single timing sample that
+a constant is about to be sized against is a number nobody has seen vary:
+
+```
+capture: uid=1000 CapEff=0000000000000000 sockname=(2113773, 1)
+[0001] +    0.00ms  294B    video4linux remove   …/2-3.4.1.1:1.0/video4linux/video6
+[0020] +  133.25ms  234B    video4linux remove   …/3-4/3-4:1.0/video4linux/video1
+[0033] +  231.78ms  228B    video4linux add      …/3-4/3-4:1.0/video4linux/video0
+[0056] +  294.68ms   87B         module add      /module/uvcvideo
+capture: 56 packet(s); burst width 294.68ms; ENOBUFS 0
+capture: largest gap between consecutive packets 93.37ms
+capture: video4linux packets 20; largest gap between consecutive video4linux packets 98.53ms
+capture: last remove +133.25ms -> first add +231.78ms = 98.53ms
+```
+
+What repeated exactly: **56 packets**, `ENOBUFS` 0, and the per-subsystem census
+(`video4linux` 10/10, `usb` 9/9, `module` 4/4, `media` 4/4, `drivers` 1/1) — the same
+table, packet for packet. The packet shape repeated too, 228 bytes and trailing NUL, with
+only `SEQNUM` advanced (89104 against 89028). The four cameras came back on the same four
+interfaces and the same ten minors.
+
+What moved: the **burst width, 294.68 ms against 336.42 ms**, and with it the
+remove-to-add pause, **98.53 ms against 119 ms**. Both are `modprobe` being re-run, and
+`modprobe` is not a real-time system. So the debounce's quiet window is chosen against the
+*spread* — two samples 20 ms apart on an idle desk say a window in the 150–300 ms range
+clears both with room, and a window near 100 ms would have straddled this run. Sizing it
+at the larger sample would have been sizing it at a coincidence.
+
+A **third** cycle, run only to write the packets to disk so the fixture work would not need
+a fourth, delivered the same 56 packets — 12953 bytes of payload, `ENOBUFS` 0 — and the
+same census again. Three cycles, three identical packet counts and three identical
+subsystem tables: the *shape* of a `uvcvideo` cycle on this host is stable and only its
+timing is not. Feeding those captured bytes through this workspace's own
+`hotplug::trigger` confirms the two claims the synthetic test packets cannot: a real
+kernel packet **ends in a NUL** (which `kobject-uevent` skips, because a segment with no
+`=` is not a field), and a real `video4linux` `add`/`remove` decodes to
+`NodeChanged`, while the `media`, `usb` and `module` neighbours decode to
+`NotOurs(OtherSubsystem)`.
+
+### The packet shape on this kernel, verbatim
+
+```
+add@/devices/pci0000:00/0000:00:14.0/usb3/3-4/3-4:1.0/video4linux/video0|ACTION=add|
+DEVPATH=/devices/pci0000:00/0000:00:14.0/usb3/3-4/3-4:1.0/video4linux/video0|
+SUBSYSTEM=video4linux|MAJOR=81|MINOR=0|DEVNAME=video0|SEQNUM=89028|
+```
+
+(`|` is a NUL.) 228 bytes; the largest `video4linux` packet in the burst was 294. Note the
+**trailing NUL**, which `kobject-uevent`'s own committed fixture does not have, and note
+that `DEVNAME` is a bare name with no `/dev/` prefix.
+
+### Which document was wrong
+
+Two files in this repository predicted opposite answers and neither had measured:
+
+- **`docs/implementation-notes.md` N8** — "Binding `NETLINK_KOBJECT_UEVENT` needs
+  `CAP_NET_ADMIN`. *Unverified* — the probe was blocked — so this capability is granted
+  ahead of proof". **Disproved.** N8 carries the amendment.
+- **`docs/research/crates-v4l2.json`** — "Needs no privileges beyond an AF_NETLINK
+  socket." Correct, and it was a flat assertion with nothing behind it. The same file's
+  risk 5 hedge ("verify container/sandbox environments permit AF_NETLINK uevent sockets")
+  is the part that survives: see the limits below.
+
+### What this does and does not license
+
+- **`CAP_NET_ADMIN` was never spent on the receive path.** G6's narrowing (design §2.13,
+  docs/7 P6e) can drop it, leaving `cap_sys_module` — which `modprobe` still needs and
+  which nothing here touches. **P4d does not re-bless**: docs/6:1045 and docs/7 P6e own
+  the narrowing, and this entry hands them the fact.
+- **The R3 hotplug arm needs no privileged wrapper for its socket.** It binds its own
+  listener as an ordinary test process and spawns `wch-priv uvcvideo cycle` as a
+  subprocess — the shape measured above. The `exec` wrapper's original argument (N8: "only
+  a wrapper can put `CAP_NET_ADMIN` inside a *test process*") is therefore not exercised
+  by hotplug.
+- **`SO_RCVBUFFORCE` still needs `CAP_NET_ADMIN`**, and is the one way the capability
+  could come back. It is not needed here, and the honest form of that claim is *measured
+  three times, never fired* rather than an arithmetic margin: all three cycles delivered
+  all 56 packets with `ENOBUFS` never raised. The margin is smaller than a payload sum
+  suggests — the whole burst is **12953 bytes** of payload against a 212992-byte buffer,
+  about 16×, and netlink charges the buffer `skb->truesize` rather than payload, so the
+  real headroom is some fraction of that. A busier machine could plausibly reach it, which
+  is why `Received::Overrun` is a modelled outcome and not an error. `SO_RCVBUF` (which
+  needs no capability) is the first thing to reach for if it ever does; if a future arm
+  reaches past it for `SO_RCVBUFFORCE`, G6 must hear about it — the grant would then be for
+  a reason N8 never predicted.
+- **One host, one kernel, four cameras** (design §3.3 item 8). This says nothing about a
+  container with a restricted netlink policy, an LSM that filters `AF_NETLINK`, or a
+  network namespace with no uevent broadcaster. `docs/research`'s risk 5 remains open, and
+  a build that cannot bind gets the typed `Error::DeviceIo` `sys::uevent::open` produces
+  rather than a panic.
+
+**Regression-tested by** `sys::uevent::tests::the_uevent_socket_binds_with_no_cap_net_admin_which_is_what_pf21_measured`,
+which asserts the effective capability set does not contain `CAP_NET_ADMIN` *before* it
+asserts the bind succeeds — so a run that held the capability fails rather than passing
+vacuously, and "we did not try unprivileged" cannot be spelled the same way as
+"unprivileged works" (AGENTS rule 7, applied to us rather than to the device).
+
+**Retires when:** a kernel or a deployment target refuses the unprivileged bind, at which
+point the test above goes red and the grant N8 removed has to be argued back on evidence
+rather than on prediction.
+
+---
+
+## N53 — "Re-enumerated on event" is a *diff*, not a call to `enumerate`, and the debounce turns on direction rather than on the clock
+
+**The question docs/7 left open.** Design §2.5 lists "filtered to subsystem `video4linux`,
+debounced, **re-enumerated on event**" inside P4d's deliverable, on the V4L2 backend
+(docs/6:710-713, docs/7:294-295). But `schema::backend::HotplugEvent`'s own doc says the
+opposite thing about ownership — "**Re-enumeration decides what camera it belongs to** —
+the event names a node, never a camera, because grouping is not a node property" — which
+reads as the *consumer's* job, and the fake's watch enumerates nothing at all. Both
+sentences are in the tree and they point different ways. This entry is the decision.
+
+**Decided: the watch re-reads the node list itself, and the events it hands out are the
+difference between successive readings.** It does *not* call `CameraBackend::enumerate`,
+and the distinction is the whole answer:
+
+| | `sysfs::nodes` — what the watch calls | `probe_nodes` → `enumerate` — what it does not |
+|---|---|---|
+| reads | `/sys/class/video4linux`, a kernel-maintained symlink farm | the same, **and opens every node for `QUERYCAP`** |
+| holds | nothing | every `/dev/video*`, transiently |
+| answers | which nodes exist | which *cameras* exist, grouped by USB interface \[PF:7, PF:19\] |
+
+Three reasons the heavier one is out, each of which would otherwise be a defect somebody
+discovers later:
+
+1. **A watch that opened nodes would be a camera holder.** `wch-priv uvcvideo cycle`
+   refuses to unload the driver while any process holds a `/dev/video*` open (design
+   §2.13), so a watch that re-enumerated inside `next_event` would make P4d's own R3 arm
+   fail against its own interlock — self-inflicted `Error::InUse`, arriving as "hotplug is
+   broken". It would also contradict D12's "the daemon never opens a camera until first
+   use": subscribing to events is not a use.
+2. **`Ok(None)` at a deadline is the contract (E3), and the battery bounds it** at
+   `deadline + 2 s`. A full sysfs-plus-`QUERYCAP` scan of ten nodes inside `next_event`
+   spends that budget on work the caller did not ask for.
+3. **A half-populated group is `enumerate`'s problem and not the watch's.** `probe_nodes`
+   drops a whole group when one member is unreadable, deliberately (E3: a busy node must
+   not be answered as a missing capability) — so re-enumerating *mid-burst* would produce
+   cameras appearing and disappearing that nothing had plugged in. Diffing node paths has
+   no such failure mode: a node is in the directory or it is not, and the events say
+   nothing about cameras, which is exactly what `HotplugEvent`'s doc asks for.
+
+So both sentences are satisfied. The design's "re-enumerated on event" is honoured — the
+tree *is* read again on every burst — and the trait's "re-enumeration decides what camera
+it belongs to" stays the consumer's, because a node path is all the watch ever emits.
+
+**What a diff-based watch cannot report, stated rather than discovered.** Its events can
+never be invented and can never leave the watch out of step with the tree, which is what
+makes every dropped packet affordable (a lost packet is a lost *trigger*, and the next
+trigger produces the full difference anyway). The price is the mirror image: **a node that
+leaves and returns entirely between two readings is not reported at all**, because between
+those two readings nothing changed. No diff-based watch closes that window.
+
+### The debounce is a second settle-shaped fold, and that is not a second home
+
+Design D5's settle policy is a pure fold on a caller-supplied clock in `engine::settle`,
+and "one home per law" (design §2.10) would ordinarily make a second one a defect. It is
+not one here, for two reasons that should be read together rather than either alone:
+
+- **They are different laws.** `engine::settle` decides when a *control* has stopped
+  moving, from frames and read-backs. `hotplug::Debounce` decides when the *kernel* has
+  stopped talking, from packet arrivals. Neither could be expressed in the other's terms.
+- **The DAG forbids sharing even if they were the same.** `webcam-handler-engine` is a
+  `[dev-dependencies]` entry of `webcam-handler-v4l2` and `scripts/gates/dependency-walls.sh`
+  keeps it that way. What is actually shared is the *shape* — an `Instant` parameter
+  instead of a clock read, which is also what `sys::wait::until_readable` already takes —
+  and a shape is not a home.
+
+### The turn rule, and why the quiet window is not sized against `modprobe`
+
+The obvious debounce is "fire when the socket has been quiet for N milliseconds", and the
+obvious N is one that separates a driver cycle's removes from its adds. **That number does
+not exist on this host.** From the PF:21 captures:
+
+| gap | measured |
+|---|---|
+| largest gap *inside* the remove phase | **93.6 ms** (the Dell goes, then ~94 ms later the USB3 devices) |
+| largest gap between two nodes of the *same* camera | 30.2 ms |
+| last remove → first add, cycle 1 | 119.0 ms |
+| last remove → first add, cycle 2 | **98.5 ms** |
+
+93.6 and 98.5 are five milliseconds apart, and both are `modprobe` timings rather than
+bounds. A window below them costs extra readings; a window above them coalesces a whole
+`uvcvideo` cycle into one reading whose diff is *empty*, because the same ten nodes come
+back — so the watch would report **nothing happened** for a cycle that took every camera
+away, and docs/7's R3 arm ("one `uvcvideo` cycle … produces remove+add events through
+`watch`") could not be satisfied at all.
+
+So the window does not try. `limits::HOTPLUG_QUIET_MS` is 250 ms — chosen to coalesce
+*any* same-direction burst on this desk with room over the 30.2 ms it actually has to
+bridge — and what ends a burst early is the **turn rule**: a trigger whose direction
+reverses the burst being coalesced ends that burst immediately, because the tree has passed
+through a state the caller must be given the chance to see. With it, the same window is
+right at 50 ms and at 2 s, which is what a constant sized against two samples of `modprobe`
+is not. `crate::watch::Watch::drain` stops mid-drain when the turn fires; what is left stays
+queued on the socket, so nothing is lost by stopping early.
+
+`limits::HOTPLUG_MAX_DEFERRAL_MS` (2 s) is the other end: a failing hub in an add/remove
+loop produces a trigger stream with no pause in it, and a quiet-only rule would defer the
+reading forever — a hang wearing a debounce costume.
+
+**One consequence for the R3 arm** (P4d's next step): because the turn fires on the *first*
+add, the reading it forces already sees that node back — and every other node the kernel
+managed to register between the packet arriving and the reading finishing. Those nodes are
+not reported as having left. **Measured, twice, at two of ten on this host** (note E9): the
+Chicony RGB interface's `video0` and `video1` were both back by the time the turn's reading
+read the tree, so the run's headline number is 8 removals rather than 10. The count is a
+race with `modprobe` and not a property, so the arm asserts *shapes* — at least one
+`Removed` naming a path from the pre-cycle set, then at least one `Added` — never an exact
+count and never a node by name. What it *can* assert exactly is the accounting: the
+pre-cycle node listing with every delivered event applied reproduces the kernel's own
+listing afterwards, which is this note's claim stated as an outcome rather than as a
+mechanism.
+
+**Proven by** `hotplug::tests::{a_burst_is_finished_when_the_socket_goes_quiet_or_when_the_ceiling_arrives,
+a_trigger_that_reverses_the_burst_ends_it_whatever_the_clock_says,
+out_of_order_instants_cannot_make_a_finished_burst_unfinished, a_lost_packet_costs_a_trigger_and_never_a_change,
+a_failed_reading_does_not_spend_the_trigger_that_asked_for_it}` and
+`watch::tests::{a_burst_of_node_removals_costs_one_reading_and_still_reports_every_node,
+without_the_debounce_the_same_burst_costs_one_reading_per_packet,
+a_drain_stops_at_the_turn_so_a_driver_cycle_is_not_coalesced_into_nothing}` — the second of
+which is the inverse arm: `Debounce::new(ZERO, ZERO)` reproduces the undebounced build and
+asserts ten readings for ten packets, so "the debounce coalesces" is a claim with a red
+version. No test here sleeps; every instant is invented by the test and nothing waits on
+one.
+
+### Amendment, 2026-08-10: six corrections from the P4d adversarial review
+
+All inside the watch this entry describes, and the first two changed behaviour.
+
+**1. An unreadable packet lost the change it announced.** `Tracker::observe_packet` armed
+the debounce only for a `NodeChanged`; `Trigger::Unreadable` bumped a counter and returned.
+`Tracker::observe_lost`, one function below, did the opposite for a packet whose bytes never
+arrived — `observe(None, at)`, which forces a reading. That asymmetry falsified this crate's
+load-bearing sentence, "a dropped, oversized or unparsable packet costs a *trigger* and
+never desynchronises the watch": for an unparsable one the cost was the whole event. The
+refusals in `trigger` are deliberately liberal — `kobject-uevent` validates the entire
+buffer, so one non-UTF-8 byte in a field this build never reads refuses a camera's `remove`
+whole — and the safety net that makes liberal refusal affordable was not wired to the
+refusing path. On a single-node camera, or when the corrupted packet is a burst's last, the
+subscriber was told nothing at all. **Fixed:** `Unreadable` arms the debounce, and so does
+`NotOurs::UnmodelledAction`, whose subsystem is unknowable by construction (the parser
+refuses on `ACTION` before it reads `SUBSYSTEM`). `OtherSubsystem` and `OtherAction` still
+do not — those are packets this build positively knows are not news, and they were 36 of 56
+in a measured cycle \[PF:21\]. The cost is bounded by the debounce itself: one reading per
+quiet window under any flood, which is the bound `Lost` already accepted. Driven by
+`hotplug::tests::a_packet_this_build_could_not_read_still_costs_a_trigger_rather_than_the_change`,
+whose three arms kill all four mutants of the match.
+
+**2. The subsystem filter was unconstrained, and the fixture named as pinning it could not
+pin it.** `VIDEO_SUBSYSTEM`'s doc forbids filtering on `DEVPATH` text, and two places named
+`uevent-add-media-node.bin` as the proof. That fixture's `DEVPATH` is
+`…/3-4:1.0/media0` — no `video4linux` substring — so a substring filter drops it correctly,
+and **no** packet in the 56-datagram cycle has a non-`video4linux` `SUBSYSTEM` with
+`video4linux` in its path. Measured on this tree: replacing `event.subsystem !=
+VIDEO_SUBSYSTEM` with `!event.devpath.to_string_lossy().contains(VIDEO_SUBSYSTEM)` left all
+22 hotplug and watch tests green, so the documented rule could be deleted with `just ci`
+green. The doc also had the containment backwards — a `usb` interface's path is a *prefix*
+of its `video4linux` child's, so the failure direction is a device hanging *below* a node,
+not above it. **Fixed:** one synthetic packet, `SUBSYSTEM=input` with
+`…/video4linux/video0/input1` as its path, plus its mirror (`SUBSYSTEM=video4linux` with no
+`video4linux` in the path). Synthetic and said so: nothing on this desk emits either. The
+mutant now dies; `fixtures/README.md` and the test comment say what the media packet
+actually pins.
+
+**3. `Trigger::NodeChanged::devpath` was a typed declaration nothing read.** Its doc named
+three consumers — the debounce's diagnostics, a log line, the R3 arm's transcript — and none
+exists: `Debounce::observe` takes a direction and an instant, this crate has no logging
+dependency (which is what `Counts` is *for*), and `Trigger` is `pub(crate)` and unreachable
+from `tests/hardware.rs`. Replacing the initialiser with `String::new()` left every
+production path in the workspace identical and only this module's own unit tests noticed.
+Rubric A8, and worse than inert: a heap copy of attacker-influenced kernel text kept alive
+past the parse is what made "no packet text becomes a path" a convention rather than a fact
+about the type. **Deleted.** `NodeChanged` carries a direction and nothing else, and
+`a_hostile_devpath_never_becomes_a_slash_dev_path_because_nothing_here_makes_one` now
+asserts the two triggers are *equal* — a benign packet and one whose every path-shaped field
+is hostile produce the same value.
+
+**4. The watch's node source read forty files it threw away.** `SysfsNodes::list` called
+`sysfs::nodes`, which `canonicalize`s each node's `device` link and reads `idVendor`,
+`idProduct` and `serial` under it, and kept only `dev_path` — ten nodes × four operations
+per rescan, on the path a hotplug burst provokes, against a tree the driver is still moving.
+Two docs said "opens nothing" and "opens no node"; the second was true and the first was
+not. **Fixed:** `sysfs::node_paths` is the `read_dir` on its own, sharing `node_names_in`
+with `nodes_in` so the `video` filter and the numeric sort keep one home —
+`the_cheap_node_listing_and_the_full_one_agree_on_the_population` is what goes red if either
+grows a second copy.
+
+**5. `MAX_UEVENTS_PER_DRAIN` documented a bound on `next_event` that nothing enforced.**
+The constant is read by `drain`, and `next_event` calls `drain` inside a loop whose exits
+are an event, an error, or the deadline — so a storm of `NotOurs` packets never arms the
+debounce and the call reads for as long as the caller was willing to wait. The behaviour is
+right (datagrams nobody reads become `ENOBUFS`, so draining a storm is work the watch has to
+do) and the **doc** was wrong. Corrected to say the bound is one pass and the caller's
+deadline is what bounds the call, and
+`watch::tests::a_flood_of_other_peoples_packets_is_all_read_and_still_answers_at_the_deadline`
+now drives the claim at the layer it is made at: every queued packet read, nothing dropped,
+deadline still honoured.
+
+**6. `Watch`'s derived `Debug` printed the 8 KiB receive buffer.** `Counts`' own doc offers
+a holding layer's `Debug` as the production read path for the counters, and taking that
+invitation emitted ~30 KB per line whose live prefix was the last datagram — a neighbouring
+subsystem's `PRODUCT=`, `MODALIAS=` and serial strings, recorded by a daemon nobody asked to
+record them. Hand-written now: socket, tracker, and the buffer's *length*, which is the
+shape `sys::mmap` already uses.
+
+**The mutation floor is owed a re-run, and this says so rather than letting it be
+assumed.** These corrections edit `hotplug.rs`, which is inside `.cargo/mutants.toml`'s
+`examine_globs`, so the floor's population moved with them (still 36 mutants for the file,
+last in a queue of 515). Two attempts on this desk did not produce a usable verdict: the
+first used four jobs against a 14 GiB tmpfs and turned 267 mutants into build failures —
+340 "unviable" against the 73 the P4d run recorded, and nine acceptances reported as no
+longer surviving purely because they were never tested; the second was correctly configured
+(`/dev/shm`, three jobs) and was on track but could not be run to completion here. What
+*is* established is narrower and was watched rather than inferred: the four hand-applied
+mutants of exactly the logic these corrections changed — the subsystem comparison replaced
+by a `DEVPATH` substring, `Unreadable` not arming the debounce, `UnmodelledAction` not
+arming it, and `OtherSubsystem`/`OtherAction` arming it — each go red, and the two
+`daemon::uds` edits were watched the same way (dropping `O_DIRECTORY`, silencing the
+downgrade warning). `just mutants` at the commit boundary is the remaining obligation, and
+`crates/api/src/codes.rs:160` was the only survivor either attempt reached, which is the
+one acceptance N37 already carries.
+
+One correction outside this entry's subject but found with it: `Fd::open` passed
+`libc::O_RDWR` alone, and `v4l::v4l2::open` hands its flags to `open(2)` unchanged (checked
+in the pinned 0.14.0 source), so every `/dev/video*` this crate opened was inherited across
+`exec` — while P4d's netlink socket set `CLOEXEC` and said why. The camera node is the more
+valuable descriptor by that argument: it is D12's exclusive-access capability and the thing
+`wch-priv`'s unload interlock counts holders of, and P4d is the first commit in this crate
+to spawn a child. `libc::O_CLOEXEC` is set, pinned by
+`sys::tests::a_device_descriptor_is_not_inherited_by_anything_this_process_execs` off
+`F_GETFD` rather than off the flags argument (AGENTS rule 5: requested is not applied).
+
+**Retires when:** something makes the node-path diff the wrong answer — a kernel that
+recycles a node name for a different device inside one burst would do it, and would need
+the event to carry more than a path, which is a `schema::backend` change and not a backend
+one.
+
+---
+
+## E9 — G4 hardware evidence: hotplug through the real backend, 2026-08-10
+
+docs/7's P4d asks for the R3 hotplug run — "one `uvcvideo` cycle via the blessed helper
+with every camera closed produces remove+add events through `watch` (the interlock
+honored)" — and docs/9's netlink row says that arm "is evidence-recorded". This is that
+record, under the carve-out G1, G2 and G3 already used: *the recipe existing and selecting
+tests is the gate criterion, and the run itself is evidence, not CI-gating*. Evidence
+entries are dated and appended; they are not amended.
+
+**Host:** kernel 7.0.0-29-generic, x86_64, uid 1000. **Attached:** Chicony `04f2:b83c`
+(RGB on `3-4:1.0`, IR on `3-4:1.2`), OBSBOT Tiny 3 `3564:ff02` on `3-1:1.0`, Dell
+U3224KB/A on `2-3.4.1.1:1.0` \[PF:19\]. Four logical cameras, ten `/dev/video*` nodes.
+**Helper:** `.wch-bin/wch-priv`, mode `700`, `blessing: cap_sys_module,cap_net_admin+ep`,
+`can delegate to a child: yes (ambient raise verified)`.
+
+### The measurement that came first, and is this entry's headline
+
+Design §8 item 10 asked whether the uevent socket needs `CAP_NET_ADMIN`, and P4d took the
+answer before writing a line of the arm: **it does not**. `socket(AF_NETLINK, SOCK_DGRAM |
+SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT)` + `bind(nl_pid=0, nl_groups=1)` succeeds as uid 1000
+with `CapEff: 0000000000000000`, and three separate `uvcvideo` cycles then **delivered all
+56 packets** to that unprivileged listener with `ENOBUFS` never raised. The full transcript,
+the per-subsystem census and the packet shape are \[PF:21\]; N8's row predicting the
+capability is disproved there and carries the amendment. The consequence for this arm is
+mechanical and worth stating in one sentence: **the test process binds its own socket as an
+ordinary process and spawns the helper as a subprocess** — no `wch-priv exec` wrapper, no
+managed recipe, and the hotplug arm therefore spends no capability of its own. The helper is
+still needed, for `modprobe` and `cap_sys_module`, which nothing here narrows.
+
+### R3 — `just smoke-hw`, motors included
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+    Starting 16 tests across 34 binaries (835 tests skipped)
+     Summary [  53.806s] 16 tests run: 16 passed, 835 skipped
+smoke-hw: 7 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+Fifteen arms before this sub-milestone, sixteen now. The new one's own transcript, verbatim:
+
+```
+before: 4 camera(s) on 10 node(s): 2-3.4.1.1:1.0, 3-1:1.0, 3-4:1.0, 3-4:1.2
+  event: Removed { path: "/dev/video2" }
+  event: Removed { path: "/dev/video3" }
+  event: Removed { path: "/dev/video4" }
+  event: Removed { path: "/dev/video5" }
+  event: Removed { path: "/dev/video6" }
+  event: Removed { path: "/dev/video7" }
+  event: Removed { path: "/dev/video8" }
+  event: Removed { path: "/dev/video9" }
+  event: Added { path: "/dev/video2" }
+  event: Added { path: "/dev/video3" }
+  event: Added { path: "/dev/video4" }
+  event: Added { path: "/dev/video5" }
+  event: Added { path: "/dev/video6" }
+  event: Added { path: "/dev/video7" }
+  event: Added { path: "/dev/video8" }
+  event: Added { path: "/dev/video9" }
+  cycle: uvcvideo: cycled; 10 node(s) before, 10 after
+cycle seen through watch: 8 removal(s), 8 arrival(s) — /dev/video2 then /dev/video2
+after: 4 camera(s) back on the same 4 bus path(s)
+```
+
+The helper printed neither of its two `warning:` lines, so the unload took and the nodes
+were all back inside its settle deadline. **Eight and not ten**, in both directions of the
+knob and in every run taken today: the turn rule ends the burst on the *first* `add`, and by
+the time that reading finishes reading `/sys/class/video4linux` the Chicony RGB interface's
+`video0` and `video1` are already registered again. Note N53 predicted one node of ten; the
+measurement says two, and N53 now says so.
+
+### R3 — `WCH_NO_MOTION=1 just smoke-hw`
+
+Both directions are run because "the knob excludes the motion arms" and "the exclusion is
+named and counted" are different claims and only running it proves the second.
+
+```
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded by WCH_NO_MOTION=1; unset it to include them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/) - test(/(^|::)hw_motion_/)
+    Starting 15 tests across 34 binaries (836 tests skipped)
+     Summary [  38.365s] 15 tests run: 15 passed, 836 skipped
+smoke-hw: 5 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 1 named skip(s) before it started
+```
+
+16 with motors and 15 without; 7 declined claims and 5. The difference is one named,
+counted skip and the two partial skips that belong to the excluded arm, rather than a
+smaller number nobody noticed. The hotplug arm's transcript is byte-identical between the
+two runs — it does not move a motor and does not care about the knob.
+
+### The skips are exercised, not described
+
+A hardware arm's skip is the thing most likely to be written once and never run, and a skip
+that reads as pass is the failure `smoke-hw`'s counter exists for. Two of this arm's four
+declines were driven for real on this host:
+
+```
+$ mv .wch-bin/wch-priv .wch-bin/wch-priv.hidden && cargo nextest run … -E 'test(/hw_hotplug_/)'
+SKIP: no blessed helper at .wch-bin/wch-priv; run `just bless` (sudo once) — this arm cannot cycle a driver without it
+```
+
+```
+$ python3 -c "import os,time; fd=os.open('/dev/video0', os.O_RDWR); time.sleep(25)" &
+$ .wch-bin/wch-priv uvcvideo status --json
+{"module":"uvcvideo","loaded":true,"holders":[{"pid":3729222,"comm":"python3","node":"/dev/video0"}]}
+$ cargo nextest run … -E 'test(/hw_hotplug_/)'
+before: 4 camera(s) on 10 node(s): 2-3.4.1.1:1.0, 3-1:1.0, 3-4:1.0, 3-4:1.2
+SKIP: 1 process(es) hold a camera open ([{"comm":"python3","node":"/dev/video0","pid":3729222}]); the uvcvideo interlock refuses a cycle and this arm does not force it
+```
+
+The second is the interlock honored rather than fought: a real other-process holder was
+present, the arm asked the helper, declined, and **did not cycle the driver** — no
+`--force`, which is an operator affordance and never a test one. The helper was restored
+intact after the first (`blessing: cap_sys_module,cap_net_admin+ep`, unchanged); the holder
+released `/dev/video0` on its own and the desk was back to `0 camera holder(s)`.
+
+### The arm was watched failing, twice, against real hardware
+
+An `#[ignore]`d evidence arm is exactly where a decorative assertion hides, so both of its
+claims were driven red by hand-written mutants on this desk before it was called done —
+each caught by a *different* assertion, which is the point of having two.
+
+| mutant | what went red |
+|---|---|
+| `Debounce::observe`: `self.turned = true` → `false` (the turn rule deleted) | `a uvcvideo cycle produced 0 event(s) through the real watch, which is not a removal followed by an arrival: []` — after 6.0 s of a 6 s budget. The whole cycle coalesced into one reading whose diff was empty, which is precisely the failure note N53 argues the turn rule exists to prevent, now observed rather than reasoned about. |
+| `Tracker::rescan`: `self.known.difference(&now)` → `self.known.iter()` (every known node reported gone) | the ordering assertion still passed — 12 removals then 8 arrivals — and the **accounting identity** caught it: `applying the watch's 20 event(s) to the pre-cycle node list does not reproduce the kernel's own listing`, `left` short of `/dev/video0` and `/dev/video1`. |
+
+Both mutants were reverted and the arm re-run green. The second is the reason the arm does
+more than count events: a defect can produce a plausible-looking removal-then-arrival
+sequence and still leave a subscriber holding a tree the kernel does not have.
+
+### What the run establishes
+
+- **`CameraBackend::watch` is real on the V4L2 backend, and a kernel proved it.** The
+  socket, the group-1 bind, the `SUBSYSTEM=video4linux` filter, the debounce, the turn rule
+  and the node-list diff are one working path from a `modprobe` to a `HotplugEvent`. Until
+  today the v4l2 half of that path had only ever been driven by committed packets; the fake
+  had passed the battery's `HotplugWatch` arm since P0, and parity now means the same thing
+  for both backends.
+- **The events are re-enumeration, not packet contents** (note N53), demonstrated as an
+  outcome: the pre-cycle node listing with all 16 delivered events applied reproduces the
+  kernel's own listing afterwards. Nothing a packet said became a path — a hostile
+  `DEVNAME` has no route to a `HotplugEvent` here, which is rubric B10's requirement
+  discharged by construction rather than by validation.
+- **The debounce is load-bearing on real timings and not only on invented ones.** One cycle
+  is 56 packets, 20 of them ours, arriving across ~300 ms \[PF:21\]; the watch answered with
+  two readings of the tree.
+- **The interlock is designed around.** The arm holds no `/dev/video*` descriptor for its
+  whole duration — its enumeration opens and closes each node before the watch is opened,
+  and the watch's own descriptor is an AF_NETLINK socket, which is the fact that makes the
+  arm possible at all. It never streams a frame; no camera image existed at any point.
+- **The desk was left as it was found** (AGENTS rule 8, applied to the driver): four cameras
+  on the same four bus paths, ten nodes on the same ten minors, `uvcvideo: loaded; 0 camera
+  holder(s)`, after every one of the seven cycles this session ran — the two mutant runs
+  included, each of which cycled the driver before failing its assertion.
+
+### What it does not establish
+
+- **Mid-stream device loss stays the fake's, by design and not by omission.** Design §3.3
+  item 9 says a camera that dies while a stream is running is "modeled, not measured", and
+  the helper's interlock makes it unarrangeable: unloading `uvcvideo` requires every node
+  closed, and a stream holds one. So this arm proves the half the interlock permits —
+  add/remove with every camera closed — and `Fault::DeviceGone` remains scripted. That is
+  the split the design drew, honored literally; the arm's doc comment says which half is
+  which so a future reader does not read the gap as a hole.
+- **A driver cycle is not a physical unplug.** The USB device never left the bus, so the
+  `usb` subsystem's own removal traffic in a real unplug — and whatever a hub or a cable
+  fault would add — is unmeasured. What a cycle reproduces faithfully is the
+  `video4linux` half, which is the half `watch` filters on.
+- **Node renumbering is untested.** Every cycle taken today returned the same ten minors in
+  the same order, so the arm's insistence on fingerprints and on shapes rather than names is
+  *correct by argument* and has never been exercised by a kernel that disagreed. A guard
+  that exists and has not fired.
+- **The receive-buffer overrun path has never fired.** `Received::Overrun` is a modelled
+  outcome and the flood claim is a unit test against a socket, not a kernel: three
+  independently captured cycles fitted the default 212992-byte buffer \[PF:21\], and no run
+  on this desk has raised `ENOBUFS`. The guard exists; the machine has not been busy enough
+  to test it.
+- **The debounce's ceiling has never fired either.** `limits::HOTPLUG_MAX_DEFERRAL_MS`
+  exists for a failing hub in an add/remove loop, and no hardware here loops.
+- **Still one host, one kernel, four cameras** (design §3.3 item 8) — and one driver:
+  everything above is `uvcvideo`. A `vivid` node's uevents are the same subsystem and would
+  take the same path, which is an argument and not a measurement.
+
+---
+
+## E10 — The mutation floor's third run, over the scope P4d widened, 2026-08-10
+
+E8 ends "the next widening writes its own entry", so this is that entry. E7 commissioned
+the floor over six pure cores; P4a widened it to nine with `crates/api/src/{codes,photo,
+wire}.rs` (E8). P4d makes it ten, and the tenth is the first from a **backend**.
+
+### The widening, and the argument that had to be written down
+
+One line: `crates/backends/v4l2/src/hotplug.rs`. `.cargo/mutants.toml`'s header rules out
+silence about a new file, so the choice was made out loud rather than left to whoever reads
+the globs next. It belongs for the same reason the other nine do — `hotplug::trigger` takes
+a byte slice and returns a value, and `Debounce`/`Tracker` fold over `Instant`s the caller
+supplies. It opens nothing, reads no clock and makes no syscall.
+
+Its two neighbours stay out, and that split is the point of the module boundary rather than
+an accident of it:
+
+- `sys/uevent.rs` is the socket, excluded with the rest of `src/sys/` — "only decidable
+  against a device". Putting the packet *decision* in `hotplug.rs` instead of in the socket
+  module is what kept a pure fold inside the floor's reach (note N53).
+- `watch.rs` is the blocking loop, excluded with its own reason: what is left in it after
+  the folds moved down is a clock, a `poll` and a `recv`, so its mutants are **timing**
+  survivors — the class note N52 records this floor being bad at.
+
+### The run
+
+**515 mutants in 33 minutes: 431 caught, 11 survived, 73 unviable, 0 timed out**, judged by
+the whole 828-test workspace suite, three parallel jobs on an eight-core machine. E8's run
+was 478 mutants in 21 minutes at four jobs; the thirty-seven new ones are `hotplug.rs`'s
+(P4d's deletion of `Unimplemented` also took a few of `codes.rs`'s with it), and the extra
+wall clock is the job count, not the scope.
+
+The register comparison runs clean in both directions — **eleven survivors, eleven
+acceptances, nothing unexpected and nothing stale**. All eleven are the ones E7 and E8
+already triaged (N25's six, N26's three, N27's one, N37's one). `hotplug.rs` contributed
+none.
+
+### What the widening bought, measured — and a note on how it was found
+
+It bought one real defect, on the first run over the file: **`Tracker::next_deadline`
+replaced with `None` survived the entire suite.**
+
+`Debounce::next_deadline` is asserted four ways one module down, so the fold itself was
+covered. What nothing asserted was that the `Tracker` *forwards* it, and — the part that
+matters — what forwarding is for. `Watch::next_event` waits for whichever comes first,
+something to read or the burst going quiet; with `None` the second half disappears and the
+budget is always the caller's deadline. The events are not lost and the tree never falls out
+of step (note N53's whole argument), so every existing test still passed: a settled burst is
+simply handed over when the *caller* gives up rather than when the *burst* does. On a
+subscriber polling with a generous deadline that is the difference between a quarter of a
+second and however long it asked for.
+
+It is neither equivalent nor unkillable, so it is not in `scripts/mutants-accepted.txt`.
+`watch::tests::a_settled_burst_is_reported_when_it_settles_and_not_when_the_caller_gives_up`
+kills it: one remove packet queued on a datagram pair, a 20 ms quiet window, a ten-second
+deadline, and the assertion that the answer came back in well under half of it. Watched
+failing against a hand-applied copy of the mutant — **10.010212057s**, the whole deadline —
+then green at 23 ms with the mutant reverted, then confirmed by a narrowed re-run over the
+file alone: 36 mutants, 24 caught, 12 unviable, **0 missed**.
+
+Two things this says beyond the fix. The floor found a class the nine hand-written mutants
+of P4d step 2 did not: those were all about *what* the watch reports, and this one is about
+*when*. And the survivor sat exactly on the seam between two modules — the fold was tested,
+the loop was tested, and the delegation between them was the gap — which is the shape a
+file-by-file reading of a diff is worst at seeing.
+
+### What it does not establish
+
+- **Three jobs, not four or five.** Note N52's measurement stands: the verdict moved with
+  `nproc` until `minimum_test_timeout = 180.0` was pinned. It is pinned, 0 mutants timed
+  out, and the register was clean — but this run does not re-measure N52's claim, it rests
+  on it. (The first attempt of this run died at 5 jobs on `ENOSPC`, a `tmpfs` build root too
+  small for five trees at about 3 GiB each. That is an environment fact, not a verdict.)
+- **`watch.rs` and `sys/uevent.rs` are still unexamined by this job**, deliberately and with
+  their reasons in the scope file. Their claims rest on the hand-written mutants of P4d step
+  2 and on the R3 arm (note E9), not on this floor.
+
+### Re-run at the sub-milestone boundary, and N52's claim measured rather than rested on
+
+The run above was judged by the suite as it stood mid-sub-milestone; the P4d review then
+added tests for seventeen findings, so the tree that ships is not the tree that was judged.
+A floor result that predates the code it certifies is the same species of stale as an
+acceptance nobody re-checks (N15), so the whole job was run again against the committed
+tree, from a clean build root:
+
+**515 mutants — 431 caught, 11 missed, 73 unviable, 0 timed out; 11 survivors, 11 recorded
+acceptances, register clean both ways. PASS.**
+
+Identical in every count to the run above, and that identity is the second measurement this
+entry can offer. The section above says "this run does not re-measure N52's claim, it rests
+on it" — the boundary re-run **does** re-measure it, because it used **eight** jobs where the
+first used three. Same tree, same scope, 3 jobs and 8 jobs, one verdict. Before
+`minimum_test_timeout = 180.0` that same comparison produced FAIL-with-31-unaccepted against
+PASS (N52's table). The pin holds at a scope 35 mutants larger than the one it was measured
+on, which is the property that matters: it was fixed for the workspace, not for a run.
+
+The 828-test figure above is therefore left as written rather than corrected — it is what
+that run was judged by, and the boundary re-run's 835 is what this commit is judged by. An
+evidence entry that quietly updates its own numbers stops being evidence.
+
+**Retires when:** never — this is dated evidence. The next widening writes its own entry.

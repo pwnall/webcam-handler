@@ -1,0 +1,1 @@
+add@/devices/pci0000:00/0000:00:14.0/usb3/3-4/3-4:1.0/video4linux/video0ACTION=addDEVPATH=/devices/pci0000:00/0000:00:14.0/usb3/3-4/3-4:1.0/video4linux/video0SUBSYSTEM=video4linuxMAJOR=81MINOR=0DEVNAME=video0SEQNUM=89160

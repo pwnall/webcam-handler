@@ -192,15 +192,6 @@
           "protocol": "held_for_lifetime"
         },
         "message": "the state directory is locked by wchd (pid 909); daemon owns the state (and likely the camera) — use wchc"
-      },
-      "unimplemented": {
-        "code": -32030,
-        "data": {
-          "arrives_in": "P2",
-          "kind": "unimplemented",
-          "operation": "Camera::start_stream"
-        },
-        "message": "Camera::start_stream is not implemented in this build; it lands at P2"
       }
     },
     "schemas": {
@@ -1851,29 +1842,6 @@
               "message"
             ],
             "type": "object"
-          },
-          {
-            "description": "The operation exists in the contract and this build does not perform it yet.\n\nEmphatically **not** a capability answer (E3): the device was never asked. A\nhalf-built backend has to say something when a trait method it has not reached\nis called, and every other choice is worse — a panic breaks the \"plugging in a\nwebcam cannot panic the library\" rule, and reusing [`Error::DeviceIo`] would\nblame the kernel for our own schedule. See note N6.",
-            "properties": {
-              "arrives_in": {
-                "description": "The phase that lands it, in docs/7's spelling (`P2`).",
-                "type": "string"
-              },
-              "kind": {
-                "const": "unimplemented",
-                "type": "string"
-              },
-              "operation": {
-                "description": "The trait method or verb that was called.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "operation",
-              "arrives_in"
-            ],
-            "type": "object"
           }
         ]
       },
@@ -1968,11 +1936,6 @@
           {
             "const": "storage_io",
             "description": "See [`Error::StorageIo`].",
-            "type": "string"
-          },
-          {
-            "const": "unimplemented",
-            "description": "See [`Error::Unimplemented`].",
             "type": "string"
           }
         ]
@@ -4514,9 +4477,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_list",
@@ -4587,9 +4547,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_info",
@@ -4668,9 +4625,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_controls",
@@ -4749,9 +4703,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_discover_pairs",
@@ -4830,9 +4781,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_get",
@@ -4918,9 +4866,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_set",
@@ -5016,9 +4961,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_snapshot",
@@ -5097,9 +5039,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_restore",
@@ -5185,9 +5124,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_photo",
@@ -5273,9 +5209,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_profile_capture",
@@ -5361,9 +5294,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_terminate_holder",
@@ -5450,9 +5380,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_start",
@@ -5555,9 +5482,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_plan",
@@ -5660,9 +5584,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_sweep",
@@ -5755,9 +5676,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_status",
@@ -5843,9 +5761,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_select",
@@ -5945,9 +5860,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_apply",
@@ -6040,9 +5952,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_restore",
@@ -6128,9 +6037,6 @@
         },
         {
           "$ref": "#/components/errors/storage_io"
-        },
-        {
-          "$ref": "#/components/errors/unimplemented"
         }
       ],
       "name": "wch_calibrate_list",

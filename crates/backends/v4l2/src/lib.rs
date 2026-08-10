@@ -7,23 +7,29 @@
 //! ## What has landed, and what has not
 //!
 //! P1 landed the **read path** (docs/7): enumeration, the control model, and the format
-//! tree. P2 adds the **write and capture paths** — `set` with the read-back D3 requires,
-//! and mmap streaming with the format negotiation D5 requires. **Hotplug is the last one
-//! left**, and it arrives at P4 with the daemon's uevent socket. The T2 trait is total, so
-//! the one method that has not landed returns [`schema::Error::Unimplemented`] naming
-//! itself and the phase that lands it — *not* a device error, because the device was never
-//! asked, and not a panic, because plugging in a webcam must never be able to panic a
-//! library. See note N6, and [`the pinning test`](self#tests) which fails when that set
-//! changes.
+//! tree. P2 added the **write and capture paths** — `set` with the read-back D3 requires,
+//! and mmap streaming with the format negotiation D5 requires. P4d landed the last one,
+//! **hotplug**: `CameraBackend::watch` is a real uevent netlink socket, so every method of
+//! T1 and T2 now answers from a device rather than from a schedule. That is what retires
+//! note N6's list — the surface it existed to enumerate is empty, and the D13 variant it
+//! named goes with it.
 //!
 //! ## The layering
 //!
 //! | Module | Owns |
 //! |---|---|
-//! | `sys` | ioctls, mmap, the bounded wait, `kill(2)`, and the pure byte-to-schema decoding Miri executes |
+//! | `sys` | ioctls, mmap, the bounded wait, `kill(2)`, the uevent netlink socket, and the pure byte-to-schema decoding Miri executes |
 //! | `sysfs` | the node list and the bus-interface topology, read without udev |
 //! | `enumerate` | the pure grouping rule: nodes to cameras \[PF:7, PF:13\] |
+//! | `hotplug` | what one uevent packet is worth, and when a burst of them has finished — folds over values |
+//! | `watch` | the blocking loop that joins those folds to the socket, and `CameraBackend::watch` |
 //! | [`holders`] | who has a node open, and asking one of them to let go (design §5) |
+//!
+//! The hotplug edge is in three pieces for the same reason `decode` is split from
+//! `ioctl`: `sys::uevent` makes the syscalls, `hotplug` decides what the bytes and the
+//! clock mean, and `watch` is the thirty lines that need both. The middle piece is the one
+//! a fixture can drive and the mutation floor can examine, so it is the one that is not
+//! under `src/sys/`.
 //!
 //! [`holders`] is the one module here that is **public and not about V4L2**: it is a
 //! `/proc` walk plus a `SIGTERM`, and it lives in this crate because a [`schema::Error::Busy`]
@@ -54,8 +60,10 @@
 
 mod enumerate;
 pub mod holders;
+mod hotplug;
 mod sys;
 mod sysfs;
+mod watch;
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -77,8 +85,6 @@ use sys::{Fd, ioctl};
 
 /// The ioctl a control write goes through, for error messages that name it.
 const SET_CTRL_OP: &str = "VIDIOC_S_EXT_CTRLS";
-/// The phase that lands hotplug (design §2.6: the uevent socket arrives with the daemon).
-const HOTPLUG_PHASE: &str = "P4";
 
 /// Real cameras, through V4L2.
 #[derive(Debug, Default)]
@@ -118,7 +124,7 @@ impl CameraBackend for V4l2Backend {
     }
 
     fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
-        Err(unimplemented_here("CameraBackend::watch", HOTPLUG_PHASE))
+        Ok(Box::new(watch::Watch::open()?))
     }
 
     fn diagnose(&self) -> Vec<ListHint> {
@@ -875,30 +881,6 @@ impl V4l2Camera {
     }
 }
 
-/// The typed refusal for a trait method this phase has not landed.
-fn unimplemented_here(operation: &str, arrives_in: &str) -> Error {
-    Error::Unimplemented {
-        operation: operation.to_owned(),
-        arrives_in: arrives_in.to_owned(),
-    }
-}
-
-/// The methods **of this backend** that answer [`Error::Unimplemented`], and the phase
-/// each waits for. Pinned by a test, so a phase cannot land without emptying its rows.
-///
-/// One surface, and now the build's **only** one. Note N6 makes this "the one list of
-/// methods that answer it" for the T1/T2 seam; P4b added a second instance of the same
-/// mechanism for the wire surface — `webcam-handler-daemon::server::unrouted`, thirteen
-/// rows — and P4c routed all of them, so that list and its producer are gone (note
-/// **N43**, which records why a second pinned list was a schedule rather than an escape
-/// hatch and what replaced its assertion). A reader auditing how much is left before the
-/// variant itself can go (N6's retirement condition) now has one row to count, and P4d
-/// takes it with the hotplug watch.
-#[must_use]
-pub fn unimplemented_surface() -> BTreeMap<&'static str, &'static str> {
-    BTreeMap::from([("CameraBackend::watch", HOTPLUG_PHASE)])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,50 +1009,10 @@ mod tests {
     }
 
     #[test]
-    fn the_unfinished_half_of_the_trait_is_named_and_says_which_phase_lands_it() {
-        // The pin, one row from empty. P2 deleted four of the five; note N6 says the
-        // `Unimplemented` variant retires when P4 deletes the last one, and this test is
-        // what makes that a compile-time obligation rather than a memory.
-        let surface = unimplemented_surface();
-        assert_eq!(surface.len(), 1);
-        for landed in [
-            "Camera::set",
-            "Camera::start_stream",
-            "Camera::next_frame",
-            "Camera::stop_stream",
-        ] {
-            assert_eq!(surface.get(landed), None, "{landed} landed at P2");
-        }
-        assert_eq!(surface.get("CameraBackend::watch"), Some(&"P4"));
-
-        // Every entry renders as the D13 refusal, blaming this build rather than the
-        // device — the distinction N6 exists for.
-        for (operation, phase) in &surface {
-            let error = unimplemented_here(operation, phase);
-            assert_eq!(error.kind(), schema::error::ErrorKind::Unimplemented);
-            let rendered = error.to_string();
-            assert!(rendered.contains(operation), "{rendered}");
-            assert!(rendered.contains(phase), "{rendered}");
-        }
-    }
-
-    #[test]
     fn the_backend_reports_itself_as_v4l2_so_no_run_can_be_mistaken_for_a_fake_one() {
         let backend = V4l2Backend::new();
         assert_eq!(backend.kind(), BackendKind::V4l2);
         assert_eq!(backend.name(), "v4l2");
-    }
-
-    #[test]
-    fn watch_refuses_with_the_phase_that_lands_it_rather_than_pretending_to_be_quiet() {
-        // A watch that returned `Ok(None)` forever would be indistinguishable from a
-        // working one on a quiet machine, which is exactly the "skip reads as pass"
-        // failure in a different costume.
-        let error = V4l2Backend::new()
-            .watch()
-            .expect_err("watch is not implemented at P1");
-        assert_eq!(error.kind(), schema::error::ErrorKind::Unimplemented);
-        assert!(error.to_string().contains("P4"), "{error}");
     }
 
     #[test]

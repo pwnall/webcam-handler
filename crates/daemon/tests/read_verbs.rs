@@ -42,9 +42,9 @@
 //!
 //! There used to be a fifth: a method this build did not route yet, answering
 //! `Error::Unimplemented` with the phase that would land it. P4c landed all of them, so the
-//! arm inverted rather than moved — `calibrate_verbs.rs` asserts that *no* method on this
-//! surface answers that variant, which is note N43's retirement and is a claim about the
-//! whole surface rather than about one verb.
+//! arm inverted rather than moved (note **N43**), and P4d then deleted the variant (note
+//! **N6**) — so the D13 registry's eighteen members no longer include one that means "not
+//! built yet", and there is nothing left for a sixth arm to ask about.
 
 #[path = "support/fixture.rs"]
 mod fixture;
