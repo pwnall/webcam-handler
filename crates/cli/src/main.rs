@@ -21,7 +21,6 @@
 
 use std::process::ExitCode;
 
-use camino::Utf8Path;
 use cli_core::{Cli, Executor, Output, Photograph, Selection, SessionRef, Stream, SweepWatcher};
 use engine::calibrate::{SweepContext, SweepRequest};
 use engine::lifecycle::{self, SessionSpec};
@@ -30,11 +29,11 @@ use schema::backend::{BackendKind, Camera, CameraBackend};
 use schema::camera::{CameraFingerprint, CameraId, CameraInfo};
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug};
-use schema::error::{Error, Result};
+use schema::error::Result;
 use schema::profile::DeviceProfile;
 use schema::progress::ProgressEvent;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
-use schema::session::{Session, SessionList, SessionListing, SessionStatus};
+use schema::session::{Session, SessionList, SessionStatus};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::time::Stamp;
 
@@ -71,32 +70,14 @@ fn backend_for(cli: &Cli) -> Result<Box<dyn CameraBackend>> {
             // rather than letting it arrive as a camera error later.
             let mut profiles = Vec::with_capacity(cli.profile.len());
             for path in &cli.profile {
-                profiles.push(read_profile(path)?);
+                // Read through the engine, which is where T3's round trip lives: `wchd`
+                // has the same flag at its own composition root, and a version check
+                // written at each root is two answers to one question.
+                profiles.push(engine::profile::read(path)?);
             }
             Ok(Box::new(fake::FakeBackend::new(profiles)?))
         }
     }
-}
-
-fn read_profile(path: &Utf8Path) -> Result<DeviceProfile> {
-    let bytes = std::fs::read(path).map_err(|error| Error::StorageIo {
-        path: path.to_owned(),
-        errno: error.raw_os_error(),
-        message: error.to_string(),
-    })?;
-    let profile: DeviceProfile =
-        serde_json::from_slice(&bytes).map_err(|error| Error::StorageIo {
-            path: path.to_owned(),
-            errno: None,
-            message: format!("not a device profile: {error}"),
-        })?;
-    if !profile.version_is_supported() {
-        return Err(Error::SchemaVersionForeign {
-            found: profile.schema_version,
-            supported: schema::limits::PROFILE_SCHEMA_VERSION,
-        });
-    }
-    Ok(profile)
 }
 
 /// The T4 executor over an in-process backend.
@@ -125,28 +106,13 @@ impl InProcess {
         let camera = self.backend.open(&info.id)?;
         Ok((info, camera))
     }
-
-    /// The pair set every verb plans against: the declared table (D3) merged with whatever
-    /// was measured on this device (E1).
-    ///
-    /// One place, because a `set` that guarded against a different pair set than the
-    /// `snapshot` that recorded roles would order its restore against a device the two
-    /// halves disagreed about.
-    fn pairs_for(
-        &self,
-        controls: &[ControlDesc],
-        measured: Vec<schema::pairing::AutomationPair>,
-    ) -> Vec<schema::pairing::AutomationPair> {
-        let merged = engine::pairing::merge(schema::pairing::declared_pairs(), measured);
-        engine::pairing::applicable(controls, &merged)
-    }
 }
 
 /// The calibration half of the executor (design D8, D9).
 ///
 /// Every mutating verb runs inside [`SessionStore::with_lock`] — take, run, release — which
 /// is D9's *daemonless* protocol, and the whole of it: a `wch` that met a lock a daemon
-/// holds is refused with [`Error::StoreLocked`] naming the holder rather than blocking, and
+/// holds is refused with [`schema::Error::StoreLocked`] naming the holder rather than blocking, and
 /// that refusal comes out of the store rather than out of a check written here.
 impl InProcess {
     /// The session store under this process's XDG state directory (note N2).
@@ -156,42 +122,22 @@ impl InProcess {
 
     /// The session a verb names, loaded, and checked against the camera it names.
     ///
-    /// The two forms are two lookups because they answer two questions (D8, N14): a task
-    /// names the newest session in *this camera's* slot, and a UUID names one session
-    /// wherever it lives — including under another camera, which is what gives the
-    /// fingerprint check something to refuse.
-    ///
-    /// The check is `engine::lifecycle::belongs_to`, and it is here rather than in each
-    /// verb because it is one law: before the P3 review only `apply` performed it, so
-    /// `plan` and `sweep` could drive camera B through a `--session` naming camera A's
-    /// session — recording samples measured on B in A's document, and then applying them
-    /// to A with `apply`'s own check green.
+    /// The law is [`lifecycle::session_for`]'s — a task names the newest session in this
+    /// camera's slot, a UUID names one session wherever it lives, and either way the
+    /// fingerprint has to agree (D8, N14). It moved into the engine when the daemon
+    /// acquired the same verb over the wire: two copies of "which session did you mean"
+    /// is how the check that P3 found implemented once out of three times gets
+    /// re-implemented twice.
     ///
     /// # Errors
     ///
-    /// [`Error::IllegalTransition`] naming what was asked for when no session answers to
-    /// it: `calibrate start` is the verb that makes one, and a lookup that invented an
-    /// empty session would let `sweep` write to a camera with nothing recording it.
-    /// [`Error::FingerprintMismatch`] naming the fields that differ when the session
-    /// belongs to another camera.
+    /// As [`lifecycle::session_for`].
     fn session_for(
         store: &SessionStore,
         fingerprint: &CameraFingerprint,
         which: &SessionRef,
     ) -> Result<Session> {
-        let (found, named) = match which {
-            SessionRef::Task { task } => (
-                lifecycle::latest(store, fingerprint, task)?,
-                format!("task={task:?}"),
-            ),
-            SessionRef::Id { id } => (lifecycle::find(store, *id)?, format!("session={id}")),
-        };
-        let session = found.ok_or_else(|| Error::IllegalTransition {
-            from: format!("no_session({named})"),
-            op: "read this session; `wch calibrate start` opens one".to_owned(),
-        })?;
-        lifecycle::belongs_to(&session, fingerprint)?;
-        Ok(session)
+        lifecycle::session_for(store, fingerprint, which)
     }
 
     /// The same, for a verb that is about to change something.
@@ -261,13 +207,7 @@ fn report_probe(found: &engine::discover::Discovery) {
 
 impl Executor for InProcess {
     fn list(&mut self) -> Result<CameraList> {
-        Ok(CameraList {
-            cameras: self.backend.enumerate()?,
-            // D1: an empty enumeration is diagnosed, not shrugged at. Asked of the
-            // backend, which is the only thing that knows what its own absence looks
-            // like.
-            hints: self.backend.diagnose(),
-        })
+        engine::resolve::list(self.backend.as_ref())
     }
 
     fn info(&mut self, requested: &CameraId) -> Result<CameraDetail> {
@@ -296,7 +236,7 @@ impl Executor for InProcess {
             // exhibit, merged with anything the probe measured. Every pair carries its own
             // provenance, and measured beats declared (E1) — so a caller reading `--json`
             // can tell a nomination from an observation without asking how it was made.
-            pairs: engine::pairing::applicable(&controls, &self.pairs_for(&controls, measured)),
+            pairs: engine::pairing::in_effect(&controls, measured),
             camera: info.id,
             controls,
         })
@@ -304,24 +244,10 @@ impl Executor for InProcess {
 
     fn get(&mut self, requested: &CameraId, control: &ControlSlug) -> Result<ControlDesc> {
         let (_, camera) = self.open(requested)?;
-        let controls = camera.controls()?;
-        controls
-            .iter()
-            .find(|desc| &desc.slug == control)
-            .cloned()
-            // The suggestion list comes from the planner's, so `get brightnes` and
-            // `set brightnes=1` name the same candidates.
-            .ok_or_else(|| {
-                engine::pairing::plan_unguarded(
-                    &controls,
-                    &[(control.clone(), schema::ControlValue::Int(0))],
-                )
-                .err()
-                .unwrap_or(Error::ControlUnknown {
-                    requested: control.to_string(),
-                    did_you_mean: Vec::new(),
-                })
-            })
+        // The suggestion list on a miss comes from the planner's, so `get brightnes` and
+        // `set brightnes=1` name the same candidates — which is why the lookup lives in
+        // the engine beside the planner rather than at each surface that offers a `get`.
+        engine::pairing::describe(&camera.controls()?, control)
     }
 
     fn set(
@@ -332,7 +258,7 @@ impl Executor for InProcess {
     ) -> Result<WriteReport> {
         let (_, mut camera) = self.open(requested)?;
         let controls = camera.controls()?;
-        let pairs = self.pairs_for(&controls, Vec::new());
+        let pairs = engine::pairing::in_effect(&controls, Vec::new());
         // The engine's planner takes pairs, and this is the one place the two spellings
         // meet — see `ControlWrite`'s own note on why the wire spelling stops at the T4
         // boundary rather than continuing into `engine::pairing` (note N35).
@@ -346,14 +272,14 @@ impl Executor for InProcess {
     fn snapshot(&mut self, requested: &CameraId) -> Result<Snapshot> {
         let (_, mut camera) = self.open(requested)?;
         let controls = camera.controls()?;
-        let pairs = self.pairs_for(&controls, Vec::new());
+        let pairs = engine::pairing::in_effect(&controls, Vec::new());
         engine::snapshot::take(camera.as_mut(), &pairs, Stamp::now())
     }
 
     fn restore(&mut self, requested: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
         let (_, mut camera) = self.open(requested)?;
         let controls = camera.controls()?;
-        let pairs = self.pairs_for(&controls, Vec::new());
+        let pairs = engine::pairing::in_effect(&controls, Vec::new());
         engine::snapshot::restore(camera.as_mut(), &pairs, snapshot)
     }
 
@@ -484,9 +410,7 @@ impl Executor for InProcess {
         // the sessions are on.
         let store = self.store()?;
         let info = self.resolve(requested)?;
-        let session = InProcess::session_for(&store, &info.fingerprint, which)?;
-        let log = lifecycle::history(&store, &session)?;
-        Ok(SessionStatus { session, log })
+        lifecycle::status(&store, &info.fingerprint, which)
     }
 
     fn calibrate_select(
@@ -573,21 +497,14 @@ impl Executor for InProcess {
 
     fn calibrate_list(&mut self, requested: Option<&CameraId>) -> Result<SessionList> {
         let store = self.store()?;
-        let found = match requested {
-            Some(id) => store.sessions_for(&self.resolve(id)?.fingerprint)?,
-            None => store.all_sessions()?,
+        // Resolving first, and only when a camera was named: `None` means every session on
+        // this machine, and a listing that enumerated cameras to answer it would refuse on
+        // a host whose cameras have all been unplugged.
+        let fingerprint = match requested {
+            Some(id) => Some(self.resolve(id)?.fingerprint),
+            None => None,
         };
-        Ok(SessionList {
-            sessions: found
-                .into_iter()
-                .map(|session| SessionListing {
-                    id: session.id,
-                    camera: session.camera,
-                    task_slug: session.task_slug,
-                    path: session.dir,
-                })
-                .collect(),
-        })
+        lifecycle::list(&store, fingerprint.as_ref())
     }
 
     fn capture_profile(&mut self, requested: &CameraId, capturer: &str) -> Result<DeviceProfile> {
@@ -632,24 +549,5 @@ mod tests {
             assert_ne!(release, "(unknown)");
             assert!(!release.contains('\n'), "{release:?} was not trimmed");
         }
-    }
-
-    #[test]
-    fn a_profile_from_a_future_version_is_refused_by_version_before_anything_else() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("future.json"))
-            .expect("utf-8 temp dir");
-        std::fs::write(&path, br#"{"schema_version":99}"#).expect("write");
-        // Refused for its version, not for the fields the rest of the document lacks.
-        assert!(matches!(
-            read_profile(&path),
-            Err(Error::StorageIo { .. } | Error::SchemaVersionForeign { .. })
-        ));
-
-        let missing = path.with_file_name("nope.json");
-        assert!(matches!(
-            read_profile(&missing),
-            Err(Error::StorageIo { .. })
-        ));
     }
 }

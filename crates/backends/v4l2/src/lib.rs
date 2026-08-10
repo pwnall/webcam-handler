@@ -876,8 +876,15 @@ fn unimplemented_here(operation: &str, arrives_in: &str) -> Error {
     }
 }
 
-/// The methods that answer [`Error::Unimplemented`] in this build, and the phase each
-/// waits for. Pinned by a test, so a phase cannot land without emptying its rows.
+/// The methods **of this backend** that answer [`Error::Unimplemented`], and the phase
+/// each waits for. Pinned by a test, so a phase cannot land without emptying its rows.
+///
+/// One surface, not the build's only one. Note N6 makes this "the one list of methods that
+/// answer it" for the T1/T2 seam; P4b added a second instance of the same mechanism for the
+/// wire surface — `webcam-handler-daemon::server::unrouted`, whose thirteen rows P4c
+/// empties — and note **N43** records why a second pinned list is a schedule rather than an
+/// escape hatch. A reader auditing how much is left before the variant itself can go (N6's
+/// retirement condition) has to count both.
 #[must_use]
 pub fn unimplemented_surface() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([("CameraBackend::watch", HOTPLUG_PHASE)])

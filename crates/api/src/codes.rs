@@ -24,8 +24,17 @@
 use std::fmt;
 use std::ops::RangeInclusive;
 
-use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
 use schema::error::{Error, ErrorKind};
+
+/// jsonrpsee's error object, re-exported because this module's own signatures name it.
+///
+/// [`typed`] takes an `&ErrorObject` and [`From<WireError>`](WireError) produces an
+/// `ErrorObjectOwned`, so a consumer that cannot name them cannot call either — and the
+/// consumers are the daemon, `wchc`, and every test that recovers a D13 error from a
+/// client. Re-exported here rather than left to each of them to depend on the right
+/// jsonrpsee feature for: this crate is where the surface is declared, and the type a
+/// caller has to name is part of the surface.
+pub use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
 
 /// JSON-RPC 2.0's band for implementation-defined server errors.
 ///

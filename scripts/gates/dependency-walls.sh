@@ -2,9 +2,18 @@
 #
 # The T6 purity walls of design §2.8, as linkage facts:
 #
-#   * `schema`, `imaging`, `fake` and `cli-core` link no tokio/axum/hyper. They are the
-#     crates a test can run without a runtime, and that property is structural rather
-#     than aspirational only if something checks it.
+#   * `schema`, `imaging`, `fake`, `cli-core` and `engine` link no tokio/axum/hyper. They
+#     are the crates a test can run without a runtime, and that property is structural
+#     rather than aspirational only if something checks it.
+#
+#     `engine` joined that list at P4b, when the camera actor landed there rather than in
+#     the daemon. Design §2.1 puts it there — "the daemon's async tasks and the direct CLI
+#     both talk to the same actor API" — and §2.8 gives the engine no runtime, which is
+#     precisely why `engine::actor` names no reply channel of its own and hands the caller
+#     a closure to build one with (note N41): a `tokio::sync::oneshot` in the signature
+#     would force a runtime on `wch`. That argument stops being true the moment the engine
+#     links tokio, and nothing about `engine::actor` would have to change for it to happen,
+#     so it is a linkage fact here instead of a paragraph in a doc comment.
 #   * `api` links no *web* stack. It is exempt from the tokio half, and only that half:
 #     `#[rpc(server, client)]` cannot expand without `jsonrpsee-core`, which activates
 #     tokio in both its `client` and `server` features. Measured, not assumed — see note
@@ -39,7 +48,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 root="$(gate_root)"
 
 findings="$(gate_metadata | jq -r \
-    --argjson pure '["webcam-handler-schema","webcam-handler-imaging","webcam-handler-fake","webcam-handler-cli-core"]' \
+    --argjson pure '["webcam-handler-schema","webcam-handler-imaging","webcam-handler-fake","webcam-handler-cli-core","webcam-handler-engine"]' \
     --argjson async_stack '["tokio","axum","hyper"]' \
     --argjson wire '["webcam-handler-api"]' \
     --argjson web_stack '["axum","hyper","tower-http"]' \

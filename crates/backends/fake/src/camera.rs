@@ -95,6 +95,16 @@ pub(crate) struct CameraState {
     /// rule (E5) nothing — and it is what lets a test hold a caller to "one capture per
     /// sample" instead of hoping.
     streams_started: u64,
+    /// How many handles have been opened onto this camera, and how many have gone away.
+    ///
+    /// The same kind of observation as `streams_started`, for the caller D12 introduces:
+    /// the daemon's camera actor opens on first use and closes on idle, and "the
+    /// descriptor went away" is the only honest form of that claim — an actor that merely
+    /// forgot its handle would pass a test that asked whether it had *decided* to close.
+    /// Two counters rather than a gauge because both directions matter and a gauge cannot
+    /// tell "never opened" from "opened and closed".
+    opens: u64,
+    closes: u64,
     timestamp_us: i64,
 }
 
@@ -131,6 +141,8 @@ impl CameraState {
             stream: None,
             frames_delivered: 0,
             streams_started: 0,
+            opens: 0,
+            closes: 0,
             timestamp_us: 0,
         }
     }
@@ -138,6 +150,26 @@ impl CameraState {
     /// How many streams this camera has started since it was opened.
     pub(crate) fn streams_started(&self) -> u64 {
         self.streams_started
+    }
+
+    /// How many handles have been opened onto this camera, ever.
+    pub(crate) fn opens(&self) -> u64 {
+        self.opens
+    }
+
+    /// How many of those handles have been dropped, ever.
+    pub(crate) fn closes(&self) -> u64 {
+        self.closes
+    }
+
+    /// Record a handle being opened.
+    pub(crate) fn opened(&mut self) {
+        self.opens = self.opens.saturating_add(1);
+    }
+
+    /// Record a handle going away, which on a real device is the descriptor closing.
+    pub(crate) fn closed(&mut self) {
+        self.closes = self.closes.saturating_add(1);
     }
 
     pub(crate) fn info(&self) -> &CameraInfo {
@@ -440,7 +472,11 @@ impl FakeCamera {
         state: Arc<Mutex<CameraState>>,
         faults: Arc<Mutex<FaultQueue>>,
     ) -> FakeCamera {
-        let info = lock(&state).info().clone();
+        let info = {
+            let mut live = lock(&state);
+            live.opened();
+            live.info().clone()
+        };
         FakeCamera {
             state,
             faults,
@@ -465,6 +501,19 @@ impl FakeCamera {
     #[must_use]
     pub fn profile(&self) -> DeviceProfile {
         lock(&self.state).profile.clone()
+    }
+}
+
+/// Dropping a handle is what closing a device node is, so the double models it as one.
+///
+/// The stream is deliberately *not* stopped here: the shared camera state outlives every
+/// handle by construction (two opens are two views of one device), and a real driver frees
+/// a stream when the last descriptor on it closes — which is a property of the node, not of
+/// this object. What is recorded is the close itself, because "the descriptor went away" is
+/// the only honest form of D12's idle-close claim.
+impl Drop for FakeCamera {
+    fn drop(&mut self) {
+        lock(&self.state).closed();
     }
 }
 

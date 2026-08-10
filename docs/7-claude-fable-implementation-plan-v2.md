@@ -37,8 +37,23 @@ exist because of it.
 
 **Standing debts carried into this plan**, each already recorded where it arose:
 
-- `Error::Unimplemented` has one producer row left (`CameraBackend::watch`); P4d deletes
-  the variant (N6's scheduled death).
+- `Error::Unimplemented` has two pinned producer surfaces, not one. `webcam-handler-v4l2::unimplemented_surface()`
+  has its last row (`CameraBackend::watch`), and P4b added thirteen more in
+  `daemon::server::unrouted()` — the methods the T5 trait forces the daemon to register
+  before P4c routes them. That is N6's mechanism instantiated a second time and recorded
+  as such (N43): the list is derived from `api::METHODS` minus the routed six, its size and
+  contents are pinned, and P4c cannot land without emptying it. P4d still deletes the
+  variant (N6's scheduled death), and by then both surfaces are empty.
+- The camera actor's idle deadline is stamped when a command *starts*, so the first verb
+  that can run longer than the timeout is followed by an immediate idle close; P4c lands
+  that verb (`calibrate sweep`) and owns the fix, whose two possible shapes and their costs
+  are in N45.
+- The daemon's socket directory is checked as an inode rather than a name (symlink refused,
+  base verified, `(st_dev, st_ino)` re-checked before the bind), but the last window —
+  holding the directory as a *descriptor* and binding relative to it, which is also what
+  would let it compare `st_uid` with `geteuid()` — needs a syscall wrapper the workspace
+  does not link, so it is a §2.8 dependency decision. P4d owns it, beside the
+  unprivileged-bind measurement (N39, N8).
 - `CAP_NET_ADMIN` was granted on an unverified prediction; P4d measures whether the
   uevent bind needs it (§8 item 10) and G6 consumes the answer.
 - The `wch-priv` powers are broader than demonstrated need, time-boxed to the plan; P6e

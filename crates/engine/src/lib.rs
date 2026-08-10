@@ -14,6 +14,7 @@
 //!
 //! | Module | Home of |
 //! |---|---|
+//! | [`actor`] | one blocking thread per open camera, and the registry that keeps it one (D12) |
 //! | [`paths`] | the two XDG directories, ours because `directories` is banned (note N2) |
 //! | [`pairing`] | the guarded-write planner and its inverse validator (D3) |
 //! | [`settle`] | the settle policy state machine (D5) |
@@ -36,6 +37,7 @@
 mod double;
 mod refusal;
 
+pub mod actor;
 pub mod calibrate;
 pub mod capture;
 pub mod discover;

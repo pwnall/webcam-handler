@@ -61,6 +61,12 @@ imageproc = { version = "0.27.0", default-features = false }
 indicatif = "0.18.6"
 jiff = "0.2.35"
 jsonrpsee = "0.26.0"
+# The server half, named as its own package rather than reached through the facade's
+# `server` feature — same release train, same pin. Note N38 records the measurement that
+# forced it: `cargo metadata` unifies features per package across the workspace, so a
+# `jsonrpsee/server` anywhere makes `webcam-handler-api` reach hyper and takes down
+# `dependency-walls.sh`'s T6 wall.
+jsonrpsee-server = "0.26.0"
 kamadak-exif = "0.6.1"
 kobject-uevent = "0.2.0"
 libc = "0.2.189"

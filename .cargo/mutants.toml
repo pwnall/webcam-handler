@@ -44,11 +44,16 @@
 #   or a plural produces survivors by the hundred that say only "the golden output is not
 #   byte-asserted", which is a decision docs/6 already made deliberately.
 # - `engine::calibrate`, `engine::lifecycle`, `engine::discover`, `engine::capture`,
-#   `engine::photo`, `engine::snapshot`, `engine::write` — the imperative shell. These are
+#   `engine::photo`, `engine::snapshot`, `engine::write`, `engine::actor` — the imperative
+#   shell. These are
 #   in scope for a *later* widening, not for the floor: they are where the tests are
 #   integration-shaped, so a survivor there needs a seam argument before it needs a test,
 #   and the triage would drown the signal from the cores. Named here so the exclusion is a
-#   decision with a date rather than an oversight.
+#   decision with a date rather than an oversight. `actor.rs` (P4b) is the newest and the
+#   closest call: its `Idle` deadline *is* a fold over two numbers and belongs here on the
+#   merits, but the file it lives in also owns a thread, a registry and a bounded queue,
+#   whose survivors would each need a rig. Split the fold out, or widen to the file and
+#   accept the triage — either is a decision somebody should make on purpose.
 # - `crates/schema` — mostly derives and data. Its laws are asserted by the battery.
 # - `crates/api/src/lib.rs` — the T5 trait itself. It is a `wire_surface!` invocation and
 #   nineteen doc comments; there is no expression in it to mutate, and the macro's own

@@ -30,9 +30,33 @@
 # every declared prefix appears here — so a new rung cannot be added, or an existing one
 # renamed, without this file following it.
 
+# ## Why every test has a deadline
+#
+# A test that hangs produces no message, and `just ci` turns from red into
+# never-finishing — which is the failure nobody debugs, because there is nothing to read.
+# It is a real shape here and not a hypothetical: the daemon suites read a child process's
+# stderr and a camera actor's reply channel, and both of those bound themselves on the
+# other end speaking. A logging change that removed the line a fixture waits for, or a
+# housekeeping pass that queued behind a wedged actor, is a hang rather than a failure.
+#
+# A deadline that turns a hang into a named failure is not synchronisation and does not
+# breach the no-sleep rule — `scripts/gates/uds-permissions.sh` says the same thing about
+# its own `timeout 60`, and for the same reason. Nothing waits on this to learn anything;
+# it exists so that when a test stops finishing, the run says which one.
+#
+# Three minutes, which is two orders of magnitude past the whole suite's runtime.
+
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 [test-groups.exclusive-device]
 max-threads = 1
 
 [[profile.default.overrides]]
 filter = 'test(/(^|::)hw_/) + test(/(^|::)vivid_/)'
 test-group = 'exclusive-device'
+# Longer, because these are the only tests that wait for hardware: a motion sweep is
+# bounded by `MAX_MOTION_SWEEP_SAMPLES` samples at `DEFAULT_SETTLE_DEADLINE_MS` each, so
+# minutes is a legitimate runtime here and three of them is not. Still bounded — a
+# hardware test that hangs is a hang like any other.
+slow-timeout = { period = "300s", terminate-after = 4 }

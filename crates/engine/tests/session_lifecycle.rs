@@ -96,7 +96,7 @@ fn a_lifecycle_operation_refuses_a_lock_somebody_else_holds_and_names_who() {
         .store()
         .with_lock(|lock| lifecycle::create(temp.store(), lock, &spec(1_000, "focus"), now()))
         .expect_err("the daemon holds the state directory");
-    let Error::StoreLocked { holder } = &err else {
+    let Error::StoreLocked { holder, protocol } = &err else {
         panic!("a held lock is a StoreLocked refusal, not {err}");
     };
     let holder = holder.as_ref().expect("the holder wrote its record");
@@ -104,6 +104,15 @@ fn a_lifecycle_operation_refuses_a_lock_somebody_else_holds_and_names_who() {
         holder.pid,
         i32::try_from(std::process::id()).expect("a pid fits"),
         "the refusal named somebody else's pid"
+    );
+    // The holder took it the way a daemon does, so the refusal carries the answer D9 gives
+    // a `wch` that meets one: this lock will not be free in a moment, and `wchc` is the
+    // program that can reach the state through the process holding it.
+    assert_eq!(*protocol, Some(LockProtocol::HeldForLifetime));
+    assert!(
+        err.to_string()
+            .contains("daemon owns the state (and likely the camera) — use wchc"),
+        "{err}"
     );
 
     // Nothing was created on the way to the refusal.

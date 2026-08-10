@@ -1,7 +1,8 @@
-//! Turning what a caller typed into the camera they meant (design D1).
+//! Turning what a caller typed into the camera they meant, and what a caller who typed
+//! nothing is told (design D1).
 //!
-//! One home. `wch` resolves here before opening; the daemon will resolve here at P4
-//! before dispatching to an actor. Backends do **not** resolve — `CameraBackend::open`
+//! One home. `wch` resolves here before opening; the daemon resolves here before
+//! dispatching to an actor. Backends do **not** resolve — `CameraBackend::open`
 //! takes an id that already means exactly one camera, which is why a backend can answer
 //! it with a lookup rather than with a policy.
 //!
@@ -10,8 +11,35 @@
 //! question about a set it happens to own — and two backends would then have two opinions
 //! about what `cam:obsbot` means. Here there is one.
 
+use schema::backend::CameraBackend;
 use schema::camera::{CameraId, CameraInfo, PrefixMatch, resolve_prefix};
 use schema::error::{Error, Result};
+use schema::report::CameraList;
+
+/// Everything `list` answers: the enumeration, and why it might be empty (D1).
+///
+/// Two backend calls and one rule, and the rule is the reason this is a function rather
+/// than two lines at each caller: **an empty enumeration is diagnosed, not shrugged at.**
+/// "No cameras" and "your camera is plugged in with no driver bound to it" \[PF:14\] are
+/// different facts, and a `list` that carried only the first would send an operator
+/// looking for a webcam that is right there. Only the backend knows what its own absence
+/// looks like, which is why the diagnosis is asked of it (note N7).
+///
+/// One home because there are two composition roots and P4f's parity gate compares their
+/// `--json` byte for byte: `wch list` reaches this through T4's in-process executor and
+/// `wch_list` reaches it through T5's server, and a second assembly is how the two come to
+/// disagree about what a listing carries.
+///
+/// # Errors
+///
+/// Whatever the backend refuses enumeration with. The diagnosis is infallible by
+/// declaration — a backend with nothing to add says nothing.
+pub fn list(backend: &dyn CameraBackend) -> Result<CameraList> {
+    Ok(CameraList {
+        cameras: backend.enumerate()?,
+        hints: backend.diagnose(),
+    })
+}
 
 /// Find the camera `requested` names, accepting any unambiguous prefix (D1).
 ///

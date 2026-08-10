@@ -106,27 +106,36 @@ fn a_held_lock_refuses_and_a_free_one_does_not() {
         .lock(LockProtocol::PerOperation)
         .expect_err("somebody holds it");
     assert_eq!(err.kind(), ErrorKind::StoreLocked);
-    match err {
+    match &err {
         Error::StoreLocked {
             holder: Some(holder),
+            protocol,
         } => {
             assert_eq!(
                 holder.pid,
                 i32::try_from(std::process::id()).expect("a pid"),
                 "the refusal named the wrong holder"
             );
+            // The arrangement takes the lock as a daemon would, so the refusal carries the
+            // daemon's protocol — and therefore D9's sentence, which is what a `wch`
+            // meeting a real daemon sees.
+            assert_eq!(*protocol, Some(LockProtocol::HeldForLifetime));
         }
         other => panic!("the holder was identifiable and must be named: {other:?}"),
     }
+    assert!(err.to_string().contains("use wchc"), "{err}");
 
     // The scripted refusal answers the same way as the real one, which is the check that
     // keeps the script honest: a double that refused differently would be a double
-    // nobody could trust (rubric A9).
+    // nobody could trust (rubric A9). Compared whole rather than by kind — the holder and
+    // the protocol are what a caller acts on, and a script that named neither would still
+    // have the right kind.
     let scripted = temp
         .store()
         .lock(LockProtocol::PerOperation)
         .expect_err("scripted");
     assert_eq!(scripted.kind(), ErrorKind::StoreLocked);
+    assert_eq!(scripted, err);
 
     // Healthy: release it, and both protocols may take it again.
     drop(arranged);

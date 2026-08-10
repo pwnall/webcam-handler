@@ -361,6 +361,55 @@ pub fn applicable(controls: &[ControlDesc], pairs: &[AutomationPair]) -> Vec<Aut
         .collect()
 }
 
+/// The pair set every verb plans against, for one device.
+///
+/// The declared table (D3) merged with whatever a probe measured on this camera (E1),
+/// narrowed by [`applicable`] to the relationships the device can actually exhibit. One
+/// function because it is one law with several readers: a `set` that guarded against a
+/// different pair set than the `snapshot` that decided roles would order its restore
+/// against a device the two halves disagreed about — and now that both composition roots
+/// answer a `controls` report (`wch` through T4, `wchd` through T5), two copies of this
+/// composition would be two opinions about what a camera's automation looks like.
+///
+/// `measured` is empty for every caller that did not run the probe, which is every read
+/// verb: measuring pairs writes to the camera, and that is its own operation (note N30).
+#[must_use]
+pub fn in_effect(controls: &[ControlDesc], measured: Vec<AutomationPair>) -> Vec<AutomationPair> {
+    applicable(
+        controls,
+        &merge(schema::pairing::declared_pairs(), measured),
+    )
+}
+
+/// One control's descriptor, refused with the same candidates a write to it would name.
+///
+/// The whole descriptor rather than the bare value, because a value with no range, no flags
+/// and no menu is not renderable — but the reason this lives here rather than at a call site
+/// is the *refusal*: `wch get brightnes` and `wch set brightnes=1` have to name the same
+/// near misses, or a caller corrects a typo twice. The suggestion list is the planner's, so
+/// asking the planner is how the two stay one answer, and both composition roots ask.
+///
+/// # Errors
+///
+/// [`Error::ControlUnknown`] naming the closest slugs this camera does have. The planner
+/// produces it; the fallback below is the unreachable arm where a planner that accepted the
+/// slug still did not hand back a descriptor, and it refuses rather than panicking because
+/// this is a request-driven path.
+pub fn describe(controls: &[ControlDesc], slug: &ControlSlug) -> Result<ControlDesc> {
+    controls
+        .iter()
+        .find(|desc| &desc.slug == slug)
+        .cloned()
+        .ok_or_else(|| {
+            plan_unguarded(controls, &[(slug.clone(), ControlValue::Int(0))])
+                .err()
+                .unwrap_or(Error::ControlUnknown {
+                    requested: slug.to_string(),
+                    did_you_mean: Vec::new(),
+                })
+        })
+}
+
 /// Whether a control is the automation half of any pair the device can honor.
 ///
 /// The snapshot's restore ordering (D4) needs the same question answered, and answering
@@ -1509,6 +1558,77 @@ mod tests {
             vec![exposure_pair()]
         );
         assert!(applicable(&[], &declared_pairs()).is_empty());
+    }
+
+    #[test]
+    fn the_pair_set_in_effect_is_the_declared_table_this_device_can_honor_and_measurement_wins() {
+        // The composition both surfaces answer a `controls` report from, in one call.
+        // Without the merge a probe's finding would be dropped; without the narrowing a
+        // report would name relationships the camera cannot exhibit; and a caller that
+        // measured nothing must still get the declared table, which is what makes this
+        // the *only* pair-set assembly either root needs.
+        let controls = vec![
+            boolean("white_balance_automatic", 1),
+            integer("white_balance_temperature", 4_600, 0x0010),
+            auto_exposure(3),
+            integer("exposure_time_absolute", 156, 0),
+        ];
+
+        let declared = in_effect(&controls, Vec::new());
+        assert_eq!(declared, applicable(&controls, &declared_pairs()));
+        assert!(
+            declared
+                .iter()
+                .all(|pair| pair.provenance == Provenance::Declared),
+            "{declared:?}"
+        );
+
+        // A measurement of a pair the table already nominates replaces it (E1), and one
+        // the table does not name is added — both of which a caller passing the declared
+        // table straight through would lose.
+        let measured = AutomationPair {
+            provenance: Provenance::Measured,
+            ..exposure_pair()
+        };
+        let with_probe = in_effect(&controls, vec![measured.clone()]);
+        assert!(with_probe.contains(&measured), "{with_probe:?}");
+        assert_eq!(
+            with_probe.len(),
+            declared.len(),
+            "a measured pair the table already had must replace it, not join it"
+        );
+
+        // And a device with neither half of a measured pair still does not exhibit it.
+        assert!(in_effect(&[], vec![measured]).is_empty());
+    }
+
+    #[test]
+    fn describing_a_control_that_is_not_there_names_what_a_write_to_it_would_name() {
+        // The law both `get` surfaces rest on: a caller who typed `brightnes` is told the
+        // same thing whether they were reading or writing. Asserted by comparing the two
+        // refusals rather than by matching a string, so a change to the planner's
+        // suggestions moves both or fails here.
+        let controls = vec![integer("brightness", 50, 0), auto_exposure(3)];
+        assert_eq!(
+            describe(&controls, &slug("brightness")).expect("the device has it"),
+            controls[0]
+        );
+
+        let typo = slug("brightnes");
+        let refused = describe(&controls, &typo).expect_err("no such control");
+        assert_eq!(refused.kind(), ErrorKind::ControlUnknown);
+        let writing = plan_unguarded(&controls, &[(typo, ControlValue::Int(1))])
+            .expect_err("no such control");
+        assert_eq!(refused, writing);
+
+        // And over a device with nothing on it, which is the arm where the planner has no
+        // candidates to offer and still has to refuse.
+        assert_eq!(
+            describe(&[], &slug("brightness"))
+                .expect_err("an empty device has no controls")
+                .kind(),
+            ErrorKind::ControlUnknown
+        );
     }
 
     #[test]

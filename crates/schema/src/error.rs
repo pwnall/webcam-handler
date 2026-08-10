@@ -30,6 +30,73 @@ pub struct Holder {
 }
 
 closed_vocabulary! {
+    /// Which of D9's two locking protocols the holder of the state directory follows.
+    ///
+    /// Both take the same advisory lock the same way; what differs is how long it is held,
+    /// and that difference is the whole of what a refused caller needs. A lock held for a
+    /// process's lifetime will not be free in a moment, so retrying is pointless and the
+    /// answer is another program; a lock held for one operation will be free shortly, so
+    /// retrying is the whole answer.
+    ///
+    /// **Here rather than in `webcam-handler-engine::store`, where the locking lives**,
+    /// because [`Error::StoreLocked`] carries it: a refusal that cannot say which protocol
+    /// holds the lock cannot tell the caller which of those two answers applies, and
+    /// `webcam-handler-schema` cannot depend on the engine. The engine re-exports this
+    /// type, so the locking code still names one definition (design §2.10) — see note N40.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum LockProtocol {
+        /// The daemon's: taken once at startup and held until the process exits, because
+        /// the daemon owns the state directory for as long as it is running.
+        HeldForLifetime,
+        /// A daemonless `wch`'s: taken for one mutating operation and released at its
+        /// end, because a CLI that held it between invocations would lock out the daemon
+        /// it does not know about.
+        PerOperation,
+    }
+}
+
+impl LockProtocol {
+    /// The protocol's name, for the lock record and for failure messages.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            LockProtocol::HeldForLifetime => "held_for_lifetime",
+            LockProtocol::PerOperation => "per_operation",
+        }
+    }
+
+    /// What to tell whoever this protocol just refused — **D9's sentence, and its home**.
+    ///
+    /// Design D9 writes the first arm itself: a `wch` finding the lock held "reports
+    /// *daemon owns the state (and likely the camera) — use wchc* rather than corrupting or
+    /// blocking (D13)". It lives here, on the fact it turns on, so that it exists once: the
+    /// same words reach a human through [`Error`]'s `Display` in `wch`, through the wire
+    /// message the daemon sends, and through `wchc` rendering a received D13 document, none
+    /// of which re-word it.
+    ///
+    /// The second arm is the same law read the other way, and it is why this is a `match`
+    /// and not an `if`: telling somebody to start a different program because another `wch`
+    /// is a few milliseconds into `calibrate select` would be advice that makes their
+    /// situation worse. A third protocol cannot be added without answering this question.
+    #[must_use]
+    pub const fn advice(self) -> &'static str {
+        match self {
+            LockProtocol::HeldForLifetime => {
+                "daemon owns the state (and likely the camera) — use wchc"
+            }
+            LockProtocol::PerOperation => "it is held for one operation and will be free shortly",
+        }
+    }
+}
+
+impl std::fmt::Display for LockProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+closed_vocabulary! {
     /// The discriminant of [`Error`], as a value.
     ///
     /// `ALL` is generated from this definition, so a variant cannot be added without
@@ -208,10 +275,23 @@ pub enum Error {
     },
 
     /// The state directory's advisory lock is held elsewhere (D9).
-    #[error("the state directory is locked{}", format_holder(.holder))]
+    ///
+    /// Both fields come from the same lock record and are `None` together: an
+    /// unidentified holder is reported as unidentified, never as a plausible pid — and
+    /// never as a protocol somebody would then act on.
+    #[error(
+        "the state directory is locked{}{}",
+        format_holder(.holder),
+        format_advice(.protocol)
+    )]
     StoreLocked {
         /// Who holds it, when we could tell.
         holder: Option<Holder>,
+        /// Which of D9's protocols the holder follows, when we could tell.
+        ///
+        /// The field exists so the refusal can say whether waiting is worth anything:
+        /// [`LockProtocol::advice`] is the one place that turns it into words.
+        protocol: Option<LockProtocol>,
     },
 
     /// `terminate_holder` was asked to kill a pid that no longer holds the device.
@@ -366,6 +446,10 @@ impl Error {
                     pid: 909,
                     comm: Some("wchd".to_owned()),
                 }),
+                // The daemon's protocol, because it is the one D9 writes a sentence for:
+                // this sample is what the OpenRPC document shows a client author, and the
+                // refusal they need to render is "use wchc", not "try again".
+                protocol: Some(LockProtocol::HeldForLifetime),
             },
             ErrorKind::HolderGone => Error::HolderGone { pid: 4242 },
             ErrorKind::DeviceIo => Error::DeviceIo {
@@ -417,6 +501,20 @@ fn format_holders(holders: &[Holder]) -> String {
 fn format_holder(holder: &Option<Holder>) -> String {
     match holder {
         Some(h) => format!(" by {}", format_holders(std::slice::from_ref(h))),
+        None => String::new(),
+    }
+}
+
+/// D9's advice for whoever just met a held lock, when the holder said which protocol it
+/// follows.
+///
+/// Nothing when it did not, on the same principle `format_holder` follows: the advice
+/// turns entirely on a fact we read out of the holder's record, and inventing it from a
+/// record we could not read would tell somebody to go and start `wchc` against a daemon
+/// that may not exist.
+fn format_advice(protocol: &Option<LockProtocol>) -> String {
+    match protocol {
+        Some(protocol) => format!("; {}", protocol.advice()),
         None => String::new(),
     }
 }
@@ -581,6 +679,80 @@ mod tests {
             Error::sample(ErrorKind::Unimplemented).kind(),
             ErrorKind::DeviceIo
         );
+    }
+
+    #[test]
+    fn a_daemons_lock_is_refused_in_the_words_d9_writes() {
+        // Quoted from design D9, parenthetical and em dash included: "`wch` finding it
+        // held reports *daemon owns the state (and likely the camera) — use wchc* rather
+        // than corrupting or blocking (D13)". The literal is here, in the test, so that
+        // rewording the constant is a red test rather than a diff nobody reads; docs/7's
+        // shorter summary of the same sentence is a plan's abbreviation, not a second law.
+        //
+        // Asserted against `sample` rather than a value built here, because that is the
+        // one the generated documents carry: `Error::sample` is the walkable population
+        // the OpenRPC emitter renders, so a sample that stopped naming a protocol would
+        // ship a `store_locked` example with D9's advice missing from it.
+        let err = Error::sample(ErrorKind::StoreLocked);
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("daemon owns the state (and likely the camera) — use wchc"),
+            "{rendered}"
+        );
+        // And it still names who, because "somebody has it, go and use another program" is
+        // half an answer: the pid is what an operator checks before believing us.
+        assert!(rendered.contains("wchd (pid 909)"), "{rendered}");
+    }
+
+    #[test]
+    fn a_momentary_lock_is_not_a_reason_to_go_and_start_wchc() {
+        // The other direction, and the one that makes the first arm a decision rather than
+        // a constant: another `wch` a few milliseconds into a mutating verb will be gone
+        // shortly, and sending its user off to a daemon that does not exist would make
+        // their situation worse.
+        let err = Error::StoreLocked {
+            holder: Some(Holder {
+                pid: 123,
+                comm: Some("wch".to_owned()),
+            }),
+            protocol: Some(LockProtocol::PerOperation),
+        };
+        let rendered = err.to_string();
+        assert!(!rendered.contains("wchc"), "{rendered}");
+        assert!(rendered.contains("free shortly"), "{rendered}");
+
+        // And an unreadable record advises nothing at all, because the advice turns
+        // entirely on a fact that record carries.
+        let unknown = Error::StoreLocked {
+            holder: None,
+            protocol: None,
+        };
+        assert_eq!(unknown.to_string(), "the state directory is locked");
+    }
+
+    #[test]
+    fn every_locking_protocol_answers_the_question_the_refusal_asks() {
+        // The population is generated from the vocabulary, so a third protocol cannot be
+        // added without landing here: each one has to say something, and no two may say
+        // the same thing — advice that did not depend on the protocol would be advice that
+        // did not need the field, which is the defect rubric A8 names.
+        for &protocol in LockProtocol::ALL {
+            assert!(!protocol.advice().is_empty(), "{protocol} advises nothing");
+            assert_eq!(
+                LockProtocol::ALL
+                    .iter()
+                    .filter(|other| other.advice() == protocol.advice())
+                    .count(),
+                1,
+                "{protocol} shares its advice with another protocol"
+            );
+            // The wire spelling and the name in a failure message are the same string, so
+            // a lock record and a refusal cannot come to disagree about what to call it.
+            assert_eq!(
+                serde_json::to_string(&protocol).expect("serialize"),
+                format!("\"{}\"", protocol.as_str())
+            );
+        }
     }
 
     #[test]

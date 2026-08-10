@@ -33,6 +33,124 @@ pub const SESSION_PHOTOS_DIR: &str = "photos";
 /// inspectable, and an operator wondering who owns it should see the file that answers.
 pub const STORE_LOCK_FILE: &str = "lock";
 
+/// The daemon's Unix socket inside the runtime directory (design D11):
+/// `<XDG runtime dir>/webcam-handler/wchd.sock`.
+///
+/// Here rather than in the daemon because `wchc` has to resolve the same path to connect
+/// (P4f), and two string literals is the drift this module exists to prevent. The
+/// *directory* is the security boundary — `connect(2)` checks search permission on every
+/// component and write permission on the socket inode, and the socket file itself is
+/// created with `0777 & ~umask` — so the 0700 mode D11 names belongs to the directory,
+/// which is where `webcam-handler-daemon::uds` asserts it.
+pub const DAEMON_SOCKET_FILE: &str = "wchd.sock";
+
+/// The longest Unix socket path the kernel will bind.
+///
+/// `sockaddr_un::sun_path` is 108 bytes on Linux and the path inside it is
+/// NUL-terminated, so 107 bytes is the real bound. It is checked before `bind` rather
+/// than inferred from `ENAMETOOLONG` afterwards, because the path is composed from
+/// `$XDG_RUNTIME_DIR` and a refusal that names the limit is the difference between "the
+/// daemon is broken" and "your `$TMPDIR` is too deep" — which is exactly what a test run
+/// under a scratch `$TMPDIR` (`scripts/mutants.sh` exports one) would otherwise look
+/// like.
+pub const MAX_UNIX_SOCKET_PATH_BYTES: usize = 107;
+
+/// The most connections the daemon serves at once.
+///
+/// jsonrpsee's own default is 100 and this is not it: a per-user daemon behind a 0700
+/// directory has one `wchc` invocation, maybe a browser tab, and whatever a script is
+/// doing. The cap exists so a client that leaks connections is refused rather than able
+/// to exhaust the daemon's file descriptors, which on this process are also the camera's.
+pub const DAEMON_MAX_CONNECTIONS: u32 = 32;
+
+/// The largest JSON-RPC request body the daemon reads.
+///
+/// Requests on this surface are small: a control id, a handful of writes, a sweep
+/// request, a sink path. A megabyte is three orders of magnitude of headroom and still
+/// bounds what a caller can make the daemon buffer before it has decided anything.
+pub const RPC_MAX_REQUEST_BYTES: u32 = 1024 * 1024;
+
+/// The largest JSON-RPC response body the daemon writes.
+///
+/// jsonrpsee's default is 10 MB and a photo does not fit in it: D10 answers a capture as
+/// base64 in the JSON result, a 4K MJPG frame off the OBSBOT is ~8 MB \[PF:9\], and
+/// base64 is four bytes per three. Set here, from the bound the picture actually has,
+/// rather than left to be discovered as a wire failure by the sub-milestone that routes
+/// `wch_photo`.
+pub const RPC_MAX_RESPONSE_BYTES: u32 = 64 * 1024 * 1024;
+
+/// The most calls one JSON-RPC batch may carry.
+///
+/// jsonrpsee defaults to unlimited, which is an unbounded loop over caller-supplied input
+/// on the one socket the daemon always serves. Nothing this project ships batches — `wch`
+/// and `wchc` run one verb per invocation — so the bound is small on purpose: it keeps
+/// the protocol feature available without making it a lever.
+pub const RPC_MAX_BATCH: u32 = 16;
+
+/// How many `accept` calls may fail in a row before the daemon stops accepting.
+///
+/// An accept error is usually about one client (`ECONNABORTED`: it hung up between
+/// `connect` and `accept`), so retrying is right. But `EMFILE` is about *us* and does not
+/// clear on its own, and a loop that retries it immediately is a spin at 100% of a core
+/// that no log level makes obvious. Consecutive failures are what distinguishes the two,
+/// and the daemon gives up rather than spinning.
+pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
+
+/// How long an open camera may go unused before the next idle sweep closes it.
+///
+/// D12's "the daemon never opens a camera until first use and closes on idle
+/// (configurable), so `wchd` running does not itself block other applications from the
+/// webcam" — this is the *default* that makes "configurable" have something to configure
+/// (`engine::actor::Cameras::with_idle_timeout` is the override).
+///
+/// Thirty seconds is chosen from the two failures it sits between. Too short and every
+/// `wchc get` in a shell loop pays a fresh `open` and the driver's first-frame settle
+/// \[PF:11\]; too long and a person who ran one command cannot start a video call without
+/// stopping the daemon, which is precisely the complaint D12 exists to answer. A human
+/// working at a terminal issues their next command inside thirty seconds, and has stopped
+/// caring about the camera long before they switch applications.
+pub const CAMERA_IDLE_CLOSE_MS: u64 = 30_000;
+
+/// How often the daemon asks every open camera whether it has gone idle.
+///
+/// [`CAMERA_IDLE_CLOSE_MS`] is the deadline and this is the thing that checks it: an idle
+/// close nobody asks about never happens, and the pass is what turns
+/// `engine::actor::Idle`'s two numbers into a descriptor going away.
+///
+/// Deliberately shorter than the timeout, and by a whole factor rather than a hair. Since
+/// `engine::actor::Idle::expired` reaches its deadline with `>=`, the first pass at or
+/// after the deadline is the one that closes: a camera therefore closes **within one
+/// cadence of its deadline** — thirty to thirty-five seconds after the last command, not
+/// "some multiple of thirty".
+///
+/// The cost is one mutex read per *actor* every five seconds, plus one acknowledgement per
+/// camera that is actually about to close. Per actor rather than per open camera, because
+/// nothing is removed from the registry except a dead thread — a machine whose eight
+/// cameras have each been used once and closed keeps eight entries — and per *actor* is
+/// also the accounting P4d's reaping will be argued against. It is a mutex and not a queue
+/// round trip because `engine::actor::CameraActor::sweep` answers from the published state
+/// unless the camera is open, unused and quiescent.
+pub const CAMERA_IDLE_SWEEP_MS: u64 = 5_000;
+
+// The relation between the two, checked where both numbers are rather than asserted from a
+// distance. A cadence at least as long as the timeout would leave a camera open for up to
+// cadence-plus-timeout while the documentation above promises thirty seconds, and a zero
+// cadence is a spin — `tokio::time::interval` refuses one by panicking, which on a daemon's
+// startup path is not an available failure mode. A compile failure is the one red nothing
+// can skip.
+const _: () = assert!(CAMERA_IDLE_SWEEP_MS > 0 && CAMERA_IDLE_SWEEP_MS < CAMERA_IDLE_CLOSE_MS);
+
+/// How many commands one camera's actor queues before refusing with
+/// [`crate::Error::Busy`].
+///
+/// A bound, not a buffer. One camera is one blocking thread (D12), so everything past the
+/// command being executed is already waiting on a device that can only do one thing at a
+/// time, and a deeper queue buys a caller nothing but a longer wait before the same
+/// answer. Eight is enough that a browser tab's poll and a `wchc` invocation arriving
+/// together never collide; a caller past it is told the camera is busy — which is the
+/// refusal D12 names — rather than made to wait for a queue nobody bounded.
+pub const CAMERA_COMMAND_QUEUE_DEPTH: usize = 8;
+
 /// The device-profile document version (design T3).
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 

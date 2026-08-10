@@ -188,9 +188,10 @@
             "comm": "wchd",
             "pid": 909
           },
-          "kind": "store_locked"
+          "kind": "store_locked",
+          "protocol": "held_for_lifetime"
         },
-        "message": "the state directory is locked by wchd (pid 909)"
+        "message": "the state directory is locked by wchd (pid 909); daemon owns the state (and likely the camera) — use wchc"
       },
       "unimplemented": {
         "code": -32030,
@@ -1736,7 +1737,7 @@
             "type": "object"
           },
           {
-            "description": "The state directory's advisory lock is held elsewhere (D9).",
+            "description": "The state directory's advisory lock is held elsewhere (D9).\n\nBoth fields come from the same lock record and are `None` together: an\nunidentified holder is reported as unidentified, never as a plausible pid — and\nnever as a protocol somebody would then act on.",
             "properties": {
               "holder": {
                 "anyOf": [
@@ -1752,6 +1753,17 @@
               "kind": {
                 "const": "store_locked",
                 "type": "string"
+              },
+              "protocol": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LockProtocol"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Which of D9's protocols the holder follows, when we could tell.\n\nThe field exists so the refusal can say whether waiting is worth anything:\n[`LockProtocol::advice`] is the one place that turns it into words."
               }
             },
             "required": [
@@ -2342,6 +2354,21 @@
           "subject"
         ],
         "type": "object"
+      },
+      "LockProtocol": {
+        "description": "Which of D9's two locking protocols the holder of the state directory follows.\n\nBoth take the same advisory lock the same way; what differs is how long it is held,\nand that difference is the whole of what a refused caller needs. A lock held for a\nprocess's lifetime will not be free in a moment, so retrying is pointless and the\nanswer is another program; a lock held for one operation will be free shortly, so\nretrying is the whole answer.\n\n**Here rather than in `webcam-handler-engine::store`, where the locking lives**,\nbecause [`Error::StoreLocked`] carries it: a refusal that cannot say which protocol\nholds the lock cannot tell the caller which of those two answers applies, and\n`webcam-handler-schema` cannot depend on the engine. The engine re-exports this\ntype, so the locking code still names one definition (design §2.10) — see note N40.",
+        "oneOf": [
+          {
+            "const": "held_for_lifetime",
+            "description": "The daemon's: taken once at startup and held until the process exits, because\nthe daemon owns the state directory for as long as it is running.",
+            "type": "string"
+          },
+          {
+            "const": "per_operation",
+            "description": "A daemonless `wch`'s: taken for one mutating operation and released at its\nend, because a CLI that held it between invocations would lock out the daemon\nit does not know about.",
+            "type": "string"
+          }
+        ]
       },
       "LogEntry": {
         "description": "One line of `log.ndjson`.",

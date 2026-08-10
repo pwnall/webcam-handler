@@ -203,6 +203,111 @@ pub fn find(store: &SessionStore, id: Uuid) -> Result<Option<Session>> {
     Ok(Some(store.load_session(&found.dir)?))
 }
 
+/// The session a verb names, loaded and checked against the camera it names.
+///
+/// The two forms of [`schema::session::SessionRef`] are two lookups because they answer
+/// two questions (D8, note N14): a task names the newest session in *this camera's* slot,
+/// and a UUID names one session wherever it lives — including under another camera, which
+/// is what gives [`belongs_to`] something to refuse.
+///
+/// One function because it is one law with two surfaces now: `wch calibrate status` reaches
+/// it through T4's executor and `wch_calibrate_status` reaches it through T5's server, and
+/// a second copy would be a second answer to "which session did you mean, and is it this
+/// camera's". Before the P3 review the check inside it existed on one verb out of three,
+/// which is exactly what a composition living at its call sites costs.
+///
+/// The `SessionRef` here is the wire/command vocabulary in [`schema::session`], spelled
+/// out because this module also names [`crate::store::SessionRef`], which is the *found
+/// directory* rather than the caller's request.
+///
+/// # Errors
+///
+/// [`Error::IllegalTransition`] naming what was asked for when no session answers to it:
+/// `calibrate start` is the verb that makes one, and a lookup that invented an empty
+/// session would let a sweep write to a camera with nothing recording it.
+/// [`Error::FingerprintMismatch`] naming the fields that differ when the session belongs to
+/// another camera. Whatever the store refuses with when the document cannot be read.
+pub fn session_for(
+    store: &SessionStore,
+    fingerprint: &CameraFingerprint,
+    which: &schema::session::SessionRef,
+) -> Result<Session> {
+    let (found, named) = match which {
+        schema::session::SessionRef::Task { task } => {
+            (latest(store, fingerprint, task)?, format!("task={task:?}"))
+        }
+        schema::session::SessionRef::Id { id } => (find(store, *id)?, format!("session={id}")),
+    };
+    let session = found.ok_or_else(|| Error::IllegalTransition {
+        from: format!("no_session({named})"),
+        op: "read this session; `wch calibrate start` opens one".to_owned(),
+    })?;
+    belongs_to(&session, fingerprint)?;
+    Ok(session)
+}
+
+/// What `calibrate status` answers: a session's document and its history.
+///
+/// [`session_for`] plus [`history`], and it is one function because it is one verb with two
+/// surfaces — `wch calibrate status` through T4 and `wch_calibrate_status` through T5. The
+/// ordering is not interchangeable and is the reason this is not two calls at each of them:
+/// the document is loaded and checked against the camera *first*, so a status verb pointed
+/// at another camera's session refuses rather than handing back that session's log.
+///
+/// **No lock, under either of D9's protocols.** Reading is not a state write, and a status
+/// verb that refused while a daemon held the state directory would be one nobody can use on
+/// the machine the sessions are on.
+///
+/// # Errors
+///
+/// As [`session_for`], plus [`Error::SchemaVersionForeign`] for a document another build
+/// wrote — a foreign document is a typed refusal, never a best-effort parse (D9).
+pub fn status(
+    store: &SessionStore,
+    fingerprint: &CameraFingerprint,
+    which: &schema::session::SessionRef,
+) -> Result<schema::session::SessionStatus> {
+    let session = session_for(store, fingerprint, which)?;
+    let log = history(store, &session)?;
+    Ok(schema::session::SessionStatus { session, log })
+}
+
+/// What `calibrate list` answers: every session, or one camera's, newest first.
+///
+/// **Nothing is parsed.** The listing is assembled from directory names alone, which is what
+/// D9 chose UUIDv7 for: a session written by a build this one cannot read still lists, and
+/// the one session whose document is corrupt does not take the listing down with it. Reading
+/// a session is [`status`]'s job and it is the one that refuses a foreign version.
+///
+/// One function because the projection from a found directory
+/// ([`crate::store::SessionRef`]) to the wire's [`schema::session::SessionListing`] is a
+/// rename — `dir` becomes `path` — and a rename written at two composition roots is how the
+/// two documents come to disagree about a field name.
+///
+/// # Errors
+///
+/// Whatever the store refuses with while walking the session tree.
+pub fn list(
+    store: &SessionStore,
+    fingerprint: Option<&CameraFingerprint>,
+) -> Result<schema::session::SessionList> {
+    let found = match fingerprint {
+        Some(camera) => store.sessions_for(camera)?,
+        None => store.all_sessions()?,
+    };
+    Ok(schema::session::SessionList {
+        sessions: found
+            .into_iter()
+            .map(|session| schema::session::SessionListing {
+                id: session.id,
+                camera: session.camera,
+                task_slug: session.task_slug,
+                path: session.dir,
+            })
+            .collect(),
+    })
+}
+
 /// Refuse a camera that is not the session's, naming the fields that differ (D8, D13).
 ///
 /// D8 says a session belongs to a **(camera fingerprint, task)** pair, and [`find`] walks

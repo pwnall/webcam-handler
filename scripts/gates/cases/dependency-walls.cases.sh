@@ -29,6 +29,15 @@ fail_case_pure_crate_links_tokio() {
     WCH_GATE_METADATA="$(_seeded_edge webcam-handler-schema tokio)" "$GATE"
 }
 
+# The engine names no runtime, and that is what lets its camera actor be a blocking OS
+# thread whose reply channel the *caller* supplies — a tokio type in `engine::actor`'s
+# signature would force a runtime on the daemonless `wch` (note N41). A tokio edge here
+# makes that argument false without changing a line of `engine::actor`, which is exactly
+# the kind of silent repeal a wall is for.
+fail_case_the_engine_grows_a_runtime() {
+    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-engine tokio)" "$GATE"
+}
+
 # The wire crate is exempt from the tokio half of wall 1 (note N5) and from nothing
 # else: an axum edge on `webcam-handler-api` would put the web stack in `wchc`'s link
 # graph through the shared trait.

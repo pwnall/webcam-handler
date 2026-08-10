@@ -437,9 +437,10 @@ impl SessionStore {
         if let Some(fault) = self.scripted {
             match fault {
                 StoreFault::LockHeld => {
-                    return Err(Error::StoreLocked {
-                        holder: self.holder().map(|record| record.holder()),
-                    });
+                    // The arrangement holds a real lock, so the record it reads is a real
+                    // holder's — the scripted fault decides *that* the refusal happens,
+                    // never what it says.
+                    return Err(store_locked(self.holder()));
                 }
                 StoreFault::DiskFull
                 | StoreFault::TornLogLine
@@ -736,43 +737,16 @@ fn read_dir_or_empty(dir: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
 
 // ---------------------------------------------------------------------- the lock
 
-closed_vocabulary! {
-    /// Which of D9's two locking protocols a holder follows.
-    ///
-    /// Both take the same lock the same way; what differs is how long it is held, and
-    /// that difference is what a refused caller needs to know. A lock held for a
-    /// process's lifetime will not be free in a moment, so retrying is pointless and the
-    /// answer is "use `wchc`"; a lock held for one operation will be free shortly.
-    /// Recording which one is in force is why [`LockRecord`] carries it.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum LockProtocol {
-        /// The daemon's: taken once at startup and held until the process exits, because
-        /// the daemon owns the state directory for as long as it is running.
-        HeldForLifetime,
-        /// A daemonless `wch`'s: taken for one mutating operation and released at its
-        /// end, because a CLI that held it between invocations would lock out the daemon
-        /// it does not know about.
-        PerOperation,
-    }
-}
-
-impl LockProtocol {
-    /// The protocol's name, for the lock record and for failure messages.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            LockProtocol::HeldForLifetime => "held_for_lifetime",
-            LockProtocol::PerOperation => "per_operation",
-        }
-    }
-}
-
-impl std::fmt::Display for LockProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+/// D9's two locking protocols, defined in the error registry that carries them.
+///
+/// The definition lives in `webcam-handler-schema` rather than here, where the locking is,
+/// because [`Error::StoreLocked`] has to *say* which protocol holds the lock — that is the
+/// fact D9's refusal turns on, it therefore crosses the wire, and `schema` cannot depend on
+/// this crate (note N40). Re-exported so every `engine::store::LockProtocol` in the tree
+/// still names one type: the vocabulary moved, the law did not split.
+///
+/// Recording which one is in force is why [`LockRecord`] carries it.
+pub use schema::error::LockProtocol;
 
 /// What the lock file says about whoever holds it.
 ///
@@ -865,9 +839,7 @@ impl StoreLock {
         match lock.try_write() {
             Ok(guard) => std::mem::forget(guard),
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                return Err(Error::StoreLocked {
-                    holder: read_record(&path).map(|record| record.holder()),
-                });
+                return Err(store_locked(read_record(&path)));
             }
             Err(err) => return Err(storage_io(&path, &err)),
         }
@@ -918,6 +890,19 @@ fn write_record(path: &Utf8Path, record: &LockRecord) -> Result<()> {
 fn read_record(path: &Utf8Path) -> Option<LockRecord> {
     let bytes = fs::read(path.as_std_path()).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// D9's refusal, built from whatever the holder's record said — which may be nothing.
+///
+/// One function because the two callers must not be able to disagree: `holder` and
+/// `protocol` are two readings of *one* record, and a refusal that named a pid without the
+/// protocol (or the reverse) would either withhold the advice D9 owes the caller or attach
+/// it to a holder we could not identify. Both fields therefore fall together.
+fn store_locked(record: Option<LockRecord>) -> Error {
+    Error::StoreLocked {
+        holder: record.as_ref().map(LockRecord::holder),
+        protocol: record.map(|record| record.protocol),
+    }
 }
 
 // ---------------------------------------------------------------------- the fault menu
@@ -1894,9 +1879,16 @@ mod tests {
             match err {
                 Error::StoreLocked {
                     holder: Some(holder),
+                    protocol: Some(reported),
                 } => {
                     assert_eq!(holder.pid, record.pid);
                     assert_eq!(holder.comm, record.comm);
+                    // The protocol reaches the refusal from the same record the pid did,
+                    // for both protocols in turn — which is what makes the advice D9 owes
+                    // the caller a fact about the holder rather than a guess about the
+                    // world. The rendering itself is `LockProtocol::advice`'s, asserted in
+                    // `webcam-handler-schema`.
+                    assert_eq!(reported, protocol);
                 }
                 other => panic!("a held lock must name its holder where it can: {other:?}"),
             }
@@ -1989,13 +1981,21 @@ mod tests {
     fn an_unidentifiable_holder_is_reported_as_unidentified() {
         // The lock record is decoration; the lock is the kernel's. A holder whose record
         // is unreadable must produce `holder: None` — an honest "somebody" — rather than
-        // an invented pid.
+        // an invented pid. The protocol falls with it: advising somebody to switch to
+        // `wchc` on the strength of a record we could not read would be inventing the one
+        // fact the advice turns on.
         let temp = TempStore::new().expect("a temp dir");
         let held = temp.store().lock(LockProtocol::PerOperation).expect("free");
         fs::write(temp.store().lock_path().as_std_path(), b"{ torn").expect("writable");
 
         match temp.peer().lock(LockProtocol::PerOperation) {
-            Err(Error::StoreLocked { holder: None }) => {}
+            Err(err @ Error::StoreLocked { holder: None, .. }) => {
+                assert!(
+                    matches!(err, Error::StoreLocked { protocol: None, .. }),
+                    "an unidentified holder named a protocol: {err:?}"
+                );
+                assert!(!err.to_string().contains("wchc"), "{err}");
+            }
             other => panic!("expected an unidentified holder, got {other:?}"),
         }
         assert!(

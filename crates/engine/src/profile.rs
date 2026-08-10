@@ -90,6 +90,76 @@ pub fn capture(camera: &mut dyn Camera, context: &CaptureContext) -> Result<Devi
     })
 }
 
+/// Read a committed device profile from `path`, refusing one this build cannot replay.
+///
+/// The other half of T3's round trip, and here for [`capture`]'s reason: **both**
+/// composition roots read these documents to build a fake backend — `wch --backend fake
+/// --profile …` and `wchd --backend fake --profile …` — and a version check written at each
+/// of them is two answers to "can this build replay this document". Design §2.11 says a
+/// backend is constructed at the roots and nowhere else; what the roots must not each own
+/// is the *reading*.
+///
+/// The version is read from a probe that deserializes **only** `schema_version`, which is
+/// the same shape `crate::store` uses for a session document and for the same reason: a
+/// document this build cannot represent is refused before anything tries to represent it,
+/// so a profile from a future version is refused *for its version* rather than for whichever
+/// field this build's shape happens to be missing. `fake::FakeBackend::new` checks the
+/// version again from its own values, which is not redundant — a profile can reach a backend
+/// without passing through a file.
+///
+/// # Errors
+///
+/// [`schema::Error::StorageIo`] naming the path when it cannot be read, is not JSON, carries
+/// no `schema_version`, or does not deserialize; and [`schema::Error::SchemaVersionForeign`]
+/// for a version this build does not speak (D9's doctrine, applied to the corpus: a foreign
+/// document is a typed refusal, never a best-effort parse).
+pub fn read(path: &camino::Utf8Path) -> Result<DeviceProfile> {
+    let bytes = std::fs::read(path).map_err(|error| schema::Error::StorageIo {
+        path: path.to_owned(),
+        errno: error.raw_os_error(),
+        message: error.to_string(),
+    })?;
+    let unreadable = |message: String| schema::Error::StorageIo {
+        path: path.to_owned(),
+        errno: None,
+        message,
+    };
+
+    let probe: VersionProbe = serde_json::from_slice(&bytes)
+        .map_err(|error| unreadable(format!("is not a JSON document: {error}")))?;
+    match probe.schema_version {
+        None => {
+            return Err(unreadable(
+                "carries no schema_version; every device profile this tool writes has one, \
+                 so this file was not written by it"
+                    .to_owned(),
+            ));
+        }
+        Some(found) if found != limits::PROFILE_SCHEMA_VERSION => {
+            return Err(schema::Error::SchemaVersionForeign {
+                found,
+                supported: limits::PROFILE_SCHEMA_VERSION,
+            });
+        }
+        Some(_) => {}
+    }
+
+    serde_json::from_slice(&bytes)
+        .map_err(|error| unreadable(format!("is not a device profile: {error}")))
+}
+
+/// Only the field that decides whether the rest may be read.
+///
+/// The same probe `crate::store` uses on a session document, spelled again rather than
+/// shared because the two are different documents with different versions — `store`'s
+/// answers about [`schema::limits::SESSION_SCHEMA_VERSION`] and this one about
+/// [`schema::limits::PROFILE_SCHEMA_VERSION`], and a shared struct would invite one call
+/// site to check the other's number.
+#[derive(Debug, serde::Deserialize)]
+struct VersionProbe {
+    schema_version: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -295,6 +365,66 @@ mod tests {
         assert_eq!(profile.invariant.controls.len(), 2);
         // And its flags are recorded, because flags are readable even when values are not.
         assert_eq!(profile.state.flags.len(), 2);
+    }
+
+    #[test]
+    fn a_captured_profile_reads_back_as_itself_and_a_foreign_one_is_refused_by_version() {
+        // T3's round trip through the one reader both composition roots use. The document
+        // is produced by `capture` rather than written out by hand, so this cannot drift
+        // from the shape the tool actually writes.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("profile.json"))
+            .expect("a UTF-8 temporary directory");
+        let captured =
+            capture(&mut stub(vec![control("brightness", 0, 50)]), &context()).expect("captures");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&captured).expect("a profile serializes"),
+        )
+        .expect("the temporary directory is writable");
+        assert_eq!(read(&path).expect("this build wrote it"), captured);
+
+        // A version this build does not speak is refused for its version — before
+        // anything looks for the fields such a document would not have.
+        let future = path.with_file_name("future.json");
+        std::fs::write(&future, br#"{"schema_version":99}"#).expect("writable");
+        assert_eq!(
+            read(&future)
+                .expect_err("99 is not this build's version")
+                .kind(),
+            schema::ErrorKind::SchemaVersionForeign
+        );
+
+        // And the two ways of not being a profile at all, each naming the path — which is
+        // the whole reason this refusal is not left to the backend, where the path is gone.
+        let garbage = path.with_file_name("garbage.json");
+        std::fs::write(&garbage, b"not json").expect("writable");
+        let err = read(&garbage).expect_err("not a device profile");
+        assert_eq!(err.kind(), schema::ErrorKind::StorageIo);
+        assert!(err.to_string().contains("garbage.json"), "{err}");
+
+        let missing = path.with_file_name("nowhere.json");
+        let err = read(&missing).expect_err("no such file");
+        assert_eq!(err.kind(), schema::ErrorKind::StorageIo);
+        assert!(err.to_string().contains("nowhere.json"), "{err}");
+
+        // JSON, and even a plausible document, but from no version at all: a file this
+        // tool did not write. Refused rather than read at whatever version this build
+        // happens to be, which would be the best-effort parse D9 forbids.
+        let versionless = path.with_file_name("versionless.json");
+        let mut stripped = serde_json::to_value(&captured).expect("a profile is a JSON document");
+        stripped
+            .as_object_mut()
+            .expect("a profile is a JSON object")
+            .remove("schema_version");
+        std::fs::write(
+            &versionless,
+            serde_json::to_vec(&stripped).expect("still a JSON document"),
+        )
+        .expect("writable");
+        let err = read(&versionless).expect_err("no schema_version");
+        assert_eq!(err.kind(), schema::ErrorKind::StorageIo);
+        assert!(err.to_string().contains("schema_version"), "{err}");
     }
 
     #[test]

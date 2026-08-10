@@ -184,6 +184,28 @@ impl FakeBackend {
             .sum()
     }
 
+    /// How many handles have been opened across every camera this backend replays.
+    ///
+    /// The same shape and the same argument as [`FakeBackend::streams_started`], for D12's
+    /// claim instead of D8's: the daemon "never opens a camera until first use and closes
+    /// on idle", and a caller holding a `Box<dyn Camera>` cannot ask a [`FakeCamera`]
+    /// anything. This can — and it is what makes "nothing opened" a fact rather than a
+    /// thing the actor's own bookkeeping says about itself.
+    #[must_use]
+    pub fn opens(&self) -> u64 {
+        self.cameras.iter().map(|state| lock(state).opens()).sum()
+    }
+
+    /// How many of those handles have gone away, which on a real device is the descriptor
+    /// closing.
+    ///
+    /// The counter that makes an idle close assertable: "the actor decided to close" is
+    /// bookkeeping, and this is the descriptor.
+    #[must_use]
+    pub fn closes(&self) -> u64 {
+        self.cameras.iter().map(|state| lock(state).closes()).sum()
+    }
+
     /// The profiles this backend replays, in enumeration order.
     ///
     /// The resemblance tests read the expectation from here: the fake's claims are

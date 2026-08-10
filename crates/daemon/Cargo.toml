@@ -18,3 +18,65 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+# Arriving with the code that reads them, as everywhere else in this workspace — a
+# dependency nobody uses is the defect a constant nobody reads is (rubric A8), and
+# `cargo machete --with-metadata` is part of `just ci`. Design §2.8's inventory for this
+# crate also lists axum, tower-http and rust-embed (P5's web listener) and sd-notify,
+# listenfd and tracing-journald (P4e's systemd integration); each arrives with the code
+# that reads it.
+#
+# `jsonrpsee-server` rather than `jsonrpsee`'s `server` feature, and that is not a style
+# choice — note N38 has the measurement. `webcam-handler-api` depends on the facade, and
+# `cargo metadata` resolves features once per package for the whole workspace, so a
+# `jsonrpsee/server` enabled here would make `api` reach hyper and take down the T6 wall
+# `dependency-walls.sh` asserts. The pin is the same release train (0.26.0), and
+# `RpcModule` is `jsonrpsee-core`'s type either way, so the trait the daemon mounts is the
+# same type this crate serves.
+[dependencies]
+camino.workspace = true
+# The composition root's two flags, in the workspace's one argument parser. `wchd` links
+# no `cli-core`: T4 is the *command* surface `wch` and `wchc` share, and the daemon has no
+# verbs — what it has is a backend to choose (design §2.11's second factory match) and,
+# from P5, a listener to open.
+clap = { workspace = true, features = ["derive"] }
+# The facade, for `jsonrpsee::core::async_trait` — the attribute the generated
+# `WchRpcServer` trait is declared with, so the daemon's impl has to use the same one.
+# `server-core` and nothing else: it is the feature `webcam-handler-api` already enables,
+# so this edge adds no feature to the shared `jsonrpsee` node (note N38).
+jsonrpsee = { workspace = true, features = ["server-core"] }
+jsonrpsee-server.workspace = true
+# `net` for `UnixListener`, `macros` for `select!` and `#[tokio::main]`, `sync` for the
+# `oneshot` a request hands to a camera actor, `time` for the idle-sweep cadence, and the
+# multi-threaded runtime because a connection task and the accept loop are concurrent by
+# construction. No `signal`: signal disposition is P4e's and this build takes the
+# kernel's default (see `main.rs`).
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+# `env-filter` so an operator can raise the level with `RUST_LOG` on a process that is
+# meant to keep running; design §2.6's journald layer waits for the systemd work (P4e).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+webcam-handler-api.workspace = true
+webcam-handler-engine.workspace = true
+webcam-handler-fake.workspace = true
+webcam-handler-schema.workspace = true
+webcam-handler-v4l2.workspace = true
+
+[dev-dependencies]
+# `client-core` is the generated T5 client's supertrait (`ClientT`): the read-verb suite
+# drives the daemon through `api::WchRpcClient` rather than through hand-built JSON, so
+# the request the server parses is the one a real client sends. It is not `wchc`'s
+# transport — that is P4f's ~200 lines — and it adds no feature the workspace's shared
+# `jsonrpsee` node did not already carry.
+jsonrpsee = { workspace = true, features = ["client-core"] }
+serde_json.workspace = true
+# The test client is a hand-written HTTP/1.1 request on a `UnixStream` — see
+# `tests/uds.rs` for why that is the honest client here and not a shortcut. The temp-dir
+# fixtures it needs are `engine::store::TempStore` and `engine::paths::TempRuntimeDir`,
+# which ship with the engine for exactly this, so no second `tempfile` edge.
+# `test-util` for tokio's paused clock: the idle-sweep driver is a task on a timer, and
+# advancing a paused clock is how a test talks about a deadline without waiting for one —
+# the same doctrine `engine::settle`'s stepped clock states, applied to the runtime's own.
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+uuid.workspace = true
+webcam-handler-testkit.workspace = true
+

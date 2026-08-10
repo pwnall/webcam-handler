@@ -13,6 +13,15 @@
 //! camera, `--partial` is asserted in both directions with the *applied set* checked, and
 //! the three selector spellings are each written and read back.
 //!
+//! ## The state directory's lock lives here too
+//!
+//! D9's daemonless protocol is `wch`'s half of a two-party rule, and the party it is a
+//! rule about is `wchd`. The daemon's end — that a running `wchd` really holds the state
+//! directory for its whole life, and what it is told when a `wch` got there first — is
+//! asserted against a real daemon process in `crates/daemon/tests/lock.rs`. What is
+//! asserted here is the other end: that the refusal reaches a *person*, in the words design
+//! D9 writes, through the binary they typed.
+//!
 //! ## The schema half
 //!
 //! `session.json` and `log.ndjson` are documents an agent reads without this tool, so they
@@ -27,6 +36,8 @@
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use engine::paths::MapEnv;
+use engine::store::{LockProtocol, SessionStore, StoreLock};
 use serde_json::{Map, Value};
 
 /// The `wch` binary this test drives, built by cargo alongside it.
@@ -52,6 +63,24 @@ impl Scratch {
 
     fn state(&self) -> Utf8PathBuf {
         Utf8PathBuf::from_path_buf(self.dir.path().join("state")).expect("a utf-8 temp dir")
+    }
+
+    /// Somebody else holds this state directory's lock, following `protocol`.
+    ///
+    /// A real `flock` over a real second open file description, which is all a `wch`
+    /// subprocess can tell about whoever holds it — so the daemon this stands in for needs
+    /// no process, and nothing here has to synchronize with one.
+    ///
+    /// Resolved through [`SessionStore::from_env`] rather than by joining a path, because
+    /// `engine::paths::state_dir` appends `webcam-handler` to `$XDG_STATE_HOME`: a
+    /// contender built any other way would be locking a file the binary never opens, and
+    /// every refusal asserted below would be a refusal that never happened.
+    fn held_by_somebody_else(&self, protocol: LockProtocol) -> StoreLock {
+        let env = MapEnv::from_pairs(&[("XDG_STATE_HOME", self.state().as_str())]);
+        SessionStore::from_env(&env)
+            .expect("the fixture sets the variable")
+            .lock(protocol)
+            .expect("nothing holds a fresh state directory")
     }
 }
 
@@ -1453,4 +1482,97 @@ fn nothing_a_calibration_writes_lands_in_the_repository() {
     );
     let photos = dir.join(schema::limits::SESSION_PHOTOS_DIR);
     assert!(photos.is_dir(), "{photos} should hold the sample photos");
+}
+
+// ------------------------------------------------------------------ the state-dir lock
+
+/// The one holder every refusal here has to name.
+fn this_process() -> String {
+    format!("pid {}", std::process::id())
+}
+
+#[test]
+fn a_wch_meeting_a_daemons_lock_is_sent_to_wchc_and_its_read_verbs_still_answer() {
+    // Design D9, verbatim: "`wch` finding it held reports *daemon owns the state (and
+    // likely the camera) — use wchc* rather than corrupting or blocking (D13)". The
+    // sentence is asserted here because this is where a person reads it — `wch` renders the
+    // typed error onto stderr and exits — and the value it is rendered from is asserted in
+    // `webcam-handler-schema` and in `crates/daemon/tests/lock.rs`.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["chicony-rgb"]);
+    let task = "read text from the DUT display";
+    let daemon = scratch.held_by_somebody_else(LockProtocol::HeldForLifetime);
+
+    let refused = wch.refuses(&["calibrate", "start", "cam:integrated", "--task", task]);
+    assert!(
+        refused
+            .stderr
+            .contains("daemon owns the state (and likely the camera) — use wchc"),
+        "{}",
+        refused.stderr
+    );
+    // Advice without a holder is advice nobody can check, so the line names who as well.
+    assert!(
+        refused.stderr.contains(&this_process()),
+        "{}",
+        refused.stderr
+    );
+    // One exit code for every D13 error (`cli_core::exit_code`); "a daemon has the lock" is
+    // not a new one, and a script that started branching on 3 here would be reading a
+    // channel this project does not offer.
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+
+    // Reading is not a state write. This is the half that makes a daemon's lifetime hold
+    // liveable for whoever is sitting at the machine, and it is stated as law on
+    // `InProcess::calibrate_status`: a status verb that refused while a daemon held the
+    // lock would be a status verb nobody can use where the sessions are.
+    let listed = wch.json(&["calibrate", "list"]);
+    assert_eq!(
+        listed["sessions"]
+            .as_array()
+            .expect("a sessions array")
+            .len(),
+        0,
+        "{listed}"
+    );
+
+    // And released, the very same command goes through — so what was refused was the lock
+    // and not the command.
+    drop(daemon);
+    wch.ok(&["calibrate", "start", "cam:integrated", "--task", task]);
+    assert_eq!(
+        wch.json(&["calibrate", "list"])["sessions"]
+            .as_array()
+            .expect("a sessions array")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn another_wchs_momentary_lock_is_refused_without_sending_anybody_to_a_daemon() {
+    // The other direction of D9's advice, and what makes the first test an assertion about
+    // a *decision* rather than about a constant: another `wch` a few milliseconds into a
+    // mutating verb will be gone shortly, and telling its user to go and start `wchc` would
+    // send them after a daemon that does not exist.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["chicony-rgb"]);
+    let task = "read text from the DUT display";
+    let peer = scratch.held_by_somebody_else(LockProtocol::PerOperation);
+
+    let refused = wch.refuses(&["calibrate", "start", "cam:integrated", "--task", task]);
+    assert!(
+        refused.stderr.contains(&this_process()),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("free shortly"),
+        "{}",
+        refused.stderr
+    );
+    assert!(!refused.stderr.contains("wchc"), "{}", refused.stderr);
+
+    drop(peer);
+    wch.ok(&["calibrate", "start", "cam:integrated", "--task", task]);
 }
