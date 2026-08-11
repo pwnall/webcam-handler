@@ -81,7 +81,7 @@ use std::sync::Arc;
 use api::{PhotoResponse, WchRpcClient, rpc_code};
 use camino::{Utf8Path, Utf8PathBuf};
 use engine::paths::TempRuntimeDir;
-use engine::settle::MonotonicClock;
+use engine::settle::FrozenClock;
 use jsonrpsee::core::client::Error as ClientError;
 use schema::backend::{Camera, CameraBackend};
 use schema::camera::{CameraId, PixelFormat};
@@ -1083,6 +1083,13 @@ fn photo_request(sink: Sink) -> PhotoRequest {
 /// `now` is the wall time the daemon's answer recorded, handed back in rather than read
 /// again: it is what goes in the EXIF, so a second reading would produce a photo that
 /// differs in its header for a reason that is not the wire.
+///
+/// The *monotonic* reading the settle runs on is [`FrozenClock`], for the reason it exists
+/// (note N60): this comparison is about bytes, so a `SettleTimeout` here would be a correct
+/// answer to a question it is not asking. The settle it drives counts frames — the request
+/// these callers build skips none — and the daemon's own side of the comparison necessarily
+/// runs on the real clock it constructs for itself, so this removes the one of the two
+/// wall-clock exposures a test can reach.
 fn engine_photo(
     fixture: &Fixture,
     camera: &CameraId,
@@ -1097,7 +1104,7 @@ fn engine_photo(
         handle.as_mut(),
         request,
         &mut engine::photo::WhereverTheCallerSaid,
-        &MonotonicClock::new(),
+        &FrozenClock,
         now,
     )
     .expect("the engine takes the same photo")

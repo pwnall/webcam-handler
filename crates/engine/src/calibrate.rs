@@ -525,7 +525,7 @@ mod tests {
     use super::*;
     use crate::lifecycle::SessionSpec;
     use crate::progress::{Recorder, Silent};
-    use crate::settle::MonotonicClock;
+    use crate::settle::FrozenClock;
     use crate::store::{LockProtocol, StoreLock, TempStore};
 
     fn slug(name: &str) -> ControlSlug {
@@ -602,10 +602,18 @@ mod tests {
         }
     }
 
+    /// A context on a clock that cannot move.
+    ///
+    /// [`FrozenClock`] rather than a real one because nothing in this module's tests is
+    /// about the settle deadline, and a real clock puts `SettleTimeout` — a correct answer
+    /// to a question none of them asks — inside reach of every assertion below whenever the
+    /// machine is busy (note N60). Every settle here counts *frames*, which is the half of
+    /// the policy a frozen clock leaves working; a test about a duration would want
+    /// [`crate::settle::SteppedClock`] and would say so.
     fn context<'a>(
         temp: &'a TempStore,
         lock: &'a StoreLock,
-        clock: &'a MonotonicClock,
+        clock: &'a FrozenClock,
         progress: &'a dyn ProgressSink,
     ) -> SweepContext<'a> {
         SweepContext {
@@ -633,7 +641,7 @@ mod tests {
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
 
         backend.queue_fault(Fault::ClampOnWrite);
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
         let outcome = run(
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
@@ -687,7 +695,7 @@ mod tests {
         let control = slug("brightness");
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
 
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
         let outcome = run(
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
@@ -752,7 +760,7 @@ mod tests {
         let control = slug("brightness");
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
 
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
         let outcome = run(
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
@@ -822,7 +830,7 @@ mod tests {
             session.pairs
         );
 
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
         let outcome = run(
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
@@ -946,7 +954,7 @@ mod tests {
         let mut camera = open(&backend);
         let control = slug("brightness");
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
 
         // The unsettled reading, measured rather than assumed: the first frame off a fresh
         // stream at the same control value the sweep will use.
@@ -1011,7 +1019,7 @@ mod tests {
             "starting a session streamed from the camera"
         );
 
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
         run(
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
@@ -1046,7 +1054,7 @@ mod tests {
         let mut camera = open(&backend);
         let control = slug("region_of_interest_rectangle");
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
 
         let error = run(
             &context(&temp, &lock, &clock, &Silent),
@@ -1072,7 +1080,7 @@ mod tests {
         let mut camera = open(&backend);
         let control = slug("focus_absoluteish");
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
 
         let error = run(
             &context(&temp, &lock, &clock, &Silent),
@@ -1100,7 +1108,7 @@ mod tests {
         let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
 
         let recorder = Recorder::new();
-        let clock = MonotonicClock::new();
+        let clock = FrozenClock;
         run(
             &context(&temp, &lock, &clock, &recorder),
             &mut session,

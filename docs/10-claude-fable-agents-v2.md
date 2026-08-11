@@ -146,7 +146,10 @@ green and the notes current, and the phase review gets its own session.
   register is checked both ways — an acceptance that stopped surviving fails the job. A
   dev tool and a G4 criterion, hours not minutes; never a `just ci` step, and its absence
   is a named, counted skip.
-- No `sleep` as synchronization — settle logic runs on a stepped clock in tests.
+- No `sleep` as synchronization — settle logic runs on a clock the test owns, never on
+  the real one. Two shapes: a `SteppedClock` where the deadline is the subject, and a
+  `FrozenClock` where it is not — a deadline that cannot expire is what stops a loaded
+  machine answering `SettleTimeout` to a test that asked about the device (N60).
 - The browser half is asserted in a real browser: the pinned Playwright/Chromium rung
   (design §3.1 R1-web) self-skips counted without node — node is never a build
   dependency — and a browser behavior verified only through the JSON the page consumes

@@ -21,6 +21,18 @@
 //! the assertion are both answerable to it, and either one drifting from it turns this
 //! suite red.
 //!
+//! ## Why the clock here cannot move
+//!
+//! Every sweep below runs on [`FrozenClock`], not on a real one. Nothing in this file is
+//! about the settle deadline: the assertions are about which sample won, what the device
+//! answered when it vanished, and what reached the disk. A real clock puts a second,
+//! unasked-for outcome inside reach of each of them — a settle that has not converged by
+//! `DEFAULT_SETTLE_DEADLINE_MS` is a `SettleTimeout`, which is a correct answer to a
+//! question this file is not asking, and on a loaded machine it is the answer that arrives
+//! (note N60: eleven frames, 5303 ms, an assertion expecting `DeviceGone`). A deadline that
+//! cannot expire removes that outcome, so a red run here means the sweep is wrong rather
+//! than that the machine was busy.
+//!
 //! ## What "both directions" means for a physics claim
 //!
 //! It is not enough that the winner is 512. `the_optimum_wins_and_every_other_sample_loses`
@@ -36,7 +48,7 @@ use engine::calibrate::{self, SweepContext, SweepRequest};
 use engine::lifecycle::{self, SessionSpec};
 use engine::progress::{ProgressSink, Recorder};
 use engine::session;
-use engine::settle::MonotonicClock;
+use engine::settle::FrozenClock;
 use engine::store::{LockProtocol, SessionStore, StoreLock, TempStore};
 use fake::{FakeBackend, Fault};
 use schema::ErrorKind;
@@ -125,7 +137,7 @@ fn start_session(
 fn context<'a>(
     store: &'a SessionStore,
     lock: &'a StoreLock,
-    clock: &'a MonotonicClock,
+    clock: &'a FrozenClock,
     progress: &'a dyn ProgressSink,
 ) -> SweepContext<'a> {
     SweepContext {
@@ -194,7 +206,7 @@ fn a_scripted_session_calibrates_focus_at_the_optimum_the_fixture_declares() {
     let control = slug(FOCUS);
     let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
 
-    let clock = MonotonicClock::new();
+    let clock = FrozenClock;
     let recorder = Recorder::new();
     let outcome = calibrate::run(
         &context(temp.store(), &lock, &clock, &recorder),
@@ -275,7 +287,7 @@ fn the_optimum_wins_and_every_other_sample_loses() {
     let control = slug(FOCUS);
     let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
 
-    let clock = MonotonicClock::new();
+    let clock = FrozenClock;
     calibrate::run(
         &context(temp.store(), &lock, &clock, &engine::progress::Silent),
         &mut session,
@@ -338,7 +350,7 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
     let control = slug(FOCUS);
     let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
 
-    let clock = MonotonicClock::new();
+    let clock = FrozenClock;
     let saboteur = SabotageAfter {
         backend: &backend,
         recorder: Recorder::new(),
@@ -498,7 +510,7 @@ fn a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_aga
     let mut camera = open(&backend);
     let control = slug(FOCUS);
     let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
-    let clock = MonotonicClock::new();
+    let clock = FrozenClock;
 
     // The fault fires inside sample 1 — after `begin_sweep` has committed `Sweeping`, and
     // before any sample exists.
@@ -589,7 +601,7 @@ fn a_refinement_pass_cannot_overwrite_the_frames_the_coarse_pass_scored() {
     let mut camera = open(&backend);
     let control = slug(FOCUS);
     let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
-    let clock = MonotonicClock::new();
+    let clock = FrozenClock;
 
     let coarse = calibrate::run(
         &context(temp.store(), &lock, &clock, &Recorder::new()),
@@ -681,7 +693,7 @@ fn a_session_directory_relocates_as_a_unit_with_every_sample_photo_intact() {
     let control = slug("brightness");
     let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
 
-    let clock = MonotonicClock::new();
+    let clock = FrozenClock;
     calibrate::run(
         &context(temp.store(), &lock, &clock, &engine::progress::Silent),
         &mut session,

@@ -7354,3 +7354,64 @@ as a named, counted refusal rather than as a verdict — or the build root stops
 `tmpfs` sized in the same order as one build tree. Until then, re-read this entry before
 raising `per_job_gib`: the figure and the budget are two different numbers, and conflating
 them is how this happened.
+
+## N67 — The repair N60 scheduled was blocked on a question the broken path never asks, and the defect was wider than the entry that found it
+
+**Doc:** AGENTS' testing rule, which said "settle logic runs on a stepped clock in tests" and
+now names two shapes. Discharges the standing debt N60's last section opened, and the one
+docs/7 bound to the G4 boundary.
+
+**Believed:** that the repair was "a stepped clock on a path where `SteppedClock` is
+deliberately not `Sync` (note N45)" — scoped work, gated on a `Sync` question.
+
+**True:** the `Sync` question never arises on the path that was broken.
+`crates/engine/tests/sweep.rs` and `engine::calibrate`'s own unit tests call `calibrate::run`
+on the test's own thread; nothing crosses a boundary, and `crates/engine/tests/faults.rs` had
+been passing `&SteppedClock::new(0)` on that same path since P3. What those tests need is not
+a clock they *step* — not one of them has anything to say about a duration — but a clock that
+cannot reach the deadline at all. That is a weaker thing and a different type:
+[`engine::settle::FrozenClock`], which holds no state and is therefore `Sync` **by
+construction**, so N45's argument is untouched rather than worked around. N45 forbids sharing
+a clock two threads can *move*; a clock that cannot move shares nothing mutable. The
+alternative — `SteppedClock` with its `Cell` swapped for an atomic — is precisely what N45
+forbids, wearing a different type.
+
+**The defect was wider than the entry that found it.** N60 named two integration tests. Under
+sixty-four spinners the old code fails **six of seventeen** per run, and one of them is
+`engine::calibrate`'s own unit test, at `SettleTimeout { waited_ms: 5030, frames_seen: 7 }`.
+The floor's per-mutant log could only name the test that happened to fail *first*, so the
+scope recorded in N60 was an artefact of which test lost the race. **A determinism defect
+found through a symptom should have its population measured before it is scoped** — the
+population here was ten sites in `calibrate.rs`, six in `tests/sweep.rs`, and one in the
+daemon's `mutating_verbs.rs`, against the two the symptom named.
+
+**Measured.** Fixed: 50 runs, 0 failures (30 at eight spinners, 20 at sixty-four). Unfixed at
+sixty-four: **20 of 20 fail**, carrying N60's exact signature —
+`left: SettleTimeout   right: DeviceGone`.
+
+**Eight spinners does not reproduce it**: 20 unfixed runs, 0 failures. That is N60's own step
+3 repeated with the same result, and it is the half worth writing down — the reproduction
+condition was never CPU contention, it was eight concurrent `cargo` *builds*. A repro recipe
+that under-loads the machine reads as "cannot reproduce", which is how a real defect comes to
+be recorded as a flake.
+
+**The reading is 1, and E7 is why.** `settle.rs` is inside the mutation floor's scope and
+`cargo-mutants` generates exactly one mutant for the impl — `now_ms` replaced by
+`Default::default()`. A frozen clock reading `0` would have *been* that mutant, identically: a
+new survivor with no argument, on the one file whose credibility N60 is about. E7 already
+recorded that a clock stuck at zero left the whole workspace green. The mutant was
+hand-applied and watched dying (`left: 0, right: 1`).
+
+**A caveat N60 did not have to think about:** `FrozenClock` pairs with a *frame-counted*
+settle. `SettleSpec::SkipFrames` converges without consulting the clock; `SettleFor`
+converges by elapsed time and on a frozen clock would run to `MAX_SETTLE_ROUNDS` instead.
+Every site changed here uses `SkipFrames`, and the doc beside the type says so.
+
+**What it does not cover.** `daemon::server`'s `Inner` builds its own `MonotonicClock` and
+`calibrate_sweep` builds another inside the actor closure, so a daemon test that takes a real
+photo still runs its settle on a clock no test can reach — 5 runs at sixty-four spinners, 0
+failures, so it is *exposed* rather than observed. Making it injectable needs a `Send + Sync`
+clock, which `SteppedClock` cannot be and `FrozenClock` already is; that is the shape of the
+next repair, and it is not blocked on N45 either.
+
+**Retires when:** nothing. N60 keeps its last paragraph, as it said it would.

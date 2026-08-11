@@ -7,7 +7,8 @@
 //! Nothing here reads a clock or sleeps. The policy is a fold over `(frame arrived, what
 //! time is it)` and the caller supplies both, which turns "the deadline expired between
 //! these two frames" from a race into an argument. [`SteppedClock`] is the double the
-//! tests drive; [`MonotonicClock`] is what the capture loop uses.
+//! tests drive, [`FrozenClock`] is the one for a test that is not about the deadline at
+//! all, and [`MonotonicClock`] is what the capture loop uses.
 //!
 //! Two rules are load-bearing and easy to get backwards:
 //!
@@ -106,6 +107,58 @@ impl SteppedClock {
 impl Clock for SteppedClock {
     fn now_ms(&self) -> Millis {
         self.now.get()
+    }
+}
+
+/// A clock that cannot move, for a test whose subject is not the deadline.
+///
+/// [`SteppedClock`] is the double for a test *about* the settle deadline: the test moves it,
+/// and the assertion is about what the policy decided on either side of the move. This is
+/// the double for the other kind of test — one that scripts a device and asserts what the
+/// **device** answered. Its reading is a constant, so the deadline is never reached, so
+/// [`SettleDecision::Timeout`] is not an outcome such a test can be handed: the scripted
+/// answer is the only reachable one, however loaded the machine running it.
+///
+/// That is the whole of what this type buys, and it is worth stating as a claim rather than
+/// as a convenience: **a deadline that cannot expire makes "the device answered" the only
+/// outcome the test can observe, so the assertion is about the device and not about the
+/// machine.** Note N60 is the run that priced the alternative — a sweep test scripting a
+/// vanished device, a real clock, eleven frames that arrived under contention *after* the
+/// five-second deadline had passed, and a perfectly correct [`Error::SettleTimeout`] handed
+/// to an assertion expecting `DeviceGone`.
+///
+/// **Not [`SteppedClock`] with the [`Cell`] swapped for an atomic.** That would be a clock
+/// two threads can *move*, which is exactly what note N45's argument forbids — "a stepped
+/// clock shared across threads is a race dressed as a fixture" — wearing a different type.
+/// This holds no state at all: it is `Sync` by construction rather than by synchronisation,
+/// because there is nothing to share and therefore nothing to race. A frozen clock crosses a
+/// thread boundary without touching that argument.
+///
+/// **Pair it with a frame-counted settle.** [`SettleSpec::SkipFrames`] converges by counting
+/// frames and does not consult the clock to do it. [`SettleSpec::SettleFor`] converges by
+/// *elapsed* time, and no time elapses here — such a settle would end at
+/// [`limits::MAX_SETTLE_ROUNDS`] rather than at its spec. A test about a duration wants
+/// [`SteppedClock`], which is what that type is for.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FrozenClock;
+
+impl FrozenClock {
+    /// What it reads, and goes on reading.
+    ///
+    /// *Which* number this is means nothing — only differences are meaningful (see
+    /// [`Millis`]) and every difference this clock can produce is zero. That it is **not
+    /// zero** is a decision, and E7's is the reason: `MonotonicClock::now_ms` replaced by
+    /// `0` "left the whole workspace green", so zero is precisely the reading of a clock
+    /// that has been mutated away. This file is inside the mutation floor's scope
+    /// (`.cargo/mutants.toml`), and a fixture whose reading no test could tell apart from
+    /// that defect would arrive as a survivor with no argument behind it. One is a number
+    /// the assertion below can name.
+    pub const READING: Millis = 1;
+}
+
+impl Clock for FrozenClock {
+    fn now_ms(&self) -> Millis {
+        FrozenClock::READING
     }
 }
 
@@ -392,6 +445,68 @@ mod tests {
         assert_eq!(clock.now_ms(), 750);
         clock.advance(u64::MAX);
         assert_eq!(clock.now_ms(), u64::MAX, "saturating, never wrapping");
+    }
+
+    #[test]
+    fn the_frozen_clock_reads_the_same_number_however_much_real_time_passes() {
+        // The only property the type has, measured against an independent clock so that a
+        // reading which had quietly become a real one is caught here rather than by a
+        // contended integration test six crates away. Spun on rather than slept on, for
+        // the reason `the_monotonic_clock_advances_with_real_time` states (note N3).
+        const OBSERVED: u64 = 5;
+        let clock = FrozenClock;
+        let first = clock.now_ms();
+        let independently = Instant::now();
+        while independently.elapsed() < Duration::from_millis(OBSERVED) {
+            std::hint::spin_loop();
+        }
+        assert_eq!(
+            clock.now_ms(),
+            first,
+            "{OBSERVED} ms of real time passed and a clock that cannot move moved"
+        );
+        assert_eq!(
+            first,
+            FrozenClock::READING,
+            "the reading that constant documents — and the assertion that keeps a frozen \
+             clock distinguishable from E7's stuck one"
+        );
+    }
+
+    #[test]
+    fn a_settle_on_the_frozen_clock_reaches_its_frame_count_past_any_deadline() {
+        // What a test using it buys, as an execution rather than as prose: a one-
+        // millisecond deadline — shorter than any machine could keep — and the settle
+        // still converges on its frames, because the deadline it is checked against never
+        // arrives. On any moving clock this is a `Timeout` on frame one.
+        let clock = FrozenClock;
+        let mut state = SettlePolicyState::new(skip_frames(10, 1), clock.now_ms());
+        for skipped in 1..=10 {
+            assert_eq!(
+                state.on_frame(clock.now_ms()),
+                SettleDecision::Skip,
+                "frame {skipped}"
+            );
+        }
+        assert_eq!(state.on_frame(clock.now_ms()), SettleDecision::Take);
+    }
+
+    #[test]
+    fn the_frozen_clock_crosses_a_thread_boundary_where_the_stepped_one_cannot() {
+        // Note N45's argument is about a clock two threads can *move*. This one has nothing
+        // to move, so it is `Sync` by construction — and the claim is made by a second
+        // thread that actually reads it, because a `Sync` a comment asserts is a `Sync`
+        // nothing checks. The same body over a `SteppedClock` does not compile, which is
+        // the difference the two types exist to keep.
+        let clock = FrozenClock;
+        let shared = &clock;
+        let elsewhere = std::thread::scope(|scope| {
+            scope
+                .spawn(move || shared.now_ms())
+                .join()
+                .expect("a reading cannot panic")
+        });
+        assert_eq!(elsewhere, clock.now_ms(), "two threads, two answers");
     }
 
     #[test]
