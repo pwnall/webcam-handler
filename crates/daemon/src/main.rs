@@ -113,10 +113,10 @@ use daemon::shutdown::{self, Notifying, Shutdown, Signals};
 use daemon::state::OwnedState;
 use daemon::systemd::{self, Activation, Supervisor};
 use daemon::uds::{self, SocketDir};
-use engine::paths::SystemEnv;
 use engine::store::SessionStore;
 use schema::Result;
 use schema::backend::{BackendKind, CameraBackend};
+use schema::paths::SystemEnv;
 
 /// Serve webcam-handler over a Unix socket (design D10, D11).
 #[derive(Debug, Parser)]

@@ -104,7 +104,6 @@
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use engine::paths::Env;
 use engine::store::{LockProtocol, StoreLock};
 use jsonrpsee_server::{
     BatchRequestConfig, Methods, Server, ServerConfig, ServerHandle, stop_channel,
@@ -113,6 +112,7 @@ use rustix::fs::{AtFlags, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use schema::limits;
+use schema::paths::Env;
 use schema::{Error, Result};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -175,7 +175,7 @@ impl SocketDir {
     /// Resolve `$XDG_RUNTIME_DIR/webcam-handler`, create it 0700, and **assert the mode
     /// that came back**.
     ///
-    /// The environment arrives as a parameter for `engine::paths`'s reason: reading it
+    /// The environment arrives as a parameter for `schema::paths`'s reason: reading it
     /// from the process would make the daemon's own tests serialize against every other
     /// test in the binary, because `std::env::set_var` is a data race and `unsafe` in
     /// Rust 2024.
@@ -237,15 +237,15 @@ impl SocketDir {
     /// # Errors
     ///
     /// [`Error::StorageIo`] when `$XDG_RUNTIME_DIR` is unset, empty or relative (that
-    /// refusal is `engine::paths`'s and names the variable), when it does not exist or is
+    /// refusal is `schema::paths`'s and names the variable), when it does not exist or is
     /// not a directory, when the socket directory cannot be created or opened, when it is a
     /// symlink or not a directory, when its mode is not [`SOCKET_DIR_MODE`], or when it is
     /// owned by somebody other than this process's effective user.
     pub fn prepare(env: &dyn Env) -> Result<SocketDir> {
-        let path = engine::paths::runtime_dir(env)?;
+        let path = schema::paths::runtime_dir(env)?;
         // Split into "the directory the platform promised" and "the one component this
-        // daemon owns", both off the one path `engine::paths` composed, so neither is a
-        // second spelling of `engine::paths::APP_DIR`. A path with no final component is
+        // daemon owns", both off the one path `schema::paths` composed, so neither is a
+        // second spelling of `schema::paths::APP_DIR`. A path with no final component is
         // not something `runtime_dir` can produce — it joins `APP_DIR` — so the refusal
         // below is unreachable rather than defensive, and it is written as a refusal
         // instead of an `unwrap` because a panic in the composition root is a daemon that
@@ -1013,10 +1013,11 @@ mod tests {
     // code under test uses would let a shared misreading of `st_mode` pass twice.
     use std::os::unix::fs::PermissionsExt;
 
-    use engine::paths::{MapEnv, TempRuntimeDir};
+    use engine::paths::TempRuntimeDir;
     use engine::store::TempStore;
     use jsonrpsee_server::RpcModule;
     use schema::ErrorKind;
+    use schema::paths::MapEnv;
 
     use super::*;
     // The one writer this crate's tests read a `tracing` line back through; `crate::logging`
@@ -1175,7 +1176,7 @@ mod tests {
 
     #[test]
     fn a_runtime_directory_the_platform_did_not_make_is_refused_rather_than_created() {
-        // `engine::paths::runtime_dir`'s doc says the socket doctrine "rests on the
+        // `schema::paths::runtime_dir`'s doc says the socket doctrine "rests on the
         // promise" that `$XDG_RUNTIME_DIR` is per-user, 0700 and cleaned at logout, and
         // that a missing one "means the process is not in a login session, which the
         // operator needs to be told rather than worked around". A recursive create is
@@ -1388,7 +1389,7 @@ mod tests {
 
     #[test]
     fn without_a_runtime_directory_variable_there_is_no_socket_directory() {
-        // `engine::paths` owns this refusal; the assertion here is that the daemon asks
+        // `schema::paths` owns this refusal; the assertion here is that the daemon asks
         // it rather than inventing a `/tmp` fallback of its own.
         let err = SocketDir::prepare(&MapEnv::empty()).expect_err("nothing is set");
         assert_eq!(err.kind(), ErrorKind::StorageIo);

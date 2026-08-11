@@ -36,8 +36,8 @@
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use engine::paths::MapEnv;
 use engine::store::{LockProtocol, SessionStore, StoreLock};
+use schema::paths::MapEnv;
 use serde_json::{Map, Value};
 
 /// The `wch` binary this test drives, built by cargo alongside it.

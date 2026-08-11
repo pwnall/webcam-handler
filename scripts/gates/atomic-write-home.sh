@@ -39,8 +39,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 root="$(gate_root)"
 
 # What "reaching for the state directory" looks like in this codebase (note N2: the two
-# XDG paths are resolved by `webcam-handler-engine::paths`, not by a crate; D9 fixes the
-# session tree's file names, and `schema::limits` is where they are spelled).
+# XDG paths are resolved by this workspace rather than by a path crate — the state half in
+# `webcam-handler-engine::paths`, the runtime half in `webcam-handler-schema::paths`, split
+# because only the state half is a storage fact; D9 fixes the session tree's file names,
+# and `schema::limits` is where they are spelled).
 #
 # `write_json_atomic` is deliberately NOT in this pattern, and the first run of the
 # widened gate is why: `engine::photo` names it in a doc comment explaining why a photo is

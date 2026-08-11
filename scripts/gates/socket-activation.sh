@@ -58,11 +58,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 root="$(gate_root)"
 
 # Where the daemon's socket goes, derived from the two crates that own the names —
-# `engine::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE`. This gate has to compose
+# `schema::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE`. This gate has to compose
 # the path it asks systemd to bind, and transcribing either name would let a rename drift the
 # gate away from the daemon silently (docs/9's derived-population rule).
 app_dir="$(sed -n 's/^pub const APP_DIR: &str = "\([^"]*\)".*/\1/p' \
-    "$root/crates/engine/src/paths.rs" | head -n1)"
+    "$root/crates/schema/src/paths.rs" | head -n1)"
 socket_file="$(sed -n 's/^pub const DAEMON_SOCKET_FILE: &str = "\([^"]*\)".*/\1/p' \
     "$root/crates/schema/src/limits.rs" | head -n1)"
 

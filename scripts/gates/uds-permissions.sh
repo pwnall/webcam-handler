@@ -55,12 +55,12 @@ root="$(gate_root)"
 wanted_mode=700
 
 # Where the daemon puts its socket, derived from the two crates that own the names —
-# `engine::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE`. Transcribing either
+# `schema::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE`. Transcribing either
 # would let a rename drift the gate away from the daemon silently (docs/9's derived-
 # population rule), and this gate has to know the path in order to recognise the line the
 # daemon logs when it starts serving.
 app_dir="$(sed -n 's/^pub const APP_DIR: &str = "\([^"]*\)".*/\1/p' \
-    "$root/crates/engine/src/paths.rs" | head -n1)"
+    "$root/crates/schema/src/paths.rs" | head -n1)"
 socket_file="$(sed -n 's/^pub const DAEMON_SOCKET_FILE: &str = "\([^"]*\)".*/\1/p' \
     "$root/crates/schema/src/limits.rs" | head -n1)"
 

@@ -49,6 +49,7 @@ use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::vocabulary::closed_vocabulary;
 
 // The wire and the command line name the same session and the same selection, so they are
 // one type in the schema rather than two that drift (design §2.10). Re-exported rather
@@ -108,9 +109,86 @@ mod photograph {
 
 pub use render::{Bar, Output, Quiet, Stream};
 
+closed_vocabulary! {
+    /// Which root is running the one command surface.
+    ///
+    /// The surface is shared and the *name* is not: `wch --help`, `wch --version` and the
+    /// line a failed `wch` prints all say `wch`, and the identical run of `wchc` has to say
+    /// `wchc`. The naive way to get that is a second `#[command(name = …)]` on a second
+    /// root type, which is the one thing T4 forbids — a verb would then exist twice, and
+    /// the P4f parity gate scrapes `--help` for its verb population, so a forked tree would
+    /// be a gate that compares a surface with itself.
+    ///
+    /// So the name is a **parameter of the parse** rather than a property of the tree.
+    /// [`Cli::try_parse_checked_from`] takes one of these and renames the built
+    /// [`clap::Command`]; nothing below this line knows which binary it is in. The
+    /// vocabulary is closed and generated (rubric rule 6, [`schema::vocabulary`]), so
+    /// `ALL` cannot drift from the type and a third root would have to be named here to
+    /// exist at all.
+    ///
+    /// It carries the error prefix too ([`Program::error_line`]), because that is the same
+    /// question wearing a different hat: `wch: {error}` and `wchc: {error}` are one format
+    /// with one variable in it, and two roots each holding their own `format!` is the
+    /// second copy design §2.10 is about.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Program {
+        /// `wch` — the direct CLI, driving a backend in-process.
+        Wch,
+        /// `wchc` — the daemon client, driving `wchd` over the T5 wire.
+        Wchc,
+    }
+}
+
+impl Program {
+    /// The name this program answers to.
+    ///
+    /// One string per root, and this is the only place either of them is spelled: clap's
+    /// usage line takes it from `argv[0]` at run time, but `--version` and any error
+    /// rendered off a freshly built command tree take it from the tree's own name, which
+    /// is what [`Program::command`] sets.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Program::Wch => "wch",
+            Program::Wchc => "wchc",
+        }
+    }
+
+    /// The shared command tree, wearing this program's name.
+    ///
+    /// The tree is [`Cli`]'s — one surface, built once — and the rename is the whole of
+    /// the difference between the two binaries' help output. `Cli` therefore carries no
+    /// `#[command(name = …)]` of its own: a default name on the derive would be a second
+    /// answer that a caller reaching for [`clap::Parser::parse`] could get by accident,
+    /// and it would be `wch`'s name in `wchc`'s mouth.
+    #[must_use]
+    pub fn command(self) -> clap::Command {
+        use clap::CommandFactory as _;
+
+        Cli::command().name(self.as_str())
+    }
+
+    /// The one line a root writes to standard error when a verb fails.
+    ///
+    /// Here rather than in each `main` so the two roots cannot disagree about the shape of
+    /// a failure. The typed error renders itself (D13); this adds only the name of the
+    /// program that met it, which is what tells an operator with both binaries in a script
+    /// which half of the pair refused.
+    #[must_use]
+    pub fn error_line(self, error: &Error) -> String {
+        format!("{self}: {error}")
+    }
+}
+
+impl std::fmt::Display for Program {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Drive V4L2 webcams: enumerate, inspect, and capture device profiles.
 #[derive(Debug, Parser)]
-#[command(name = "wch", version, about, long_about = None)]
+#[command(version, about, long_about = None)]
 pub struct Cli {
     /// Emit the schema document for this verb instead of a table.
     #[arg(long, global = true)]
@@ -145,9 +223,12 @@ impl Cli {
     /// Exits the way clap exits, which is the point: a usage mistake leaves code 2 and a
     /// device refusal leaves code 1, and a script deciding whether to retry needs them
     /// apart.
+    ///
+    /// `program` is the root doing the parsing, and it is an argument rather than a
+    /// constant because the tree is shared — see [`Program`].
     #[must_use]
-    pub fn parse_checked() -> Cli {
-        match Cli::try_parse_checked_from(std::env::args_os()) {
+    pub fn parse_checked(program: Program) -> Cli {
+        match Cli::try_parse_checked_from(program, std::env::args_os()) {
             Ok(cli) => cli,
             Err(error) => error.exit(),
         }
@@ -155,16 +236,32 @@ impl Cli {
 
     /// [`Cli::parse_checked`] over an explicit argument list, for tests.
     ///
+    /// Built from [`Program::command`] rather than from clap's derived
+    /// [`clap::Parser::try_parse_from`], which is what makes the program name reach the
+    /// help, the version line and the usage line of every error raised below: those come
+    /// from the *tree*, and `try_parse_from` would build an unnamed one.
+    ///
     /// # Errors
     ///
     /// clap's own error, for a parse failure or for one of the cross-argument rules.
-    pub fn try_parse_checked_from<I, T>(args: I) -> std::result::Result<Cli, clap::Error>
+    pub fn try_parse_checked_from<I, T>(
+        program: Program,
+        args: I,
+    ) -> std::result::Result<Cli, clap::Error>
     where
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let cli = Cli::try_parse_from(args)?;
-        cli.check()?;
+        use clap::FromArgMatches as _;
+
+        let mut command = program.command();
+        let mut matches = command.try_get_matches_from_mut(args)?;
+        // What clap's own `try_parse_from` does with the error, and the reason this is not
+        // a bare `?`: an unformatted `FromArgMatches` error renders without the usage
+        // block, so the program name would go missing on exactly the path that names it.
+        let cli =
+            Cli::from_arg_matches_mut(&mut matches).map_err(|error| error.format(&mut command))?;
+        cli.check(program)?;
         Ok(cli)
     }
 
@@ -175,13 +272,15 @@ impl Cli {
     /// command that declares it, and a subcommand cannot name a flag defined on the root.
     /// Written out rather than worked around, so the rule is visible and so the refusal is
     /// still a usage error rather than a device one.
-    fn check(&self) -> std::result::Result<(), clap::Error> {
-        use clap::CommandFactory as _;
-
+    ///
+    /// It builds the tree through `program` for the same reason the parse does: a refusal
+    /// whose usage block named the other binary would send an operator to the wrong
+    /// `--help`.
+    fn check(&self, program: Program) -> std::result::Result<(), clap::Error> {
         if self.json
             && let Command::Photo { out: None, .. } = &self.command
         {
-            return Err(Cli::command().error(
+            return Err(program.command().error(
                 clap::error::ErrorKind::MissingRequiredArgument,
                 "photo --json needs --out <PATH>: with no path the photo's bytes are \
                  standard output, and the JSON document cannot share it",
@@ -1450,7 +1549,6 @@ pub fn exit_code(_error: &Error) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory as _;
     use schema::control::ControlValue;
 
     use super::*;
@@ -1458,8 +1556,75 @@ mod tests {
     #[test]
     fn the_command_tree_is_well_formed() {
         // clap's own consistency check: duplicate arguments, conflicting shorts, and
-        // malformed help all fail here rather than at somebody's first invocation.
-        Cli::command().debug_assert();
+        // malformed help all fail here rather than at somebody's first invocation. Run
+        // per root, over the generated `ALL` rather than a hand list, because the tree a
+        // binary actually parses with is the renamed one.
+        for &program in Program::ALL {
+            program.command().debug_assert();
+        }
+    }
+
+    #[test]
+    fn each_root_announces_its_own_name_over_the_one_shared_tree() {
+        // The property T4 needs and the parity gate rests on: one surface, two names. If
+        // the name were a property of the tree instead of the parse, `wchc --help` would
+        // announce `wch` and the P4f gate would be scraping a verb population from a
+        // binary that had told it the wrong story about which binary it was.
+        //
+        // Every assertion is anchored rather than a `contains`, because `wch` is a prefix
+        // of `wchc`: an unanchored membership test would pass for `Wch` over `wchc`'s
+        // output and the arm that matters would never go red.
+        let mut verbs: Option<Vec<String>> = None;
+        for &program in Program::ALL {
+            let command = program.command();
+            assert_eq!(command.get_name(), program.as_str());
+
+            let version = command.clone().render_version();
+            assert!(
+                version.starts_with(&format!("{} ", program.as_str())),
+                "{program}: {version}"
+            );
+
+            // The usage block of a refusal raised off a freshly built tree — the shape
+            // `Cli::check` produces — carries the name too, so an operator sent to
+            // `--help` is sent to the right one.
+            let usage = command.clone().render_usage().to_string();
+            assert!(
+                usage.starts_with(&format!("Usage: {} ", program.as_str())),
+                "{program}: {usage}"
+            );
+
+            // And it is the *same* surface underneath: the P4f parity gate derives its
+            // verb population by scraping `--help`, so a tree that had been forked to get
+            // the name would show up here before it showed up there.
+            let offered: Vec<String> = command
+                .get_subcommands()
+                .map(|sub| sub.get_name().to_owned())
+                .collect();
+            assert!(offered.len() > 1, "{program}: {offered:?}");
+            match &verbs {
+                None => verbs = Some(offered),
+                Some(first) => assert_eq!(first, &offered, "{program} offers other verbs"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_error_line_names_the_program_that_met_the_error() {
+        // One format, one variable. The two roots print failures through this rather than
+        // each holding a `format!`, so `wchc`'s prefix cannot drift from `wch`'s shape.
+        let error = Error::Busy {
+            path: "/dev/video0".into(),
+            holders: Vec::new(),
+        };
+        for &program in Program::ALL {
+            let line = program.error_line(&error);
+            assert!(
+                line.starts_with(&format!("{}: ", program.as_str())),
+                "{line}"
+            );
+            assert!(line.contains(&error.to_string()), "{line}");
+        }
     }
 
     #[test]
@@ -1660,7 +1825,7 @@ mod tests {
         // Without `-o`, the photo's bytes *are* standard output. Emitting a JSON document
         // there too would produce a file that is neither. clap refuses it, so the answer
         // is a usage error rather than a corrupt image.
-        let error = Cli::try_parse_checked_from(["wch", "--json", "photo", "cam:x"])
+        let error = Cli::try_parse_checked_from(Program::Wch, ["wch", "--json", "photo", "cam:x"])
             .expect_err("--json without -o must not parse");
         assert_eq!(
             error.kind(),
@@ -1670,12 +1835,16 @@ mod tests {
 
         // Both halves of the inverse: `-o` with `--json`, and no `--json` without `-o`.
         assert!(
-            Cli::try_parse_checked_from(["wch", "--json", "photo", "cam:x", "-o", "a.jpg"]).is_ok()
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                ["wch", "--json", "photo", "cam:x", "-o", "a.jpg"]
+            )
+            .is_ok()
         );
-        assert!(Cli::try_parse_checked_from(["wch", "photo", "cam:x"]).is_ok());
+        assert!(Cli::try_parse_checked_from(Program::Wch, ["wch", "photo", "cam:x"]).is_ok());
         // And the rule is about `photo` alone: every other verb answers in JSON with no
         // path at all, which is the whole point of `--json`.
-        assert!(Cli::try_parse_checked_from(["wch", "--json", "list"]).is_ok());
+        assert!(Cli::try_parse_checked_from(Program::Wch, ["wch", "--json", "list"]).is_ok());
     }
 
     #[test]
@@ -1810,20 +1979,23 @@ mod tests {
 
     #[test]
     fn the_calibrate_verbs_parse_the_way_the_agent_guide_will_teach_them() {
-        let cli = Cli::try_parse_checked_from([
-            "wch",
-            "calibrate",
-            "start",
-            "cam:obsbot",
-            "--task",
-            "read text from the DUT display",
-            "--goal",
-            "legible text",
-            "--criterion",
-            "text clarity",
-            "--criterion",
-            "colour accuracy",
-        ])
+        let cli = Cli::try_parse_checked_from(
+            Program::Wch,
+            [
+                "wch",
+                "calibrate",
+                "start",
+                "cam:obsbot",
+                "--task",
+                "read text from the DUT display",
+                "--goal",
+                "legible text",
+                "--criterion",
+                "text clarity",
+                "--criterion",
+                "colour accuracy",
+            ],
+        )
         .expect("parses");
         let Command::Calibrate(CalibrateCommand::Start {
             task,
@@ -1839,15 +2011,18 @@ mod tests {
         // Ordered, because D8 says the criteria are ranked and the *selector* reads them.
         assert_eq!(criteria, &["text clarity", "colour accuracy"]);
 
-        let cli = Cli::try_parse_checked_from([
-            "wch",
-            "calibrate",
-            "apply",
-            "cam:obsbot",
-            "--task",
-            "focus",
-            "--partial",
-        ])
+        let cli = Cli::try_parse_checked_from(
+            Program::Wch,
+            [
+                "wch",
+                "calibrate",
+                "apply",
+                "cam:obsbot",
+                "--task",
+                "focus",
+                "--partial",
+            ],
+        )
         .expect("parses");
         let Command::Calibrate(CalibrateCommand::Apply { partial, which, .. }) = &cli.command
         else {
@@ -1862,9 +2037,11 @@ mod tests {
         );
 
         // `--partial` is opt-in: without it the D8 gate is the one that answers.
-        let cli =
-            Cli::try_parse_checked_from(["wch", "calibrate", "apply", "cam:obsbot", "--task", "f"])
-                .expect("parses");
+        let cli = Cli::try_parse_checked_from(
+            Program::Wch,
+            ["wch", "calibrate", "apply", "cam:obsbot", "--task", "f"],
+        )
+        .expect("parses");
         let Command::Calibrate(CalibrateCommand::Apply { partial, .. }) = &cli.command else {
             panic!("expected calibrate apply");
         };
@@ -1873,14 +2050,17 @@ mod tests {
         // `restore` — the eighth verb — names a session the two ordinary ways and takes no
         // other argument: it puts the camera back where *that session* found it, and there
         // is nothing to choose (note N23).
-        let cli = Cli::try_parse_checked_from([
-            "wch",
-            "calibrate",
-            "restore",
-            "cam:obsbot",
-            "--task",
-            "focus",
-        ])
+        let cli = Cli::try_parse_checked_from(
+            Program::Wch,
+            [
+                "wch",
+                "calibrate",
+                "restore",
+                "cam:obsbot",
+                "--task",
+                "focus",
+            ],
+        )
         .expect("parses");
         let Command::Calibrate(CalibrateCommand::Restore { which, .. }) = &cli.command else {
             panic!("expected calibrate restore");
@@ -1893,11 +2073,16 @@ mod tests {
         );
         // …and it needs one, like every other session verb.
         assert!(
-            Cli::try_parse_checked_from(["wch", "calibrate", "restore", "cam:obsbot"]).is_err()
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                ["wch", "calibrate", "restore", "cam:obsbot"]
+            )
+            .is_err()
         );
 
         // `list` takes an optional camera: every session on the machine, or one camera's.
-        let cli = Cli::try_parse_checked_from(["wch", "calibrate", "list"]).expect("parses");
+        let cli = Cli::try_parse_checked_from(Program::Wch, ["wch", "calibrate", "list"])
+            .expect("parses");
         assert!(matches!(
             cli.command,
             Command::Calibrate(CalibrateCommand::List { camera: None })
@@ -1918,6 +2103,7 @@ mod tests {
             ["--values", "-108000,0,108000"].as_slice(),
         ] {
             let cli = Cli::try_parse_checked_from(
+                Program::Wch,
                 [
                     "wch",
                     "calibrate",
@@ -1952,6 +2138,7 @@ mod tests {
             ["--value", "-3600", "--by", "agent"].as_slice(),
         ] {
             let cli = Cli::try_parse_checked_from(
+                Program::Wch,
                 ["wch", "calibrate", "select", "cam:obsbot", "pan_absolute"]
                     .iter()
                     .copied()
@@ -1976,9 +2163,11 @@ mod tests {
     #[test]
     fn a_session_is_named_by_task_or_by_id_and_never_by_neither_or_both() {
         let id = "019fd0f0-0000-7000-8000-000000000001";
-        let cli =
-            Cli::try_parse_checked_from(["wch", "calibrate", "status", "cam:x", "--session", id])
-                .expect("parses");
+        let cli = Cli::try_parse_checked_from(
+            Program::Wch,
+            ["wch", "calibrate", "status", "cam:x", "--session", id],
+        )
+        .expect("parses");
         let Command::Calibrate(CalibrateCommand::Status { which, .. }) = &cli.command else {
             panic!("expected calibrate status");
         };
@@ -1991,30 +2180,39 @@ mod tests {
 
         // Neither, and both: usage errors, because the tool cannot guess which session is
         // meant and must not pick one.
-        assert!(Cli::try_parse_checked_from(["wch", "calibrate", "status", "cam:x"]).is_err());
         assert!(
-            Cli::try_parse_checked_from([
-                "wch",
-                "calibrate",
-                "status",
-                "cam:x",
-                "--task",
-                "t",
-                "--session",
-                id,
-            ])
+            Cli::try_parse_checked_from(Program::Wch, ["wch", "calibrate", "status", "cam:x"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                [
+                    "wch",
+                    "calibrate",
+                    "status",
+                    "cam:x",
+                    "--task",
+                    "t",
+                    "--session",
+                    id,
+                ]
+            )
             .is_err()
         );
         // And a UUID that is not one is refused at parse time rather than looked up.
         assert!(
-            Cli::try_parse_checked_from([
-                "wch",
-                "calibrate",
-                "status",
-                "cam:x",
-                "--session",
-                "the-one-from-yesterday",
-            ])
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                [
+                    "wch",
+                    "calibrate",
+                    "status",
+                    "cam:x",
+                    "--session",
+                    "the-one-from-yesterday",
+                ]
+            )
             .is_err()
         );
     }
@@ -2032,7 +2230,7 @@ mod tests {
                 "focus_absolute",
             ];
             argv.extend_from_slice(args);
-            let cli = Cli::try_parse_checked_from(argv).expect("parses");
+            let cli = Cli::try_parse_checked_from(Program::Wch, argv).expect("parses");
             let Command::Calibrate(CalibrateCommand::Sweep { plan, .. }) = &cli.command else {
                 panic!("expected calibrate sweep");
             };
@@ -2052,46 +2250,55 @@ mod tests {
         // big it is or it does not run. Both failure directions — none of the four, and
         // two of them.
         assert!(
-            Cli::try_parse_checked_from([
-                "wch",
-                "calibrate",
-                "sweep",
-                "cam:x",
-                "--task",
-                "t",
-                "focus_absolute",
-            ])
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                [
+                    "wch",
+                    "calibrate",
+                    "sweep",
+                    "cam:x",
+                    "--task",
+                    "t",
+                    "focus_absolute",
+                ]
+            )
             .is_err()
         );
         assert!(
-            Cli::try_parse_checked_from([
-                "wch",
-                "calibrate",
-                "sweep",
-                "cam:x",
-                "--task",
-                "t",
-                "focus_absolute",
-                "--all",
-                "--step",
-                "4",
-            ])
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                [
+                    "wch",
+                    "calibrate",
+                    "sweep",
+                    "cam:x",
+                    "--task",
+                    "t",
+                    "focus_absolute",
+                    "--all",
+                    "--step",
+                    "4",
+                ]
+            )
             .is_err()
         );
 
         // Motion is never implicit (design §5), and the flag is what makes it explicit.
-        let cli = Cli::try_parse_checked_from([
-            "wch",
-            "calibrate",
-            "sweep",
-            "cam:x",
-            "--task",
-            "t",
-            "pan_absolute",
-            "--step",
-            "3600",
-            "--allow-motion",
-        ])
+        let cli = Cli::try_parse_checked_from(
+            Program::Wch,
+            [
+                "wch",
+                "calibrate",
+                "sweep",
+                "cam:x",
+                "--task",
+                "t",
+                "pan_absolute",
+                "--step",
+                "3600",
+                "--allow-motion",
+            ],
+        )
         .expect("parses");
         let Command::Calibrate(CalibrateCommand::Sweep {
             allow_motion,
@@ -2120,7 +2327,7 @@ mod tests {
                 "focus_absolute",
             ];
             argv.extend_from_slice(args);
-            let cli = Cli::try_parse_checked_from(argv).expect("parses");
+            let cli = Cli::try_parse_checked_from(Program::Wch, argv).expect("parses");
             let Command::Calibrate(CalibrateCommand::Select { by, .. }) = &cli.command else {
                 panic!("expected calibrate select");
             };
@@ -2150,17 +2357,20 @@ mod tests {
         // A value with nobody claiming it would record a calibration whose selector was
         // invented, which is the one thing D8's selector field exists to prevent.
         assert!(
-            Cli::try_parse_checked_from([
-                "wch",
-                "calibrate",
-                "select",
-                "cam:x",
-                "--task",
-                "t",
-                "focus_absolute",
-                "--value",
-                "512",
-            ])
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                [
+                    "wch",
+                    "calibrate",
+                    "select",
+                    "cam:x",
+                    "--task",
+                    "t",
+                    "focus_absolute",
+                    "--value",
+                    "512",
+                ]
+            )
             .is_err()
         );
         // Nor may a caller *claim* to be a metric: that is something the tool computes.
@@ -2199,7 +2409,30 @@ mod tests {
         }
         // A metric and a value together is two answers to one question.
         assert!(
-            Cli::try_parse_checked_from([
+            Cli::try_parse_checked_from(
+                Program::Wch,
+                [
+                    "wch",
+                    "calibrate",
+                    "select",
+                    "cam:x",
+                    "--task",
+                    "t",
+                    "focus_absolute",
+                    "--metric",
+                    "sharpness",
+                    "--value",
+                    "512",
+                    "--by",
+                    "human",
+                ]
+            )
+            .is_err()
+        );
+        // And a metric this build does not compute is refused naming the ones it does.
+        let error = Cli::try_parse_checked_from(
+            Program::Wch,
+            [
                 "wch",
                 "calibrate",
                 "select",
@@ -2208,26 +2441,9 @@ mod tests {
                 "t",
                 "focus_absolute",
                 "--metric",
-                "sharpness",
-                "--value",
-                "512",
-                "--by",
-                "human",
-            ])
-            .is_err()
-        );
-        // And a metric this build does not compute is refused naming the ones it does.
-        let error = Cli::try_parse_checked_from([
-            "wch",
-            "calibrate",
-            "select",
-            "cam:x",
-            "--task",
-            "t",
-            "focus_absolute",
-            "--metric",
-            "vibes",
-        ])
+                "vibes",
+            ],
+        )
         .expect_err("vibes is not a metric");
         for &metric in MetricName::ALL {
             assert!(error.to_string().contains(metric.as_str()), "{error}");

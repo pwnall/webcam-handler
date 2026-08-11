@@ -310,7 +310,7 @@ impl Activation {
     /// reads them — the protocol says a process must not let a child re-adopt its
     /// descriptors — and removing a variable is a write to the process environment. Doing it
     /// as the daemon's first act keeps that write as far away as this design can get it from
-    /// the reads `engine::paths` makes a few lines later, and from every thread the runtime
+    /// the reads `schema::paths` makes a few lines later, and from every thread the runtime
     /// will eventually be running. It is a residual rather than a solved problem: the tokio
     /// worker threads already exist by the time `main`'s body runs, and the only shape that
     /// would remove the write entirely is reading `/proc/self/environ`, i.e. reimplementing

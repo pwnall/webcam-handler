@@ -9,13 +9,13 @@
 //! policy's deadline is an argument, the pairing planner's device state is a slice of
 //! [`schema::ControlDesc`], and the session state machine's "now" arrives as a
 //! [`schema::Stamp`]. Where a seam is unavoidable it is a trait with a real
-//! implementation and a scriptable double in the same module ([`paths::Env`],
+//! implementation and a scriptable double in the same module ([`schema::paths::Env`],
 //! [`settle::Clock`]).
 //!
 //! | Module | Home of |
 //! |---|---|
 //! | [`actor`] | one blocking thread per open camera, and the registry that keeps it one (D12) |
-//! | [`paths`] | the two XDG directories, ours because `directories` is banned (note N2) |
+//! | [`paths`] | D9's state directory, ours because `directories` is banned (note N2); the runtime half is [`schema::paths`] |
 //! | [`pairing`] | the guarded-write planner and its inverse validator (D3) |
 //! | [`settle`] | the settle policy state machine (D5) |
 //! | [`sweep`] | the sweep planner (D8) |

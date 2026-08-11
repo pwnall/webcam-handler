@@ -41,9 +41,9 @@
 
 use std::sync::Arc;
 
-use engine::paths::Env;
 use engine::store::{LockProtocol, SessionStore, StoreLock};
 use schema::Result;
+use schema::paths::Env;
 
 /// The state directory this process owns, and the lock that says so.
 ///
@@ -72,7 +72,7 @@ pub struct OwnedState {
 impl OwnedState {
     /// Take D9's lock for this process's lifetime.
     ///
-    /// The environment arrives as a parameter for `engine::paths`'s reason — the process
+    /// The environment arrives as a parameter for `schema::paths`'s reason — the process
     /// environment cannot be mutated in-process without `unsafe` in Rust 2024, so a daemon
     /// that read `std::env` directly could not be tested against a state directory of the
     /// test's choosing, and could not be tested in parallel with anything.
@@ -133,9 +133,9 @@ impl OwnedState {
 
 #[cfg(test)]
 mod tests {
-    use engine::paths::MapEnv;
     use engine::store::TempStore;
     use schema::error::Error;
+    use schema::paths::MapEnv;
     use schema::{ErrorKind, Result};
 
     use super::*;

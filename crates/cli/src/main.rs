@@ -21,7 +21,9 @@
 
 use std::process::ExitCode;
 
-use cli_core::{Cli, Executor, Output, Photograph, Selection, SessionRef, Stream, SweepWatcher};
+use cli_core::{
+    Cli, Executor, Output, Photograph, Program, Selection, SessionRef, Stream, SweepWatcher,
+};
 use engine::calibrate::{SweepContext, SweepRequest};
 use engine::lifecycle::{self, SessionSpec};
 use engine::store::SessionStore;
@@ -38,8 +40,16 @@ use schema::session::{Session, SessionList, SessionStatus};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::time::Stamp;
 
+/// Which root this is.
+///
+/// The command surface is shared with `wchc` (T4), so the name is a parameter rather than
+/// a property of the tree — see [`Program`]. One value, read by both edges of this process
+/// that have to say it: the parser that renders `--help` and `--version`, and the lines a
+/// failing run writes to standard error.
+const PROGRAM: Program = Program::Wch;
+
 fn main() -> ExitCode {
-    let cli = Cli::parse_checked();
+    let cli = Cli::parse_checked(PROGRAM);
     let mut out = Output::process();
 
     match run(&cli, &mut out) {
@@ -48,7 +58,7 @@ fn main() -> ExitCode {
             // The typed error, rendered once. `--json` consumers get the same information
             // as the document they asked for, so a failure there is still a parse failure
             // for them — which is correct: there is no answer.
-            let _ = out.line(Stream::Stderr, &format!("wch: {error}"));
+            let _ = out.line(Stream::Stderr, &PROGRAM.error_line(&error));
             ExitCode::from(cli_core::exit_code(&error))
         }
     }
@@ -124,7 +134,7 @@ impl InProcess {
 impl InProcess {
     /// The session store under this process's XDG state directory (note N2).
     fn store(&self) -> Result<SessionStore> {
-        SessionStore::from_env(&engine::paths::SystemEnv)
+        SessionStore::from_env(&schema::paths::SystemEnv)
     }
 }
 
@@ -159,7 +169,7 @@ impl engine::progress::ProgressSink for Watched<'_> {
 /// [`engine::discover::Discovery`] the session probe returned.
 fn report_probe(skipped: &[ProbeSkip], restored: &RestoreReport) {
     for skip in skipped {
-        eprintln!("wch: did not probe {}: {}", skip.control, skip.reason);
+        eprintln!("{PROGRAM}: did not probe {}: {}", skip.control, skip.reason);
     }
     if !restored.is_complete() {
         let stuck: Vec<String> = restored
@@ -168,7 +178,7 @@ fn report_probe(skipped: &[ProbeSkip], restored: &RestoreReport) {
             .map(ToString::to_string)
             .collect();
         eprintln!(
-            "wch: the probe could not put {} control(s) back: {}",
+            "{PROGRAM}: the probe could not put {} control(s) back: {}",
             stuck.len(),
             stuck.join(", ")
         );

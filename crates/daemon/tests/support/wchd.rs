@@ -37,8 +37,9 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStderr, Command, Stdio};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use engine::paths::{MapEnv, TempRuntimeDir};
+use engine::paths::TempRuntimeDir;
 use engine::store::TempStore;
+use schema::paths::MapEnv;
 
 /// A private pair of XDG directories, thrown away with the value.
 ///
@@ -75,12 +76,12 @@ impl Scratch {
     /// The socket a `wchd` started here would bind.
     ///
     /// Composed from the same two homes the daemon composes it from —
-    /// `engine::paths::runtime_dir` and `schema::limits::DAEMON_SOCKET_FILE` — rather than
+    /// `schema::paths::runtime_dir` and `schema::limits::DAEMON_SOCKET_FILE` — rather than
     /// written out, so a fixture cannot drift away from the thing it is waiting for.
     /// Deliberately not `daemon::uds::SocketDir::prepare`, which would *create* the directory
     /// and so answer the question the daemon's own startup check exists to ask.
     pub(crate) fn socket(&self) -> Utf8PathBuf {
-        engine::paths::runtime_dir(&self.env())
+        schema::paths::runtime_dir(&self.env())
             .expect("the fixture sets the runtime variable")
             .join(schema::limits::DAEMON_SOCKET_FILE)
     }

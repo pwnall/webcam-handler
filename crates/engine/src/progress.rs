@@ -3,7 +3,7 @@
 //! The *events* are `schema::progress` — DTOs, because docs/7's risk register says a hook
 //! that is not schema-shaped from the start is a hook P4 re-plumbs. This module is the
 //! other half: the seam that carries them, with a real implementation and a double, the
-//! same shape [`crate::settle::Clock`] and [`crate::paths::Env`] already have.
+//! same shape [`crate::settle::Clock`] and [`schema::paths::Env`] already have.
 //!
 //! ## Emitting cannot fail, and that is a decision
 //!

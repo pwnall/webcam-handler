@@ -25,7 +25,7 @@
 #    is every account's route to a camera pointed at somebody. `daemon::systemd::Activation`
 #    refuses to serve from one — this is the half that stops it being reached at all.
 # 3. **`ListenStream=` ends at the socket the daemon looks for.** The path is composed from
-#    `engine::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE` in the daemon and
+#    `schema::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE` in the daemon and
 #    written out by hand in the unit; both are read here, so a rename in either crate turns
 #    this red instead of shipping a unit that binds a socket nothing connects to.
 # 4. **`TimeoutStopSec` exceeds `limits::DAEMON_SHUTDOWN_DRAIN_MS`.** This is the pair worth a
@@ -60,7 +60,7 @@ units="$root/packaging/systemd"
 socket_file="$(sed -n 's/^pub const DAEMON_SOCKET_FILE: &str = "\([^"]*\)".*/\1/p' \
     "$root/crates/schema/src/limits.rs" | head -n1)"
 app_dir="$(sed -n 's/^pub const APP_DIR: &str = "\([^"]*\)".*/\1/p' \
-    "$root/crates/engine/src/paths.rs" | head -n1)"
+    "$root/crates/schema/src/paths.rs" | head -n1)"
 drain_ms="$(sed -n 's/^pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = \([0-9_]*\);.*/\1/p' \
     "$root/crates/schema/src/limits.rs" | head -n1)"
 drain_ms="${drain_ms//_/}"
@@ -165,7 +165,7 @@ for socket in "${sockets[@]}"; do
             gate_fail "$name listens on $listen, which does not end in $socket_file — the name schema::limits::DAEMON_SOCKET_FILE gives it and the one every client composes"
         fi
         if [[ "$listen" != */"$app_dir"/* ]]; then
-            gate_fail "$name listens on $listen, which is not inside a $app_dir directory — engine::paths::APP_DIR is the component the daemon and D11 both name"
+            gate_fail "$name listens on $listen, which is not inside a $app_dir directory — schema::paths::APP_DIR is the component the daemon and D11 both name"
         fi
         if [[ "$listen" == @* ]]; then
             gate_fail "$name listens on the abstract namespace ($listen), which has no directory, no mode and no owner; the daemon refuses one because D11's authentication would not exist"

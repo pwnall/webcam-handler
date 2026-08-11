@@ -21,6 +21,7 @@
 //! | [`backend`] | the `CameraBackend`/`Camera` traits and `BackendKind` (T1/T2) |
 //! | [`error`] | the closed error registry (D13) |
 //! | [`limits`] | every cap and deadline, and D9's path layout (rubric A14) |
+//! | [`paths`] | the runtime directory the daemon's socket lives in, and the [`paths::Env`] seam (D11/T6) |
 //! | [`slug`] | the pinned slug transform (D2) |
 //! | [`vocabulary`] | the generator every closed vocabulary and fault menu is built from |
 //!
@@ -47,6 +48,7 @@ pub mod error;
 pub mod limits;
 pub mod metrics;
 pub mod pairing;
+pub mod paths;
 pub mod profile;
 pub mod progress;
 pub mod report;

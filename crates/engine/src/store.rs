@@ -41,7 +41,7 @@
 //! ## What is public, and why
 //!
 //! [`TempStore`] — the temp-dir double design §2.9 names — is public and gated behind
-//! nothing, for the reason [`crate::paths::MapEnv`] is: the daemon's and the CLI's tests
+//! nothing, for the reason [`schema::paths::MapEnv`] is: the daemon's and the CLI's tests
 //! need the same fixture as the engine's, and P3b/P3d consume it from other crates. A
 //! `#[cfg(test)]` double is a double only this crate can use, and the alternative is
 //! three copies of a fixture, which is three copies of a law.
@@ -95,7 +95,7 @@ impl SessionStore {
     ///
     /// Whatever [`crate::paths::state_dir`] refuses with — [`Error::StorageIo`] when
     /// neither `$XDG_STATE_HOME` nor `$HOME` gives a usable directory.
-    pub fn from_env(env: &dyn crate::paths::Env) -> Result<SessionStore> {
+    pub fn from_env(env: &dyn schema::paths::Env) -> Result<SessionStore> {
         Ok(SessionStore::new(crate::paths::state_dir(env)?))
     }
 
@@ -1003,7 +1003,7 @@ fn corrupt(path: &Utf8Path, message: impl Into<String>) -> Error {
 /// A store rooted in a temporary directory that disappears with it — design §2.9's
 /// "temp-dir store".
 ///
-/// Public and gated behind nothing, for [`crate::paths::MapEnv`]'s reason: the engine's
+/// Public and gated behind nothing, for [`schema::paths::MapEnv`]'s reason: the engine's
 /// tests, the daemon's integration tests and the CLI's subprocess tests all need a state
 /// directory that is real, empty, and gone afterwards, and three copies of that fixture
 /// is three copies of a law (design §2.10). It also keeps the privacy rule mechanical —
@@ -1376,7 +1376,7 @@ mod tests {
     fn a_store_from_an_environment_is_rooted_at_that_environments_state_dir() {
         // The seam `paths` owns (note N2), consumed rather than re-derived: a store built
         // from an environment must land under the same directory `state_dir` resolves.
-        let env = crate::paths::MapEnv::from_pairs(&[("XDG_STATE_HOME", "/var/lib/state")]);
+        let env = schema::paths::MapEnv::from_pairs(&[("XDG_STATE_HOME", "/var/lib/state")]);
         let store = SessionStore::from_env(&env).expect("the variable is set");
         assert_eq!(store.root(), "/var/lib/state/webcam-handler");
         assert_eq!(
@@ -1386,7 +1386,7 @@ mod tests {
 
         // And the refusal travels rather than being papered over with a guess.
         assert_eq!(
-            SessionStore::from_env(&crate::paths::MapEnv::empty())
+            SessionStore::from_env(&schema::paths::MapEnv::empty())
                 .expect_err("nothing is set")
                 .kind(),
             ErrorKind::StorageIo

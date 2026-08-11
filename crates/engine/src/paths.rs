@@ -1,102 +1,50 @@
-//! The two XDG directories webcam-handler needs.
+//! The state directory: where D9's session tree lives, and the fixtures that fake one.
 //!
-//! Ours rather than the `directories` crate's, because that crate reaches MPL-2.0 code
-//! through `option-ext` and the license gate refuses it (note N2). We need exactly two
-//! paths, both fixed by one paragraph of the XDG Base Directory specification, on one
-//! platform; vendoring a cross-platform path library to get them is the worse trade.
+//! The other XDG directory this tool needs is in [`schema::paths`], and the split is
+//! deliberate. `$XDG_RUNTIME_DIR/webcam-handler` is a **transport** fact — the daemon
+//! binds a socket in it (D11) and `wchc` connects to that socket, and the thin-client
+//! wall (T6) forbids `webcam-handler-client` from linking this crate, so a thin client
+//! that had to come here to learn where a socket lives could not be a thin client. The
+//! state directory is a **storage** fact: it is the first line of opening a session store,
+//! and nothing asks for it that is not already linking the engine to read what is inside.
+//! One home each (design §2.10), and the line is drawn along what a directory is *for*
+//! rather than along which module resolved both first.
 //!
-//! The environment arrives as a parameter and is never read from the process. That is
-//! not purity for its own sake: `std::env::set_var` is a data race against every other
-//! thread in the binary — `unsafe` since Rust 2024, which this crate forbids — so a test
-//! that wanted to exercise the `$HOME` fallback by mutating the environment would have
-//! to serialize itself against every other test in the same process. [`Env`] turns the
-//! fallback into a value, and the tests below run in parallel like everything else.
+//! What that leaves here is [`state_dir`], the `$HOME` fallback the specification gives it,
+//! and the temporary-directory fixtures — including [`TempRuntimeDir`], which is about the
+//! *runtime* directory and stays on this side anyway. It is a `tempfile::TempDir` wearing a
+//! [`camino`] path, and `webcam-handler-schema` has no `tempfile` edge; moving the fixture
+//! would have bought one crate's convenience with a dependency on the crate every other
+//! crate links. `tempfile` is already here, for [`crate::store::write_json_atomic`]'s
+//! in-directory temporary file, so the fixture costs this workspace nothing where it is —
+//! and `wchc`'s tests can take a dev-dependency on the engine, which
+//! `scripts/gates/dependency-walls.sh` counts as no edge at all because a test binary ships
+//! nowhere.
+//!
+//! Ours rather than the `directories` crate's, for [`schema::paths`]'s reason: that crate
+//! reaches MPL-2.0 code through `option-ext` and the license gate refuses it (note N2).
+//! The environment arrives as a parameter for [`schema::paths::Env`]'s reason, too — it is
+//! the same seam, and there is only one of it.
 
 use camino::{Utf8Path, Utf8PathBuf};
+use schema::paths::{APP_DIR, Env, MapEnv, XDG_RUNTIME_DIR, usable_dir};
 use schema::{Error, Result};
-
-/// The directory component this tool owns inside each XDG base directory.
-pub const APP_DIR: &str = "webcam-handler";
 
 /// The base directory for persistent state (design D9's session tree).
 const XDG_STATE_HOME: &str = "XDG_STATE_HOME";
 
-/// The base directory for per-session runtime objects (the daemon's UDS).
-const XDG_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
-
 /// The user's home, for the specification's `$XDG_STATE_HOME` fallback.
 const HOME: &str = "HOME";
-
-/// A read-only view of an environment.
-///
-/// One method, because two paths is all we resolve. Implementors are values, so a caller
-/// can hand these functions a fabricated environment without touching the process.
-pub trait Env {
-    /// The value of `key`, or `None` when it is unset or not valid UTF-8.
-    ///
-    /// Non-UTF-8 reads as unset on purpose: every path in this tool is a
-    /// [`camino::Utf8PathBuf`], so a value we cannot represent is a value we cannot use,
-    /// and falling back is friendlier than failing.
-    fn var(&self, key: &str) -> Option<String>;
-}
-
-/// The real process environment.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemEnv;
-
-impl Env for SystemEnv {
-    fn var(&self, key: &str) -> Option<String> {
-        std::env::var(key).ok()
-    }
-}
-
-/// A fabricated environment: the scriptable double for the [`Env`] seam.
-///
-/// Public rather than test-only because the daemon's integration tests and the CLI's
-/// golden-output tests need the same fixed environment, and three copies of a two-field
-/// map is three copies of a law.
-#[derive(Debug, Clone, Default)]
-pub struct MapEnv {
-    vars: std::collections::BTreeMap<String, String>,
-}
-
-impl MapEnv {
-    /// An environment in which nothing is set.
-    #[must_use]
-    pub fn empty() -> Self {
-        MapEnv::default()
-    }
-
-    /// An environment holding exactly these variables.
-    #[must_use]
-    pub fn from_pairs(pairs: &[(&str, &str)]) -> Self {
-        MapEnv {
-            vars: pairs
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-                .collect(),
-        }
-    }
-
-    /// Set one variable, builder-style.
-    #[must_use]
-    pub fn with(mut self, key: &str, value: &str) -> Self {
-        self.vars.insert(key.to_owned(), value.to_owned());
-        self
-    }
-}
-
-impl Env for MapEnv {
-    fn var(&self, key: &str) -> Option<String> {
-        self.vars.get(key).cloned()
-    }
-}
 
 /// This tool's persistent state directory: `<XDG state home>/webcam-handler`.
 ///
 /// `$XDG_STATE_HOME` when it is usable, else the specification's `$HOME/.local/state`
 /// fallback. Nothing is created here — resolving a path and making a directory are
 /// different operations with different failure modes, and the store owns the second one.
+///
+/// What "usable" means is [`schema::paths::usable_dir`]'s, not a second copy of it: the
+/// three checks the specification asks for govern both XDG directories, so they are
+/// spelled once below the pair of them.
 ///
 /// # Errors
 ///
@@ -120,38 +68,18 @@ pub fn state_dir(env: &dyn Env) -> Result<Utf8PathBuf> {
     })
 }
 
-/// This tool's runtime directory: `<XDG runtime dir>/webcam-handler`.
-///
-/// No fallback, deliberately. `$XDG_RUNTIME_DIR` is the only directory the platform
-/// promises is per-user, 0700, and cleaned at logout; `/tmp` is none of those, and the
-/// daemon's socket permissions doctrine (design D11: the UDS directory is 0700) rests on
-/// the promise. A missing `$XDG_RUNTIME_DIR` means the process is not in a login
-/// session, which the operator needs to be told rather than worked around.
-///
-/// # Errors
-///
-/// [`Error::StorageIo`] when `$XDG_RUNTIME_DIR` is unset, empty, or relative.
-pub fn runtime_dir(env: &dyn Env) -> Result<Utf8PathBuf> {
-    match usable_dir(env, XDG_RUNTIME_DIR) {
-        Some(base) => Ok(base.join(APP_DIR)),
-        None => Err(Error::StorageIo {
-            path: format!("${XDG_RUNTIME_DIR}").into(),
-            errno: None,
-            message: "unset or not an absolute path; a login session normally sets it, \
-                      and the daemon socket has nowhere else that is private to you"
-                .to_owned(),
-        }),
-    }
-}
-
 /// A private `$XDG_RUNTIME_DIR` that disappears with the value.
 ///
 /// The runtime half of [`crate::store::TempStore`], and public for the same reason: the
 /// daemon's own tests, the CLI's subprocess tests and P4f's `wchc` tests all need a
 /// runtime directory that is real, empty, and gone afterwards, and three copies of that
-/// fixture is three copies of a law (design §2.10). [`runtime_dir`] deliberately has no
-/// `/tmp` fallback — the 0700 socket-directory promise rests on the platform's — so
-/// without this a test would have to weaken the thing it is testing.
+/// fixture is three copies of a law (design §2.10). [`schema::paths::runtime_dir`]
+/// deliberately has no `/tmp` fallback — the 0700 socket-directory promise rests on the
+/// platform's — so without this a test would have to weaken the thing it is testing.
+///
+/// It is in this crate rather than beside the resolver it fabricates an environment for
+/// because it is a `tempfile::TempDir`, and `webcam-handler-schema` carries no `tempfile`
+/// edge; see this module's header for why that trade goes this way.
 ///
 /// Nothing is created *inside* it: `<base>/webcam-handler` is the daemon's to make, at
 /// the mode D11 requires, and a fixture that made it first would be answering the
@@ -224,27 +152,11 @@ impl TempRuntimeDir {
     }
 }
 
-/// The value of `key` when it names a directory we are allowed to believe.
-///
-/// The specification asks for all three checks and each one is a real failure we would
-/// otherwise inherit: an unset variable falls back, an *empty* one "must be considered
-/// as unset", and "if an implementation encounters a relative path it should consider
-/// the path invalid and ignore it". The last is the one that bites — a stray
-/// `XDG_STATE_HOME=.` would otherwise scatter session directories through whatever
-/// working directory the daemon happened to start in.
-fn usable_dir(env: &dyn Env, key: &str) -> Option<Utf8PathBuf> {
-    let raw = env.var(key)?;
-    if raw.is_empty() {
-        return None;
-    }
-    let path = Utf8PathBuf::from(raw);
-    if path.is_absolute() { Some(path) } else { None }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use schema::ErrorKind;
+    use schema::paths::runtime_dir;
 
     #[test]
     fn xdg_state_home_wins_when_it_is_set() {
@@ -281,16 +193,12 @@ mod tests {
     #[test]
     fn an_empty_variable_counts_as_unset() {
         // The specification's wording, and the shape a shell produces by accident:
-        // `XDG_STATE_HOME= wchd` exports an empty string, not an absent variable.
+        // `XDG_STATE_HOME= wchd` exports an empty string, not an absent variable. The
+        // runtime directory's half of this rule is asserted where the resolver is.
         let env = MapEnv::from_pairs(&[("XDG_STATE_HOME", ""), ("HOME", "/home/someone")]);
         assert_eq!(
             state_dir(&env).expect("HOME is set"),
             "/home/someone/.local/state/webcam-handler"
-        );
-        let runtime = MapEnv::from_pairs(&[("XDG_RUNTIME_DIR", "")]);
-        assert_eq!(
-            runtime_dir(&runtime).expect_err("empty is unset").kind(),
-            ErrorKind::StorageIo
         );
     }
 
@@ -314,26 +222,12 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_dir_honors_its_variable_and_refuses_without_it() {
-        let env = MapEnv::from_pairs(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
-        assert_eq!(
-            runtime_dir(&env).expect("the variable is set"),
-            "/run/user/1000/webcam-handler"
-        );
-
-        // No `/tmp` fallback: both directions asserted, because the fallback is exactly
-        // the convenience fix that would weaken the 0700 socket-directory promise.
-        let err = runtime_dir(&MapEnv::from_pairs(&[("HOME", "/home/someone")]))
-            .expect_err("HOME is not a runtime dir");
-        assert_eq!(err.kind(), ErrorKind::StorageIo);
-        assert!(err.to_string().contains("XDG_RUNTIME_DIR"), "{err}");
-    }
-
-    #[test]
     fn the_temp_runtime_dir_is_a_real_directory_the_resolver_accepts() {
         // The fixture's whole job is to satisfy `runtime_dir`'s three checks — set,
         // non-empty, absolute — with a directory that actually exists, so that a socket
-        // test exercises the resolver rather than working around it.
+        // test exercises the resolver rather than working around it. The resolver is one
+        // crate down now, which is exactly why this arm asserts against it rather than
+        // against the fixture's own idea of what it made.
         let runtime = TempRuntimeDir::new().expect("a temporary directory");
         assert!(runtime.base().is_absolute(), "{}", runtime.base());
         assert!(runtime.base().as_std_path().is_dir(), "{}", runtime.base());
@@ -344,16 +238,5 @@ mod tests {
         // And nothing is created inside it: whether `<base>/webcam-handler` exists, and
         // at what mode, is the daemon's startup check to decide.
         assert!(!resolved.as_std_path().exists(), "{resolved}");
-    }
-
-    #[test]
-    fn the_system_env_reads_the_process_environment() {
-        // Not a claim about any particular variable — the process environment is not
-        // ours to control — only that the real implementation is wired to it. `PATH` is
-        // present in every environment a test binary can run in; if it is not, the
-        // assertion below is the honest reading either way.
-        let system = SystemEnv;
-        assert_eq!(system.var("WCH_A_VARIABLE_NOBODY_SETS"), None);
-        assert_eq!(std::env::var("PATH").ok(), system.var("PATH"));
     }
 }

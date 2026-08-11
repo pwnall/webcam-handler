@@ -26,7 +26,7 @@ _socket_names() {
     local root
     root="$(gate_root)"
     sed -n 's/^pub const APP_DIR: &str = "\([^"]*\)".*/\1/p' \
-        "$root/crates/engine/src/paths.rs" | head -n1
+        "$root/crates/schema/src/paths.rs" | head -n1
     sed -n 's/^pub const DAEMON_SOCKET_FILE: &str = "\([^"]*\)".*/\1/p' \
         "$root/crates/schema/src/limits.rs" | head -n1
 }
