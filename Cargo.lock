@@ -2381,7 +2381,9 @@ name = "webcam-handler-client"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "image",
  "jsonrpsee",
+ "rustix 1.1.4",
  "serde_json",
  "soketto",
  "tokio",
@@ -2391,6 +2393,7 @@ dependencies = [
  "webcam-handler-cli-core",
  "webcam-handler-engine",
  "webcam-handler-schema",
+ "webcam-handler-testkit",
 ]
 
 [[package]]

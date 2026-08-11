@@ -1,9 +1,11 @@
 //! `wchc` end to end: the refusals it owns, and the verbs it answers over a real socket.
 //!
-//! One file, deliberately, where `crates/daemon/tests/` is eight. Its subject is a single
-//! thing — the shipped `wchc` — and the two halves below need the same two helpers, so a
-//! `#[path]`-included `support/` module here would be note **N49**'s hazard (an item used by
-//! one includer and dead in the other) bought for nothing.
+//! One file for the fake backend, where `crates/daemon/tests/` is eight. Its subject is a
+//! single thing — the shipped `wchc` against a daemon replaying a committed document — and
+//! everything it needs *around* that is now `support/fixture.rs`, shared with the R3 arms in
+//! `hardware.rs`. Until P4g it was all here, on the argument that a `#[path]`-included module
+//! would be note **N49**'s hazard bought for nothing; the second includer is what buys it,
+//! and that module's header records the trade the second time round.
 //!
 //! ## The two halves
 //!
@@ -34,14 +36,10 @@
 //! daemon that cannot serve says why and exits, closing the pipe. A sweep's progress is
 //! asserted from the events themselves. There is no duration anywhere in this file.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::Mutex;
 
 use camino::Utf8PathBuf;
 use cli_core::{Executor as _, SessionRef, SweepWatcher};
-use engine::paths::TempRuntimeDir;
-use engine::store::TempStore;
 use schema::camera::CameraId;
 use schema::capture::{PhotoFormat, SettlePolicy, StreamRequest};
 use schema::control::ControlSlug;
@@ -49,31 +47,10 @@ use schema::progress::{CalibrationProgress, ProgressEvent};
 use schema::session::{SweepRequest, SweepSpec};
 use serde_json::Value;
 
-/// The `wchc` binary this suite drives, built by cargo alongside it.
-fn wchc() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_wchc"))
-}
+#[path = "support/fixture.rs"]
+mod fixture;
 
-/// The `wchd` binary beside it.
-///
-/// `CARGO_BIN_EXE_*` exists only for the package that declares the binary, so this is a
-/// sibling lookup rather than an environment variable — and a missing sibling is a panic
-/// naming the command that produces it, because "the daemon was not built" and "the daemon
-/// misbehaved" must not look the same from here.
-fn wchd() -> Command {
-    let wchc = Utf8PathBuf::from(env!("CARGO_BIN_EXE_wchc"));
-    let wchd = wchc
-        .parent()
-        .expect("the test binary's directory")
-        .join("wchd");
-    assert!(
-        wchd.exists(),
-        "wchd is not beside wchc at {wchd}; this suite drives the shipped daemon, so build \
-         the workspace (`cargo nextest run --workspace`, which is what `just ci` runs) \
-         rather than this package alone"
-    );
-    Command::new(wchd)
-}
+use fixture::{Daemon, Fixture, wchc};
 
 fn repo_root() -> Utf8PathBuf {
     Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -98,157 +75,19 @@ fn profile(name: &str) -> Utf8PathBuf {
     path
 }
 
-/// A private pair of XDG directories and, when a test asks for one, a daemon in them.
-struct Fixture {
-    runtime: TempRuntimeDir,
-    state: TempStore,
-}
-
-impl Fixture {
-    fn new() -> Fixture {
-        Fixture {
-            runtime: TempRuntimeDir::new().expect("a runtime directory"),
-            state: TempStore::new().expect("a state directory"),
-        }
-    }
-
-    /// The socket a daemon started here would bind.
-    ///
-    /// Composed from the two homes the daemon composes it from, never written out — the
-    /// same rule `crates/daemon/tests/support/wchd.rs` follows, so a fixture cannot drift
-    /// away from the path it is waiting for.
-    fn socket(&self) -> Utf8PathBuf {
-        schema::paths::runtime_dir(&self.runtime.env())
-            .expect("the fixture sets the runtime variable")
-            .join(schema::limits::DAEMON_SOCKET_FILE)
-    }
-
-    /// A `wchc` bound to these directories, with the arguments given.
-    fn wchc(&self, args: &[&str]) -> Command {
-        let mut command = wchc();
-        command
-            // Environment variables rather than flags, because that is how the shipped
-            // client finds the socket (note N2): a test that passed a path in would not be
-            // exercising the resolution an operator gets.
-            .env("XDG_RUNTIME_DIR", self.runtime.base().as_str())
-            .args(args);
-        command
-    }
-
-    /// Run `wchc` and collect everything the process produced.
-    fn run(&self, args: &[&str]) -> Ran {
-        let output = self.wchc(args).output().expect("wchc runs");
-        Ran {
-            code: output.status.code().unwrap_or(-1),
-            stdout: output.stdout,
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }
-    }
-
-    /// Start a `wchd` replaying a committed profile, and wait until it is serving.
-    fn daemon(&self, replaying: &str) -> Daemon {
-        let socket = self.socket();
-        let mut command = wchd();
-        command
-            .env("XDG_RUNTIME_DIR", self.runtime.base().as_str())
-            .env("XDG_STATE_HOME", self.state.root().as_str())
-            // Pinned rather than inherited: this suite learns that the daemon is up by
-            // reading the line it logs, and a developer with `RUST_LOG=warn` exported would
-            // otherwise watch it wait for a line nobody was going to write.
-            .env("RUST_LOG", "info")
-            // Removed in both directions: run from a `systemd-run` shell, these daemons
-            // would otherwise notify somebody else's service manager and serve from
-            // somebody else's listener.
-            .env_remove("NOTIFY_SOCKET")
-            .env_remove("LISTEN_FDS")
-            .env_remove("LISTEN_PID")
-            .args([
-                "--backend",
-                "fake",
-                "--profile",
-                profile(replaying).as_str(),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-
-        let mut child = command.spawn().expect("wchd is built beside this test");
-        let stderr = BufReader::new(child.stderr.take().expect("stderr was piped"));
-        let mut daemon = Daemon {
-            child,
-            stderr,
-            said: Vec::new(),
-        };
-        // The daemon announces the socket it is serving. Waiting for *that* line is a
-        // readiness signal from the process rather than a guess about how long starting
-        // takes; end-of-file without it means it refused to start, and the panic carries
-        // everything it said.
-        daemon.wait_for(socket.as_str());
-        daemon
-    }
-}
-
-/// What one `wchc` invocation produced.
-struct Ran {
-    code: i32,
-    /// Bytes, not a string: a photo with no `-o` **is** standard output.
-    stdout: Vec<u8>,
-    stderr: String,
-}
-
-impl Ran {
-    /// The answer, asserting the verb succeeded.
-    fn ok(&self) -> &[u8] {
-        assert_eq!(self.code, 0, "wchc failed: {}", self.stderr);
-        &self.stdout
-    }
-
-    /// The `--json` answer as a document.
-    fn json(&self) -> Value {
-        serde_json::from_slice(self.ok()).unwrap_or_else(|error| {
-            panic!(
-                "not a JSON document ({error}): {}",
-                String::from_utf8_lossy(&self.stdout)
-            )
-        })
-    }
-}
-
-/// A running `wchd`, killed with the value.
-struct Daemon {
-    child: Child,
-    stderr: BufReader<ChildStderr>,
-    said: Vec<String>,
-}
-
-impl Daemon {
-    fn wait_for(&mut self, wanted: &str) {
-        loop {
-            let mut line = String::new();
-            match self.stderr.read_line(&mut line) {
-                Ok(0) | Err(_) => panic!(
-                    "wchd exited without saying {wanted:?}; it said:\n{}",
-                    self.said.join("\n")
-                ),
-                Ok(_) => {
-                    self.said.push(line.trim_end().to_owned());
-                    if line.contains(wanted) {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        // `SIGKILL`, deliberately: this is the teardown a *failed assertion* gets, and what
-        // it has to guarantee is that no daemon is left holding a temporary directory that
-        // is about to be deleted. An orderly stop is `crates/daemon/tests/signals.rs`'s
-        // subject, not a thing a `Drop` here should wait for.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+/// Start a `wchd` replaying a committed profile, and wait until it is serving.
+///
+/// The backend arguments are this file's and the spawning is `support/fixture.rs`'s, which is
+/// the whole of the split between the two suites that share that module: a document is what
+/// makes these assertions repeatable on a machine with no camera, and it is the one thing the
+/// hardware suite cannot pass.
+fn replaying(fixture: &Fixture, profile_name: &str) -> Daemon {
+    fixture.spawn(&[
+        "--backend",
+        "fake",
+        "--profile",
+        profile(profile_name).as_str(),
+    ])
 }
 
 // ---------------------------------------------------------------- without a daemon
@@ -357,7 +196,7 @@ fn a_command_line_that_is_not_one_leaves_claps_code_and_names_this_binary() {
 #[test]
 fn the_read_verbs_answer_the_camera_the_daemon_is_replaying() {
     let fixture = Fixture::new();
-    let _daemon = fixture.daemon(REPLAYED);
+    let _daemon = replaying(&fixture, REPLAYED);
 
     let list = fixture.run(&["--json", "list"]).json();
     let cameras = list["cameras"].as_array().expect("a camera list");
@@ -407,7 +246,7 @@ fn one_verb_with_a_flag_reaches_two_wire_methods_and_answers_the_same_document()
     // difference between the two methods on a fake backend whose pairs are otherwise
     // declared either way.
     let fixture = Fixture::new();
-    let _daemon = fixture.daemon("obsbot-tiny3");
+    let _daemon = replaying(&fixture, "obsbot-tiny3");
     let list = fixture.run(&["--json", "list"]).json();
     let id = list["cameras"][0]["id"].as_str().expect("an id").to_owned();
 
@@ -474,7 +313,7 @@ fn a_photo_arrives_as_bytes_through_base64_and_as_a_file_on_the_daemons_disk() {
     // (`PhotoResponse::bytes_match_the_delivery`, whose second consumer this is — note N34)
     // and hands a `cli_core::Photograph` to the renderer both binaries share.
     let fixture = Fixture::new();
-    let _daemon = fixture.daemon(REPLAYED);
+    let _daemon = replaying(&fixture, REPLAYED);
     let list = fixture.run(&["--json", "list"]).json();
     let id = list["cameras"][0]["id"].as_str().expect("an id").to_owned();
 
@@ -518,7 +357,7 @@ fn a_profile_captured_over_the_wire_is_the_one_the_daemon_is_replaying() {
     // this verb `capture_profile` and D10 spells the method `profile_capture`, because a
     // wire name is a compatibility contract and a trait method name is not.
     let fixture = Fixture::new();
-    let _daemon = fixture.daemon(REPLAYED);
+    let _daemon = replaying(&fixture, REPLAYED);
     let list = fixture.run(&["--json", "list"]).json();
     let id = list["cameras"][0]["id"].as_str().expect("an id").to_owned();
 
@@ -574,7 +413,7 @@ fn a_sweep_delivers_its_progress_while_the_call_it_belongs_to_is_still_in_flight
     // (note N57) — and one that never bridged the stream onto the watcher would record
     // nothing at all.
     let fixture = Fixture::new();
-    let _daemon = fixture.daemon(REPLAYED);
+    let _daemon = replaying(&fixture, REPLAYED);
     let socket = fixture.socket();
     let mut remote = client::remote::Remote::connect(
         &socket,
@@ -689,7 +528,7 @@ fn the_calibration_arc_runs_end_to_end_over_the_socket() {
     // than in the sweep test above because what it asserts is the *routing* of eight verbs
     // whose answers are documents, not the ordering of one that is a state machine.
     let fixture = Fixture::new();
-    let _daemon = fixture.daemon(REPLAYED);
+    let _daemon = replaying(&fixture, REPLAYED);
     let list = fixture.run(&["--json", "list"]).json();
     let id = list["cameras"][0]["id"].as_str().expect("an id").to_owned();
 

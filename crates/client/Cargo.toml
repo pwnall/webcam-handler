@@ -68,6 +68,18 @@ webcam-handler-cli-core.workspace = true
 webcam-handler-schema.workspace = true
 
 [dev-dependencies]
+# An independent decoder for `tests/hardware.rs`'s photo arm: a JPEG that came out of a real
+# camera has to decode at the size the report claims, and checking it with this workspace's
+# own codec would be a document agreeing with itself. Default features off with `png` and
+# `jpeg` is the workspace pin (AGENTS "Docs and dependencies"), so this adds no format decoder
+# the tree did not already build.
+image.workspace = true
+# `process` only, for one `SIGTERM`: the hardware suite stops the daemon that held a camera
+# for it the way a service manager would and reads the status, because a run whose daemon died
+# in the middle must not look like a run whose daemon was asked to stop. `rustix` and not
+# `libc` for `webcam-handler-daemon`'s reason — this crate is `#![forbid(unsafe_code)]` and
+# rustix is a safe wrapper — and it is already resolved for the daemon's own suites.
+rustix = { workspace = true, features = ["process"] }
 # `wchc`'s own suites spawn the shipped binary and read what it writes, so the fixtures they
 # need are a private pair of XDG directories and a device profile for the daemon beside it to
 # replay. **Dev-dependencies do not ship**, which is why `webcam-handler-engine` may be named
@@ -76,3 +88,9 @@ webcam-handler-schema.workspace = true
 # give — a third copy of a temp-directory fixture is a third answer to "where does this run".
 serde_json.workspace = true
 webcam-handler-engine.workspace = true
+# Two predicates and nothing else: `battery::is_perturbable` and `battery::is_motorized` are
+# the conformance battery's own answers to "may a test write to this control" and "is there a
+# motor on the other end of it", and the R3 arms here ask them rather than re-deciding — so
+# "may this test move the camera somebody is pointing at a person" has one answer in the
+# workspace (`crates/backends/v4l2/tests/hardware.rs` asks the same two).
+webcam-handler-testkit.workspace = true
