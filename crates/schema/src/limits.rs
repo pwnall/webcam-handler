@@ -195,6 +195,41 @@ pub const CLIENT_SUBSCRIPTION_BUFFER: usize = 256;
 // The ordering the paragraph above argues, checked where both numbers are.
 const _: () = assert!(CLIENT_SUBSCRIPTION_BUFFER > WS_MESSAGE_BUFFER_CAPACITY as usize);
 
+/// How long `wchc` keeps reading a sweep's progress after the sweep itself has answered.
+///
+/// The bound on the **tail**, and the tail exists because a sweep's answer and its last
+/// progress event leave the daemon on two different tasks — `wch_calibrate_sweep`'s method
+/// call, and the forward task `daemon::events` runs per subscription — and reach the one
+/// connection's writer in whichever order that daemon's runtime scheduled them. A client
+/// that stopped reading the instant its call answered would abandon a `SweepFinished` that
+/// lost that race by microseconds, and that event is the one `cli_core`'s `Bar` prints a
+/// sweep's closing line from and the only one it cannot repaint from a later one. Note
+/// **N69** has the measurement and the failure rate it came from.
+///
+/// **It is a bound and not a wait**, which is the whole of why it is not the thing note
+/// **N65** refused. The drain ends the instant this sweep's terminal event arrives — 34 µs
+/// after the answer, measured on the runs where the answer won — so this number is only ever
+/// reached when no terminal event is coming at all, which `wch_subscribe_calibration` is
+/// explicitly allowed to arrange (it drops and counts, note **N57**). Then it costs this
+/// once, at the end of a sweep that took camera-minutes, and the bar stops one event short
+/// exactly as it did before the drain existed. What stays refused is waiting *without* a
+/// bound: a dropped terminal event would hang the client for ever.
+///
+/// A quarter of a second is chosen from the delay it has to cover, which is one already-woken
+/// task waiting for a core — no device, no disk, and nothing that can be slow for a reason of
+/// its own. Measured at 34 µs; a woken thread on a host oversubscribed eightfold waits
+/// milliseconds, not hundreds of them. It is [`HOTPLUG_QUIET_MS`]'s order of magnitude for a
+/// related reason: long enough that the thing it waits for has already happened, short enough
+/// that a person watching a terminal never meets it.
+///
+/// Read by `wchc`'s `Remote::calibrate_sweep`, which is the only tail there is.
+pub const CLIENT_SWEEP_DRAIN_MS: u64 = 250;
+
+// A tail must cost less than the smallest piece of work the sweep it follows does, or
+// finishing a sweep would cost more than one of that sweep's samples. Checked where both
+// numbers are, in `CAMERA_IDLE_SWEEP_MS`'s tradition.
+const _: () = assert!(CLIENT_SWEEP_DRAIN_MS < FRAME_DEADLINE_MS);
+
 /// How many unwritten notifications one subscription may hold before the daemon drops.
 ///
 /// jsonrpsee's `message_buffer_capacity`, which P4b deliberately did not inherit: it turned

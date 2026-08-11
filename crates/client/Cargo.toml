@@ -48,9 +48,14 @@ jsonrpsee = { workspace = true, features = ["async-client"] }
 soketto.workspace = true
 # `net` for `UnixStream`, `rt` for the current-thread runtime this binary owns (see
 # `remote::Remote`), `macros` for the `select!` that runs a sweep beside its progress
-# stream. No `rt-multi-thread`: one verb per invocation needs one thread, and `jsonrpsee`'s
-# background task is driven by the `block_on` that is already there.
-tokio = { workspace = true, features = ["macros", "net", "rt"] }
+# stream, and `time` for the one bound that sweep's tail is drained under
+# (`schema::limits::CLIENT_SWEEP_DRAIN_MS`). `time` is named here rather than inherited:
+# `jsonrpsee-core/async-client` enables it for its own request timeout, and a feature this
+# crate's own code calls into has to be a feature this crate's own manifest asks for — the
+# day that dependency stops needing a timer, `Remote::calibrate_sweep` must not be what
+# discovers it. No `rt-multi-thread`: one verb per invocation needs one thread, and
+# `jsonrpsee`'s background task is driven by the `block_on` that is already there.
+tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
 # `compat`, which is the whole of this edge: soketto takes the `futures::io` traits and a
 # `tokio::net::UnixStream` speaks tokio's. One adapter, at the one place the two meet.
 tokio-util = { workspace = true, features = ["compat"] }

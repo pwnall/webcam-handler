@@ -649,8 +649,15 @@ fn a_sweep_delivers_its_progress_while_the_call_it_belongs_to_is_still_in_flight
         Some(CalibrationProgress::SweepStarted { total, .. }) if *total == samples
     );
     assert!(started, "the sweep's first event is missing: {seen:?}");
-    // …and the last is its end, which is what says every event in between was consumed
-    // while the call was still outstanding rather than after it.
+    // …and the last is its end.
+    //
+    // **This assertion is sound because the sweep drains its tail, and it was racing before
+    // that** (note N69). `wch_calibrate_sweep`'s answer and its `SweepFinished` leave the
+    // daemon on two different tasks, so the answer can arrive first, and a client that
+    // stopped reading when its call returned abandoned exactly this event — measured failing
+    // 2 runs in 150 under four concurrent workspace suites, with the other seven events
+    // present and this one missing. `Remote::calibrate_sweep`'s fourth step is what makes
+    // the assertion a statement about the client rather than about the scheduler.
     let finished = matches!(
         seen.last().map(|event| &event.progress),
         Some(CalibrationProgress::SweepFinished { .. })
@@ -658,6 +665,12 @@ fn a_sweep_delivers_its_progress_while_the_call_it_belongs_to_is_still_in_flight
     assert!(finished, "the sweep's last event is missing: {seen:?}");
     // One `SampleTaken` per planned sample, so the bar a human sees counts what the sweep
     // actually did rather than what it announced.
+    //
+    // This count was racing on the same ordering and was never observed losing: the last
+    // sample's event is one hop further from the answer than the terminal one — the daemon
+    // commits the session durably in between — so it is the same defect with a wider window
+    // rather than a property that was safe. The drain covers both, because it reads until
+    // the terminal event and everything this sweep emitted comes before it.
     let taken = seen
         .iter()
         .filter(|event| matches!(event.progress, CalibrationProgress::SampleTaken { .. }))

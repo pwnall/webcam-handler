@@ -7596,3 +7596,174 @@ it is needed.
 the floor ever stops reading the working tree during its run (a floor that mutated a frozen
 export could not have this defect), at which point claim 3 above becomes unnecessary rather
 than wrong.
+
+---
+
+## N69 — The event a sweep loses has not arrived yet, so the drain N65 measured could only ever count zero
+
+**Doc:** notes **N65** (the client's runtime has one thread and its sweep has no drain, both
+measured — this entry supersedes the *conclusion* of its §2 and leaves its measurement
+standing), **N57** (the per-client calibration stream, and that dropping an event is a thing
+it is allowed to do), **N60** ("a second-direction failure means investigate, never delete
+the line"), **N25** (what an "equivalent" acceptance claims), **N67** (a repro recipe that
+under-loads the machine reads as "cannot reproduce"), AGENTS' "bounded everything" and
+`schema::limits`' rule that something reads every number. Found by `just mutants` on a
+stable tree at `4a76b1d`.
+
+### Provenance: the register worked, and what it caught was not what it said
+
+The floor reported one recorded acceptance as no longer surviving —
+`crates/engine/src/session.rs: replace > with >= in sampled_precision`. That acceptance is
+an N25 equivalence and it is **correct**: `sampled_precision` sorts and dedups before it
+takes windows, so every gap is at least 1, and the `i64::try_from(…).ok()` in the
+`filter_map` drops an overflowing difference rather than yielding 0. `gap > 0` and
+`gap >= 0` admit the same elements; identical programs cannot be told apart by a test. The
+register was not touched. Re-measured by N60's own method rather than argued: the mutant
+**hand-applied to this tree, with the fix below in place, passes the workspace suite —
+935/935, four runs of five**.
+
+What actually failed under that mutant was
+`webcam-handler-client::wchc a_sweep_delivers_its_progress_…`, carrying all seven of the
+sweep's events except the terminal one. That is N60's pattern for the third time
+(N60 itself, N68, this), and N60's rule is the only reason the finding exists at all: the
+failing test was investigated instead of the line being deleted, and **the flake was a
+product defect**.
+
+**And the fifth of those five runs is the pattern happening again while this entry was being
+written**: with the mutant applied, one run failed
+`webcam-handler-v4l2 sys::uevent::tests::a_quiet_socket_answers_at_its_deadline_rather_than_erroring_or_hanging`,
+which asserts `started.elapsed() < 1s` on a real clock after a 20 ms deadline, on a machine
+still carrying this entry's own load. Named rather than fixed, because it is one more
+instance of the class N60 scheduled and N67 discharged for `engine`'s settle path — a real
+clock in a test that has nothing to say about a duration — and it belongs to whoever takes
+that population next.
+
+### The defect
+
+**Believed** (N65 §2): that `Remote::calibrate_sweep` needs no drain after its `select!`
+loop, because on a current-thread runtime nothing can be pushed onto the subscription
+between the two polls of one turn and `biased` polls the events first. Measured at the time
+as "zero events on every one of five runs", and the drain was deleted on that measurement.
+
+**True: the argument is right, the measurement is right, and the conclusion is wrong.** The
+event a sweep loses is not one this client was holding — it is one that had not *arrived*.
+`wch_calibrate_sweep`'s answer and its `SweepFinished` leave the daemon on two different
+tasks: the method call, and the forward task `daemon::events` runs per subscription (the
+sweep emits into a `broadcast` from the actor's own thread, and the task that reads it has to
+be scheduled). They reach one connection's writer in whichever order that daemon's runtime
+put them, and when the answer wins, the client's loop breaks on it and the terminal event
+lands microseconds later on a socket nobody is reading any more.
+
+It is the one event a bar cannot recover from a later one. `cli_core::Bar` prints the
+sweep's closing line — `brightness: 3 sample(s) taken; nothing selected yet` — from
+`is_terminal()` and from nothing else, and then `finish()` clears the bar. What a person sees
+is a progress bar that stops one short of finishing and then vanishes without a word.
+
+### Measured, and every row says what it is a measurement of
+
+Eight-core workstation, tree at `4a76b1d`. "Four suites" is four concurrent
+`cargo nextest run --locked --offline --workspace` in a loop — the mutation floor's shape,
+which is four concurrent jobs each running the whole suite.
+
+| What | Load | Result |
+|---|---|---|
+| the integration test, unfixed | quiet | 0 failures / 20 runs |
+| " | 8 spinners | 0 / 20 |
+| " | 64 spinners | 0 / 20 |
+| " | **four suites** | **2 / 150** |
+| " , fixed | four suites | **0 / 150** |
+| 60 sweeps in one process, fresh daemon each | four suites | 0 / 60 |
+| events left in *this client's own queue* when the loop breaks | four suites | **0**, every run of 30 |
+| the same, after 512 `tokio::task::yield_now` turns | four suites | **0**, every run of 30 |
+| the terminal event's arrival, relative to the answer | four suites | **+34 µs**, on the run that lost the race |
+
+Four of those rows are the design, and each of them says something the others do not.
+
+- **Spinners do not reproduce it**, at eight or at sixty-four, which is N67's finding
+  repeated on a different defect: the condition is not CPU starvation, it is a machine with
+  four other build-and-test jobs on it. A recipe that under-loads reads as "cannot
+  reproduce".
+- **Zero events in this client's queue, every run, is N65's number re-taken — and it is not
+  evidence for N65's conclusion.** It is what N65's argument predicts and the argument is
+  sound; what neither could see is that they were counting the one queue that is provably
+  empty at that instant. A drain that reads only what is already buffered can be *proved* to
+  find nothing here, which makes "we measured zero" and "there is nothing to collect" two
+  different statements that happened to share a number.
+- **512 `yield_now` turns find nothing either**, and that is a fact about tokio rather than
+  about this daemon: the current-thread `block_on` loop re-polls a main future whose waker
+  has already fired without ever parking on the I/O driver, so a drain that spins on yields
+  never lets the connection's read task touch the socket. Recorded because "yield instead of
+  waiting" is the obvious way to write a non-blocking drain and it cannot work on this
+  runtime.
+- **34 µs** is why a bound of a quarter second is a bound and not a wait.
+
+### Changed
+
+`Remote::calibrate_sweep`'s state machine moved into `sweep_and_watch`, a free function
+generic over the answer's type, and grew a fourth step: **a bounded tail**, entered only when
+the sweep's terminal event is actually outstanding.
+
+- `drain_tail` reads until this sweep's terminal event, the end of the stream, or
+  `schema::limits::CLIENT_SWEEP_DRAIN_MS` (250 ms), whichever comes first. `timeout_at`
+  polls the event before the clock, so the bound is on *waiting* and never on reading: even a
+  zero budget delivers what is already in hand.
+- The guard is the half that keeps it off the ordinary path — a sweep whose terminal event
+  beat its answer, which is nearly all of them, pays nothing. **The first shape of this fix
+  had no guard and drained unconditionally, and it waited the full bound on every sweep.**
+  What caught it was the integration test's own duration going 0.47 s → 0.77 s, which is
+  a quarter of a second wearing a number; a fix whose cost is invisible in a suite that
+  takes four seconds is a fix nobody would have questioned. It is now asserted by counting
+  what the scripted stream was *asked*.
+- The events source is a one-method trait (`ProgressSource`) with a scripted double, so the
+  ordering that costs a bar its last line — an event that arrives after the answer — is a
+  **unit test that fails every run** rather than a race that fails one in a hundred. Six
+  buggy implementations were watched failing before this was called done: no tail (the code
+  as it shipped), a tail with no guard, a tail on an ended stream, a tail that does not stop
+  at its own terminal event, a tail that ignores the session filter, and a tail with no bound
+  — the last of which does not fail with an assertion but with nextest's timeout, which is
+  N65's objection reproduced exactly.
+
+**Why this is not the thing N65 refused.** N65 refused *waiting for a terminal event*, on
+the grounds that "waiting for a terminal event would hang forever whenever one was dropped,
+and dropping is a thing `wch_subscribe_calibration` is explicitly allowed to do". Every word
+of that stands and this tail cannot hang: it waits only when the daemon has not yet said its
+last word, it stops the instant the word arrives, and it is bounded when the word was
+dropped. The distinction is between a wait and a bound — and, separately, between the queue
+N65 counted and the socket the event was still on.
+
+**What this deliberately does not do.** It does not make the daemon order the two writes.
+The honest fix on that side would be a sweep's answer that waits for its own fan-out, and a
+call that waits on a subscriber is exactly what P4e-i's "nothing a client does can wedge the
+daemon" forbids. It does not add a wire method to use as a flush barrier — a round trip
+would cost more than the tail and would still be racing the same two tasks. And it does not
+report a lost terminal event to the operator: `wch` cannot lose one (its sink is
+synchronous), so a line on `wchc`'s stderr would be a divergence in the one place the parity
+gate does not look, for a case whose whole rendering is "the bar stops one short", which is
+what N57 already says a dropped event looks like.
+
+### The recurrence worth naming, and it is now three
+
+Three entries in the register now turn on **a measurement taken on an unloaded machine that
+was read as proof**:
+
+- **N65**: a counting drain, five runs, zero events — a quiet machine, and the mechanism it
+  was looking for needs a loaded one to appear at all;
+- **N67**: eight spinners, 20 runs, no failures, where sixty-four and concurrent `cargo`
+  builds failed 20 of 20 — "a repro recipe that under-loads the machine reads as *cannot
+  reproduce*, which is how a real defect gets recorded as a flake";
+- **this one**: 0 of 20 quiet, 0 of 20 at eight spinners, 0 of 20 at sixty-four, 0 of 60 in a
+  warm-daemon harness — and 2 of 150 under four concurrent workspace suites. Four of those
+  five load levels would have closed the investigation.
+
+The rule the three of them add up to: **for a defect that is an ordering, a green run is
+evidence only if the run's load is stated, and the load has to be the one the defect was
+seen under.** N67 named the condition for its own defect (concurrent builds, not spinners);
+this one's is different again (four concurrent test suites), which is the point — the level
+is a property of the race, not a house constant, so it gets measured per defect and written
+down beside the rate. A measurement with no load stated is not evidence about a race, and
+"zero events on five runs" is the shape that sentence takes when it goes wrong.
+
+**Retires when:** the daemon can no longer answer a sweep before its own terminal event has
+left the process — at which point the tail has nothing to collect and both the drain and
+`CLIENT_SWEEP_DRAIN_MS` retire together. Until then, re-read this entry before deleting the
+tail on the strength of a quiet run: that is precisely how it came to be missing.
