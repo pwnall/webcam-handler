@@ -168,9 +168,26 @@ gate_predicates() {
 # Write the real workspace's `cargo metadata` to a scratch file and echo the path. The
 # failing arms doctor a copy of the real graph rather than inventing one, so a seeded
 # violation differs from the shipped tree in exactly the one way the case describes.
+#
+# **It never echoes an empty path, and that is not defensiveness — it is a measured
+# defect.** Seven case files spell their seeded copy `"$md.seeded"`, so a `$md` that came
+# back empty makes that `.seeded`, resolved against the *checkout* — which is precisely
+# what the paragraph below `gate_scratch_tree` forbids ("predicates have no side effects
+# on the tree, and neither may the cases that exercise them"). It happened: a full scratch
+# filesystem made `mktemp` fail, and a zero-byte `.seeded` appeared at the repository root.
+# `run_case` deliberately runs without `set -e`, so nothing downstream was going to stop
+# it, and inside a `fail_case_` a seeding failure is indistinguishable from the predicate
+# going red — which is the one confusion this harness must not have. So the fallback is a
+# path that is still *outside* the tree: a caller that ignores this failure writes
+# somewhere harmless, and `selftest.sh` catches the class rather than this instance.
 gate_metadata_snapshot() {
-    local out
-    out="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-metadata.XXXXXXXX")"
+    local out scratch
+    scratch="${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}"
+    if ! out="$(mktemp "$scratch/wch-metadata.XXXXXXXX")" || [[ -z "$out" ]]; then
+        printf 'gate: no scratch file for a metadata snapshot in %s (full filesystem?)\n' \
+            "$scratch" >&2
+        out="$scratch/wch-metadata-unavailable.$$"
+    fi
     (
         unset WCH_GATE_METADATA
         gate_metadata >"$out"

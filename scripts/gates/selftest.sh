@@ -34,6 +34,30 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/wch-selftest.XXXXXXXX")"
 export WCH_GATE_SCRATCH="$scratch"
 trap 'rm -rf "$scratch"' EXIT
 
+# What the working tree looked like before any arm ran.
+#
+# The header above states the law — cases never mutate the checkout — and until now that
+# was a convention every case file had to keep on its own. It got broken: a full scratch
+# filesystem made `gate_metadata_snapshot`'s `mktemp` fail, `feature-posture`'s arms
+# expanded `"$md.seeded"` with an empty `$md`, and a zero-byte `.seeded` was written to
+# the repository root. Nothing noticed, because a `fail_case_` that fails for the wrong
+# reason exits non-zero and non-zero is what a failing arm is *supposed* to do.
+#
+# So the law gets a checker. Recorded before and compared after, rather than asserted
+# clean: running the selftest on a dirty tree is the ordinary case for whoever is writing
+# a gate, and "you had uncommitted work" is not a finding. `--porcelain` covers untracked
+# files too, which is the shape the defect actually took. A tree without `git` — a source
+# tarball — skips it, named and counted, because a missing tool is not a violation.
+tree_state() {
+    git -C "$(gate_root)" status --porcelain 2>/dev/null
+}
+tree_before=""
+tree_watched=0
+if git -C "$(gate_root)" rev-parse --git-dir >/dev/null 2>&1; then
+    tree_before="$(tree_state)"
+    tree_watched=1
+fi
+
 # Enumerate the case functions a case file defines. Derived from the file, so adding a
 # violation shape is adding a function.
 list_cases() {
@@ -133,6 +157,20 @@ done < <(gate_predicates)
 
 printf 'selftest: %s predicates, %s pass arm(s), %s fail arm(s)\n' \
     "$predicates" "$pass_arms" "$fail_arms"
+
+# The law this harness's header states, checked rather than trusted. See `tree_before`.
+if ((tree_watched == 1)); then
+    tree_after="$(tree_state)"
+    if [[ "$tree_before" != "$tree_after" ]]; then
+        report_problem "an arm changed the checkout; cases seed violations in scratch copies, never in the tree"
+        diff <(printf '%s\n' "$tree_before") <(printf '%s\n' "$tree_after") |
+            sed 's/^/        /' || true
+    else
+        printf 'selftest: the checkout is as the arms found it\n'
+    fi
+else
+    printf 'selftest: SKIP (1): no git checkout, so "the arms left the tree alone" was not checked\n'
+fi
 
 if ((predicates == 0)); then
     printf 'selftest: FAIL — no predicates found\n' >&2

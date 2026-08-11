@@ -50,7 +50,11 @@ are gate-checked, not trusted.
 **Doc:** design §2.8 lists `directories 6` among the core picks.
 
 **Repo:** no dependency. `webcam-handler-engine::paths` resolves `$XDG_STATE_HOME`
-(fallback `$HOME/.local/state`) and `$XDG_RUNTIME_DIR` directly.
+(fallback `$HOME/.local/state`) and `webcam-handler-schema::paths` resolves
+`$XDG_RUNTIME_DIR`, both directly. (Path citation amended at P4f, when the runtime half
+moved so the thin client could reach it without linking the engine — note **N64**. The
+count and the reasoning below are unchanged: it is still two paths and still ~thirty
+lines, now with one home each.)
 
 **Why:** `directories 6.0.0 → dirs-sys 0.5.0 → option-ext 0.2.0`, and `option-ext` is
 **MPL-2.0**. The license allowlist rejected it on the scaffold's first `cargo deny` run —
@@ -7048,3 +7052,305 @@ line is where PF:22's next transcript will come from.
 
 **Retires when:** PF:22 does, or when `/dev/videoN` becomes load-bearing somewhere the
 comparison would have to follow.
+
+---
+
+## N64 — The runtime path went to the schema and the state path stayed, because the line is what a directory is *for*; five gate files proved they were derived by going red
+
+**Doc:** design §2.10 ("one home per law"), T4 ("a verb exists once"), T6 and
+`scripts/gates/dependency-walls.sh`'s Wall 3 (the thin client links no engine and no
+backend), D11 (the socket's directory is the whole authentication model), and docs/9's
+derived-population rule. Note **N2** is the entry whose path citation this one amends —
+`directories` is still not a dependency and the count is still two paths in ~thirty lines;
+what changed is that they now have one home each.
+
+**Believed:** implicitly, that "the XDG paths" were one subject with one owner, so
+`engine::paths` could hold both because the engine was the first thing that needed either.
+
+**True:** they are two subjects, and P4f is where the difference stopped being academic.
+`wchc` has to resolve `$XDG_RUNTIME_DIR/webcam-handler/wchd.sock` to connect —
+`schema::limits::DAEMON_SOCKET_FILE` already sat in the schema saying so in as many words
+("here rather than in the daemon because `wchc` has to resolve the same path to connect
+(P4f)") — but the other two thirds of that path, `APP_DIR` and `runtime_dir`, were in the
+engine, and Wall 3 forbids the client from linking it. **One string was reachable and the
+rule that composes it was not**, which is a decision left half-finished rather than a
+dependency problem.
+
+**The line, and it is not "who wrote it first".** A **runtime** directory is a *transport*
+fact: the daemon binds a socket in it and a client connects to that socket, and neither
+should have to link a session store to find a file descriptor. A **state** directory is a
+*storage* fact: D9's session tree, touched only by things that already link the engine. So
+`schema::paths` takes `Env`, `SystemEnv`, `MapEnv`, `APP_DIR`, `runtime_dir` and
+`usable_dir`; `engine::paths` keeps `state_dir`. One home each, and deliberately **no
+re-export shim** — a second name for one item is exactly the drift this move exists to
+prevent, and a shim would have made the move invisible to the gates below, which is the
+half of the value.
+
+**One item's home was decided by a dependency instead of by that line, and it says so.**
+`TempRuntimeDir` is a `tempfile::TempDir`. Moving it with the function it makes fixtures
+for would put `tempfile` in the *schema's* shipping edges, to serve tests — so it stays in
+`engine::paths`, and `crates/client`'s tests dev-depend on the engine, which Wall 3 permits
+because it counts shipping edges only. Both module headers carry that sentence rather than
+leaving a reader to wonder why the fixture and the function parted company. It is worth
+naming as a *class*: a boundary drawn by a law can still be bent by a dependency, and the
+honest response is to say which one decided, not to pretend the law did.
+
+**The fact worth keeping, and it is the derived-population rule paying for itself.** Five
+gate files `sed` `APP_DIR` out of the crate that defines it, and **all five went red the
+moment it moved** — `uds-permissions.sh`, `systemd-units.sh`, `socket-activation.sh` and
+the case files for the first and the third, which write stub daemons that have to land
+their sockets where the real one would. (P4f's own `cli-parity.sh` and its cases make it
+seven; they read `crates/schema/src/paths.rs` from the day they were written.) That is the
+rule working exactly as `json-validates.sh`'s header argues
+for it: a gate that had transcribed `"webcam-handler"` would have stayed green and started
+lying, checking a directory nothing binds in against a name nothing uses. A red gate on a
+pure move is not a cost of the move; it is the receipt.
+
+**`Program` is a program identity, not a second surface.** The other half of the same
+commit. `cli_core::Program` is a closed vocabulary (`Wch`, `Wchc`) and the name is a
+**parameter of the parse**: `Program::command()` is `Cli::command().name(self.as_str())`,
+so `--help`, `--version` and the usage block of every clap error come off **one** tree with
+the right binary's name on them. `#[command(name = "wch")]` is gone from the derive, so a
+caller reaching for `Parser::parse` can no longer put `wch`'s name in `wchc`'s mouth by
+accident. The error prefix is the same question and so it is the same value:
+`Program::error_line` owns `{program}: {error}`, read by `wch`'s root and by the two
+`report_probe` diagnostics that also printed it. Forking the tree instead would have been
+the one thing T4 forbids — and it would have made the parity gate a comparison of a surface
+with itself, which `Program`'s own doc records.
+
+**Measured rather than asserted, because a `--help` change is a gate population change.**
+`json-validates.sh` scrapes `wch --help`, and P4f's parity gate scrapes it at two levels, so
+a byte of drift there moves two populations. A 781-line dump — root `--help`, `--version`,
+all ten verbs, every subcommand, and three error paths including clap's usage block — was
+built from the parent commit in a throwaway worktree and diffed against the same dump after
+the change. Same SHA-256 both sides.
+
+**The two new tests are anchored rather than `contains`-based**, and the reason is
+specific: `wch` is a prefix of `wchc`, so `assert!(stderr.contains("wch"))` could never go
+red on the defect it is aimed at. Both were watched failing on a hand-applied inverse.
+`the_command_tree_is_well_formed` now `debug_assert`s once per root, so a tree that is
+malformed under only one of the two names is still caught.
+
+**Retires when:** nothing retires it. It is a boundary, and the entry exists so the next
+person to reach for a re-export shim reads why there is not one.
+
+---
+
+## N65 — The client's runtime has one thread and its sweep has no drain, both measured; and the subscribe-before-call ordering is argued, not proved
+
+**Doc:** design D10 and D12, T5, note **N57** (one declaration, two generated traits; the
+per-client calibration stream and what a subscriber that falls behind is told), note
+**N38** (the way a dependency adoption is re-measured), AGENTS' "bounded everything" and
+its ban on waiting out a timer, and docs/6 §2.8 (the dependency registry).
+
+**Believed** — three things, each of which would have been reasonable to write down without
+checking, and each of which is checked here instead.
+
+**1. That the client's runtime shape is a preference.** It is not, and the difference is
+visible from outside the process. `wchc` runs *one verb per invocation*, so its only
+concurrency is a call and the connection's background task, and a current-thread runtime
+drives both inside the `block_on` that is already there. **Measured:** `wchc list` against a
+real daemon, reading `/proc/self/status` at the moment the client is built, is `Threads: 1`
+as shipped and `Threads: 9` on the same 8-core host with `Builder::new_multi_thread` — eight
+worker threads spawned to serve a program that issues one request. Reaching for them at all
+needs `tokio/rt-multi-thread`, a feature this crate deliberately does not enable, so the
+cheap choice is also the one the manifest makes visible. What it **costs** is stated rather
+than assumed: the background task makes progress only inside `block_on`, so between two
+`Executor` calls this client is not reading its socket. Nothing depends on it doing so —
+pings are off, the daemon sends nothing unsolicited except on a subscription, and the one
+subscription this binary opens is drained inside the same `block_on` as the call it belongs
+to.
+
+**2. That the sweep needs a drain after its `select!` loop.** A counting drain *was*
+written, and then measured: **zero events on every one of five runs**, so it was deleted.
+The absence is a consequence of (1) rather than an omission — on a current-thread runtime
+the connection's background task can only run while this future is awaiting, so nothing can
+be pushed onto the subscription *between* the two polls of one `select!` turn, and the
+`biased;` ordering polls the events first. A poll after the break could only ever find the
+queue empty. An event the *daemon* writes after its response is not waited for either, and
+must not be: waiting for a terminal event would hang forever whenever one was dropped, and
+dropping is a thing `wch_subscribe_calibration` is explicitly allowed to do (N57). This is
+the shape a deleted mechanism should leave behind — a measurement in the doc where the code
+used to be, so the next reader does not re-add it on the same intuition.
+
+**3. That subscribing before calling is proved by the test that exercises it. It is not,
+and this is the honest half.** The ordering matters — the daemon buffers nothing for a
+client that has not arrived (N57: "a parked long-lived `Receiver` would hold a whole
+sweep's events for nobody"), so a subscribe-*after*-call would silently drop the start of
+every sweep. But a subscribe-after-call **mutant stayed green**: the sweep opens a camera
+and settles a sensor before its first event, which is far longer than the round trip a late
+subscribe costs, so the race never lost. The test says so where it is written rather than
+claiming credit for a property it did not establish. Closing it for real needs a daemon
+that emits an event *before* it touches hardware, or a fault seam that holds the first
+emission — neither exists, and inventing one for this would be a fixture asserting the
+thing it was built from. Recorded in docs/7's standing debts.
+
+**The dependency N57 declined to pay, paid here and re-measured.** `jsonrpsee`'s
+`async-client` feature is the only route to the generated *subscription* client —
+`SubscriptionClientT` is unimplementable outside `jsonrpsee-core` — and it drags
+`futures-timer`, which was in neither the lock nor the local cache. N57 named that cost at
+P4e-i and left it; this is the consumer that needs it. Re-measured the way N38 did:
+**exactly one package joins the graph** (`futures-timer 3.0.4`, MIT OR Apache-2.0),
+`webcam-handler-api`'s closure goes 112 → 115, and **no web-stack crate** enters. The
+closure figures are `3992d88`'s, taken at the time; the half of that measurement anyone can
+re-take later is the lockfile, and it agrees — `git diff ed51d18..3992d88 -- Cargo.lock`
+adds exactly one `name =` line, `futures-timer`. Recorded because a package count is only as
+re-checkable as the command that produced it, and a lockfile diff needs no command to be
+remembered.
+
+**Whether `futures-timer` earns an entry of its own: no, and here is the decision.** It is
+an *inert* `[workspace.dependencies]` row — no crate in this workspace names it, and the
+lock is what pins it. An N-entry is a justified deviation or a piece of case law, and there
+is no deviation here: the crate cleared the standing bar (permissive, pinned at adoption,
+no git source), which the owner's 2026-08-09 ruling says is not an escalation. What it
+needed was for the registry row to *say* that nobody names it and that the lock rather than
+that line is what pins the version — an inert row that could otherwise be read as a
+guarantee it does not provide. That sentence is in the manifest and the version is in
+docs/6 §2.8. A second home for it here would be the duplication §2.10 exists to refuse.
+
+**Two smaller decisions, recorded because each had a worse available answer.**
+`Transport::send_ping` is *implemented* rather than defaulted: jsonrpsee's default answers
+`Ok(())` without writing a frame, which is a false claim even while pings are off, and a
+false claim that becomes load-bearing the day somebody turns them on.
+`Incoming::Closed` becomes a refusal rather than a skipped message, so in-flight calls end
+rather than wait for an answer that is not coming.
+
+**And `--backend` reads provenance, not value.** The flag carries `default_value = "v4l2"`,
+so `cli.backend` always holds one and a value check would accept `wchc --backend v4l2` while
+the daemon replayed a profile — a client agreeing with a claim it cannot check. The refusal
+reads clap's `ValueSource` and names `wchd --backend` as where that decision lives. It is
+N42's shape inverted: there, a flag with no consumer stayed absent; here, a flag on the
+shared surface exists once (T4) and the consumer that cannot mean it says so.
+
+**Retires when:** (1) and (2) retire together if `wchc` ever grows a second concurrent
+verb, at which point both measurements are re-taken rather than trusted. (3) retires when
+the daemon can be made to emit a calibration event before it opens a camera, so the
+subscribe-after-call mutant can be watched failing.
+
+---
+
+## E12 — G4 evidence: `wch` and `wchc` byte-identical against the real cameras, 2026-08-11
+
+E9 and E11 are the shape this follows: a dated run against something this project does not
+control. The parity **gate** runs over the fake, deliberately and permanently — the shape of
+an answer must not depend on what is plugged in, and a gate that needed a camera could not
+run in CI. This entry is the other question, asked once: does the claim hold when the
+document on both sides is describing hardware?
+
+**Host:** the P4d/P4e/P4f workstation, kernel `7.0.0-29-generic` (x86_64), four cameras
+attached — the same host and hardware as PF:19, PF:22, E9 and E11. `/dev/video0`
+through `/dev/video9`.
+
+### The run
+
+    $ wchd --backend v4l2 &
+    2026-08-11T13:49:40Z  INFO wchd: wchd is serving socket=…/webcam-handler/wchd.sock backend="v4l2"
+
+    $ for each verb: wch --json <verb> vs wchc --json <verb>
+    list                                    exit 0/0   3871 bytes  sha256:2da17403f98e5e9a…  identical
+    info cam:obsbot-tiny-3-obsbot-tiny-3-st exit 0/0   8415 bytes  sha256:8aa88aa4b961d615…  identical
+    controls cam:obsbot-tiny-3-…            exit 0/0  12974 bytes  sha256:b31f53457d08347c…  identical
+    get cam:obsbot-tiny-3-… brightness      exit 0/0    378 bytes  sha256:99db3b3cd0ee4616…  identical
+    calibrate list cam:obsbot-tiny-3-…      exit 0/0     21 bytes  sha256:655fa99a5156e03d…  identical
+
+    $ kill -TERM <wchd>
+    2026-08-11T13:49:40Z  INFO daemon::shutdown: wchd is stopping signal="SIGTERM"
+    wchd exit=0
+
+The cameras `list` enumerated, from the same run:
+
+    cam:obsbot-tiny-3-obsbot-tiny-3-st   uvcvideo   OBSBOT Tiny 3: OBSBOT Tiny 3 St
+    cam:integrated-camera-integrated-c   uvcvideo   Integrated Camera: Integrated C
+    cam:integrated-camera-integrated-i   uvcvideo   Integrated Camera: Integrated I
+    cam:dell-u3224kb-a-4k-webcam         uvcvideo   Dell U3224KB/A 4K Webcam
+
+### What this run establishes
+
+All five compared verbs are **byte-identical** across the two roots over the real v4l2
+backend — one of them a PTZ device whose control set the fake's profiles were captured from,
+and one of them the 4K monitor webcam. The daemon **exits 0 on the SIGTERM that ends the
+run**, which is P4e-ii's teardown discipline under its first real client rather than under a
+test harness.
+
+Two things are worth naming because they are load-bearing and easy to read past.
+**`wch` and `wchd` had the same devices open at the same time**, and neither refused: a
+control read does not stream, and exclusive streaming is the constraint (D12), so
+"availability is not capability" (E3) has an everyday shape here — two processes reading one
+camera's controls is not contention. And **`calibrate list` answered 21 bytes from both
+roots**, which is the empty-session document; a comparison of two empty answers proves less
+than the others and is recorded as the weakest row rather than counted as an equal.
+
+### What it does not establish
+
+That any *write* verb agrees across the two roots against real hardware — none was compared,
+for the reason the gate's own table gives: `wch` and `wchd` would drive two different opens
+of one device and a comparison would be of two states. That the parity holds for the four
+verbs the gate exempts as `device`, which have no real-hardware comparison anywhere. That it
+holds on a machine with no cameras, where both roots answer an empty list and the comparison
+is vacuous — which is the case CI would have run had this been a gate. And nothing about the
+`wchc` sweep's progress rendering, which needs a terminal to draw anything and was not part
+of this run.
+
+
+---
+
+## N66 — The mutation floor spent the whole filesystem and spelled the shortfall as a FAIL, which is N52's finding in a second dimension
+
+**Doc:** AGENTS rule 3 ("CI executes what it claims … never silence"), rule 1 (a discovered
+defect class lands with its gate), docs/9's mutation-floor row, and notes **N52** (the
+floor's verdict once moved with `nproc`) and **N60** (what a floor that cries wolf costs:
+"it gets re-run at `-j1` until it agrees, and the run after that is the one where a real
+survivor is waved through"). Found at the **P4f** boundary, running `just gate-g4`.
+
+**Believed:** that `scripts/mutants.sh`'s job trimming — divide the build root's free space
+by a measured per-job figure — was the conservative half of the script. It reads that way:
+the figure was measured rather than guessed (3 GiB per tree, with `CARGO_PROFILE_DEV_DEBUG=0`
+already applied for exactly this reason), and the trim prints what it did, out loud.
+
+**True:** dividing by the per-job figure spends **all** of it. On this host that was
+`16 / 3 = 5` jobs at 3 GiB in a 16 GiB `tmpfs` — 15/16 of the filesystem, with the run's own
+`target/mutants.out`, the nextest artifacts and everything else on `/tmp` expected to fit in
+the remainder. It had been true for as long as a build tree stayed under three gigabytes.
+P4f added a crate — a library, a binary and a subprocess integration suite, with
+`jsonrpsee/async-client` and `soketto` on a new shipping edge — and the tree went a little
+over.
+
+**What was measured.** The run died **fifteen minutes in**, with 23 mutants caught and 502
+untested:
+
+    ERROR Worker thread failed: failed to overwrite "/tmp/cargo-mutants-webcam-handler-zT14Sf.tmp/crates/imaging/src/metrics.rs"
+    Caused by:
+        Disk quota exceeded (os error 122)
+    mutants: cargo-mutants exited 137 after 15m0s
+    mutants: FAIL — cargo-mutants could not complete (exit 137); see target/mutants.out
+
+**And that last line is the defect, not the disk.** A filesystem that filled is a
+resource fact and a slow, annoying, entirely legible one. What this job did with it was
+report **FAIL**, which is the same word a surviving unaccepted mutant gets and the same
+non-zero `just gate-g4` gets — so the floor's verdict was, for those fifteen minutes, a
+function of how much room `/tmp` happened to have. That is precisely N52's shape ("the same
+tree answered FAIL at 8 jobs and PASS at 4") in a second dimension: N52 was about *time* and
+pinned `minimum_test_timeout`; this one is about *space*. Two dimensions is enough to call it
+a class rather than two accidents, and the class is: **a floor whose budget is derived from
+the machine can spell the machine's shortfall as a statement about the code.**
+
+**Changed:** one line of arithmetic and the paragraph that argues it. `per_job_gib` stays the
+measurement it is — it was measured and it should not be inflated to buy headroom, because
+then it is no longer a measurement — and a **`reserve_gib`, one job's worth, is held back
+from the budget** before the division. On this host that is `(16 - 3) / 3 = 4` jobs rather
+than five, and the two printed lines say what was held back, so a reader of CI output can
+see the difference between "this host runs four jobs" and "this host ran out". Re-run at the
+P4f boundary: 4 jobs, no disk error.
+
+**What this deliberately does not do.** It does not make the floor's exit code distinguish a
+resource failure from a survivor. That is the deeper fix and it is a bigger one — the exit
+would have to be a third outcome that `phase.sh` understands, and a third outcome is a thing
+a gate table can get wrong in its own way. The reserve removes the instance; the class stays
+open, and it stays open **on the record** rather than in somebody's memory of a bad
+afternoon.
+
+**Retires when:** either the floor grows that third outcome — a resource shortfall reported
+as a named, counted refusal rather than as a verdict — or the build root stops being a
+`tmpfs` sized in the same order as one build tree. Until then, re-read this entry before
+raising `per_job_gib`: the figure and the budget are two different numbers, and conflating
+them is how this happened.

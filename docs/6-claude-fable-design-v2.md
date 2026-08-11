@@ -773,6 +773,22 @@ binaries: in-process engine (`wch`) and generated RPC client (`wchc`). A verb, i
 and its rendering exist once; the two binaries differ only in executor and connection
 bootstrapping. `wch` refuses politely when the daemon holds the state lock (D9/D13).
 
+**As built at P4f, three refinements of that paragraph.** `wchc`'s executor lives in
+`webcam-handler-client`'s **library** rather than in its binary — `src/main.rs` is four
+lines — because the sweep's progress goes to a `SweepWatcher` and the shipped watcher is an
+indicatif bar that draws *nothing* when stderr is not a terminal, so a suite that could only
+see a subprocess could assert that a sweep answered and never that its events arrived. The
+root's **name is a parameter of the parse** (`cli_core::Program`, note N64), not a property
+of the tree, so both roots' `--help`, `--version`, clap usage blocks and `{program}: {error}`
+lines come off one command tree. And the two binaries differ in one thing more than the
+executor: `--backend` and `--profile` are **global flags a client cannot honour**, because
+the daemon chose its backend at its own composition root, so `wchc` **refuses** them —
+reading clap's `ValueSource` rather than the value, since `--backend` carries a default —
+and names `wchd --backend` as where that decision lives. Ignoring them would let a script
+pointed at real cameras believe it was replaying a profile; forking the surface is what T4
+forbids. `scripts/gates/cli-parity.sh` compares the two roots' `--json` on every read verb
+and buckets the rest with a reason apiece.
+
 **The web client.** Vanilla ES modules, no build step, no npm, no CDN (assets embed;
 external fetches would violate both the offline posture and the license inventory): a
 ~50-line JSON-RPC-over-WebSocket helper, `<img>` for MJPEG preview, controls rendered
@@ -810,7 +826,10 @@ webcam-handler/
                         #              backend factory match]
     priv/               # webcam-handler-priv    (bin wch-priv) [dev-only privileged helper (§2.13);
                         #              never a dependency of any product crate — gate-asserted]
-    client/             # webcam-handler-client  (bin wchc) [cli-core + jsonrpsee client; links no backend]
+    client/             # webcam-handler-client  (bin wchc) [cli-core + jsonrpsee client
+                        #              (async-client) + soketto + tokio-util(compat) + tokio(rt,net);
+                        #              links no backend and no engine (T6). A lib, not just a bin, so a
+                        #              test can hand the executor a recording sweep watcher]
     daemon/             # webcam-handler-daemon  (bin wchd) [engine + both backends + factory match +
                         #              jsonrpsee server, rustix(fs,net,process) — N39's dirfd-held
                         #              socket directory, safe-wrapped so this crate stays
@@ -917,7 +936,17 @@ one stop token, cloned to every open subscription and to the idle-sweep driver. 
 edge deliberately carries **no feature**, because `sync` is unconditional in 0.7.19 and a
 feature enabled on a normal edge is enabled for every build of the workspace; the dev entry
 keeps `compat`, which is why one package is two entries), jsonrpsee 0.26 (MIT;
-0.x — minor pinned workspace-wide), rust-embed 8 (MIT; solo maintainer on a self-hosted
+0.x — minor pinned workspace-wide; **the `async-client` feature is adopted at P4f** on
+`webcam-handler-client`, being the only route to the generated *subscription* client the
+sweep needs, and re-measured the way N38 measured the server's: exactly **one** package
+joins the graph and no web-stack crate does), futures-timer 3.0.4 (MIT OR Apache-2.0; that
+one package. **No crate in this workspace names it** — it is `jsonrpsee`'s dependency,
+carried here as an inert `[workspace.dependencies]` row so the adoption is visible in the
+registry, and the lock rather than that line is what pins the version. N57 named its cost
+at P4e-i and declined to pay it; P4f is the consumer that needed it. The adoption was
+re-measured the way N38 measured the server's, and the durable form of that measurement is a
+lockfile diff: **exactly one package name joins `Cargo.lock`** across the commit, and it is
+this one. `3992d88` records the dependency-closure figures it took at the time), rust-embed 8 (MIT; solo maintainer on a self-hosted
 forge — reviewed on bump, `include_dir` fallback), zune-jpeg 0.5 (MIT/Apache/Zlib), yuv
 0.8 (BSD-3/Apache), image 0.25 `default-features=false, features=["png","jpeg"]`
 (MIT/Apache; the default `avif` feature drags rav1e — never enable by accident), png 0.18,
@@ -946,17 +975,23 @@ the `LISTEN_FDS`/`LISTEN_PID` protocol, taken as a dependency for the half that 
 protocol: `take_unix_listener` validates that the descriptor really is a listening `AF_UNIX`
 stream socket, which is the check that stops a `from_raw_fd` on a passed-in number being a lie
 this process then serves from. Its `libc` edge is its own — the daemon stays
-`#![forbid(unsafe_code)]` and adds none), soketto 0.8.1 (Apache-2.0 OR MIT, **dev-only** edge of `webcam-handler-daemon`,
-adopted at P4e-i: it is jsonrpsee-server's *own* WebSocket implementation and already in the
-lock through it, so the subscription suite's hand-driven upgrade over `AF_UNIX` and the
-daemon's frame layer cannot disagree about what a frame is. Deliberately not jsonrpsee's
-client — `SubscriptionClientT` is unimplementable outside `jsonrpsee-core` (note N57) and
-`wchc`'s transport is P4f's), kamadak-exif 0.6 (BSD-2, **dev-only**: the independent EXIF reader that
+`#![forbid(unsafe_code)]` and adds none), soketto 0.8.1 (Apache-2.0 OR MIT, adopted at P4e-i as a
+**dev-only** edge of `webcam-handler-daemon` and **a shipping edge of
+`webcam-handler-client` since P4f**: it is jsonrpsee-server's *own* WebSocket
+implementation and was already in the lock through it, so the subscription suite's
+hand-driven upgrade over `AF_UNIX`, `wchc`'s transport and the daemon's frame layer cannot
+disagree about what a frame is. The P4e-i entry noted that it is deliberately *not*
+jsonrpsee's client, because `SubscriptionClientT` is unimplementable outside
+`jsonrpsee-core` (note N57); P4f is where that resolved — `wchc` uses soketto for the
+handshake and the frames and wraps it in `TransportSenderT`/`TransportReceiverT` so
+jsonrpsee's own async client drives one connection carrying calls *and* subscriptions), kamadak-exif 0.6 (BSD-2, **dev-only**: the independent EXIF reader that
 verifies what little_exif wrote — a gate-commissioned test oracle gets its §2.8 entry at
 commissioning time, docs/9). `directories` was dropped before the scaffold settled [N2]:
 it drags MPL-2.0 `option-ext`, the license gate caught it on its first run, and the tool
-needs exactly two XDG paths on one platform — `engine::paths` owns them in ~thirty
-lines, and the transitive culprit is on the ban list so the drop cannot silently revert.
+needs exactly two XDG paths on one platform — `schema::paths` owns the runtime one and
+`engine::paths` the state one, in ~thirty lines between them (split at P4f, §2.10: a
+runtime directory is a transport fact and a state directory a storage one), and the
+transitive culprit is on the ban list so the drop cannot silently revert.
 Test-time external tooling, outside the shipped license
 inventory but named here so it is chosen once: ffprobe/mpv as container oracles, and a
 pinned Playwright + Chromium for the browser rung (§3.1) — node is a test-host

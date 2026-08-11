@@ -20,8 +20,10 @@ type, the backend traits, `BackendKind`),
 `webcam-handler-imaging` (codecs, our AVI muxer, metrics), `webcam-handler-engine` (camera actors, guarded
 writes, snapshot/restore, calibration, session store), backends behind one trait
 (`webcam-handler-v4l2` real, `webcam-handler-fake` replaying **captured device profiles**), `webcam-handler-api` (the one
-jsonrpsee wire surface), binaries `wch` (direct CLI), `wchd` (daemon: JSON-RPC over UDS
-always, web client over opt-in loopback TCP + token), `wchc` (daemon CLI client),
+jsonrpsee wire surface), binaries `wch` (direct CLI, in `webcam-handler-cli`), `wchd`
+(daemon: JSON-RPC over UDS always, web client over opt-in loopback TCP + token, in
+`webcam-handler-daemon`), `wchc` (daemon CLI client, in `webcam-handler-client` — a lib as
+well as a bin, so a test can drive the executor a subprocess cannot observe),
 `webcam-handler-web` (vanilla-JS, embedded, Chrome-targeted — Firefox/Safari best-effort,
 never a feature constraint). `wch` and `wchc` share one command surface via
 `webcam-handler-cli-core` — a verb exists once; `wchc` links no backend and no engine.
@@ -184,7 +186,11 @@ green and the notes current, and the phase review gets its own session.
 - For a phase-closing change: the docs/7 gate criteria hold as named, counted,
   re-runnable commands; hardware evidence recorded in the notes with transcripts.
 - New device behavior landed as corpus + notes, not prose in a PR description.
-- `--json` output round-trips against the committed schemas; `wch`/`wchc` parity holds.
+- `--json` output round-trips against the committed schemas; `wch`/`wchc` parity holds —
+  which since P4f is `./scripts/gates/cli-parity.sh` rather than an aspiration: it compares
+  the two roots byte for byte on every read verb over the fake, and puts every other verb
+  `wch --help` offers in a named bucket with a reason, because a verb neither compared nor
+  named is the way this claim quietly stops being true.
 
 ## Docs and dependencies
 

@@ -116,25 +116,39 @@ export CARGO_PROFILE_TEST_DEBUG=0
 # against not running at all.
 #
 # The job count is then trimmed to what the build root can actually hold, out loud, from a
-# per-job figure measured with the debug info off.
+# per-job figure measured with the debug info off — **and one job's worth is held back**.
+#
+# The reserve is not caution, it is a defect this job already had (note **N66**). Dividing
+# the free space by the per-job figure spends the whole filesystem: on this host that was
+# five jobs at three GiB in a sixteen GiB `tmpfs`, 15/16 of it, and the P4f boundary run
+# died fifteen minutes in with `Disk quota exceeded` — because the figure was measured on a
+# workspace that has since grown a crate, and a build tree that is now a little over three
+# GiB needs the sixteenth. What made that worse than slow is what it *said*: the floor
+# exited 137 and reported FAIL, which is the same verdict a surviving mutant gets. A gate
+# whose resource budget can spell itself as a survivor is N52's finding in a second
+# dimension, and N60 records what the reflex costs — a run that is re-run until it agrees is
+# a run nobody reads. So the figure stays the measurement it is, and the *budget* leaves a
+# tree's worth of room.
 build_root="${WCH_MUTANTS_BUILD_ROOT:-${TMPDIR:-/tmp}}"
 mkdir -p "$build_root"
 export TMPDIR="$build_root"
 
 per_job_gib=3
+reserve_gib="$per_job_gib"
 avail_gib="$(df -BG --output=avail "$build_root" | tail -1 | tr -dc '0-9')"
-fits=$((avail_gib / per_job_gib))
+fits=$(((avail_gib - reserve_gib) / per_job_gib))
 if ((fits < 1)); then
-    printf 'mutants: FAIL — %s has %s GiB free and one build tree needs about %s; set WCH_MUTANTS_BUILD_ROOT to a larger filesystem\n' \
-        "$build_root" "$avail_gib" "$per_job_gib" >&2
+    printf 'mutants: FAIL — %s has %s GiB free and one build tree needs about %s with %s held back; set WCH_MUTANTS_BUILD_ROOT to a larger filesystem\n' \
+        "$build_root" "$avail_gib" "$per_job_gib" "$reserve_gib" >&2
     exit 1
 fi
 if ((fits < jobs)); then
-    printf 'mutants: %s has %s GiB free, so %s job(s) rather than %s (about %s GiB each)\n' \
-        "$build_root" "$avail_gib" "$fits" "$jobs" "$per_job_gib"
+    printf 'mutants: %s has %s GiB free, so %s job(s) rather than %s (about %s GiB each, %s GiB held back)\n' \
+        "$build_root" "$avail_gib" "$fits" "$jobs" "$per_job_gib" "$reserve_gib"
     jobs="$fits"
 fi
-printf 'mutants: build directories under %s (%s GiB free)\n' "$build_root" "$avail_gib"
+printf 'mutants: build directories under %s (%s GiB free, %s GiB held back)\n' \
+    "$build_root" "$avail_gib" "$reserve_gib"
 declare -a extra=()
 if [[ "${WCH_MUTANTS_ITERATE:-0}" == "1" ]]; then
     # Development convenience only: re-runs skip what a previous run already caught. A

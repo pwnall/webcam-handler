@@ -90,11 +90,16 @@ exist because of it.
   flight, so the count needed a permit pool rather than an arithmetic argument (note
   **N59**). The flag changes *when* the answer arrives and never what it says: the refusal
   at the bound is the same `Error::Busy` with the same empty holder list, and so is the
-  refusal a caller past the permit pool takes. The third item took its **permitted alternative — an argued absence** of a
-  command-line spelling: `wch` opens its own camera per invocation, so the queue the flag
-  chooses about is always empty, and the consumer where it means something is `wchc`, whose
-  transport is P4f's. The argument is written where the absence is, in
-  `cli_core::Command::photo_request`, and in N42.
+  refusal a caller past the permit pool takes. ~~The third item took its **permitted
+  alternative — an argued absence** of a command-line spelling: `wch` opens its own camera per
+  invocation, so the queue the flag chooses about is always empty, and the consumer where it
+  means something is `wchc`, whose transport is P4f's.~~ **The third item is discharged at
+  P4f** (note **N42**, whose own words were "it stays a wire field until the surface that can
+  mean it exists"): that surface is `wchc`, so `--wait` is a flag now. It is on the *shared*
+  T4 root, because a verb exists once, and its `--help` says out loud that it is inert under
+  `wch` rather than leaving a user to find out. No committed artifact moved, as N42 predicted
+  for a `#[serde(default)]` field, and `schema-artifacts-current.sh` is the proof of that
+  rather than the prediction.
 - **Two `engine` integration tests can be handed a different typed error by a loaded
   machine**, and the mutation floor found it (note **N60**).
   `crates/engine/tests/sweep.rs` builds its context with `MonotonicClock::new()` — a real
@@ -194,6 +199,26 @@ exist because of it.
   there, and says which of the two paths it is on at startup so the difference is legible in
   the journal. Nothing schedules it, and nothing can without a `bindat(2)` Linux does not
   have.
+- `wchc`'s **subscribe-before-call ordering is argued, not proved** (note **N65**). The
+  daemon buffers nothing for a client that has not arrived (N57), so a sweep that called
+  before it subscribed would silently drop the start of every run — and yet a
+  subscribe-*after*-call mutant stayed **green**, because the sweep opens a camera and settles
+  a sensor before its first event, which is far longer than the round trip a late subscribe
+  costs. The race never loses, so no test can watch it lose. Closing it needs a daemon that
+  emits a calibration event *before* it touches hardware, or a fault seam that holds the first
+  emission; neither exists, and building one for this claim alone would be a fixture asserting
+  the thing it was built from. The method's own doc says which of its four steps is measured
+  and which is reasoned. Nothing schedules it.
+- Under `--task`, `wchc calibrate sweep`'s **progress filter admits another camera's sweep of
+  the same control** (note **N65**, `remote::SweepFilter`). Which session occupies a task slot
+  is a fact only the daemon holds until the call answers — which is *after* every event has
+  been rendered — so the filter falls back to the one thing the request does pin down, the
+  control being swept. Named by `--session <uuid>` it is exact. The rejected alternative was to
+  resolve the task to an id with a `calibrate_status` call before subscribing, and it was
+  rejected for a reason worth keeping: it changes *which* D13 refusal a bad `--task` produces
+  — the status verb's rather than the sweep's — and `cli-parity.sh` compares exactly that
+  against `wch`. What is lost is a bar's accuracy, on a daemon running two sweeps at once.
+  Nothing schedules it.
 - The `wch-priv` powers are broader than demonstrated need, time-boxed to the plan; P6e
   executes the narrowing ruling (N8).
 - ~~The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.~~
@@ -519,15 +544,68 @@ can drift while both stay green.
 
 ### P4f — `wchc` and parity
 
-**Lands:** the UDS client transport (~200 lines, modeled on reth's IPC adapter —
-vendored knowledge, not a git dependency); the T4 executor over the generated client;
-connection bootstrapping and the daemon-not-running refusal; subscription rendering
-(live sweep progress in `wchc`); documented exit codes.
+**Lands** (`ed51d18`, `3992d88`), in two commits, and the first of them contains no `wchc`
+code at all: it removes the one structural obstacle standing in front of it. **The paths
+split and the program identity.** `wchc` has to resolve
+`$XDG_RUNTIME_DIR/webcam-handler/wchd.sock`, and `schema::limits::DAEMON_SOCKET_FILE` already
+sat in the schema saying so — but `APP_DIR` and `runtime_dir` were in `engine::paths`, which
+the thin-client wall forbids `wchc` from linking (T6). One string was reachable and the rule
+that composes it was not. The line drawn is *what a directory is for*: a runtime directory is
+a **transport** fact and goes to `schema::paths`, a state directory is a **storage** fact and
+stays in `engine::paths`, one home each (§2.10) and **no re-export shim**. `cli_core::Program`
+is the other half — a closed vocabulary whose value is a *parameter of the parse*, so
+`--help`, `--version`, every clap usage block and `{program}: {error}` come off **one** tree
+with the right binary's name on them; `#[command(name = "wch")]` left the derive, so nobody
+can put `wch`'s name in `wchc`'s mouth by accident. Note **N64**. **Then the client itself:**
+the UDS transport — a soketto handshake wrapped in jsonrpsee's two transport traits, 96
+non-comment lines, one connection carrying calls *and* subscriptions because
+`calibrate sweep` needs both — the T4 `Executor` over the generated client, bootstrapping,
+the daemon-not-running refusal, live sweep progress, D12's `--wait` flag, and the two
+composition-root flags refused rather than ignored.
 
-**Proves / gate rows:** the **CLI parity gate**: `wch <verb> --json` and
-`wchc <verb> --json` byte-identical on every read verb over the fake, the population
-derived from the T4 verb list with local-only verbs named, never silently exempted;
-`wchc` subprocess tests over pass and fail trees.
+**What it found, which is not what it planned.** Four things, each recorded where it lives.
+(1) **"Modeled on reth's IPC adapter" is a shape, not a framing** — reth's IPC is
+newline-framed raw JSON-RPC and `wchd` speaks HTTP/1.1 with a WebSocket upgrade on the same
+socket, so what carried over was the `TransportSenderT`/`TransportReceiverT` idea and none of
+the framing. (2) **Five gate scripts went red the moment `APP_DIR` moved**, because they
+`sed` it out of the crate that defines it — the derived-population rule paying for itself,
+since a transcribed constant would have stayed green and started lying (N64). (3) **Two
+things were measured rather than asserted and one of them was then deleted**: the runtime is
+current-thread (`Threads: 1` as shipped, `Threads: 9` with `new_multi_thread` on this 8-core
+host), and the sweep's drain was written, measured at **zero events over five runs**, and
+removed, because on a current-thread runtime nothing can be pushed between the two polls of
+one biased `select!` turn (N65). (4) **The subscribe-before-call ordering is argued, not
+proved** — a subscribe-after-call mutant stayed green, because the sweep opens a camera and
+settles a sensor before its first event. The test says so rather than claiming credit, and it
+is in the standing debts above.
+
+**Two debts discharged and one deliberately not.** N42/N56's `--wait` had taken its
+permitted alternative, an *argued absence* of a command-line spelling, whose own words were
+"it stays a wire field until the surface that can mean it exists" — that surface is `wchc`,
+so the flag lands here, on the shared T4 root, with its `--help` saying it is inert under
+`wch`. No committed artifact moved, exactly as N42 predicted for a `#[serde(default)]` field.
+N57's declined dependency is paid: `jsonrpsee/async-client` is the only route to the
+generated subscription client and it drags `futures-timer`; re-measured the way N38 did,
+**one** package joins the graph, `api`'s closure goes 112 → 115, and no web-stack crate
+enters. **N48's `terminate_holder` is not discharged** and stays where it is: it still has no
+T4 spelling, so it is out of the parity population by construction rather than by exemption.
+
+**Proves / gate rows:** four new `g4` rows. `./scripts/gates/cli-parity.sh` — the **CLI parity
+gate** docs/9 commissioned: `wch <verb> --json` and `wchc <verb> --json` byte-identical on
+every read verb over the fake, the population scraped from `wch --help` at both levels with
+an exact row match, and **every** leaf in one of four named buckets (compared; exempt-session;
+exempt-device; exempt-stamped) so that a verb in no bucket is a failure. Three of the four
+buckets carry a check their own reason implies — the session verbs are shown to be refused to
+`wch` by D9's store lock *in that refusal's own words*, and `snapshot`'s exemption is measured
+to be exactly one field (`taken_at`) wide rather than asserted. docs/9's "local-only verbs
+(none at P4)" is **tested** rather than repeated: every exempt verb is driven through `wchc`
+alone and must answer, and a verb only `wch` could run would name itself there. It came back
+none, so the claim survived. The gate also exercises the property its own fixture rests on —
+one `wch` reads the very state directory a live `wchd` holds, because read verbs take no lock
+under either D9 protocol. Then `binary(wchc)`, the subprocess suite; the client crate's unit
+tests; and the `cli-core` tests that pin one command tree with one name per root. Evidence
+**E12**: the same comparison run once against the **real** cameras over v4l2, five verbs
+byte-identical, with the daemon exiting 0 on the SIGTERM that ended the run.
 
 ### P4g — G4 close
 
