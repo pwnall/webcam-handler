@@ -100,7 +100,7 @@ exist because of it.
   `wch` rather than leaving a user to find out. No committed artifact moved, as N42 predicted
   for a `#[serde(default)]` field, and `schema-artifacts-current.sh` is the proof of that
   rather than the prediction.
-- **Two `engine` integration tests can be handed a different typed error by a loaded
+- ~~**Two `engine` integration tests can be handed a different typed error by a loaded
   machine**, and the mutation floor found it (note **N60**).
   `crates/engine/tests/sweep.rs` builds its context with `MonotonicClock::new()` — a real
   clock — where AGENTS.md's convention is "settle logic runs on a stepped clock in tests",
@@ -111,7 +111,29 @@ exist because of it.
   rather than a line, and it is worth doing *before* G4 closes: until it is done, a
   second-direction failure of the acceptance register means "investigate" rather than
   "delete the line", which is a slower gate than the one P3f commissioned. Nothing
-  schedules it yet.
+  schedules it yet.~~ **Discharged before the G4 boundary, at `364ea5f`** — between P4f's
+  close and P4g, which is where a debt bound to a *gate* rather than to a sub-milestone
+  comes due (note **N67**, whose own opening says it discharges "the one docs/7 bound to
+  the G4 boundary"). Both halves of this bullet were wrong. The repair was **not** blocked
+  on `SteppedClock`'s `Sync` question, because
+  that question never arises on the path that was broken: `tests/sweep.rs` and
+  `engine::calibrate`'s unit tests call `calibrate::run` on the test's own thread, and
+  `tests/faults.rs` had been passing `&SteppedClock::new(0)` on that same path since P3.
+  What those tests need is not a clock they *step* — not one of them has anything to say
+  about a duration — but one that cannot reach the deadline at all, which is
+  `engine::settle::FrozenClock`: stateless, therefore `Sync` **by construction**, so N45's
+  ruling is untouched rather than worked around. And the scope was **not** two tests: under
+  sixty-four spinners the old code failed six of seventeen per run, one of them
+  `engine::calibrate`'s own unit test, and the population was ten sites in `calibrate.rs`,
+  six in `tests/sweep.rs` and one in the daemon's `mutating_verbs.rs`. The floor's per-mutant
+  log could only ever name the test that lost the race *first*, which is the lesson N67
+  keeps: a determinism defect found through a symptom has its population measured before it
+  is scoped. Measured fixed at 50 runs / 0 failures against 20 of 20 unfixed at sixty-four
+  spinners. AGENTS' testing rule now names both clock shapes. What stays open is named
+  there and not here: `daemon::server`'s `Inner` and `calibrate_sweep` each build their own
+  `MonotonicClock` inside the actor closure, so a daemon test that takes a real photo still
+  settles on a clock no test can reach — *exposed* rather than observed (5 runs at
+  sixty-four spinners, 0 failures), and not blocked on N45 either.
 - `terminate_holder` reached the wire at P4c with **no command-line spelling**, and the
   absence is counted rather than assumed (N48). `schema::report`'s header had already put
   `TerminationReport` in the OpenRPC document rather than the JSON Schema bundle for that

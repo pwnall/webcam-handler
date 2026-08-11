@@ -3120,7 +3120,7 @@
                 "type": "null"
               }
             ],
-            "description": "The bytes, for a `Sink::ReturnBytes` request; absent for `Sink::ServerPath`.\n\n`Option` rather than an empty vector, because \"the caller asked for a file\" and\n\"the caller asked for bytes and got none\" are different answers, and\n[`PhotoResponse::bytes_match_the_delivery`] is the predicate that tells them apart\nonce a consumer exists to call it (P4c/P4f — see that method's own note)."
+            "description": "The bytes, for a `Sink::ReturnBytes` request; absent for `Sink::ServerPath`.\n\n`Option` rather than an empty vector, because \"the caller asked for a file\" and\n\"the caller asked for bytes and got none\" are different answers, and\n[`PhotoResponse::bytes_match_the_delivery`] is the predicate that tells them apart,\ncalled at both ends of the socket since P4f (see that method's own note)."
           },
           "report": {
             "$ref": "#/components/schemas/PhotoReport",

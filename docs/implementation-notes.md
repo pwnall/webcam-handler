@@ -3121,11 +3121,42 @@ two places the entry named rather than in one convenient one:
   daemon suite asserts the predicate again from the *client* side on every photo answer it
   receives, which is the half `wchc` will do at P4f.
 
-One row remains, and it still names its sub-milestone: `api::codes::typed`'s client-side
-consumer is P4f's `wchc`.
+~~One row remains, and it still names its sub-milestone: `api::codes::typed`'s client-side
+consumer is P4f's `wchc`.~~
 
-**Retires when:** P4f lands its call site. Each declaration names which, so the review that
-closes G4 can check them off rather than rediscover them.
+**Checked off at the G4 boundary, 2026-08-11 (docs/7 P4g), and verified in the tree rather
+than read off the commit that claims it.** The last row is discharged. `api::codes::typed`'s
+client-side consumer is `client::remote::refusal` (`crates/client/src/remote.rs:175`, called
+at `:159`, `:611` and `:624` — the three places a `jsonrpsee` `ClientError` can reach this
+crate, and there is no fourth). It is the whole of the branch: `ClientError::Call(object)`
+whose payload `codes::typed` accepts becomes that `schema::Error`, and **everything else**
+becomes `Error::StorageIo` naming the socket rather than being dressed up as a camera answer
+(E3 — availability is not capability). The reconstructed value is rendered once, at
+`crates/client/src/main.rs:36`, through the same `Display` `wch` renders it with, which is
+the identity `./scripts/gates/cli-parity.sh` compares byte for byte; the smallest place it
+can be watched is `crates/client/tests/wchc.rs:216–227`, where `wchc --json get <cam>
+warp_drive` exits 1 with `wchc: no control named "warp_drive"` — a D13 error that crossed the
+wire and came back typed, asserted in both directions against a control the camera does have.
+**All four rows of this entry are now discharged**, each in the sub-milestone it named: the
+`DiscoveryReport` assembly at P4c, `Sink::is_addressable` and
+`PhotoResponse::bytes_match_the_delivery` at P4c, and the decode at P4f.
+
+**One thing the check-off found and did not fix, because a declaration is the thing this
+entry is about.** `PhotoResponse::bytes_match_the_delivery`'s own doc comment still says
+"**One of its two consumers landed at P4c** and the other is still owed … The one still owed
+is `wchc` … (P4f); until then a truncated payload is refused by the sender and by nobody on
+the receiving end" (`crates/api/src/photo.rs:152–160`, and the field's own comment at
+`:134`). The consumer landed: `client::remote` calls it at `crates/client/src/remote.rs:468`
+on every photo answer it receives, and E13's hardware arm drives that call against three real
+cameras. So the declaration now names a gap that has closed — which is this entry's own
+mechanism ("each declaration names which") pointed the wrong way, and is exactly the rot A8's
+row exists to prevent one level up. Recorded here, at file:line, for the G4 review to price;
+not fixed in the commit that found it.
+
+**Retires when:** ~~P4f lands its call site.~~ Nothing further — every row named its
+sub-milestone and every sub-milestone landed. Each declaration named which, so the review
+that closes G4 checked them off rather than rediscovering them, which is the whole return on
+having written them down.
 
 ---
 
@@ -3987,11 +4018,39 @@ population and P4f's parity population on the way (note N48's precedent) for a `
 that had to say it did nothing here. It is a wire field until the surface that can mean it
 exists.
 
+**Checked off at the G4 boundary, 2026-08-11 (docs/7 P4g), and verified in the tree.** This
+entry asked to be checked off "in note N34's shape", and the obligation it carries — D12's
+`wait` flag — is **discharged in all three of its parts**, the third of which landed after
+the paragraph above was written and is recorded here rather than left to docs/7 to assert on
+this entry's behalf:
+
+1. *The wire shape*: `schema::capture::PhotoRequest::wait`, `crates/schema/src/capture.rs:684`,
+   `#[serde(default)]` with the doc at `:661` quoting D12's sentence. Both `schemas/`
+   artifacts moved with it at P4e-i, in their own commit.
+2. *The actor machinery*: `daemon::server::enqueueing` (`crates/daemon/src/server.rs:1168`) is
+   the one place the field is read, at `:1504`, and it is the only producer of an `Enqueue`
+   other than `Refuse` in the daemon; `limits::CAMERA_ENQUEUE_WAIT_MS` bounds the wait and
+   `limits::CAMERA_ENQUEUE_WAITERS` bounds how many callers may hold that budget (note N59).
+3. *The command-line spelling* — **the part this entry's text above still describes as an
+   argued absence, and which stopped being one at P4f.** `--wait` is a flag:
+   `crates/cli-core/src/lib.rs:589`, on the **shared** T4 root because a verb exists once,
+   reaching the request at `:1074`. Its `--help` says out loud that it is inert under `wch`
+   (`:584–587`) rather than leaving a user to find out. Three assertions hold it, all in
+   `crates/cli-core/src/lib.rs`: `the_wait_flag_reaches_the_request_and_is_absent_from_it_by_default`
+   (`:2073`, run green for this check-off), `wch list --wait` refused at `:2104` because the
+   queue the flag chooses about is a camera's one thread and no other verb takes a capture
+   through it, and `:2116` requiring the string in **both** roots' `--help`. No committed
+   artifact moved, which is `schema-artifacts-current.sh`'s finding rather than N42's
+   prediction.
+
 **What is left of this entry.** Only the daemon-status half: the actor registry is still
-`engine::actor::Cameras::activity` and still not on the wire.
+`engine::actor::Cameras::activity` and still not on the wire. Rubric B6's row says "both
+observable via the status API and tested", and the surface that answers it is a library
+accessor — a deliberate refusal to invent a twentieth T5 method, argued above, and an input
+the G4 rubric reconciliation has to price rather than inherit.
 
 **Retires when:** a daemon status reaches the wire — which is a T5 method, so a docs/7
-sub-milestone has to want one.
+sub-milestone has to want one. The `wait` half retires here.
 
 ---
 
@@ -8069,3 +8128,365 @@ a dated record of one device's two firmwares rather than an open question.
 "why a re-capture is not the fix" this one has to be read against); PF:9, whose example this
 retires and whose rule it leaves standing; PF:3, PF:4 and PF:5, whose only or partial carrier
 this document is; AGENTS rule 4, which is the whole authority for the ruling.
+
+---
+
+## E13 — G4 evidence: the daemon at the real cameras — a photo and a calibrate sweep over the socket, 2026-08-11
+
+E9, E11 and E12 are the shape this follows: a dated run against something this project does
+not control, recorded once and not amended. This is the R3 half of docs/7's **P4g** — "the
+daemon against the real cameras: a photo over UDS, a calibrate sweep over UDS with live
+`wchc` progress" — landed as commit **`9c8b46a`**, whose two `#[ignore]`d arms live in
+`crates/client/tests/hardware.rs`. The run transcribed below was taken at 14:11 local on the
+working tree that became that commit (`06489e3` plus the new files); the final confirmation
+at the bottom is the tree as committed.
+
+**The gap it fills was total.** All sixteen `hw_` arms in the tree before this one lived in
+the V4L2 backend and drove a camera **in process**. Nothing anywhere drove `wchd`. E12,
+taken on this same desk five hours earlier, compared `wch` and `wchc` against these cameras
+and named the hole in its own "what it does not establish": `photo` is one of the four
+`device`-bucket exemptions with "no real-hardware comparison anywhere", and "nothing about
+the `wchc` sweep's progress rendering". Two arms, one for each half.
+
+**The hotplug cycle is not re-run here, and that is P4g's instruction rather than an
+omission**: "a transcript written twice is two transcripts nobody can tell apart". G4's
+hotplug evidence is **E9** — the `uvcvideo` cycle through the real `watch`, the
+eight-removals-then-eight-arrivals reading and why it is eight and not ten, the accounting
+identity, the interlock honored against a real other-process holder that made the arm
+decline rather than force, and the two hand-written mutants that arm was watched failing.
+Cited, not repeated.
+
+### The fixture, and it is narrower than E12's
+
+**Host:** the P4d/P4e/P4f workstation, kernel `7.0.0-29-generic` (x86_64), `rustc 1.97.1`,
+`cargo-nextest 0.9.138`, eight cores. **Attached: three cameras on six nodes** —
+
+| camera | `card` | nodes | link |
+|---|---|---|---|
+| `cam:obsbot-tiny-3-obsbot-tiny-3-st` | OBSBOT Tiny 3: OBSBOT Tiny 3 St | `/dev/video0,1` | 480 Mbps, USB 2.00 |
+| `cam:integrated-camera-integrated-c` | Integrated Camera: Integrated C | `/dev/video2,3` | 480 Mbps, USB 2.01 |
+| `cam:integrated-camera-integrated-i` | Integrated Camera: Integrated I | `/dev/video4,5` | 480 Mbps, USB 2.01 |
+
+**The Dell U3224KB/A that E12 enumerated is not attached** — its monitor is off the bus —
+so this run's fixture is *three* cameras where E9, E11, E12 and PF:22 all had **four on ten
+nodes**. That is stated here rather than left for a reader to assume parity, because a
+run's fixture is part of its evidence and the difference is load-bearing twice over: the
+4K monitor webcam is the one camera in this house whose formats nobody here has driven
+through a socket, and PF:23's corpus arms had to grow a counted skip on this very day
+precisely because a committed profile whose device is off the bus is a profile nobody
+visited. This run is the same shape from the other side.
+
+**And the format tree this run negotiated against is not the one E12 saw.** PF:23 landed
+the same day: the OBSBOT stopped advertising 3840×2160 and 120 fps, with nothing on our
+side of the cable moved, and `corpus/profiles/obsbot-tiny3.json` was re-captured at
+**`1a51c81`** — *after* this run. So at 14:11 the device had already shrunk while the
+committed document still claimed 4K, and the MJPG 1920×1080 the photo arm negotiated is the
+top of the tree the camera actually had. Nothing in either arm asserts a mode by name, which
+is why the shrink cost this suite nothing; a reader comparing this fixture with E12's five
+hours earlier should still know the device moved between them.
+
+**The daemon is real and the client is the shipped one.** Both arms spawn
+`wchd --backend v4l2` into a private pair of XDG directories, discover cameras through the
+tool's own `list` — no `/dev/videoN` is named anywhere, which is PF:22 and note N63 obeyed
+— and stop the daemon with a real `SIGTERM` through `rustix` (not `Child::kill`'s SIGKILL),
+asserting its status, so a daemon that died mid-run cannot leave a green test behind. Every
+capture goes to the fixture's temporary `$XDG_STATE_HOME` and is deleted with it: **no frame
+reaches the tree** (AGENTS "Hardware and privacy").
+
+The two arms observe differently and the choice is not a preference. The **photo** arm
+drives the shipped `wchc` **binary** as a subprocess, because `-o` resolution, the exit code
+and the `--json` document are process facts. The **sweep** arm drives
+`client::remote::Remote` with a recording `cli_core::SweepWatcher`, because the shipped
+watcher is an indicatif bar that draws nothing when standard error is not a terminal — "the
+events arrived" is a question only answerable inside the process, and it is the seam
+`crates/client/src/lib.rs`'s header has said since P4f that the library exists for.
+
+### A photo over UDS — three cameras, three photos
+
+```
+cam:obsbot-tiny-3-obsbot-tiny-3-st: MJPG 1920x1080 → 253417 bytes to a file, 240135 bytes through base64, settled 10 frame(s), the camera's own bytes [E6]
+cam:integrated-camera-integrated-c: MJPG 1280x720 → 221486 bytes to a file, 257262 bytes through base64, settled 10 frame(s), the camera's own bytes [E6]
+cam:integrated-camera-integrated-i: GREY 640x360 → 23119 bytes to a file, 20113 bytes through base64, settled 10 frame(s), re-encoded
+wchd stopped on SIGTERM with exit status: 0 after 3 photo(s)
+```
+
+| camera | negotiated | size | to file | base64 | rendering |
+|---|---|---|---|---|---|
+| OBSBOT Tiny 3 | MJPG, 1/30 s | 1920×1080 | 253 417 B | 240 135 B | verbatim \[E6\] |
+| Chicony RGB | MJPG, 1/30 s | 1280×720 | 221 486 B | 257 262 B | verbatim \[E6\] |
+| Chicony IR | GREY, 1/15 s | 640×360 | 23 119 B | 20 113 B | `converted_and_encoded` |
+
+Each photo was written by the **daemon's** process to a path the **client** resolved (D10),
+decoded independently by `image` at the size the report claims, and counted against the
+report's own `byte_count` through `api::PhotoResponse::bytes_match_the_delivery` — the
+predicate whose client-side consumer note N34 had been owed since P4a. All three settled ten
+frames, which is `limits::DEFAULT_SETTLE_SKIP_FRAMES` and not a number the test chose.
+
+**The two MJPG cameras are the first time E6's byte fidelity has crossed a socket.** The IR
+sensor is a GREY source and is the arm's non-compressed case, where `is_verbatim` must be
+*false* and the pass-through assertion is deliberately not made — a rule with only obedient
+instances is a rule nobody has tested.
+
+The `-o` half and the base64 half are **two separate captures of the same scene**, which is
+why their byte counts differ and why they differ again on the confirmation run
+(261 177 / 249 212 B on the OBSBOT). A JPEG's size is a property of the frame, and no two
+frames off a live sensor are the same size. Anything asserting equality there would be
+asserting that the world holds still.
+
+### A calibrate sweep over UDS, with its progress live
+
+| camera | control | range | stride | samples | events | wall |
+|---|---|---|---|---|---|---|
+| OBSBOT Tiny 3 | `brightness` | `0..=100` | 25 | 5 | 12 | 2.84 s |
+| Chicony RGB | `brightness` | `0..=255` | 63 | 5 | 12 | 3.15 s |
+
+Twelve events is `1 SweepStarted + 5 ValueSet + 5 SampleTaken + 1 SweepFinished`, every one
+of them delivered to the watcher **inside the `calibrate_sweep` call** and every one carrying
+this session's id. The `Uniform` stride is derived from each device's own declared range,
+which is why it is 25 on one camera and 63 on the other.
+
+**The live-progress claim is the arrival times, not the count.** On the OBSBOT the five
+samples reached the watcher at 0.52 / 1.02 / 1.61 / 2.18 / 2.84 s — spread across the sweep
+rather than bunched at its end, which is the only difference between a progress stream and a
+report delivered late. Each event crosses the camera actor's thread, a `broadcast`, the
+per-client subscription note **N57** describes, a serialization and a socket while the call
+it belongs to is still outstanding.
+
+Every sample's `{requested, applied}` agreed on both cameras: no clamping, no step
+alignment, so \[PF:6\] had nothing to report here — which is a fact about `brightness` on
+these two cameras and not a weakening of the rule.
+
+**Restoration is asserted, not reported.** 22 non-volatile controls on the OBSBOT and 15 on
+the Chicony RGB were re-read over the same socket after the session and compared against a
+snapshot taken over that socket before it opened; every one matched, and `brightness` went
+back to `Int(50)` and `Int(128)`. Why a *second* read rather than the report: see M5 below.
+
+### The named, counted skip — availability is not capability
+
+```
+SKIP (partial): cam:integrated-camera-integrated-i exposes no sweepable brightness-class
+control among its 3, so this arm declines it — which is a fact about this sensor's control
+set and not about the socket
+```
+
+The Chicony IR sensor enumerates three controls (`user_controls`,
+`region_of_interest_rectangle`, `region_of_interest_auto_ctrls`) and none is
+brightness-class. It declines on **every** run of this suite, naming the camera and the size
+of the set that was examined, and `scripts/smoke-hw.sh` greps and counts that line. A camera
+without the control is not a failure; what it must not be is silent (AGENTS rule 3, rule 7).
+
+### The arms were watched failing, six times over
+
+An `#[ignore]`d evidence arm is exactly where a decorative assertion hides. Each mutant below
+was applied to the tree, built, run against the whole non-ignored workspace suite **and**
+against the two arms on the real cameras, then reverted. Line numbers are as printed; a later
+comment pass moved them, and each assertion is named by its message instead.
+
+| mutant | workspace | the arm |
+|---|---|---|
+| **M1** `engine::photo`: the report transposes its own dimensions | 1 failure (`daemon::mutating_verbs`) | "the photo's size disagrees with its own report" |
+| **M2** `imaging::photo`: the `verbatim` short-circuit disabled (E6 broken) | 2 failures (`cli::photo`, over the fake) | "an MJPG source must pass through, not re-encode \[E6\]: `DecodedAndEncoded { source: PixelFormat([77, 74, 80, 71]), target: Jpeg }`" |
+| **M3** `engine::photo`: the sink writes two bytes fewer than the report counts | 1 failure (`cli::photo`) | "the report's byte count is not the file's" |
+| **M4** `client::remote`: `watch.event(&event)` deleted from `sweep_and_watch`'s select | 1 failure (`remote::tests`) | "no progress reached the watcher, so the subscription and the call did not overlap" |
+| **M5** `engine::snapshot`: `restore_one`'s read-before-write short-circuit made unconditional | 1 failure (`daemon::calibrate_verbs`) | "brightness is `Some(Int(100))` and the session found it at `Int(50)`" |
+| **M7** the three brightness-class names replaced with names no camera has | — | **PASS in 0.224 s and four counted `SKIP` lines** |
+
+Two of those rows carry more than a tick.
+
+**M5 is why the sweep arm re-reads the device instead of believing the answer.**
+`RestoreReport::is_complete()` was **still true** under a restore that reported
+`AlreadyCorrect` for every control and wrote nothing. The report passed and the camera had
+not moved back. A restoration assertion built on the report alone would have been green with
+the OBSBOT sitting at brightness 100.
+
+**M7 is the skip path exercised rather than described.** Forcing *every* camera to decline
+gives a test that passes in a fifth of a second, and the run still says what it did not
+claim — per camera, with the size of the control set it looked at — through the same
+accounting `scripts/smoke-hw.sh` applies to the v4l2 rung:
+
+```
+smoke-hw: 4 claim(s) declined by tests that ran — each named above
+smoke-hw:   SKIP (partial): cam:obsbot-tiny-3-obsbot-tiny-3-st … among its 24 …
+smoke-hw:   SKIP (partial): cam:integrated-camera-integrated-c … among its 18 …
+smoke-hw:   SKIP (partial): cam:integrated-camera-integrated-i … among its 3 …
+smoke-hw:   SKIP: no attached camera offered a capture node and a sweepable
+            brightness-class control, so no sweep ran over the socket
+```
+
+One mutant was **not** run and the reason is recorded rather than papered over:
+"subscribe after the call rather than before it" is not expressible as a small mutation of
+`Remote::calibrate_sweep`, because the call is a future nothing polls until
+`sweep_and_watch`'s select loop, so the subscribe necessarily precedes the request going
+out. That is note **N65**'s standing debt — the ordering is argued, not proved — and it is
+argued *more* strongly here, since a sweep on real hardware opens a camera and settles a
+sensor before its first event.
+
+### N69 on real hardware, and this is the headline
+
+**M6 — the bounded tail deleted**, i.e. N69's fix reverted:
+`if watching && !ended { drain_tail(…) }` disabled in `crates/client/src/remote.rs`.
+
+N69 fixed a lost terminal event using a scripted double and measured the integration test at
+**2 failures in 150** against the fake, under four concurrent workspace suites. The question
+that entry could not answer is whether a *real* daemon driving a *real* camera loses it often
+enough for an integration arm to see. Measured under N69's own load condition, which that
+entry requires be stated rather than assumed — four concurrent
+`cargo nextest run --locked --offline --workspace` loops on this eight-core workstation:
+
+| what | load | result |
+|---|---|---|
+| the sweep arm, tail deleted (M6) | four suites | **2 failures / 10 runs** |
+| the sweep arm, tail present (as shipped) | four suites | 0 / 10 |
+| the sweep arm, tail deleted | quiet | 0 / 3 |
+| the scripted-double unit test, tail deleted | any | fails immediately, every run |
+
+**2 in 10 against the fake's 2 in 150 — and the loss is *wider*.** Both failing runs lost the
+final `SampleTaken` as well as `SweepFinished`; the recorded event list ends at
+`ValueSet { index: 5, total: 5 }`. One failing run's tail, verbatim, times relative to the
+call:
+
+```
+( 5.468 ms) SweepStarted { control: brightness, plan: Uniform { step: 25 }, total: 5 }
+(31.524 ms) ValueSet    { index: 1, requested: 0,   applied: 0 }
+(543.4 ms)  SampleTaken { index: 1, requested: 0,   applied: 0,   mean_luma 0.0589 }
+(560.7 ms)  ValueSet    { index: 2, requested: 25,  applied: 25 }
+(1.063 s)   SampleTaken { index: 2, requested: 25,  applied: 25,  mean_luma 0.1021 }
+(1.088 s)   ValueSet    { index: 3, requested: 50,  applied: 50 }
+(1.591 s)   SampleTaken { index: 3, requested: 50,  applied: 50,  mean_luma 0.1514 }
+(1.729 s)   ValueSet    { index: 4, requested: 75,  applied: 75 }
+(2.180 s)   SampleTaken { index: 4, requested: 75,  applied: 75,  mean_luma 0.3175 }
+(2.289 s)   ValueSet    { index: 5, requested: 100, applied: 100 }
+-- and nothing else.
+```
+
+**N69 predicted exactly this in writing and could not observe it**: "the last sample's event
+is one hop further from the answer than the terminal one — the daemon commits the session
+durably in between — so it is the same defect with a wider window rather than a property that
+was safe." That sentence is now a measurement.
+
+**Why real hardware makes it worse rather than better**, which is the counter-intuitive half
+and the reason this entry exists. Every sample here is a settle and a capture — about 500 ms
+— so the daemon's forward task has been **idle for half a second** when the last sample's two
+events and the call's answer are all queued within a few hundred microseconds of each other.
+The window the answer has to win is unchanged (N69 measured the terminal event arriving
+**+34 µs** after the answer on the run that lost the race); what changed is the number of
+events sitting behind it, which is **two rather than one**. A slower producer does not make
+this race rarer, it makes the pile-up at the end larger.
+
+What a person would have seen is what N69 says a person sees, now on a real camera: a bar
+that stops at 4 of 5 and vanishes without its closing line.
+
+The assertion that fired is `"the sweep's terminal event never reached the watcher [N69]"`,
+`crates/client/tests/hardware.rs:668`.
+
+### The whole `hw_` suite, and the one red that is not this run's
+
+```
+$ cargo nextest run --locked --offline --workspace --run-ignored all --no-tests=fail \
+    -E 'test(/(^|::)hw_/)'
+  Starting 18 tests across 40 binaries (943 tests skipped)
+   Summary [  28.147s] 17/18 tests run: 16 passed, 1 failed, 943 skipped
+```
+
+Sixteen arms before this sub-milestone, eighteen now, 28.1 s on one thread — the two new arms
+joined the `exclusive-device` nextest group and `just smoke-hw` **by being named `hw_*`**, and
+neither `.config/nextest.toml` nor `scripts/smoke-hw.sh` was edited.
+
+The single failure is `hw_profile_capture_reproduces_the_committed_invariant_section`, red at
+HEAD as well as under this change, and it is **PF:23** — the OBSBOT's shrinking format tree,
+diagnosed the same afternoon and closed at `1a51c81` by a sanctioned re-capture. It is
+recorded here because it was seen here, and because a reader of this transcript needs to know
+that 17 of 18 was the honest count at 14:11 and 18 of 18 is the count at the commit this
+entry sits behind.
+
+Three more things were seen and are named rather than fixed:
+
+- **`sys::uevent::tests::a_quiet_socket_answers_at_its_deadline_rather_than_erroring_or_hanging`
+  failed once and passed on the next run** (`crates/backends/v4l2/src/sys/uevent.rs:289`,
+  "a quiet machine broadcast a uevent during this test"). This is the population N69 and N67
+  both name — a real clock in a test that has nothing to say about a duration — and a machine
+  that has just run a hotplug arm is not the quiet machine that assertion assumes.
+- **A hardware arm that fails *between* its sweep and its restore leaves the camera moved.**
+  Seen three times here, deliberately, while running M4/M5/M6, each time putting the OBSBOT's
+  brightness back by hand. It is the property `crates/backends/v4l2/tests/hardware.rs` has had
+  since P3e — restoration is on the success path — and the daemon's persisted pre-sweep
+  snapshot is what makes it recoverable rather than lost. Recorded so a reader of a red
+  hardware run knows to check the camera.
+- **`wchd` refuses to serve when the composed socket path exceeds 107 bytes**, and says so
+  precisely: "…is 130 bytes long and a Unix socket path may be at most 107 — `$XDG_RUNTIME_DIR`
+  is too deep for a client to reach a socket under. The daemon binds through a descriptor and
+  would not have tripped on the length itself; this refusal is on behalf of the `wchc` that
+  would have to connect by this name and could not." Met while poking by hand from a deep
+  scratch directory. Not a defect — recorded because it is a good refusal, and because it is
+  why the by-hand parts of this session ran from `mktemp -d /tmp/wchhw.XXXXXX`.
+
+### What this run establishes
+
+- **A photo crosses the socket, end to end, and the document agrees with the file.** Three
+  cameras, three photos, each negotiated on the daemon's thread, written by the daemon's
+  process to a path the client resolved, decoded independently at the reported size and
+  counted against the reported `byte_count`. This is P4g's first deliverable and the first
+  time any write verb has been driven against real hardware through `wchd` at all.
+- **Byte fidelity survives the daemon.** Two MJPG cameras delivered the camera's own bytes
+  through the socket, `is_verbatim` true, with the GREY sensor as the negative instance.
+  E6's byte-fidelity path had never been exercised anywhere but in process.
+- **A calibrate sweep crosses the socket with its progress live.** Twelve events per session,
+  all inside the call, spread across the sweep, each carrying the session's id. This is
+  P4g's second deliverable, and it is the first assertion anywhere that N57's per-client
+  subscription delivers a running sweep's events to a client that is still waiting for the
+  answer.
+- **The camera is left as it was found, proved by re-reading it.** 22 and 15 non-volatile
+  controls compared against a snapshot taken over the same socket, not against a report —
+  which M5 shows is the difference between an assertion and a formality (AGENTS rule 8).
+- **The daemon exits 0 on a real SIGTERM in both arms**, after 3 photos and after 2 sweeps —
+  P4e-ii's teardown discipline under a client that has actually driven hardware.
+- **N69's defect is worse on real hardware than the fake could show, and by how much is now
+  a number**: 2 in 10 rather than 2 in 150, losing two events rather than one. The fix is
+  load-bearing on this rung, and the register now carries the measurement N69 asked for and
+  could not take.
+- **The suite's skips are exercised, not described** (M7), and the two new arms cost the
+  existing sixteen nothing.
+
+### What it does not establish
+
+- **Nothing about the Dell U3224KB/A.** It is off the bus, so the one camera in this house
+  whose formats have never been driven through a socket still has not been. E12's fixture was
+  four cameras and this one is three; the two entries are not interchangeable, and a later
+  reader assembling "what has run against hardware" must intersect them rather than union
+  them.
+- **Nothing about the progress *rendering*.** This arm asserts that events reach a
+  **watcher**; it does not draw a bar. `cli_core::Bar` is an indicatif bar that renders
+  nothing when standard error is not a terminal, which is precisely why the sweep arm drives
+  the library rather than the binary. E12 said the same sentence about the same claim, and it
+  is still true: the last unasserted step between a `SweepFinished` and a human is the
+  drawing, and it needs a terminal no test in this workspace owns.
+- **The sweep result is two cameras, not three.** The IR sensor declined, counted and named.
+  So "a sweep over the socket works" rests on two `brightness` controls on two UVC cameras —
+  one PTZ, one integrated — and on nothing else. No other control class was swept, no
+  non-`Uniform` plan was run, and no motor moved in either arm.
+- **Nothing about a machine with no cameras**, which is the case CI would run if this were a
+  gate: both arms would decline, counted, and the comparison would be vacuous. This rung is
+  evidence and not CI-gating, under the same carve-out G1, G2 and G3 used.
+- **This is `wchc` alone; it is not a parity run.** No answer here was compared against
+  `wch`. E12 is the comparison, and E12's is five read verbs. A `photo` taken by `wch` and a
+  `photo` taken by `wchc` against one camera remain two states of one device rather than two
+  renderings of one answer, which is the reason `cli-parity.sh` puts `photo` in the `device`
+  bucket in the first place.
+- **Nothing about the TCP or WebSocket surfaces.** Everything above is `AF_UNIX`. The daemon
+  was started without `--http`, and the subscription rode the UDS connection.
+- **The dropped-event path stayed unexercised in the green runs.** With the tail in place no
+  sweep lost an event, so N57's "a subscription is allowed to drop" remains asserted by the
+  scripted double and by nothing on this desk. The two M6 failures are the only real losses
+  measured, and they were arranged by deleting the fix.
+- **The N69 rate is one load level on one host, and 10 runs is a coarse instrument.** "2 in
+  10" and "2 in 150" are not the same measurement taken twice; they share a load condition
+  and nothing else. N69's own rule applies to this entry as much as to that one — a green run
+  is evidence only if its load is stated — which is why the quiet-machine row (0 / 3) is in
+  the table and is worth exactly what it says.
+- **The hotplug half of G4's R3 evidence is E9's**, taken on a four-camera fixture that no
+  longer exists on this desk. Nothing here re-measures it, and nothing here should be read as
+  having re-measured it.
+- **Still one host, one kernel, one driver** (design §3.3 item 8): three UVC cameras on
+  `uvcvideo`, on a machine whose two USB cameras both negotiate High Speed. A `vivid` node or
+  a SuperSpeed camera would take the same code path, which is an argument and not a
+  measurement.

@@ -130,8 +130,8 @@ pub struct PhotoResponse {
     ///
     /// `Option` rather than an empty vector, because "the caller asked for a file" and
     /// "the caller asked for bytes and got none" are different answers, and
-    /// [`PhotoResponse::bytes_match_the_delivery`] is the predicate that tells them apart
-    /// once a consumer exists to call it (P4c/P4f — see that method's own note).
+    /// [`PhotoResponse::bytes_match_the_delivery`] is the predicate that tells them apart,
+    /// called at both ends of the socket since P4f (see that method's own note).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes: Option<Base64Bytes>,
 }
@@ -149,15 +149,22 @@ impl PhotoResponse {
     /// socket, so it can be built by somebody else's code, and a type that could not
     /// *represent* the disagreement could not refuse it either.
     ///
-    /// **One of its two consumers landed at P4c** and the other is still owed.
+    /// **Both of its consumers have landed**, one per end of the socket, which is what
+    /// makes the refusal mutual rather than a sender's courtesy.
     /// `daemon::server::photo_response` calls this as the last statement before an answer
-    /// leaves the process, so there is exactly one place a daemon can skip it, and a
+    /// leaves the process (P4c), so there is exactly one place a daemon can skip it, and a
     /// document that disagrees with itself is refused as `Error::DeviceIo` — ours, not the
-    /// device's. The one still owed is `wchc`, which will call it on a response it
-    /// *received* before turning it into a `cli_core::Photograph` (P4f); until then a
-    /// truncated payload is refused by the sender and by nobody on the receiving end.
-    /// Note N34 records both call sites so the remaining absence is counted rather than
-    /// assumed.
+    /// device's. `client::remote::Remote::photo` calls it on a response it *received*,
+    /// before turning it into a `cli_core::Photograph` (P4f), so a truncated payload is now
+    /// refused at both ends instead of by the sender and by nobody.
+    ///
+    /// Checked off at the G4 close, and the check-off is the point: note **N34** recorded
+    /// this as one of four declarations with no consumer precisely so that the review
+    /// closing G4 would count them rather than rediscover them. It is also the one that
+    /// showed the mechanism can point the wrong way — the receiving call site landed at
+    /// P4f and this paragraph went on claiming the absence for two sub-milestones, which
+    /// is a declaration outliving the thing it declared. E13's photo arm drives the
+    /// received half against three real cameras.
     #[must_use]
     pub fn bytes_match_the_delivery(&self) -> bool {
         match (&self.report.delivery, &self.bytes) {

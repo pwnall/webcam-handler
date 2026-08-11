@@ -189,6 +189,12 @@ green and the notes current, and the phase review gets its own session.
 - For a phase-closing change: the docs/7 gate criteria hold as named, counted,
   re-runnable commands; hardware evidence recorded in the notes with transcripts.
 - New device behavior landed as corpus + notes, not prose in a PR description.
+- **A doc comment in `webcam-handler-api` or `webcam-handler-schema` is an input to a
+  committed artifact, not just prose.** The OpenRPC document and the JSON Schema bundle
+  under `schemas/` are emitted from those comments, so editing one — even fixing a stale
+  sentence — moves a committed file, and `schema-artifacts-current.sh` goes red until
+  `just generate` is run and the result committed. The gate is the backstop and it works;
+  this line exists so the trap costs a command rather than a CI cycle.
 - `--json` output round-trips against the committed schemas; `wch`/`wchc` parity holds —
   which since P4f is `./scripts/gates/cli-parity.sh` rather than an aspiration: it compares
   the two roots byte for byte on every read verb over the fake, and puts every other verb

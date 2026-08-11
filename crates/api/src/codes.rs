@@ -4,7 +4,8 @@
 //! [`ErrorObjectOwned`] the daemon returns, and an [`ErrorObject`] a client receives
 //! becomes a [`schema::Error`] again. `wchc` therefore renders exactly what `wch` renders,
 //! because it renders the *same value* through the same `Display` — which is what P4f's
-//! parity gate is going to compare byte for byte.
+//! parity gate compares byte for byte, as `scripts/gates/cli-parity.sh` over every read
+//! verb, and what evidence **E12** measured once against the real cameras.
 //!
 //! ## Why the match is over [`ErrorKind`] and not over [`schema::Error`]
 //!
