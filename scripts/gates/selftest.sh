@@ -48,13 +48,16 @@ trap 'rm -rf "$scratch"' EXIT
 # a gate, and "you had uncommitted work" is not a finding. `--porcelain` covers untracked
 # files too, which is the shape the defect actually took. A tree without `git` — a source
 # tarball — skips it, named and counted, because a missing tool is not a violation.
-tree_state() {
-    git -C "$(gate_root)" status --porcelain 2>/dev/null
-}
+#
+# The recording and the comparison now live in `lib.sh` (`gate_tree_state`), because
+# `scripts/mutants.sh` needs the identical thing for note N68's defect — a run whose input
+# moved while it was reading it — and two copies of a law is the defect AGENTS.md names.
+# The shared version records the commit as well as the dirty state, which this check gains
+# for free: an arm that committed something would have been invisible to porcelain alone.
 tree_before=""
 tree_watched=0
-if git -C "$(gate_root)" rev-parse --git-dir >/dev/null 2>&1; then
-    tree_before="$(tree_state)"
+if gate_tree_watchable "$(gate_root)"; then
+    tree_before="$(gate_tree_state "$(gate_root)")"
     tree_watched=1
 fi
 
@@ -160,11 +163,10 @@ printf 'selftest: %s predicates, %s pass arm(s), %s fail arm(s)\n' \
 
 # The law this harness's header states, checked rather than trusted. See `tree_before`.
 if ((tree_watched == 1)); then
-    tree_after="$(tree_state)"
+    tree_after="$(gate_tree_state "$(gate_root)")"
     if [[ "$tree_before" != "$tree_after" ]]; then
         report_problem "an arm changed the checkout; cases seed violations in scratch copies, never in the tree"
-        diff <(printf '%s\n' "$tree_before") <(printf '%s\n' "$tree_after") |
-            sed 's/^/        /' || true
+        gate_tree_changes "$tree_before" "$tree_after" | sed 's/^/        /'
     else
         printf 'selftest: the checkout is as the arms found it\n'
     fi

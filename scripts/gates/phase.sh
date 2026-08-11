@@ -10,6 +10,21 @@
 # to check nothing is the defect class this whole suite exists to prevent. `just gate-g5`
 # and `just gate-g6` report exactly that today, which is the truth about them — criteria
 # accrete row by row, in the commit that lands the thing each row proves.
+#
+# ## A criterion has three answers, and this runner keeps them apart
+#
+# A `command` row that exits `$GATE_NO_VERDICT` (75, `EX_TEMPFAIL` — see `lib.sh`) is
+# saying "I could not answer", not "the answer is no": it ran out of disk, it was
+# interrupted, its baseline would not build, or the tree moved while it was reading it.
+# `scripts/mutants.sh` is the row that says it today (notes N52, N66, **N68**).
+#
+# Rendering that as `FAIL … criterion N failed` is not a small infidelity. The whole point
+# of the third outcome is that nobody re-runs a gate at `-j1` until it agrees and then
+# waves the next real finding through (N60), and a gate table that flattens the three
+# answers back into two would have moved the ambiguity out one layer rather than removing
+# it. So a no-verdict row is reported as one, this gate ends on `NO VERDICT` when that is
+# all that happened, and the exit code carries the distinction out to whoever ran
+# `just gate-g4`. It is still non-zero: an unproven criterion never closes a phase.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -63,7 +78,12 @@ while IFS=$'\t' read -r row_phase kind selection what; do
         ;;
     esac
 
-    if ((status != 0)); then
+    # The three answers, kept apart. `tests` rows cannot produce the third one — nextest
+    # has no such exit code — so this only ever fires for a `command` row, and today
+    # `scripts/mutants.sh` is the only command that produces it.
+    if ((status == GATE_NO_VERDICT)); then
+        gate_no_verdict "$phase criterion $checked could not produce a verdict (exit $status), so it is neither proven nor disproven: $what"
+    elif ((status != 0)); then
         gate_fail "$phase criterion $checked failed (exit $status): $what"
     fi
 done <"$table"

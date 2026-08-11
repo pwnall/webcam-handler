@@ -7415,3 +7415,184 @@ clock, which `SteppedClock` cannot be and `FrozenClock` already is; that is the 
 next repair, and it is not blocked on N45 either.
 
 **Retires when:** nothing. N60 keeps its last paragraph, as it said it would.
+
+---
+
+## N68 — The floor had one word for three things, and the third was a run whose input moved while it was reading it
+
+**Doc:** AGENTS rule 1 (a discovered defect class lands with its gate), rule 2 (every gate
+predicate proves both directions), rule 3 ("never silence"), docs/9's mutation-floor row,
+and notes **N52** (the floor's verdict moved with `nproc`), **N60** (what a floor that cries
+wolf costs), **N66** (the verdict moved with the free space on `/tmp`) and **N25** (what an
+"equivalent" acceptance claims). Found at the G4 boundary, running `just gate-g4`.
+
+**Believed:** that `scripts/mutants.sh` reports two things — the floor is green, or the
+floor has a finding. N66 had already recorded that a resource shortfall was being spelled as
+the second one, and left the repair open on the record.
+
+**True:** it reports **three** things and had one word for all of them. The third is not a
+resource fact and it is not an interruption: it is a run **whose input moved underneath it**.
+The floor reads the working tree for the better part of an hour, one mutant at a time, and
+its verdict is only ever about the tree it read.
+
+**What was measured, 2026-08-11.** A `just gate-g4` started at **08:13:22** and finished at
+**09:18:54** (its own `target/mutants.out/lock.json` and `outcomes.json` mtimes). At about
+**09:19** — while it was still running — an agent edited `crates/engine/tests/sweep.rs`,
+`crates/engine/src/calibrate.rs` and `crates/engine/src/settle.rs`: one inside the floor's
+scope, two feeding the suite that judges every mutant. The run then said:
+
+    mutants: FAIL — 3 recorded acceptance(s) no longer survive; the mutant became killable
+    mutants:   crates/engine/src/sweep.rs: replace && with || in strided
+    mutants:   crates/engine/src/sweep.rs: replace < with <= in strided
+    mutants:   crates/engine/src/sweep.rs: replace > with >= in strided
+    mutants: 525 generated — 435 caught, 8 missed, 0 timed out, 82 unviable
+
+All three are **N25 "equivalent" acceptances** (`scripts/mutants-accepted.txt:30-32`): the
+argument on each line is that the mutant is the *same program* given the callers'
+preconditions — `limit` is never 0, the values reaching the comparison are distinct, the
+widened stride already bounds the count. **A test cannot distinguish identical programs.**
+That is the proof pattern N60 used to settle its own false positive (five measurements, the
+last of which showed the Laplacian response sums to exactly zero, so `0/n`, `0*n` and `0%n`
+are one number). So this verdict is not "true" and it is not "false" — it is **void**, and
+nothing in the tooling could say so. `just gate-g4` printed `FAIL`, exit 1, the same as a
+real missing test.
+
+Two corroborations of the reading, both from the run's own recorded output, which is still
+on disk:
+
+- its `missed.txt` holds 8 rows; the register holds 11; the three it lacks are **exactly**
+  the three sweep.rs lines above, and nothing survived that the register does not name. A
+  run in which only the equivalences "became killable" is a run in which something other
+  than the code changed;
+- the commit the tree now sits at was made at **09:45:59**, after the run ended. The tree
+  that produced this verdict is therefore not any committed tree, which is why the state
+  recorded below is HEAD **and** `git status --porcelain` rather than either alone.
+
+**The class, now at three.** N52's verdict moved with **time** (`nproc`, through the test
+timeout: same tree, FAIL at 8 jobs and PASS at 4). N66's moved with **space** (a 16 GiB
+`tmpfs`, `Disk quota exceeded` fifteen minutes in, exit 137, printed FAIL). This one moved
+with a **moving input**. Three dimensions is not three accidents: *a floor that derives
+anything from the machine it runs on can spell the machine's condition as a statement about
+the code.* And N60 prices it — "a gate that cries wolf does not get believed, it gets re-run
+at `-j1` until it agrees, and the run after that is the one where a real survivor is waved
+through".
+
+**Changed.**
+
+1. **Three outcomes, three exit codes.** Green is 0. A finding — an unaccepted survivor, or
+   an acceptance that stopped surviving — is 1, worded exactly as before, because that
+   outcome was never the ambiguous one. **No verdict is `$GATE_NO_VERDICT` = 75**, which is
+   `EX_TEMPFAIL` from `sysexits.h` ("temporary failure; the user is invited to retry") rather
+   than an invented number; `scripts/gates/lib.sh` carries the argument and the rejected
+   alternatives (0 would make an unproven criterion read as proven — rule 3's "skip that
+   reads as pass" wearing an exit code; 1 is the finding; 2 is already `phase.sh`'s usage
+   error and cargo-mutants' "some survived"). It covers the pre-flight space refusal, a
+   killed or interrupted cargo-mutants, a red baseline, a result set whose rows and summary
+   disagree, and a tree that moved. A missing scope file, an empty scope and a run that
+   generated zero mutants stay **findings**: those are statements about the tree, and a
+   floor that has been quietly disarmed is what this job is for.
+2. **`phase.sh` renders and propagates the distinction**, because a fix that stopped at the
+   floor would have moved the ambiguity out one layer rather than removed it — `just
+   gate-g4`'s summary line is what anybody actually reads. A `command` row exiting 75 is
+   reported as `NO VERDICT`, counted separately, and the gate exits 75 when that is all that
+   happened. A finding outranks it when both occur, and the unanswered criteria are still
+   named on the line above.
+3. **The floor records the tree before the run and compares it after**, `git rev-parse HEAD`
+   plus `git status --porcelain` (which covers untracked files). Recorded and compared rather
+   than asserted clean, for `selftest.sh`'s reason: running the floor on a dirty tree is
+   ordinary, and "you had uncommitted work" is not a finding — what is one is that the tree
+   is not the one the run started on. The message lists the changed lines, so "which files"
+   is answered where it is asked. A tree git cannot describe skips the check, named and
+   counted.
+4. **That logic has one home.** `scripts/gates/lib.sh` gained `gate_tree_watchable`,
+   `gate_tree_state` and `gate_tree_changes`; `selftest.sh`'s own tree-watch (added earlier
+   the same day, for the arm that wrote a `.seeded` file into the checkout) now calls them,
+   and gained HEAD-awareness for free. `scripts/mutants.sh` **now sources `lib.sh`**, which
+   it did not before — deliberately, and for two functions and one constant, keeping its own
+   `mutants:` reporting vocabulary. The rejected alternative was two copies of an
+   eight-line law, which AGENTS.md names a defect; they would have drifted immediately,
+   because the floor needs the commit and the selftest did not.
+5. **The verdict logic gained a documented seam, and a gate predicate that drives it both
+   ways.** `scripts/mutants.sh` is a `g4` criterion *command*, not a predicate under
+   `scripts/gates/`, so `selftest.sh` never reached it and it had no case file — which is
+   why this defect survived three encounters and is the part of this entry that generalises.
+   cargo-mutants writes its result as a directory of text files (`caught.txt`, `missed.txt`,
+   `timeout.txt`, `unviable.txt`, one mutant per line, beside `outcomes.json`), so a recorded
+   run *is* a fixture: `WCH_MUTANTS_CLASSIFY=<dir>` makes the shipped script classify one and
+   exit, building nothing. A fixture may carry its own register (`accepted.txt`) and the tree
+   state its run started from (`tree-before.txt`) — the only way to exercise "the input
+   moved" without editing somebody's checkout, which no gate here may do.
+   `scripts/gates/mutation-verdict.sh` + its case file drive **that mode of the real script**
+   (rubric rule 6, paid for by N10): what is proved is what runs, and the mutants are the
+   only recorded part. Its fixtures are *derived* from `scripts/mutants-accepted.txt`, so if
+   its reading of the register ever drifts from the floor's, the clean fixture stops
+   classifying clean and the predicate goes red.
+
+**Measured after the change.** Six recorded result sets classified in about a second: clean →
+0, unaccepted survivor → 1, stale acceptance → 1, rows-and-summary-disagree → 75, no result
+set → 75, moved tree → 75 (naming the file). Three phase-gate runs: a finding row → exit 1
+saying FAIL and not `NO VERDICT`, a no-verdict row → exit 75 saying `NO VERDICT` and not
+FAIL, one of each → exit 1 saying both. `selftest.sh` goes from 20 predicates / 32 pass arms
+/ 143 fail arms to **21 / 34 / 150**, and every one of the seven new failing arms was watched
+red with the reason it was written for — including the two that are dated defects replayed
+(`truncated=finding` is N66, `moved=finding` is what the floor did until this commit) and the
+two that guard the new outcome from becoming a hiding place (a real survivor answered as
+"no verdict", and a floor that refuses a tree nobody touched).
+
+**The cross-check was validated against real runs rather than reasoned about**, because a
+truncation detector that cries wolf on a 40-minute job would be worse than the defect it
+replaces. In today's recorded output `total_mutants` 525 = 435 + 8 + 0 + 82 and each file's
+line count equals its census entry exactly; E10's two runs give 515 = 431 + 11 + 73 + 0. Two
+independent runs, one of them the very run this entry is about — and that one was **replayed
+through the new classifier** (`WCH_MUTANTS_CLASSIFY=target/mutants.out`), which reproduced
+its census and its three-line verdict exactly. So the seam is not only a fixture format: the
+directory a real run leaves behind is a fixture, and the first thing it proved is that the
+new refusals do not fire on real cargo-mutants output.
+
+**One small thing worth writing down**, because it is the shape of the bug this whole entry
+is about, in miniature: the predicate's first wording check forbade the *substring* `FAIL` in
+a no-verdict report, and immediately went red on the floor's own trailer — which names its
+exit code `EX_TEMPFAIL`. The check is now word-bounded. A test that reads a word as a
+substring is the same error as a gate that reads a machine's condition as a verdict: not
+looking at what was actually said.
+
+**Does N66's clause retire?** N66's "Retires when" offers two disjuncts, and the first —
+*"the floor grows that third outcome: a resource shortfall reported as a named, counted
+refusal rather than as a verdict"* — is **satisfied, and that clause retires**. Both routes a
+shortfall takes now end in a named refusal: the pre-flight `df` budget refuses with 75 before
+building anything, and a cargo-mutants killed part way (exit 137, which is the shape N66's
+own failure took) is 75 as well, counted by `phase.sh` as a criterion that could not answer.
+**The rest of N66 does not retire and is not history.** Its measurement stands (`per_job_gib`
+is a measurement, `reserve_gib` is a budget, and conflating them is how it happened), its
+reserve arithmetic is still the thing that stops the shortfall occurring rather than merely
+being reported honestly, and its closing warning — re-read the entry before raising
+`per_job_gib` — is untouched. An entry retires on empirical disproof; nothing here disproves
+N66. Only the repair it explicitly deferred has landed. **N52 and N60 are untouched**: N52's
+pin is still the reason a timeout is not a verdict about the machine, and N60's last
+paragraph — a second-direction failure means "investigate", never "delete the line" — is now
+also printed by the floor itself, beside every stale-acceptance report, because that is where
+it is needed.
+
+**What this deliberately does not do.**
+
+- **It does not teach `run-all.sh` the third outcome.** No gate predicate produces one today,
+  and a branch with no observations behind it is a claim — which is N52's own lesson about
+  the timeout arm that had never fired. When a predicate needs it, it lands with the arm that
+  exercises it.
+- **It does not run the real floor from a gate.** The 40-minute run does exactly what it did
+  before; only what it *says* changed. What is proved in seconds is the classification, which
+  is the half that was wrong.
+- **A moved tree voids the whole run, not part of it.** The floor cannot say which mutants
+  were judged against which tree, and pretending otherwise would be inventing precision.
+- **Two samples are not a watch.** A file edited and reverted inside the run's hour leaves
+  both recordings identical and is invisible here. Recording every mutant's tree state would
+  cost an `fsync`-heavy walk per mutant across a 40-minute job; the cheap check catches the
+  case that happened and the expensive one is not obviously worth it.
+- **The other rungs keep their own vocabulary.** `miri.sh`, `rung-vivid.sh` and `smoke-hw.sh`
+  report named, counted skips and none of them currently has a way to fail environmentally;
+  `$GATE_NO_VERDICT` is there when one of them does.
+
+**Retires when:** never by disproof — it is a defect with a date. It retires as history if
+the floor ever stops reading the working tree during its run (a floor that mutated a frozen
+export could not have this defect), at which point claim 3 above becomes unnecessary rather
+than wrong.
