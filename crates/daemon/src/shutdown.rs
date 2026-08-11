@@ -21,19 +21,35 @@
 //!    saying it *first* is what makes the rest of this list affordable: every step below takes
 //!    time, and a supervisor that learns about the stop only when the socket closes has been
 //!    counting that time against a timeout.
-//! 3. **Cancel** — [`Shutdown::cancel`], which reaches every open subscription. This is the
+//! 3. **Cancel, and wait for that to reach them** — [`Shutdown::cancel`], which reaches every
+//!    open subscription, and then the live subscription count going to zero. This is the
 //!    difference worth having, and it is why cancellation comes *before* the transport stops:
 //!    a subscription cancelled here ends with [`crate::events::SHUTTING_DOWN`] in a payload
 //!    the client can branch on, and one whose connection is simply closed ends with nothing at
 //!    all. AGENTS says open streams are "cancelled, never awaited, on shutdown" — cancelled
 //!    *with a reason* is what that costs, and reversing steps 3 and 4 would silently buy the
 //!    cheaper half.
+//!
+//!    **The wait is the half a `cancel()` alone does not buy, and it was measured rather than
+//!    reasoned about.** Cancelling wakes a subscription's task; that task then has to be
+//!    scheduled, return, and have jsonrpsee put its close frame on the connection, and a
+//!    transport stopped in the meantime closes that connection with the reason still in
+//!    flight. `tests/signals.rs` is the first test in this project to stop a real *process*
+//!    over a real socket, and without this wait it saw the ending **about half the time** —
+//!    the cheaper half of this step, bought by a race instead of by an ordering. The count is
+//!    a `watch`, so this is a wait on an event rather than a poll of a counter, and it is
+//!    bounded by the same deadline as the drain because a stop a subscriber could hold open is
+//!    a stop a client could prevent.
 //! 4. **Stop accepting** — `crate::uds::Serving::stop`. No new connections; the ones that are
 //!    up finish the answer they are writing.
-//! 5. **Drain, bounded** — [`limits::DAEMON_SHUTDOWN_DRAIN_MS`]. The requests that were
-//!    already accepted get that long and no longer. On expiry the daemon says so at `warn`,
-//!    naming the bound and that work was still in flight, and stops anyway (AGENTS rule 3: an
-//!    auto-skipping wait is never a silence).
+//! 5. **Drain, bounded** — [`limits::DAEMON_SHUTDOWN_DRAIN_MS`], as a **deadline** taken once
+//!    at the top of the teardown and shared with step 3's wait rather than a fresh timeout per
+//!    step: the bound is on the stop, not on each of its parts, and two full-length waits would
+//!    put this daemon's worst case within reach of the `TimeoutStopSec` that constant was
+//!    chosen to stay under by a factor. The requests that were already accepted get what is
+//!    left of it and no longer. On expiry the daemon says so at `warn`, naming the bound and
+//!    that work was still in flight, and stops anyway (AGENTS rule 3: an auto-skipping wait is
+//!    never a silence).
 //! 6. **Join housekeeping** — the idle-sweep driver observes the same token and ends itself
 //!    (`crate::server::Wchd::spawn_idle_sweeps_every`), and this is where that is *awaited*
 //!    rather than assumed. A detached task's ending is a maybe; a joined one's is a fact
@@ -73,6 +89,7 @@
 use std::time::Duration;
 
 use schema::{Error, Result, limits};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 /// The daemon's one "we are stopping" fact, as something every task can await.
@@ -296,6 +313,11 @@ impl Notifying for Unsupervised {
 /// returns is why. `main`'s `?` is what turns "the accept loop gave up" into a non-zero exit
 /// and therefore into a restart.
 ///
+/// `subscriptions` is `crate::server::Wchd::watch_subscribers` — the live count, as the thing
+/// step 3's wait waits *on*. A receiver rather than the `Wchd` it comes from, because what this
+/// function needs is one number changing and a parameter that carried the whole daemon would be
+/// a teardown that could reach anything.
+///
 /// `housekeeping` is the idle-sweep driver's handle. It is a parameter rather than something
 /// this starts, because the composition root is where D12's driver is started and a function
 /// that both started and joined it would be a second opinion about whether the daemon has one.
@@ -313,9 +335,18 @@ pub async fn serve_until_stopped(
     shutdown: &Shutdown,
     signals: impl Signalling,
     notify: &dyn Notifying,
+    subscriptions: watch::Receiver<usize>,
     housekeeping: tokio::task::JoinHandle<()>,
 ) -> Result<()> {
-    stop_in_order(serving, shutdown, signals, notify, housekeeping).await
+    stop_in_order(
+        serving,
+        shutdown,
+        signals,
+        notify,
+        subscriptions,
+        housekeeping,
+    )
+    .await
 }
 
 /// The transport being stopped — the seam under [`serve_until_stopped`].
@@ -393,6 +424,7 @@ async fn stop_in_order<T: Stopping>(
     shutdown: &Shutdown,
     mut signals: impl Signalling,
     notify: &dyn Notifying,
+    mut subscriptions: watch::Receiver<usize>,
     housekeeping: tokio::task::JoinHandle<()>,
 ) -> Result<()> {
     // 1. Whichever comes first. The transport arm is not an alternative way of asking to
@@ -428,19 +460,48 @@ async fn stop_in_order<T: Stopping>(
     // 2. Before anything else takes time. See the header.
     notify.stopping("stopping: cancelling subscriptions and draining in-flight requests");
 
+    // The one deadline the rest of this shares. Taken here rather than per step: the bound is
+    // on the stop (see the header's step 5), so a teardown whose subscriptions were slow to end
+    // has that much less drain, and the daemon's worst case is this number rather than a
+    // multiple of it.
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(limits::DAEMON_SHUTDOWN_DRAIN_MS);
+
     // 3. Every open subscription ends with a reason rather than with a socket that closed
     //    under it — and it ends *before* the transport that carries it is stopped, which is
     //    the whole difference this step buys.
     shutdown.cancel();
 
+    //    And then the half asking does not buy: the cancelled subscriptions actually ending.
+    //    Bounded, because a subscription that never ended would otherwise hold the stop open
+    //    for as long as it liked.
+    //    The inner refusal — a publisher that has gone — is deliberately not read: it is this
+    //    daemon's own `crate::events` being dropped, so there is nobody left to tell and
+    //    nothing to report. Only the *deadline* is a failure here.
+    let expired = tokio::time::timeout_at(deadline, subscriptions.wait_for(|open| *open == 0))
+        .await
+        .is_err();
+    if expired {
+        // Never a silence (AGENTS rule 3), and a different sentence from the drain's below
+        // because it is a different failure: a subscription that did not end is a client that
+        // will be told nothing, where a drain that expired is a request that will not be
+        // answered.
+        tracing::warn!(
+            drain_ms = limits::DAEMON_SHUTDOWN_DRAIN_MS,
+            open = *subscriptions.borrow(),
+            "subscriptions were still open when the shutdown deadline passed; \
+             their clients will not be told why"
+        );
+    }
+
     // 4. No new connections.
     transport.stop();
 
-    // 5. The drain, bounded. Called on the same value a `select!` arm above may have
-    //    cancelled mid-flight, which is why `Serving::stopped` is cancel-safe and answers
-    //    twice; on the give-up path this is what waits for the connections that loop left up.
-    let drain = Duration::from_millis(limits::DAEMON_SHUTDOWN_DRAIN_MS);
-    let outcome = match tokio::time::timeout(drain, transport.stopped()).await {
+    // 5. The drain, bounded by what is left of the same deadline. Called on the same value a
+    //    `select!` arm above may have cancelled mid-flight, which is why `Serving::stopped` is
+    //    cancel-safe and answers twice; on the give-up path this is what waits for the
+    //    connections that loop left up.
+    let outcome = match tokio::time::timeout_at(deadline, transport.stopped()).await {
         Ok(verdict) => verdict,
         Err(_elapsed) => {
             // Never a silence (AGENTS rule 3). It names the bound because the sentence an
@@ -524,25 +585,46 @@ mod tests {
     /// synchronous call sites, rather than two tasks racing to record themselves.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Step {
-        Ready { cancelled: bool },
-        Stopping { cancelled: bool },
-        Status { cancelled: bool },
-        TransportStopped { cancelled: bool },
+        Ready {
+            cancelled: bool,
+        },
+        Stopping {
+            cancelled: bool,
+        },
+        Status {
+            cancelled: bool,
+        },
+        /// The transport being stopped, stamped with the token *and* with how many
+        /// subscriptions were still open when it happened — which is the whole of step 3's
+        /// second half: `watching: 1` here is a build that stopped the socket out from under
+        /// a subscriber it had only just asked to end.
+        TransportStopped {
+            cancelled: bool,
+            watching: usize,
+        },
     }
 
     /// Everything a teardown did, in order.
     #[derive(Debug)]
     struct Recorder {
         shutdown: Shutdown,
+        /// How many subscriptions the scripted daemon still has open, read at each step.
+        subscriptions: watch::Sender<usize>,
         steps: std::sync::Mutex<Vec<Step>>,
     }
 
     impl Recorder {
-        fn new(shutdown: &Shutdown) -> Arc<Recorder> {
+        fn new(shutdown: &Shutdown, open: usize) -> Arc<Recorder> {
             Arc::new(Recorder {
                 shutdown: shutdown.clone(),
+                subscriptions: watch::Sender::new(open),
                 steps: std::sync::Mutex::new(Vec::new()),
             })
+        }
+
+        /// How many subscriptions are open at this instant.
+        fn watching(&self) -> usize {
+            *self.subscriptions.borrow()
         }
 
         /// Record one step, stamped with the token's state at the instant it happened.
@@ -601,8 +683,11 @@ mod tests {
 
     impl Stopping for Scriptable {
         fn stop(&self) {
-            self.recorder
-                .record(|cancelled| Step::TransportStopped { cancelled });
+            let watching = self.recorder.watching();
+            self.recorder.record(|cancelled| Step::TransportStopped {
+                cancelled,
+                watching,
+            });
             self.stopped.send_replace(true);
         }
 
@@ -655,8 +740,9 @@ mod tests {
     /// removed rather than tolerated.
     async fn teardown(signalled: Option<Stop>, answer: Answer) -> (Result<()>, Vec<Step>, bool) {
         let shutdown = Shutdown::new();
-        let recorder = Recorder::new(&shutdown);
+        let recorder = Recorder::new(&shutdown, 0);
         let notify = Recording(Arc::clone(&recorder));
+        let subscriptions = recorder.subscriptions.subscribe();
         let mut transport = Scriptable::new(answer, &recorder);
         let (housekeeping, ended) = housekeeping_that_announces_its_end();
 
@@ -665,6 +751,7 @@ mod tests {
             &shutdown,
             Scripted(signalled),
             &notify,
+            subscriptions,
             housekeeping,
         )
         .await;
@@ -716,13 +803,133 @@ mod tests {
             steps,
             vec![
                 Step::Stopping { cancelled: false },
-                Step::TransportStopped { cancelled: true },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 0,
+                },
             ]
         );
         // Step 6, and the reason it is a join: a driver whose handle was dropped is a driver
         // whose ending nothing waited for.
         assert!(
             joined,
+            "the teardown returned before housekeeping had ended"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_transport_is_not_stopped_until_the_cancelled_subscriptions_have_ended() {
+        // **Step 3's second half**, which is the half a `cancel()` alone does not buy — see
+        // this module's header for the measurement that put it there. The recording stamps
+        // each step with the count as well as the token, so the claim is an order rather than
+        // an outcome: `TransportStopped { watching: 0 }` says the socket carrying the
+        // subscriptions was still up when the last of them ended, and a build that stopped the
+        // transport straight after cancelling records `watching: 1` — a client whose stream
+        // ended with a closed socket instead of a reason it could branch on.
+        let shutdown = Shutdown::new();
+        let recorder = Recorder::new(&shutdown, 1);
+        let notify = Recording(Arc::clone(&recorder));
+        let subscriptions = recorder.subscriptions.subscribe();
+        let mut transport = Scriptable::new(Answer::WhenStopped, &recorder);
+        let (housekeeping, ended) = housekeeping_that_announces_its_end();
+
+        // The subscriber this teardown has to reach, scripted as the real ones behave: it ends
+        // *because* it was cancelled, and it publishes that by the count going to zero, which
+        // is `crate::events::Counted`'s `Drop` and the same channel `Wchd::watch_subscribers`
+        // hands out. Nothing here is a duration.
+        let subscriber = {
+            let (recorder, cancelled) = (Arc::clone(&recorder), shutdown.clone());
+            tokio::spawn(async move {
+                cancelled.cancelled().await;
+                recorder.subscriptions.send_replace(0);
+            })
+        };
+
+        let outcome = stop_in_order(
+            &mut transport,
+            &shutdown,
+            Scripted(Some(Stop::Terminate)),
+            &notify,
+            subscriptions,
+            housekeeping,
+        )
+        .await;
+
+        subscriber.await.expect("the scripted subscriber");
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(
+            recorder.steps(),
+            vec![
+                Step::Stopping { cancelled: false },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 0,
+                },
+            ],
+            "the transport was stopped with a subscription still open"
+        );
+        assert!(
+            *ended.borrow(),
+            "the teardown returned before housekeeping had ended"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_subscription_that_never_ends_does_not_hold_the_stop_open_for_ever() {
+        // The other direction of the same wait, and the reason it is bounded at all: a
+        // subscription that never ended would otherwise be a client that could keep a daemon
+        // from stopping — which is the same objection `limits::DAEMON_SHUTDOWN_DRAIN_MS`
+        // answers for the drain, one step earlier. Three things have to be true and none
+        // implies the others: it ends, it says why at `warn` naming the bound (AGENTS rule 3 —
+        // never a silence), and the rest of the teardown still happens.
+        //
+        // Nothing waits in wall time: the clock is paused, so the deadline fires when the
+        // runtime goes idle. A build that dropped the bound hangs here and becomes a named
+        // nextest TIMEOUT rather than a green test.
+        let shutdown = Shutdown::new();
+        let recorder = Recorder::new(&shutdown, 1);
+        let notify = Recording(Arc::clone(&recorder));
+        let subscriptions = recorder.subscriptions.subscribe();
+        let mut transport = Scriptable::new(Answer::WhenStopped, &recorder);
+        let (housekeeping, ended) = housekeeping_that_announces_its_end();
+
+        let (outcome, logged) = crate::logging::captured(async {
+            stop_in_order(
+                &mut transport,
+                &shutdown,
+                Scripted(Some(Stop::Interrupt)),
+                &notify,
+                subscriptions,
+                housekeeping,
+            )
+            .await
+        })
+        .await;
+
+        // Asked to stop, and it stopped: a subscriber that would not go away is not a failure
+        // of the *daemon*, and an exit code would ask a service manager to restart it.
+        assert_eq!(outcome, Ok(()));
+        assert!(
+            logged.contains("WARN") && logged.contains("subscriptions were still open"),
+            "a subscription that was never told went unreported: {logged:?}"
+        );
+        assert!(
+            logged.contains(&limits::DAEMON_SHUTDOWN_DRAIN_MS.to_string()),
+            "the warning did not name the bound: {logged:?}"
+        );
+        assert_eq!(
+            recorder.steps(),
+            vec![
+                Step::Stopping { cancelled: false },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 1,
+                },
+            ],
+            "a stop that waited on a subscription left the rest of the teardown undone"
+        );
+        assert!(
+            *ended.borrow(),
             "the teardown returned before housekeeping had ended"
         );
     }
@@ -752,7 +959,10 @@ mod tests {
             steps,
             vec![
                 Step::Stopping { cancelled: false },
-                Step::TransportStopped { cancelled: true },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 0,
+                },
             ],
             "an accept loop that gave up skipped part of the teardown"
         );
@@ -774,8 +984,9 @@ mod tests {
         // when the runtime goes idle. A build that dropped the bound hangs here and becomes a
         // named nextest TIMEOUT rather than a green test.
         let shutdown = Shutdown::new();
-        let recorder = Recorder::new(&shutdown);
+        let recorder = Recorder::new(&shutdown, 0);
         let notify = Recording(Arc::clone(&recorder));
+        let subscriptions = recorder.subscriptions.subscribe();
         let mut transport = Scriptable::new(Answer::Never, &recorder);
         let (housekeeping, ended) = housekeeping_that_announces_its_end();
 
@@ -785,6 +996,7 @@ mod tests {
                 &shutdown,
                 Scripted(Some(Stop::Terminate)),
                 &notify,
+                subscriptions,
                 housekeeping,
             )
             .await
@@ -807,7 +1019,10 @@ mod tests {
             recorder.steps(),
             vec![
                 Step::Stopping { cancelled: false },
-                Step::TransportStopped { cancelled: true },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 0,
+                },
                 Step::Status { cancelled: true },
             ],
             "a drain that ran out of time left the teardown half done"
@@ -841,7 +1056,10 @@ mod tests {
             steps,
             vec![
                 Step::Stopping { cancelled: false },
-                Step::TransportStopped { cancelled: true },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 0,
+                },
                 Step::Status { cancelled: true },
             ],
             "the drain expired without the teardown finishing"
@@ -858,8 +1076,9 @@ mod tests {
         // red: a build that warned unconditionally would pass it while telling every operator
         // of every clean stop that their requests had been cut off.
         let shutdown = Shutdown::new();
-        let recorder = Recorder::new(&shutdown);
+        let recorder = Recorder::new(&shutdown, 0);
         let notify = Recording(Arc::clone(&recorder));
+        let subscriptions = recorder.subscriptions.subscribe();
         let mut transport = Scriptable::new(Answer::WhenStopped, &recorder);
         let (housekeeping, _ended) = housekeeping_that_announces_its_end();
 
@@ -869,6 +1088,7 @@ mod tests {
                 &shutdown,
                 Scripted(Some(Stop::Interrupt)),
                 &notify,
+                subscriptions,
                 housekeeping,
             )
             .await

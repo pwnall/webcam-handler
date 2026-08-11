@@ -88,7 +88,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 # subscription and to the idle-sweep driver (`daemon::shutdown::Shutdown`). **It carries no
 # feature**, deliberately and stated because the neighbouring dev-dependency does: `sync` is
 # unconditional in tokio-util 0.7.19's `src/lib.rs`, so the token needs nothing enabled, while
-# `tests/support/subscribe.rs` needs `compat` to bridge a `tokio::net::UnixStream` onto the
+# `tests/support/ws.rs` needs `compat` to bridge a `tokio::net::UnixStream` onto the
 # `futures::io` traits soketto takes. Same package, same pin, two entries — the dev one adds
 # the feature, this one must not, because a feature enabled on a normal edge is enabled for
 # every build of the workspace.
@@ -124,7 +124,8 @@ webcam-handler-v4l2.workspace = true
 # `jsonrpsee` node did not already carry.
 jsonrpsee = { workspace = true, features = ["client-core"] }
 serde_json.workspace = true
-# A real WebSocket upgrade on the daemon's own socket, for `tests/subscriptions.rs`: the
+# A real WebSocket upgrade on the daemon's own socket, for `tests/subscriptions.rs` and
+# `tests/signals.rs`: the
 # generated T5 *client* cannot carry a subscription — `SubscriptionClientT::subscribe`
 # answers a type whose only constructor is private to `jsonrpsee-core`, so no transport of
 # ours can implement it (note **N57**) — and `support/mod.rs`'s one-shot HTTP `POST` cannot

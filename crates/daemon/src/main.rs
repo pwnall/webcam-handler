@@ -291,6 +291,12 @@ async fn run(args: &Args) -> Result<()> {
     let notify: Arc<dyn Notifying> = Arc::new(Supervisor::new());
     notify.ready(&format!("serving on {socket} ({backend_name})"));
 
+    // The live subscription count, taken before the daemon handle is moved into the startup
+    // enumeration below: `serve_until_stopped` waits on it after it cancels, which is what
+    // makes "cancelled with a reason" an ordering rather than a race (`daemon::shutdown`'s
+    // step 3).
+    let subscriptions = wchd.watch_subscribers();
+
     // Second, and deliberately not part of readiness: enumeration is device work, and a
     // daemon whose startup waited for a camera would fail to start on a host whose camera is
     // wedged. It is a startup fact rather than a live one and the status says so.
@@ -312,6 +318,7 @@ async fn run(args: &Args) -> Result<()> {
         &shutdown,
         signals,
         notify.as_ref(),
+        subscriptions,
         housekeeping,
     )
     .await;

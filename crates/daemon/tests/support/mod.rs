@@ -11,7 +11,7 @@
 //! this workspace builds warnings as errors, so an item used by only some of them is a
 //! `dead_code` failure in the rest. Adding a consumer therefore means every item here has to
 //! be used by it, and adding an item means every existing consumer has to use it — which is
-//! also why these three headers name their includers rather than saying "the suites".
+//! also why every header in `support/` names its includers rather than saying "the suites".
 //!
 //! ## Why it is hand-written
 //!

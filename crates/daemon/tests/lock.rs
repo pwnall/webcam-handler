@@ -24,182 +24,39 @@
 //! ## Nothing here sleeps
 //!
 //! Two processes are synchronized twice, both times by a real signal. Starting: the test
-//! **reads a line from the daemon's stderr pipe**, and a read on a pipe blocks until the
-//! writer writes — so "the daemon is up" arrives from the daemon rather than from a guess
-//! about how long it takes. Stopping: `wait` returns when the kernel has reaped the
-//! process, which is after its descriptors are closed, which is when the `flock` is gone.
-//!
-//! The bound on that read is end-of-file: a `wchd` that cannot serve says why and exits,
-//! which closes the pipe, and the wait fails with everything the daemon printed. This is
-//! the same bound `crates/engine/tests/crash_recovery.rs` accepts for the same reason, and
-//! it is why the line is matched on the **socket path** rather than on a sentence — a
-//! reworded log message must not be able to turn a failing test into a hanging one.
+//! **reads a line from the daemon's stderr pipe**, so "the daemon is up" arrives from the
+//! daemon rather than from a guess about how long it takes. Stopping: `wait` returns when the
+//! kernel has reaped the process, which is after its descriptors are closed, which is when
+//! the `flock` is gone. Both live in `support/wchd.rs`, which states the bound on each.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Child, ChildStderr, Command, Stdio};
+#[path = "support/wchd.rs"]
+mod wchd;
 
-use camino::Utf8PathBuf;
 use daemon::state::OwnedState;
-use engine::paths::{MapEnv, TempRuntimeDir};
-use engine::store::{LockProtocol, SessionStore, TempStore};
+use engine::store::{LockProtocol, SessionStore};
 use schema::ErrorKind;
 use schema::error::Error;
 
-/// A private pair of XDG directories, thrown away with the value.
+use crate::wchd::{Daemon, Scratch};
+
+/// A store over the directory this fixture's environment resolves to.
 ///
-/// Both are needed even though this suite is about the lock: `wchd` refuses to serve
-/// without a runtime directory to put its socket in (D11), so a fixture that only supplied
-/// a state directory would be testing the startup order's *first* refusal instead of the
-/// lock.
-struct Scratch {
-    state: TempStore,
-    runtime: TempRuntimeDir,
-}
-
-impl Scratch {
-    fn new() -> Scratch {
-        Scratch {
-            state: TempStore::new().expect("a state directory"),
-            runtime: TempRuntimeDir::new().expect("a runtime directory"),
-        }
-    }
-
-    /// The environment a process started here would read.
-    fn env(&self) -> MapEnv {
-        self.runtime
-            .env()
-            .with("XDG_STATE_HOME", self.state.root().as_str())
-    }
-
-    /// A store over the directory that environment resolves to.
-    ///
-    /// Resolved through `from_env` rather than taken from [`TempStore::store`] on purpose:
-    /// `engine::paths::state_dir` appends `webcam-handler` to `$XDG_STATE_HOME`, so the
-    /// directory a `wchd` locks is one level below this fixture's root. A contender built
-    /// any other way would be contending for a different file and would pass every
-    /// assertion below by never meeting anybody.
-    fn store(&self) -> SessionStore {
-        SessionStore::from_env(&self.env()).expect("the fixture sets both variables")
-    }
-
-    /// The socket a `wchd` started here would bind.
-    ///
-    /// Composed from the same two homes the daemon composes it from —
-    /// `engine::paths::runtime_dir` and `schema::limits::DAEMON_SOCKET_FILE` — rather than
-    /// written out, so this fixture cannot drift away from the thing it is waiting for.
-    /// Deliberately not `daemon::uds::SocketDir::prepare`, which would *create* the
-    /// directory and so answer the question the daemon's own startup check exists to ask.
-    fn socket(&self) -> Utf8PathBuf {
-        engine::paths::runtime_dir(&self.env())
-            .expect("the fixture sets the runtime variable")
-            .join(schema::limits::DAEMON_SOCKET_FILE)
-    }
-
-    /// A `wchd` bound to these directories, not yet started.
-    fn wchd(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_wchd"));
-        command
-            // As environment variables rather than flags, because that is how the shipped
-            // daemon finds both directories (note N2) — a test that passed paths in would
-            // not be exercising the resolution an operator gets.
-            .env("XDG_STATE_HOME", self.state.root().as_str())
-            .env("XDG_RUNTIME_DIR", self.runtime.base().as_str())
-            // Pinned rather than inherited: this suite learns that the daemon is serving by
-            // reading the line it logs, and a developer with `RUST_LOG=warn` exported would
-            // otherwise watch it wait for a line nobody was going to write.
-            .env("RUST_LOG", "info")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        command
-    }
-}
-
-/// A running `wchd`, stopped with the value.
+/// Resolved through `from_env` rather than taken from a `TempStore` on purpose:
+/// `engine::paths::state_dir` appends `webcam-handler` to `$XDG_STATE_HOME`, so the directory
+/// a `wchd` locks is one level below the fixture's root. A contender built any other way
+/// would be contending for a different file and would pass every assertion below by never
+/// meeting anybody.
 ///
-/// [`Daemon::stop`] is idempotent and [`Drop`] calls it, so an assertion that fails part way
-/// through does not leave a daemon holding a lock — and, more to the point, holding it over
-/// a temporary directory that is about to be deleted underneath it.
-struct Daemon {
-    child: Child,
-    stderr: BufReader<ChildStderr>,
-    transcript: Vec<String>,
-    stopped: bool,
+/// A local rather than a method on the shared [`Scratch`]: `systemd.rs` includes that module
+/// too and never contends for the state directory, and note **N49** makes an item its
+/// binaries do not all use a `dead_code` failure in the ones that do not.
+fn store(scratch: &Scratch) -> SessionStore {
+    SessionStore::from_env(&scratch.env()).expect("the fixture sets both variables")
 }
 
-impl Daemon {
-    /// Start one. It has not necessarily got anywhere yet.
-    fn spawn(scratch: &Scratch) -> Daemon {
-        let mut child = scratch
-            .wchd()
-            .spawn()
-            .expect("wchd is built beside this test");
-        let stderr = child.stderr.take().expect("stderr was piped");
-        Daemon {
-            child,
-            stderr: BufReader::new(stderr),
-            transcript: Vec::new(),
-            stopped: false,
-        }
-    }
-
-    /// Start one and wait until it has bound its socket.
-    ///
-    /// The daemon announces the socket it is serving, so the line carrying that path is the
-    /// event this waits for — an announcement from the process rather than a guess about
-    /// how long starting takes. End-of-file without it means the daemon refused to start,
-    /// and the panic carries everything it said.
-    fn serving(scratch: &Scratch) -> Daemon {
-        let socket = scratch.socket();
-        let mut daemon = Daemon::spawn(scratch);
-        while let Some(line) = daemon.next_line() {
-            if line.contains(socket.as_str()) {
-                return daemon;
-            }
-        }
-        panic!(
-            "wchd exited without binding {socket}; it said:\n{}",
-            daemon.transcript.join("\n")
-        );
-    }
-
-    /// The next line the daemon wrote, or `None` when it has closed its stderr — which,
-    /// with stderr piped, is when it has exited.
-    fn next_line(&mut self) -> Option<String> {
-        let mut line = String::new();
-        match self.stderr.read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => {
-                self.transcript.push(line.trim_end().to_owned());
-                Some(line)
-            }
-        }
-    }
-
-    /// The pid the lock record should be naming.
-    fn pid(&self) -> i32 {
-        i32::try_from(self.child.id()).expect("a pid fits in an i32")
-    }
-
-    /// Kill it and wait for the kernel to reap it.
-    ///
-    /// Killing rather than signalling politely is the honest test of P4b's claim: this
-    /// build installs no signal handler, so there is no orderly path to take, and what is
-    /// being asserted afterwards is the kernel's own guarantee — an `flock` is released when
-    /// the last descriptor on its open file description closes, and a process that dies
-    /// closes all of them. `wait` returning is what says that has happened.
-    fn stop(&mut self) {
-        if !self.stopped {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            self.stopped = true;
-        }
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        self.stop();
-    }
+/// A `wchd` over these directories, serving.
+fn serving(scratch: &Scratch) -> Daemon {
+    Daemon::serving(scratch.wchd(), &scratch.socket())
 }
 
 /// Take the lock the way every mutating `wch` verb does, and hand back what happened.
@@ -218,9 +75,9 @@ fn mutate(store: &SessionStore) -> schema::Result<()> {
 fn a_running_daemon_owns_the_state_directory_and_sends_a_wch_to_wchc() {
     // Ordering one: the daemon is there first. This is the case D9 writes the sentence for.
     let scratch = Scratch::new();
-    let mut daemon = Daemon::serving(&scratch);
+    let mut daemon = serving(&scratch);
 
-    let err = mutate(&scratch.store()).expect_err("the daemon owns the state directory");
+    let err = mutate(&store(&scratch)).expect_err("the daemon owns the state directory");
     assert_eq!(err.kind(), ErrorKind::StoreLocked);
     let Error::StoreLocked {
         holder: Some(holder),
@@ -249,7 +106,7 @@ fn a_running_daemon_owns_the_state_directory_and_sends_a_wch_to_wchc() {
     // The inverse, and the whole reason a lifetime hold is survivable: the lock is the
     // daemon's for exactly as long as the daemon is.
     daemon.stop();
-    mutate(&scratch.store()).expect("a dead daemon holds nothing");
+    mutate(&store(&scratch)).expect("a dead daemon holds nothing");
 }
 
 #[test]
@@ -259,8 +116,7 @@ fn a_daemon_that_meets_a_wchs_momentary_lock_refuses_to_start_and_does_not_adver
     // is what `TempStore` exists to make available — so the contention is real and the test
     // is synchronous.
     let scratch = Scratch::new();
-    let momentary = scratch
-        .store()
+    let momentary = store(&scratch)
         .lock(LockProtocol::PerOperation)
         .expect("nothing holds a fresh state directory");
 
@@ -287,7 +143,7 @@ fn a_daemon_that_meets_a_wchs_momentary_lock_refuses_to_start_and_does_not_adver
     // The same refusal through the binary an operator runs. Read as one line rather than
     // waited on: a `wchd` that wrongly *started* would never exit, and a test that read to
     // end-of-file would hang instead of failing.
-    let mut refused = Daemon::spawn(&scratch);
+    let mut refused = Daemon::spawn(scratch.wchd());
     let said = refused
         .next_line()
         .expect("wchd says why it will not serve");
@@ -298,7 +154,7 @@ fn a_daemon_that_meets_a_wchs_momentary_lock_refuses_to_start_and_does_not_adver
     // And released, the same daemon starts — so the refusal was about the lock and not
     // about this fixture.
     drop(momentary);
-    Daemon::serving(&scratch).stop();
+    serving(&scratch).stop();
 }
 
 #[test]
@@ -309,7 +165,7 @@ fn a_daemons_lifetime_hold_stops_the_mutating_protocol_and_leaves_reading_alone(
     // `calibrate_status`: "a `wch calibrate status` that refused while a daemon held the
     // lock would be a status verb nobody can use on the machine the sessions are on".
     let scratch = Scratch::new();
-    let store = scratch.store();
+    let store = store(&scratch);
 
     // With no daemon anywhere, the daemonless protocol takes and releases, twice over,
     // leaving nothing held. This is the arm that would go red if a lifetime hold had leaked
@@ -321,7 +177,7 @@ fn a_daemons_lifetime_hold_stops_the_mutating_protocol_and_leaves_reading_alone(
         "a per-operation lock outlived its operation"
     );
 
-    let mut daemon = Daemon::serving(&scratch);
+    let mut daemon = serving(&scratch);
     assert_eq!(
         mutate(&store).expect_err("the daemon owns it").kind(),
         ErrorKind::StoreLocked
@@ -333,6 +189,10 @@ fn a_daemons_lifetime_hold_stops_the_mutating_protocol_and_leaves_reading_alone(
             .expect("reading is not a state write")
             .is_empty()
     );
+    // "While running" as an observation rather than an inference: a daemon that had died on
+    // its way up would leave the lock free too, and this assertion would then be reporting the
+    // wrong thing about the right file.
+    assert!(daemon.still_running(), "the daemon is not there to hold it");
     assert!(store.holder().is_some(), "the daemon let go while running");
 
     daemon.stop();
@@ -384,8 +244,7 @@ fn the_daemons_own_lock_refuses_the_daemonless_protocol_rather_than_deadlocking(
         .all_sessions()
         .expect("reading takes no lock at all");
     drop(held);
-    scratch
-        .store()
+    store(&scratch)
         .with_lock(|_lock| Ok(()))
         .expect("released with the value");
 }

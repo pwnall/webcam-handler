@@ -118,6 +118,8 @@ mod subscribe;
 mod support;
 #[path = "support/wire.rs"]
 mod wire;
+#[path = "support/ws.rs"]
+mod ws;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -134,8 +136,9 @@ use serde_json::json;
 
 use crate::fixture::{Ask, Fixture};
 use crate::gated::{Blocking, Gate};
-use crate::subscribe::{Watching, Ws};
+use crate::subscribe::Watching;
 use crate::wire::{Wire, refusal};
+use crate::ws::Ws;
 
 // ------------------------------------------------------------------ opening a subscription
 
@@ -1473,13 +1476,12 @@ async fn a_watch_that_stops_ends_the_streams_reading_it_and_names_why() {
     // The ending, with its reason. `params.error` rather than `params.result` is jsonrpsee's
     // `subscription_error` notification — the only carrier left after an accept — and the
     // payload is typed rather than prose, so a client branches instead of parsing a
-    // sentence.
-    let ending = connection.notification().await;
-    assert_eq!(ending["subscription"], subscription, "{ending}");
+    // sentence. `Ws::ending` is what reads it, so "this stream ended, naming why" is one
+    // helper here and in `signals.rs` rather than two spellings of one frame shape.
     assert_eq!(
-        ending["error"],
+        connection.ending(&subscription).await,
         json!({ "ended": daemon::events::WATCH_STOPPED }),
-        "a stranded subscriber was told nothing: {ending}"
+        "a stranded subscriber was told nothing"
     );
 
     // Reaped, not merely silent: the count comes back down and the thread is gone. A build
@@ -1569,29 +1571,21 @@ async fn a_daemon_that_is_stopping_ends_every_open_subscription_and_names_why() 
     // cancellation rather than about a connection that went away.
     fixture.wchd.shutdown().cancel();
 
-    let endings = [
-        connection.notification().await,
-        connection.notification().await,
-    ];
     for (subscription, stream) in [
         (&hotplug, "wch_subscribe_events"),
         (&calibration, "wch_subscribe_calibration"),
     ] {
-        let ending = endings
-            .iter()
-            .find(|ending| &ending["subscription"] == subscription)
-            .unwrap_or_else(|| {
-                panic!("{stream} was left open by a daemon that is stopping: {endings:?}")
-            });
         // `params.error` is jsonrpsee's `subscription_error` notification, the only carrier
         // left after an accept, and the payload is typed rather than prose so a client
         // branches instead of parsing a sentence — and branches on *this* reason rather than
         // on `WATCH_STOPPED`, because "re-subscribe now" and "this daemon is going away" are
-        // different advice.
+        // different advice. Each stream is asked for **by id**: the two end in whichever
+        // order the runtime gets to them, and `Ws::ending` queues the one that is not being
+        // waited for rather than dropping it (which is what makes the second call answer).
         assert_eq!(
-            ending["error"],
+            connection.ending(subscription).await,
             json!({ "ended": daemon::events::SHUTTING_DOWN }),
-            "{stream} ended without telling its client why: {ending}"
+            "{stream} ended without telling its client why"
         );
     }
 

@@ -1,9 +1,13 @@
 //! One open subscription, over each of the two transports a subscription can use.
 //!
-//! Included by `subscriptions.rs` and by nothing else, which is what `support/wire.rs`
-//! already does for the four verb suites and for the same reason (note **N49**): a
-//! `#[path]`-included module is compiled into every binary that includes it, so an item with
-//! one user has to live in a module with one includer.
+//! Included by `subscriptions.rs` and by nothing else, which is what `support/wire.rs` already
+//! does for the four verb suites and for the same reason (note **N49**): a `#[path]`-included
+//! module is compiled into every binary that includes it, so an item with one user has to live
+//! in a module with one includer — and that is *per item*, down to an enum variant nobody
+//! constructs. [`Watching::InMemory`] is such a variant: only a suite holding a
+//! `jsonrpsee_server::Methods` can build one, which is why the real-socket half of this
+//! arrangement lives one file along in `support/ws.rs`, where `signals.rs` can include it
+//! without inheriting a variant it cannot construct.
 //!
 //! ## Why the generated client is not here
 //!
@@ -19,177 +23,15 @@
 //!   which takes the per-connection buffer as an argument — and that argument is the lever
 //!   the backpressure arm pulls, because it is the same bound
 //!   `limits::WS_MESSAGE_BUFFER_CAPACITY` sets on a real connection;
-//! - **a real WebSocket on the daemon's own `AF_UNIX` socket**, hand-driven the way
-//!   `support/mod.rs`'s HTTP client is and for the reason its header gives: the socket
-//!   carries HTTP/1.1 and the subscription surface is the *upgrade* on that same
-//!   connection, which is the fact P4f's client transport has to be built against rather
-//!   than discover. `soketto` is jsonrpsee-server's own WebSocket implementation, so the
-//!   two halves of the frame layer cannot disagree about what a frame is.
+//! - **a real WebSocket on the daemon's own `AF_UNIX` socket** — [`crate::ws::Ws`], whose
+//!   header states why it is hand-written.
 //!
-//! Nothing here waits on a clock. `receive_data` ends when the peer writes, which is the
-//! same readiness signal `support::call`'s read-to-EOF already relies on.
+//! Nothing here waits on a clock. Both arms end when the daemon writes.
 
-use std::collections::VecDeque;
-
-use camino::Utf8Path;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
-use tokio_util::compat::{Compat, TokioAsyncReadCompatExt as _};
+use serde_json::Value;
 
-/// A real WebSocket connection to the daemon, and the JSON-RPC on top of it.
-///
-/// One connection, many requests: which is what
-/// `limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` is a bound *on*, so a fixture that opened
-/// a connection per subscription could not drive it at all.
-pub(crate) struct Ws {
-    sender: soketto::Sender<Compat<tokio::net::UnixStream>>,
-    receiver: soketto::Receiver<Compat<tokio::net::UnixStream>>,
-    /// The next request id. Ids are matched on the way back rather than assumed, because a
-    /// notification can arrive between a request and its answer — which is the whole point
-    /// of a duplex transport and the thing an HTTP client never has to think about.
-    next_id: u32,
-    /// Notifications that arrived while a call was waiting for its answer.
-    ///
-    /// **Queued, not discarded**, and that is the difference between a suite that tests the
-    /// daemon and one that tests the scheduler: on a duplex connection an answer and a
-    /// notification are in flight together, so a helper that dropped whichever lost the race
-    /// would make a delivered event look like an undelivered one — the test would hang, and
-    /// it would hang for a reason on this side of the socket. [`Ws::notification`] drains
-    /// this before it reads another frame.
-    ///
-    /// Bounded by what one test asks for and nothing else, which is why it is a test-side
-    /// `VecDeque` rather than one of `schema::limits`' numbers: the *daemon's* bound on
-    /// unread notifications is `limits::WS_MESSAGE_BUFFER_CAPACITY`, and it is measured
-    /// elsewhere in this suite by a subscriber that never reads at all.
-    queued: VecDeque<Value>,
-}
-
-impl Ws {
-    /// Upgrade a fresh connection to `socket`.
-    ///
-    /// # Panics
-    ///
-    /// If the daemon declines the upgrade, which is the assertion `tests/uds.rs` makes
-    /// directly — a suite whose subject is what a subscription *carries* has nothing useful
-    /// to say after a refused handshake.
-    pub(crate) async fn connect(socket: &Utf8Path) -> Ws {
-        let stream = tokio::net::UnixStream::connect(socket.as_std_path())
-            .await
-            .expect("the daemon is listening");
-        let mut client = soketto::handshake::Client::new(stream.compat(), "localhost", "/");
-        match client.handshake().await.expect("the handshake completes") {
-            soketto::handshake::ServerResponse::Accepted { .. } => {}
-            other => panic!("the daemon declined a WebSocket upgrade: {other:?}"),
-        }
-        let (sender, receiver) = client.into_builder().finish();
-        Ws {
-            sender,
-            receiver,
-            next_id: 1,
-            queued: VecDeque::new(),
-        }
-    }
-
-    /// One JSON-RPC frame, whatever it is.
-    ///
-    /// Ends when the server writes. A subscription that never delivers turns this into a
-    /// nextest `TIMEOUT` — a named failure with a test's name on it — rather than a hang,
-    /// which is what `.config/nextest.toml`'s deadline exists to give.
-    async fn frame(&mut self) -> Value {
-        let mut bytes = Vec::new();
-        self.receiver
-            .receive_data(&mut bytes)
-            .await
-            .expect("the daemon writes a frame");
-        serde_json::from_slice(&bytes).expect("a JSON-RPC document")
-    }
-
-    /// Send one request and read frames until its answer arrives.
-    ///
-    /// Whatever else arrives first is put on [`Ws::queued`] rather than thrown away — see
-    /// that field for why, which is the one thing about this transport an HTTP client never
-    /// has to think about.
-    pub(crate) async fn call(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        self.write(&request.to_string()).await;
-        loop {
-            let frame = self.frame().await;
-            if frame.get("id") == Some(&json!(id)) {
-                return frame;
-            }
-            self.queued.push_back(frame);
-        }
-    }
-
-    /// Put one message on the wire and read nothing back.
-    ///
-    /// [`Ws::call`]'s other half, and the only way a test can hand the daemon something no
-    /// answer will ever be collected for — a request the client dies in the middle of, which
-    /// is one of the hostile directions `subscriptions.rs` walks. A helper that read an
-    /// answer could not express it: what makes that case a case is that nobody is left to
-    /// read one.
-    pub(crate) async fn write(&mut self, message: &str) {
-        self.sender
-            .send_text(message)
-            .await
-            .expect("the connection takes a message");
-        self.sender.flush().await.expect("the message is written");
-    }
-
-    /// The next *answer* on this connection, whichever request it belongs to.
-    ///
-    /// [`Ws::call`]'s shape for a client with many requests in flight and no interest in
-    /// which one comes back — the only shape in which "how many of these were answered
-    /// while the device was held" is a question at all, because matching ids would mean
-    /// naming a request that may be the one still waiting. Notifications are queued rather
-    /// than discarded, for [`Ws::queued`]'s reason.
-    ///
-    /// Ends when the daemon writes. A daemon that answered none of them is a nextest
-    /// `TIMEOUT` with a test's name on it, which is exactly what a wedge looks like from
-    /// outside — see this suite's header.
-    pub(crate) async fn answer(&mut self) -> Value {
-        loop {
-            let queued = self
-                .queued
-                .iter()
-                .position(|frame| frame.get("id").is_some())
-                .and_then(|position| self.queued.remove(position));
-            if let Some(answered) = queued {
-                return answered;
-            }
-            let frame = self.frame().await;
-            if frame.get("id").is_some() {
-                return frame;
-            }
-            self.queued.push_back(frame);
-        }
-    }
-
-    /// The next notification on this connection, whichever subscription it belongs to.
-    ///
-    /// Answers to calls are skipped rather than treated as the end of anything: on a duplex
-    /// connection the two are interleaved by construction, which is the whole reason
-    /// [`Ws::queued`] exists.
-    ///
-    /// It hands back the notification's `params` — the subscription id *and* the payload —
-    /// because the one thing [`Watching`] cannot express is a connection carrying **two**
-    /// subscriptions, and telling those apart is exactly what a client that subscribed twice
-    /// has to do. Ends when the daemon writes; a stream that never delivers is a nextest
-    /// `TIMEOUT` with a test's name on it rather than a hang.
-    pub(crate) async fn notification(&mut self) -> Value {
-        loop {
-            let frame = match self.queued.pop_front() {
-                Some(queued) => queued,
-                None => self.frame().await,
-            };
-            if let Some(params) = frame.get("params") {
-                return params.clone();
-            }
-        }
-    }
-}
+use crate::ws::Ws;
 
 /// One open subscription, over one of the two transports.
 ///
