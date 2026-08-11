@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# A library beside the binary, for `webcam-handler-daemon`'s reason — its own manifest says
+# "so integration tests can drive a real server", and this one is so they can drive a real
+# client. `crates/client/src/lib.rs`'s header argues which property needs it.
+[lib]
+name = "client"
+
 [[bin]]
 name = "wchc"
 path = "src/main.rs"
@@ -15,3 +21,53 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+# The thin-client wall (T6) as a manifest: `webcam-handler-api` for the wire surface,
+# `webcam-handler-cli-core` for the command surface, `webcam-handler-schema` for the types
+# both speak — and no engine, no backend, which `scripts/gates/dependency-walls.sh` asserts
+# from the resolved graph rather than from this comment.
+[dependencies]
+camino.workspace = true
+# The generated T5 client, and the runtime that drives it. **`async-client` and nothing
+# else**: it is the one feature that gives `ClientBuilder::build_with_tokio`, which is the
+# only constructor of a `jsonrpsee_core::client::Client` — the single value that implements
+# both `ClientT` (for `WchRpcClient`'s nineteen calls) and `SubscriptionClientT` (for
+# `WchEventsClient`'s two streams), which is what lets one connection carry a sweep and its
+# progress (note **N57**).
+#
+# Deliberately **not** `client`, the umbrella: it pulls `client-ws-transport-tls`, and a TLS
+# stack on a `AF_UNIX` socket is both pointless and a `feature-posture.sh` violation.
+# Enabling `async-client` here enables `jsonrpsee-core/async-client` for the whole workspace
+# — `cargo metadata` resolves features once per package (note **N38**) — so it is measured
+# rather than assumed: the only package it adds to `webcam-handler-api`'s normal-dependency
+# closure is `futures-timer` (MIT OR Apache-2.0), and no web-stack crate joins it.
+jsonrpsee = { workspace = true, features = ["async-client"] }
+# The frame layer, and the same one the daemon serves: `soketto` is jsonrpsee-server's own
+# WebSocket implementation, so the two halves of a frame cannot disagree about what a frame
+# is. It is a **normal** dependency here where it is a dev-dependency of the daemon,
+# because `wchc`'s transport is the shipped product rather than a fixture.
+soketto.workspace = true
+# `net` for `UnixStream`, `rt` for the current-thread runtime this binary owns (see
+# `remote::Remote`), `macros` for the `select!` that runs a sweep beside its progress
+# stream. No `rt-multi-thread`: one verb per invocation needs one thread, and `jsonrpsee`'s
+# background task is driven by the `block_on` that is already there.
+tokio = { workspace = true, features = ["macros", "net", "rt"] }
+# `compat`, which is the whole of this edge: soketto takes the `futures::io` traits and a
+# `tokio::net::UnixStream` speaks tokio's. One adapter, at the one place the two meet.
+tokio-util = { workspace = true, features = ["compat"] }
+# One type name: a session id, which is what `remote::SweepFilter` compares a progress event
+# against. `wchc` mints none — the daemon does, at its own composition root, because the
+# engine reads no clock (D9) — so this edge is a spelling and not a capability.
+uuid.workspace = true
+webcam-handler-api.workspace = true
+webcam-handler-cli-core.workspace = true
+webcam-handler-schema.workspace = true
+
+[dev-dependencies]
+# `wchc`'s own suites spawn the shipped binary and read what it writes, so the fixtures they
+# need are a private pair of XDG directories and a device profile for the daemon beside it to
+# replay. **Dev-dependencies do not ship**, which is why `webcam-handler-engine` may be named
+# here and nowhere above: `dependency-walls.sh`'s thin-client wall counts normal edges only,
+# and `TempRuntimeDir`/`TempStore` are the engine's for the reason the daemon's own suites
+# give — a third copy of a temp-directory fixture is a third answer to "where does this run".
+serde_json.workspace = true
+webcam-handler-engine.workspace = true

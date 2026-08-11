@@ -53,6 +53,18 @@ clap_complete = "4.6.9"
 clap_mangen = "0.3.2"
 comfy-table = "8.0.0"
 fd-lock = "4.0.4"
+# Adopted at P4f with `jsonrpsee/async-client`, which is the only thing that reaches it:
+# `jsonrpsee-core`'s async client uses it for the request timeout, and **no crate in this
+# workspace names it directly**. It is listed here anyway because design §2.8 makes this
+# table the dependency registry, and an adoption that appears only in `Cargo.lock` is an
+# adoption nobody reviewed — note N57 declined to pay for exactly this crate at P4e-i ("not
+# in `Cargo.lock` and does not resolve offline"), so its arrival is a decision and not an
+# accident. MIT OR Apache-2.0, both already on cargo-deny's allowlist; it adds no transitive
+# package of its own, which was measured against `webcam-handler-api`'s dependency closure
+# before it was taken (`dependency-walls.sh` and `feature-posture.sh` are the standing
+# checks). The version is the one the lock resolves; the lock, not this line, is what pins a
+# dependency nothing declares.
+futures-timer = "3.0.4"
 humantime = "2.4.0"
 # `default-features = false` is load-bearing: the default feature set drags `avif`,
 # which drags the rav1e AV1 encoder (design §2.8; feature-posture.sh gates it).

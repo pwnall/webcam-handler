@@ -59,7 +59,7 @@ use schema::vocabulary::closed_vocabulary;
 pub use schema::session::{ChosenBy, Selection, SessionRef};
 
 pub use photograph::Photograph;
-pub use render::SweepWatcher;
+pub use render::{SweepWatcher, report_probe};
 
 /// The photo answer, and its bytes when the caller asked for them.
 ///
@@ -186,6 +186,15 @@ impl std::fmt::Display for Program {
     }
 }
 
+/// The id clap knows `--backend` by.
+///
+/// The derive takes an argument's id from its **field name**, and `ArgMatches` is a map on
+/// that id — so this string and the field below are one name spelled twice, which is exactly
+/// the drift a test has to catch: a lookup on an id no argument has answers `None`, which
+/// reads as "the flag was not typed" and would make `wchc`'s refusal quietly stop refusing.
+/// `the_backend_flag_is_reachable_by_the_id_the_matches_are_keyed_on` is that test.
+const BACKEND_ARG: &str = "backend";
+
 /// Drive V4L2 webcams: enumerate, inspect, and capture device profiles.
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -215,6 +224,15 @@ pub struct Cli {
     /// What to do.
     #[command(subcommand)]
     pub command: Command,
+
+    /// Whether `--backend` was *typed*, as opposed to defaulted — see
+    /// [`Cli::backend_was_chosen`].
+    ///
+    /// `#[arg(skip)]`, so clap neither parses nor renders it; it is filled in by
+    /// [`Cli::try_parse_checked_from`] from the matches, which is the only place that still
+    /// has them.
+    #[arg(skip)]
+    backend_chosen: bool,
 }
 
 impl Cli {
@@ -256,13 +274,39 @@ impl Cli {
 
         let mut command = program.command();
         let mut matches = command.try_get_matches_from_mut(args)?;
+        // Read **before** the struct is built, because building it removes the values it
+        // takes (`ArgMatches::remove_one`) and a source cannot be read off a match that is
+        // no longer there. See [`Cli::backend_was_chosen`] for why the source is a fact
+        // anybody needs.
+        let backend_chosen =
+            matches.value_source(BACKEND_ARG) == Some(clap::parser::ValueSource::CommandLine);
         // What clap's own `try_parse_from` does with the error, and the reason this is not
         // a bare `?`: an unformatted `FromArgMatches` error renders without the usage
         // block, so the program name would go missing on exactly the path that names it.
-        let cli =
+        let mut cli =
             Cli::from_arg_matches_mut(&mut matches).map_err(|error| error.format(&mut command))?;
+        cli.backend_chosen = backend_chosen;
         cli.check(program)?;
         Ok(cli)
+    }
+
+    /// Whether the command line **named** a backend, rather than taking the default.
+    ///
+    /// `--backend` carries `default_value = "v4l2"`, so [`Cli::backend`] always holds one and
+    /// the value alone cannot answer "did somebody ask for this?". `wchc` needs the
+    /// question answered, because it refuses the flag: the daemon chose its backend at its
+    /// own composition root and a client cannot change it, so `wchc --backend v4l2` has to
+    /// be refused exactly as `wchc --backend fake` is. Refusing on the *value* would let the
+    /// spelling that happens to match the default through, and a client that silently
+    /// accepted `--backend v4l2` while the daemon replayed a profile would be lying about
+    /// which machine's cameras it was showing.
+    ///
+    /// `false` for a [`Cli`] that did not come through [`Cli::try_parse_checked_from`] —
+    /// clap's own `Parser::try_parse_from` builds one without ever seeing this — which is
+    /// the honest reading either way: nothing was typed that this crate saw.
+    #[must_use]
+    pub fn backend_was_chosen(&self) -> bool {
+        self.backend_chosen
     }
 
     /// The cross-argument rules, in clap's error type so they still exit 2.
@@ -534,6 +578,15 @@ pub enum Command {
         /// How long to let the sensor settle first.
         #[command(flatten)]
         settle: SettleArgs,
+
+        /// Wait for the camera rather than being refused while it is busy (D12).
+        ///
+        /// Inert under `wch`, which opens its own camera per invocation and runs one verb:
+        /// the queue it would be waiting for is its own and always empty. It is meaningful
+        /// under `wchc`, where the daemon serves every client from one thread per camera —
+        /// see [`Command::photo_request`], which is where the flag became reachable.
+        #[arg(long)]
+        wait: bool,
     },
 
     /// Run a calibration session: sweep controls, score the samples, apply the result (D8).
@@ -950,6 +1003,21 @@ impl Command {
     /// of a socket. Resolving it here — in the shared command surface — is what makes
     /// `wch photo -o out.jpg` and `wchc photo -o out.jpg` mean the same file.
     ///
+    /// `--wait` is D12's flag and it **landed here at P4f**, with the surface that can mean
+    /// it. The absence this doc used to argue was note N42's and note N56 restated it: "the
+    /// consumer where it is meaningful is `wchc`, whose transport is P4f's… It stays a wire
+    /// field until the surface that can mean it exists." That surface exists now, so the
+    /// flag is a flag: `wchc photo --wait` asks the daemon to *queue* behind whatever is
+    /// holding the camera's one thread (`limits::CAMERA_ENQUEUE_WAIT_MS` bounds the wait),
+    /// where without it a busy camera is `Error::Busy`. It is still inert under `wch` for
+    /// exactly the reason it was inert before — one process, one camera, one verb, an empty
+    /// queue — and its `--help` line says so rather than leaving a user to discover it,
+    /// which is the objection that kept a flag with no reachable consumer out of P4b.
+    ///
+    /// `PhotoRequest::wait` is `#[serde(default)]`, so nothing about the committed schema
+    /// artifacts moves with this — asserted by `scripts/gates/schema-artifacts-current.sh`
+    /// rather than claimed.
+    ///
     /// # Errors
     ///
     /// [`Error::IllegalTransition`] from [`Sink::writable_format`] when the output path's
@@ -966,6 +1034,7 @@ impl Command {
             transform,
             stream,
             settle,
+            wait,
             ..
         } = self
         else {
@@ -997,19 +1066,12 @@ impl Command {
             settle: settle.policy(),
             transform: transform.0,
             sink,
-            // **There is no `--wait` flag, and that absence is argued rather than
-            // overlooked** (note N42, which allows "a command-line spelling, or an argued
-            // absence of one"). D12's flag chooses what a *full command queue* means, and a
-            // full command queue needs something else already holding the camera's one
-            // thread. `wch` opens its own camera per invocation and runs one verb, so the
-            // queue it would be waiting for is its own and always empty; the flag would be
-            // inert in one of this surface's two consumers and would need a `--help` line
-            // saying so. The consumer where it *is* meaningful is `wchc`, whose transport is
-            // P4f's — until that lands nothing on a command line can reach a daemon at all,
-            // so a flag here would be a typed declaration with no producer and no reachable
-            // consumer, which is the objection (rubric A8) that kept the whole field out of
-            // P4b. It stays a wire field until the surface that can mean it exists.
-            wait: false,
+            // D12's flag, carried verbatim rather than decided here. The surface says what
+            // was asked for; whether asking means anything is the *executor's* answer, and
+            // the two executors differ — see this method's doc. Nothing in this crate
+            // branches on it, which is what makes `wch photo --wait` and `wch photo`
+            // produce byte-identical `--json` while `wchc`'s two differ.
+            wait: *wait,
         }))
     }
 }
@@ -1719,6 +1781,51 @@ mod tests {
     }
 
     #[test]
+    fn the_backend_flag_is_reachable_by_the_id_the_matches_are_keyed_on() {
+        // `BACKEND_ARG` and the field it names are one name spelled twice, and the failure
+        // mode of a mismatch is silent: `ArgMatches::value_source` on an id no argument has
+        // answers `None`, which reads exactly like "the flag was not typed" — so `wchc`
+        // would stop refusing `--backend` and nothing else would notice.
+        for &program in Program::ALL {
+            assert!(
+                program
+                    .command()
+                    .get_arguments()
+                    .any(|arg| arg.get_id() == BACKEND_ARG),
+                "{program} has no argument with the id the matches are read by"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backend_that_was_typed_is_distinguishable_from_the_one_that_was_defaulted() {
+        // The fact `wchc` refuses on, and the reason it is a fact rather than a comparison:
+        // `--backend` carries `default_value = "v4l2"`, so the *value* is the same in both
+        // rows below and only the provenance differs.
+        let defaulted =
+            Cli::try_parse_checked_from(Program::Wchc, ["wchc", "list"]).expect("parses");
+        assert_eq!(defaulted.backend, BackendKindArg(BackendKind::V4l2));
+        assert!(!defaulted.backend_was_chosen());
+
+        let typed =
+            Cli::try_parse_checked_from(Program::Wchc, ["wchc", "--backend", "v4l2", "list"])
+                .expect("parses");
+        assert_eq!(typed.backend, defaulted.backend, "the values are the same");
+        assert!(
+            typed.backend_was_chosen(),
+            "the same value, typed, has to be distinguishable from the default"
+        );
+
+        // The other spelling, so the fact is about the flag rather than about one value.
+        let other = Cli::try_parse_checked_from(
+            Program::Wchc,
+            ["wchc", "--backend", "fake", "--profile", "p.json", "list"],
+        )
+        .expect("parses");
+        assert!(other.backend_was_chosen());
+    }
+
+    #[test]
     fn an_empty_camera_argument_is_refused_rather_than_resolved() {
         let arg = CameraArg {
             camera: String::new(),
@@ -1960,6 +2067,55 @@ mod tests {
             .expect("builds")
             .expect("a request");
         assert_eq!(request.settle, SettlePolicy::default());
+    }
+
+    #[test]
+    fn the_wait_flag_reaches_the_request_and_is_absent_from_it_by_default() {
+        // D12's flag, which landed at P4f with the surface that can mean it (notes N42,
+        // N56). Both directions, because a request that always waited and one that never
+        // did would each pass one of them — and the daemon branches on this field, so a
+        // build that dropped it would turn `wchc photo --wait` into a `Busy` refusal on a
+        // camera that was about to be free.
+        let waiting = Cli::try_parse_checked_from(
+            Program::Wch,
+            ["wch", "photo", "cam:x", "-o", "a.jpg", "--wait"],
+        )
+        .expect("parses");
+        let request = waiting
+            .command
+            .photo_request(camino::Utf8Path::new("/tmp"))
+            .expect("builds")
+            .expect("a request");
+        assert!(request.wait);
+
+        let plain =
+            Cli::try_parse_checked_from(Program::Wch, ["wch", "photo", "cam:x", "-o", "a.jpg"])
+                .expect("parses");
+        let request = plain
+            .command
+            .photo_request(camino::Utf8Path::new("/tmp"))
+            .expect("builds")
+            .expect("a request");
+        assert!(!request.wait, "waiting must never be the default");
+
+        // It is a flag on `photo` and on nothing else: the queue it waits for is a camera's
+        // one thread, and no other verb takes a capture through it. A `--wait` clap accepted
+        // anywhere would be a flag with no reader.
+        assert!(Cli::try_parse_checked_from(Program::Wch, ["wch", "list", "--wait"]).is_err());
+
+        // And the `--help` line says it is inert under `wch`, which is the alternative to
+        // leaving a user to discover it. Read off the built tree rather than from the source
+        // (rubric rule 6), and asserted for both roots, because the surface is shared.
+        for &program in Program::ALL {
+            let help = program
+                .command()
+                .find_subcommand_mut("photo")
+                .expect("the photo verb")
+                .render_long_help()
+                .to_string();
+            assert!(help.contains("--wait"), "{program}: {help}");
+            assert!(help.contains("Inert under `wch`"), "{program}: {help}");
+        }
     }
 
     #[test]

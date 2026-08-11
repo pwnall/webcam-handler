@@ -122,6 +122,53 @@ impl Output {
     }
 }
 
+/// Say what the pair probe touched and what it put back, on standard error.
+///
+/// The `--json` document carries the *pairs*; what a probe declined and how the restore went
+/// are facts about the run rather than about the camera, and a caller redirecting stdout
+/// should still see them.
+///
+/// **Here rather than in a binary, because it has two binaries.** It began in
+/// `crates/cli/src/main.rs`, where `wch` was the only root that could run a probe; P4f gives
+/// `wchc` the same two callers — `controls --discover-pairs` over `wch_discover_pairs`, whose
+/// answer carries these two fields on the wire precisely so a socket client is not running a
+/// write with its restoration report withheld (note N30) — and two copies of a rendering is
+/// the second home design §2.10 forbids and the thing the parity gate would then be
+/// comparing against itself.
+///
+/// `program` is a parameter for [`crate::Program`]'s reason: the line names the binary that
+/// met the probe, and `wch:` in `wchc`'s mouth would send an operator to the wrong `--help`.
+///
+/// Takes the two facts rather than a probe result, because its callers hold them in
+/// different shapes: a [`schema::report::DiscoveryReport`] over the wire, and the engine's
+/// own `Discovery` in `wch`.
+///
+/// Writes with `eprintln!` rather than through [`Output`]: its callers are inside
+/// [`crate::Executor`] implementations, which are handed no output sink — the seam answers
+/// with schema values and renders nothing, and threading a sink through it to carry two
+/// notes would be a wider change to the trait than the notes are worth.
+pub fn report_probe(
+    program: crate::Program,
+    skipped: &[schema::pairing::ProbeSkip],
+    restored: &RestoreReport,
+) {
+    for skip in skipped {
+        eprintln!("{program}: did not probe {}: {}", skip.control, skip.reason);
+    }
+    if !restored.is_complete() {
+        let stuck: Vec<String> = restored
+            .unrestored()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        eprintln!(
+            "{program}: the probe could not put {} control(s) back: {}",
+            stuck.len(),
+            stuck.join(", ")
+        );
+    }
+}
+
 /// Serialize a schema value as the `--json` answer.
 fn json<T: serde::Serialize>(value: &T, out: &mut Output) -> Result<()> {
     let text = serde_json::to_string_pretty(value).map_err(|error| Error::StorageIo {

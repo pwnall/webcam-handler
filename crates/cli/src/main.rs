@@ -157,32 +157,12 @@ impl engine::progress::ProgressSink for Watched<'_> {
 
 /// Say what the probe touched and what it put back, on standard error.
 ///
-/// The `--json` document carries the *pairs*; what a probe declined and how the restore
-/// went are facts about the run rather than about the camera, and a caller redirecting
-/// stdout should still see them.
-///
-/// Takes the two facts rather than a probe result, because its two callers hold them in
-/// two shapes: `controls --discover-pairs` has a whole
-/// [`schema::report::DiscoveryReport`] — the document `wchd`'s `wch_discover_pairs`
-/// answers, where these two fields are on the wire so a socket client is not running a
-/// write with its restoration report withheld (N30) — and `calibrate start` has the
-/// [`engine::discover::Discovery`] the session probe returned.
+/// One line of assembly over [`cli_core::report_probe`], which is where the rendering moved
+/// at P4f: `wchc` runs the same probe over `wch_discover_pairs` and prints the same two
+/// notes, and a second copy here would be the fork design §2.10 forbids. What stays local is
+/// only the program's own name, which is this root's one fact about itself.
 fn report_probe(skipped: &[ProbeSkip], restored: &RestoreReport) {
-    for skip in skipped {
-        eprintln!("{PROGRAM}: did not probe {}: {}", skip.control, skip.reason);
-    }
-    if !restored.is_complete() {
-        let stuck: Vec<String> = restored
-            .unrestored()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        eprintln!(
-            "{PROGRAM}: the probe could not put {} control(s) back: {}",
-            stuck.len(),
-            stuck.join(", ")
-        );
-    }
+    cli_core::report_probe(PROGRAM, skipped, restored);
 }
 
 impl Executor for InProcess {

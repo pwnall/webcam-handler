@@ -112,6 +112,89 @@ pub const RPC_MAX_RESPONSE_BYTES: u32 = 64 * 1024 * 1024;
 /// the protocol feature available without making it a lever.
 pub const RPC_MAX_BATCH: u32 = 16;
 
+/// How long `wchc` waits for an ordinary verb's answer.
+///
+/// jsonrpsee's client default is sixty seconds, which is somebody else's number for
+/// somebody else's deployment — and here it is not even the right *shape*, because the
+/// longest ordinary verb on this surface is not a network round trip but a camera one.
+/// Priced from the three bounds that compose it: a `wch_photo` that asked to wait
+/// ([`CAMERA_ENQUEUE_WAIT_MS`], ten seconds) may then settle
+/// ([`DEFAULT_SETTLE_DEADLINE_MS`], five) and then wait for one frame
+/// ([`FRAME_DEADLINE_MS`], two). Everything else on the surface is shorter than that, and
+/// the sweep — the one verb that is not — has [`CLIENT_SWEEP_REQUEST_TIMEOUT_MS`].
+///
+/// Two minutes leaves an order of magnitude of headroom over that seventeen seconds, which
+/// is deliberate: this bound exists so a client that has lost its daemon eventually says so
+/// rather than hanging forever, not so it can adjudicate whether a camera is slow. A
+/// timeout that fired while the daemon was still working would be this client inventing a
+/// failure the daemon had not had, which is E3's conversion wearing a stopwatch.
+///
+/// Read by `wchc`'s `Remote::request_timeout`, once per invocation.
+pub const CLIENT_REQUEST_TIMEOUT_MS: u64 = 120_000;
+
+// The relation the paragraph above argues, checked where all four numbers are: the ordinary
+// budget has to outlast the worst ordinary command, or `wchc photo --wait` would time out on
+// a daemon that was about to answer it.
+const _: () = assert!(
+    CLIENT_REQUEST_TIMEOUT_MS
+        > CAMERA_ENQUEUE_WAIT_MS + DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS
+);
+
+/// How long `wchc` waits for a calibration sweep's answer.
+///
+/// Its own number because a sweep is the one method on this surface "whose latency is
+/// unbounded by design" (`webcam-handler-api`'s `wch_calibrate_sweep`, which asks a client
+/// to raise or disable its timeout rather than leave it at jsonrpsee's default). Raised
+/// rather than disabled: AGENTS bounds everything, and "no timeout at all" is the shape a
+/// wedged client takes when nobody is left to notice.
+///
+/// Priced from the sweep's own caps rather than from patience: [`MAX_SWEEP_SAMPLES`] is the
+/// most samples one sweep visits and each costs at most a settle
+/// ([`DEFAULT_SETTLE_DEADLINE_MS`]) plus a frame ([`FRAME_DEADLINE_MS`]), so the worst sweep
+/// this build will run is a little under half an hour. An hour is that with room for the
+/// writes and the per-sample scoring the arithmetic leaves out.
+///
+/// Read by `wchc`'s `Remote::request_timeout`, for the one verb that needs it.
+pub const CLIENT_SWEEP_REQUEST_TIMEOUT_MS: u64 = 3_600_000;
+
+// The arithmetic above, where the numbers are. A budget shorter than the sweep the planner
+// will happily run would make `wchc calibrate sweep --all` fail on exactly the sweeps that
+// took the longest to get wrong — and it would fail *after* the camera had been driven.
+const _: () = assert!(
+    CLIENT_SWEEP_REQUEST_TIMEOUT_MS
+        > MAX_SWEEP_SAMPLES as u64 * (DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS)
+);
+
+/// How many requests `wchc` may have in flight on its one connection.
+///
+/// jsonrpsee sizes the channel to its background task from this and defaults it to 256,
+/// which is a server-shaped number: `wchc` runs **one verb per invocation**, so what is
+/// actually in flight is a call, at most one subscribe beside it (the sweep, note N57), and
+/// the unsubscribe a dropped `Subscription` sends. Four is that with one to spare.
+///
+/// Small on purpose rather than generous: this is the one place a client could buffer work
+/// the daemon has not agreed to yet, and a bound that could never be reached would not be a
+/// bound. Read by `wchc`'s `Remote::connect`.
+pub const CLIENT_MAX_CONCURRENT_REQUESTS: usize = 4;
+
+/// How many undelivered events `wchc` holds for one subscription.
+///
+/// jsonrpsee's client **closes** a subscription whose buffer overflows, so this is not a
+/// drop policy like [`WS_MESSAGE_BUFFER_CAPACITY`] one hop upstream — it is the depth at
+/// which this client would end its own progress stream. Deeper than the daemon's
+/// per-connection buffer for that reason: the hop that refuses has to be the one that
+/// *counts* what it refused and carries on (`wch_subscribe_calibration`'s policy), never
+/// this one, which cannot say anything about what it lost.
+///
+/// Equal to [`SUBSCRIPTION_BROADCAST_DEPTH`] because the two bound the same thing from two
+/// ends — how far behind a subscriber may fall — and a client that buffered less than the
+/// daemon's fan-out would make the client the first to fail on a burst the daemon was
+/// built to absorb. Read by `wchc`'s `Remote::connect`.
+pub const CLIENT_SUBSCRIPTION_BUFFER: usize = 256;
+
+// The ordering the paragraph above argues, checked where both numbers are.
+const _: () = assert!(CLIENT_SUBSCRIPTION_BUFFER > WS_MESSAGE_BUFFER_CAPACITY as usize);
+
 /// How many unwritten notifications one subscription may hold before the daemon drops.
 ///
 /// jsonrpsee's `message_buffer_capacity`, which P4b deliberately did not inherit: it turned
