@@ -40,8 +40,8 @@ pub(crate) enum Wire {
     /// It drives the real parsing, the real `param_kind = map` decoding, the real handler
     /// and the real `WireError → -320xx` conversion; everything except the socket. Its
     /// fault menu in §2.9 has exactly one entry ("disconnect mid-subscription"), which is
-    /// P4e's subject, so this is a *speed* double and not a fault double — and nothing here
-    /// pretends otherwise.
+    /// P4e-i's subject and `tests/subscriptions.rs`'s, so this is a *speed* double and not
+    /// a fault double — and nothing here pretends otherwise.
     InMemory(Methods),
     /// A real `AF_UNIX` socket, spoken to by a real HTTP/1.1 client (`support`).
     Uds(Utf8PathBuf),
@@ -52,8 +52,11 @@ impl Wire {
     async fn round_trip(&self, request: String) -> Result<String, ClientError> {
         match self {
             Wire::InMemory(methods) => {
-                // The subscription buffer, which nothing on this surface uses: T5 declares
-                // no subscription until P4e (note N29).
+                // The subscription buffer, which nothing this enum carries can use: the
+                // two subscriptions live on `WchEvents`, whose generated client is bounded
+                // by `SubscriptionClientT` and therefore reachable by no transport of ours
+                // (note **N57**). `tests/subscriptions.rs` drives them through
+                // `Methods::subscribe` and a real WebSocket instead.
                 let (answer, _subscriptions) = methods.raw_json_request(&request, 1).await?;
                 Ok(answer.to_string())
             }

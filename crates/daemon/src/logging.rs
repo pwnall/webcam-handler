@@ -4,8 +4,9 @@
 //! > protocol, no libsystemd) under systemd.
 //!
 //! P4b lands the first half. The journald layer arrives with the rest of the systemd
-//! integration (P4e), which is also where `sd_notify` and socket activation live; adding
-//! it here would put a later phase's criteria past their gate.
+//! integration (P4e-ii, the shutdown half of the split note N58 records), which is also
+//! where `sd_notify` and socket activation live; adding it here would put a later phase's
+//! criteria past their gate.
 //!
 //! ## Why installation lives in the composition root
 //!

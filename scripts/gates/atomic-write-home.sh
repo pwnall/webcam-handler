@@ -66,7 +66,18 @@ state_dir_pattern+='|STORE_LOCK_FILE|sessions/|session\.json|log\.ndjson'
 # byte-identical bypasses that differed only in how the open call was spelled got
 # opposite verdicts from this gate, which is the "green while checking less than it
 # claims" family (note N10) rather than the naming limit the header records.
+#
+# The `OFlags::` alternatives are the same family again, added at P4e-i because that
+# sub-milestone taught this workspace a *new* way to obtain a writable file:
+# `daemon::server::open_destination` opens through `rustix` and turns the descriptor into a
+# `std::fs::File`, which none of the spellings above can see (note **N51**'s discharge).
+# The match is on the write-shaped **flags** rather than on `rustix::fs::open(`, because
+# the call itself is not a write — `daemon::uds::SocketDir` opens the socket directory
+# `O_PATH | O_DIRECTORY` with the same function, and reading a directory is not a bypass of
+# anything. The limit this shares with the rest: flags assembled behind a `const` are a
+# variable, and this is a grep.
 raw_write_pattern='fs::write\(|File::create\(|File::create_new\(|File::options\(|OpenOptions::new\(|serde_json::to_writer|to_writer_pretty'
+raw_write_pattern+='|OFlags::(WRONLY|RDWR|CREATE|TRUNC|APPEND)'
 
 # The home itself, and the module that resolves the paths. Both are derived from the
 # engine package's location so that moving the crate moves the exemption.

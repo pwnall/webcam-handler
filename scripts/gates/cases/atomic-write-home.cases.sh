@@ -120,6 +120,52 @@ RS
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+# The P4e-i widening, proven: the bypass spelled the way that sub-milestone taught this
+# workspace to open a file for writing — through `rustix`, with the descriptor turned into
+# a `std::fs::File`. Not one character of the pattern's std spellings appears in it, so
+# before the widening this file was a session write nothing could see.
+fail_case_bypass_spelled_with_rustix_flags() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/daemon/src/journal_rustix.rs" <<'RS'
+//! Seeded by the gate selftest: the same bypass, opened the way P4e-i opens a photo's
+//! destination.
+use std::io::Write as _;
+
+pub fn note(dir: &camino::Utf8Path, line: &str) {
+    let fd = rustix::fs::open(
+        dir.join("log.ndjson").as_std_path(),
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CREATE,
+        rustix::fs::Mode::from_bits_truncate(0o600),
+    )
+    .unwrap();
+    let _ = std::fs::File::from(fd).write_all(line.as_bytes());
+}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The direction the widening must NOT take with it: `rustix::fs::open` is not itself a
+# write. `daemon::uds::SocketDir` opens the runtime directory `O_PATH | O_DIRECTORY` with
+# that function and names `XDG_RUNTIME_DIR` while doing it, so a pattern that matched the
+# call rather than the flags would call the socket bind a state-directory bypass.
+pass_case_a_read_only_rustix_open_beside_the_runtime_dir() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/daemon/src/dirfd.rs" <<'RS'
+//! Seeded by the gate selftest: a directory held as a descriptor, which writes nothing.
+pub fn hold(runtime_dir: &camino::Utf8Path) -> rustix::fd::OwnedFd {
+    rustix::fs::open(
+        runtime_dir.as_std_path(),
+        rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::PATH,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap()
+}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 fail_case_nothing_to_scan() {
     local tree
     tree="$(gate_scratch_tree)"

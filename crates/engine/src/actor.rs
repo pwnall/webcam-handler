@@ -63,17 +63,28 @@
 //! library accessor rather than a wire method on purpose — T5 is pinned at nineteen
 //! methods and a `wch_status` would be a twentieth (note N42).
 //!
+//! ## D12's `wait` flag, and the one place a caller's own thread waits
+//!
 //! D12's other half — "a second capture request queues or is refused with `Busy` per its
-//! `wait` flag" — lands here as the mechanism only: the command queue *is* the queue, and
-//! a caller that arrives past [`limits::CAMERA_COMMAND_QUEUE_DEPTH`] is refused with
-//! [`Error::Busy`]. The flag that chooses between the two is **P4e's**: it needs an enqueue
-//! that waits with a bound, which [`CameraActor::submit`]'s `try_send` is not, and a wire
-//! field nothing in the schema carries. Note N42 records the re-deferral and its reasons.
+//! `wait` flag" — is [`Enqueue`]. The command queue *is* D12's queue: a caller that arrives
+//! past [`limits::CAMERA_COMMAND_QUEUE_DEPTH`] is refused with [`Error::Busy`]
+//! ([`Enqueue::Refuse`], which is what [`CameraActor::submit`] has always done), or waits
+//! for room until an instant it names ([`Enqueue::WaitUntil`]) and takes the *same* refusal
+//! when that instant arrives. The flag changes when the answer arrives, never what it is.
+//!
+//! **The waiting happens on the caller's thread, and the deadline is the caller's.** That is
+//! the same doctrine as the paragraph above rather than an exception to it: the actor still
+//! reads no clock, because the only clock read is `Instant::now()` on the thread that chose
+//! to wait, computing how much of its *own* budget is left. A caller with no thread to spare
+//! — the daemon, on a runtime worker — hands the wait to a blocking pool thread, which is
+//! where a blocking wait is already legal. Note **N42** deferred this mechanism from P4b and
+//! P4c, and note **N51** named the same missing bound from the other side.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use camino::Utf8PathBuf;
 use schema::backend::{Camera, CameraBackend};
@@ -116,6 +127,96 @@ type Work = Box<dyn for<'device> FnOnce(Result<OpenCamera<'device>>) -> Answerin
 
 /// How an idle sweep reports what it did.
 type SweepAnswer = Box<dyn FnOnce(bool) + Send>;
+
+/// How a caller wants to meet a full command queue — D12's `wait` flag, as a value.
+///
+/// A value rather than a `bool` because only one of the two arms means anything on its own:
+/// "wait" without a bound is the wedge AGENTS forbids of anything that waits, so the waiting
+/// arm carries the deadline that makes it bounded and the refusing arm carries nothing
+/// because it needs nothing.
+///
+/// A [`std::time::Instant`] rather than a duration or a [`Millis`], and the difference is
+/// the same one [`crate::settle`] makes about its own deadline: an *instant* is a decision
+/// the caller has already made, so a wait that is resumed, retried or split still ends when
+/// the caller said it would, and a deadline that has already passed is a refusal rather than
+/// a wait of zero length. [`Millis`] is not available for this: it is the caller's stamp on
+/// a *command*, taken from [`crate::settle::Clock`], and a `SteppedClock` is deliberately
+/// not `Sync` — a wait is the one thing here that spans two threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Enqueue {
+    /// Refuse with [`Error::Busy`] when there is no room right now.
+    ///
+    /// What [`CameraActor::submit`] has always done, and what every caller that has not
+    /// asked for anything else still gets.
+    Refuse,
+    /// Wait for room, and give up with the same [`Error::Busy`] at this instant.
+    WaitUntil(Instant),
+}
+
+impl Enqueue {
+    /// Wait up to [`limits::CAMERA_ENQUEUE_WAIT_MS`] from now.
+    ///
+    /// The shipped spelling of `wait: true`, and the one reader of that constant: a caller
+    /// that wants a different budget names its own instant, which is what this module's own
+    /// tests do. The clock is read *here*, on the caller's thread, at the moment the caller
+    /// decides to wait — the actor's thread is never involved and still reads nothing.
+    #[must_use]
+    pub fn waiting() -> Enqueue {
+        Enqueue::WaitUntil(Instant::now() + Duration::from_millis(limits::CAMERA_ENQUEUE_WAIT_MS))
+    }
+}
+
+/// The signal a waiting caller waits on: a place in the command queue has come free.
+///
+/// A counter and a condition variable rather than a permit pool, because the queue is
+/// already the bound — [`limits::CAMERA_COMMAND_QUEUE_DEPTH`] is enforced by the
+/// `sync_channel` itself — and a second count of the same seats would be a second answer to
+/// "is there room" that could drift from the first. What is missing from `std::sync::mpsc`
+/// is only the *wake-up*: `SyncSender` offers a send that blocks forever and a send that
+/// never blocks, and `send_timeout` is unstable on the pinned toolchain, so the bounded
+/// middle is a `try_send` retried when this says something changed.
+///
+/// [`Seats::served`] is what the waiter's predicate compares against, and a counter rather
+/// than a flag for the ordinary condition-variable reason: a flag can be raised and lowered
+/// between two waiters' turns, and a number that only goes up cannot be missed.
+#[derive(Debug)]
+struct Room {
+    /// The two numbers, behind one lock because a waiter changes both.
+    seats: Mutex<Seats>,
+    /// Raised whenever [`Seats`] changes — a place came free, a caller started or stopped
+    /// waiting for one, or the thread left.
+    changed: Condvar,
+}
+
+/// What is true about the queue's occupancy right now.
+#[derive(Debug, Default)]
+struct Seats {
+    /// How many commands the actor thread has taken off the queue.
+    served: u64,
+    /// How many callers are parked waiting for a place in it.
+    ///
+    /// Written by [`CameraActor::send_waiting`] and read by this module's own suite, which
+    /// is the point rather than an accident: without it, "the caller waited rather than
+    /// being refused" is a claim about the scheduler, and a test that released the held
+    /// thread before the waiter had reached the queue would pass against an actor that never
+    /// learned to wait at all. With it, the release is taken *after* the subject says it is
+    /// waiting — a signal, which is the only kind of waiting this project allows.
+    waiting: usize,
+}
+
+impl Room {
+    /// A place has come free, or the thread has gone; either way, everyone waiting should
+    /// look again.
+    ///
+    /// `notify_all` and not `notify_one`: a freed place can be taken by a caller that never
+    /// waited for it ([`Enqueue::Refuse`] does not touch this lock at all), so waking one
+    /// waiter could spend a wake-up on a caller that finds the queue full again while
+    /// another waits out its whole budget beside it.
+    fn freed(&self) {
+        lock(&self.seats).served += 1;
+        self.changed.notify_all();
+    }
+}
 
 /// One question for one camera's actor thread.
 enum Command {
@@ -282,6 +383,8 @@ pub struct CameraActor {
     node: Utf8PathBuf,
     /// The one way in.
     commands: SyncSender<Command>,
+    /// How a caller that asked to wait learns that a place has come free.
+    room: Arc<Room>,
     /// What the thread publishes; read by [`CameraActor::activity`].
     live: Arc<Mutex<Live>>,
     /// `false` once the thread has left its loop, however it left.
@@ -319,15 +422,21 @@ impl CameraActor {
             idle: Idle::new(after_ms, now_ms),
         }));
         let alive = Arc::new(AtomicBool::new(true));
+        let room = Arc::new(Room {
+            seats: Mutex::new(Seats::default()),
+            changed: Condvar::new(),
+        });
 
         let (commands, inbox) = mpsc::sync_channel(limits::CAMERA_COMMAND_QUEUE_DEPTH);
         let thread = Thread {
             backend,
             id: info.id.clone(),
             live: Arc::clone(&live),
+            room: Arc::clone(&room),
             _liveness: Liveness {
                 alive: Arc::clone(&alive),
                 live: Arc::clone(&live),
+                room: Arc::clone(&room),
             },
         };
         std::thread::Builder::new()
@@ -345,6 +454,7 @@ impl CameraActor {
             info,
             node,
             commands,
+            room,
             live,
             alive,
         })
@@ -400,10 +510,41 @@ impl CameraActor {
     where
         F: for<'device> FnOnce(Result<OpenCamera<'device>>) -> Answering + Send + 'static,
     {
-        self.send(Command::Use {
+        self.submit_with(at, Enqueue::Refuse, work)
+    }
+
+    /// [`CameraActor::submit`], choosing what a full command queue means — D12's `wait`
+    /// flag.
+    ///
+    /// [`Enqueue::Refuse`] is [`CameraActor::submit`] exactly: no lock is taken, nothing
+    /// waits, and a full queue is [`Error::Busy`] now. [`Enqueue::WaitUntil`] **blocks the
+    /// calling thread** until a place comes free or that instant arrives, and it is named
+    /// so a caller cannot reach it by accident: the daemon runs it on a blocking pool
+    /// thread, never on a runtime worker, for the reason this module's header gives.
+    ///
+    /// The wait ends the moment the actor takes a command off the queue, which is a signal
+    /// from the thread and not a poll — nothing here sleeps, and the deadline is a bound
+    /// rather than a schedule.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Busy`] when the queue is full and either the caller did not ask to wait or
+    /// its instant arrived first — the *same* refusal either way, with the same empty
+    /// holder list, because the flag chooses when the answer arrives and not what it is.
+    /// [`Error::DeviceGone`] when the thread has left, including when it leaves while a
+    /// caller is waiting: a thread that is gone is not a device that is held (E3).
+    pub fn submit_with<F>(&self, at: Millis, how: Enqueue, work: F) -> Result<()>
+    where
+        F: for<'device> FnOnce(Result<OpenCamera<'device>>) -> Answering + Send + 'static,
+    {
+        let command = Command::Use {
             at,
             work: Box::new(work),
-        })
+        };
+        match how {
+            Enqueue::Refuse => self.send(command),
+            Enqueue::WaitUntil(deadline) => self.send_waiting(command, deadline),
+        }
     }
 
     /// Run `work` against the device and wait for its answer.
@@ -513,16 +654,89 @@ impl CameraActor {
     fn send(&self, command: Command) -> Result<()> {
         match self.commands.try_send(command) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(Error::Busy {
-                path: self.node.clone(),
-                // Empty, and that is the honest answer rather than a missing one. The
-                // holder list is filled by the `/proc/*/fd` walk that answers "which
-                // *other* processes have this node open"; here the work in the way is our
-                // own, and it feeds `terminate_holder` — naming this process's pid would
-                // invite a client to kill the daemon it is talking to.
-                holders: Vec::new(),
-            }),
+            Err(TrySendError::Full(_)) => Err(self.busy()),
             Err(TrySendError::Disconnected(_)) => Err(self.device_gone()),
+        }
+    }
+
+    /// [`CameraActor::send`], waiting for room until `deadline`.
+    ///
+    /// The lock is held *across* the `try_send`, and that is the whole of the correctness
+    /// argument: [`Room::freed`] cannot bump between a send that found the queue full and
+    /// the wait that follows it, so there is no wake-up to lose. Everything else is the
+    /// ordinary condition-variable loop — re-read the counter, try, wait for it to move —
+    /// with the caller's own budget recomputed each turn so that a stream of wake-ups
+    /// cannot extend the wait past the instant the caller named.
+    ///
+    /// A spent deadline and a deadline that expires mid-wait take the *same* line out of
+    /// this function, which is what makes one test able to go red for both.
+    fn send_waiting(&self, mut command: Command, deadline: Instant) -> Result<()> {
+        let mut seats = lock(&self.room.seats);
+        // Raised before the first attempt and lowered after the last one, so that "somebody
+        // is waiting for this camera" spans the whole of the wait rather than the instant
+        // inside `wait_timeout_while` — see [`Seats::waiting`] for what reads it and why.
+        seats.waiting += 1;
+        self.room.changed.notify_all();
+
+        let outcome = loop {
+            match self.commands.try_send(command) {
+                Ok(()) => break Ok(()),
+                Err(TrySendError::Full(returned)) => command = returned,
+                Err(TrySendError::Disconnected(_)) => break Err(self.device_gone()),
+            }
+            // A thread that left while this caller was waiting is `DeviceGone`, not `Busy`
+            // — and it is asked here rather than left to the next `try_send` because the
+            // drop guard lowers this flag *before* the inbox it shares a thread with is
+            // dropped, so for one moment a disconnected actor still answers `Full`.
+            if !self.is_alive() {
+                break Err(self.device_gone());
+            }
+            let Some(budget) = deadline.checked_duration_since(Instant::now()) else {
+                break Err(self.busy());
+            };
+            let seen = seats.served;
+            let (guard, _) = self
+                .room
+                .changed
+                .wait_timeout_while(seats, budget, |seats| seats.served == seen)
+                .unwrap_or_else(PoisonError::into_inner);
+            seats = guard;
+        };
+
+        seats.waiting -= 1;
+        drop(seats);
+        self.room.changed.notify_all();
+        outcome
+    }
+
+    /// Block until `count` callers are parked in [`CameraActor::send_waiting`].
+    ///
+    /// The rendezvous this module's suite needs and nothing else has: it ends when the
+    /// subject says so, never when a duration passes, which is what lets a test release the
+    /// actor's held thread *after* a waiter has provably reached the full queue. Without it
+    /// a test could only guess, and an actor that had quietly gone back to refusing would
+    /// pass whenever the guess was generous.
+    #[cfg(test)]
+    fn awaited_by(&self, count: usize) {
+        let seats = lock(&self.room.seats);
+        let _parked = self
+            .room
+            .changed
+            .wait_while(seats, |seats| seats.waiting < count)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+
+    /// The refusal for a command queue that is full — D12's `Busy`.
+    ///
+    /// Its holder list is empty, and that is the honest answer rather than a missing one.
+    /// The list is filled by the `/proc/*/fd` walk that answers "which *other* processes
+    /// have this node open"; here the work in the way is our own, and it feeds
+    /// `terminate_holder` — naming this process's pid would invite a client to kill the
+    /// daemon it is talking to (note N42).
+    fn busy(&self) -> Error {
+        Error::Busy {
+            path: self.node.clone(),
+            holders: Vec::new(),
         }
     }
 
@@ -552,6 +766,7 @@ struct Thread {
     backend: Arc<dyn CameraBackend>,
     id: CameraId,
     live: Arc<Mutex<Live>>,
+    room: Arc<Room>,
     _liveness: Liveness,
 }
 
@@ -564,6 +779,11 @@ impl Thread {
     fn run(self, inbox: &Receiver<Command>) {
         let mut open: Option<Box<dyn Camera>> = None;
         while let Ok(command) = inbox.recv() {
+            // A place has come free — announced *before* the command runs, because the
+            // queue's bound is about how many commands are waiting and this one has stopped
+            // waiting. A caller that asked to wait gets in now rather than after work that
+            // may take minutes (D12's `wait` flag; [`CameraActor::send_waiting`]).
+            self.room.freed();
             match command {
                 Command::Use { at, work } => {
                     // Three steps in an order that is load-bearing: the work runs with the
@@ -671,6 +891,7 @@ impl Thread {
 struct Liveness {
     alive: Arc<AtomicBool>,
     live: Arc<Mutex<Live>>,
+    room: Arc<Room>,
 }
 
 impl Drop for Liveness {
@@ -685,6 +906,11 @@ impl Drop for Liveness {
             live.used_since_sweep = false;
         }
         self.alive.store(false, Ordering::Release);
+        // Last, and the order is load-bearing: a caller waiting for a place in the queue of
+        // a thread that is leaving must find `alive` already `false` when this wakes it, or
+        // it would meet `Error::Busy` where the fact is `Error::DeviceGone` (E3). Without
+        // this, such a caller would wait out its whole budget for room that is never coming.
+        self.room.freed();
     }
 }
 
@@ -758,9 +984,33 @@ impl Cameras {
         self.backend.enumerate()
     }
 
+    /// A source of hotplug events from the backend this registry drives (T1).
+    ///
+    /// The fourth forward, for [`Cameras::enumerate`]'s reason, and the one P4e-i's
+    /// `subscribe_events` needed: a daemon whose only handle on the backend is this
+    /// registry could not otherwise watch at all, and giving it a second
+    /// `Arc<dyn CameraBackend>` to watch with would put `backend.open(&id)` one line away
+    /// from every request handler — the exact thing this type's header says must stay
+    /// unrepresentable.
+    ///
+    /// **Watching is not opening** (note N53): the V4L2 watch diffs `/sys/class/video4linux`
+    /// and opens no node, so a subscriber costs no descriptor and D12's "the daemon never
+    /// opens a camera until first use" is untouched — subscribing to events is not a use.
+    ///
+    /// The answer is exclusively owned and `&mut`-driven (`HotplugWatch: Send`, not `Sync`),
+    /// so a caller runs it on one thread of its own. This registry keeps nothing.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend refuses a watch with — for V4L2, [`Error::DeviceIo`] when the
+    /// uevent socket cannot be opened.
+    pub fn watch(&self) -> Result<Box<dyn schema::backend::HotplugWatch>> {
+        self.backend.watch()
+    }
+
     /// Which backend this registry drives (T1).
     ///
-    /// The third and last forward, for [`Cameras::enumerate`]'s reason: a process holding a
+    /// A forward, for [`Cameras::enumerate`]'s reason: a process holding a
     /// registry needs no other handle on the backend, and this is the one fact about it
     /// that is not a question about a camera. `profile_capture` writes it into a document's
     /// provenance, where "a profile captured from the fake backend would be circular
@@ -1230,6 +1480,209 @@ mod tests {
                 .recv()
                 .unwrap_or_else(|err| panic!("queued command {drained} never ran: {err}"));
         }
+    }
+
+    /// One camera whose actor's single thread is provably held, with its command queue
+    /// filled to exactly [`limits::CAMERA_COMMAND_QUEUE_DEPTH`].
+    ///
+    /// Every arm of D12's `wait` flag starts here, and the determinism is the same sentence
+    /// `one_camera_runs_one_command_at_a_time_and_says_so_when_the_queue_is_full` makes:
+    /// **nothing can drain while the thread is held**, so "the queue is full" is an
+    /// observation rather than a hope. Dropping the returned sender releases it.
+    fn a_full_queue(
+        cameras: &Cameras,
+        info: &CameraInfo,
+    ) -> (Arc<CameraActor>, mpsc::SyncSender<()>) {
+        let actor = cameras.actor(info, 0).expect("a thread can be spawned");
+        let (started, holding) = mpsc::sync_channel::<()>(1);
+        let (release, held) = mpsc::sync_channel::<()>(1);
+        actor
+            .submit(1, move |_device| {
+                let _ = started.send(());
+                // Ends when this test says so, never when a duration passes.
+                let _ = held.recv();
+                answering(|| {})
+            })
+            .expect("an empty queue");
+        holding.recv().expect("the actor started the first command");
+
+        for queued in 0..limits::CAMERA_COMMAND_QUEUE_DEPTH {
+            actor
+                .submit(2, |_device| answering(|| {}))
+                .unwrap_or_else(|err| panic!("command {queued} of the bound was refused: {err}"));
+        }
+        (actor, release)
+    }
+
+    #[test]
+    fn a_full_queue_refuses_a_caller_that_will_not_wait_and_one_whose_deadline_has_passed() {
+        // D12's flag, refusing half. Two callers meet the same full queue and take the
+        // *same* refusal for two different reasons, which is the property that makes the
+        // flag safe to add: it changes when the answer arrives and never what it is (note
+        // N42's empty holder list is the other half of that sentence, asserted below).
+        let (_backend, cameras, info) = one_camera(10_000);
+        let (actor, release) = a_full_queue(&cameras, &info);
+
+        let refused = actor
+            .submit(2, |_device| answering(|| {}))
+            .expect_err("the queue took more than it is bounded to");
+        assert_eq!(refused.kind(), ErrorKind::Busy);
+
+        // A deadline that has already arrived is a refusal and *not* a wait of zero length.
+        // This is the arm that makes the bound assertable without anything waiting for a
+        // clock: the same line of `send_waiting` answers here and when a budget runs out
+        // mid-wait, so a build that had stopped honouring the deadline goes red here.
+        let spent = actor
+            .submit_with(2, Enqueue::WaitUntil(Instant::now()), |_device| {
+                answering(|| {})
+            })
+            .expect_err("a deadline that has already arrived is not a wait");
+        assert_eq!(spent.kind(), ErrorKind::Busy);
+        assert_eq!(
+            spent.to_string(),
+            refused.to_string(),
+            "the flag changed what the refusal says and not only when it arrives"
+        );
+        // Note **N42**: the holder list stays empty, because the work in the way is this
+        // process's own and the field feeds `terminate_holder`.
+        assert!(
+            matches!(&spent, Error::Busy { holders, .. } if holders.is_empty()),
+            "{spent:?}"
+        );
+
+        drop(release);
+    }
+
+    #[test]
+    fn a_caller_that_waits_takes_the_place_the_running_command_frees() {
+        // D12's other half — "a second capture request **queues** … per its `wait` flag" —
+        // and the mechanism notes N42 and N51 both named as missing: an enqueue that waits,
+        // with a bound.
+        //
+        // Nothing here sleeps and nothing guesses. The queue is full because the actor's one
+        // thread is held; the waiter is *provably parked* before this test lets go, because
+        // `awaited_by` blocks until the waiter says so; and the sixty-second deadline is a
+        // bound nothing reaches rather than a schedule — the same one-sided argument
+        // `crate::settle`'s own suite makes about its deadline.
+        let (_backend, cameras, info) = one_camera(10_000);
+        let (actor, release) = a_full_queue(&cameras, &info);
+
+        let (answered, outcome) = mpsc::sync_channel::<Result<()>>(1);
+        let (ran, arrived) = mpsc::sync_channel::<()>(1);
+        let waiting = Arc::clone(&actor);
+        let waiter = std::thread::spawn(move || {
+            let _ = answered.send(waiting.submit_with(
+                2,
+                Enqueue::WaitUntil(Instant::now() + Duration::from_secs(60)),
+                move |_device| {
+                    answering(move || {
+                        let _ = ran.send(());
+                    })
+                },
+            ));
+        });
+
+        // The subject's own signal that it is waiting, and the reason the release below
+        // cannot come too early: an actor that had gone back to refusing would answer the
+        // waiter immediately, and this test would then be comparing `Err(Busy)` against
+        // `Ok(())` rather than racing the scheduler.
+        //
+        // The red-on-inverse, watched before this was called done: with `submit_with`'s
+        // waiting arm rewired to `send`, nothing ever parks, this line never returns, and
+        // the run becomes a named `TIMEOUT` (`.config/nextest.toml`, 60 s x 3) rather than a
+        // hang — which is a failure with this test's name on it.
+        actor.awaited_by(1);
+        assert_eq!(
+            outcome.try_recv(),
+            Err(TryRecvError::Empty),
+            "a caller that asked to wait was answered while the queue was provably full"
+        );
+
+        drop(release);
+        outcome
+            .recv()
+            .expect("the waiting thread answered")
+            .expect("a caller that asked to wait was refused when room came free");
+        arrived
+            .recv()
+            .expect("the command the waiting caller enqueued never ran");
+        waiter.join().expect("the waiting thread");
+    }
+
+    #[test]
+    fn a_caller_waiting_on_a_thread_that_dies_is_told_the_device_is_gone_and_not_that_it_is_busy() {
+        // E3, at the one seam where the two facts are easiest to confuse: a caller parked on
+        // a full queue whose actor thread then unwinds (a backend that panics on device
+        // vocabulary is measured, not hypothetical \[PF:1\]). Retrying this handle will
+        // never work, so `Busy` — which invites a retry, and whose `holders` list invites a
+        // `terminate_holder` — would be the wrong sentence, and waiting out the whole budget
+        // for room that is never coming would be the wrong *timing*.
+        let (_backend, cameras, info) = one_camera(10_000);
+        let actor = cameras.actor(&info, 0).expect("a thread can be spawned");
+
+        // The held command panics when this test lets go, so the thread dies without ever
+        // serving what is queued behind it — which is what keeps the queue full across the
+        // death rather than draining into it.
+        let (started, holding) = mpsc::sync_channel::<()>(1);
+        let (release, held) = mpsc::sync_channel::<()>(1);
+        actor
+            .submit(1, move |_device| -> Answering {
+                let _ = started.send(());
+                let _ = held.recv();
+                panic!("a backend panicked on this camera's control vocabulary");
+            })
+            .expect("an empty queue");
+        holding.recv().expect("the actor started the first command");
+        for queued in 0..limits::CAMERA_COMMAND_QUEUE_DEPTH {
+            actor
+                .submit(2, |_device| answering(|| {}))
+                .unwrap_or_else(|err| panic!("command {queued} of the bound was refused: {err}"));
+        }
+
+        let (answered, outcome) = mpsc::sync_channel::<Result<()>>(1);
+        let waiting = Arc::clone(&actor);
+        let waiter = std::thread::spawn(move || {
+            let _ = answered.send(waiting.submit_with(
+                2,
+                Enqueue::WaitUntil(Instant::now() + Duration::from_secs(60)),
+                |_device| answering(|| {}),
+            ));
+        });
+        actor.awaited_by(1);
+
+        drop(release);
+        let gone = outcome
+            .recv()
+            .expect("the waiting thread answered")
+            .expect_err("the actor's thread is gone");
+        assert_eq!(
+            gone.kind(),
+            ErrorKind::DeviceGone,
+            "a thread that died is not a device that is held (E3)"
+        );
+        waiter.join().expect("the waiting thread");
+        assert!(!actor.is_alive());
+    }
+
+    #[test]
+    fn the_shipped_wait_budget_is_the_one_constant_and_nothing_repeats_it() {
+        // Rubric A8: `limits::CAMERA_ENQUEUE_WAIT_MS` has exactly one reader and this is the
+        // assertion that it is the one the daemon gets. Both bounds, because a `waiting()`
+        // that ignored the constant in either direction would still land between two
+        // readings of the clock taken far enough apart.
+        let before = Instant::now();
+        let Enqueue::WaitUntil(deadline) = Enqueue::waiting() else {
+            panic!("the shipped enqueue does not wait");
+        };
+        let after = Instant::now();
+        let budget = Duration::from_millis(limits::CAMERA_ENQUEUE_WAIT_MS);
+        assert!(deadline >= before + budget, "the budget was shortened");
+        assert!(deadline <= after + budget, "the budget was lengthened");
+
+        // And the other arm is a value with no clock in it at all, which is what makes
+        // "this caller will not wait" free.
+        assert_eq!(Enqueue::Refuse, Enqueue::Refuse);
+        assert_ne!(Enqueue::Refuse, Enqueue::waiting());
     }
 
     #[test]

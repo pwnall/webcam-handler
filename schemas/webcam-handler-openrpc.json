@@ -2230,6 +2230,47 @@
         ],
         "type": "object"
       },
+      "HotplugEvent": {
+        "description": "A camera appearing or disappearing.",
+        "oneOf": [
+          {
+            "description": "A device node appeared. Re-enumeration decides what camera it belongs to —\nthe event names a node, never a camera, because grouping is not a node property.",
+            "properties": {
+              "kind": {
+                "const": "added",
+                "type": "string"
+              },
+              "path": {
+                "description": "The node that appeared.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "path"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A device node disappeared.",
+            "properties": {
+              "kind": {
+                "const": "removed",
+                "type": "string"
+              },
+              "path": {
+                "description": "The node that vanished.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "path"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "KnownFlag": {
         "description": "The control flag bits this version names.\n\nFlags are carried as raw bits *plus* this decoded set, because the set grows:\n`HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support\nbehind PF:1 and older references do not list it [PF:12]. Bits outside this\nvocabulary survive in [`ControlFlags::unknown_bits`].",
         "oneOf": [
@@ -3055,6 +3096,11 @@
             "$ref": "#/components/schemas/Transform",
             "default": "none",
             "description": "The orientation, applied to pixels or recorded in EXIF depending on the sink (E6)."
+          },
+          "wait": {
+            "default": false,
+            "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag: *\"a second capture request queues or is refused with `Busy` per its\n`wait` flag\"*. `false` — the default, and the shape every client sent before this\nfield existed — is [`crate::Error::Busy`] the moment\n[`crate::limits::CAMERA_COMMAND_QUEUE_DEPTH`] commands are already waiting. `true`\nwaits for room, bounded by [`crate::limits::CAMERA_ENQUEUE_WAIT_MS`], and takes the\n*same* refusal when that budget is spent: the flag changes when the answer arrives,\nnever what it is.\n\n`#[serde(default)]` like its three siblings, so a request written before this field\nexisted still parses and still means what it meant. `false` rather than `true` for\nthe same reason: it is the behaviour every caller has already met, and a default that\nsilently turned a prompt refusal into ten seconds of latency would be a change to\nrequests nobody rewrote.\n\nIt is on the *request* rather than beside it because the T4 executor surface takes\none `&PhotoRequest` and the T5 method takes one assembled request (design §2.10), so\na value here reaches every caller without a second parameter on three signatures.\nThe flag is meaningful only where something else can be holding the camera's one\nthread, which today is the daemon; note **N42** records why it has no command-line\nspelling yet.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3207,6 +3253,231 @@
             "type": "object"
           }
         },
+        "type": "object"
+      },
+      "ProgressEvent": {
+        "description": "One progress event, addressed to a session and stamped.\n\nThe session id is on every event rather than established once at subscription time,\nbecause P4e's subscription is per *client* and a client may watch a daemon running\nmore than one session. A stream whose events had to be correlated by arrival order\nwould be a stream that could not be multiplexed.",
+        "oneOf": [
+          {
+            "description": "A sweep began, and this is how big it is.",
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/ControlSlug",
+                "description": "Which control."
+              },
+              "plan": {
+                "$ref": "#/components/schemas/SweepSpec",
+                "description": "The plan it is executing."
+              },
+              "progress": {
+                "const": "sweep_started",
+                "type": "string"
+              },
+              "total": {
+                "description": "How many samples it will take.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "progress",
+              "control",
+              "plan",
+              "total"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The camera has been moved to the next value; the sensor is settling.\n\nEmitted before the capture rather than after it because the capture is the slow\npart: a bar that only advances on [`CalibrationProgress::SampleTaken`] sits still\nfor the seconds that actually pass. It carries `{requested, applied}` for the same\nreason every other layer does — the driver may have taken something else [PF:6],\nand a viewer watching a sweep should see that when it happens, not when the\nsession file is read afterwards.",
+            "properties": {
+              "applied": {
+                "description": "The value the device actually holds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "control": {
+                "$ref": "#/components/schemas/ControlSlug",
+                "description": "Which control."
+              },
+              "index": {
+                "description": "Which sample this is, counting from one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "progress": {
+                "const": "value_set",
+                "type": "string"
+              },
+              "requested": {
+                "description": "The value the sweep asked for.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "total": {
+                "description": "How many the sweep will take.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "warnings": {
+                "description": "Anything notable about the write.",
+                "items": {
+                  "$ref": "#/components/schemas/WriteWarning"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "progress",
+              "control",
+              "index",
+              "total",
+              "requested",
+              "applied"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A photo was taken and scored.",
+            "properties": {
+              "applied": {
+                "description": "The value the device held when the shutter fell [PF:6].",
+                "format": "int64",
+                "type": "integer"
+              },
+              "control": {
+                "$ref": "#/components/schemas/ControlSlug",
+                "description": "Which control."
+              },
+              "index": {
+                "description": "Which sample this is, counting from one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "metrics": {
+                "additionalProperties": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "description": "What the metrics made of it. Metrics *rank*; they do not decide (D8).",
+                "type": "object"
+              },
+              "photo": {
+                "description": "The photo, relative to the session directory (D9).",
+                "type": "string"
+              },
+              "progress": {
+                "const": "sample_taken",
+                "type": "string"
+              },
+              "requested": {
+                "description": "The value the sweep asked for — which is what the photo is named after.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "total": {
+                "description": "How many the sweep will take.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "progress",
+              "control",
+              "index",
+              "total",
+              "requested",
+              "applied",
+              "photo"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every planned sample was taken.\n\nNote what it does **not** say: nothing was selected. A sweep produces a ranking and\nstops there, and the `Selected` fact belongs to whoever chose (D8).",
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/ControlSlug",
+                "description": "Which control."
+              },
+              "progress": {
+                "const": "sweep_finished",
+                "type": "string"
+              },
+              "samples": {
+                "description": "How many samples it took.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "progress",
+              "control",
+              "samples"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The sweep stopped before its plan did.\n\nThe samples already recorded stand — they happened — so `taken` is the count on\ndisk and the control is left mid-sweep rather than forced into a terminal state.",
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/ControlSlug",
+                "description": "Which control."
+              },
+              "detail": {
+                "description": "The refusal, rendered.",
+                "type": "string"
+              },
+              "failure": {
+                "$ref": "#/components/schemas/ErrorKind",
+                "description": "The refusal's discriminant, so a consumer can branch without parsing prose."
+              },
+              "progress": {
+                "const": "sweep_interrupted",
+                "type": "string"
+              },
+              "taken": {
+                "description": "How many samples were recorded before it stopped.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "description": "How many the plan held.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "progress",
+              "control",
+              "taken",
+              "total",
+              "failure",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "at": {
+            "$ref": "#/components/schemas/Stamp",
+            "description": "When it happened."
+          },
+          "session": {
+            "description": "Which session.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "at"
+        ],
         "type": "object"
       },
       "Provenance": {
@@ -4413,7 +4684,7 @@
     }
   },
   "info": {
-    "description": "The webcam-handler daemon's JSON-RPC surface (design D10, T5), generated from the Rust trait and committed as documentation — never read back, never a second source of truth. The daemon listens on a Unix domain socket (D11), so this document describes methods rather than a URL. Errors are the closed D13 registry under `components/errors`: `code` from a closed numeric range, `message` the error's own rendering, `data` the typed error itself.",
+    "description": "The webcam-handler daemon's JSON-RPC surface (design D10, T5), generated from the Rust trait and committed as documentation — never read back, never a second source of truth. The daemon listens on a Unix domain socket (D11), so this document describes methods rather than a URL. Errors are the closed D13 registry under `components/errors`: `code` from a closed numeric range, `message` the error's own rendering, `data` the typed error itself. The daemon also carries server-initiated streams, which OpenRPC 1.3.2 has no shape for: they are described under the `x-subscriptions` extension, reached over a WebSocket upgrade on the same socket, and each one's `item` is the payload of one notification.",
     "license": {
       "name": "MIT OR Apache-2.0"
     },
@@ -6070,5 +6341,147 @@
   "openrpc": "1.3.2",
   "x-d13-error-data": {
     "$ref": "#/components/schemas/Error"
-  }
+  },
+  "x-subscriptions": [
+    {
+      "description": "Device nodes appearing and disappearing, as the kernel reports them (D10, P4d).\n\nOne `HotplugEvent` per node, never per camera: \"re-enumeration decides what\ncamera it belongs to — the event names a node, never a camera, because grouping\nis not a node property\" (`schema::backend::HotplugEvent`). A client that wants\nthe camera list calls `wch_list` afterwards, which enumerates live (E2).\n\nThe daemon's watch is a **diff of successive readings of the node tree** (note\nN53), so it inherits that shape's one honest hole: a node that leaves and\nreturns entirely between two readings is not reported at all. It opens no node,\nbecause subscribing to events is not a use of a camera (D12, N53).\n\n**A subscriber that falls too far behind is closed rather than resynced**, and\nthat is the opposite of what `wch_subscribe_calibration` does one method down.\nA `HotplugEvent` is a *delta*: a gap makes a consumer's picture of the node tree\nwrong in a way it cannot detect, and there is no variant in this closed\nvocabulary that means \"you missed some\". Ending the stream with the count is the\nonly answer that does not hand over a quiet lie — the client re-subscribes and\nre-enumerates.\n\n# Errors\n\nWhatever the backend refuses `CameraBackend::watch` with — typically\n`device_io` when the uevent socket cannot be opened, which is a\ncontainer or an LSM rather than a missing privilege [PF:21]. The watch is\nstarted on the first subscription rather than at startup, deliberately: a\ndaemon that refused to *start* because it could not watch would be answering\n`wch_list` with nothing on a host where enumeration works perfectly (E3).",
+      "errors": [
+        {
+          "$ref": "#/components/errors/device_gone"
+        },
+        {
+          "$ref": "#/components/errors/busy"
+        },
+        {
+          "$ref": "#/components/errors/permission_denied"
+        },
+        {
+          "$ref": "#/components/errors/camera_unknown"
+        },
+        {
+          "$ref": "#/components/errors/camera_ambiguous"
+        },
+        {
+          "$ref": "#/components/errors/control_unknown"
+        },
+        {
+          "$ref": "#/components/errors/control_read_only"
+        },
+        {
+          "$ref": "#/components/errors/control_inactive"
+        },
+        {
+          "$ref": "#/components/errors/format_unsupported"
+        },
+        {
+          "$ref": "#/components/errors/settle_timeout"
+        },
+        {
+          "$ref": "#/components/errors/fingerprint_mismatch"
+        },
+        {
+          "$ref": "#/components/errors/session_conflict"
+        },
+        {
+          "$ref": "#/components/errors/illegal_transition"
+        },
+        {
+          "$ref": "#/components/errors/schema_version_foreign"
+        },
+        {
+          "$ref": "#/components/errors/store_locked"
+        },
+        {
+          "$ref": "#/components/errors/holder_gone"
+        },
+        {
+          "$ref": "#/components/errors/device_io"
+        },
+        {
+          "$ref": "#/components/errors/storage_io"
+        }
+      ],
+      "item": {
+        "name": "HotplugEvent",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/HotplugEvent"
+        }
+      },
+      "name": "wch_subscribe_events",
+      "notification": "wch_subscribe_events",
+      "summary": "Device nodes appearing and disappearing, as the kernel reports them (D10, P4d).",
+      "unsubscribe": "wch_unsubscribe_events"
+    },
+    {
+      "description": "Every calibration sweep's live progress, from every session (D8, D10, P3c).\n\n`schema::progress::ProgressEvent` verbatim and no second vocabulary: the same\nevents `wch calibrate sweep` renders its progress bar from, which is what\ndocs/7's risk register asked P3c to guarantee. Each carries its session id and\neach in-flight variant carries `index`/`total`, so a client that connects\nmid-sweep can paint a truthful bar from the first event it sees.\n\n**Every session, filtered by the consumer.** The stream is per client, not per\nsession; `ProgressEvent::session` is what a client with one session in mind\nmatches on. A session parameter would resolve a `SessionRef` at subscribe time\nagainst a store lock this path has no business taking, and a\n`SessionRef::Task` subscription would silently follow whichever session\noccupied the slot next.\n\n**A subscriber that falls behind loses events and is told how many** — the\nopposite of `wch_subscribe_events`, for a reason in the payload rather than in\nthe transport: `index`/`total` ride on every in-flight variant, so a gap is\nself-healing and the next event repaints a correct bar. The alternative,\nclosing the stream, would end a client's view of a twenty-minute sweep because\nit was briefly slow. Nothing a subscriber does reaches the sweep: the camera is\nnever held for a progress bar's benefit (note N17, `limits::PROGRESS_QUEUE_DEPTH`).\n\nA sweep that *fails* does not fail this stream. The refusal arrives as an\nevent — `CalibrationProgress::SweepInterrupted`, carrying the D13 discriminant\n— because the sweep's own caller is the one being refused.\n\n# Errors\n\nNothing, today: the events come from this daemon's own sweeps rather than from\na device, so there is nothing here to refuse with. The method still answers a\n[`codes::WireError`] on rejection because that is the one shape a refusal on\nthis surface may take.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/device_gone"
+        },
+        {
+          "$ref": "#/components/errors/busy"
+        },
+        {
+          "$ref": "#/components/errors/permission_denied"
+        },
+        {
+          "$ref": "#/components/errors/camera_unknown"
+        },
+        {
+          "$ref": "#/components/errors/camera_ambiguous"
+        },
+        {
+          "$ref": "#/components/errors/control_unknown"
+        },
+        {
+          "$ref": "#/components/errors/control_read_only"
+        },
+        {
+          "$ref": "#/components/errors/control_inactive"
+        },
+        {
+          "$ref": "#/components/errors/format_unsupported"
+        },
+        {
+          "$ref": "#/components/errors/settle_timeout"
+        },
+        {
+          "$ref": "#/components/errors/fingerprint_mismatch"
+        },
+        {
+          "$ref": "#/components/errors/session_conflict"
+        },
+        {
+          "$ref": "#/components/errors/illegal_transition"
+        },
+        {
+          "$ref": "#/components/errors/schema_version_foreign"
+        },
+        {
+          "$ref": "#/components/errors/store_locked"
+        },
+        {
+          "$ref": "#/components/errors/holder_gone"
+        },
+        {
+          "$ref": "#/components/errors/device_io"
+        },
+        {
+          "$ref": "#/components/errors/storage_io"
+        }
+      ],
+      "item": {
+        "name": "ProgressEvent",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/ProgressEvent"
+        }
+      },
+      "name": "wch_subscribe_calibration",
+      "notification": "wch_subscribe_calibration",
+      "summary": "Every calibration sweep's live progress, from every session (D8, D10, P3c).",
+      "unsubscribe": "wch_unsubscribe_calibration"
+    }
+  ]
 }

@@ -658,6 +658,30 @@ pub struct PhotoRequest {
     pub transform: Transform,
     /// Where the bytes go.
     pub sink: Sink,
+    /// Whether a request that finds the camera's command queue full waits for its turn.
+    ///
+    /// D12's flag: *"a second capture request queues or is refused with `Busy` per its
+    /// `wait` flag"*. `false` — the default, and the shape every client sent before this
+    /// field existed — is [`crate::Error::Busy`] the moment
+    /// [`crate::limits::CAMERA_COMMAND_QUEUE_DEPTH`] commands are already waiting. `true`
+    /// waits for room, bounded by [`crate::limits::CAMERA_ENQUEUE_WAIT_MS`], and takes the
+    /// *same* refusal when that budget is spent: the flag changes when the answer arrives,
+    /// never what it is.
+    ///
+    /// `#[serde(default)]` like its three siblings, so a request written before this field
+    /// existed still parses and still means what it meant. `false` rather than `true` for
+    /// the same reason: it is the behaviour every caller has already met, and a default that
+    /// silently turned a prompt refusal into ten seconds of latency would be a change to
+    /// requests nobody rewrote.
+    ///
+    /// It is on the *request* rather than beside it because the T4 executor surface takes
+    /// one `&PhotoRequest` and the T5 method takes one assembled request (design §2.10), so
+    /// a value here reaches every caller without a second parameter on three signatures.
+    /// The flag is meaningful only where something else can be holding the camera's one
+    /// thread, which today is the daemon; note **N42** records why it has no command-line
+    /// spelling yet.
+    #[serde(default)]
+    pub wait: bool,
 }
 
 /// Where a photo's bytes ended up — [`Sink`], answered.

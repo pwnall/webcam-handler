@@ -21,9 +21,11 @@
 //! `content-type: application/json`. That is a consequence of mounting jsonrpsee's own
 //! service rather than a choice, and it is the fact P4f's client transport has to be built
 //! against: it is an HTTP/1.1 client on a `UnixStream`, not a newline-framed JSON-RPC
-//! pipe. The same connection can carry a WebSocket upgrade — which is how P4e's
-//! subscriptions will reach a `wchc` that has no TCP listener to use — and this build
-//! turns that half off until P4e brings its bounds and its tests with it (see [`serve`]).
+//! pipe. The same connection carries a **WebSocket upgrade**, which is how P4e-i's
+//! subscriptions reach a `wchc` that has no TCP listener to use: jsonrpsee's HTTP path
+//! builds `RpcServiceCfg::OnlyCalls`, so a `wch_subscribe_*` over `POST /` is answered
+//! `-32603` — calls and subscriptions really are two capabilities over one socket, and
+//! [`serve`] enables the second with the two bounds it costs.
 //!
 //! ## What breaks on a bump, and how it is noticed
 //!
@@ -48,12 +50,15 @@
 //!
 //!    What is *not* claimed: `ServerConfig` has nine more fields, and this build inherits
 //!    them. Two of them are bounds in AGENTS's sense — `message_buffer_capacity` and
-//!    `max_subscriptions_per_connection` — and both govern the WebSocket surface only,
-//!    which is why this build turns that surface **off** (`ServerConfig::http_only`) rather than
-//!    shipping somebody else's channel depth behind a transport no test drives. P4e's
-//!    subscriptions turn it back on, with those two constants and the tests that reach
-//!    them. `keep_alive_timeout` is inherited and inert: it is hyper's HTTP/2 setting and
-//!    this transport is HTTP/1.1 over `AF_UNIX`. Note **N38** records the list.
+//!    `max_subscriptions_per_connection` — and both govern the WebSocket surface only.
+//!    P4b turned that surface **off** rather than ship somebody else's channel depth behind
+//!    a transport no test drives; **P4e-i turns it on**, with
+//!    [`limits::WS_MESSAGE_BUFFER_CAPACITY`] and
+//!    [`limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`] set here and driven to their bounds
+//!    by `tests/subscriptions.rs`. So seven bounds are named in this module now, not five.
+//!    `keep_alive_timeout` is inherited and inert: it is hyper's HTTP/2 setting and
+//!    this transport is HTTP/1.1 over `AF_UNIX`. Note **N38** records the list, and note
+//!    **N57** records what enabling the surface cost.
 //!
 //! ## The socket directory is the authentication model
 //!
@@ -320,7 +325,7 @@ impl SocketDir {
     /// `bind(2)` on an existing path is `EADDRINUSE` unconditionally — a Unix socket file
     /// is not a lock and outlives the process that made one — so a daemon that never
     /// unlinks cannot restart after any exit that did not clean up, which at this
-    /// sub-milestone is *every* exit (P4e owns the shutdown discipline). Unlinking
+    /// sub-milestone is *every* exit (P4e-ii owns the shutdown discipline). Unlinking
     /// something at the socket path is also, in most codebases, how one process hijacks
     /// another's socket. Both facts are answered by the same argument, and it is D9's,
     /// not a new law: the daemon holds the state directory's advisory lock
@@ -650,7 +655,8 @@ impl Serving {
     /// Ask the server to stop. Idempotent from the caller's point of view.
     ///
     /// Ending the accept loop is all this does — in-flight connections finish their
-    /// current answer and end. It is not a drain and not a signal handler; both are P4e's.
+    /// current answer and end. It is not a drain and not a signal handler; both are
+    /// P4e-ii's.
     pub fn stop(&self) {
         // `AlreadyStoppedError` means somebody already asked, including the accept loop
         // itself on its give-up path. That is the outcome this call wanted.
@@ -710,13 +716,13 @@ impl Accepting for UnixListener {
 /// Returns immediately; the accept loop runs as a tokio task, so the caller must already
 /// be inside a runtime. [`Serving::stop`] ends the loop and [`Serving::stopped`] resolves
 /// once it and every connection it spawned are gone — which is the whole of P4b's
-/// lifecycle and is deliberately less than P4e's: nothing here handles a signal, drains a
-/// subscription, or unlinks the socket on the way out. The socket file is left where it is
-/// on purpose; [`SocketDir::bind`] is what makes that harmless.
+/// lifecycle and is deliberately less than P4e-ii's: nothing here handles a signal, drains
+/// a subscription, or unlinks the socket on the way out. The socket file is left where it
+/// is on purpose; [`SocketDir::bind`] is what makes that harmless.
 ///
 /// jsonrpsee spells the per-connection future `serve_with_graceful_shutdown`, and its
 /// "graceful" is about *one connection's* in-flight request finishing rather than being
-/// dropped mid-answer. It is not this daemon claiming a drain: P4e's shutdown discipline —
+/// dropped mid-answer. It is not this daemon claiming a drain: P4e-ii's shutdown discipline —
 /// `CancellationToken` teardown, cancelled preview streams, an orderly store-lock release —
 /// is not here, and no name in this module should be read as standing in for it.
 ///
@@ -732,14 +738,31 @@ impl Accepting for UnixListener {
 /// accepted. So the permit is taken **here**, at accept, and held for the connection's
 /// life; the config's own cap is left set as well, where it bounds concurrent requests.
 ///
-/// ## WebSocket upgrades are off until P4e
+/// ## WebSocket upgrades, and the two bounds they cost
 ///
-/// `enable_ws` defaults to on, and with it come two of jsonrpsee's numbers this project
-/// has not chosen — `message_buffer_capacity` (a channel depth, which AGENTS says lives in
-/// `schema::limits`) and `max_subscriptions_per_connection`. Nothing at P4b subscribes and
-/// no test drives an upgrade, so leaving the surface enabled would be shipping an
-/// unbounded, untested transport for a consumer that does not exist yet (rubric A8). P4e's
-/// subscriptions turn it on together with those constants and the tests that reach them.
+/// `enable_ws` defaults to on, and with it come two of jsonrpsee's numbers: 1024 for
+/// `message_buffer_capacity` (a channel depth, which AGENTS says lives in `schema::limits`)
+/// and 1024 for `max_subscriptions_per_connection`. P4b left the surface **off** because
+/// nothing subscribed and no test drove an upgrade, which would have been shipping an
+/// unbounded, untested transport for a consumer that did not exist yet (rubric A8, note
+/// N38).
+///
+/// P4e-i is that consumer, so the surface is on and both numbers are this project's:
+/// [`limits::WS_MESSAGE_BUFFER_CAPACITY`] bounds what one subscription may hold unwritten
+/// before the daemon drops and counts, and [`limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`]
+/// bounds how many streams one connection may open — refused as a `-32006` answer to the
+/// *subscribe call*, before any handler runs, so connect-and-abandon costs a client its own
+/// slots and nobody else's. `crate::events` is where what happens at the first bound is
+/// argued; `tests/subscriptions.rs` drives both.
+///
+/// **What is deliberately still inherited:** `ping_config` is `None`, so a peer that opens
+/// a WebSocket, subscribes and then never reads again is never reaped by an inactivity
+/// timer. That is bounded rather than unbounded — [`limits::DAEMON_MAX_CONNECTIONS`]
+/// connections times [`limits::WS_MESSAGE_BUFFER_CAPACITY`] messages, and the fan-out in
+/// front of it never waits on any of them — and it is left alone on purpose: turning
+/// `enable_ws_ping` on adds two constants whose behavioural half cannot be asserted without
+/// waiting out a timer, which is the shape AGENTS bans. Note **N57** records it as the
+/// residual.
 pub fn serve(listener: UnixListener, methods: impl Into<Methods>) -> Serving {
     serve_accepting(listener, methods)
 }
@@ -756,7 +779,13 @@ fn serve_accepting<L: Accepting>(listener: L, methods: impl Into<Methods>) -> Se
                 .max_request_body_size(limits::RPC_MAX_REQUEST_BYTES)
                 .max_response_body_size(limits::RPC_MAX_RESPONSE_BYTES)
                 .set_batch_request_config(BatchRequestConfig::Limit(limits::RPC_MAX_BATCH))
-                .http_only()
+                // The WebSocket surface, and the two numbers it costs — see this
+                // function's doc. `set_message_buffer_capacity` panics on zero, which is
+                // why `schema::limits` carries a `const` assertion beside the constant
+                // rather than a hope: a panic on the daemon's startup path is not an
+                // available failure mode.
+                .max_subscriptions_per_connection(limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION)
+                .set_message_buffer_capacity(limits::WS_MESSAGE_BUFFER_CAPACITY)
                 .build(),
         )
         .to_service_builder();

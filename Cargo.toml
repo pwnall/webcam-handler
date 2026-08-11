@@ -85,6 +85,14 @@ schemars = "1.2.2"
 sd-notify = "0.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# jsonrpsee-server's *own* WebSocket implementation, already in `Cargo.lock` through it and
+# already accepted by cargo-deny (Apache-2.0 OR MIT). A `[dev-dependencies]` entry of
+# `webcam-handler-daemon` only: the daemon's subscription suite drives a real upgrade on the
+# real `AF_UNIX` socket, and using the server's own frame layer is what keeps the two halves
+# of a frame from disagreeing about what a frame is. Not jsonrpsee's client — that would
+# want `TransportSenderT`/`TransportReceiverT` impls and buys nothing a frame reader does
+# not, and `wchc`'s transport is P4f's separate piece by design (§2.6).
+soketto = "0.8.1"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 tokio = "1.53.1"

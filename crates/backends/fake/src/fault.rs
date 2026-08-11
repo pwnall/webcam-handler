@@ -22,6 +22,8 @@
 //! | [`Fault::FrameTimeout`] | one shot | `next_frame` → [`schema::Error::SettleTimeout`] |
 //! | [`Fault::HotplugAdd`] | one shot | the watch yields [`schema::backend::HotplugEvent::Added`] |
 //! | [`Fault::HotplugRemove`] | one shot | the watch yields [`schema::backend::HotplugEvent::Removed`] |
+//! | [`Fault::WatchUnavailable`] | one shot | `watch` → [`schema::Error::DeviceIo`]: this host has no watch to give |
+//! | [`Fault::WatchFails`] | one shot | `next_event` → [`schema::Error::DeviceIo`]: a watch that was running stops |
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -55,6 +57,21 @@ closed_vocabulary! {
         HotplugAdd,
         /// A device node disappears.
         HotplugRemove,
+        /// This host cannot give out a hotplug watch at all.
+        ///
+        /// What a container without `NETLINK_KOBJECT_UEVENT`, an LSM, or a backend with no
+        /// watch to give answers — the refusal `CameraBackend::watch` has always been able
+        /// to make and no double could script. It is the *availability* half of E3: the
+        /// machine has cameras and enumerates them perfectly, and only the watch is missing.
+        WatchUnavailable,
+        /// A watch that was running stops.
+        ///
+        /// The other direction, and the one with a consumer behind it: an unreadable
+        /// `/sys/class/video4linux`, a netlink `recv` that errored, an fd limit a client can
+        /// create. Scriptable because what the *daemon* does about it — end its subscribers'
+        /// streams rather than leave them attached to nothing — is a claim nothing could
+        /// otherwise reach (note **N59**).
+        WatchFails,
     }
 }
 
@@ -71,6 +88,8 @@ impl Fault {
             Fault::FrameTimeout => "frame_timeout",
             Fault::HotplugAdd => "hotplug_add",
             Fault::HotplugRemove => "hotplug_remove",
+            Fault::WatchUnavailable => "watch_unavailable",
+            Fault::WatchFails => "watch_fails",
         }
     }
 }

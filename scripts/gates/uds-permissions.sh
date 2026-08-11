@@ -30,7 +30,7 @@
 # announces nor exits would otherwise hang CI forever.
 #
 # Inspecting the directory *after* the daemon has been stopped is deliberate and it is
-# sound: this build never unlinks its socket (P4e owns shutdown discipline), so the
+# sound: this build never unlinks its socket (P4e-ii owns shutdown discipline), so the
 # directory and the socket file are exactly as the daemon left them, and a mode is a
 # property of a directory rather than of a process.
 #

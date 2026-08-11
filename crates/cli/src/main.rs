@@ -133,7 +133,9 @@ impl InProcess {
 /// Two traits with one method because of the thin-client wall (T6): `cli-core` is shared
 /// with `wchc`, which links no engine and cannot name `engine::progress::ProgressSink`.
 /// This is the whole of the bridge — the events on both sides are the same schema DTOs, so
-/// nothing is translated, and P4e will bridge a subscription onto the same watcher.
+/// nothing is translated. P4e-i built the daemon's half onto the same seam — a
+/// `ProgressSink` that fans the events out to subscribers (`daemon::events`) rather than
+/// rendering them — which is why the seam is a sink and not a `&dyn Fn`.
 #[derive(Debug)]
 struct Watched<'a>(&'a dyn SweepWatcher);
 
@@ -246,6 +248,11 @@ impl Executor for InProcess {
         let taken = engine::photo::take(
             camera.as_mut(),
             request,
+            // The blocking open, which for `wch` is a feature rather than note N51's
+            // hazard: a person typed this path, `-o /dev/stdout` and `-o` a fifo both work,
+            // and Ctrl-C exists. The daemon's destination is the other one (design §2.10 —
+            // one rule, two callers, and the difference is stated rather than assumed).
+            &mut engine::photo::WhereverTheCallerSaid,
             &engine::settle::MonotonicClock::new(),
             Stamp::now(),
         )?;

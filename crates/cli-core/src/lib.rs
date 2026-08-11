@@ -898,6 +898,19 @@ impl Command {
             settle: settle.policy(),
             transform: transform.0,
             sink,
+            // **There is no `--wait` flag, and that absence is argued rather than
+            // overlooked** (note N42, which allows "a command-line spelling, or an argued
+            // absence of one"). D12's flag chooses what a *full command queue* means, and a
+            // full command queue needs something else already holding the camera's one
+            // thread. `wch` opens its own camera per invocation and runs one verb, so the
+            // queue it would be waiting for is its own and always empty; the flag would be
+            // inert in one of this surface's two consumers and would need a `--help` line
+            // saying so. The consumer where it *is* meaningful is `wchc`, whose transport is
+            // P4f's — until that lands nothing on a command line can reach a daemon at all,
+            // so a flag here would be a typed declaration with no producer and no reachable
+            // consumer, which is the objection (rubric A8) that kept the whole field out of
+            // P4b. It stays a wire field until the surface that can mean it exists.
+            wait: false,
         }))
     }
 }

@@ -399,7 +399,15 @@ fn one_sample(
             sink: Sink::ServerPath {
                 path: step.session_dir.join(&photo_rel),
             },
+            // `false`, and not because a sweep is impatient: this photo is taken from
+            // *inside* the camera's actor thread, so there is no queue in front of it and
+            // nothing for D12's flag to choose between (note N42).
+            wait: false,
         },
+        // The destination is the session tree's own, under a directory this process made
+        // (D9) — never a path a client named, which is what note N51's non-blocking open is
+        // for. There is nothing here for a client to swap.
+        &mut photo::WhereverTheCallerSaid,
         controls,
         captured_at,
     )?;

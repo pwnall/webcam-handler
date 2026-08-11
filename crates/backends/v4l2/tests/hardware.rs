@@ -1056,7 +1056,11 @@ fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_
                 settle: schema::capture::SettlePolicy::default(),
                 transform: schema::capture::Transform::None,
                 sink: schema::capture::Sink::ServerPath { path: path.clone() },
+                // One camera, one photo, one thread: nothing is queued in front of this
+                // for D12's flag to choose about.
+                wait: false,
             },
+            &mut engine::photo::WhereverTheCallerSaid,
             &engine::settle::MonotonicClock::new(),
             schema::time::Stamp::now(),
         )

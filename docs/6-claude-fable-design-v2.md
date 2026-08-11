@@ -815,7 +815,8 @@ webcam-handler/
                         #              jsonrpsee server, rustix(fs,net,process) — N39's dirfd-held
                         #              socket directory, safe-wrapped so this crate stays
                         #              #![forbid(unsafe_code)] — axum, tower-http, rust-embed, tokio,
-                        #              tokio-util, sd-notify, listenfd, tracing-journald]
+                        #              tokio-util, sd-notify, listenfd, tracing-journald;
+                        #              soketto **dev-only** (P4e-i's WebSocket test client)]
     web/                # webcam-handler-web     [rust-embed asset crate; vanilla JS inside]
     testkit/            # webcam-handler-testkit [dev-only: corpus loader, synthetic fixtures, oracles]
   xtask/                # webcam-handler-xtask: completions (clap_complete), man pages (clap_mangen),
@@ -923,7 +924,12 @@ swappable), camino 1, humantime 2, base64 0.23 (MIT/Apache; **`webcam-handler-ap
 — D10's "base64 in the JSON result" is a transport encoding and this is its one home, so
 `webcam-handler-schema` stays free of it; pinned at P0 with no consumer and adopted at
 P4a when the wire photo answer landed), sd-notify 0.5 + listenfd 1 (pure-Rust systemd
-protocols), kamadak-exif 0.6 (BSD-2, **dev-only**: the independent EXIF reader that
+protocols), soketto 0.8.1 (Apache-2.0 OR MIT, **dev-only** edge of `webcam-handler-daemon`,
+adopted at P4e-i: it is jsonrpsee-server's *own* WebSocket implementation and already in the
+lock through it, so the subscription suite's hand-driven upgrade over `AF_UNIX` and the
+daemon's frame layer cannot disagree about what a frame is. Deliberately not jsonrpsee's
+client — `SubscriptionClientT` is unimplementable outside `jsonrpsee-core` (note N57) and
+`wchc`'s transport is P4f's), kamadak-exif 0.6 (BSD-2, **dev-only**: the independent EXIF reader that
 verifies what little_exif wrote — a gate-commissioned test oracle gets its §2.8 entry at
 commissioning time, docs/9). `directories` was dropped before the scaffold settled [N2]:
 it drags MPL-2.0 `option-ext`, the license gate caught it on its first run, and the tool

@@ -131,7 +131,6 @@ fn bundle() -> Result<Value> {
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
     use schema::error::Error;
     use schema::profile::DeviceProfile;
-    use schema::progress::ProgressEvent;
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session, SessionList, SessionStatus, SweepRequest};
     use schema::snapshot::{RestoreReport, Snapshot};
@@ -173,10 +172,22 @@ fn bundle() -> Result<Value> {
     register::<SweepRequest>(&mut generator, &mut roots);
     register::<SessionStatus>(&mut generator, &mut roots);
     register::<SessionList>(&mut generator, &mut roots);
-    // The live calibration stream. A root rather than a `$def` by reachability: P4e puts
-    // these on the wire as their own documents, and a consumer validating a subscription
-    // needs the event named in the bundle rather than reachable from something else.
-    register::<ProgressEvent>(&mut generator, &mut roots);
+    // **The live streams, walked rather than listed.** Every subscription's item type is a
+    // root: nothing prints one as `--json`, which is what the paragraph on `register` says a
+    // root usually means, but a subscription payload is the one other thing a consumer
+    // validates our output against — one notification is one of these and nothing else.
+    //
+    // That is a *law*, so it has the derivable home a law gets. `api::SUBSCRIPTIONS` is the
+    // second inventory `wire_surface!` emits from the same declaration as the trait, and
+    // `openrpc()` below already walks it; a hand list here was the same rule written twice,
+    // and the second copy did not grow (measured: a third subscription reached the OpenRPC
+    // document's `x-subscriptions` and neither `x-roots` nor `$defs` here, with every xtask
+    // test green — note **N59**). `roots` is sorted and deduped below, so a payload that is
+    // also a root for another reason costs nothing.
+    for subscription in api::SUBSCRIPTIONS {
+        let _schema = subscription.item.schema(&mut generator);
+        roots.push(subscription.item.name().into_owned());
+    }
     register::<DeviceProfile>(&mut generator, &mut roots);
     register::<Error>(&mut generator, &mut roots);
 
@@ -201,7 +212,24 @@ fn bundle() -> Result<Value> {
     }))
 }
 
-/// The OpenRPC document: the T5 trait, its DTOs and the D13 codes it refuses with.
+/// The OpenRPC document: the T5 surface, its DTOs and the D13 codes it refuses with.
+///
+/// ## Subscriptions are an extension, and that is the honest encoding
+///
+/// OpenRPC 1.3.2 — the version this document is written to — has **no notion of a
+/// server-initiated notification stream**. Three encodings were available and two of them
+/// publish something false:
+///
+/// | Encoding | What it claims | Honest? |
+/// |---|---|---|
+/// | `wch_subscribe_events` as a `method` | true of the subscribe *call*; silent about the payload, which is the only interesting part | half |
+/// | `wch_unsubscribe_events` as a `method` too | **false** — its callback is `params.one::<RpcSubscriptionId>()`, positional only, and every method here declares `"paramStructure": "by-name"` | no |
+/// | a top-level `x-subscriptions` array | complete about both names, the notification name and the item schema; invisible to a stock OpenRPC tool | yes, and non-standard |
+///
+/// So `methods` is exactly the *call* surface — `api::METHODS`, unchanged — and the two
+/// subscriptions are described beside it, with their item schemas resolving into the same
+/// `components/schemas` every other `$ref` here does. Every string comes from
+/// `api::SUBSCRIPTIONS`; nothing is retyped. Note **N57** records the decision.
 ///
 /// Everything here is *derived*. The method list is `webcam-handler-api`'s `METHODS`,
 /// which that crate declares in the same tokens as the trait itself, so this emitter
@@ -287,6 +315,31 @@ fn openrpc() -> Result<Value> {
         }));
     }
 
+    // The subscriptions, from the second inventory `wire_surface!` emits — see this
+    // function's doc for why they are not in `methods`. The item schema is asked of the
+    // Rust type through the *same* generator, so a subscription payload's `$ref` resolves
+    // inside this document exactly as a method parameter's does.
+    let mut subscriptions: Vec<Value> = Vec::with_capacity(api::SUBSCRIPTIONS.len());
+    for subscription in api::SUBSCRIPTIONS {
+        subscriptions.push(json!({
+            "name": subscription.name,
+            "unsubscribe": subscription.unsubscribe,
+            // The method name each notification arrives under, which is not derivable from
+            // the other two by a consumer that does not know jsonrpsee's defaults.
+            "notification": subscription.notification,
+            "summary": name_d13_errors(&subscription.summary(), &error_names),
+            "description": name_d13_errors(&subscription.description(), &error_names),
+            // A named content descriptor, like a method's `result`: a consumer generating a
+            // client needs something to call the payload.
+            "item": {
+                "name": subscription.item.name(),
+                "required": true,
+                "schema": serde_json::to_value(subscription.item.schema(&mut generator))?,
+            },
+            "errors": error_refs,
+        }));
+    }
+
     // The shape of every `data` above, named once instead of nineteen times.
     let error_data = serde_json::to_value(generator.subschema_for::<Error>())?;
 
@@ -308,9 +361,14 @@ fn openrpc() -> Result<Value> {
                             describes methods rather than a URL. Errors are the closed D13 \
                             registry under `components/errors`: `code` from a closed \
                             numeric range, `message` the error's own rendering, `data` the \
-                            typed error itself.",
+                            typed error itself. The daemon also carries server-initiated \
+                            streams, which OpenRPC 1.3.2 has no shape for: they are described \
+                            under the `x-subscriptions` extension, reached over a WebSocket \
+                            upgrade on the same socket, and each one's `item` is the payload \
+                            of one notification.",
         },
         "methods": methods,
+        "x-subscriptions": subscriptions,
         "components": {
             "errors": errors,
             "schemas": definitions,
@@ -575,6 +633,92 @@ mod tests {
             // The result is a named content descriptor, not a bare schema: an OpenRPC
             // consumer generating a client needs something to call the return value.
             assert_eq!(emitted["result"]["name"], json!(method.result.name()));
+        }
+    }
+
+    #[test]
+    fn the_openrpc_document_describes_every_subscription_and_names_none_of_them_a_method() {
+        // The other half of the walk above, over the population `methods` deliberately does
+        // not carry — see `openrpc`'s doc for the three encodings and why this is the one
+        // that publishes nothing false. Both directions matter and both are here: every row
+        // of `api::SUBSCRIPTIONS` is described, and no subscription spelling appears among
+        // the methods, which is what would make a stock OpenRPC client generate a call the
+        // HTTP half of this socket answers `-32603`.
+        let document = openrpc().expect("the document is emitted");
+        let described = document["x-subscriptions"]
+            .as_array()
+            .expect("x-subscriptions is an array");
+
+        assert_eq!(described.len(), api::SUBSCRIPTIONS.len(), "{described:?}");
+        assert!(!described.is_empty(), "the surface subscribes to nothing");
+        for (emitted, subscription) in described.iter().zip(api::SUBSCRIPTIONS) {
+            assert_eq!(emitted["name"], json!(subscription.name));
+            // Both wire names, because a consumer that cannot close a stream is a consumer
+            // that leaks one — and the unsubscribe spelling is jsonrpsee's derivation
+            // rather than ours, so a document that omitted it would leave a client
+            // guessing at it.
+            assert_eq!(emitted["unsubscribe"], json!(subscription.unsubscribe));
+            assert_eq!(emitted["notification"], json!(subscription.notification));
+            // The item is the whole reason this section exists: a subscribe call emitted as
+            // a method would carry an opaque id and say nothing about the payload.
+            assert_eq!(emitted["item"]["name"], json!(subscription.item.name()));
+            assert!(
+                emitted["item"]["schema"].is_object(),
+                "{} carries no item schema",
+                subscription.name
+            );
+        }
+
+        let methods = document["methods"].as_array().expect("methods is an array");
+        let named: Vec<&str> = methods
+            .iter()
+            .filter_map(|method| method["name"].as_str())
+            .collect();
+        for subscription in api::SUBSCRIPTIONS {
+            for spelling in subscription.names() {
+                assert!(
+                    !named.contains(&spelling),
+                    "{spelling} is described as a method, which promises a call the HTTP \
+                     half of this socket refuses"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_subscriptions_payload_is_a_root_of_the_bundle_and_not_only_of_the_document() {
+        // **The law `bundle()` states, checked from the other end.** A subscription's item
+        // is a root because a notification payload is the one thing besides `--json` that a
+        // consumer validates our output against — and the two artifacts have two audiences,
+        // so a payload that reached the OpenRPC document and not the bundle would leave a
+        // consumer following the bundle's own contract with nothing to validate against.
+        //
+        // Written even though `bundle()` now *derives* the roots, because the walk is the
+        // law and the derivation is only this build's way of obeying it: the hand list it
+        // replaced looked equally obeyed, and a third subscription reached
+        // `x-subscriptions` while reaching neither `x-roots` nor `$defs`, with all eight
+        // xtask tests green (measured — note **N59**). This is the assertion that was
+        // missing, and it fails on that experiment.
+        let bundle = bundle().expect("the bundle is emitted");
+        let roots = bundle["x-roots"].as_array().expect("x-roots is an array");
+        let definitions = bundle["$defs"].as_object().expect("$defs is an object");
+
+        assert!(
+            !api::SUBSCRIPTIONS.is_empty(),
+            "the surface subscribes to nothing"
+        );
+        for subscription in api::SUBSCRIPTIONS {
+            let item = subscription.item.name();
+            assert!(
+                roots.contains(&json!(item)),
+                "{}'s payload {item} is not a root of the bundle",
+                subscription.name
+            );
+            assert!(
+                definitions.contains_key(item.as_ref()),
+                "{}'s payload {item} is named as a root and defined nowhere",
+                subscription.name
+            );
         }
     }
 

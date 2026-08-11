@@ -52,7 +52,7 @@ mod fault;
 
 pub mod frames;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use camino::Utf8PathBuf;
@@ -77,6 +77,14 @@ pub struct FakeBackend {
     /// Shared with the cameras and the watch, so a fault scripted before `open` still
     /// fires after it.
     faults: Arc<Mutex<FaultQueue>>,
+    /// Raised whenever a fault is scripted, so a seam that is *waiting out a caller's
+    /// deadline* wakes the instant a test speaks rather than when the deadline arrives.
+    ///
+    /// Guarded by `faults`, which is the mutex every waiter holds. It exists for exactly
+    /// one seam — [`FakeWatch::next_event`], the only one in this fake whose contract is
+    /// "block until an event or the deadline" — and it is what lets that contract be
+    /// honoured without a `sleep`: the wait ends when another thread says so.
+    scripted: Arc<Condvar>,
 }
 
 impl FakeBackend {
@@ -115,6 +123,7 @@ impl FakeBackend {
         Ok(FakeBackend {
             cameras,
             faults: Arc::new(Mutex::new(FaultQueue::default())),
+            scripted: Arc::new(Condvar::new()),
         })
     }
 
@@ -130,14 +139,21 @@ impl FakeBackend {
     /// Script `fault` to fire once.
     pub fn queue_fault(&self, fault: Fault) {
         lock(&self.faults).queue(fault);
+        // Told rather than discovered: a watch parked on its caller's deadline is woken
+        // here, so scripting a hotplug event is an *event* for the seam waiting on it and
+        // a test never has to wait out a duration to see one.
+        self.scripted.notify_all();
     }
 
     /// Script several faults, each to fire once.
     pub fn queue_faults(&self, faults: &[Fault]) {
-        let mut queue = lock(&self.faults);
-        for &fault in faults {
-            queue.queue(fault);
+        {
+            let mut queue = lock(&self.faults);
+            for &fault in faults {
+                queue.queue(fault);
+            }
         }
+        self.scripted.notify_all();
     }
 
     /// Script `fault` to fire until [`FakeBackend::release_fault`].
@@ -146,6 +162,7 @@ impl FakeBackend {
     /// because "once" is the wrong duration for a condition.
     pub fn hold_fault(&self, fault: Fault) {
         lock(&self.faults).hold(fault);
+        self.scripted.notify_all();
     }
 
     /// Stop a held fault.
@@ -269,6 +286,16 @@ impl CameraBackend for FakeBackend {
     }
 
     fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
+        // The refusal a host without `NETLINK_KOBJECT_UEVENT` makes, scripted — see
+        // [`Fault::WatchUnavailable`]. `DeviceIo` and never `DeviceGone`: the *cameras* are
+        // here and enumerate perfectly, and only the watch is missing (E3).
+        if take_fault(&self.faults, Fault::WatchUnavailable) {
+            return Err(schema::Error::DeviceIo {
+                operation: "watch for hotplug events".to_owned(),
+                errno: None,
+                message: "this host has no hotplug watch to give".to_owned(),
+            });
+        }
         let node = self
             .cameras
             .first()
@@ -281,36 +308,82 @@ impl CameraBackend for FakeBackend {
             .unwrap_or_else(|| Utf8PathBuf::from("/dev/video0"));
         Ok(Box::new(FakeWatch {
             faults: Arc::clone(&self.faults),
+            scripted: Arc::clone(&self.scripted),
             node,
         }))
     }
 }
 
-/// The hotplug seam: it yields what the fault menu was told to yield, and otherwise says
-/// the deadline arrived.
+/// The hotplug seam: it yields what the fault menu was told to yield, and otherwise waits
+/// out the caller's deadline and says the deadline arrived.
 #[derive(Debug)]
 struct FakeWatch {
     faults: Arc<Mutex<FaultQueue>>,
+    scripted: Arc<Condvar>,
     /// The node the scripted events name.
     node: Utf8PathBuf,
 }
 
 impl HotplugWatch for FakeWatch {
-    fn next_event(&mut self, _deadline: Instant) -> Result<Option<HotplugEvent>> {
-        // Returns immediately rather than waiting out the deadline: a fake that slept
-        // would be scheduling a flake (N3 bans `thread::sleep` for exactly this), and the
-        // caller learns the same thing either way — `Ok(None)` means "nothing happened",
-        // which is an answer and not an error (E3).
-        if take_fault(&self.faults, Fault::HotplugAdd) {
-            return Ok(Some(HotplugEvent::Added {
-                path: self.node.clone(),
-            }));
+    /// **It honours the deadline, and that is a correction rather than a feature** (note
+    /// N57).
+    ///
+    /// This used to return immediately whatever deadline it was given, with the argument
+    /// that "a fake that slept would be scheduling a flake". The argument was about
+    /// `sleep`, and the conclusion was one step too far: `HotplugWatch::next_event`'s
+    /// contract is *block until an event or until `deadline`*, and a watch that answers
+    /// `Ok(None)` instantly and forever is a watch whose only honest consumer is a caller
+    /// that polls on a cadence of its own. P4e-i's daemon is not that caller — it runs one
+    /// thread per watch, in a loop, which against the old behaviour was a spin at 100% of a
+    /// core. AGENTS reads both ways: a fake capability no real device exhibits is a bug in
+    /// the fake, and so is a real behaviour the fake refuses to exhibit.
+    ///
+    /// **Nothing here sleeps**, and the distinction is the one N3 draws. The wait is a
+    /// `Condvar` a scripted fault *ends* — `FakeBackend::queue_fault` notifies — so a test
+    /// that scripts an event sees it immediately and never waits out a duration. What is
+    /// left is the caller's own deadline, which is a bound the trait declares rather than
+    /// synchronisation: `testkit::battery`'s arm passes 50 ms and asserts the answer comes
+    /// back inside it, and that assertion was vacuous until now.
+    fn next_event(&mut self, deadline: Instant) -> Result<Option<HotplugEvent>> {
+        let mut queue = lock(&self.faults);
+        loop {
+            // Checked before the events, because a watch that has failed has nothing left to
+            // yield — see [`Fault::WatchFails`].
+            if queue.take(Fault::WatchFails) {
+                return Err(schema::Error::DeviceIo {
+                    operation: "read the hotplug watch".to_owned(),
+                    errno: None,
+                    message: "the watch this backend gave out stopped working".to_owned(),
+                });
+            }
+            if queue.take(Fault::HotplugAdd) {
+                return Ok(Some(HotplugEvent::Added {
+                    path: self.node.clone(),
+                }));
+            }
+            if queue.take(Fault::HotplugRemove) {
+                return Ok(Some(HotplugEvent::Removed {
+                    path: self.node.clone(),
+                }));
+            }
+            // A deadline that has already passed is a zero wait rather than a panic, which
+            // is what makes "an already-spent deadline answers immediately" a case a test
+            // can arrange with `Instant::now()` and no clock at all.
+            let budget = deadline.saturating_duration_since(Instant::now());
+            if budget.is_zero() {
+                // `Ok(None)` means the deadline arrived first — a normal outcome, not an
+                // error, so a caller polling on a cadence never has to interpret a timeout
+                // as a failure (E3).
+                return Ok(None);
+            }
+            // Spurious wake-ups are why this is a loop rather than one wait: the answer is
+            // re-read from the queue every time round, so a wake nobody caused costs one
+            // turn and never an invented event.
+            let (guard, _timed_out) = self
+                .scripted
+                .wait_timeout(queue, budget)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue = guard;
         }
-        if take_fault(&self.faults, Fault::HotplugRemove) {
-            return Ok(Some(HotplugEvent::Removed {
-                path: self.node.clone(),
-            }));
-        }
-        Ok(None)
     }
 }

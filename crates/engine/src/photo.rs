@@ -17,8 +17,21 @@
 //! the file's header and leaves the camera's bitstream alone. That is what makes a stamped
 //! photo still a *verbatim* photo under E6, and `imaging::exif`'s own tests assert the scan
 //! survives byte-identical rather than taking the writer's word for it.
+//!
+//! ## Why *how* the file is opened is a seam and *where* it goes is not
+//!
+//! [`Destination`] is the one thing about the write that differs between this module's two
+//! callers, and note **N51** is why it has to. `wch` resolves `-o` on a command line
+//! somebody typed and opens it when the bytes are ready — a fifo or `/dev/stdout` is a
+//! feature there, and a person who typed one has Ctrl-C. The daemon has none of that: an
+//! `open(2)` that blocks runs inside a camera's actor thread, so a client that named a fifo
+//! would park that camera for the life of the process. So the daemon supplies its own
+//! [`Destination`], which resolves the name to a *descriptor* before it touches a camera at
+//! all — and *where* photos go is still answered exactly once, here, by this module's
+//! own `deliver`.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 
 use camino::Utf8Path;
 use schema::backend::Camera;
@@ -79,12 +92,88 @@ impl std::fmt::Debug for Photograph {
     }
 }
 
+/// How a photo's bytes reach the path a [`Sink::ServerPath`] names.
+///
+/// A seam and not a constant, because the two callers want different answers and both are
+/// right — see this module's header, and note **N51** for the measurement. The trait is the
+/// *whole* delivery rather than only the `open` so that a caller which resolved the
+/// destination in advance can also decide when to truncate it: truncating a file before the
+/// bytes exist destroys an operator's photo on the way to reporting that the capture failed.
+///
+/// `Send` because the daemon moves one into a camera actor's closure; deliberately not
+/// `Sync`, because a destination is one request's and sharing one between two photos is a
+/// question nothing here needs to answer.
+pub trait Destination: std::fmt::Debug + Send {
+    /// Put `bytes` at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StorageIo`] naming the path, when the bytes could not be written.
+    fn write(&mut self, path: &Utf8Path, bytes: &[u8]) -> Result<()>;
+}
+
+/// Open the path when the bytes are ready, and write them — what this module has always
+/// done.
+///
+/// `std::fs::write`'s semantics exactly, and not `write_json_atomic`'s: that is the session
+/// store's protocol for documents the tool re-reads and must never find half-written (D9). A
+/// photo is written once for a human or an agent, at a path they named, and a
+/// temp-file-plus-rename would silently break the case where that path is a fifo or
+/// `/dev/stdout` — which for `wch` is a feature rather than a hazard.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WhereverTheCallerSaid;
+
+impl Destination for WhereverTheCallerSaid {
+    fn write(&mut self, path: &Utf8Path, bytes: &[u8]) -> Result<()> {
+        std::fs::write(path, bytes).map_err(|error| Error::StorageIo {
+            path: path.to_owned(),
+            errno: error.raw_os_error(),
+            message: error.to_string(),
+        })
+    }
+}
+
+/// Put `bytes` on an already-open descriptor, and cut whatever was there beyond them.
+///
+/// The other half of note **N51**'s answer, and the only piece of it that belongs to the
+/// engine: a caller that resolved a destination *before* it opened a camera has a
+/// `std::fs::File` rather than a name, and the write has to be expressible against one.
+/// Public because the daemon's [`Destination`] is where the resolution lives — that part is
+/// the transport's, for the reason `daemon::server::addressable` gives — and this is the
+/// half that must not be written twice.
+///
+/// **The truncation happens here rather than at the open**, and that ordering is the fix's
+/// quiet half: `O_TRUNC` on a descriptor opened before the capture would empty an operator's
+/// existing photo and then report that the camera failed. `set_len` after `write_all` leaves
+/// a file exactly `bytes` long whether it was longer, shorter or absent.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] naming `path`, which is used for the message only — the bytes go to
+/// the descriptor, which is the whole point.
+pub fn write_to_open_file(file: &mut std::fs::File, path: &Utf8Path, bytes: &[u8]) -> Result<()> {
+    let storage_io = |error: &std::io::Error| Error::StorageIo {
+        path: path.to_owned(),
+        errno: error.raw_os_error(),
+        message: error.to_string(),
+    };
+    file.write_all(bytes).map_err(|error| storage_io(&error))?;
+    let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    file.set_len(length).map_err(|error| storage_io(&error))?;
+    Ok(())
+}
+
 /// Take one photo (design D5, D6, D10).
 ///
 /// `now` and `clock` are both arguments because the engine reads no clock: `now` is the
 /// wall time that goes in the EXIF, and `clock` is the monotonic one the settle policy
 /// runs on. They are different things and conflating them is how an NTP step becomes a
 /// settle failure.
+///
+/// `destination` is an argument for the reason this module's header gives: a CLI and a
+/// daemon open a caller-named path differently and both are right (note **N51**).
+/// [`WhereverTheCallerSaid`] is what `wch` hands in and what this pipeline did before the
+/// seam existed.
 ///
 /// # Errors
 ///
@@ -96,6 +185,7 @@ impl std::fmt::Debug for Photograph {
 pub fn take(
     camera: &mut dyn Camera,
     request: &PhotoRequest,
+    destination: &mut dyn Destination,
     clock: &dyn Clock,
     now: Stamp,
 ) -> Result<Photograph> {
@@ -111,7 +201,7 @@ pub fn take(
     // after the frame would report values a caller could have changed in between.
     let controls = controls_in_effect(camera);
     let captured = capture::grab(camera, &request.stream, request.settle, clock)?;
-    from_capture(camera, &captured, request, controls, now)
+    from_capture(camera, &captured, request, destination, controls, now)
 }
 
 /// The same assembly, over a frame the caller already holds (design D6).
@@ -137,6 +227,7 @@ pub fn from_capture(
     camera: &dyn Camera,
     captured: &capture::Capture,
     request: &PhotoRequest,
+    destination: &mut dyn Destination,
     controls: BTreeMap<ControlSlug, ControlValue>,
     now: Stamp,
 ) -> Result<Photograph> {
@@ -172,7 +263,7 @@ pub fn from_capture(
         photo.bytes.clone()
     };
 
-    let delivery = deliver(&request.sink, format, &bytes)?;
+    let delivery = deliver(&request.sink, destination, format, &bytes)?;
     let returned = matches!(delivery, PhotoDelivery::Bytes { .. }).then_some(bytes);
 
     Ok(Photograph {
@@ -221,32 +312,26 @@ pub fn controls_in_effect(camera: &mut dyn Camera) -> BTreeMap<ControlSlug, Cont
 /// [`Error::StorageIo`] naming the path. A photo that could not be written is a failure
 /// even though the capture succeeded — reporting success with the bytes discarded would
 /// be the worst of both.
-fn deliver(sink: &Sink, format: PhotoFormat, bytes: &[u8]) -> Result<PhotoDelivery> {
+fn deliver(
+    sink: &Sink,
+    destination: &mut dyn Destination,
+    format: PhotoFormat,
+    bytes: &[u8],
+) -> Result<PhotoDelivery> {
     let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     match sink {
+        // The destination is never consulted, and that is what keeps a caller which
+        // resolved one in advance from having resolved anything at all for a request that
+        // asked for its bytes back.
         Sink::ReturnBytes { .. } => Ok(PhotoDelivery::Bytes { format, byte_count }),
         Sink::ServerPath { path } => {
-            write_photo(path, bytes)?;
+            destination.write(path, bytes)?;
             Ok(PhotoDelivery::Path {
                 path: path.clone(),
                 byte_count,
             })
         }
     }
-}
-
-/// Write a photo to a path, reporting a filesystem failure as one.
-///
-/// Not `write_json_atomic`: that is the session store's protocol for documents the tool
-/// re-reads and must never find half-written (D9). A photo is written once for a human or
-/// an agent, at a path they named, and a temp-file-plus-rename would silently break the
-/// case where that path is a fifo or `/dev/stdout`.
-fn write_photo(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
-    std::fs::write(path, bytes).map_err(|error| Error::StorageIo {
-        path: path.to_owned(),
-        errno: error.raw_os_error(),
-        message: error.to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -273,6 +358,9 @@ mod tests {
             },
             transform,
             sink,
+            // Nothing in this module queues behind anything: the tests here hold their own
+            // camera. D12's flag is `daemon::server`'s to exercise.
+            wait: false,
         }
     }
 
@@ -316,6 +404,7 @@ mod tests {
                 },
                 Transform::None,
             ),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -366,6 +455,7 @@ mod tests {
         let report = take(
             camera.as_mut(),
             &request(Sink::ServerPath { path: path.clone() }, Transform::None),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -413,6 +503,7 @@ mod tests {
                 },
                 Transform::Rot90,
             ),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -442,6 +533,7 @@ mod tests {
         let report = take(
             camera.as_mut(),
             &request(Sink::ServerPath { path }, Transform::Rot90),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -471,6 +563,7 @@ mod tests {
                 },
                 Transform::None,
             ),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -531,6 +624,7 @@ mod tests {
                 },
                 Transform::None,
             ),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -567,6 +661,7 @@ mod tests {
                 },
                 Transform::None,
             ),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -589,6 +684,7 @@ mod tests {
                 },
                 Transform::None,
             ),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -642,6 +738,7 @@ mod tests {
         let error = take(
             camera.as_mut(),
             &request(Sink::ServerPath { path: path.clone() }, Transform::None),
+            &mut WhereverTheCallerSaid,
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
@@ -670,6 +767,7 @@ mod tests {
                     },
                     Transform::None,
                 ),
+                &mut WhereverTheCallerSaid,
                 &SteppedClock::new(0),
                 Stamp::epoch(),
             )

@@ -1973,6 +1973,47 @@
       ],
       "type": "object"
     },
+    "HotplugEvent": {
+      "description": "A camera appearing or disappearing.",
+      "oneOf": [
+        {
+          "description": "A device node appeared. Re-enumeration decides what camera it belongs to —\nthe event names a node, never a camera, because grouping is not a node property.",
+          "properties": {
+            "kind": {
+              "const": "added",
+              "type": "string"
+            },
+            "path": {
+              "description": "The node that appeared.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device node disappeared.",
+          "properties": {
+            "kind": {
+              "const": "removed",
+              "type": "string"
+            },
+            "path": {
+              "description": "The node that vanished.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "KnownFlag": {
       "description": "The control flag bits this version names.\n\nFlags are carried as raw bits *plus* this decoded set, because the set grows:\n`HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support\nbehind PF:1 and older references do not list it [PF:12]. Bits outside this\nvocabulary survive in [`ControlFlags::unknown_bits`].",
       "oneOf": [
@@ -2798,6 +2839,11 @@
           "$ref": "#/$defs/Transform",
           "default": "none",
           "description": "The orientation, applied to pixels or recorded in EXIF depending on the sink (E6)."
+        },
+        "wait": {
+          "default": false,
+          "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag: *\"a second capture request queues or is refused with `Busy` per its\n`wait` flag\"*. `false` — the default, and the shape every client sent before this\nfield existed — is [`crate::Error::Busy`] the moment\n[`crate::limits::CAMERA_COMMAND_QUEUE_DEPTH`] commands are already waiting. `true`\nwaits for room, bounded by [`crate::limits::CAMERA_ENQUEUE_WAIT_MS`], and takes the\n*same* refusal when that budget is spent: the flag changes when the answer arrives,\nnever what it is.\n\n`#[serde(default)]` like its three siblings, so a request written before this field\nexisted still parses and still means what it meant. `false` rather than `true` for\nthe same reason: it is the behaviour every caller has already met, and a default that\nsilently turned a prompt refusal into ten seconds of latency would be a change to\nrequests nobody rewrote.\n\nIt is on the *request* rather than beside it because the T4 executor surface takes\none `&PhotoRequest` and the T5 method takes one assembled request (design §2.10), so\na value here reaches every caller without a second parameter on three signatures.\nThe flag is meaningful only where something else can be holding the camera's one\nthread, which today is the daemon; note **N42** records why it has no command-line\nspelling yet.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -4224,6 +4270,7 @@
     "DeviceProfile",
     "Error",
     "FormatInfo",
+    "HotplugEvent",
     "LogEntry",
     "NegotiatedStream",
     "PhotoFormat",

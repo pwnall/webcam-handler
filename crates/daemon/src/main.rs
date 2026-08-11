@@ -24,7 +24,7 @@
 //!
 //! Nothing here installs a signal handler, so SIGTERM and SIGINT both terminate the
 //! process — that is the kernel's default disposition, not a parity this daemon
-//! implements, and P4e's "SIGTERM ≡ SIGINT" is a claim about *draining*, which this build
+//! implements, and P4e-ii's "SIGTERM ≡ SIGINT" is a claim about *draining*, which this build
 //! does not do. What is nevertheless true, and is why an un-drained exit is survivable
 //! rather than a hole: Linux releases an `flock` when the last descriptor on its open
 //! file description closes, so a killed `wchd` releases the state lock, and the same
@@ -47,7 +47,6 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use api::WchRpcServer;
 use camino::Utf8PathBuf;
 use clap::Parser;
 use daemon::logging;
@@ -154,9 +153,12 @@ async fn run(args: &Args) -> Result<()> {
     // from one (see `daemon::logging`).
     tracing::info!(socket = %dir.socket_path(), backend = backend.name(), "wchd is serving");
 
-    // The wire surface is `webcam-handler-api`'s T5 trait, and the daemon *mounts* it with
-    // the generated `into_rpc()` rather than registering methods of its own — inventing a
-    // second registration path is the thing D10 exists to prevent.
+    // The wire surface is `webcam-handler-api`'s T5 surface, and the daemon *mounts* it
+    // with the generated `into_rpc()` rather than registering methods of its own —
+    // inventing a second registration path is the thing D10 exists to prevent. Since P4e-i
+    // that is two generated traits merged into one `Methods` by `daemon::server::mount`,
+    // which every integration fixture goes through as well, so "one registration" is a
+    // property of one function rather than of two call sites agreeing.
     //
     // A second `SessionStore` over the directory this process already owns, which is what
     // that type is for: "cheap to build and cheap to clone-by-rebuilding — it owns a path,
@@ -171,10 +173,10 @@ async fn run(args: &Args) -> Result<()> {
     );
     // D12's other half. The handle is dropped rather than held: dropping a `JoinHandle`
     // detaches the task, and this build has nothing to say about when housekeeping ends —
-    // it ends with the runtime, which ends with the process. P4e owns stopping it in an
+    // it ends with the runtime, which ends with the process. P4e-ii owns stopping it in an
     // order.
     drop(wchd.spawn_idle_sweeps());
-    let mut server = uds::serve(listener, wchd.into_rpc());
+    let mut server = uds::serve(listener, daemon::server::mount(wchd)?);
 
     // Runs until the process is signalled. `stopped()` resolves when the accept loop and
     // every connection it spawned are gone, which is what an integration test uses; here
@@ -187,7 +189,7 @@ async fn run(args: &Args) -> Result<()> {
     // Said out loud rather than left to the end of a scope, because it is the one thing
     // this build does claim about stopping: the state directory is released, and released
     // *after* the server has stopped answering. It is the orderly half of a release the
-    // kernel performs anyway when the process dies (see this file's header) — P4e's
+    // kernel performs anyway when the process dies (see this file's header) — P4e-ii's
     // shutdown discipline is about the order, never about whether it happens.
     drop(state);
     served

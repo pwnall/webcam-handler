@@ -3832,6 +3832,7 @@ that a review item.
 methods and none of them is a daemon status; `calibrate_status` is a *session* document;
 `schema::report::CameraList`/`CameraInfo` carry no "open" field. Adding `wch_status` would be
 a twentieth method, which `the_trait_registers_the_nineteen_wch_methods_and_nothing_else`
+(renamed at P4e-i to `the_surface_registers_the_nineteen_methods_and_the_two_subscriptions_and_nothing_else`, note N57)
 turns red on purpose (note N29) and which no sub-milestone in docs/7 authorises. A
 `sd_notify(STATUS)` camera count is P4e's and could not be asserted from a test anyway.
 
@@ -3918,9 +3919,32 @@ So a client that sends a ninth verb for one camera during a `calibrate_sweep` ge
 list is the paragraph below — and P4c is the first build where anybody can meet it. That
 is stated here rather than tested twice.
 
+**Discharged, in part, at P4e-i (2026-08-10).** The `wait` flag landed, with the enqueue
+that honours it and the bound that enqueue needs. `schema::capture::PhotoRequest` gained
+`#[serde(default)] wait: bool`; `engine::actor::CameraActor::submit_with` takes an
+`Enqueue` — `Refuse`, which is what `submit` has always done, or `WaitUntil(Instant)`, which
+parks the **caller's** thread until a place comes free; `limits::CAMERA_ENQUEUE_WAIT_MS` is
+the shipped budget and `Enqueue::waiting` its one reader; and `daemon::server::enqueueing`
+is the one place the field is read. Both artifacts under `schemas/` moved with the field, in
+their own commit, which is what item 1 above asked for. Note **N56** carries the mechanism,
+its three tests and the two things it does *not* buy.
+
+The **third** item — a command-line spelling — is answered by its permitted alternative, an
+argued absence, and the argument is in `cli_core::Command::photo_request` beside the `wait:
+false` it writes: `wch` opens its own camera per invocation and runs one verb, so the queue
+the flag chooses about is its own and always empty; the consumer where the flag is
+meaningful is `wchc`, whose transport is **P4f's** (docs/7:341), and until that lands
+nothing on a command line can reach a daemon at all. A `--wait` today would be a flag with
+no producer and no reachable consumer, and would move `json-validates.sh`'s `--help`-scraped
+population and P4f's parity population on the way (note N48's precedent) for a `--help` line
+that had to say it did nothing here. It is a wire field until the surface that can mean it
+exists.
+
+**What is left of this entry.** Only the daemon-status half: the actor registry is still
+`engine::actor::Cameras::activity` and still not on the wire.
+
 **Retires when:** a daemon status reaches the wire — which is a T5 method, so a docs/7
-sub-milestone has to want one — or **P4e** lands the `wait` flag with the enqueue that
-honours it.
+sub-milestone has to want one.
 
 ---
 
@@ -4750,8 +4774,79 @@ asserts the typed refusal names both the path and what it is, asserts `FakeBacke
 is still zero, and then takes a photo to a real path through the same camera — which is the
 assertion the wedge would break, and the line a blocked build never reaches.
 
-**Retires when:** P4e bounds an actor command; this entry then records the layered answer
-rather than a whole one.
+**Discharged at P4e-i (2026-08-10), and the layered answer is two sentences rather than
+one.** The race is closed by making the *descriptor* the destination:
+`daemon::server::open_destination` opens the path with
+`rustix::fs::OFlags::WRONLY | CREATE | NONBLOCK | CLOEXEC`, `fstat`s what it got, and
+refuses anything that is not a regular file — all of it **before** a camera is resolved or
+opened, so `FakeBackend::opens()` is still zero after a refusal and the assertion this
+entry's test makes is unchanged. The open `File` is then carried into the actor's closure by
+`daemon::server::OpenedAhead`, a `engine::photo::Destination`; `wch` keeps the blocking open
+it wants (`engine::photo::WhereverTheCallerSaid`), because a person typed that path, `-o
+/dev/stdout` is a feature and Ctrl-C exists. There is no window left: the name is resolved
+once, and nothing a client does to it afterwards can redirect the bytes.
+
+**The two flags do different halves, and the note owes that precision** (the summary
+sentence above was imprecise about it). `O_NONBLOCK` removes the *cause* — no open on this
+path can wait, so a fifo answers `ENXIO` where it used to park the thread. The bounded
+enqueue N42 landed beside it removes the *consequence class* — a command that parks the
+thread for some other reason no longer turns every later request for that camera into an
+unbounded queue. A deadline on the daemon's await would have done neither: it answers the
+*caller*, and cannot unwind a thread already inside a blocking `open(2)`, so `Live::busy`
+would stay raised and the camera would stay parked. That is why P4e-i landed the
+non-blocking open rather than a timeout, and why "an actor command that cannot outlive a
+deadline makes the residual race a refusal rather than a wedge" was only ever half true.
+
+**Two ordering decisions worth having written down.** `O_TRUNC` is deliberately *not* in the
+open: truncating a destination before the capture has happened would empty an operator's
+existing photo on the way to reporting that the camera failed, so
+`engine::photo::write_to_open_file` sets the length after `write_all`. And the `stat` in
+`describe_unopenable` is not the `stat` this entry is about: `ENXIO` has already decided the
+refusal, and that call only supplies the noun — a client that swaps the path between the
+failed open and it gets a less accurate sentence rather than a parked camera.
+
+**What remains, honestly.** A *regular file* on a hung mount still blocks in `write(2)`
+inside the actor's thread. `O_NONBLOCK` does not help there and must not: a short write on a
+regular file is a truncated photo, which is a worse bug than a slow one.
+
+**Amended 2026-08-10 (note N59), because the sentence that stood here was wrong and wrong in
+the flattering direction.** It said "a wedged filesystem costs one camera one command rather
+than the camera". It costs the camera. `engine::actor::Thread::run` calls `work(...)` inline,
+so a `write(2)` that never returns means `finished()` never runs, `Live::busy` stays raised
+for ever, `close_if_idle` is never reached and `inbox.recv()` is never called again — every
+later command on that camera is refused for the life of the process, which is bit for bit the
+wedge this entry was opened to measure with a hung mount as the trigger instead of a fifo.
+What the bounded enqueue changes is only *how quickly other callers are told no*: a
+`wait: true` caller gives up at `limits::CAMERA_ENQUEUE_WAIT_MS` with `Busy` rather than
+holding a pool thread indefinitely, and a `wait: false` caller was already refused. Ending
+such a command outright would need a cancellable device thread, which nothing in D12
+provides — that part was right, and it is the actual retirement condition.
+
+**And a gate moved with it, because the workspace learned a new way to write a file.**
+`atomic-write-home.sh`'s raw-write population is a hand list of spellings — it has to be;
+there is no walkable population of "ways to obtain a writable descriptor" — and until this
+change every entry was `std`'s. A `rustix` open turned into a `std::fs::File` matched none
+of them, so a state-directory bypass spelled the way `open_destination` is spelled would
+have been invisible to the gate: the third instance of note N10's family, and the second
+one in this predicate (the P3 review added `File::options(` and `File::create_new(` for
+the same reason). The pattern now also matches the write-shaped **flags**,
+`OFlags::(WRONLY|RDWR|CREATE|TRUNC|APPEND)`, and deliberately not `rustix::fs::open(`
+itself: `daemon::uds::SocketDir` opens the runtime directory `O_PATH | O_DIRECTORY` with
+that same function while naming `XDG_RUNTIME_DIR`, and calling that a bypass would be a
+false positive with an obvious workaround. Both directions are in
+`cases/atomic-write-home.cases.sh` — a seeded bypass through `rustix` that the old pattern
+was measured not to match, and a read-only `rustix` open beside the runtime directory that
+must stay green.
+
+**The tests.** `a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_is_touched`
+is unchanged and now asserts a stronger mechanism through the same wire; the new
+`a_path_swapped_after_the_check_cannot_redirect_the_photo_or_park_the_camera` renames the
+checked file away mid-capture and puts a fifo in its place, and finds the photo in the inode
+the daemon approved; `daemon::server`'s
+`a_destination_is_opened_from_its_descriptor_and_a_fifo_never_waits_for_a_reader` asserts the
+four refusals apart from one another and that an existing file survives the open.
+
+**Retires when:** nothing. It records the layered answer.
 
 ## N52 — The mutation floor's verdict moved with `nproc`, and the branch that did it had never fired
 
@@ -5706,3 +5801,758 @@ What it argues for, for the owner and the next plan revision:
 
 **Retires when:** the trigger is re-phrased against a measurable quantity, or session GC is
 commissioned on evidence that sessions are what filled something.
+
+---
+
+## N56 — The bounded enqueue is one mechanism wearing three names, and it is the caller's thread that waits
+
+**Doc:** D12 says "a second capture request queues or is refused with `Busy` per its `wait`
+flag" (docs/6:524-528) and rubric B3 makes it a review row. AGENTS says "Bounded
+everything… constants live in `webcam-handler-schema::limits` and something reads each one",
+and "No `sleep` as synchronization, anywhere, including tests". docs/7's standing debts
+carry the flag and the race as two entries; notes **N42** and **N51** are those entries.
+
+**They were never two.** N42's second item — "`CameraActor::submit` is a `try_send` on a
+bounded `SyncSender` and has no blocking-with-deadline path at all, so `wait: true` is not a
+branch, it is an enqueue that waits, plus the bound AGENTS requires of anything that waits"
+— is the same missing mechanism N51's amendment names from the other side: "closing this
+race properly wants the actor-command bound too, and shipping half of it would trade a wedge
+for a leak". P4e-i lands them in one commit for a story-shaped reason rather than a
+file-shaped one (note **N54**'s third rule): the story is *nothing a client does can wedge
+the daemon*, and half of it is a leak.
+
+### Repo: what landed
+
+- **`engine::actor::Enqueue`** — `Refuse`, or `WaitUntil(std::time::Instant)`.
+  `CameraActor::submit` is `submit_with(_, Refuse, _)` and is byte-for-byte the behaviour
+  every existing caller had. `submit_with` is the new door.
+- **`engine::actor::Room`** — a `Mutex<Seats>` and a `Condvar` beside the existing
+  `sync_channel`. The queue's bound is still the channel's
+  (`limits::CAMERA_COMMAND_QUEUE_DEPTH`); what `std::sync::mpsc` is missing is only the
+  *wake-up*, because `SyncSender` offers a send that blocks forever and one that never
+  blocks and `send_timeout` is unstable on the pinned toolchain. A permit pool was
+  considered and rejected: a second count of the same eight seats is a second answer to "is
+  there room" that can drift from the first.
+- **`limits::CAMERA_ENQUEUE_WAIT_MS = 10_000`**, priced against two other constants in the
+  same module — a caller that waits must be able to outlast the worst case of the command in
+  front of it (`DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS`, seven seconds), and must
+  not pretend to outlast a sweep, which is minutes. A `const` assertion checks the first
+  relation where all three numbers are. Its one reader is `Enqueue::waiting`.
+- **`schema::capture::PhotoRequest::wait`**, `#[serde(default)]` like its three siblings, so
+  no request written before it exists became invalid. Both `schemas/` artifacts moved with
+  it and `required` did not.
+- **`daemon::server::enqueueing`** — the one place the field is read, and
+  `Wchd::on_resolved_camera_queueing` the one place it is honoured.
+
+### Why the waiting happens where it does
+
+**The actor still reads no clock.** The only `Instant::now()` is on the thread that *chose*
+to wait, computing how much of its own budget is left — which is the same doctrine
+`engine::settle` states ("the caller supplies both, which turns *the deadline expired between
+these two frames* from a race into an argument"), not an exception to it. A `Millis` from
+`crate::settle::Clock` could not have carried this: `SteppedClock` is deliberately not
+`Sync`, and a wait is the one thing here that spans two threads.
+
+**The daemon parks a blocking-pool thread, never a runtime worker.** `submit_with` with a
+deadline blocks by construction, so the waiting arm goes through `Wchd::offload`. A request
+that did not ask to wait pays nothing at all — no lock, no pool thread, no extra `await` —
+which is what keeps the flag from being a tax on the ordinary path.
+
+**Amended 2026-08-10 (note N59): the sentence that stood here — "the number of parked pool
+threads is bounded by `limits::DAEMON_MAX_CONNECTIONS` (32) against tokio's own pool" — was
+not a bound this build had.** It was arithmetic about HTTP/1.1, which answers one request per
+connection; P4e-i lifted `ServerConfig::http_only()` in the same sub-milestone, and
+jsonrpsee's WebSocket transport `tokio::spawn`s a task per inbound message with no
+per-connection concurrency cap at all (`jsonrpsee-server-0.26.0/src/transport/ws.rs`,
+`ServerConfig` — `max_connections` bounds connections, `max_subscriptions_per_connection`
+bounds subscriptions, nothing bounds calls). One connection could therefore hold thousands of
+`wch_photo {"wait": true}` in flight, the real ceiling being tokio's 512-thread blocking pool
+with an unbounded queue behind it — the same pool every `offload` in the daemon draws on, so
+`wch_list` from an unrelated client queued behind the flood. The bound now exists rather than
+being inherited: `limits::CAMERA_ENQUEUE_WAITERS`, a permit pool in `daemon::server`, sized to
+`DAEMON_MAX_CONNECTIONS` precisely so the sentence above is true by construction instead of by
+an accident of which transport a client chose. A request past it takes the enqueue a request
+that never asked to wait takes, so the refusal vocabulary does not grow.
+
+**A waiter whose thread dies is `DeviceGone`, not `Busy`** (E3). `Liveness::drop` bumps the
+counter and notifies *after* it lowers `alive`, and `send_waiting` re-reads `is_alive` after
+each wake — because the drop guard runs before the inbox `Receiver` is dropped, so for one
+moment a dying actor still answers `Full`. Without that ordering a waiter would spend its
+whole budget waiting for room that is never coming and then be told the camera was busy.
+
+### The tests, and how each one goes red
+
+- `a_full_queue_refuses_a_caller_that_will_not_wait_and_one_whose_deadline_has_passed` — the
+  refusing half, and the arm that makes the deadline assertable without a clock: a spent
+  deadline and a budget that runs out mid-wait leave `send_waiting` by the *same* line. Both
+  refusals are compared against each other, so a build that changed what the flag says rather
+  than when it says it goes red.
+- `a_caller_that_waits_takes_the_place_the_running_command_frees` — the waiting half. The
+  determinism is a signal, not a duration: `Seats::waiting` is raised for the whole of a
+  wait and `CameraActor::awaited_by` (test-only) blocks until the subject says it is parked,
+  so the held thread is released *after* the waiter has provably met a full queue. The
+  sixty-second deadline is a bound nothing reaches. Watched red against a hand-applied mutant
+  that rewires the waiting arm to `send`: the run becomes a named nextest `TIMEOUT` rather
+  than a hang, which is the shape `.config/nextest.toml` exists to give.
+- `a_caller_waiting_on_a_thread_that_dies_is_told_the_device_is_gone_and_not_that_it_is_busy`
+  — E3, arranged by having the *held* command panic on release, so the thread dies without
+  serving what is queued behind it and the queue stays full across the death.
+- `the_shipped_wait_budget_is_the_one_constant_and_nothing_repeats_it`, and the daemon's
+  `d12s_wait_flag_chooses_between_the_two_enqueues_and_nothing_else` — the constant's single
+  reader, and the field's two directions, each asserted where it lives.
+- `d12s_wait_flag_crosses_the_wire_both_ways_and_neither_spelling_changes_the_photo` — the
+  wire half. **Rewritten after the P4e-i review (note N59)**: as first written it sent both
+  spellings behind one held command, where eight seats were free, so both were simply
+  enqueued and `wch_photo` ignoring the field entirely passed the whole workspace. It now
+  fills the queue first — reading exactly the refusals a flood of twice the seats must
+  produce, which is an observation and not a guess — and then compares two *outcomes* at one
+  instant: `wait: false` refused `Busy`, `wait: true` served once the held command lets go.
+- `a_flood_of_waiting_captures_is_bounded_and_never_the_daemon` — the bound on how *many*
+  callers may wait, which this entry originally claimed the connection count supplied. See
+  note **N59**.
+
+### What this deliberately does not do, and why
+
+**The bound is not driven to its refusal over the socket.** ~~Filling a nine-deep queue
+through a transport means knowing when eight requests have been *enqueued*, which nothing
+outside the daemon can observe — so the assertion would be a fact about the scheduler wearing
+a fact about the queue.~~ **Retracted 2026-08-10 (note N59), and the retraction is the reason
+the wire test could not tell the two spellings apart.** "Nothing outside the daemon can
+observe it" was true only because nothing published it. Two things are observable and both
+are ordinary refusals or ordinary counts: a `Busy` answer *is* the daemon saying the queue is
+full, so reading `CAMERA_COMMAND_QUEUE_DEPTH` of them from a flood of twice that many is an
+observation rather than a guess; and `Wchd::watch_waiting_captures` — which
+`limits::CAMERA_ENQUEUE_WAITERS` needed a reader for anyway — is the daemon saying a caller
+is parked. Neither costs the shared fixture an item, because both hang off the `Wchd` handle
+`Fixture` already holds. The wire tests drive both today.
+
+**`calibrate_sweep`'s per-sample photos are `wait: false` and blocking-open**, deliberately:
+they run *inside* the actor's thread, so there is no queue in front of them, and their
+destination is the session tree this process made rather than a path a client named.
+
+**Retires when:** a caller appears that needs a wait bound other than the one constant — at
+which point the deadline is already an argument and only the daemon's spelling moves — or the
+actor grows a cancellable command, which would let N51's remaining residual (a regular file on
+a hung mount) be ended rather than merely bounded.
+
+---
+
+## N57 — One declaration, two generated traits: D10's sentence bends where jsonrpsee's client is, and the transports say why
+
+**Doc:** D10 (docs/6:491-509) says "the whole daemon API is one `#[rpc(server, client)]`
+trait" and lists `subscribe_events` and `subscribe_calibration` among its methods. Note
+**N28** is the property that keeps the trait and its inventory one declaration; note **N29**
+did the arithmetic for what a subscription would cost the counts; note **N38** named the two
+constants P4b deferred with the WebSocket surface it turned off. This entry is P4e-i's, and
+it records the decisions those three left open.
+
+**P4e is two sub-milestones**, and the register for that is note **N58**, not this entry:
+everything below is P4e-i's, and the shutdown clauses named there are P4e-ii's.
+
+### The split that costs D10 a sentence
+
+**Believed:** that "one trait" and "one wire surface" are the same claim, so subscriptions
+would simply join `WchRpc`.
+
+**True:** one `#[subscription]` anywhere in a trait re-bounds the whole **generated client**,
+and the bound it lands on is one no type of ours can satisfy.
+`jsonrpsee-proc-macros-0.26.0/src/render_client.rs` picks the client supertrait once per
+trait — `SubscriptionClientT` if the trait carries any subscription, `ClientT` otherwise —
+and `SubscriptionClientT::subscribe` answers `jsonrpsee_core::client::Subscription`, whose
+only constructor is **private, over two private types**
+(`jsonrpsee-core-0.26.0/src/client/mod.rs`). So no transport outside `jsonrpsee-core` can
+implement it. Measured, as an `E0599` on a scratch tree:
+
+```
+error[E0599]: the method `list` exists for struct `Wire`, but its trait bounds were not satisfied
+    = note: the following trait bounds were not satisfied:
+            `Wire: SubscriptionClientT`
+```
+
+`crates/daemon/tests/support/wire.rs`'s `Wire` is `ClientT`-only *because it is two
+transports* — an in-memory `Methods` and a `POST` on a `UnixStream` — and four integration
+suites drive the T5 client twice, once per pipe, which is the comparison they exist to make.
+Folding the subscriptions in would have cost all four one of their two pipes, or adopted
+`jsonrpsee/async-client` (and `futures-timer`, which is not in `Cargo.lock` and does not
+resolve offline) to serve a client `wchc` will not use — P4f's transport is a separate piece
+by design (design §2.6).
+
+**Decided: two `#[rpc]` traits out of one `wire_surface!` invocation** — `WchRpc` with
+`METHODS`, `WchEvents` with `SUBSCRIPTIONS` — merged into one `Methods` by
+`daemon::server::mount`, which the shipped binary and every integration fixture both go
+through.
+
+It is not only a compilation dodge, and that matters for whether the sentence should have
+been written differently in the first place: **calls and subscriptions really are two
+capabilities over this socket.** jsonrpsee's HTTP path builds `RpcServiceCfg::OnlyCalls`, so
+a `wch_subscribe_*` sent as a `POST /` is answered `-32603` — not a D13 code, not
+`MethodNotFound`. A subscription needs the *upgrade*. One client trait would have hidden
+that from the one consumer that has to build against it.
+
+What D10 is actually protecting is **one source**, and it survives intact: both traits come
+out of one declaration, so a subscription still cannot reach a trait and miss an inventory
+(N28), and `Methods::merge` is the one place a name that collided *across* the two halves is
+caught — the proc macro's own `check_name` looks inside one trait only. That merge is
+asserted, in `crates/api` and again at `mount`.
+
+### Are subscriptions methods? Two consumers, two answers
+
+**The count walks say yes.** Their population is a real `RpcModule`'s `method_names()`,
+which is `callbacks.keys()`, and jsonrpsee registers the `unsubscribe` callback under its own
+key (`rpc_module.rs::verify_and_register_unsubscribe`). N29's arithmetic holds exactly: the
+registered population goes nineteen to **twenty-three** while D10's own method count goes
+nineteen to twenty-one, and those are two numbers about two things. Every consumer
+*partitions* by `wire::Subscription::names()` rather than excluding a spelling by hand —
+`crates/api`'s registration test, `daemon::server`'s `routed_subscriptions`, and
+`crates/daemon/tests/method_surface.rs`, whose exercised set is now *calls* while
+`tests/subscriptions.rs` walks the *subscribes*. A third subscription joins both walks by
+existing, which is the property that made the partition worth more than a filter.
+
+**Amended 2026-08-10 (note N59): that was true of the two count walks and false of a third
+rule this entry stated in the same breath.** `xtask::bundle`'s "a subscription's item type is
+a root of the JSON Schema bundle" was written as two hand-registered lines beside a
+`SUBSCRIPTIONS` walk the same file already performs 130 lines further down — so a third
+subscription reached `x-subscriptions` and reached neither `x-roots` nor `$defs`, with every
+xtask test green and `schema-artifacts-current.sh` green after regeneration, because that
+predicate only diffs emitted against committed. The walk is derived now and
+`every_subscriptions_payload_is_a_root_of_the_bundle_and_not_only_of_the_document` states the
+law from the other end. The lesson is the general one this entry was already about: a rule
+that *has* a walkable population and does not use it is a rule with one obedient instance,
+not a mechanism.
+
+**The OpenRPC document says no**, because saying yes would publish something false. OpenRPC
+1.3.2 has no notion of a server-initiated stream. A subscribe call emitted as a `method`
+would be true about the call and silent about the payload, which is the only interesting part
+of it; its `unsubscribe` sibling emitted as a `method` would be **false**, because that
+callback is `params.one::<RpcSubscriptionId>()` — positional — and every method in this
+document declares `"paramStructure": "by-name"`. So `methods` stays exactly the call surface
+and the subscriptions are a top-level `x-subscriptions` array carrying both wire names, the
+notification name and the **item schema**, resolving into the same `components/schemas` every
+other `$ref` does. Complete about the payload, honest about being an extension. `xtask`
+asserts both directions: every row described, and no subscription spelling among the methods.
+`schemas/webcam-handler-schema.json` gains `HotplugEvent` as a root beside `ProgressEvent`,
+for the reason that comment already gave.
+
+**N5's wall is intact and cost nothing to keep.** A `#[subscription]` with even one parameter
+makes the generated server call `tokio::spawn` on its params-decoding error path
+(`render_server.rs`'s `error_ret`), which would put a task spawn in the crate whose header
+says "Nothing here runs; it declares". Both subscriptions are parameterless, so no such call
+is generated — and `crates/api` needed no tokio dev-dependency either, because
+`AnswersNothing`'s two bodies return without awaiting and the registration tests read
+`method_names()` rather than driving a subscription.
+
+### `subscribe_calibration` is per *client*, and D10's parenthetical is a filter
+
+D10 says "per-session progress"; `crates/schema/src/progress.rs` says the opposite in as many
+words, and it is the side with the committed shape behind it: the session id rides on **every
+event** "because P4e's subscription is per *client* and a client may watch a daemon running
+more than one session". **Decided: per client, filtered by the consumer on
+`ProgressEvent::session`.** A `SessionRef` parameter would resolve against a store lock the
+subscribe path has no business taking, and a `SessionRef::Task` subscription would silently
+follow whichever session occupied the slot next — besides costing N5's sentence above.
+`subscribe_events` carries `HotplugEvent` **verbatim**, nodes and not cameras, for the reason
+its own doc and note **N53** give: grouping is not a node property, and re-enumeration is
+live every time (E2).
+
+### What a subscriber that falls behind is told, and why the two streams differ
+
+Not one policy, and the difference is in the payload rather than in the transport:
+
+- **`subscribe_events` ends the stream, naming the count.** A `HotplugEvent` is a *delta*,
+  the vocabulary is closed, and there is no variant meaning "you missed some". A gap leaves a
+  consumer's picture of the node tree wrong in a way it cannot detect, so ending is the only
+  answer that is not a quiet lie. The count reaches the client as a **typed** payload
+  (`{"lagged": n}`), because jsonrpsee's blanket `impl<T: ToString> From<T> for
+  SubscriptionError` would have flattened it into prose a client has to parse.
+- **`subscribe_calibration` counts it and carries on.** Every in-flight
+  `CalibrationProgress` variant carries `index`/`total` — put there so "a subscriber that
+  connects mid-sweep has no earlier events to count" — so a gap is self-healing and the next
+  event repaints a correct bar. Ending a client's view of a twenty-minute sweep because it
+  was briefly slow would be the transport inventing a failure the payload already handles.
+
+The decision is a fold, `daemon::events::lag_verdict`, with both arms and the payload unit-
+tested — because forcing a real fan-out lag means keeping a subscription's task from running
+while `SUBSCRIPTION_BROADCAST_DEPTH` events go past it, which is a fact about the scheduler
+wearing a fact about the queue. At the *other* two hops there is one answer and it is note
+**N17**'s and `engine::progress::ChannelSink`'s: **drop, and count.** Never block — the
+producers are a camera actor's own thread and the hotplug watch's, and either one waiting on
+a subscriber is the wedge this sub-milestone exists to make unrepresentable.
+
+**Events emitted with nobody subscribed are dropped and counted**, which is P4e-i's decision
+rather than an accident. `broadcast::Sender::send` answers `Err` exactly when
+`receiver_count() == 0`, and `Fanout::unheard` turns that into a number. Nothing is buffered
+for a client that has not arrived: a parked long-lived `Receiver` would hold a whole sweep's
+events for nobody, which is the unbounded growth `limits::PROGRESS_QUEUE_DEPTH` rejects one
+crate down. The sweep is on disk either way (D9), and `schema::progress` already documented
+the posture — an event "is allowed to be dropped when nobody is listening".
+
+### The hotplug watch runs while somebody is listening, and not before
+
+`CameraBackend::watch` can fail — a container without `NETLINK_KOBJECT_UEVENT`, an LSM, a
+backend with no watch to give. **Decided: start it at the first subscription, on its own OS
+thread, and end it when the last subscriber goes.** Eagerly at startup, the same failure
+would refuse to *start a daemon* on a host where enumeration works perfectly, which is the
+availability-versus-capability conversion E3 forbids; started lazily it is a D13 refusal of
+the subscription that asked for it, which is what a refusal means everywhere else on this
+surface. Ending it with its last reader is also why P4e-ii's teardown does not have to reach
+it: a thread parked in `poll(2)` for nobody has to be told to stop, and one that stops when
+its last reader leaves never does.
+
+It is an OS thread rather than a task because `HotplugWatch` is `Send` and **not** `Sync` and
+`next_event` takes `&mut self` — a single-consumer, exclusively-owned, blocking object — and
+this daemon runs nothing that can block on a runtime worker. That thread reads
+`Instant::now()`, which is not an exception to "the caller stamps each deadline": **it is the
+caller.**
+
+### The fake's watch was wrong, and P4e-i is what made it visible
+
+`FakeWatch::next_event` returned `Ok(None)` immediately whatever deadline it was given, with
+the argument that "a fake that slept would be scheduling a flake". The argument was about
+`sleep` and the conclusion was one step too far. `HotplugWatch`'s contract is *block until an
+event or until the deadline*; a watch that answers instantly and forever has no honest
+consumer except one polling on a cadence of its own, and P4e-i's daemon is not that caller —
+it loops, which against the old behaviour was a **spin at 100% of a core in every daemon
+integration test**. AGENTS reads both ways: a fake capability no real device exhibits is a
+bug in the fake, and so is a real behaviour the fake refuses to exhibit.
+
+**Corrected with a `Condvar` and no sleep.** The wait ends when a test scripts a fault
+(`FakeBackend::queue_fault` notifies), so an event a test asks for arrives when it asks; what
+is left is the caller's own deadline, which is a bound the trait declares rather than
+synchronisation. `testkit::battery`'s "the deadline is honored" arm was vacuous until now.
+
+### The WebSocket surface, and the residual left switched off
+
+P4b's `ServerConfig::http_only()` is lifted and both of note N38's numbers are this
+project's: `limits::WS_MESSAGE_BUFFER_CAPACITY` (64) bounds what one subscription may hold
+unwritten, and `limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` (8) bounds how many streams one
+connection may open — refused as a `-32006` answer to the *subscribe call*, before any
+handler runs, so connect-and-abandon costs a client its own slots and nobody else's.
+`limits::SUBSCRIPTION_BROADCAST_DEPTH` (256) is the fan-out's, deliberately deeper than one
+connection's private buffer so that the hop which refuses is the private one and a slow
+subscriber never costs another its events; a `const` assertion checks that relation where
+both numbers are, beside the one that keeps `set_message_buffer_capacity` from panicking on
+zero. `tests/uds.rs`'s upgrade assertion is **inverted rather than deleted**, which is the
+whole record of what changed about the transport.
+
+**The residual, named rather than fixed:** `ping_config` stays `None`, so a peer that opens a
+WebSocket, subscribes, and never reads again is not reaped by an inactivity timer. It is
+bounded — `DAEMON_MAX_CONNECTIONS` × `WS_MESSAGE_BUFFER_CAPACITY`, with a fan-out in front
+that never waits on any of it — and turning `enable_ws_ping` on would add two constants whose
+behavioural half cannot be asserted without waiting out a timer, which is the shape AGENTS
+bans. Left off on purpose.
+
+### What the tests can and cannot force
+
+The suite's determinism is **signals, never durations**: the gate announcing that a sweep is
+inside a write, `Wchd::watch_subscribers()` announcing that a subscription was reaped, and
+`Wchd::watch_losses()` announcing that a bound has refused an event. That last one is why the
+slow-subscriber arithmetic is exact rather than a measurement of the scheduler: the reading
+subscriber taking the last event says the *producer* finished, and the loss count reaching
+the overflow says the *stalled subscriber's own task* finished — reading it before that would
+free a slot per read and let its task send what it would otherwise have dropped. It is note
+N17's pre-authorised "query on the sink" and it is an operator-visible number, not a test
+hook. `Attached`'s live-count decrement is a field declared **after** the receiver, so drop
+order publishes "nobody is subscribed" only once the receiver is gone; that ordering is
+structural and no test can observe it from outside, which the test that depends on it says.
+
+Two reds were watched rather than argued: a third row in `wire_surface!` makes the
+subscription walk fail at its fallback naming the row, and swapping `daemon::events`'
+`try_send` for the `send().await` beside it turns the backpressure test into a named nextest
+`TIMEOUT` at 180s.
+
+### Amended 2026-08-10 — the hostile directions, and the two of them this wire cannot express
+
+*Nothing a client does can wedge the daemon* is worth exactly what the list of things a
+client can do is worth, so P4e-i walks that list, one test apiece in
+`crates/daemon/tests/subscriptions.rs`: a client that subscribes and vanishes; one that names
+a session at subscribe time; a sweep of a session that does not exist; a client that
+subscribes twice to one sweep; a subscription that outlives its session; a session that ends
+under a watcher; more subscriptions than the per-connection bound; a connection that dies in
+the middle of a message.
+
+**Every one of them ends by asking the daemon a verb** — over the connection that did the
+damage wherever the damage left one, over a connection opened afterwards always, and over the
+plain `POST /` the upgrade shares a listener with. That is not belt and braces. A daemon that leaked a permit, a task or a lock
+keeps serving the client that already holds a connection while refusing the next one, and one
+whose accept loop has gone does the opposite; the two have nothing in common except that a
+wedged daemon fails to *return* rather than failing an assertion. The question is a list
+**and** a refusal, for `method_surface.rs`'s `discriminating_refusals` reason — a daemon that
+had degraded into one blanket error would satisfy "it answered" — and the expected code comes
+from `api::rpc_code` rather than from a literal.
+
+**Two of the eight have no wire form, and what was asserted instead is the finding.** Neither
+subscription takes a parameter (above), so "subscribe to a session that does not exist" and
+"subscribe twice to *the same session*" cannot be sent:
+
+- A client that sends a `session` key anyway is **accepted and the key is ignored** —
+  jsonrpsee generates no params decoding at all for a parameterless subscription, so there is
+  nothing there to refuse with. Pinned rather than assumed, because a client that believed it
+  had a server-side filter would drop every other session's events and never know it. The
+  session-shaped refusal is asserted where a session is actually named — the *sweep*, which
+  answers `IllegalTransition` — together with the claim that the refusal is the sweep's
+  alone: the stream is neither closed nor fed a phantom event, which the next real sweep's
+  first event is what proves, by arriving first.
+- "Twice to the same session" is two subscriptions on one connection watching one sweep,
+  which is the interesting half anyway: two ids, both fed the same events, one connection's
+  bookkeeping counting both and giving both back.
+
+**A terminal event is not a close.** `CalibrationProgress::is_terminal` is per control and
+per sweep, and `schema::progress`'s own test warns a *consumer* against closing on it; the
+transport must not either, and nothing in `daemon::events::forward` can, because it is
+generic over the payload. Asserted from both sides anyway: one test runs a whole D8 arc —
+sweep, select, apply, restore — under a watcher and asserts that only the session ended,
+and another puts a second session down the same subscription afterwards, one that **fails**,
+and asserts the `SweepInterrupted` discriminant it carries is the one that session's caller
+was refused with.
+
+Three more reds were watched for these, plus one re-demonstration. `daemon::events::forward`
+returning after its first delivery: the two session-lifetime tests become named `TIMEOUT`s
+and two siblings fail outright. `Counted::drop` not decrementing: every reaping wait becomes
+a named `TIMEOUT` — which is the answer to why a reap is *waited for* on a `watch` and never
+read off a counter, since a read would have passed against that mutant on whichever schedule
+happened to look right. `still_answers` expecting any other D13 code: all seven hostile
+directions and the disconnect test fail in milliseconds, which is what says the second
+question is answered by the daemon rather than by the helper. And `method_surface.rs`'s walk
+was re-demonstrated after the two-trait change — deleting one call from `every_method` fails
+the equality naming `wch_calibrate_restore`, with the four subscription spellings correctly
+on neither side of it.
+
+**Retires when:** jsonrpsee makes `Subscription` constructible outside `jsonrpsee-core`, at
+which point one trait would carry both halves and the split above becomes a cost with nothing
+buying it; or OpenRPC gains a shape for a server-initiated stream, at which point
+`x-subscriptions` becomes a `$ref` to a standard one.
+
+---
+
+## N58 — P4e split into P4e-i and P4e-ii, and the seam is that shutdown's proof needs subscriptions' fixture
+
+**Doc:** docs/7's "Milestones are session-sized" convention — "a sub-milestone that turns out
+to be two splits — **recorded in the notes** — rather than stretching past what one session
+can carry" — names the notes as the register, so this entry is the split rather than a report
+of it. Note **N54** is the precedent and the rule: *size by story, not by subsystem*, written
+after P4d had been mis-sized in exactly this way. Nothing here changes a gate letter or a
+criterion; this is about how the work is cut.
+
+**P4e was written as one sub-milestone**, "Subscriptions and shutdown", and its "Lands"
+clause failed N54's own test the moment it was read against it: it needs the word *and*
+between two things a reviewer holds in mind separately. The two are
+
+- **P4e-i — subscriptions and backpressure.** *A client can watch, and nothing a client does
+  can wedge the daemon.* `subscribe_events` and `subscribe_calibration`; the WebSocket half
+  of the Unix socket that P4b deliberately turned off, back on with note N38's two bounds and
+  the tests that reach them; the fan-out and its lag policies; disconnect-mid-sweep; and the
+  three debts note **N56** discharges, which are one mechanism.
+- **P4e-ii — shutdown and systemd.** *The daemon stops the way the init system expects.*
+  SIGTERM ≡ SIGINT through `CancellationToken` teardown, the drain, ordered store-lock
+  release, `sd_notify` READY/STATUS/STOPPING, `listenfd` socket activation, the journald
+  layer under systemd, and never self-daemonizing. The tree already names those deferrals
+  where they sit — `uds.rs`'s "not a drain and not a signal handler", `state.rs`'s ordering
+  sentence, `server.rs`'s ordered end for the idle-sweep driver, and `tests/uds.rs`'s socket
+  file that survives a stop *deliberately*.
+
+### Why this is a seam and not a cut through the middle of one
+
+The two halves are **sequential, not parallel**, and the reason is in docs/9's own
+commissioned row for P4e: "one test per signal (SIGTERM, SIGINT), real delivery, drain
+asserted **with open subscription + mid-flight sweep**". That row is **P4e-ii's**, and it is
+the only gate row docs/9 commissions for P4e — which means shutdown's proof is stated in
+terms of the thing P4e-i builds. Ordered the other way, P4e-ii would have had to build a
+subscription fixture in order to assert a drain, and P4e-i would then have rebuilt it; a
+seam that makes one half's proof cheaper and neither half's proof weaker is a seam rather
+than an incision. `crates/daemon/tests/subscriptions.rs`'s disconnect test is left inheritable
+on purpose: it already holds a sweep inside a device write, already holds an open
+subscription across it, and already ends by asserting `ServerHandle::stopped()` resolves —
+which is the assertion a leaked bridging task turns into a named `TIMEOUT`.
+
+The seam is also a story seam in N54's sense rather than a file seam. The two halves *do*
+share files — `daemon::server`, `daemon::uds`, `Inner` — so a cut made by what the code
+touches would have refused to make it. What they do not share is a claim: "nothing a client
+does can wedge the daemon" is about a running daemon and a hostile peer, and "the daemon
+stops the way the init system expects" is about a daemon that is ending and a well-behaved
+init. A reviewer holding both at once is holding two.
+
+### What the split cost, and the prediction it is the first chance to measure
+
+P4e-i's own criteria are new `g4` rows in `scripts/gates/phase-criteria.tsv`, added with the
+things they prove; P4e-ii's is docs/9's row above, and it is deliberately **not** written
+yet — a criterion is a row added in the same commit as the thing it proves, and nothing here
+proves a signal.
+
+N54 ended with a falsifiable prediction and asked for it to be measured "the next time a
+split happens". This is that split, and it is the *good* case for the prediction rather than
+the fair one: P4e was split **before** either half was written, so there is no un-split P4e
+to compare against, and the numbers this produces are two reviews of two halves with nothing
+to hold them beside. Recorded so the next reader knows the comparison is unavailable rather
+than unfavourable. What can be said now: P4e-i alone owes `just ci` and the mutation floor
+(it edits `crates/api/src/wire.rs`, which is inside the floor's `examine_globs`) — two
+terminal rungs, which is N54's second rule met rather than broken.
+
+**Retires when:** never by disproof — it is a record of a decision. It is superseded if a
+later plan revision re-merges the two halves, which would need the docs/9 row above to stop
+depending on a subscription.
+
+---
+
+## N59 — P4e-i's adversarial review: the bound that was arithmetic, the stream that was told nothing, and four rules with one obedient instance each
+
+**Doc:** AGENTS rule 1 ("every anticipated or discovered defect class becomes a lint, a CI
+job, or a test that can go red"), rule 2 ("both directions"), rubric A8 ("for every constant,
+ask what *reads* it and what goes red when it stops being read"), rubric A4's amendment (a
+transient failure must not leave a client in a state no verb can leave), rubric B11 (a stated
+number wants something that can go red when the arithmetic moves under it), and design §2.10
+("one home per law"). Four hostile reviews went over the uncommitted P4e-i change; this
+entry records what they found that was real, what the tree does about it, and the two
+findings that were *not* real in the shape they were reported.
+
+### 1. The bound that was arithmetic about a transport this sub-milestone removed
+
+`daemon::server::on_resolved_camera_queueing`'s doc and note **N56** both stated that "the
+number of parked pool threads is bounded by `limits::DAEMON_MAX_CONNECTIONS` (32) against
+tokio's own pool". That was never a bound this build enforced. It was an inference from
+HTTP/1.1 answering one request per connection — and P4e-i lifts `ServerConfig::http_only()`
+in the same sub-milestone. jsonrpsee's WebSocket transport `tokio::spawn`s one task per
+inbound message and never awaits it (`jsonrpsee-server-0.26.0/src/transport/ws.rs`), and
+`ServerConfig` has no per-connection concurrent-call cap at all: `max_connections` bounds
+connections, `max_subscriptions_per_connection` bounds subscriptions, nothing bounds calls.
+So **one** connection could hold arbitrarily many `wch_photo {"wait": true}` in flight, each
+parking a blocking-pool thread inside `CameraActor::send_waiting` for up to
+`CAMERA_ENQUEUE_WAIT_MS`; the real ceiling was tokio's 512-thread pool with an unbounded
+queue behind it, a number this project neither chose nor names. Every other verb draws on
+that same pool through `Wchd::offload` — `wch_list`, `resolve`, `addressable`,
+`open_destination`, even `subscribe_events` — so a flood of waiting captures put every other
+client behind it. That is the exact failure the sub-milestone's story is named against, and
+it was untestable by construction: the wire test said in as many words that it "deliberately
+does not fill the queue over the socket", and `engine::actor`'s suite drives one waiter at a
+time.
+
+**What landed.** `limits::CAMERA_ENQUEUE_WAITERS`, enforced by a permit pool
+(`daemon::server::Waiters`) around the waiting arm. Sized to `DAEMON_MAX_CONNECTIONS`, with a
+`const` assertion that the two agree, precisely so the sentence above becomes true by
+construction rather than by an accident of which transport a client chose. A caller past it
+is **not** made to wait for permission to wait — that is a second unbounded queue — it takes
+the enqueue a caller that never asked to wait takes: served if there is room right now,
+`Error::Busy` if there is not. So the flag degrades to its own `false` under load and D13
+grows no nineteenth variant meaning "too many waiters" (the registry is closed).
+
+An async wake-up in `engine::actor::Room` was the other candidate and is not available: it
+would mean a `tokio::sync::Notify` in `crates/engine`, which `dependency-walls.sh` names in
+`$pure` and P4b's own argument (note N41) rests on. The permit pool is also the right *home*
+on the merits — what is being bounded is the daemon's blocking pool, which is a fact about
+the process hosting the actor rather than about the actor. It is not the "second count of the
+same eight seats" N56 rejected: these permits count parked *callers*, and the queue's own
+bound is still the `sync_channel`'s.
+
+**How it goes red.** `a_flood_of_waiting_captures_is_bounded_and_never_the_daemon` holds a
+camera's actor thread with a real sweep (the `Gate` decorator `calibrate_verbs.rs` already
+uses), fills the command queue from **one** WebSocket connection — `CAMERA_COMMAND_QUEUE_DEPTH * 2`
+requests meeting that many free seats, so exactly half are refused and reading that many
+`Busy` answers is an *observation* that the queue is full — parks `CAMERA_ENQUEUE_WAITERS`
+waiters and waits for the daemon to publish that they arrived, then sends four more and reads
+four immediate refusals. Watched red against a hand-applied `Semaphore::new(4096)`: the four
+park instead, the run takes a whole `CAMERA_ENQUEUE_WAIT_MS`, and it fails at `36` parked
+where this daemon bounds `32` (measured, 10.01 s).
+
+### 2. Three rules with one obedient instance each, and the fourth that had none
+
+Rubric A8 read as a question — *what reads this, and what goes red when it stops being read?*
+— caught three numbers and one property:
+
+- **`WS_MESSAGE_BUFFER_CAPACITY`.** Its only production reader was `uds::serve`, and the
+  suite that claimed to drive it drove `Methods::subscribe`, whose buffer is an *argument*.
+  Measured: `.set_message_buffer_capacity(1024)` — jsonrpsee's own default, i.e. the exact
+  regression note N38 turned the surface off to prevent — passed all 109 daemon tests. Fixed
+  by publishing what a real connection actually gave the subscription
+  (`SubscriptionSink::max_capacity`, recorded as `events::StreamActivity::buffer` at accept),
+  because `ServerConfig` cannot be read back and the sink is the one place the configured
+  number becomes visible. `a_real_connections_message_buffer_is_the_number_this_project_chose`
+  asserts it over a real WebSocket and asserts the in-memory arm reports the *different*
+  number it was handed, so the field is an observation rather than a second copy of `limits`.
+- **`HOTPLUG_WATCH_DEADLINE_MS`.** Its property — `Hotplug`'s "ended when the last subscriber
+  goes" — was unobservable: `running` was private and `StreamActivity::subscribers` counts
+  receivers rather than threads. A 3600× change left the whole workspace green (measured).
+  Fixed by making the flag a `watch::Sender<bool>` *inside* the mutex that already guarded it
+  — one fact in one place, decided under exclusion and awaitable — surfaced as
+  `Wchd::watch_hotplug`. `a_hotplug_watch_runs_only_while_somebody_is_listening` deliberately
+  scripts no fault after the last unsubscribe, so the thread's turn comes from the deadline
+  and from nothing else; with the constant at an hour the test is a named nextest `TIMEOUT`
+  at 180 s (measured).
+- **`PhotoRequest::wait`.** The wire test named for D12's flag could not tell the two
+  spellings apart: it sent both behind one held command, where the queue is eight deep, so
+  both were simply enqueued. Measured: `let how = enqueueing(false);` — D12's flag deleted —
+  passed all 861 tests in the workspace. N56 had argued the gap was unavoidable ("nothing
+  outside the daemon can observe" an enqueue); that is retracted there. It was unobservable
+  only because nothing published it, and the two signals needed are ordinary: a `Busy` answer
+  *is* the daemon saying the queue is full, and `Wchd::watch_waiting_captures` — which
+  `CAMERA_ENQUEUE_WAITERS` needed a reader for anyway — is the daemon saying a caller is
+  parked. The rewritten test compares two *outcomes* at one instant (`wait: false` refused,
+  `wait: true` served after release) rather than two timings, and the deleted-flag mutant is
+  now a named `TIMEOUT` at workspace scope.
+- **`xtask::bundle`'s subscription roots.** Stated as a law in a comment and implemented as
+  two hand-written lines beside a `api::SUBSCRIPTIONS` walk the same file already performs.
+  Measured: a third subscription reached the OpenRPC document's `x-subscriptions` and reached
+  neither `x-roots` nor `$defs`, with all eight xtask tests green. Derived now, with
+  `every_subscriptions_payload_is_a_root_of_the_bundle_and_not_only_of_the_document` stating
+  the law from the other end — verified red against the hand list plus a third subscription.
+  N57 is amended: its "a third subscription joins both walks by existing" was true of the two
+  count walks and false of this third rule.
+
+### 3. The hotplug watch's error arm did the opposite of what it said
+
+`Hotplug::watching`'s `Err` arm logged "the hotplug watch stopped; **subscribers were told**"
+and cleared its flag. Nothing told them. `forward`'s only end-of-stream arm is
+`broadcast::error::RecvError::Closed`, which tokio produces when the `Sender` is dropped —
+and the `Sender` lives in `Fanout::events` inside `Events` inside `Inner`, for the daemon's
+whole life. Every open `wch_subscribe_events` stream therefore stayed accepted, stayed
+counted in `SubscriptionActivity::live`, and silently delivered nothing for the rest of the
+process, with no error, no close and no count: rubric A4's shape one layer up, behind a log
+line asserting the opposite, and precisely the "quiet lie" this module refuses twenty lines
+earlier when it ends a *lagging* hotplug stream. A second facet, same arm: it cleared
+`running` without consulting `receiver_count()`, so a subscriber taking the lock in the
+window returned attached to a stream with no thread behind it — falsifying `Hotplug::attach`'s
+own stated argument.
+
+**What landed.** `Fanout` carries `Feed<T>` — an event, or `Feed::Ended(&'static str)`. The
+terminal travels *in* the channel rather than beside it, because a subscriber that is behind
+must get what it already has before it is told the source stopped, and a signal raced against
+the queue would end a stream with deliverable events still in it; `broadcast` gives a sender
+no close it can perform without dropping, so the value carries what the channel cannot. Both
+exits of the watch thread are one function (`Hotplug::give_up`) that takes the lock once, and
+`Hotplug::attach` now takes that lock **first** and its receiver **last**, which closes the
+third interleaving as well: a subscriber arriving while a failing thread ends its readers
+attaches after the terminal was sent, so it is not handed somebody else's ending.
+
+**And the fault menu grew the two variants that make both directions reachable.**
+`fake::Fault::WatchUnavailable` (a host with no watch to give) and `Fault::WatchFails` (a
+watch that stops) — the exhaustive-match menu whose whole point is that "a fault the compiler
+cannot force the fake to script is a fault nobody tests", which had eight variants and
+neither of these. Two tests:
+`a_backend_that_cannot_watch_refuses_the_subscribe_call_rather_than_accepting_it` (the D13
+refusal before the accept, which is what makes the lazy-start decision worth making) and
+`a_watch_that_stops_ends_the_streams_reading_it_and_names_why` (delivery, then the ending,
+then the reaping, then the retry). Watched red against the arm that only cleared the flag:
+a named `TIMEOUT` at 180 s — which is what a stranded subscriber looks like from outside.
+
+### 4. Two findings that were reported and are not defects
+
+- **"A permit pool is a second count of the same seats."** N56 rejected a permit pool and was
+  right about the pool it rejected — one that replaced the `sync_channel`'s bound. The one
+  that landed counts something else (parked callers, in the process that hosts them), so the
+  two are not the same proposal and the entry is amended rather than contradicted.
+- **"`WS_MESSAGE_BUFFER_CAPACITY` should be driven past its bound over a real socket."** It
+  should not, and the suite says why where it declines to: an `AF_UNIX` socket puts the
+  kernel's own send buffer between the daemon and a reader that has stopped, so "the
+  connection is full" over that transport is a fact about `SO_SNDBUF` rather than about this
+  constant. The exactness lives on the in-memory dispatch, where the connection buffer is the
+  only queue in the path; what the real socket now pins is the *configured value*, which is
+  the half that was actually missing.
+
+### The smaller corrections, recorded so they are not re-found
+
+`WS_MESSAGE_BUFFER_CAPACITY`'s sizing argument said "a whole quarter of the longest sweep"
+from premises (two events per sample × 256 samples) that give an eighth; restated in samples,
+which is the unit with one meaning. `crates/api`'s pinned-spelling test was renamed at P4e-i
+and three citations of the old name were left behind — the two live ones
+(`daemon/tests/method_surface.rs`, docs/9's method-count row, which AGENTS designates the
+authoritative statement of that mechanism) now name the current test, and N42's historical
+citation gained a parenthetical rather than a rewrite. `Fixture::start`'s baseline comment
+promised three assertions and wrote two; the third (`FakeBackend::opens() == 0`, which is
+D12's own invariant and the one a fixture change could quietly break) is written now. And
+`soketto` joined design §2.8's inventory: the adoption itself needed no escalation under the
+2026-08-09 ruling — `Apache-2.0 OR MIT`, pinned, already in the lock through
+`jsonrpsee-server`, `cargo deny` and `dependency-walls.sh` green — but §2.8 *is* the registry
+AGENTS points a licence audit at, and a crate the daemon's test binaries link that the
+registry does not know about is the registry being wrong.
+
+**Retires when:** nothing. It records what a review found and what the tree does about it.
+The one thing in it that could be disproved is the sizing of `CAMERA_ENQUEUE_WAITERS`: if a
+real deployment shows thirty-two parked captures is either too few to be useful or too many
+for the pool, the number moves and the `const` assertion tying it to
+`DAEMON_MAX_CONNECTIONS` moves with it — at which point the sentence it exists to make true
+has to be rewritten rather than deleted.
+
+## N60 — The floor said an acceptance had become a lie, and the acceptance was telling the truth
+
+**Believed:** that the acceptance register's second direction — "a listed mutant that has
+stopped surviving fails the job too" — reports one thing: that a mutant somebody argued was
+unkillable has become killable, so the argument needs revisiting. E7 commissioned it as
+N15's lesson mechanised, and until now it had never fired.
+
+**True:** it fires on *any* run in which the mutant's test pass fails, and a mutant's test
+pass can fail for reasons that have nothing to do with the mutant. The first time it ever
+fired, at the P4e-i boundary, it was wrong.
+
+**What it said.** 525 mutants, 443 caught, 9 survivors against 11 acceptances, and:
+
+    FAIL — 2 recorded acceptance(s) no longer survive; the mutant became killable
+      crates/imaging/src/metrics.rs: replace / with % in sharpness
+      crates/imaging/src/metrics.rs: replace / with * in sharpness
+
+Both are N26's, whose argument is an *equivalence*: the Laplacian response sums to exactly
+zero, so `0/n`, `0*n` and `0%n` are the same number. N26 even predicted this firing and
+named its cause — "an `imageproc` release that changes the border handling" — which made
+the report initially credible. That cause did not apply: `imageproc` had not moved, and
+P4e-i does not touch `crates/imaging` at all (`git diff --stat` over it is empty).
+
+**What was measured, in order, before anything was changed.**
+
+1. Both mutants applied by hand to the working tree: **867/867 tests pass**, twice. The
+   mutants survive.
+2. The three tests the floor's per-mutant logs name as failing, run directly against each
+   mutant: **pass**, at 1.4s where the floor recorded 5.5-5.9s.
+3. The same three tests, unmutated, under eight CPU spinners: **pass**.
+4. The mutant re-applied in a *fresh* tree with cargo-mutants' own environment
+   (`CARGO_PROFILE_DEV_DEBUG=0`, its own target directory): **passes**.
+5. N26's equivalence claim re-measured directly rather than trusted, over the population
+   most likely to break it — a horizontal gradient, an interior bright pixel, a bright
+   pixel **on the border**, a bright **corner**, and a hard vertical edge, all 64x48:
+   every Laplacian response sums to **exactly 0**. The samples are `i16` widened to `f64`,
+   which is exact, so the sum is an exact integer and `0/n == 0*n == 0%n` is arithmetic
+   rather than tolerance.
+
+(5) is a proof, not a hypothesis, and it settles the rest: **the two programs are
+identical, and identical programs cannot make a test fail.** So whatever failed those runs,
+it was not the mutation.
+
+**What did fail, from the floor's own per-mutant log:**
+
+    thread 'an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took' panicked
+    assertion `left == right` failed: the device's own answer was reshaped on its way out:
+      frames did not settle within 5303 ms (11 frames seen)
+      left: SettleTimeout   right: DeviceGone
+
+The test scripts a device that vanishes and asserts `DeviceGone`. Under eight concurrent
+cargo builds the frames did not arrive inside the settle deadline, so the sweep answered
+`SettleTimeout` — a different, entirely correct typed error — and the assertion failed.
+`crates/engine/tests/sweep.rs` builds its context with `MonotonicClock::new()`, a **real**
+clock, where AGENTS.md's convention is "settle logic runs on a stepped clock in tests".
+
+The apparent specificity that made the report convincing — two mutants, three failures, all
+in the tests that consume `sharpness` — dissolves the same way: those are the *slowest*
+engine tests, so they are the ones a contention threshold reaches first. Scoring frames is
+what makes them slow and what makes them consume the metric; the correlation is real and
+the causation runs the other way.
+
+**Changed:** nothing in the register. Both lines stay, and N26 stands with its argument
+strengthened by (5) — it had been asserted over nine 3x3 positions and four fixtures, and
+is now measured over borders, corners and hard edges at a realistic size.
+
+**The real defect, which is not the floor's:** two engine tests can be handed a different
+typed error by a loaded machine. That is a determinism defect in the suite, it predates
+P4e-i (the tests are P3's), and P4e-i only exposed it by making every mutant's test pass
+longer. Scheduled rather than fixed here, because the principled repair is a stepped clock
+on a path where `SteppedClock` is deliberately not `Sync` (note N45) — a scoped piece of
+work, not a line. docs/7's standing debts carry it.
+
+**And the thing this entry exists to say.** N52 recorded that the floor's verdict once moved
+with `nproc`, and warned about the reflex it creates: "a gate that cries wolf does not get
+believed — it gets re-run at `-j1` until it agrees, and the run after that is the one where
+a real survivor is waved through". This firing is that warning's second instance, in the
+one direction nobody had exercised. **The floor was deliberately not re-run to obtain a
+green**, because a re-run that agrees proves nothing about which of the two answers was
+right; what settled it was applying the mutants by hand and measuring the arithmetic they
+claim to change. A register whose second direction can be tripped by an unrelated flake is
+only as trustworthy as the suite's determinism — so the determinism is the thing to fix,
+and until it is, a second-direction failure means "investigate", never "delete the line".
+
+**Retires when:** the settle path in `engine`'s integration tests runs on a stepped clock,
+at which point this entry keeps only its last paragraph.

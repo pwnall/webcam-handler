@@ -1072,6 +1072,9 @@ fn photo_request(sink: Sink) -> PhotoRequest {
         },
         transform: Transform::None,
         sink,
+        // The default, and the shape every request sent before D12's flag existed. The
+        // tests that are about the flag build their own.
+        wait: false,
     }
 }
 
@@ -1090,8 +1093,14 @@ fn engine_photo(
         .backend
         .open(camera)
         .expect("the fake hands out a second view of one device");
-    engine::photo::take(handle.as_mut(), request, &MonotonicClock::new(), now)
-        .expect("the engine takes the same photo")
+    engine::photo::take(
+        handle.as_mut(),
+        request,
+        &mut engine::photo::WhereverTheCallerSaid,
+        &MonotonicClock::new(),
+        now,
+    )
+    .expect("the engine takes the same photo")
 }
 
 #[tokio::test]
@@ -1438,9 +1447,10 @@ fn mkfifo(path: &Utf8Path) {
 
 #[tokio::test]
 async fn a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_is_touched() {
-    // Note **N51**. `engine::photo` writes with `std::fs::write`, whose `open` carries no
-    // `O_NONBLOCK`: on a fifo it blocks until somebody opens the read end. That open runs
-    // *inside the camera's actor closure*, and nothing bounds a submitted command — so a
+    // Note **N51**. A photo's bytes used to be written with `std::fs::write`, whose `open`
+    // carries no `O_NONBLOCK`: on a fifo it blocks until somebody opens the read end. That
+    // open ran *inside the camera's actor closure*, and nothing bounded a submitted command
+    // — so a
     // client that ran `mkfifo /tmp/x.jpg` and named it would park that camera's one thread
     // for the life of the process. Everything after that follows: the request never answers,
     // the actor's queue fills and every later request for that camera is `Busy`, and D12's
@@ -1448,9 +1458,17 @@ async fn a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_i
     // webcam is unusable by any application until `wchd` is restarted.
     //
     // Neither `wch` nor `wchc` can send this: `-o` is resolved on a command line somebody
-    // typed. It is the third rule `daemon::server::addressable` answers, beside the two that
-    // were already there, and for their reason — a request this build was never going to
-    // honour must not cost anybody a descriptor.
+    // typed. It is `daemon::server::open_destination`'s rule, beside the two `addressable`
+    // answers, and for their reason — a request this build was never going to honour must
+    // not cost anybody a descriptor.
+    //
+    // **What P4e-i changed under this test, without changing what it asserts.** The refusal
+    // used to be a `stat` of the *name*; it is now an `O_NONBLOCK` open plus an `fstat` of
+    // the *descriptor*, which is the same verdict reached in a way a client cannot step
+    // through — the sibling test below is the one that can tell the two apart. The fifo arm
+    // is also stronger than it reads: without `O_NONBLOCK` the open does not return, so a
+    // build that lost the flag turns this into a named nextest `TIMEOUT` rather than a wrong
+    // answer.
     let fixture = Fixture::start();
     let camera = camera(&fixture.cameras, 0).id.clone();
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
@@ -1513,6 +1531,274 @@ async fn a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_i
     assert!(answer.bytes_match_the_delivery());
     assert!(after.exists(), "{after}");
     assert_eq!(fixture.backend.opens(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_swapped_after_the_check_cannot_redirect_the_photo_or_park_the_camera() {
+    // Note **N51**'s *remaining* ground, which is what P4e-i discharges. The refusal above
+    // has been there since P4c and a `stat`-then-`open` passes it: the daemon looked at the
+    // name, saw a regular file, opened a camera, and only then resolved the same name a
+    // second time — so a client that replaced the path in between won the race, and the
+    // second resolution blocked in `open(2)` on a fifo forever with the camera's one thread
+    // inside it. N51 called that "shipping half of it would trade a wedge for a leak".
+    //
+    // The fix is to make the *descriptor* the destination, resolved once and before any
+    // camera is touched. This test is the difference between the two builds, and it is a
+    // positive observation rather than the absence of a hang: the bytes are found in the
+    // inode this daemon checked, under the name the client moved it to.
+    //
+    // Nothing here sleeps. The swap happens while the camera is provably inside a frame,
+    // announced by the `Holding` decorator, and the release is this test speaking.
+    //
+    // The red-on-inverse, watched before this was called done: with the daemon's
+    // destination replaced by one that resolves the *name* at write time
+    // (`engine::photo::WhereverTheCallerSaid`, which is the right answer for `wch` and the
+    // wrong one here), the write blocks in `open(2)` on the fifo below and the run becomes a
+    // named `TIMEOUT` (`.config/nextest.toml`, 60 s x 3) — which is this test's name on a
+    // failure, and is also exactly the harm note N51 measured.
+    let (entered, entrances) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release, held) = std::sync::mpsc::sync_channel::<()>(1);
+    let fixture = Fixture::start_behind(|fake| {
+        Arc::new(Holding {
+            inner: Arc::clone(fake),
+            entered: std::sync::Mutex::new(entered),
+            release: std::sync::Mutex::new(Some(held)),
+        }) as Arc<dyn CameraBackend>
+    });
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+
+    // The destination the client names, existing and ordinary at the moment it is checked.
+    let named = scratch.base().join("shot.jpg");
+    std::fs::write(&named, b"an operator's earlier photo").expect("a writable scratch directory");
+
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+    let request = photo_request(Sink::ServerPath {
+        path: named.clone(),
+    });
+    let taking = tokio::spawn(async move { wire.photo(camera.clone(), request).await });
+
+    // The daemon has opened the destination and is now inside the frame. A blocking `recv`
+    // on the pool rather than a sleep: it ends when the device says so.
+    tokio::task::spawn_blocking(move || entrances.recv())
+        .await
+        .expect("the blocking pool is alive")
+        .expect("the photo reached the device");
+
+    // The swap: the file that was checked moves aside, and a fifo takes its name. A build
+    // that resolved the name again would open *this* and never come back.
+    let moved = scratch.base().join("moved.jpg");
+    std::fs::rename(&named, &moved).expect("the checked file can be renamed");
+    mkfifo(&named);
+
+    drop(release);
+    let answer: PhotoResponse = taking
+        .await
+        .expect("the photo task")
+        .expect("the photo answered, so nothing opened the fifo");
+    assert!(answer.bytes_match_the_delivery());
+
+    // The bytes are in the inode this daemon checked — under its new name, because that is
+    // where the client put it. Nothing else could be true: the descriptor was resolved once.
+    let written = std::fs::read(&moved).expect("the checked file holds the photo");
+    assert_eq!(
+        u64::try_from(written.len()).expect("a photo fits"),
+        answer.report.delivery.byte_count(),
+        "the photo did not land in the file this daemon checked"
+    );
+    assert_ne!(
+        written, b"an operator's earlier photo",
+        "the destination was never written"
+    );
+
+    // And the fifo is untouched — still a fifo, never opened, never written. The answer's
+    // `delivery` still reports the path the *request* named, which is the honest thing to
+    // say: a client that moves its own destination mid-capture is told where it asked for
+    // the photo, not where it then put the file.
+    let replacement = std::fs::symlink_metadata(&named).expect("the fifo is still there");
+    assert!(
+        std::os::unix::fs::FileTypeExt::is_fifo(&replacement.file_type()),
+        "{named}"
+    );
+    let PhotoDelivery::Path { path: reported, .. } = &answer.report.delivery else {
+        panic!("a path sink must report a path");
+    };
+    assert_eq!(reported, &named);
+
+    // The camera is still usable, which is the claim the wedge would break.
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+    let after = scratch.base().join("after.jpg");
+    wire.photo(
+        camera_id(&fixture),
+        photo_request(Sink::ServerPath {
+            path: after.clone(),
+        }),
+    )
+    .await
+    .expect("the camera is still answering");
+    assert!(after.exists(), "{after}");
+    assert_eq!(fixture.backend.opens(), 1, "one camera, one descriptor");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn d12s_wait_flag_crosses_the_wire_both_ways_and_neither_spelling_changes_the_photo() {
+    // D12: "a second capture request queues or is refused with `Busy` **per its `wait`
+    // flag**". The field is new on a committed wire shape (note **N42**'s first item), and
+    // what is asserted here is that the daemon *reads* it: the two spellings, sent at the
+    // same moment to the same busy camera, get different answers.
+    //
+    // **An earlier version of this test could not tell them apart, and said it could** (note
+    // **N59**). It sent both values behind a single held command, where the queue is eight
+    // deep and both were simply enqueued — so `wch_photo` ignoring `request.wait` entirely
+    // (`enqueueing(false)`) passed all 861 tests in the workspace, measured. The missing
+    // ingredient was not a second value; it was a **full queue**, and the missing signal was
+    // "somebody is parked waiting for a seat", which the daemon now publishes
+    // (`Wchd::watch_waiting_captures`) because `limits::CAMERA_ENQUEUE_WAITERS` needs a
+    // reader anyway.
+    //
+    // With it, every wait below is a signal: the decorator announces that the device is
+    // occupied, a `Busy` answer announces that the queue is full, and the waiting count
+    // announces that the `wait: true` request is parked in it. Nothing sleeps, and the
+    // sixty-second-shaped risk of "assert it has not answered yet" is not taken at all —
+    // what is compared is two *outcomes*, not two timings.
+    //
+    // The bound on the queue itself stays where it is exact (`engine::actor`, note N42's
+    // division). What is new here is the wire's own half: the flag arrives, both ways, and
+    // it changes which of D12's two answers a request gets.
+    let (entered, entrances) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release, held) = std::sync::mpsc::sync_channel::<()>(1);
+    let fixture = Fixture::start_behind(|fake| {
+        Arc::new(Holding {
+            inner: Arc::clone(fake),
+            entered: std::sync::Mutex::new(entered),
+            release: std::sync::Mutex::new(Some(held)),
+        }) as Arc<dyn CameraBackend>
+    });
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let bytes = photo_request(Sink::ReturnBytes {
+        format: PhotoFormat::Jpeg,
+    });
+    assert!(!bytes.wait, "the default is the shape older clients send");
+
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+    let holder = wire.clone();
+    let holding = {
+        let (camera, request) = (camera.clone(), bytes.clone());
+        tokio::spawn(async move { holder.photo(camera, request).await })
+    };
+
+    // The actor's one thread is now inside the first photo's `next_frame`.
+    tokio::task::spawn_blocking(move || entrances.recv())
+        .await
+        .expect("the blocking pool is alive")
+        .expect("the first photo reached the device");
+    assert_eq!(fixture.backend.streams_started(), 1);
+
+    // Fill the camera's command queue while its one thread is held. The queue is
+    // `CAMERA_COMMAND_QUEUE_DEPTH` deep and the held photo is *running* rather than queued,
+    // so exactly that many of these take seats and the rest are refused — a count, not a
+    // guess, and it stays true because nothing can drain while the thread is held.
+    let seats = schema::limits::CAMERA_COMMAND_QUEUE_DEPTH;
+    let (refusals, mut turned_away) = tokio::sync::mpsc::channel::<ErrorKind>(seats * 2);
+    for _ in 0..seats * 2 {
+        let (wire, camera, request) = (wire.clone(), camera.clone(), bytes.clone());
+        let refusals = refusals.clone();
+        tokio::spawn(async move {
+            // Only the refusals are reported: a filler that took a seat answers when the
+            // device is released, which is minutes of camera time away in a real daemon and
+            // is not what this rendezvous is about.
+            if let Err(err) = wire.photo(camera, request).await {
+                let _ = refusals
+                    .send(refusal::<PhotoResponse>(Err(err)).1.kind())
+                    .await;
+            }
+        });
+    }
+    drop(refusals);
+    for refused in 0..seats {
+        let kind = turned_away
+            .recv()
+            .await
+            .unwrap_or_else(|| panic!("only {refused} of the fillers past the seats were refused"));
+        assert_eq!(
+            kind,
+            ErrorKind::Busy,
+            "a full command queue refused something other than D12's `Busy`"
+        );
+    }
+
+    // Now the two spellings, at a camera whose queue is provably full. `wait: true` parks —
+    // which the daemon publishes, so the release below happens *after* it has provably done
+    // so — and `wait: false` takes D12's refusal immediately.
+    let mut parked = fixture.wchd.watch_waiting_captures();
+    let waiting = {
+        let (wire, camera) = (wire.clone(), camera.clone());
+        let request = PhotoRequest {
+            wait: true,
+            ..bytes.clone()
+        };
+        tokio::spawn(async move { wire.photo(camera, request).await })
+    };
+    parked
+        .wait_for(|parked| *parked == 1)
+        .await
+        .expect("the daemon publishes how many captures are waiting");
+
+    let (_, refused) = refusal(
+        wire.photo(
+            camera.clone(),
+            PhotoRequest {
+                wait: false,
+                ..bytes.clone()
+            },
+        )
+        .await,
+    );
+    assert_eq!(
+        refused.kind(),
+        ErrorKind::Busy,
+        "`wait: false` waited instead of taking D12's refusal: {refused}"
+    );
+
+    // Released, and the difference is the assertion: the request that asked to wait is
+    // *served*, where the one that did not was refused at the same instant, at the same
+    // camera, over the same wire.
+    drop(release);
+    let answer: PhotoResponse = waiting
+        .await
+        .expect("the waiting request's task")
+        .expect("`wait: true` was refused where it should have queued");
+    assert!(answer.bytes_match_the_delivery());
+    holding
+        .await
+        .expect("the held request's task")
+        .expect("the photo that was holding the device");
+
+    // One descriptor throughout: the flag chose how to *enqueue* and changed nothing about
+    // what the camera did. The stream count is the held photo, the seated fillers and the
+    // waiter — every request that was not refused took exactly one.
+    assert_eq!(
+        fixture.backend.streams_started(),
+        u64::try_from(seats + 2).expect("a small bound")
+    );
+    assert_eq!(fixture.backend.opens(), 1);
+}
+
+/// The camera every photo in this file names, for a test that needed it twice.
+fn camera_id(fixture: &Fixture) -> CameraId {
+    camera(&fixture.cameras, 0).id.clone()
 }
 
 #[tokio::test]

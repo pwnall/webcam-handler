@@ -22,7 +22,7 @@ workspace = true
 # dependency nobody uses is the defect a constant nobody reads is (rubric A8), and
 # `cargo machete --with-metadata` is part of `just ci`. Design §2.8's inventory for this
 # crate also lists axum, tower-http and rust-embed (P5's web listener) and sd-notify,
-# listenfd and tracing-journald (P4e's systemd integration); each arrives with the code
+# listenfd and tracing-journald (P4e-ii's systemd integration); each arrives with the code
 # that reads it.
 #
 # `jsonrpsee-server` rather than `jsonrpsee`'s `server` feature, and that is not a style
@@ -54,15 +54,21 @@ jsonrpsee-server.workspace = true
 # hardening lands without moving the boundary `unsafe-scope.sh` asserts (note N39's
 # 2026-08-10 amendment).
 rustix = { workspace = true, features = ["fs", "net", "process"] }
+# One `#[derive(Serialize)]`: the payload a lag close carries back to the subscriber that
+# lagged (`crate::events`). jsonrpsee's blanket `impl<T: ToString> From<T> for
+# SubscriptionError` would flatten that count into prose a client has to parse, and the
+# whole reason to name it is that a client can act on it. No `serde_json` edge — the
+# `to_json_raw_value` that renders it is jsonrpsee's own re-export.
+serde = { workspace = true, features = ["derive"] }
 # `net` for `UnixListener`, `macros` for `select!` and `#[tokio::main]`, `sync` for the
 # `oneshot` a request hands to a camera actor, `time` for the idle-sweep cadence, and the
 # multi-threaded runtime because a connection task and the accept loop are concurrent by
-# construction. No `signal`: signal disposition is P4e's and this build takes the
+# construction. No `signal`: signal disposition is P4e-ii's and this build takes the
 # kernel's default (see `main.rs`).
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 # `env-filter` so an operator can raise the level with `RUST_LOG` on a process that is
-# meant to keep running; design §2.6's journald layer waits for the systemd work (P4e).
+# meant to keep running; design §2.6's journald layer waits for the systemd work (P4e-ii).
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A session's identity is a UUIDv7 the *caller* mints: the engine reads no clock, so the
 # composition root is where "now" enters (design D9). Promoted from a dev-dependency when
@@ -83,6 +89,16 @@ webcam-handler-v4l2.workspace = true
 # `jsonrpsee` node did not already carry.
 jsonrpsee = { workspace = true, features = ["client-core"] }
 serde_json.workspace = true
+# A real WebSocket upgrade on the daemon's own socket, for `tests/subscriptions.rs`: the
+# generated T5 *client* cannot carry a subscription — `SubscriptionClientT::subscribe`
+# answers a type whose only constructor is private to `jsonrpsee-core`, so no transport of
+# ours can implement it (note **N57**) — and `support/mod.rs`'s one-shot HTTP `POST` cannot
+# carry a duplex stream. So the suite speaks the frame layer directly, with
+# jsonrpsee-server's own implementation of it. `tokio-util`'s `compat` is what bridges a
+# `tokio::net::UnixStream` to the `futures::io` traits soketto takes; both crates are
+# already in `Cargo.lock` and neither touches a T6 wall, which counts normal edges only.
+soketto.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
 # The test client is a hand-written HTTP/1.1 request on a `UnixStream` — see
 # `tests/uds.rs` for why that is the honest client here and not a shortcut. The temp-dir
 # fixtures it needs are `engine::store::TempStore` and `engine::paths::TempRuntimeDir`,

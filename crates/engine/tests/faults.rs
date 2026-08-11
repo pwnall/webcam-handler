@@ -33,14 +33,19 @@ fn every_fault_in_the_menu_has_a_named_engine_behaviour() {
             Fault::FrameTimeout => a_frame_that_never_arrives_times_out(),
             Fault::DeviceGoneMidStream => a_device_that_vanishes_is_device_gone(),
             Fault::Busy => a_busy_camera_refuses_without_claiming_it_cannot(),
-            // Hotplug is the backend's channel and the engine has no P2 consumer for it:
-            // `CameraBackend::watch` lands at P4 with the daemon's uevent socket. Named
-            // rather than silently omitted, and the exhaustive match is what will force
-            // this arm to grow a body when the consumer exists.
-            Fault::HotplugAdd | Fault::HotplugRemove => {
+            // Hotplug is the backend's channel and the engine has no consumer for it at
+            // all: `CameraBackend::watch` is forwarded by `engine::actor::Cameras` and read
+            // by `daemon::events`, one crate out, where P4e-i's `subscribe_events` drives
+            // all four of these. Named rather than silently omitted, and the exhaustive
+            // match is what would force this arm to grow a body if the engine ever became a
+            // consumer.
+            Fault::HotplugAdd
+            | Fault::HotplugRemove
+            | Fault::WatchUnavailable
+            | Fault::WatchFails => {
                 println!(
-                    "SKIP: {fault} has no engine-side consumer until P4 wires the hotplug \
-                     subscription"
+                    "SKIP: {fault} is the daemon's to observe (daemon::events); the engine \
+                     forwards the watch and consumes none of it"
                 );
             }
         }
@@ -196,6 +201,7 @@ fn a_device_that_vanishes_is_device_gone() {
     let error = engine::photo::take(
         camera.as_mut(),
         &photo_request(),
+        &mut engine::photo::WhereverTheCallerSaid,
         &engine::settle::SteppedClock::new(0),
         Stamp::epoch(),
     )
@@ -266,5 +272,7 @@ fn photo_request() -> PhotoRequest {
         sink: Sink::ReturnBytes {
             format: PhotoFormat::Jpeg,
         },
+        // These faults are the device's, and D12's flag is about a queue in front of it.
+        wait: false,
     }
 }

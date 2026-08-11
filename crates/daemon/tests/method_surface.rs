@@ -24,6 +24,18 @@
 //!   by [`Recording`] as each call passes through. The name comes from `#[method(name = …)]`'s
 //!   expansion, so this file writes down no spelling of its own; it writes down what it saw.
 //!
+//! ## The registered set is **partitioned**, never filtered by hand (P4e-i)
+//!
+//! Since the subscriptions landed, `method_names()` carries four names no `ClientT` can
+//! send: jsonrpsee registers an `unsubscribe` callback of its own beside every
+//! `#[subscription]` (`rpc_module.rs::verify_and_register_unsubscribe`), and the generated
+//! client reaches the subscribe half through `SubscriptionClientT` — which `Wire` cannot
+//! implement, because `jsonrpsee_core::client::Subscription`'s only constructor is private
+//! (note **N57**). So the comparison below subtracts `api::SUBSCRIPTIONS`' names from the
+//! registered set rather than naming them here, and `tests/subscriptions.rs` is the walk
+//! that drives *that* population. Two walks over two populations, each derived from the one
+//! declaration in `crates/api`, and a third subscription joins both by existing.
+//!
 //! A hand list on either side would agree with itself forever (rubric rule 6). What is
 //! unavoidably hand-written is the *sequence of calls* in [`every_method`] — a Rust test
 //! cannot walk a trait and invent arguments for it — and that is precisely what the
@@ -64,8 +76,8 @@
 //! 4. **It cannot catch a rename.** The client and the server are two expansions of *one*
 //!    declaration, so a changed `#[method(name = …)]` moves both sides together and this
 //!    comparison stays green. That is `crates/api`'s pinned-spelling test's job
-//!    (`the_trait_registers_the_nineteen_wch_methods_and_nothing_else`), and it is why that
-//!    pin is a list on purpose.
+//!    (`the_surface_registers_the_nineteen_methods_and_the_two_subscriptions_and_nothing_else`),
+//!    and it is why that pin is a list on purpose.
 //! 5. **It cannot see a method on the trait that nothing registered**, because there is no
 //!    second registration path: `into_rpc()` is the one, D10 exists to keep it that way, and
 //!    `uds.rs` never registers a `wch_`-prefixed name beside it. Removing a method from the
@@ -436,6 +448,10 @@ fn a_photo() -> PhotoRequest {
         sink: Sink::ReturnBytes {
             format: PhotoFormat::Jpeg,
         },
+        // The census drives every method once against an idle camera, so there is never a
+        // queue to wait for; D12's flag is exercised where it can go red, in
+        // `mutating_verbs.rs`.
+        wait: false,
     }
 }
 
@@ -598,6 +614,21 @@ async fn every_method_the_daemon_registers_is_exercised_over_the_fake() {
     let registered: BTreeSet<String> = fixture.methods.method_names().map(str::to_owned).collect();
     assert!(!registered.is_empty(), "the daemon registered nothing");
 
+    // The half of the registration this suite's client cannot reach, derived from
+    // `api::SUBSCRIPTIONS` rather than written out — see this file's header. Asserted to be
+    // a *subset* first, because subtracting a name nothing registered would silently make
+    // the comparison below weaker rather than fail.
+    let subscribed: BTreeSet<String> = api::SUBSCRIPTIONS
+        .iter()
+        .flat_map(api::wire::Subscription::names)
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        subscribed.is_subset(&registered),
+        "an unsubscribe spelling nothing registered: {subscribed:?} against {registered:?}"
+    );
+    let called: BTreeSet<String> = registered.difference(&subscribed).cloned().collect();
+
     for (named_for, transport) in fixture.wires() {
         let client = Recording::over(transport);
         let answers = every_method(&client, &ask, &sweep, named_for).await;
@@ -622,16 +653,22 @@ async fn every_method_the_daemon_registers_is_exercised_over_the_fake() {
         // because it reads as a second guard. The red-ability that is actually there was
         // demonstrated by deleting a call from `every_method` and watching this line fail.
         assert_eq!(
-            exercised, registered,
+            exercised, called,
             "{named_for}: the daemon registers a method this suite does not drive, \
              or drives one it does not register"
         );
 
         // Not vacuous, and this is the assertion that says so rather than a loop that could
         // not have failed: two empty sets compare equal, so the count is only a count if the
-        // number is the one `crates/api` pins the trait at. Note N29 is why nineteen is the
-        // number and why the two subscriptions P4e adds are not in it.
-        assert_eq!(registered.len(), 19, "{named_for}: {registered:?}");
+        // number is the one `crates/api` pins the trait at. Nineteen is the *call* surface;
+        // the four names beside it are two subscriptions' worth, which is note N29's
+        // accounting ("P4e grows the registered population by four rather than two").
+        assert_eq!(called.len(), 19, "{named_for}: {called:?}");
+        assert_eq!(
+            registered.len(),
+            19 + 2 * api::SUBSCRIPTIONS.len(),
+            "{named_for}: {registered:?}"
+        );
     }
 
     // The store half of "it really ran": each transport opened its own session, and they

@@ -50,7 +50,7 @@ use schema::Result;
 /// Dropping it releases the lock — the release is the *close* of the descriptor, so a
 /// `wchd` that is killed releases it too (`engine::store::StoreLock`'s own paragraph is the
 /// home of that argument). That is why P4b can exit without a signal handler and still
-/// leave the state directory usable; P4e's "store-lock release" is about doing it in an
+/// leave the state directory usable; P4e-ii's "store-lock release" is about doing it in an
 /// order, not about doing it at all.
 #[derive(Debug)]
 #[must_use = "dropping this releases the state directory, which is the daemon's to hold"]

@@ -114,9 +114,9 @@
 
 use std::sync::Arc;
 
-use api::{WchRpcServer, WireError};
+use api::{WchEventsServer, WchRpcServer, WireError};
 use camino::{Utf8Path, Utf8PathBuf};
-use engine::actor::{CameraActivity, Cameras, OpenCamera};
+use engine::actor::{CameraActivity, Cameras, Enqueue, OpenCamera};
 use engine::settle::{Clock, Millis, MonotonicClock};
 use engine::store::{SessionStore, StoreLock};
 use jsonrpsee::core::async_trait;
@@ -133,6 +133,8 @@ use schema::session::{Selection, Session, SessionList, SessionRef, SessionStatus
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::{Error, limits};
 use tokio::sync::oneshot;
+
+use crate::events::{Events, ProgressBroadcast};
 
 /// The wire names this build routes.
 ///
@@ -176,6 +178,52 @@ pub const ROUTED: &[&str] = &[
     "wch_snapshot",
     "wch_terminate_holder",
 ];
+
+/// The subscription spellings this build routes, both names of each.
+///
+/// [`ROUTED`]'s sibling and a pin for its reason. It is derived from `api::SUBSCRIPTIONS`
+/// rather than written out, and that is not the same kind of list: what [`ROUTED`] pins is
+/// the *spelling* of a call, and what this pins is that both halves of a subscription — the
+/// subscribe **and** the `unsubscribe` jsonrpsee derives from it — reach the registration
+/// this daemon serves. A build whose merge dropped the unsubscribe half would leave clients
+/// unable to close a stream, and nothing else would notice.
+///
+/// Two populations rather than one widened [`ROUTED`], because they have two producers: a
+/// method's name comes from `#[method(name = …)]` and a subscription's second name comes
+/// from `build_unsubscribe_method` inside jsonrpsee.
+#[must_use]
+pub fn routed_subscriptions() -> Vec<&'static str> {
+    api::SUBSCRIPTIONS
+        .iter()
+        .flat_map(api::wire::Subscription::names)
+        .collect()
+}
+
+/// The whole T5 surface as the one registration the daemon serves.
+///
+/// D10's "one wire surface" survives the two generated traits by being merged **here**, at
+/// the single composition point both the shipped binary and every integration fixture go
+/// through — inventing a second registration path is the thing D10 exists to prevent, and
+/// two `into_rpc()` calls that never met would be exactly that.
+///
+/// # Errors
+///
+/// [`Error::DeviceIo`] when the two halves collide on a name. `Methods::merge` verifies
+/// every incoming spelling against the ones already registered, which is the *only* place
+/// a cross-trait collision can be caught — the proc macro's own `check_name` looks inside
+/// one trait. It is this process failing to compose itself rather than a device declining
+/// anything, which is the variant `Wchd::offload` already uses for that.
+pub fn mount(wchd: Wchd) -> schema::Result<jsonrpsee_server::Methods> {
+    let mut methods: jsonrpsee_server::Methods = WchRpcServer::into_rpc(wchd.clone()).into();
+    methods
+        .merge(WchEventsServer::into_rpc(wchd))
+        .map_err(|err| Error::DeviceIo {
+            operation: "mount the T5 wire surface".to_owned(),
+            errno: None,
+            message: err.to_string(),
+        })?;
+    Ok(methods)
+}
 
 /// The timer the idle-sweep driver runs on.
 ///
@@ -251,6 +299,94 @@ struct Inner {
     /// time that goes in a photo's EXIF. Conflating those two is how an NTP step becomes a
     /// settle failure, which is why `engine::photo::take` takes them separately.
     clock: MonotonicClock,
+    /// The two things this daemon says without being asked (D10, P4e-i).
+    ///
+    /// An `Arc` of its own inside the one `Arc<Inner>`, because a hotplug watch **thread**
+    /// holds it and that thread outlives the request that started it. `crate::events` is
+    /// where every bound on it lives.
+    events: Arc<Events>,
+    /// The requests that chose to *wait* for a place in a camera's command queue, bounded.
+    ///
+    /// D12's `wait` flag parks a thread by construction, and this is the answer to "how
+    /// many" — see [`Waiters`] and [`limits::CAMERA_ENQUEUE_WAITERS`].
+    waiters: Waiters,
+}
+
+/// The permits a request that chose to wait for a place in a camera's queue has to hold.
+///
+/// **The bound [`limits::CAMERA_ENQUEUE_WAIT_MS`] is worth nothing without.** That constant
+/// bounds one waiter; a client that sends a thousand `wch_photo {"wait": true}` on one
+/// WebSocket connection sends a thousand waiters, because jsonrpsee's WebSocket transport
+/// spawns a task per inbound message and bounds nothing per connection — measured, and the
+/// correction note **N56** carries. Each of those parks a **blocking-pool** thread, and the
+/// pool is the same one `Wchd::offload` uses for every enumeration, every session read and
+/// every photo destination, so unbounded waiters are an unbounded queue in front of every
+/// verb the daemon serves.
+///
+/// Two numbers, one place, because they are two views of one fact and separating them is how
+/// they come to disagree: the semaphore is what *enforces* the bound, and the `watch` is the
+/// same count in the one shape a test can **await** — `crate::events::Fanout::live` makes the
+/// identical pair for the identical reason. A caller that polled a counter for "the waiters
+/// are parked" would be a caller with a sleep in it under another name (AGENTS).
+#[derive(Debug)]
+struct Waiters {
+    /// One permit per parked thread. `try_acquire` and never `acquire`: waiting for
+    /// permission to wait is a second unbounded queue.
+    permits: Arc<tokio::sync::Semaphore>,
+    /// How many permits are held right now, as something to be told about.
+    live: tokio::sync::watch::Sender<usize>,
+}
+
+impl Waiters {
+    fn new() -> Waiters {
+        Waiters {
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                usize::try_from(limits::CAMERA_ENQUEUE_WAITERS).unwrap_or(usize::MAX),
+            )),
+            live: tokio::sync::watch::Sender::new(0),
+        }
+    }
+
+    /// A permit, or `None` when [`limits::CAMERA_ENQUEUE_WAITERS`] are already parked.
+    fn take(&self) -> Option<Waiting> {
+        let permit = Arc::clone(&self.permits).try_acquire_owned().ok()?;
+        self.live.send_modify(|live| *live += 1);
+        Some(Waiting {
+            _permit: permit,
+            live: self.live.clone(),
+        })
+    }
+}
+
+/// One parked waiter, as a value whose `Drop` is the whole of the release.
+///
+/// A guard rather than a line at the end of the waiting arm, for `crate::events::Counted`'s
+/// reason: the request that owns it can end by answering, by refusing, or by its client
+/// hanging up, and a decrement written on one of those paths is a decrement the other two
+/// skip. It is moved **into the blocking closure** rather than held beside the `await`,
+/// because the resource being counted is the pool thread — a future dropped mid-`offload`
+/// does not unpark the thread it started, so releasing the permit there would let the bound
+/// be exceeded by exactly the requests that were abandoned.
+///
+/// **Which of the two moves first, stated rather than relied on.** Taking is permit-then-
+/// count, so a waiter woken by the count reaching the bound is looking at that many permits
+/// really held — which is what makes the suite's rendezvous exact. Releasing is the other
+/// way round (`Drop::drop` runs before a struct's fields), so for an instant the count is
+/// lower than the permits outstanding. Nothing reads it in that direction; a caller that
+/// wanted "the count fell, so a permit is free" would need the field ordering
+/// `crate::events::Attached` uses, and would have to say so.
+#[derive(Debug)]
+struct Waiting {
+    /// Held for its `Drop` and never read: the permit *is* the bound, and reading it would
+    /// be the thing that made holding it incidental.
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    live: tokio::sync::watch::Sender<usize>,
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.live.send_modify(|live| *live = live.saturating_sub(1));
+    }
 }
 
 impl Wchd {
@@ -282,7 +418,76 @@ impl Wchd {
             store,
             sessions: tokio::sync::Mutex::new(lock),
             clock: MonotonicClock::new(),
+            events: Arc::new(Events::new()),
+            waiters: Waiters::new(),
         }))
+    }
+
+    /// What the daemon's subscriptions are doing right now (D10, P4e-i).
+    ///
+    /// The status surface for the event half, in [`Wchd::activity`]'s tradition and for its
+    /// reason: the counts an operator wants and the ones an integration test asserts are the
+    /// same counts, so there is one accessor rather than a test hook beside a metric.
+    ///
+    /// Note **N17** pre-authorised exactly this shape — "if P4e's subscription needs to
+    /// distinguish 'this client is slow' from 'this client is gone' … that is a *query* on
+    /// the sink, not a failure of `emit`".
+    #[must_use]
+    pub fn subscriptions(&self) -> crate::events::SubscriptionActivity {
+        self.0.events.activity()
+    }
+
+    /// The live subscriber count, as something to **await** rather than poll.
+    ///
+    /// "The subscription was reaped" is an event, and the only honest way to wait for an
+    /// event is to be told: a test that polled [`Wchd::subscriptions`] for it would be a
+    /// test with a sleep in it under another name (AGENTS).
+    #[must_use]
+    pub fn watch_subscribers(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.0.events.watch_live()
+    }
+
+    /// Every event this daemon's subscriptions failed to deliver, as something to **await**.
+    ///
+    /// [`Wchd::watch_subscribers`]' sibling and for its reason: a loss is an event, and the
+    /// itemised counters [`Wchd::subscriptions`] reports can be read at any moment but only
+    /// a change can be waited for. It is what lets "the bound refused an event" be a
+    /// rendezvous rather than a guess about how far a subscription's task has got — the
+    /// difference between an exact assertion and a measurement of the scheduler.
+    #[must_use]
+    pub fn watch_losses(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.events.watch_lost()
+    }
+
+    /// How many requests are parked waiting for a place in a camera's command queue — D12's
+    /// `wait` flag, as the number [`limits::CAMERA_ENQUEUE_WAITERS`] bounds.
+    ///
+    /// An operator's number first: it is how oversubscribed the cameras are, and it is the
+    /// one thing a daemon that *feels* slow can be asked that the camera counters do not
+    /// answer. It is a `watch` rather than a counter for [`Wchd::watch_subscribers`]'
+    /// reason — "the waiters are parked" is an event, and a test that polled for it would be
+    /// a test with a sleep in it — and that is what lets the suite release a held device
+    /// *after* the waiters have provably arrived rather than guessing that they have.
+    ///
+    /// Rubric A8: without it, [`limits::CAMERA_ENQUEUE_WAITERS`] would be a number nothing
+    /// reads and nothing can go red about.
+    #[must_use]
+    pub fn watch_waiting_captures(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.0.waiters.live.subscribe()
+    }
+
+    /// Whether a hotplug watch thread is running, as something to **await**.
+    ///
+    /// `crate::events::Hotplug`'s header states that the watch exists exactly while somebody
+    /// is subscribed — started by the first subscriber, put down after the last one leaves —
+    /// and this is what makes that a property something outside can check rather than a
+    /// paragraph. It is also the only thing that can observe
+    /// [`limits::HOTPLUG_WATCH_DEADLINE_MS`] doing its job: the thread notices its last
+    /// reader has gone on the turn that deadline gives it, so a build that changed the
+    /// number changes how long this takes to go false and nothing else does.
+    #[must_use]
+    pub fn watch_hotplug(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.0.events.watch_hotplug_running()
     }
 
     /// What every camera this daemon has an actor for is doing — docs/7 P4b's status
@@ -339,7 +544,7 @@ impl Wchd {
     /// is made and asserted.
     ///
     /// Nothing stops this task: it ends when the runtime it was spawned on is dropped,
-    /// which is when the process is stopping. Ending it in an order is P4e's shutdown
+    /// which is when the process is stopping. Ending it in an order is P4e-ii's shutdown
     /// discipline; the returned handle is what a test uses to abort one it started.
     ///
     /// Must be called from inside a tokio runtime.
@@ -456,11 +661,49 @@ impl Wchd {
         F: FnOnce(OpenCamera<'_>) -> schema::Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.on_resolved_camera_queueing(info, Enqueue::Refuse, work)
+            .await
+    }
+
+    /// [`Wchd::on_resolved_camera`], choosing what a full command queue means — D12's
+    /// `wait` flag.
+    ///
+    /// The one caller that passes anything but [`Enqueue::Refuse`] is `wch_photo`, because
+    /// `PhotoRequest::wait` is the only place on this wire where a client says which it
+    /// wants. Every other verb takes the refusal, which is what all of them have always
+    /// taken.
+    ///
+    /// **The waiting arm goes to the blocking pool, and that is not an implementation
+    /// detail.** `CameraActor::submit_with(_, WaitUntil(_), _)` parks the calling thread by
+    /// construction, and this daemon's one rule about blocking is that nothing which can
+    /// park a thread runs on a runtime worker (see this module's header). So a request that
+    /// *chose* to wait pays a pool thread for as long as it waits; a request that did not
+    /// pays nothing at all, because `try_send` does not block and never leaves this task.
+    ///
+    /// **And the number of those threads is bounded here** — [`Waiters`], sized by
+    /// [`limits::CAMERA_ENQUEUE_WAITERS`]. It is not bounded by the transport: one WebSocket
+    /// connection can hold arbitrarily many calls in flight, which is the correction note
+    /// **N56** carries and the reason this permit pool exists rather than an arithmetic
+    /// argument in a doc comment. A request that finds the pool exhausted takes the enqueue a
+    /// request that never asked to wait takes — served if there is room right now,
+    /// [`Error::Busy`] if there is not — so the flag degrades to its own `false` under load
+    /// and the refusal vocabulary does not grow by a variant meaning "too many waiters"
+    /// (D13 is closed at eighteen).
+    async fn on_resolved_camera_queueing<T, F>(
+        &self,
+        info: CameraInfo,
+        how: Enqueue,
+        work: F,
+    ) -> schema::Result<(CameraInfo, T)>
+    where
+        F: FnOnce(OpenCamera<'_>) -> schema::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
         let at = self.0.clock.now_ms();
         let actor = self.0.cameras.actor(&info, at)?;
 
         let (answered, answer) = oneshot::channel::<schema::Result<T>>();
-        actor.submit(at, move |device| {
+        let submitted = move |device: schema::Result<OpenCamera<'_>>| {
             let outcome = device.and_then(work);
             // Handed back rather than sent from inside the work, so the actor has already
             // recorded that it is between commands by the time this request's answer
@@ -471,7 +714,32 @@ impl Wchd {
                 // work is done either way.
                 let _ = answered.send(outcome);
             })
-        })?;
+        };
+        // The permit is asked for only on the arm that would park a thread, so an ordinary
+        // request never touches the pool and never moves the count a waiting one is measured
+        // by.
+        let parking = match how {
+            Enqueue::Refuse => None,
+            Enqueue::WaitUntil(_) => self.0.waiters.take(),
+        };
+        match parking {
+            // No lock, no pool thread, no `await`: the fast path is exactly what every verb
+            // did before the flag existed. It is also where a `wait: true` request past the
+            // permit pool lands, which is why the two are one arm rather than two — a caller
+            // past the bound is refused with the words the flag already promised.
+            None => actor.submit(at, submitted)?,
+            Some(permit) => {
+                let waiting = Arc::clone(&actor);
+                self.offload(move |_| {
+                    let outcome = waiting.submit_with(at, how, submitted);
+                    // Released on the thread it bounds rather than on the task that started
+                    // it — see [`Waiting`].
+                    drop(permit);
+                    outcome
+                })
+                .await?;
+            }
+        }
 
         match answer.await {
             Ok(answer) => answer.map(|value| (info, value)),
@@ -481,7 +749,8 @@ impl Wchd {
         }
     }
 
-    /// [`Wchd::on_camera`], for work that needs the daemon's state as well as the device.
+    /// [`Wchd::on_resolved_camera`], for work that needs the daemon's state as well as the
+    /// device.
     ///
     /// Six of the routed verbs are a session read-modify-write *around* a device operation
     /// — `calibrate_start`'s probe, `calibrate_plan`'s draft, the sweep, `apply`,
@@ -494,29 +763,15 @@ impl Wchd {
     /// commits a sample per value from inside the same closure that took the photo, so
     /// splitting the two would put half a read-modify-write on a pool thread and the other
     /// half on an actor. Both halves block, and the actor's thread is a blocking thread.
-    async fn on_camera_with_state<T, F>(
-        &self,
-        requested: CameraId,
-        work: F,
-    ) -> schema::Result<(CameraInfo, T)>
-    where
-        F: FnOnce(&Inner, OpenCamera<'_>) -> schema::Result<T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let inner = Arc::clone(&self.0);
-        self.on_camera(requested, move |device| work(&inner, device))
-            .await
-    }
-
-    /// [`Wchd::on_camera_with_state`], for a caller that has already resolved.
     ///
-    /// What the five calibrate verbs that open a camera use, for
-    /// [`Wchd::on_resolved_camera`]'s reason: each needs `info.fingerprint` to build the
-    /// closure that checks the session, so each already holds the answer, and handing the
-    /// [`CameraId`] back to be enumerated a second time would put the check and the writes
-    /// on two different readings of the machine. It is also the enumeration that would run
-    /// *inside* `editing_sessions()`, charging a `/sys` walk per node to every other client
-    /// waiting on the session mutex.
+    /// **For a caller that has already resolved**, which every caller of it is: the five
+    /// calibrate verbs need `info.fingerprint` to build the closure that checks the session,
+    /// and `wch_photo` needs the resolution to happen *before* it opens the destination a
+    /// client named, so that a request naming a camera this host does not have leaves no
+    /// file behind. Handing the [`CameraId`] back to be enumerated a second time would put
+    /// the check and the writes on two different readings of the machine (E2), and would run
+    /// that enumeration *inside* `editing_sessions()`, charging a `/sys` walk per node to
+    /// every other client waiting on the session mutex.
     async fn on_resolved_camera_with_state<T, F>(
         &self,
         info: CameraInfo,
@@ -526,8 +781,27 @@ impl Wchd {
         F: FnOnce(&Inner, OpenCamera<'_>) -> schema::Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.on_resolved_camera_with_state_queueing(info, Enqueue::Refuse, work)
+            .await
+    }
+
+    /// [`Wchd::on_resolved_camera_with_state`], choosing what a full command queue means.
+    ///
+    /// [`Wchd::on_resolved_camera_queueing`]'s reason at the entry point `wch_photo` uses:
+    /// the flag has to reach the enqueue from the request, and the request's verb is one
+    /// that needs the daemon's state as well as the device.
+    async fn on_resolved_camera_with_state_queueing<T, F>(
+        &self,
+        info: CameraInfo,
+        how: Enqueue,
+        work: F,
+    ) -> schema::Result<(CameraInfo, T)>
+    where
+        F: FnOnce(&Inner, OpenCamera<'_>) -> schema::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
         let inner = Arc::clone(&self.0);
-        self.on_resolved_camera(info, move |device| work(&inner, device))
+        self.on_resolved_camera_queueing(info, how, move |device| work(&inner, device))
             .await
     }
 
@@ -615,12 +889,12 @@ const fn recheck_walks() -> u64 {
     limits::TERMINATE_RECHECK_MS / limits::TERMINATE_RECHECK_POLL_MS + 1
 }
 
-/// Everything about a photo's sink that can be answered before a camera is opened.
+/// Everything about a photo's sink that can be answered without touching the filesystem.
 ///
-/// Three rules, every one of which only a *socket* can break, and all three refused here
-/// rather than downstream so that a request this build was never going to honour costs
-/// nobody a descriptor. That is assertable — `FakeBackend::opens()` is still zero after any
-/// of the refusals — which is what keeps this an early check rather than a duplicated one.
+/// Two rules, both of which only a *socket* can break, and both refused here rather than
+/// downstream so that a request this build was never going to honour costs nobody a
+/// descriptor. That is assertable — `FakeBackend::opens()` is still zero after either of the
+/// refusals — which is what keeps this an early check rather than a duplicated one.
 ///
 /// - [`Sink::is_addressable`] is note **N34**'s orphan predicate and this is the consumer it
 ///   named. `cli_core::Command::photo_request` resolves a relative `-o` against the
@@ -633,30 +907,19 @@ const fn recheck_walks() -> u64 {
 ///   again inside `engine::photo` where the answer is used. That is one rule asked twice
 ///   rather than two rules: the engine's call is the backstop every caller gets, and this
 ///   one is why `/tmp/x.webp` never reaches a camera.
-/// - **The destination is a regular file, or does not exist yet.** The third rule, and the
-///   only one here that reads the filesystem — note **N51**. `engine::photo` writes with
-///   `std::fs::write`, whose `open` has no `O_NONBLOCK`: on a fifo it blocks until a reader
-///   appears, and that open runs *inside the camera's actor closure*, which nothing bounds.
-///   So `mkfifo /tmp/x.jpg` followed by a `wch_photo` naming it would park that camera's one
-///   thread forever — the request never answers, every later request for that camera is
-///   `Busy` because the actor's queue fills, and D12's idle close never fires because
-///   `CameraActor::sweep` sees `busy` first, so the operator's webcam is unusable by any
-///   application until `wchd` is restarted. The second shape is quieter and worse:
-///   `/dev/stdout` is a regular path a client may name, and under systemd it is the journal
-///   — a camera frame in the logs, which AGENTS forbids absolutely (rubric A12). Neither is
-///   reachable from `wch`, which resolves `-o` on a command line somebody typed.
 ///
-/// All three refusals are [`Error::IllegalTransition`], which note **N46** records for the
-/// first two: not
-/// `FormatUnsupported`, which is the camera saying what it cannot offer (E3); not
-/// `StorageIo`, which would claim a filesystem was consulted; not `DeviceIo`, which would
-/// blame the kernel for a request nobody could honour. The third takes the same variant for
-/// the same reason — it is the request naming a destination this build will not write, not
-/// the disk declining to be written — even though it is the one that does stat a path.
+/// The third rule — *the destination is a regular file* — is [`open_destination`]'s, because
+/// it is a question about an **inode** rather than about a request, and note **N51** is the
+/// entry that says why the difference is not pedantry. Both refusals are
+/// [`Error::IllegalTransition`], which note **N46** records: not `FormatUnsupported`, which
+/// is the camera saying what it cannot offer (E3); not `StorageIo`, which would claim a
+/// filesystem was consulted; not `DeviceIo`, which would blame the kernel for a request
+/// nobody could honour.
 ///
-/// **Blocking**, therefore, and the reason the caller runs it on the blocking pool: a `stat`
-/// is fast until the path is on a hung mount, and this daemon runs nothing that can block on
-/// a runtime worker.
+/// **This one no longer touches the filesystem at all**, which is the P4e-i change: it used
+/// to `stat` the path and refuse a non-regular file, and a `stat` followed later by an
+/// `open` is a window a client can step through. Nothing here blocks now — the caller still
+/// runs it on the blocking pool, beside the open that does.
 fn addressable(sink: &Sink) -> schema::Result<()> {
     if !sink.is_addressable() {
         // The predicate is the authority on *whether*; this only says *what*. The one way
@@ -678,53 +941,195 @@ fn addressable(sink: &Sink) -> schema::Result<()> {
         });
     }
     sink.writable_format()?;
-    if let Sink::ServerPath { path } = sink {
-        // `metadata` and not `symlink_metadata`, deliberately: a symlink to a regular file
-        // is an ordinary destination, and it is the *target* that decides whether the write
-        // blocks or lands in a log. `/dev/stdout` is refused by this reading and not by the
-        // other one. A path that does not exist has no metadata and is fine — `std::fs::write`
-        // creates a regular file, which is the case this rule is protecting.
-        if let Ok(existing) = std::fs::metadata(path) {
-            let kind = existing.file_type();
-            if !kind.is_file() {
-                return Err(Error::IllegalTransition {
-                    from: format!("not_a_regular_file({path})"),
-                    op: format!(
-                        "write a photo to {path}; that path names a {} rather than a file, \
-                         and this daemon writes photos only to regular files — opening a \
-                         fifo would park the camera's thread until somebody read it, and a \
-                         character device or /dev/stdout would put a frame somewhere frames \
-                         may not go",
-                        describe_file_type(&kind)
-                    ),
-                });
-            }
-        }
-    }
     Ok(())
+}
+
+/// Open a photo's destination the way a *daemon* must: without ever waiting in `open(2)`,
+/// and before a camera is touched.
+///
+/// Note **N51**'s discharge, and the whole of what it adds over the `stat` it replaces:
+/// **every question is asked of the descriptor**, so there is no window between the check
+/// and the write for a client to step through. The `stat`-then-`open` shape P4c landed
+/// refused a fifo it *saw*, and a client that replaced the path between the two calls still
+/// won the race and still parked the camera's one thread in `open(2)` forever. Here the
+/// verdict and the destination are the same object: whatever the name points at afterwards,
+/// the bytes go to the inode this function approved.
+///
+/// Two flags do the work, and they do different halves:
+///
+/// - `O_NONBLOCK` is what makes the open itself a *refusal* rather than a wait. A fifo with
+///   no reader answers `ENXIO` instead of blocking until somebody reads it, which is the
+///   wedge N51 measured — one `mkfifo` and one `wch_photo` used to make the operator's
+///   webcam unusable by any application until `wchd` was restarted. `rustix` carries the
+///   per-architecture value, so the flag costs neither a guess nor an `unsafe` block (this
+///   crate is `#![forbid(unsafe_code)]`, and N51's 2026-08-10 amendment is the ruling).
+/// - The `fstat` is what refuses the rest: a directory, a socket, a character device, and
+///   `/dev/stdout` — which under systemd is the journal, and a camera frame in the journal
+///   is a bound this project does not trade (rubric A12). A fifo *with* a reader opens
+///   perfectly well under `O_NONBLOCK` and is still not a file this daemon writes a frame
+///   to, so the two checks are not two spellings of one.
+///
+/// **`O_TRUNC` is deliberately absent.** Truncating before the capture has happened would
+/// empty an operator's existing photo on the way to reporting that the camera failed; the
+/// length is set on the descriptor after the bytes exist, by
+/// [`engine::photo::write_to_open_file`].
+///
+/// **Blocking**, and the reason the caller runs it on the blocking pool: `open(2)` on a
+/// regular file is fast until the path is on a hung mount, and this daemon runs nothing that
+/// can block on a runtime worker.
+///
+/// **The residual, stated at its real size** (note **N59** corrected this paragraph). A
+/// regular file whose *write* blocks on a dead mount still costs **the camera**, not one
+/// command: `engine::actor::Thread::run` calls the work inline, so a `write(2)` that never
+/// returns means the actor never records that it finished, `Live::busy` stays raised, D12's
+/// idle close can never fire, and no later command on that camera ever runs. What the
+/// bounded enqueue buys is only how quickly *other* callers are told no — a `wait: true`
+/// caller gives up at [`limits::CAMERA_ENQUEUE_WAIT_MS`] with [`Error::Busy`] instead of
+/// occupying a pool thread indefinitely, and a `wait: false` caller was already refused.
+/// Ending such a command outright would need a cancellable device thread, which nothing in
+/// D12 provides.
+///
+/// # Errors
+///
+/// [`Error::IllegalTransition`] when the path names something this build will not write a
+/// photo to, for [`addressable`]'s reason and in its words. [`Error::StorageIo`] for every
+/// other reason an open fails — a missing parent directory, a permission, a full disk —
+/// because those are the filesystem declining rather than the request being unhonourable.
+fn open_destination(path: &Utf8Path) -> schema::Result<std::fs::File> {
+    use rustix::fs::{FileType, Mode, OFlags};
+
+    let refuse = |what: &str| Error::IllegalTransition {
+        from: format!("not_a_regular_file({path})"),
+        op: format!(
+            "write a photo to {path}; that path names a {what} rather than a file, and this \
+             daemon writes photos only to regular files — opening a fifo would park the \
+             camera's thread until somebody read it, and a character device or /dev/stdout \
+             would put a frame somewhere frames may not go"
+        ),
+    };
+
+    let opened = rustix::fs::open(
+        path.as_std_path(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        // 0666 before the umask, which is what `File::create` asks for and therefore what a
+        // photo written by `wch` already gets. A daemon that tightened it here would make
+        // the same photo readable or not depending on which surface took it.
+        Mode::from_bits_truncate(0o666),
+    );
+    let opened = match opened {
+        Ok(opened) => opened,
+        // The two errnos that mean "this path is not a file", rather than "the filesystem
+        // said no". `EISDIR` is a directory opened for writing; `ENXIO` is the fifo with no
+        // reader — the wedge itself, arriving as a refusal because of `O_NONBLOCK`.
+        Err(rustix::io::Errno::ISDIR) => return Err(refuse("directory")),
+        Err(rustix::io::Errno::NXIO) => return Err(refuse(&describe_unopenable(path))),
+        Err(errno) => {
+            return Err(Error::StorageIo {
+                path: path.to_owned(),
+                errno: Some(errno.raw_os_error()),
+                message: format!("{}: {errno}", std::io::Error::from(errno)),
+            });
+        }
+    };
+
+    let found = rustix::fs::fstat(&opened).map_err(|errno| Error::StorageIo {
+        path: path.to_owned(),
+        errno: Some(errno.raw_os_error()),
+        message: format!("{}: {errno}", std::io::Error::from(errno)),
+    })?;
+    let kind = FileType::from_raw_mode(found.st_mode);
+    if kind != FileType::RegularFile {
+        return Err(refuse(describe_file_type(kind)));
+    }
+    Ok(std::fs::File::from(opened))
+}
+
+/// What a path is, for the one refusal that could not ask its descriptor.
+///
+/// `ENXIO` means the open declined to wait, and the *verdict* is already made — this only
+/// supplies the sentence. So the `stat` here is not the `stat` note N51 is about: nothing
+/// this function returns can change what the daemon does, only what it says, and a client
+/// that swaps the path between the failed open and this call gets a less accurate noun
+/// rather than a parked camera.
+///
+/// The fallback names the condition rather than guessing at a type, because `ENXIO` also
+/// answers for a device node with no driver behind it.
+fn describe_unopenable(path: &Utf8Path) -> String {
+    use rustix::fs::FileType;
+    match rustix::fs::stat(path.as_std_path()) {
+        Ok(found) => describe_file_type(FileType::from_raw_mode(found.st_mode)).to_owned(),
+        Err(_) => "destination that cannot be opened without waiting for a reader".to_owned(),
+    }
 }
 
 /// What a destination is, for a refusal that has to say why it is not a file.
 ///
-/// A `match` with a payload-carrying fallback (AGENTS rule 6): `FileType` grows variants
-/// as platforms do, and a refusal that panicked on an unfamiliar one would be the one thing
-/// a request-driven path may not do.
-fn describe_file_type(kind: &std::fs::FileType) -> &'static str {
-    use std::os::unix::fs::FileTypeExt;
-    if kind.is_dir() {
-        "directory"
-    } else if kind.is_fifo() {
-        "fifo"
-    } else if kind.is_socket() {
-        "socket"
-    } else if kind.is_char_device() {
-        "character device"
-    } else if kind.is_block_device() {
-        "block device"
-    } else if kind.is_symlink() {
-        "symbolic link"
+/// An exhaustive `match` including `rustix`'s own catch-all `Unknown` arm, which is AGENTS
+/// rule 6's shape with the fallback supplied by the vocabulary rather than by us: an
+/// `st_mode` this kernel invents lands in `Unknown` and gets a sentence, and a variant
+/// `rustix` adds is a compile error rather than a panic on a request-driven path.
+///
+/// `RegularFile` shares the fallback arm because the only caller has already established it
+/// is not one — naming it would be writing a refusal for a destination that is accepted.
+fn describe_file_type(kind: rustix::fs::FileType) -> &'static str {
+    use rustix::fs::FileType;
+    match kind {
+        FileType::Directory => "directory",
+        FileType::Fifo => "fifo",
+        FileType::Socket => "socket",
+        FileType::CharacterDevice => "character device",
+        FileType::BlockDevice => "block device",
+        FileType::Symlink => "symbolic link",
+        FileType::RegularFile | FileType::Unknown => "thing that is not a regular file",
+    }
+}
+
+/// D12's `wait` flag, as the enqueue it chooses.
+///
+/// A named function rather than an `if` at the call site, because it is the whole of what
+/// this daemon does with the field and it has exactly two answers, both of which have to be
+/// able to go red. `wait: true` waits for room in the camera's command queue, bounded by
+/// [`limits::CAMERA_ENQUEUE_WAIT_MS`] — the constant `Enqueue::waiting` reads, so the budget
+/// is not repeated here. `wait: false` — the default, and every request written before the
+/// field existed — takes [`Error::Busy`] the moment the queue is full. Both end in the same
+/// refusal, so the flag buys when the answer arrives and never what it says (note **N42**).
+fn enqueueing(wait: bool) -> Enqueue {
+    if wait {
+        Enqueue::waiting()
     } else {
-        "thing that is not a regular file"
+        Enqueue::Refuse
+    }
+}
+
+/// The one file a photo request may write, opened before this daemon touched a camera.
+///
+/// The daemon's [`engine::photo::Destination`], and the reason that trait exists: `wch`
+/// opens a path when the bytes are ready because a person typed it, and this daemon cannot,
+/// because its open would run on a camera actor's one thread (note **N51**, and
+/// [`open_destination`] for the two flags).
+///
+/// It holds a descriptor rather than a name, so the `path` it is handed at write time is
+/// used for the error message and nothing else — **that is the fix**, stated as a type: the
+/// name was resolved once, before the camera opened, and nothing a client does afterwards
+/// can redirect these bytes.
+#[derive(Debug)]
+struct OpenedAhead(Option<std::fs::File>);
+
+impl engine::photo::Destination for OpenedAhead {
+    fn write(&mut self, path: &Utf8Path, bytes: &[u8]) -> schema::Result<()> {
+        // `None` means this request never had a destination — a `ReturnBytes` sink, which
+        // `engine::photo::deliver` does not write and this arm therefore never sees. It is
+        // written rather than assumed away for the reason every payload-carrying fallback in
+        // this workspace is (AGENTS rule 6): a build that changed which sinks are written
+        // must fail here rather than open a path this daemon never checked.
+        let Some(file) = self.0.as_mut() else {
+            return Err(Error::StorageIo {
+                path: path.to_owned(),
+                errno: None,
+                message: "this request opened no destination before the camera was used".to_owned(),
+            });
+        };
+        engine::photo::write_to_open_file(file, path, bytes)
     }
 }
 
@@ -992,24 +1397,56 @@ impl WchRpcServer for Wchd {
         camera: CameraId,
         request: PhotoRequest,
     ) -> Result<api::PhotoResponse, WireError> {
-        // The sink is answered for **before** anything is resolved or opened: every one of
-        // the things that can be wrong with one is wrong about the request rather than about
-        // the device, and a camera opened for a request that was always going to be refused
-        // is a descriptor taken from whoever is using it (see `addressable`). On the
-        // blocking pool because the last of the three rules stats a path.
+        // Three steps before the camera is touched, in an order where each one is the
+        // cheapest thing that can still refuse.
+        //
+        // 1. The sink, which is a question about the *request* and needs neither a
+        //    filesystem nor an enumeration — so a `.webp` or a relative path costs nothing
+        //    and creates nothing (see `addressable`).
         {
             let sink = request.sink.clone();
             self.offload(move |_| addressable(&sink)).await?;
         }
+        // 2. Which camera. Before the destination is opened rather than after, so a request
+        //    naming a camera this host does not have leaves no file where none was.
+        let info = self.resolve(camera).await?;
+        // 3. The destination, resolved from a name to a **descriptor** exactly once — which
+        //    is note **N51**'s discharge: nothing a client does to the path afterwards can
+        //    redirect these bytes, and no open on this path can wait. On the blocking pool,
+        //    because `open(2)` is fast until the path is on a hung mount and this daemon
+        //    parks no runtime worker.
+        //
+        //    A request that gets this far and then fails leaves a zero-length file where
+        //    there was none — the same thing a failed capture leaves, and the price of
+        //    resolving the name before the camera. What it never does is empty a file that
+        //    was already there: `open_destination` carries no `O_TRUNC`, and the length is
+        //    set once the bytes exist.
+        let destination = {
+            let sink = request.sink.clone();
+            self.offload(move |_| match &sink {
+                Sink::ServerPath { path } => open_destination(path).map(Some),
+                // Nothing is opened for a request that asked for its bytes back, which is
+                // why the destination is an `Option` rather than a second sink type.
+                Sink::ReturnBytes { .. } => Ok(None),
+            })
+            .await?
+        };
+        let how = enqueueing(request.wait);
         let now = schema::time::Stamp::now();
         let (_, taken) = self
-            .on_camera_with_state(camera, move |inner, device| {
+            .on_resolved_camera_with_state_queueing(info, how, move |inner, device| {
                 // Two clocks, because they measure different things and conflating them is
                 // how an NTP step becomes a settle failure: `now` is the wall time that
                 // goes in the EXIF, and `inner.clock` is the monotonic one the settle
                 // policy runs on — this daemon's one reading of "what time is it", the
                 // field `Inner::clock` exists to be.
-                engine::photo::take(device, &request, &inner.clock, now)
+                engine::photo::take(
+                    device,
+                    &request,
+                    &mut OpenedAhead(destination),
+                    &inner.clock,
+                    now,
+                )
             })
             .await?;
         // Nothing here logs. The only facts this verb has that the answer does not already
@@ -1242,6 +1679,10 @@ impl WchRpcServer for Wchd {
         let fingerprint = info.fingerprint.clone();
         let editing = self.editing_sessions().await;
         let lock = Arc::clone(&editing);
+        // Built here rather than inside the closure, because the closure runs on the
+        // actor's thread and the sink is a handle on state this daemon already owns —
+        // constructing it there would be constructing it per sweep.
+        let progress = ProgressBroadcast::new(Arc::clone(&self.0.events));
         Ok(self
             .on_resolved_camera_with_state(info, move |inner, device| {
                 let mut session = engine::lifecycle::session_to_update(
@@ -1259,18 +1700,18 @@ impl WchRpcServer for Wchd {
                     // in the middle of a twenty-minute pan sweep makes sample 40 older than
                     // sample 39.
                     clock: &MonotonicClock::new(),
-                    // **Nothing is listening, and that is the documented answer.** The live
-                    // events are `schema::progress::ProgressEvent`s and P4e puts them on
-                    // their own subscription rather than threading a watcher through a
-                    // call; the T5 method's own doc says a client's progress bar simply does
-                    // not move until then. `Silent` is a real sink rather than an `Option`,
-                    // so the sweep emits into it and the events are dropped where a
-                    // subscription will later be attached — the seam is already the shape
-                    // P4e needs, which is what docs/7's risk register asked P3c to
-                    // guarantee. The honest consequence, which the parity gate does not
-                    // cover: `wch calibrate sweep` renders indicatif from these same events
-                    // and `wchc calibrate sweep` shows nothing at all until P4e.
-                    progress: &engine::progress::Silent,
+                    // **P4e-i's whole change on the emit side**, and it is one line
+                    // because P3c built the seam for it: this used to be
+                    // `engine::progress::Silent`, "a real sink rather than an `Option`, so
+                    // the sweep emits into it and the events are dropped where a
+                    // subscription will later be attached". This is that subscription.
+                    //
+                    // It emits from the **actor's own thread**, which is where a sweep
+                    // runs, so the sink must not be able to wait or to fail —
+                    // `crate::events::Fanout::emit` is both, and `engine::progress`'s
+                    // header is where the reason is written down. What a client that is
+                    // not there, or is behind, costs is `crate::events`'.
+                    progress: &progress,
                     started_at: schema::time::Stamp::now(),
                 };
                 engine::calibrate::run(&context, &mut session, device, &request)?;
@@ -1370,6 +1811,54 @@ impl WchRpcServer for Wchd {
             })
             .await?
             .1)
+    }
+}
+
+// ------------------------------------------------------------ the two things it says first
+//
+// `crate::events` is where every bound, every counter and every drop decision lives; these
+// two bodies are the routing, and they are this short on purpose. What is *here* rather
+// than there is the one thing that is a daemon fact rather than an event fact: the hotplug
+// watch is started on the blocking pool, because binding a netlink socket and reading
+// `/sys` is work that blocks and this daemon runs none of that on a runtime worker.
+
+#[async_trait]
+impl WchEventsServer for Wchd {
+    async fn subscribe_events(
+        &self,
+        pending: jsonrpsee::PendingSubscriptionSink,
+    ) -> jsonrpsee::core::SubscriptionResult {
+        // Attached and started in one blocking closure, in that order, so that a watch
+        // thread deciding to give up cannot race a subscriber into a stream nothing feeds —
+        // `crate::events::Hotplug::attach` has the argument.
+        //
+        // A failure here is refused *before* the accept, which is the one moment a
+        // subscription can still carry a JSON-RPC code: after it, jsonrpsee has only a
+        // `subscription_error` notification, which carries no code at all. So a backend
+        // that cannot watch is a D13 refusal like every other refusal on this surface,
+        // rather than a stream that opens and immediately says something untyped.
+        let events = Arc::clone(&self.0.events);
+        let attached = match self
+            .offload(move |inner| crate::events::attach_hotplug(&inner.events, &inner.cameras))
+            .await
+        {
+            Ok(attached) => attached,
+            Err(error) => {
+                pending.reject(WireError(error)).await;
+                return Ok(());
+            }
+        };
+        crate::events::subscribe_hotplug(events, pending, attached).await
+    }
+
+    async fn subscribe_calibration(
+        &self,
+        pending: jsonrpsee::PendingSubscriptionSink,
+    ) -> jsonrpsee::core::SubscriptionResult {
+        // Nothing to start and nothing to refuse: the producer is this daemon's own sweeps,
+        // which exist whether or not anybody is watching, and the events they emit while
+        // nobody is are dropped and counted (`crate::events`' header).
+        crate::events::subscribe_calibration(Arc::clone(&self.0.events), pending).await
     }
 }
 
@@ -1668,10 +2157,23 @@ mod tests {
             "the pin and the wire surface disagree: a method was added to T5 and not routed, \
              or a name here is not a T5 method"
         );
-        // Not vacuous, and pinned at the number `crates/api` pins the trait at: two empty
-        // sets compare equal and would say nothing (note N29 is why nineteen is the number
-        // and why the two subscriptions are not in it).
+        // Not vacuous, and pinned at the number `crates/api` pins the *call* surface at:
+        // two empty sets compare equal and would say nothing. Nineteen is the trait's own
+        // count; the two subscriptions are a second population with a second pin
+        // (`routed_subscriptions`), because a subscription's second wire name comes from
+        // jsonrpsee rather than from `#[method(name = …)]` (note N29's accounting).
         assert_eq!(routed.len(), 19, "{routed:?}");
+
+        let subscribed: BTreeSet<&str> = routed_subscriptions().into_iter().collect();
+        assert_eq!(
+            subscribed.len(),
+            2 * api::SUBSCRIPTIONS.len(),
+            "{subscribed:?}"
+        );
+        assert!(
+            subscribed.is_disjoint(&routed),
+            "a subscription and a method share a wire name: {subscribed:?}"
+        );
 
         // And the one that reads like a read verb but is not: measuring pairs writes to the
         // camera, so it landed with the mutating half rather than with P4b's six (N30).
@@ -1700,10 +2202,17 @@ mod tests {
         // rather than some other module. Without it, a second registration path — the thing
         // D10 exists to prevent — would leave both suites green about different populations.
         let (_backend, _temp, wchd) = daemon(limits::CAMERA_IDLE_CLOSE_MS);
-        let registered: BTreeSet<&str> = wchd.into_rpc().method_names().collect();
-        let routed: BTreeSet<&str> = ROUTED.iter().copied().collect();
+        let methods = mount(wchd).expect("the two halves of one declaration cannot collide");
+        let registered: BTreeSet<&str> = methods.method_names().collect();
+
+        // Both pins, unioned: `mount` is where the two `into_rpc()` calls meet, so this is
+        // also the assertion that the merge kept *all* of both halves — a merge that
+        // dropped the unsubscribe callbacks would leave clients unable to close a stream
+        // and nothing else in this crate would notice.
+        let mut pinned: BTreeSet<&str> = ROUTED.iter().copied().collect();
+        pinned.extend(routed_subscriptions());
         assert_eq!(
-            registered, routed,
+            registered, pinned,
             "the registration is not the pinned surface"
         );
     }
@@ -1847,6 +2356,92 @@ mod tests {
             format: schema::capture::PhotoFormat::Jpeg,
         })
         .expect("a payload has nowhere to be wrong");
+
+        // And this check no longer reads the filesystem at all, which is the half of note
+        // **N51**'s discharge that is an *absence*: a path that names a directory passes
+        // here and is refused by `open_destination`, on the descriptor, where no client can
+        // step between the question and the answer.
+        addressable(&Sink::ServerPath {
+            path: "/tmp/out.jpg".into(),
+        })
+        .expect("a path that does not exist is an ordinary destination");
+    }
+
+    #[test]
+    fn a_destination_is_opened_from_its_descriptor_and_a_fifo_never_waits_for_a_reader() {
+        // Note **N51**'s discharge, at the layer that does it. The integration suite drives
+        // the same three shapes over the wire; this is where each refusal's *identity* is
+        // asserted, because a check that answered one variant for everything would still
+        // pass a suite that only asked whether the photo failed.
+        let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+
+        // A directory. `EISDIR`, before anything is written.
+        let directory = scratch.base().join("a-directory.jpg");
+        std::fs::create_dir(&directory).expect("a writable scratch directory");
+        let refused = open_destination(&directory).expect_err("a directory is not a file");
+        assert_eq!(refused.kind(), ErrorKind::IllegalTransition);
+        assert!(refused.to_string().contains("directory"), "{refused}");
+
+        // A fifo with no reader — the wedge N51 measured. **This call returning at all is
+        // the assertion**: without `O_NONBLOCK` it does not return, and this test becomes a
+        // named nextest `TIMEOUT` rather than a wrong answer.
+        let fifo = scratch.base().join("wedge.jpg");
+        let made = std::process::Command::new("mkfifo")
+            .arg(fifo.as_str())
+            .status()
+            .expect("mkfifo(1) runs");
+        assert!(made.success(), "mkfifo {fifo}");
+        let refused = open_destination(&fifo).expect_err("a fifo is not a file");
+        assert_eq!(refused.kind(), ErrorKind::IllegalTransition);
+        assert!(refused.to_string().contains("fifo"), "{refused}");
+
+        // A missing parent directory is the *filesystem* declining, not the request being
+        // unhonourable — a distinction E3 makes and a single refusal variant would lose.
+        let nowhere = scratch.base().join("no-such-directory/shot.jpg");
+        let refused = open_destination(&nowhere).expect_err("there is no such directory");
+        assert_eq!(refused.kind(), ErrorKind::StorageIo);
+        assert!(refused.to_string().contains("shot.jpg"), "{refused}");
+
+        // And the ordinary destination, in both of its shapes: a path that does not exist
+        // yet, and one that does. Neither is truncated by the open — the length is set when
+        // the bytes exist — so a capture that fails afterwards leaves an operator's photo
+        // where it was rather than emptying it on the way to reporting the failure.
+        let fresh = scratch.base().join("fresh.jpg");
+        drop(open_destination(&fresh).expect("a new regular file"));
+        assert!(fresh.exists(), "{fresh}");
+        let existing = scratch.base().join("existing.jpg");
+        std::fs::write(&existing, b"an operator's photo").expect("a writable scratch directory");
+        drop(open_destination(&existing).expect("an existing regular file"));
+        assert_eq!(
+            std::fs::read(&existing).expect("still there"),
+            b"an operator's photo",
+            "opening the destination emptied a file before anything was captured"
+        );
+    }
+
+    #[test]
+    fn d12s_wait_flag_chooses_between_the_two_enqueues_and_nothing_else() {
+        // The flag both ways, at the one place this daemon reads it. What each answer
+        // *does* is `engine::actor`'s and is asserted there against a queue that is provably
+        // full; what is asserted here is that the field reaches the choice, in both
+        // directions — a handler that had wired the flag backwards would take a photo either
+        // way and no integration test could tell.
+        assert_eq!(enqueueing(false), Enqueue::Refuse);
+
+        let before = std::time::Instant::now();
+        let Enqueue::WaitUntil(deadline) = enqueueing(true) else {
+            panic!("`wait: true` chose the refusing enqueue");
+        };
+        // The budget is `engine::actor::Enqueue::waiting`'s, which reads
+        // `limits::CAMERA_ENQUEUE_WAIT_MS` — asserted as a bound rather than transcribed, so
+        // the constant keeps its single reader (rubric A8).
+        assert!(deadline > before, "`wait: true` chose a spent deadline");
+        assert!(
+            deadline
+                <= std::time::Instant::now()
+                    + std::time::Duration::from_millis(limits::CAMERA_ENQUEUE_WAIT_MS),
+            "the daemon widened the bound the constant states"
+        );
     }
 
     /// A photo answer with `count` claimed and `bytes` carried.

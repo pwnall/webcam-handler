@@ -74,18 +74,39 @@ exist because of it.
   **P4d does not re-bless**: the narrowing is still G6's (P6e), which now has a fact to
   execute on instead of a prediction — `cap_sys_module` is untouched, because `modprobe`
   still needs it.
-- D12's `wait` flag — "a second capture request queues or is refused with `Busy` per its
-  `wait` flag" — is **re-deferred from P4c to P4e**, with its reason recorded (N42). P4c
-  routes the capture verb, so the half of D12 that exists is reachable over the wire and
-  asserted there: two photos in flight against one camera reach one actor, share one
-  descriptor, and stream sequentially, and a caller past
-  `limits::CAMERA_COMMAND_QUEUE_DEPTH` is refused. The flag that chooses between the two is
-  three changes wearing one name — a field on a committed wire shape (nothing in the schema
-  is called `wait`, so both bundles move), an enqueue that waits with a bound where
-  `CameraActor::submit` has only a `try_send`, and a command-line spelling or an argued
-  absence of one. P4e already owns the concurrency semantics of a client that goes away
-  mid-operation, which is the same question from the other end, and P4c's own "Lands"
-  sentence never names the flag.
+- ~~D12's `wait` flag — "a second capture request queues or is refused with `Busy` per its
+  `wait` flag" — is **re-deferred from P4c to P4e**, three changes wearing one name (N42).~~
+  **Discharged at P4e-i**, and the three changes were one mechanism (note **N56**): a
+  `#[serde(default)] wait: bool` on `schema::capture::PhotoRequest`, moving both `schemas/`
+  artifacts and leaving `required` alone, so no request written before it existed became
+  invalid; `engine::actor::CameraActor::submit_with(_, Enqueue, _)`, where `Refuse` is what
+  `submit` has always done and `WaitUntil(Instant)` parks the *caller's* thread — a
+  blocking-pool one in the daemon, never a runtime worker — until a place comes free; and
+  `limits::CAMERA_ENQUEUE_WAIT_MS` as the bound AGENTS requires of anything that waits, with
+  `Enqueue::waiting` its one reader — joined, after the P4e-i review, by
+  `limits::CAMERA_ENQUEUE_WAITERS`, which bounds *how many* callers may hold that budget at
+  once: a waiter parks a blocking-pool thread the whole daemon shares, and the WebSocket
+  surface this sub-milestone turned on lets one connection hold arbitrarily many calls in
+  flight, so the count needed a permit pool rather than an arithmetic argument (note
+  **N59**). The flag changes *when* the answer arrives and never what it says: the refusal
+  at the bound is the same `Error::Busy` with the same empty holder list, and so is the
+  refusal a caller past the permit pool takes. The third item took its **permitted alternative — an argued absence** of a
+  command-line spelling: `wch` opens its own camera per invocation, so the queue the flag
+  chooses about is always empty, and the consumer where it means something is `wchc`, whose
+  transport is P4f's. The argument is written where the absence is, in
+  `cli_core::Command::photo_request`, and in N42.
+- **Two `engine` integration tests can be handed a different typed error by a loaded
+  machine**, and the mutation floor found it (note **N60**).
+  `crates/engine/tests/sweep.rs` builds its context with `MonotonicClock::new()` — a real
+  clock — where AGENTS.md's convention is "settle logic runs on a stepped clock in tests",
+  so under contention a scripted `DeviceGone` arrives as a perfectly correct
+  `SettleTimeout` and the assertion fails. It predates P4e-i (the tests are P3's); P4e-i
+  exposed it only by making each mutant's test pass longer. The repair is a stepped clock
+  on a path where `SteppedClock` is deliberately not `Sync` (N45), which is scoped work
+  rather than a line, and it is worth doing *before* G4 closes: until it is done, a
+  second-direction failure of the acceptance register means "investigate" rather than
+  "delete the line", which is a slower gate than the one P3f commissioned. Nothing
+  schedules it yet.
 - `terminate_holder` reached the wire at P4c with **no command-line spelling**, and the
   absence is counted rather than assumed (N48). `schema::report`'s header had already put
   `TerminationReport` in the OpenRPC document rather than the JSON Schema bundle for that
@@ -108,15 +129,33 @@ exist because of it.
   bundle: `serde` and `schemars` both describe the field, so the emitted JSON Schema and the
   OpenRPC document change together. It wants its own commit and a gate diff rather than a
   ride-along, and nothing here schedules it.
-- A `Sink::ServerPath` naming a **fifo** is refused by a `stat`, and a client that replaces the
-  path between the `stat` and the write still parks the camera's actor thread (note **N51**).
-  P4c closed the reachable shape — `mkfifo /tmp/x.jpg` plus one `wch_photo` used to wedge a
-  camera until `wchd` restarted, and `/dev/stdout` used to put a frame in the journal — and
-  the residual race needs the *open* to be non-blocking, whose flag has no portable spelling
-  reachable from a crate that does not link `libc`. **P4e** owns it, with the bound on a
-  submitted command that N42 already deferred there: `CameraActor::submit` has only a
-  `try_send` and nothing times an actor command out, which is the same missing mechanism, and
-  a command that cannot outlive a deadline turns the residual race into a refusal.
+- ~~A `Sink::ServerPath` naming a **fifo** is refused by a `stat`, and a client that replaces
+  the path between the `stat` and the write still parks the camera's actor thread (note
+  **N51**).~~ **Discharged at P4e-i**, by making the *descriptor* the destination rather than
+  the name: `daemon::server::open_destination` opens
+  `WRONLY | CREATE | NONBLOCK | CLOEXEC` through `rustix` — already a direct dependency
+  since P4d, so no new edge and no `unsafe` block — `fstat`s what it got, refuses anything
+  that is not a regular file, and hands the open `File` to the actor's closure. The
+  refusal still happens before any camera is touched, which is the assertion N51's own test
+  makes. There is no window left to race: the name is resolved once. The note carries the
+  precision this bullet used to miss — `O_NONBLOCK` removes the *cause*, and a deadline on
+  the daemon's await would not have, because it answers the caller without unwinding a thread
+  already inside `open(2)`. **The honest residual is bigger than an earlier draft of this
+  bullet said** (note **N59**): a regular file on a hung mount still blocks in `write(2)`
+  *inside the actor's thread*, and that costs the whole camera for the life of the process —
+  `Live::busy` stays raised, the idle close can never fire, and no later command on that
+  camera runs. `CAMERA_ENQUEUE_WAIT_MS` bounds a *later caller's* wait for a seat and bounds
+  the blocked write not at all. Ending it wants a cancellable device thread that D12 does not
+  provide.
+- A WebSocket peer that subscribes and then **never reads again** is not reaped: P4e-i left
+  jsonrpsee's `ping_config` at `None`, so nothing times a silent connection out (note
+  **N57**). It is bounded rather than unbounded — `DAEMON_MAX_CONNECTIONS` ×
+  `WS_MESSAGE_BUFFER_CAPACITY`, with a fan-out in front of it that never waits on any of it,
+  and a per-connection subscription bound that costs such a client only its own slots — so
+  the cost is a held connection, not a wedged daemon, which is the claim P4e-i is named for.
+  Turning `enable_ws_ping` on adds two constants whose behavioural half can only be asserted
+  by waiting out a timer, which AGENTS bans; the honest form is a signal from the transport,
+  and jsonrpsee 0.26 offers none. Nothing here schedules it.
 - The `wch-priv` powers are broader than demonstrated need, time-boxed to the plan; P6e
   executes the narrowing ruling (N8).
 - ~~The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.~~
@@ -322,18 +361,65 @@ arm — the battery runs against the fake, whose watch arm has been green since 
 produces remove+add events through `watch` (the interlock honored — §3.3 item 9 keeps
 mid-stream loss fake-only, and this arm's design respects that).
 
-### P4e — Subscriptions and shutdown
+### P4e-i — Subscriptions and backpressure
+
+**The split.** P4e was written as one sub-milestone — "Subscriptions and shutdown" — and
+**split in two** while P4e-i was being cut, under the standing convention above ("a
+sub-milestone that turns out to be two splits — recorded in the notes") and on note
+**N54**'s sizing rule. The register is note **N58**; the split changes no gate letter and
+no criterion, only which half owns each clause. The seam is a story rather than a file
+list: *a client can watch, and nothing a client does can wedge the daemon* and *the daemon
+stops the way the init system expects* are two claims, and the second one's proof needs the
+first one's fixture — an open subscription and a mid-flight sweep — which is why they are
+sequential rather than parallel.
 
 **Lands:** `subscribe_events` (hotplug) and `subscribe_calibration` (transporting P3c's
-progress hook); disconnect-mid-sweep semantics — the sweep continues, the subscription
-is reaped, both asserted; shutdown discipline: SIGTERM ≡ SIGINT through
-`CancellationToken` teardown, drain, store-lock release, `sd_notify(STOPPING)`;
-`sd-notify` READY/STATUS, `listenfd` socket activation, journald layer under systemd;
-the daemon never self-daemonizes.
+progress hook); the WebSocket half of **the Unix socket** that P4b turned off, back on with
+the two bounds it deferred by name (N38) and the tests that reach them — P5b's WS endpoint
+is the *TCP* listener's and stays P5b's; disconnect-mid-sweep semantics — the sweep
+continues, the subscription is reaped, both asserted. **The debts:** D12's `wait` flag, the
+bound on a submitted actor command, and note N51's `stat`/`open` race, which are one
+mechanism wearing three names and land together (N56).
+
+**Also lands, after the review:** the two bounds this sub-milestone's own numbers needed
+readers for — a real connection's `message_buffer_capacity`, read back off the sink it gave a
+subscription, and the hotplug watch thread's liveness, published so that "ended when the last
+subscriber goes" is a property something can check — plus the hotplug watch's two failure
+directions, reachable at last because `fake::Fault` grew the variants for them, and the
+stream terminal that makes a watch which stops end its subscribers rather than strand them
+(note **N59**).
+
+**Proves / gate rows:** one real-delivery test per subscription, over both transports and
+with the population walked from the surface's own inventory rather than listed beside it,
+so a subscription with no delivery test stops the walk; a subscriber that stops reading
+costing counted drops and never the daemon, its bound read from `schema::limits`;
+disconnect-mid-sweep both assertions — the sweep read back through the same function
+`calibrate_status` answers from, the reaping waited for rather than sampled; the hostile
+directions a client can take, one test apiece, each ending by asking the daemon a verb it
+must still answer; one declaration, two generated traits and two inventories, with the
+OpenRPC document emitting the call surface and describing the subscriptions as the
+extension they are (N57); and the three debts' own rows — the flag both ways where it is
+read and where it crosses the wire, the wait bounded by one constant with one reader, and a
+photo's destination resolved once, as a descriptor; and — after the review — the waiter
+count driven past its permit pool from one connection while a sweep provably holds the
+camera, a real connection's message buffer read back rather than assumed, the watch thread's
+lifecycle observed so its deadline bounds something, and both of the watch's failure
+directions driven, one of them ending an open subscriber's stream with a reason (N59).
+
+### P4e-ii — Shutdown and systemd
+
+**Lands:** shutdown discipline: SIGTERM ≡ SIGINT through `CancellationToken` teardown,
+drain, store-lock release, `sd_notify(STOPPING)`; `sd-notify` READY/STATUS, `listenfd`
+socket activation, journald layer under systemd; the daemon never self-daemonizes. The
+tree names the deferrals in place — `uds.rs`'s "not a drain and not a signal handler",
+`state.rs`'s ordered store-lock release, `server.rs`'s ordered end for the idle-sweep
+driver, and the socket file that today deliberately survives a stop.
 
 **Proves / gate rows:** one real-delivery test per signal, each with an open
-subscription and a mid-flight sweep; disconnect-mid-sweep both assertions;
-sd-notify/listenfd behavior tests where the harness allows, named skips where not.
+subscription and a mid-flight sweep — docs/9's own commissioned row, and the reason this
+half comes second: P4e-i's disconnect fixture already carries both ingredients and already
+ends by asserting `stopped()` resolves; sd-notify/listenfd behavior tests where the harness
+allows, named skips where not.
 
 ### P4f — `wchc` and parity
 

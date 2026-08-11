@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use api::WchRpcServer;
 use camino::Utf8PathBuf;
 use daemon::server::Wchd;
 use daemon::uds::{self, SocketDir};
@@ -44,6 +43,13 @@ pub(crate) const SESSION_TASK: &str = "exposure";
 /// why this is one value and not six locals.
 pub(crate) struct Fixture {
     pub(crate) backend: Arc<FakeBackend>,
+    /// The daemon behind both wires, for the questions no wire answers.
+    ///
+    /// Every suite that includes this module compiles every item in it (note **N49**), so
+    /// this field has a reader *here* as well as in `subscriptions.rs`: [`Fixture::replaying`]
+    /// asserts the daemon starts with nothing subscribed, which is what makes a count a
+    /// suite reads later a difference that suite caused rather than a leftover.
+    pub(crate) wchd: Wchd,
     pub(crate) cameras: Vec<CameraInfo>,
     pub(crate) store: SessionStore,
     pub(crate) socket: Utf8PathBuf,
@@ -145,17 +151,22 @@ impl Fixture {
         let dir = SocketDir::prepare(&runtime.env()).expect("a fresh, private socket directory");
         let listener = dir.bind(&lock).expect("nothing is in the way");
 
-        // One daemon, two transports. `into_rpc` consumes a clone; the value behind it is
-        // an `Arc`, so both wires reach the same registry, the same backend and the same
-        // store — which is what makes a difference between them a difference in transport.
+        // One daemon, two transports. `mount` consumes a clone; the value behind it is an
+        // `Arc`, so both wires reach the same registry, the same backend and the same store
+        // — which is what makes a difference between them a difference in transport. The
+        // fixture keeps its own handle because the subscription suite asks the daemon what
+        // its subscriptions are doing, which is a question no wire answers (note N17: "a
+        // *query* on the sink, not a failure of `emit`").
         let wchd = Wchd::new(
             wrap(&backend),
             SessionStore::new(state.root()),
             Arc::clone(&lock),
         );
-        let methods: Methods = wchd.into_rpc().into();
+        let methods: Methods =
+            daemon::server::mount(wchd.clone()).expect("the T5 surface mounts once");
 
-        Fixture {
+        let fixture = Fixture {
+            wchd,
             handle: uds::serve(listener, methods.clone()),
             socket: dir.socket_path(),
             methods,
@@ -165,7 +176,26 @@ impl Fixture {
             _lock: lock,
             _state: state,
             _runtime: runtime,
-        }
+        };
+        // The baseline every counter in `subscriptions.rs` is read against: a daemon that
+        // has answered nothing has nothing subscribed, has lost nothing, and — D12 — has
+        // opened no camera. Asserted rather than assumed, because a fixture that started a
+        // watch or a stream of its own would make every later difference a difference from
+        // an unknown number.
+        let opening = fixture.wchd.subscriptions();
+        assert_eq!(opening.live, 0, "a fresh daemon is already subscribed to");
+        assert_eq!(opening.hotplug.lost() + opening.calibration.lost(), 0);
+        // The third clause, which the sentence above promised and an earlier version of this
+        // block did not write (note **N59**). It is the one of the three that a *fixture*
+        // change could plausibly break — a warm-up probe, an eager actor — and it would
+        // break every `opens()` assertion in `mutating_verbs.rs` by one while every
+        // `opens() == 0` refusal assertion stayed satisfied by a different history.
+        assert_eq!(
+            fixture.backend.opens(),
+            0,
+            "a fresh daemon has already opened a camera"
+        );
+        fixture
     }
 
     /// The two transports, in the order a failure should be read in.

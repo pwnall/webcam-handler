@@ -7,28 +7,31 @@
 //! |---|---|
 //! | [`codes`] | the D13 → JSON-RPC code registry, both directions (D10, D13) |
 //! | [`photo`] | D10's base64-in-JSON photo answer (D6, D10) |
-//! | [`wire`] | the surface as data — the inventory, declared with the trait it describes |
-//! | this file | the T5 trait itself — one method per operation the daemon routes |
+//! | [`wire`] | the surface as data — the inventories, declared with the traits they describe |
+//! | this file | the T5 surface itself — one method per operation the daemon routes, plus the two subscriptions |
 //!
-//! ## Why one trait, and why both halves in one crate
+//! ## Why one declaration, and why both halves in one crate
 //!
 //! D10 makes the whole daemon API one `#[rpc(server, client)]` trait: the daemon
 //! implements the server half, `wchc` consumes the generated client, and the direct CLI
 //! calls the same operations on the engine through T4's executor. A verb therefore exists
-//! exactly once. Splitting the trait so the client and the server could live in different
-//! crates would produce two wire surfaces, which is the thing D10 exists to prevent — and
-//! it is the alternative note N5 weighed and rejected when the tokio question came up.
+//! exactly once. Splitting the *surface* so the client and the server could live in
+//! different crates would produce two wire surfaces, which is the thing D10 exists to
+//! prevent — and it is the alternative note N5 weighed and rejected when the tokio
+//! question came up.
+//!
+//! P4e-i makes it **one declaration and two generated traits**: `WchRpc` carries the
+//! nineteen calls and `WchEvents` the two subscriptions, both out of one `wire_surface!`
+//! invocation below. [`wire`]'s header has the three measured facts that force the split
+//! and the argument that what D10 protects — one source — survives it; note **N57** is the
+//! entry. The daemon merges the two registrations into the one `Methods` value it serves
+//! (`daemon::server::mount`), so there is still exactly one registration path.
 //!
 //! ## What is not here yet
 //!
 //! `record_start`, `record_stop` and `record_status` join at P6 **with their tests**: D10
 //! completes there and G6 says so, and a method declared before anything can exercise it
-//! is a wire promise nothing keeps. `subscribe_events` (hotplug) and
-//! `subscribe_calibration` (per-session progress) join at P4e with their delivery
-//! semantics, for the same reason — a subscription the daemon cannot yet deliver would
-//! have needed a refusal saying so, and the registry no longer has one: P4d deleted
-//! `Error::Unimplemented` (note N6, retired), so "declared before it can be exercised" is
-//! now a shape this build cannot express rather than one it merely avoids.
+//! is a wire promise nothing keeps.
 //!
 //! ## Errors on the wire
 //!
@@ -89,10 +92,12 @@ pub mod codes;
 pub mod photo;
 pub mod wire;
 
+use schema::backend::HotplugEvent;
 use schema::camera::CameraId;
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug, ControlWrite};
 use schema::profile::DeviceProfile;
+use schema::progress::ProgressEvent;
 use schema::report::{
     CameraDetail, CameraList, ControlReport, DiscoveryReport, TerminationReport, WriteReport,
 };
@@ -467,10 +472,106 @@ wire_surface! {
         #[method(name = "calibrate_list")]
         async fn calibrate_list(&self, camera: Option<CameraId>) -> Result<SessionList, WireError>;
     }
+
+    /// Everything the daemon *tells* a client without being asked (design D10, T5).
+    ///
+    /// The second trait [`wire`]'s `wire_surface!` emits, from the same declaration as
+    /// `WchRpc` — see [`wire`]'s header for the three measured facts that make it two
+    /// traits rather than one, and note **N57** for what that costs D10's sentence and what
+    /// it preserves. The daemon merges both registrations into one `Methods`; a client
+    /// reaches these over a **WebSocket upgrade** on the same Unix socket, because
+    /// jsonrpsee's HTTP path serves calls only.
+    ///
+    /// Neither subscription takes a parameter, and that is a decision with two
+    /// independent reasons rather than an omission. `schema::progress`'s own header
+    /// settles the design half — "P4e's subscription is per *client* and a client may
+    /// watch a daemon running more than one session", which is why the session id rides on
+    /// every event and why D10's parenthetical "per-session progress" is answered by a
+    /// consumer-side filter rather than by a wire field. The mechanical half is note N5's
+    /// wall: jsonrpsee's generated server calls `tokio::spawn` on a subscription's
+    /// params-decoding error path, and a parameterless subscription generates no such
+    /// call, so this crate still starts no runtime and spawns no task.
+    ///
+    /// **Refusals.** A subscription that cannot be opened is rejected before it is
+    /// accepted, with the same [`codes::WireError`] every method answers with — the D13
+    /// registry and nothing else. After the accept there is no JSON-RPC code left to
+    /// carry: what jsonrpsee can send is a `subscription_error` notification, so a stream
+    /// that ends abnormally ends with the typed reason as its payload. Which stream ends
+    /// on which loss is each method's own business, below.
+    pub trait WchEvents {
+        /// Device nodes appearing and disappearing, as the kernel reports them (D10, P4d).
+        ///
+        /// One `HotplugEvent` per node, never per camera: "re-enumeration decides what
+        /// camera it belongs to — the event names a node, never a camera, because grouping
+        /// is not a node property" (`schema::backend::HotplugEvent`). A client that wants
+        /// the camera list calls `wch_list` afterwards, which enumerates live (E2).
+        ///
+        /// The daemon's watch is a **diff of successive readings of the node tree** (note
+        /// N53), so it inherits that shape's one honest hole: a node that leaves and
+        /// returns entirely between two readings is not reported at all. It opens no node,
+        /// because subscribing to events is not a use of a camera (D12, N53).
+        ///
+        /// **A subscriber that falls too far behind is closed rather than resynced**, and
+        /// that is the opposite of what `wch_subscribe_calibration` does one method down.
+        /// A `HotplugEvent` is a *delta*: a gap makes a consumer's picture of the node tree
+        /// wrong in a way it cannot detect, and there is no variant in this closed
+        /// vocabulary that means "you missed some". Ending the stream with the count is the
+        /// only answer that does not hand over a quiet lie — the client re-subscribes and
+        /// re-enumerates.
+        ///
+        /// # Errors
+        ///
+        /// Whatever the backend refuses `CameraBackend::watch` with — typically
+        /// [`schema::Error::DeviceIo`] when the uevent socket cannot be opened, which is a
+        /// container or an LSM rather than a missing privilege \[PF:21\]. The watch is
+        /// started on the first subscription rather than at startup, deliberately: a
+        /// daemon that refused to *start* because it could not watch would be answering
+        /// `wch_list` with nothing on a host where enumeration works perfectly (E3).
+        #[subscription(name = "subscribe_events", item = HotplugEvent)]
+        async fn subscribe_events(&self);
+
+        /// Every calibration sweep's live progress, from every session (D8, D10, P3c).
+        ///
+        /// `schema::progress::ProgressEvent` verbatim and no second vocabulary: the same
+        /// events `wch calibrate sweep` renders its progress bar from, which is what
+        /// docs/7's risk register asked P3c to guarantee. Each carries its session id and
+        /// each in-flight variant carries `index`/`total`, so a client that connects
+        /// mid-sweep can paint a truthful bar from the first event it sees.
+        ///
+        /// **Every session, filtered by the consumer.** The stream is per client, not per
+        /// session; `ProgressEvent::session` is what a client with one session in mind
+        /// matches on. A session parameter would resolve a `SessionRef` at subscribe time
+        /// against a store lock this path has no business taking, and a
+        /// `SessionRef::Task` subscription would silently follow whichever session
+        /// occupied the slot next.
+        ///
+        /// **A subscriber that falls behind loses events and is told how many** — the
+        /// opposite of `wch_subscribe_events`, for a reason in the payload rather than in
+        /// the transport: `index`/`total` ride on every in-flight variant, so a gap is
+        /// self-healing and the next event repaints a correct bar. The alternative,
+        /// closing the stream, would end a client's view of a twenty-minute sweep because
+        /// it was briefly slow. Nothing a subscriber does reaches the sweep: the camera is
+        /// never held for a progress bar's benefit (note N17, `limits::PROGRESS_QUEUE_DEPTH`).
+        ///
+        /// A sweep that *fails* does not fail this stream. The refusal arrives as an
+        /// event — `CalibrationProgress::SweepInterrupted`, carrying the D13 discriminant
+        /// — because the sweep's own caller is the one being refused.
+        ///
+        /// # Errors
+        ///
+        /// Nothing, today: the events come from this daemon's own sweeps rather than from
+        /// a device, so there is nothing here to refuse with. The method still answers a
+        /// [`codes::WireError`] on rejection because that is the one shape a refusal on
+        /// this surface may take.
+        #[subscription(name = "subscribe_calibration", item = ProgressEvent)]
+        async fn subscribe_calibration(&self);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use jsonrpsee::core::async_trait;
     use schema::error::Error;
 
@@ -619,6 +720,46 @@ mod tests {
         }
     }
 
+    /// The same stand-in for the second generated trait, and it answers even less.
+    ///
+    /// A `PendingSubscriptionSink` dropped without `accept` or `reject` sends jsonrpsee's
+    /// own default rejection, which is exactly "answers nothing" — and it is the one body
+    /// that needs no `await`, which is what keeps [`answered`]'s no-runtime claim true for
+    /// this file. What is not arbitrary, and is the whole reason these bodies exist, is
+    /// that they typecheck: `into_rpc()` cannot be called on a trait nothing implements,
+    /// and `into_rpc()` is the only authority on what the surface registers.
+    #[async_trait]
+    impl WchEventsServer for AnswersNothing {
+        async fn subscribe_events(
+            &self,
+            _sink: jsonrpsee::PendingSubscriptionSink,
+        ) -> jsonrpsee::core::SubscriptionResult {
+            Ok(())
+        }
+        async fn subscribe_calibration(
+            &self,
+            _sink: jsonrpsee::PendingSubscriptionSink,
+        ) -> jsonrpsee::core::SubscriptionResult {
+            Ok(())
+        }
+    }
+
+    /// The whole T5 surface as one registration, the way the daemon serves it.
+    ///
+    /// `Methods::merge` verifies every incoming name against the ones already registered
+    /// (`jsonrpsee-core-0.26.0/src/server/rpc_module.rs`), so a spelling that collided
+    /// *across* the two traits is refused here — which the per-trait `check_name` cannot
+    /// see, because it only looks inside one trait. That is the one thing the split costs
+    /// and the one place it is paid.
+    fn whole_surface() -> jsonrpsee::core::server::Methods {
+        let mut methods: jsonrpsee::core::server::Methods =
+            WchRpcServer::into_rpc(AnswersNothing).into();
+        methods
+            .merge(WchEventsServer::into_rpc(AnswersNothing))
+            .expect("the two halves of one declaration cannot collide");
+        methods
+    }
+
     /// Drive one of jsonrpsee's futures to its answer without a runtime.
     ///
     /// `RpcModule::raw_json_request` is `async` and this crate starts no runtime and spawns
@@ -657,7 +798,10 @@ mod tests {
         // expectation is computed rather than tabulated, and both directions are present
         // in one run: `wch_list` (no parameters) and `wch_calibrate_list` (one optional)
         // are answered by the method body, and the other seventeen are refused before it.
-        let module = AnswersNothing.into_rpc();
+        // Named rather than inferred, because `AnswersNothing` now implements two
+        // generated server traits and `into_rpc` is a method on each: this walk is over
+        // the call surface, and saying so is one token.
+        let module = WchRpcServer::into_rpc(AnswersNothing);
         let mut omissible = 0;
         for method in METHODS {
             let request = format!(
@@ -694,12 +838,12 @@ mod tests {
     }
 
     #[test]
-    fn the_trait_registers_the_nineteen_wch_methods_and_nothing_else() {
+    fn the_surface_registers_the_nineteen_methods_and_the_two_subscriptions_and_nothing_else() {
         // Read off a real `RpcModule`, not off a list in this file: the macro's own
         // registration is the authority on what the wire carries, and a hand list here
         // would agree with itself forever (rubric rule 6).
-        let module = AnswersNothing.into_rpc();
-        let mut names: Vec<&str> = module.method_names().collect();
+        let methods = whole_surface();
+        let mut names: Vec<&str> = methods.method_names().collect();
         names.sort_unstable();
 
         // Every name is namespaced. D10 says `namespace = "wch"`, and jsonrpsee's default
@@ -712,19 +856,23 @@ mod tests {
             );
         }
 
-        // Nineteen: D10's list minus `record_*` (P6, with their tests) and minus the two
-        // subscriptions (P4e, with their delivery semantics). Recorded as a number so the
-        // next sub-milestone that adds one has to come here and say so — P4c's gate row
-        // walks the *registered daemon module*, which is a different claim and a different
-        // population.
-        assert_eq!(names.len(), 19, "{names:?}");
-        for absent in [
-            "wch_record_start",
-            "wch_record_stop",
-            "wch_record_status",
-            "wch_subscribe_events",
-            "wch_subscribe_calibration",
-        ] {
+        // Twenty-three, and the arithmetic is note **N29**'s: nineteen calls, plus *four*
+        // names for two subscriptions, because a `#[subscription]` registers its
+        // `unsubscribe` sibling as its own callback
+        // (`rpc_module.rs::verify_and_register_unsubscribe`) and `method_names()` is
+        // `callbacks.keys()`. D10's own method count goes nineteen to twenty-one; the
+        // registered population goes nineteen to twenty-three, and those are two different
+        // numbers about two different things. It is derived from `SUBSCRIPTIONS` rather
+        // than written as `23`, so a third subscription moves it by two without anybody
+        // editing this line — and pinned below by name, which is what catches a rename.
+        assert_eq!(
+            names.len(),
+            METHODS.len() + 2 * SUBSCRIPTIONS.len(),
+            "{names:?}"
+        );
+        // The three that really are still absent. `record_*` join at P6 with their tests;
+        // there is nothing else left in D10's list.
+        for absent in ["wch_record_start", "wch_record_stop", "wch_record_status"] {
             assert!(!names.contains(&absent), "{absent} landed early");
         }
 
@@ -733,7 +881,10 @@ mod tests {
         // a code is, so changing one has to be a diff somebody wrote on purpose.
         // `wch_profile_capture` is D10's spelling, not T4's `capture_profile`, and
         // `wch_discover_pairs` is its own method rather than a flag on `wch_controls`
-        // because the daemon routes it with the writes.
+        // because the daemon routes it with the writes. The two `wch_unsubscribe_*`
+        // spellings are jsonrpsee's derivation rather than ours (see
+        // [`wire::Subscription::unsubscribe`]), and pinning them here is what makes a
+        // change in that derivation a diff rather than a silently renamed wire name.
         assert_eq!(
             names,
             vec![
@@ -755,30 +906,90 @@ mod tests {
                 "wch_restore",
                 "wch_set",
                 "wch_snapshot",
+                "wch_subscribe_calibration",
+                "wch_subscribe_events",
                 "wch_terminate_holder",
+                "wch_unsubscribe_calibration",
+                "wch_unsubscribe_events",
             ]
         );
     }
 
     #[test]
-    fn the_inventory_and_the_registration_describe_the_same_surface() {
-        // Two expansions of one declaration, compared. `METHODS` is `wire_surface!`'s
-        // half and `method_names()` is jsonrpsee's, and the macro deliberately does not
-        // own the whole of a wire name: the namespace separator is the proc macro's
-        // (`rpc_macro.rs` defaults it to `_`). So this is where `"wch"` + `"_"` + `"list"`
-        // is *checked* against what the module registers rather than assumed — the one
-        // fact about this surface that really is derived twice.
-        let module = AnswersNothing.into_rpc();
-        let mut registered: Vec<&str> = module.method_names().collect();
+    fn the_inventories_and_the_registration_describe_the_same_surface() {
+        // Two expansions of one declaration, compared. `METHODS` and `SUBSCRIPTIONS` are
+        // `wire_surface!`'s half and `method_names()` is jsonrpsee's, and the macro
+        // deliberately does not own the whole of a wire name: the namespace separator is
+        // the proc macro's (`rpc_macro.rs` defaults it to `_`) and so is the *unsubscribe*
+        // derivation (`build_unsubscribe_method` strips `subscribe`). So this is where
+        // `"wch"` + `"_"` + `"list"` and `"wch"` + `"_un"` + `"subscribe_events"` are
+        // *checked* against what the module registers rather than assumed — the facts
+        // about this surface that really are derived twice.
+        let methods = whole_surface();
+        let mut registered: Vec<&str> = methods.method_names().collect();
         registered.sort_unstable();
 
         let mut inventoried: Vec<&str> = METHODS.iter().map(|method| method.name).collect();
+        inventoried.extend(SUBSCRIPTIONS.iter().flat_map(wire::Subscription::names));
         inventoried.sort_unstable();
 
         assert_eq!(
             inventoried, registered,
             "the OpenRPC document would describe a different surface than the daemon serves"
         );
+
+        // And the two halves are disjoint, which is what lets every consumer partition the
+        // registered set by `SUBSCRIPTIONS` instead of excluding names by hand. Without
+        // this the equality above would still hold if a subscription's name collided with
+        // a method's — `Methods::merge` would have refused it, but only because the
+        // *merge* is where that is caught, and this file is where it is stated.
+        let subscribed: BTreeSet<&str> = SUBSCRIPTIONS
+            .iter()
+            .flat_map(wire::Subscription::names)
+            .collect();
+        let called: BTreeSet<&str> = METHODS.iter().map(|method| method.name).collect();
+        assert!(subscribed.is_disjoint(&called), "{subscribed:?}");
+        assert_eq!(subscribed.len(), 2 * SUBSCRIPTIONS.len(), "{subscribed:?}");
+    }
+
+    #[test]
+    fn every_subscription_carries_the_prose_and_the_item_type_a_document_needs() {
+        // `every_method_carries_…`'s sibling over the population that has no `params` and
+        // no `result`: what a subscription's consumer needs instead is the *item* type,
+        // which is what xtask writes into `x-subscriptions`. A subscription with no
+        // summary is the same hole a method with none is.
+        assert!(
+            !SUBSCRIPTIONS.is_empty(),
+            "the surface subscribes to nothing"
+        );
+        for subscription in SUBSCRIPTIONS {
+            let name = subscription.name;
+            assert!(!subscription.summary().is_empty(), "{name} has no summary");
+            assert!(
+                subscription.summary().ends_with('.'),
+                "{name}'s summary is not a sentence: {}",
+                subscription.summary()
+            );
+            assert!(
+                subscription.description().contains("# Errors"),
+                "{name} does not document what it refuses with"
+            );
+            // The item is what a subscriber decodes, so it has to name a type the document
+            // can carry a schema for — a `TypeRef` that named nothing would publish an
+            // `x-subscriptions` row a consumer cannot use.
+            assert!(
+                !subscription.item.name().is_empty(),
+                "{name} carries nothing"
+            );
+            // jsonrpsee's own precondition, which our `concat!` derivation shares: its
+            // expansion panics on a subscribe name that does not start with `subscribe`.
+            // Asserted rather than trusted, because the two derivations agreeing is only
+            // true *because* of it.
+            assert!(
+                subscription.name.starts_with("wch_subscribe_"),
+                "{name} would make jsonrpsee's unsubscribe derivation and ours disagree"
+            );
+        }
     }
 
     #[test]

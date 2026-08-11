@@ -35,17 +35,18 @@
 //!   to answer with. The suite is one claim lighter and says so rather than letting a
 //!   sentence stand for an assertion that is gone.
 //!
-//! ## Progress, and the honest gap
+//! ## Progress, and where it is now asserted
 //!
-//! `calibrate_sweep` emits `schema::progress::ProgressEvent`s into
-//! `engine::progress::Silent` and they are dropped. That is the T5 method's own documented
-//! answer — P4e puts the live events on their own subscription rather than threading a
-//! watcher through a call, and "until then a client's progress bar simply does not move,
-//! which is honest". The consequence worth stating because no gate covers it: `wch
-//! calibrate sweep` renders a progress bar from these same events and `wchc calibrate sweep`
-//! will show nothing at all until P4e. There is nothing to assert here except the absence,
-//! and an absence with no producer is not something a test can see — so this paragraph is
-//! the record.
+//! `calibrate_sweep` emits `schema::progress::ProgressEvent`s, and at P4c they went into
+//! `engine::progress::Silent` and were dropped — the T5 method's own documented answer,
+//! which puts the live events on their own subscription rather than threading a watcher
+//! through a call. **P4e-i attached that subscription** (`daemon::events`,
+//! `wch_subscribe_calibration`), so the events these tests provoke now reach whoever is
+//! watching. Nothing in *this* binary subscribes, deliberately: a sweep with no listener is
+//! still the ordinary case, and the delivery claim belongs to `tests/subscriptions.rs`,
+//! which drives it over both transports. What remains true here and is worth stating
+//! because no gate covers it: `wchc calibrate sweep` renders nothing until **P4f** builds
+//! the client transport that consumes the stream.
 //!
 //! ## What is deliberately not asserted
 //!
@@ -57,6 +58,8 @@
 
 #[path = "support/fixture.rs"]
 mod fixture;
+#[path = "support/gated.rs"]
+mod gated;
 mod support;
 #[path = "support/wire.rs"]
 mod wire;
@@ -79,6 +82,7 @@ use schema::snapshot::RestoreReport;
 use uuid::Uuid;
 
 use crate::fixture::{Ask, Fixture, SESSION_TASK, camera as nth_camera};
+use crate::gated::{Blocking, Gate, lock};
 use crate::wire::{Wire, refusal};
 
 /// The task each test opens its own session under.
@@ -846,133 +850,6 @@ fn device_state(fixture: &Fixture) -> Vec<(ControlSlug, Option<ControlValue>, u3
         .into_iter()
         .map(|desc| (desc.slug, desc.current, desc.flags.raw))
         .collect()
-}
-
-// ------------------------------------------------- note N47: one session edit at a time
-
-/// A gate the test opens one write at a time.
-///
-/// Armed rather than always-on, and that is not a convenience: `calibrate_start`'s probe
-/// *writes* to the camera (D3's toggle-and-restore), so a decorator that held every write
-/// from the moment the camera opened would stop the setup rather than the sweep. The flag
-/// is raised after the session is queued and lowered once the interleaving under test has
-/// happened, so what is held is exactly the sweep.
-#[derive(Debug)]
-struct Gate {
-    armed: std::sync::atomic::AtomicBool,
-    /// Says a write has begun and is waiting. Buffered by one, because the actor is one
-    /// thread and can only be inside one write.
-    entered: std::sync::mpsc::SyncSender<()>,
-    /// One token lets one write through. Buffered, so the test's send does not itself have
-    /// to wait for the device.
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-/// A backend whose control writes pass through a [`Gate`].
-///
-/// A decorator over the real fake, in `daemon::server`'s `Announcing` tradition: blocking on
-/// command is this test's synchronisation, not a capability any device has, and a
-/// `FakeBackend` that could be told to block would be claiming something no replayed profile
-/// does — which AGENTS calls a bug in the fake.
-///
-/// It gates `Camera::set` rather than `next_frame` because that is where a *sweep* is when
-/// its session document is half-written: `engine::lifecycle::sweep_write` has already
-/// persisted the pre-sweep snapshot and is inside the write it took the snapshot for.
-#[derive(Debug)]
-struct Blocking {
-    inner: Arc<fake::FakeBackend>,
-    gate: Arc<Gate>,
-}
-
-/// One open camera, forwarding everything and asking the gate before each write.
-#[derive(Debug)]
-struct Held {
-    camera: Box<dyn Camera>,
-    gate: Arc<Gate>,
-}
-
-/// A poisoned lock here means a test thread panicked holding a channel, which is not a
-/// reason to replace a useful failure with a confusing one.
-fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-impl CameraBackend for Blocking {
-    fn kind(&self) -> schema::backend::BackendKind {
-        self.inner.kind()
-    }
-
-    fn enumerate(&self) -> schema::Result<Vec<schema::camera::CameraInfo>> {
-        self.inner.enumerate()
-    }
-
-    fn open(&self, id: &CameraId) -> schema::Result<Box<dyn Camera>> {
-        Ok(Box::new(Held {
-            camera: self.inner.open(id)?,
-            gate: Arc::clone(&self.gate),
-        }))
-    }
-
-    fn watch(&self) -> schema::Result<Box<dyn schema::backend::HotplugWatch>> {
-        self.inner.watch()
-    }
-
-    fn diagnose(&self) -> Vec<schema::report::ListHint> {
-        self.inner.diagnose()
-    }
-}
-
-impl Camera for Held {
-    fn info(&self) -> &schema::camera::CameraInfo {
-        self.camera.info()
-    }
-
-    fn formats(&self) -> schema::Result<Vec<schema::camera::FormatInfo>> {
-        self.camera.formats()
-    }
-
-    fn controls(&self) -> schema::Result<Vec<ControlDesc>> {
-        self.camera.controls()
-    }
-
-    fn get(&mut self, id: schema::control::ControlId) -> schema::Result<ControlValue> {
-        self.camera.get(id)
-    }
-
-    fn set(
-        &mut self,
-        id: schema::control::ControlId,
-        value: ControlValue,
-    ) -> schema::Result<schema::control::Applied> {
-        if self.gate.armed.load(std::sync::atomic::Ordering::Acquire) {
-            // Announce first, then wait: the test's next line depends on this camera being
-            // *inside* the write it is about to reason about.
-            let _ = self.gate.entered.send(());
-            // Ends when the test hands over a token, never when a duration passes.
-            let _ = lock(&self.gate.release).recv();
-        }
-        self.camera.set(id, value)
-    }
-
-    fn start_stream(
-        &mut self,
-        request: &schema::capture::StreamRequest,
-    ) -> schema::Result<schema::capture::NegotiatedStream> {
-        self.camera.start_stream(request)
-    }
-
-    fn next_frame(
-        &mut self,
-        deadline: std::time::Instant,
-    ) -> schema::Result<schema::capture::Frame> {
-        self.camera.next_frame(deadline)
-    }
-
-    fn stop_stream(&mut self) -> schema::Result<()> {
-        self.camera.stop_stream()
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

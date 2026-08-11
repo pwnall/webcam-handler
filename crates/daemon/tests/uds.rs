@@ -90,8 +90,11 @@ async fn hold(socket: &Utf8Path, request: &str) -> std::io::Result<UnixStream> {
 
 /// Ask for a WebSocket upgrade, and hand back whatever the server said.
 ///
-/// The upgrade is a real one — the headers `soketto` looks for — so that "this build
-/// declines it" is a fact about the server rather than about a malformed request.
+/// The upgrade is a real one — the headers `soketto` looks for, and the nonce from RFC
+/// 6455's own example — so that what the server says is a fact about the server rather than
+/// about a malformed request. It is deliberately still hand-written rather than soketto's
+/// client: this suite is about *what the socket speaks*, and the frame layer above the
+/// handshake is `tests/subscriptions.rs`'s subject.
 async fn upgrade(socket: &Utf8Path) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket.as_std_path()).await?;
     let framed = "GET / HTTP/1.1\r\n\
@@ -220,7 +223,7 @@ async fn the_server_stops_when_the_test_that_started_it_says_so() {
     // sleeps and then kills something — which this workspace bans by name.
     //
     // It is *not* a claim that shutdown is graceful, that anything drains, or that a
-    // stream is cancelled. Those are P4e's and this build implements none of them.
+    // stream is cancelled. Those are P4e-ii's and this build implements none of them.
     let serving = Serving::start();
     let socket = serving.socket();
 
@@ -248,7 +251,7 @@ async fn the_server_stops_when_the_test_that_started_it_says_so() {
     );
 
     // And the socket file is still there, because nothing unlinks it on the way out.
-    // That is deliberate — P4e owns the orderly exit — and it is exactly the leftover
+    // That is deliberate — P4e-ii owns the orderly exit — and it is exactly the leftover
     // `SocketDir::bind` is written to survive.
     assert!(socket.as_std_path().exists(), "{socket}");
 }
@@ -315,25 +318,38 @@ async fn connections_are_bounded_at_the_number_this_project_chose() {
 }
 
 #[tokio::test]
-async fn a_websocket_upgrade_is_declined_until_the_phase_that_brings_its_bounds() {
-    // `enable_ws` defaults to on, and with it come two of jsonrpsee's numbers this project
-    // has not chosen — `message_buffer_capacity`, which is a channel depth of the kind
-    // AGENTS says lives in `schema::limits`, and `max_subscriptions_per_connection`.
-    // Nothing at P4b subscribes, so the surface is off until P4e brings its constants and
-    // the tests that reach them (note N38). Asserted rather than assumed, because "we
-    // turned it off" is exactly the kind of claim a dependency bump can quietly undo.
+async fn a_websocket_upgrade_is_accepted_now_that_this_build_bounds_it() {
+    // **This assertion is inverted rather than deleted**, and the inversion is the whole
+    // record of what P4e-i changed about the transport. Until it, `enable_ws` was off:
+    // with it come two of jsonrpsee's numbers this project had not chosen —
+    // `message_buffer_capacity`, which is a channel depth of the kind AGENTS says lives in
+    // `schema::limits`, and `max_subscriptions_per_connection` — and shipping an unbounded,
+    // untested transport for a consumer that did not exist yet is rubric A8's subject
+    // (note N38). The consumer now exists, both numbers are `schema::limits`', and the
+    // suite that drives them to their bounds is `tests/subscriptions.rs`.
+    //
+    // What is asserted here is only the *upgrade*: the same socket, the same accept loop,
+    // one `GET` instead of a `POST`. That the upgraded connection then carries a
+    // subscription is a claim about the surface and is made where the surface is.
     let serving = Serving::start();
 
     let answer = upgrade(&serving.socket())
         .await
         .expect("the daemon is listening");
     assert!(
-        !answer.starts_with("HTTP/1.1 101"),
-        "the daemon upgraded a connection to a transport nothing here bounds: {answer}"
+        answer.starts_with("HTTP/1.1 101"),
+        "the daemon declined the upgrade its subscriptions need: {answer}"
     );
-    assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+    // The handshake really completed, rather than a 101 with no accept token — which is
+    // what a server that had switched protocols without agreeing to *this* handshake would
+    // send, and what a client would then hang on. The value is RFC 6455's own worked
+    // example for the nonce `upgrade` sends.
+    assert!(
+        answer.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "the upgrade was answered without agreeing to the handshake: {answer}"
+    );
 
-    // The transport it does speak is unaffected, which is what makes this a statement
+    // The transport it already spoke is unaffected, which is what makes this a statement
     // about the upgrade rather than about the socket.
     let served = call(
         &serving.socket(),

@@ -112,6 +112,114 @@ pub const RPC_MAX_RESPONSE_BYTES: u32 = 64 * 1024 * 1024;
 /// the protocol feature available without making it a lever.
 pub const RPC_MAX_BATCH: u32 = 16;
 
+/// How many unwritten notifications one subscription may hold before the daemon drops.
+///
+/// jsonrpsee's `message_buffer_capacity`, which P4b deliberately did not inherit: it turned
+/// the WebSocket surface off entirely rather than ship "an unbounded, untested transport
+/// for a consumer that does not exist yet" (note **N38**). P4e-i is that consumer, so the
+/// number arrives with it.
+///
+/// It bounds the **last** hop — between the daemon's own subscription task and the socket's
+/// writer — and what happens at it is the law `engine::progress::ChannelSink` already
+/// states one layer in: drop, and count. Blocking there would let a subscriber that stopped
+/// reading hold a task per stream; growing would let it decide how much memory the daemon
+/// uses. Neither is available to a daemon whose whole story is that nothing a client does
+/// can wedge it.
+///
+/// Sixty-four is chosen from what one subscriber can fall behind by and still be worth
+/// serving, and the arithmetic is stated in samples because that is the unit with one
+/// meaning: [`MAX_SWEEP_SAMPLES`] is 256 and a sweep emits two events per sample, so this
+/// is a whole *thirty-two samples* of the longest sweep this build will run — an eighth of
+/// its events. A client further behind than that is not rendering a progress bar, and every
+/// in-flight progress variant carries `index`/`total` so its next event repaints a correct
+/// one anyway. A hotplug burst is smaller still: one `uvcvideo` cycle on this desk was ten
+/// nodes \[PF:21\].
+///
+/// Read by `daemon::uds::serve`, which sets it on every connection, and **read back** by the
+/// daemon's subscription suite off a real WebSocket subscription's own sink
+/// (`SubscriptionSink::max_capacity`, published as `daemon::events::StreamActivity::buffer`)
+/// — because a bound this project sets and nothing reads is a bound that silently becomes
+/// jsonrpsee's default again (rubric A8, note **N38**). The suite drives a subscriber past
+/// it and counts what was dropped on the in-memory dispatch, where the connection buffer is
+/// the only queue in the path.
+pub const WS_MESSAGE_BUFFER_CAPACITY: u32 = 64;
+
+// jsonrpsee's `set_message_buffer_capacity` **panics** on zero
+// (`ServerConfigBuilder`: `assert!(c > 0)`), and a panic on the daemon's startup path is
+// not an available failure mode. Checked here, in `CAMERA_IDLE_SWEEP_MS`'s tradition,
+// because the number and the thing that refuses it are one screen apart nowhere else.
+const _: () = assert!(WS_MESSAGE_BUFFER_CAPACITY > 0);
+
+/// The most subscriptions one connection may hold open at once.
+///
+/// The second of the two numbers note **N38** says P4e owns. It is per *connection* rather
+/// than per daemon, which is jsonrpsee's shape and the right one: the resource a
+/// subscription costs is a task and a buffer on the connection that asked for it, and
+/// [`DAEMON_MAX_CONNECTIONS`] already bounds how many connections there are — so the two
+/// multiply to a bound on the whole daemon.
+///
+/// Eight, because this surface has **two** subscriptions and a client has no reason to open
+/// either of them twice: the events are broadcast and a second receiver on one connection
+/// sees exactly what the first does. The headroom is for a client that re-subscribes after
+/// a lag close (`wch_subscribe_events` ends a stream that fell too far behind) without
+/// having noticed its previous stream is gone. A client past the bound is refused the
+/// *subscribe call* — jsonrpsee answers `-32006` before the handler runs — rather than
+/// disconnected, so connect-and-abandon costs it its own slots and nobody else's.
+///
+/// Read by `daemon::uds::serve` and driven to its refusal, over a real WebSocket, by the
+/// daemon's subscription suite.
+pub const RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION: u32 = 8;
+
+/// How many events the daemon's fan-out holds for a subscriber that has fallen behind.
+///
+/// One event source, N subscribers (design D10's two subscriptions; P5c's browser client is
+/// the N). The hop this bounds is the **first** one — between the thread or actor producing
+/// events and each subscription's own task — and it exists because the producer must never
+/// be able to wait on a consumer: a hotplug watch that blocked would stop reading the
+/// kernel's socket, and a sweep that blocked would hold a camera at one value because a
+/// progress bar went away, which is exactly what [`PROGRESS_QUEUE_DEPTH`] refuses one crate
+/// down.
+///
+/// **One number for both streams, deliberately.** What it bounds is not a property of
+/// either producer but of a *subscriber*: how far behind the slowest one may fall before it
+/// starts losing events. Two constants would be two answers to one question, and the two
+/// producers are already bounded by their own numbers — [`MAX_SWEEP_SAMPLES`] and a hotplug
+/// burst's node count.
+///
+/// Deliberately larger than [`WS_MESSAGE_BUFFER_CAPACITY`]: this queue is shared by every
+/// subscriber and that one is per subscription, so a fan-out bound at or below the
+/// per-connection bound would make the shared queue the thing that always fails first, and
+/// a slow subscriber would cost the others their events rather than only its own.
+///
+/// Read by `daemon::events`, once per stream.
+pub const SUBSCRIPTION_BROADCAST_DEPTH: usize = 256;
+
+// The relation the paragraph above argues, checked where both numbers are: a shared fan-out
+// no deeper than one connection's private buffer would make one slow subscriber the reason
+// another one lagged, which is the property the fan-out exists to provide.
+const _: () = assert!(SUBSCRIPTION_BROADCAST_DEPTH > WS_MESSAGE_BUFFER_CAPACITY as usize);
+
+/// How long the daemon's hotplug thread waits in one `HotplugWatch::next_event` call.
+///
+/// Not a poll interval and not a cadence: `next_event` blocks in `poll(2)` on the uevent
+/// socket for the whole of it and answers the moment a burst settles, so this is how often
+/// the loop gets a turn to notice it should stop rather than how often the tree is read.
+/// A deadline that arrives first is `Ok(None)`, which is an answer and not an error (E3),
+/// so the cost of a quiet second is one loop iteration.
+///
+/// One second, chosen from the only thing it trades: a longer deadline makes the loop's
+/// turn rarer and a shorter one spends turns on a socket that is usually silent. It is
+/// **not** a bound on how quickly an event is delivered — the socket wakes the poll — which
+/// is why nothing here is sized against a human's patience.
+///
+/// Read by `daemon::events`, which is the only loop that owns a watch, and **driven** by the
+/// daemon's subscription suite: `a_hotplug_watch_runs_only_while_somebody_is_listening`
+/// drops the last subscriber and waits for the watch thread to publish that it has left,
+/// which it can only do on the turn this deadline gives it. That wait is bounded by this
+/// number and by nothing else, so a build that changed it changes what the suite waits for —
+/// which is what makes this a bound rather than a number (rubric A8).
+pub const HOTPLUG_WATCH_DEADLINE_MS: u64 = 1_000;
+
 /// How many `accept` calls may fail in a row before the daemon stops accepting.
 ///
 /// An accept error is usually about one client (`ECONNABORTED`: it hung up between
@@ -202,6 +310,74 @@ const _: () = assert!(CAMERA_IDLE_SWEEP_MS > 0 && CAMERA_IDLE_SWEEP_MS < CAMERA_
 /// together never collide; a caller past it is told the camera is busy — which is the
 /// refusal D12 names — rather than made to wait for a queue nobody bounded.
 pub const CAMERA_COMMAND_QUEUE_DEPTH: usize = 8;
+
+/// How long a request that asked to *wait* for a place in that queue is willing to wait.
+///
+/// D12's sentence has two halves — "a second capture request queues **or** is refused with
+/// `Busy` per its `wait` flag" — and this is the bound the waiting half needs. AGENTS
+/// requires one of anything that waits, and the reason is [`CAMERA_COMMAND_QUEUE_DEPTH`]'s
+/// one layer out: a wait nobody bounded is the same wedge as a queue nobody bounded, moved
+/// from the daemon's memory to the caller's patience.
+///
+/// Ten seconds is chosen from what it sits between, and both ends are numbers in this
+/// module rather than intuitions. The command in front can take a whole
+/// [`DEFAULT_SETTLE_DEADLINE_MS`] plus a [`FRAME_DEADLINE_MS`] before it lets go — seven
+/// seconds at its own worst case — so anything shorter would refuse a caller who was
+/// waiting for exactly the one thing waiting can help with. And a *sweep* is minutes of
+/// camera time (`MAX_SWEEP_SAMPLES` photos), so nothing in this range could outlast one:
+/// `wait: true` behind a calibration is still `Error::Busy`, which is the honest answer
+/// rather than a request that never comes back.
+///
+/// What it does **not** promise is a place at the back of a full queue: eight commands each
+/// taking their own worst case would need far longer than this. The flag buys the caller
+/// the wait for *room*, not the wait for the whole queue — and the refusal it takes when the
+/// budget is spent is the same [`crate::Error::Busy`] a caller that never asked to wait
+/// takes immediately, so the flag changes when the answer arrives and never what it is.
+///
+/// Read by `engine::actor::Enqueue::waiting`, which is the shipped deadline the daemon's
+/// `wch_photo` hands to `CameraActor::submit_with`; a test that wants to talk about a
+/// particular instant hands in its own.
+pub const CAMERA_ENQUEUE_WAIT_MS: u64 = 10_000;
+
+// Checked where all three numbers are, in `CAMERA_IDLE_SWEEP_MS`'s tradition, because the
+// paragraph above is an argument about the *relation*: a wait budget shorter than the
+// worst case of the command in front of it would spend the flag's whole purpose, and
+// nothing else in this workspace reads these three together.
+const _: () = assert!(CAMERA_ENQUEUE_WAIT_MS > DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS);
+
+/// How many requests may be *parked* waiting for a place in a camera's queue at once.
+///
+/// [`CAMERA_ENQUEUE_WAIT_MS`] bounds how long one waiter waits; this bounds how many there
+/// are, and without it the first bound is worth nothing. A wait for a place in the command
+/// queue parks a thread by construction — the queue is a `std::sync::mpsc::SyncSender` and
+/// the wake-up is a `Condvar` (note **N56**) — so in the daemon each waiter holds one of
+/// tokio's blocking-pool threads, and *every other* blocking thing the daemon does
+/// (enumeration, the session tree, opening a photo's destination) draws on the same pool.
+/// Unbounded waiters are therefore an unbounded queue in front of every verb, which is
+/// exactly what this build's story says a client cannot cause.
+///
+/// **It is [`DAEMON_MAX_CONNECTIONS`] because that is the number the transport used to
+/// enforce and stopped.** Before the WebSocket surface, one connection answered one request
+/// at a time, so the parked-thread count could not exceed the connection count; jsonrpsee's
+/// WebSocket transport spawns a task per inbound message and caps nothing per connection
+/// (measured against jsonrpsee-server 0.26.0, note **N56**'s amendment), so one connection
+/// can hold thousands in flight. Making the permit pool exactly the old number keeps the
+/// arithmetic that used to be true, and makes it true by construction rather than by an
+/// accident of which transport a client chose.
+///
+/// A request past it is **not** made to wait for a permit — waiting for permission to wait
+/// is a second unbounded queue. It takes the enqueue a caller that never asked to wait
+/// takes: served if there is room right now, [`crate::Error::Busy`] if there is not. So the
+/// flag degrades to its own `false` under load, and the refusal vocabulary does not grow.
+///
+/// Read by `daemon::server`'s permit pool, and driven past its bound — over one WebSocket
+/// connection, behind a camera an in-flight sweep is provably holding — by the daemon's
+/// subscription suite.
+pub const CAMERA_ENQUEUE_WAITERS: u32 = 32;
+
+// The paragraph above is an argument about a *relation* between two numbers, so it is
+// checked where both of them are rather than believed.
+const _: () = assert!(CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS);
 
 /// The device-profile document version (design T3).
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;

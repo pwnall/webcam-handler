@@ -19,3 +19,7 @@ parm = "parm"
 # `/proc/<pid>/status`'s `CapInh:` line, quoted verbatim in a measurement transcript
 # \[PF:21\]. A transcript that was corrected is not a transcript.
 Inh = "Inh"
+# `O_WRONLY`, as `rustix::fs::OFlags::WRONLY` spells it. POSIX's name for the flag the
+# daemon opens a photo's destination with (note N51's discharge); a flag name we do not
+# get to correct, in code and in the note that explains it.
+WRONLY = "WRONLY"

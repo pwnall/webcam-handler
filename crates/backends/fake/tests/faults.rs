@@ -34,6 +34,8 @@ fn every_fault_in_the_menu_is_observable() {
             Fault::FrameTimeout => frame_timeout(),
             Fault::HotplugAdd => hotplug_add(),
             Fault::HotplugRemove => hotplug_remove(),
+            Fault::WatchUnavailable => watch_unavailable(),
+            Fault::WatchFails => watch_fails(),
         }
     }
 }
@@ -67,8 +69,10 @@ fn no_fault_fires_unless_it_was_scripted() {
         "an unscripted stream settles"
     );
 
-    // HotplugAdd, HotplugRemove.
-    let mut watch = backend.watch().expect("watch");
+    // HotplugAdd, HotplugRemove, WatchUnavailable, WatchFails.
+    let mut watch = backend
+        .watch()
+        .expect("an unscripted host gives a watch out");
     assert_eq!(watch.next_event(Instant::now()).expect("poll"), None);
 }
 
@@ -260,6 +264,80 @@ fn hotplug_remove() {
     assert!(
         matches!(&event, Some(HotplugEvent::Removed { path }) if !path.as_str().is_empty()),
         "{event:?}"
+    );
+}
+
+fn watch_unavailable() {
+    let backend = backend();
+    backend.queue_fault(Fault::WatchUnavailable);
+
+    let error = backend.watch().expect_err("this host has no watch to give");
+    // `DeviceIo` and not `DeviceGone`: E3 keeps "the machine will not give me a watch"
+    // apart from "the camera is gone", and this backend's cameras are all still here —
+    // which is asserted rather than argued, one line down.
+    assert!(matches!(&error, Error::DeviceIo { .. }), "{error}");
+    assert!(!backend.enumerate().expect("enumeration").is_empty());
+
+    // One shot: the next caller gets a watch, which is what makes a daemon's "the next
+    // subscriber starts a fresh watch" reachable.
+    backend.watch().expect("a watch after the refusal");
+}
+
+fn watch_fails() {
+    let backend = backend();
+    let mut watch = backend.watch().expect("watch");
+    // A watch that was handed out fine and then stops, which is the direction with a
+    // consumer behind it: the daemon's watch thread ends its subscribers' streams over it
+    // (note **N59**).
+    backend.queue_fault(Fault::WatchFails);
+
+    let error = watch
+        .next_event(Instant::now())
+        .expect_err("the watch stopped working");
+    assert!(matches!(&error, Error::DeviceIo { .. }), "{error}");
+    // Checked before the events, so a failure is not overtaken by a queued arrival.
+    backend.queue_faults(&[Fault::WatchFails, Fault::HotplugAdd]);
+    assert!(
+        watch.next_event(Instant::now()).is_err(),
+        "a queued arrival was answered by a watch that had failed"
+    );
+}
+
+#[test]
+fn the_watch_waits_for_a_scripted_event_and_gives_the_deadline_back_when_none_comes() {
+    // The behaviour P4e-i corrected, both directions (note **N57**). `HotplugWatch` says
+    // `next_event` blocks until an event or until the deadline; this fake used to answer
+    // `Ok(None)` instantly whatever it was given, which made a caller that loops — the
+    // daemon's watch thread — a spin at 100% of a core, and made
+    // `testkit::battery`'s "the deadline is honored" arm vacuous.
+    //
+    // **Nothing here sleeps.** The waiting arm ends when *this test* scripts a fault, which
+    // is a signal from the subject; the deadline arm is the trait's own bound, driven with
+    // a deadline that has already passed so that "it returned rather than blocked" needs no
+    // clock at all and no duration to elapse.
+    let backend = backend();
+    let mut watch = backend.watch().expect("watch");
+
+    // A generous budget nothing reaches: the wait ends on the notification, so this bound
+    // is one-sided and a build that ignored it would fail by *timing out*, not by racing.
+    let generous = Instant::now() + Duration::from_secs(60);
+    let waiting = std::thread::spawn(move || (watch.next_event(generous), watch));
+    backend.queue_fault(Fault::HotplugAdd);
+    let (event, mut watch) = waiting.join().expect("the watching thread");
+    assert!(
+        matches!(event.expect("poll"), Some(HotplugEvent::Added { .. })),
+        "a scripted event did not end the wait"
+    );
+
+    // And the other direction, with no fault to find: an already-spent deadline is a zero
+    // wait rather than a block or a panic, which is the same shape
+    // `v4l2::watch`'s own suite pins for the real one.
+    let began = Instant::now();
+    assert_eq!(watch.next_event(Instant::now()).expect("poll"), None);
+    assert!(
+        began.elapsed() < Duration::from_secs(30),
+        "a spent deadline was waited out: {:?}",
+        began.elapsed()
     );
 }
 
