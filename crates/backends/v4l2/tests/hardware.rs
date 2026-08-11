@@ -160,11 +160,22 @@ fn hw_controls_enumerate_on_every_node_without_panicking() {
 fn hw_enumeration_matches_the_committed_profile() {
     // Drift is a finding either way: the corpus is stale, or the kernel changed
     // behaviour, and both are worth knowing (design §3.1 R3).
+    //
+    // **What "matches" means is not decided here** — it is
+    // `CameraInfo::differing_fields` in the schema, which is also what
+    // `DeviceProfile::invariant_matches` uses under the capture arm below, so the two R3
+    // arms cannot drift apart into two answers (design §2.10). Read that function for the
+    // argument; the short version is that `/dev/videoN` is probe order, this rung is the
+    // one that renumbers it (the uvcvideo cycle further down this file), and asserting the
+    // kernel's names as identity made three of four cameras red for nothing on
+    // 2026-08-11 [PF:22, note N63]. The node *count* and each node's kind and caps are
+    // still asserted, because those are what a device changing shape looks like.
     let Some((_, cameras)) = attached() else {
         return;
     };
 
     let mut matched = 0usize;
+    let mut renumbered = 0usize;
     let mut unknown = Vec::new();
     for info in &cameras {
         let Some((name, profile)) = committed_for(info) else {
@@ -173,19 +184,42 @@ fn hw_enumeration_matches_the_committed_profile() {
         };
         matched += 1;
 
-        assert_eq!(
-            profile.invariant.info.nodes, info.nodes,
-            "{name}: the attached camera's node set differs from the committed profile"
+        let committed = &profile.invariant.info;
+        let differing = committed.differing_fields(info);
+        assert!(
+            differing.is_empty(),
+            "{name}: the attached camera differs from the committed profile in \
+             {differing:?}\ncommitted: {committed:#?}\nattached: {info:#?}"
         );
-        assert_eq!(
-            profile.invariant.info.card, info.card,
-            "{name}: card name drift"
+
+        // The paths are printed rather than asserted, and printed *because* they are not
+        // asserted: a rung that silently ignores a field is one nobody can audit, and this
+        // is the line that puts the renumbering in the transcript where PF:22's evidence
+        // came from in the first place.
+        let moved: Vec<String> = committed
+            .nodes
+            .iter()
+            .zip(info.nodes.iter())
+            .filter(|(was, now)| was.path != now.path)
+            .map(|(was, now)| format!("{} → {}", was.path, now.path))
+            .collect();
+        if moved.is_empty() {
+            println!("{name}: enumeration matches the committed profile");
+        } else {
+            renumbered += 1;
+            println!(
+                "{name}: enumeration matches the committed profile; its node paths were \
+                 reassigned by the kernel and are not identity [PF:22]: {}",
+                moved.join(", ")
+            );
+        }
+    }
+
+    if renumbered > 0 {
+        println!(
+            "{renumbered} of {matched} matched camera(s) sit at different /dev/videoN \
+             paths than when their profile was captured, and none of them changed"
         );
-        assert_eq!(
-            profile.invariant.info.bus_info, info.bus_info,
-            "{name}: bus_info drift"
-        );
-        println!("{name}: enumeration matches the committed profile");
     }
 
     if !unknown.is_empty() {
@@ -213,6 +247,13 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
     // G1's criterion, as a test rather than as a transcript: a fresh capture must equal
     // the committed one in the invariant section, and *differ* in provenance. The state
     // block is excluded by construction — the camera has been used since.
+    //
+    // This arm is the second consumer of the same comparison the arm above uses:
+    // `invariant_matches` compares formats, controls and pairs exactly and hands the
+    // `info` half to `CameraInfo::differing_fields`. It had the identical defect and
+    // never got to show it, because the suite stopped at the first failure — `capture`
+    // copies `camera.info()` verbatim into the invariant section, node paths and all, so
+    // the old `self.invariant == other.invariant` compared them too [PF:22, note N63].
     let Some((backend, cameras)) = attached() else {
         return;
     };
@@ -243,10 +284,15 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
 
         assert!(
             fresh.invariant_matches(&committed),
-            "{name}: a fresh capture's invariant section differs from the committed one.\n\
+            "{name}: a fresh capture's invariant section differs from the committed one \
+             (info: {:?}).\n\
              Either the corpus is stale or the kernel changed behaviour — both are \
              findings, and neither is fixed by re-capturing without saying why.\n\
              committed: {:#?}\nfresh: {:#?}",
+            committed
+                .invariant
+                .info
+                .differing_fields(&fresh.invariant.info),
             committed.invariant,
             fresh.invariant
         );

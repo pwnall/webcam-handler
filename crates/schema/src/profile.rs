@@ -5,8 +5,11 @@
 //!
 //! - the **invariant** description — identity, nodes, formats, the control set with its
 //!   menus, ranges and non-volatile flags, and the automation pairs measured on the
-//!   device. This is what "the corpus still resembles the device" means, and it compares
-//!   exactly.
+//!   device. This is what "the corpus still resembles the device" means. Formats,
+//!   controls and pairs compare exactly; the `info` half compares by
+//!   [`crate::camera::CameraInfo::differing_fields`], because the one field in here that
+//!   is not invariant is the `/dev/videoN` path the kernel hands out in probe order
+//!   \[PF:22, note **N63**\].
 //! - the **state** block — current control values and the INACTIVE-class flags, which
 //!   change with use \[PF:3, PF:4\]. Re-capturing a profile after a sweep must not read as
 //!   corpus drift, so this compares loosely or not at all.
@@ -110,9 +113,35 @@ impl DeviceProfile {
     /// Compares the invariant section only. Provenance and state are excluded by
     /// construction, which is what lets the G1 criterion — "`profile capture` reproduces
     /// the committed profile" — be true of a camera someone has been using.
+    ///
+    /// The `info` half goes through [`CameraInfo::differing_fields`] rather than through
+    /// `==`, because one field inside this "invariant" section is not invariant:
+    /// `/dev/videoN` is probe order, and a `uvcvideo` reload renumbered three of four
+    /// attached cameras without any of them changing \[PF:22, note **N63**\]. That
+    /// comparison is the one home for the rule; this method is its second consumer, and
+    /// spelling the exclusion again here would be the second copy AGENTS forbids.
     #[must_use]
     pub fn invariant_matches(&self, other: &DeviceProfile) -> bool {
-        self.invariant == other.invariant
+        // Destructured, not `==`, and destructured on both sides so that a new field on
+        // `ProfileInvariant` stops compiling here until somebody says whether it compares
+        // exactly or by rule.
+        let ProfileInvariant {
+            info,
+            formats,
+            controls,
+            measured_pairs,
+        } = &self.invariant;
+        let ProfileInvariant {
+            info: other_info,
+            formats: other_formats,
+            controls: other_controls,
+            measured_pairs: other_pairs,
+        } = &other.invariant;
+
+        info.describes_same_device(other_info)
+            && formats == other_formats
+            && controls == other_controls
+            && measured_pairs == other_pairs
     }
 
     /// The control descriptor for a slug, from the invariant section.
@@ -239,6 +268,31 @@ mod tests {
         }
     }
 
+    /// A profile of a two-node camera sitting at the given paths.
+    ///
+    /// The caps words are the OBSBOT's, measured 2026-08-11: a capture node and a
+    /// metadata node, unchanged across the reload that moved them.
+    fn profile_with_nodes(paths: &[&str; 2]) -> DeviceProfile {
+        use crate::camera::{DeviceNode, NodeKind};
+
+        let mut out = profile(Vec::new());
+        out.invariant.info.nodes = vec![
+            DeviceNode {
+                path: paths[0].into(),
+                kind: NodeKind::VideoCapture,
+                device_caps: 0x0420_0001,
+                capabilities: 0x84a0_0001,
+            },
+            DeviceNode {
+                path: paths[1].into(),
+                kind: NodeKind::MetaCapture,
+                device_caps: 0x0480_0000,
+                capabilities: 0x84a0_0001,
+            },
+        ];
+        out
+    }
+
     #[test]
     fn using_the_camera_does_not_read_as_corpus_drift() {
         // The T3 split, as the property it exists for: the same device, sampled before
@@ -252,6 +306,45 @@ mod tests {
             "state changes must not count as drift"
         );
         assert_ne!(fresh.state, used.state, "…but the state block did change");
+    }
+
+    #[test]
+    fn renumbering_the_nodes_does_not_read_as_corpus_drift_either() {
+        // The second consumer of `CameraInfo::differing_fields`, and the reason it has to
+        // be the *same* function: this is the arm that never ran on 2026-08-11, because
+        // the enumeration arm failed first and the suite stopped. `capture` copies
+        // `camera.info()` verbatim, so a `self.invariant == other.invariant` compared the
+        // kernel's node names as well [PF:22, note N63].
+        let committed = profile_with_nodes(&["/dev/video4", "/dev/video5"]);
+        let after_reload = profile_with_nodes(&["/dev/video0", "/dev/video1"]);
+        assert_ne!(
+            committed.invariant.info.nodes, after_reload.invariant.info.nodes,
+            "the fixture has to differ in the field under test"
+        );
+        assert!(
+            committed.invariant_matches(&after_reload),
+            "a uvcvideo reload renamed the nodes; nothing about the device moved"
+        );
+
+        // The inverse, at this layer rather than at the schema's: a node that vanished is
+        // a device that changed, and this method has to carry that through.
+        let mut lost = after_reload.clone();
+        lost.invariant.info.nodes.pop();
+        assert!(!committed.invariant_matches(&lost));
+
+        // …and the halves that still compare exactly are still compared exactly, so
+        // routing `info` through a rule cannot be mistaken for loosening the section.
+        let mut refprofile = committed.clone();
+        refprofile
+            .invariant
+            .formats
+            .push(crate::camera::FormatInfo {
+                pixel_format: crate::camera::PixelFormat::MJPG,
+                description: "Motion-JPEG".to_owned(),
+                flags: 0,
+                sizes: Vec::new(),
+            });
+        assert!(!committed.invariant_matches(&refprofile));
     }
 
     #[test]

@@ -5553,6 +5553,9 @@ sequence and still leave a subscriber holding a tree the kernel does not have.
   the same order, so the arm's insistence on fingerprints and on shapes rather than names is
   *correct by argument* and has never been exercised by a kernel that disagreed. A guard
   that exists and has not fired.
+  **Fired since (2026-08-11), see \[PF:22\] and note N63:** a later reload rotated three of
+  the four cameras through each other's minors. This arm's fingerprint-and-shape discipline
+  held; the R3 *enumeration* arm, which asserted the names, did not.
 - **The receive-buffer overrun path has never fired.** `Received::Overrun` is a modelled
   outcome and the flood claim is a unit test against a socket, not a kernel: three
   independently captured cycles fitted the default 212992-byte buffer \[PF:21\], and no run
@@ -6848,3 +6851,200 @@ verify` is not run — docs/9's gaps register says why); that the units behave u
 manager, since `wchd.service` is a **user** unit and this run used the user manager; or
 anything about the substitution window on the inherited path, which is closed by the unit's
 `DirectoryMode=0700` and not by this daemon (N39's amendment of the same date).
+
+---
+
+## PF:22 — `/dev/videoN` is probe-order bookkeeping: a `uvcvideo` reload renumbered three of four cameras and changed nothing about any of them
+
+**Measured** 2026-08-11 on kernel `7.0.0-29-generic` (x86_64), four cameras attached — the
+same host and hardware as PF:19 and E9. Continues the docs/6 §1.2 registry; cite it as
+`[PF:22]`.
+
+**Design §1.2 gets no new bullet, following the convention PF:17–21 already set.** That
+section's bullets run PF:1–16, and its own header states the rule: a new finding "always
+lands first" here, "before a revision of this document absorbs it". Five entries have
+landed that way since; this is the sixth, and the next v2 revision absorbs them together
+or not at all. §1.2 also already carries the sentence this entry measures — *"Node
+numbering (`/dev/video0` vs `video1`) is never load-bearing"* — so what changed is not the
+design's claim but the evidence for it, and the fact that the code disagreed.
+
+The reload is not hypothetical here. This project's own R3 hotplug arm (E9, docs/7 P4d)
+unloads and reloads `uvcvideo` through `wch-priv` as part of its evidence run — so the
+event that renumbers the nodes is one the test suite *performs*, several times a session.
+
+### The measurement
+
+`./target/debug/wch list --json` against `corpus/profiles/*.json`, matched by fingerprint:
+
+| profile | committed nodes | live nodes | `card` | `bus_info` |
+|---|---|---|---|---|
+| `chicony-rgb` | `/dev/video0,1` | `/dev/video2,3` | unchanged | unchanged |
+| `chicony-ir` | `/dev/video2,3` | `/dev/video4,5` | unchanged | unchanged |
+| `obsbot-tiny3` | `/dev/video4,5` | `/dev/video0,1` | unchanged | unchanged |
+| `dell-u3224kb` | `/dev/video6,7,8,9` | unchanged | unchanged | unchanged |
+
+Three of four cameras moved. The Dell did not, and the `bus_info` column says why without
+having to be a separate measurement: it hangs off a different PCI root
+(`usb-0000:00:0d.0-3.4.1.1`, the dock) from the three on `usb-0000:00:14.0`, and it kept
+the four highest minors — the shape you get when a reprobe reorders one controller's
+devices and leaves another's alone. Do not read the Dell's row as "docked cameras are
+stable"; read it as "one controller was reprobed and one was not". The three that did move
+moved as a **rotation** — the OBSBOT went first this time — which is exactly what "probe
+order" means, and exactly what no re-capture can pin down.
+
+Nothing else moved. For the OBSBOT the two sides are byte-identical but for the path:
+
+```
+left:  [DeviceNode { path: "/dev/video4", kind: VideoCapture, device_caps: 69206017, capabilities: 2225078273 }, DeviceNode { path: "/dev/video5", kind: MetaCapture, … }]
+right: [DeviceNode { path: "/dev/video0", kind: VideoCapture, device_caps: 69206017, capabilities: 2225078273 }, DeviceNode { path: "/dev/video1", kind: MetaCapture, … }]
+```
+
+`card`, `bus_info`, the node count, and every node's `kind`, `device_caps` and
+`capabilities` survived on all four. So did every fingerprint: `bus_path` is the sysfs USB
+*interface* path (`3-1:1.0`) and not a minor number [PF:13], which is why all four profiles
+still found their camera to be compared against at all.
+
+### The transcript, from the arm that used to assert the names
+
+`just smoke-hw`, same session, after the comparison moved. The rung prints every path that
+moved precisely because it no longer asserts it — a field a test silently ignores is one
+nobody can audit, and this is where the next reading of this finding will come from:
+
+```
+obsbot-tiny3: enumeration matches the committed profile; its node paths were reassigned by the kernel and are not identity [PF:22]: /dev/video4 → /dev/video0, /dev/video5 → /dev/video1
+chicony-rgb:  enumeration matches the committed profile; its node paths were reassigned by the kernel and are not identity [PF:22]: /dev/video0 → /dev/video2, /dev/video1 → /dev/video3
+chicony-ir:   enumeration matches the committed profile; its node paths were reassigned by the kernel and are not identity [PF:22]: /dev/video2 → /dev/video4, /dev/video3 → /dev/video5
+dell-u3224kb: enumeration matches the committed profile
+3 of 4 matched camera(s) sit at different /dev/videoN paths than when their profile was captured, and none of them changed
+
+Summary [  53.484s] 16 tests run: 16 passed, 910 skipped
+smoke-hw: 7 claim(s) declined by tests that ran — each named above
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+The Dell prints the unadorned line, because its four paths did not move. Sixteen of sixteen
+green with the other three still rotated, motor arms included (owner ruling, 2026-08-08),
+and the seven partial skips are the Chicony IR camera's usual control-poverty declines —
+the same seven as before this change.
+
+### What it means for the code
+
+Node numbering can be *displayed*, *opened*, and *recorded as provenance*. It can never be
+**asserted as identity** against anything captured on another boot — which the R3
+enumeration arm was doing, and which is what made it red on this date about a machine on
+which nothing had happened. The comparison moved; the corpus did not. Note **N63** carries
+that argument and `CameraInfo::differing_fields` carries it in the code.
+
+**Retires when:** a kernel is measured that assigns `/dev/videoN` from something stable
+across a driver reload — a device property rather than a probe counter. Nothing in
+`uvcvideo` or in the v4l2 core suggests one is coming; minors come from
+`video_register_device`'s first free slot.
+
+**Adjacent:** E9's "What it does not establish" lists *"Node renumbering is untested …
+a guard that exists and has not fired"*. It has now fired, on the arm above it rather than
+inside E9's own cycle; E9 carries a pointer.
+
+---
+
+## N63 — The profile's section is called `invariant` and one field in it is not: `/dev/videoN` moved, so the comparison moved rather than the corpus
+
+**Believed:** that `ProfileInvariant` earned its name field by field — that "the part of a
+profile that should not change unless the device or the kernel does" could be compared with
+`==`, as `DeviceProfile::invariant_matches` did, and that `CameraInfo`'s node list was a
+description of the device. The R3 enumeration arm believed it twice over, asserting
+`profile.invariant.info.nodes == info.nodes` directly.
+
+**True:** `CameraInfo::nodes` is two claims wearing one type. Per node, `kind`,
+`device_caps` and `capabilities` say what the device *is*; `path` says what the kernel
+happened to call it on the boot the capture was taken. The first is invariant. The second
+is a counter.
+
+**What was measured:** PF:22, 2026-08-11. One `uvcvideo` unload/reload — the cycle this
+project's *own* R3 hotplug arm performs as evidence (E9) — rotated three of the four
+attached cameras through each other's node numbers with `card`, `bus_info`, node counts and
+every caps word unchanged. `hw_enumeration_matches_the_committed_profile` went red for all
+three. `hw_profile_capture_reproduces_the_committed_invariant_section` had the identical
+defect and never got to show it: `engine::profile::capture` copies `camera.info()` verbatim
+into the invariant section, node paths included, so `self.invariant == other.invariant`
+compared them too — but nextest fails fast by default and the whole `hw_` suite runs
+single-threaded in the `exclusive-device` group, so the enumeration arm's failure ended the
+run before the capture arm was reached. One defect, two arms, one report. Both are green
+now with the same four cameras attached and the paths still rotated.
+
+**Changed:** the comparison, in one place. `CameraInfo::differing_fields` joins
+`CameraFingerprint::differing_fields` in `crates/schema/src/camera.rs` with the same
+signature idiom and the same sentence — "the fields where `self` and `other` disagree, in a
+stable order". It compares the fingerprint (through that neighbour, so PF:8's
+absent-serial rule is not re-spelled), `card`, `driver`, `bus_info`, `backend`, the node
+**count**, and per node `kind`/`device_caps`/`capabilities`. It does not compare `path`.
+`invariant_matches` calls it for the `info` half and keeps `==` for formats, controls and
+pairs; the R3 enumeration arm calls it directly. Both sides destructure rather than
+field-access, so a new field on either struct stops compiling until somebody decides which
+half it belongs to — the one home (design §2.10) enforced by the compiler rather than by
+memory.
+
+### Why the schema did not change
+
+`DeviceNode.path` stays. It is capture-time provenance, it is what the fake backend replays
+(a statement about the machine a profile came from, not a claim about this one), and it is
+what a refusal has to name when a node cannot be opened. Deleting it to make a comparison
+correct would be fixing the wrong artifact — and it would silently move
+`schemas/webcam-handler-schema.json` and every committed profile.
+
+### Why a re-capture is not the fix
+
+This is the sentence worth writing down, because re-capturing is the obvious move and it is
+wrong. A re-capture bakes *today's* arbitrary numbering into the corpus and produces a
+green run that means nothing; the next reload breaks it again, and this project performs
+that reload deliberately. Worse, it would teach the habit that corpus red means "re-capture
+until green", which is the exact failure the arm's own message warns about ("neither is
+fixed by re-capturing without saying why"). The corpus was never stale. Profiles are
+immutable once committed (AGENTS: "re-capture replaces wholesale") and there was nothing to
+replace: the four documents describe the four cameras correctly, and did on both sides of
+the reload.
+
+### Why this is a test defect and not a data loss
+
+`CameraFingerprint` — `bus_path`/`usb_id`/`card`/`driver`/`serial` — holds no node path,
+and `CameraFingerprint::slug` is what keys D9's session directories. A calibration session
+recorded before a reload still finds its camera afterwards, and `calibrate apply`'s
+conservative match never consulted a minor number. Nothing persisted was ever keyed on the
+thing that moved; only an assertion was.
+
+### `CameraId` is excluded too, and that one is unmeasured
+
+`assign_ids` hands out collision ordinals over the card names of *every* attached camera in
+enumeration order, and enumeration order is node order — the thing PF:22 says the kernel
+reassigns. So on a host with two identically-named cameras, a reload could swap which is
+`cam:webcam` and which is `cam:webcam-2` with neither device changing: the same defect in a
+second costume. `CameraId`'s own doc already says it is "never persisted as identity". It
+costs nothing to drop from the comparison, because the only device-derived input to an id
+is `card`, which *is* compared. Unlike the path finding this one has not been observed — no
+two attached cameras collide on this host — so it is named here rather than claimed as
+measured, and it is written down because the next reviewer will otherwise re-derive it.
+
+### Both directions
+
+The hardware arm is `#[ignore]`d and needs a camera, so the population comparison is
+exercised over values in `crates/schema`, which is where the both-directions proof lives:
+`a_renumbered_node_is_not_drift_because_dev_video_n_is_probe_order`,
+`a_camera_that_changed_shape_still_goes_red_at_every_field_that_describes_it`,
+`identity_still_has_to_match_and_the_report_names_which_half_moved`,
+`a_camera_id_is_not_compared_because_it_is_derived_from_the_whole_topology`, and
+`renumbering_the_nodes_does_not_read_as_corpus_drift_either` for the second consumer.
+
+All eight checks the function spells — `card`, `driver`, `bus_info`, `backend`,
+`nodes.len`, and per node `kind`, `device_caps`, `capabilities` — were removed one at a
+time and the suite watched to go red on that check alone (AGENTS rule 2); the ninth,
+`fingerprint`, is delegated and carries its neighbour's own arms. Two whole implementations
+are worth naming because they are the two ways to get this wrong: **the defect as it
+stood**, `nodes` compared with `==`, which the renumbering arm catches; and **the
+over-correction**, the node set dropped entirely, which the shape arms catch and which
+would have made R3 green and worthless.
+
+The enumeration arm also *prints* every path that moved rather than passing over it in
+silence, because a rung that quietly ignores a field is one nobody can audit — and that
+line is where PF:22's next transcript will come from.
+
+**Retires when:** PF:22 does, or when `/dev/videoN` becomes load-bearing somewhere the
+comparison would have to follow.

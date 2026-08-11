@@ -368,6 +368,145 @@ impl CameraInfo {
     pub fn capture_node(&self) -> Option<&DeviceNode> {
         self.nodes.iter().find(|n| n.kind == NodeKind::VideoCapture)
     }
+
+    /// The fields where `self` and `other` describe **different devices**, in a stable
+    /// order.
+    ///
+    /// Empty means "these two descriptions are of the same camera in the same shape" —
+    /// the same idiom, and the same sentence, as [`CameraFingerprint::differing_fields`]
+    /// one type up. This is the one home (design §2.10) for "does the attached camera
+    /// still match its committed profile": both R3 arms that ask it — the enumeration arm
+    /// directly, [`crate::profile::DeviceProfile::invariant_matches`] underneath the
+    /// capture arm — go through here rather than spelling a comparison twice.
+    ///
+    /// # `/dev/videoN` is deliberately not compared \[PF:22\]
+    ///
+    /// Node numbering is probe-order bookkeeping, not a property of the device. Design
+    /// §1.2 already says it "is never load-bearing", and PF:7 says a camera is a group of
+    /// nodes sharing a USB interface rather than a path — but a `==` over
+    /// [`CameraInfo::nodes`] compares [`DeviceNode::path`] along with everything else, so
+    /// the rule and the code disagreed.
+    ///
+    /// Measured 2026-08-11 on this host, after one `uvcvideo` unload/reload of exactly the
+    /// kind this project's own R3 hotplug arm performs (evidence E9): three of the four
+    /// attached cameras changed every path they own — `chicony-rgb` `video0,1` →
+    /// `video2,3`, `chicony-ir` `video2,3` → `video4,5`, `obsbot-tiny3` `video4,5` →
+    /// `video0,1`, the Dell unchanged only because it hangs off a different PCI root —
+    /// while `card`, `bus_info` and every node's `kind`, `device_caps` and `capabilities`
+    /// were identical on both sides. Nothing about any device had changed. The kernel had
+    /// renamed three of them.
+    ///
+    /// **The rejected fix is re-capturing the profiles**, which is the obvious one and is
+    /// wrong: it bakes today's arbitrary numbering into the corpus, and the next reload —
+    /// which this project performs *deliberately*, as R3 evidence — breaks it again. The
+    /// corpus is not stale. The comparison was. Note **N63**.
+    ///
+    /// The path stays in the schema regardless: it is capture-time provenance, and the
+    /// fake backend replays it, which is a statement about the machine the profile came
+    /// from and not a claim about this one.
+    ///
+    /// # What still has to match, because a device really can change shape
+    ///
+    /// The node **count**, and per node the `kind`, `device_caps` and `capabilities` —
+    /// everything that says what the node *is*. A camera that grew a node, lost one, or
+    /// reclassified one goes red here, which is what makes PF:19's four-node Dell and
+    /// PF:7's two-logical-cameras-per-USB-device checkable at all. Dropping the node set
+    /// rather than the paths would have made the R3 arm green and worthless.
+    ///
+    /// A count mismatch reports `nodes.len` and stops there rather than also walking the
+    /// pairs: one inserted node shifts every later index, and a screenful of consequent
+    /// mismatches buries the one fact that explains them.
+    ///
+    /// # [`CameraId`] is excluded, and for a neighbouring reason
+    ///
+    /// An id is derived from the card names of **every** camera attached at enumeration
+    /// time: [`assign_ids`] hands out collision ordinals, so a second identically-named
+    /// camera decides whether this one is `cam:webcam` or `cam:webcam-2`, and which of the
+    /// two gets the ordinal follows enumeration order — which is node order, which is the
+    /// thing that just moved. `CameraId`'s own documentation says it is "never persisted
+    /// as identity". Comparing it against a corpus entry captured on some other day's
+    /// topology is therefore the same defect in a second costume, and it costs nothing to
+    /// drop, because the only device-derived input to an id is `card`, which is compared
+    /// right here. Unlike the path finding this one is *unmeasured* — no two attached
+    /// cameras collide on this host — so it is named rather than claimed.
+    ///
+    /// # Why this is a test defect and not a data-loss bug
+    ///
+    /// [`CameraFingerprint`] — which keys D9's session directories through
+    /// [`CameraFingerprint::slug`] — is `bus_path`/`usb_id`/`card`/`driver`/`serial` and
+    /// holds no node path at all. A calibration session recorded before a reload still
+    /// finds its camera afterwards. Nothing persisted was ever keyed on the number.
+    #[must_use]
+    pub fn differing_fields(&self, other: &CameraInfo) -> Vec<String> {
+        // Destructured rather than field-accessed so that this function stops compiling
+        // the day `CameraInfo` grows a field: a new field is a decision about which half
+        // of this split it belongs to, and the compiler is the only thing that reliably
+        // asks for it. `id` here and `DeviceNode::path` in the node loop are bound to `_`
+        // rather than omitted, precisely so the two exclusions are visible in the code
+        // instead of being inferred from what is missing from it.
+        let CameraInfo {
+            id: _,
+            fingerprint,
+            card,
+            driver,
+            bus_info,
+            nodes,
+            backend,
+        } = self;
+
+        let mut out = Vec::new();
+        // Reused rather than re-derived, so PF:8's rule that an absent serial is not a
+        // disagreement holds in both comparisons at once.
+        out.extend(
+            fingerprint
+                .differing_fields(&other.fingerprint)
+                .into_iter()
+                .map(|field| format!("fingerprint.{field}")),
+        );
+        if *card != other.card {
+            out.push("card".to_owned());
+        }
+        if *driver != other.driver {
+            out.push("driver".to_owned());
+        }
+        if *bus_info != other.bus_info {
+            out.push("bus_info".to_owned());
+        }
+        if nodes.len() == other.nodes.len() {
+            for (index, (mine, theirs)) in nodes.iter().zip(other.nodes.iter()).enumerate() {
+                let DeviceNode {
+                    path: _,
+                    kind,
+                    device_caps,
+                    capabilities,
+                } = mine;
+                if *kind != theirs.kind {
+                    out.push(format!("nodes[{index}].kind"));
+                }
+                if *device_caps != theirs.device_caps {
+                    out.push(format!("nodes[{index}].device_caps"));
+                }
+                if *capabilities != theirs.capabilities {
+                    out.push(format!("nodes[{index}].capabilities"));
+                }
+            }
+        } else {
+            out.push("nodes.len".to_owned());
+        }
+        if *backend != other.backend {
+            out.push("backend".to_owned());
+        }
+        out
+    }
+
+    /// Whether these two descriptions are of the same camera in the same shape.
+    ///
+    /// [`CameraInfo::differing_fields`] carries the argument for what "the same" means
+    /// here and what it deliberately ignores.
+    #[must_use]
+    pub fn describes_same_device(&self, other: &CameraInfo) -> bool {
+        self.differing_fields(other).is_empty()
+    }
 }
 
 /// A pixel format, as its FourCC.
@@ -855,6 +994,150 @@ mod tests {
         assert_eq!(
             reversed.capture_node().expect("a capture node").path,
             "/dev/video8"
+        );
+    }
+
+    /// The OBSBOT's measured node shape, at whatever paths the caller names.
+    ///
+    /// The caps words are the ones `wch list --json` reported on 2026-08-11 — a capture
+    /// node and a metadata node, byte-identical before and after the reload that moved
+    /// them from `video4,5` to `video0,1`.
+    fn obsbot_at(paths: [&str; 2]) -> CameraInfo {
+        let mut info = grouped(&[(paths[0], CAP_VIDEO_CAPTURE), (paths[1], CAP_META_CAPTURE)]);
+        info.card = "OBSBOT Tiny 3: OBSBOT Tiny 3 St".to_owned();
+        info.bus_info = "usb-0000:00:14.0-1".to_owned();
+        info.fingerprint.card.clone_from(&info.card);
+        info.nodes[0].device_caps = 0x0420_0001;
+        info.nodes[1].device_caps = 0x0480_0000;
+        for node in &mut info.nodes {
+            node.capabilities = 0x84a0_0001;
+        }
+        info
+    }
+
+    #[test]
+    fn a_renumbered_node_is_not_drift_because_dev_video_n_is_probe_order() {
+        // PF:22, note N63, and the measurement itself: one `uvcvideo` unload/reload — the
+        // cycle this project's own R3 hotplug arm performs (E9) — moved the OBSBOT from
+        // /dev/video4,5 to /dev/video0,1 with `card`, `bus_info` and every node's kind and
+        // caps identical on both sides. Nothing about the device changed, so the
+        // comparison must say nothing changed.
+        let committed = obsbot_at(["/dev/video4", "/dev/video5"]);
+        let live = obsbot_at(["/dev/video0", "/dev/video1"]);
+        assert_ne!(
+            committed.nodes[0].path, live.nodes[0].path,
+            "the fixture has to actually differ in the field under test"
+        );
+        assert_eq!(
+            committed.differing_fields(&live),
+            Vec::<String>::new(),
+            "a renumbering is not a device change"
+        );
+        assert!(committed.describes_same_device(&live));
+    }
+
+    #[test]
+    fn a_camera_that_changed_shape_still_goes_red_at_every_field_that_describes_it() {
+        // The inverse of the test above, and the reason this comparison is not simply
+        // "ignore the node list": the count and the per-node kind and caps *are* the
+        // claim. Each direction is arranged from the same measured baseline, so a
+        // comparison that had quietly stopped looking at nodes fails all four.
+        let committed = obsbot_at(["/dev/video4", "/dev/video5"]);
+
+        // A camera that grew a node. Paths chosen to overlap the committed ones, so the
+        // only thing that can produce the mismatch is the count.
+        let mut grew = committed.clone();
+        grew.nodes.push(DeviceNode {
+            path: Utf8PathBuf::from("/dev/video6"),
+            kind: NodeKind::VideoCapture,
+            device_caps: 0x0420_0001,
+            capabilities: 0x84a0_0001,
+        });
+        assert_eq!(committed.differing_fields(&grew), vec!["nodes.len"]);
+
+        // …and one that lost one. Both directions, because a comparison written as
+        // "every committed node is present" would pass this half.
+        let mut lost = committed.clone();
+        lost.nodes.pop();
+        assert_eq!(committed.differing_fields(&lost), vec!["nodes.len"]);
+
+        // A node that changed what it is for. PF:7: kind is decided by device_caps, so a
+        // node whose caps moved reports both — the classification and the word behind it.
+        let mut reclassified = committed.clone();
+        reclassified.nodes[1].device_caps = CAP_VIDEO_CAPTURE;
+        reclassified.nodes[1].kind = NodeKind::from_device_caps(CAP_VIDEO_CAPTURE);
+        assert_eq!(
+            committed.differing_fields(&reclassified),
+            vec!["nodes[1].kind", "nodes[1].device_caps"]
+        );
+
+        // And the whole-device capabilities word, which differs from device_caps on a
+        // multi-node device and is kept for exactly that reason.
+        let mut recapped = committed.clone();
+        recapped.nodes[0].capabilities = 0x8420_0001;
+        assert_eq!(
+            committed.differing_fields(&recapped),
+            vec!["nodes[0].capabilities"]
+        );
+    }
+
+    #[test]
+    fn identity_still_has_to_match_and_the_report_names_which_half_moved() {
+        // The half the R3 arm was right to assert all along: `card` and `bus_info` are
+        // what survived the reload, so they are what a mismatch means something by.
+        let committed = obsbot_at(["/dev/video4", "/dev/video5"]);
+
+        let mut renamed = committed.clone();
+        renamed.card = "OBSBOT Tiny 2".to_owned();
+        assert_eq!(committed.differing_fields(&renamed), vec!["card"]);
+
+        let mut moved = committed.clone();
+        moved.bus_info = "usb-0000:00:14.0-4".to_owned();
+        assert_eq!(committed.differing_fields(&moved), vec!["bus_info"]);
+
+        // The driver too, which is the field that would move if this camera were bound by
+        // something other than `uvcvideo` — a different driver is a different set of
+        // measured behaviours, and every PF entry in the registry is about one of them.
+        let mut rebound = committed.clone();
+        rebound.driver = "uvcvideo_next".to_owned();
+        assert_eq!(committed.differing_fields(&rebound), vec!["driver"]);
+
+        // The fingerprint is reported through its own comparison rather than a second
+        // copy of it, so its fields arrive prefixed and PF:8's absent-serial rule holds
+        // here too.
+        let mut replugged = committed.clone();
+        replugged.fingerprint.bus_path = "3-4:1.0".to_owned();
+        replugged.fingerprint.serial = Some("0001".to_owned());
+        assert_eq!(
+            committed.differing_fields(&replugged),
+            vec!["fingerprint.bus_path"],
+            "an appearing serial is an absence filled in [PF:8], not a disagreement"
+        );
+
+        // Nothing is compared "for completeness": the backend that produced a description
+        // is part of it, because a fake-backend capture must never read as a hardware one.
+        let mut faked = committed.clone();
+        faked.backend = crate::backend::BackendKind::Fake;
+        assert_eq!(committed.differing_fields(&faked), vec!["backend"]);
+    }
+
+    #[test]
+    fn a_camera_id_is_not_compared_because_it_is_derived_from_the_whole_topology() {
+        // `assign_ids` hands out collision ordinals over every attached card, so which of
+        // two identical cameras is `-2` follows enumeration order — the same node order
+        // that PF:22 says the kernel reassigns. The id carries no fact about *this*
+        // device that `card` does not, and `card` is compared, so dropping it weakens
+        // nothing. The second line is what makes that claim checkable rather than
+        // asserted: the ordinal really does move with the order.
+        let committed = obsbot_at(["/dev/video4", "/dev/video5"]);
+        let mut reordered = committed.clone();
+        reordered.id = CameraId::parse("cam:obsbot-tiny-3-obsbot-tiny-3-st-2").expect("literal");
+        assert_eq!(committed.differing_fields(&reordered), Vec::<String>::new());
+
+        let cards = cards(&["OBSBOT Tiny", "OBSBOT Tiny"]);
+        assert_eq!(
+            bodies(&assign_ids(&cards)),
+            vec!["obsbot-tiny", "obsbot-tiny-2"]
         );
     }
 
