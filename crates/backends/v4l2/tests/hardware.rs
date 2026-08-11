@@ -81,6 +81,92 @@ fn committed_for(info: &schema::camera::CameraInfo) -> Option<(String, DevicePro
         .map(|(path, profile)| (path.file_stem().unwrap_or("?").to_owned(), profile))
 }
 
+/// The committed profiles no attached camera matched, by file stem.
+///
+/// The mirror of the `unknown` list both corpus arms already print, and it was missing.
+/// Each arm walks *attached cameras* and asks the corpus about them, so a profile whose
+/// device is not on this desk is never visited and never mentioned: on 2026-08-11 three
+/// of four profiles were compared and the fourth — `dell-u3224kb`, whose monitor was off
+/// the bus — went unnamed in a transcript that read as full coverage. AGENTS rule 3 wants
+/// that skip named and counted, and PF:23 is why it is worth the ten lines: the device
+/// that changed what it advertises did so while nobody was looking at it, so "which
+/// profiles did today's run actually check" is the number that bounds the claim.
+///
+/// `expect` rather than the `.ok()?` its neighbour uses: a corpus that will not load is
+/// what `testkit::corpus`'s own doc calls a loud failure, and swallowing it here would
+/// let a broken corpus print "no attached camera matches a committed profile" and pass.
+fn committed_without_a_device(cameras: &[schema::camera::CameraInfo]) -> Vec<String> {
+    corpus::load_all()
+        .expect("the committed corpus loads")
+        .into_iter()
+        .filter(|(_, profile)| {
+            !cameras.iter().any(|info| {
+                profile
+                    .invariant
+                    .info
+                    .fingerprint
+                    .matches(&info.fingerprint)
+            })
+        })
+        .map(|(path, _)| path.file_stem().unwrap_or("?").to_owned())
+        .collect()
+}
+
+/// Say the same sentence about coverage in both corpus arms, so the two cannot drift into
+/// two accounts of what a run left unchecked.
+fn report_unchecked_profiles(cameras: &[schema::camera::CameraInfo]) {
+    let unchecked = committed_without_a_device(cameras);
+    if unchecked.is_empty() {
+        return;
+    }
+    println!(
+        "SKIP (partial): {} committed profile(s) match no camera attached to this host, \
+         so this arm did not check them against a device: {}",
+        unchecked.len(),
+        unchecked.join(", ")
+    );
+}
+
+/// The format tree as one line: sizes nested under pixel formats, and under each size the
+/// number of frame rates and the fastest of them.
+///
+/// Printed on the way *past* rather than only on failure, for the reason the enumeration
+/// arm prints every node path it no longer asserts: the transcript of the last green run
+/// is where the next drift's "before" column comes from. On 2026-08-11 there was no such
+/// column — the OBSBOT's shrink from seven sizes to six had to be re-derived out of the
+/// committed JSON by hand, because every previous green run had said only that the two
+/// sides matched \[PF:23\].
+fn offered_modes(invariant: &schema::profile::ProfileInvariant) -> String {
+    invariant
+        .formats
+        .iter()
+        .map(|entry| {
+            let sizes: Vec<String> = entry
+                .sizes
+                .iter()
+                .map(|offered| {
+                    let fastest = offered
+                        .intervals
+                        .iter()
+                        .filter_map(schema::camera::FrameInterval::fps)
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    let rates = offered.intervals.len();
+                    match offered.size {
+                        schema::camera::FrameSize::Discrete { width, height } => {
+                            format!("{width}x{height} {rates} rate(s) to {fastest:.0}fps")
+                        }
+                        // A stepwise or uninterpretable size is carried, not dropped, so
+                        // the line has to be able to say so rather than skip the entry.
+                        ref other => format!("{other:?} {rates} rate(s) to {fastest:.0}fps"),
+                    }
+                })
+                .collect();
+            format!("{} [{}]", entry.pixel_format, sizes.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[test]
 #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
 fn hw_controls_enumerate_on_every_node_without_panicking() {
@@ -229,6 +315,7 @@ fn hw_enumeration_matches_the_committed_profile() {
             unknown.join(", ")
         );
     }
+    report_unchecked_profiles(&cameras);
     // A host whose cameras are not in the corpus is a host this arm has nothing to say
     // about, which the module doc promises and an `assert!(matched > 0)` broke: it turned
     // "different hardware" into a red run. The claim is conditional by design — *if* a
@@ -286,13 +373,24 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
             fresh.invariant_matches(&committed),
             "{name}: a fresh capture's invariant section differs from the committed one \
              (info: {:?}).\n\
-             Either the corpus is stale or the kernel changed behaviour — both are \
-             findings, and neither is fixed by re-capturing without saying why.\n\
+             committed offers: {}\n\
+             fresh offers:     {}\n\
+             Three things do this and they are not answered the same way: the corpus is \
+             stale, the kernel changed behaviour, or the device changed what it \
+             advertises. The third is the one this tool cannot tell from the other two \
+             on its own, and it is what happened on 2026-08-11, when the OBSBOT stopped \
+             advertising 3840x2160 and 120 fps with nothing about this code or this \
+             kernel having moved [PF:23]. Read the device's own frame descriptors — \
+             `lsusb -d VID:PID -v | grep -E 'wWidth|wHeight|dwFrameInterval'` — because \
+             that answer comes from the hardware without passing through anything here. \
+             None of the three is fixed by re-capturing without saying why.\n\
              committed: {:#?}\nfresh: {:#?}",
             committed
                 .invariant
                 .info
                 .differing_fields(&fresh.invariant.info),
+            offered_modes(&committed.invariant),
+            offered_modes(&fresh.invariant),
             committed.invariant,
             fresh.invariant
         );
@@ -301,12 +399,21 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
             "{name}: a re-capture must carry its own provenance"
         );
         compared += 1;
-        println!("{name}: a fresh capture reproduces the committed invariant section");
+        // What matched, not just that something did: a green line reading only "matches"
+        // is what every run before 2026-08-11 printed, and it left the next reader with
+        // no record of what the device used to offer [PF:23].
+        println!(
+            "{name}: a fresh capture reproduces the committed invariant section; it \
+             offers {}, {} control(s)",
+            offered_modes(&fresh.invariant),
+            fresh.invariant.controls.len()
+        );
     }
 
     if compared == 0 {
         println!("SKIP: no attached camera matches a committed profile, so nothing was compared");
     }
+    report_unchecked_profiles(&cameras);
 }
 
 #[test]

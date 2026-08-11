@@ -841,8 +841,10 @@ impl V4l2Camera {
 
     /// Every size this format offers, with the intervals available *at that size*.
     ///
-    /// The nesting is not decoration: the OBSBOT offers MJPG to 3840×2160 while YUYV
-    /// stops at 640×480 on the same cable, so a flat list would be a lie \[PF:9\].
+    /// The nesting is not decoration: the OBSBOT reaches far higher in MJPG than in YUYV
+    /// on the same cable — 3840×2160 against 640×480 when PF:9 measured it, 1920×1440
+    /// against 640×480 since the device stopped advertising 4K \[PF:9, PF:23\] — so a
+    /// flat list would be a lie.
     fn sizes_for(&self, pixel_format: PixelFormat) -> Result<Vec<FrameSizeInfo>> {
         let fourcc = pixel_format.to_fourcc();
         let mut sizes = Vec::new();

@@ -7767,3 +7767,305 @@ down beside the rate. A measurement with no load stated is not evidence about a 
 left the process — at which point the tail has nothing to collect and both the drain and
 `CLIENT_SWEEP_DRAIN_MS` retire together. Until then, re-read this entry before deleting the
 tail on the strength of a quiet run: that is precisely how it came to be missing.
+
+---
+
+## PF:23 — The OBSBOT Tiny 3 stopped advertising 3840×2160 and 120 fps, and nothing on our side of the cable moved
+
+**Measured** 2026-08-11 on kernel `7.0.0-29-generic` (x86_64), against the OBSBOT Tiny 3
+(`3564:ff02`) at `3-1:1.0` — the same host, the same port, the same kernel and the same
+firmware string as the capture it contradicts. Continues the docs/6 §1.2 registry; cite it
+as `[PF:23]`.
+
+**Design §1.2 gets no new bullet**, following the convention PF:17–22 already set: a new
+finding lands here first, and the next v2 revision absorbs the accumulated entries together
+or not at all; this is the seventh waiting. §1.2 *is* touched, though, in a way the
+earlier six were not — **PF:9's bullet contains a sentence this entry falsifies**, and the
+distinction between its rule and its example is the first thing to get right, so it is dealt
+with below rather than left for a reader to notice.
+
+### The measurement
+
+`corpus/profiles/obsbot-tiny3.json` as committed on 2026-08-08 against a fresh
+`wch --backend v4l2 profile capture` on 2026-08-11. The `CameraInfo` half is identical —
+`CameraInfo::differing_fields` answers `[]` — and so is the control set: all 24 controls,
+byte for byte, in the invariant section. **Only the format tree moved.**
+
+| | committed 2026-08-08T16:19:01Z | fresh 2026-08-11T21:54:09Z |
+|---|---|---|
+| frame sizes | 7 | 6 |
+| interval entries | 48 | 32 |
+| controls | 24 | 24 |
+| `CameraInfo` fields differing | — | none |
+| file | 23,659 bytes | 21,364 bytes |
+
+Size by size, in the tree's own nesting:
+
+| format | size | rates, committed | rates, fresh |
+|---|---|---|---|
+| MJPG | 1920×1080 | 120, 60, 59.94, 50, 30, 29.97, 25, 24, 20, 15 | 60, 59.94, 50, 30, 29.97, 25, 24, 20, 15 |
+| MJPG | **3840×2160** | 30, 29.97, 25, 24, 20, 15 | **not offered** |
+| MJPG | 1280×720 | 120, 60, 59.94, 50, 30, 29.97, 25, 24, 20, 15 | 60, 59.94, 50, 30, 29.97, 25, 24, 20, 15 |
+| MJPG | 1280×960 | 30, 29.97, 25, 24, 20, 15 | unchanged |
+| MJPG | 1920×1440 | 30, 29.97, 25, 24, 20, 15 | unchanged |
+| YUYV | 640×360 | 30, 25, 24, 20, 15 | 30 |
+| YUYV | 640×480 | 30, 25, 24, 20, 15 | 30 |
+
+Sixteen interval entries went: six with the 4K mode, one each from the two sizes that
+offered 120 fps, and four each from the two uncompressed sizes. **The loss is at two
+different depths of the same tree** — a whole `FrameSizeInfo` at 3840×2160, and intervals
+inside `FrameSizeInfo`s that survived — and that shape matters for what can notice it, which
+the last section is about. The 4K mode is the headline and the uncompressed collapse from
+five rates to one is the part a summary loses; both are the device, and neither is a rounding
+of the other.
+
+### The device is the authority, and this evidence does not pass through our code
+
+AGENTS rule 4 says the device is the only authority on itself, so the finding is not allowed
+to rest on the tool that produced the disagreement. `lsusb -d 3564:ff02 -v` reads the
+descriptors off the wire and agrees exactly:
+
+```
+FORMAT_MJPEG          bFormatIndex 1   bNumFrameDescriptors 4
+  FRAME_MJPEG   1 1920x1080  bFrameIntervalType 9   fastest dwFrameInterval 166666  (60.0 fps)
+  FRAME_MJPEG   2 1280x720   bFrameIntervalType 9   fastest dwFrameInterval 166666  (60.0 fps)
+  FRAME_MJPEG   3 1280x960   bFrameIntervalType 6   fastest dwFrameInterval 333333  (30.0 fps)
+  FRAME_MJPEG   4 1920x1440  bFrameIntervalType 6   fastest dwFrameInterval 333333  (30.0 fps)
+FORMAT_UNCOMPRESSED   bFormatIndex 2   bNumFrameDescriptors 2   guid {32595559-…} (YUY2)
+  FRAME_UNCOMPRESSED 1 640x360  bFrameIntervalType 1   dwFrameInterval 333333  (30.0 fps)
+  FRAME_UNCOMPRESSED 2 640x480  bFrameIntervalType 1   dwFrameInterval 333333  (30.0 fps)
+```
+
+Six frame descriptors, largest 1920×1440, thirty-two `dwFrameInterval` entries, and the
+shortest interval anywhere is 166666 (100 ns units) — 60 fps. There is no 3840×2160
+descriptor and no 83333 to be found. **The kernel is not filtering a list the device sent;
+the device is not sending it.** That distinction is the whole finding: an ENUM_FRAMESIZES
+walk that came up short could be `uvcvideo` declining to expose something, and a
+`bNumFrameDescriptors` of 4 could not.
+
+### It is not a link-speed story, and the note must not become one
+
+The obvious reading — "it fell back to USB 2 and dropped the modes it cannot feed" — is
+wrong, and it is worth refusing explicitly because it is the reading a future reader will
+reach for. Both captures record `bus_path: "3-1:1.0"`. `/sys/bus/usb/devices/3-1/speed` is
+`480` and `/sys/bus/usb/devices/usb3` is a 480 Mbps, USB 2.00 bus, so the device is at high
+speed *now* — and the kernel log says it was at high speed then too. Every enumeration of
+this device on record, on both sides of the change, reads `new high-speed USB device` and
+`bcdDevice= 5.10`. `bNumConfigurations` is 1, so there is no second configuration for it to
+have switched into. **The camera advertised 3840×2160 over a 480 Mbps link on 2026-08-08 and
+declines to advertise it over the same 480 Mbps link today.**
+
+PF:9's bullet glosses the MJPG/YUYV gap as "(USB bandwidth)". That gloss is about why
+*uncompressed* stops early and it is not disturbed here; what is disturbed is the idea that
+the bus explains the *compressed* ceiling, because the bus did not move and the ceiling did.
+
+### It changed at one of four re-enumerations, and the record cannot say which
+
+The committed capture was taken at 2026-08-08 09:19:01 PDT, under the enumeration of
+2026-08-08 03:04:36. The journal has every enumeration of this device since:
+
+| enumeration | boot | speed / `bcdDevice` | relative to the captures |
+|---|---|---|---|
+| 2026-08-07 14:37:37 | −2 | high / 5.10 | before |
+| 2026-08-07 16:41:54 | −2 | high / 5.10 | before |
+| **2026-08-08 03:04:36** | −2 | high / 5.10 | **in force for the committed capture (4K present)** |
+| 2026-08-08 11:16:50 | −2 | high / 5.10 | between |
+| 2026-08-10 17:40:55 | −2 | high / 5.10 | between |
+| 2026-08-10 21:08:59 | −1 | high / 5.10 | between (clean reboot) |
+| **2026-08-11 12:57:10** | 0 | high / 5.10 | **in force for the fresh capture (4K absent)** |
+
+Four re-enumerations sit between the two captures, and the kernel log cannot tell them apart:
+same port, same speed, same device-release string, no configuration change. Nothing in the
+record identifies which of the four the device came back different from.
+
+The **power outage** is the last of them. Boot −2 ends with a recorded power-off sequence;
+boot −1's journal has none at all — it stops mid-minute at 12:50:05 on 2026-08-11 and boot 0
+begins 7 minutes later at 12:57:09, which is what an unplanned power loss looks like in a
+journal. So the outage is corroborated as an event, and it is the salient one: it
+power-cycled the camera rather than merely re-probing it, and a camera that lost its rail is
+a camera whose firmware re-ran whatever decides what to advertise.
+
+**That is an explanation, not a measurement, and it is not proved.** Three of the four
+re-enumerations are equally available as the moment it changed, and nothing was captured
+between 2026-08-08 and today that would narrow it. `bcdDevice` did not move, which rules out
+a firmware version change to the extent that field tracks one — and the device could have
+changed what it advertises without changing that field, so even the ruling-out is bounded.
+Do not upgrade this paragraph on re-reading: what is known is that the device advertises
+less, that it did so at some point in a window containing four re-enumerations, and that one
+of them was a power loss.
+
+### Why this is not N63's case, and why that entry does not govern here
+
+N63 carries a section headed **"Why a re-capture is not the fix"**, and it is emphatic: a
+re-capture "bakes *today's* arbitrary numbering into the corpus and produces a green run that
+means nothing", and it "would teach the habit that corpus red means 're-capture until
+green'". Both sentences are right. Neither applies to this finding, and a reader who takes
+them as a general rule against re-capture will read the two entries as contradicting each
+other. They do not, and the difference is not one of degree:
+
+- **There, the corpus was not stale.** N63's own words: "The four documents describe the four
+  cameras correctly, and did on both sides of the reload." The device had not changed; an
+  assertion had over-reached, and the artifact at fault was the comparison. **Here, the
+  corpus is stale in the strict sense** — it says the device offers 3840×2160, and the
+  device's own frame descriptors say it does not. A document that describes the device
+  wrongly is the one thing a corpus may not be.
+- **There, a re-capture would have recorded an arbitrary number.** `/dev/videoN` is a probe
+  counter; whatever a capture wrote down would be falsified by the next `uvcvideo` reload,
+  which this project *performs* as part of E9. **Here a re-capture records the device's own
+  answer** — six frame descriptors, thirty-two intervals — which is the same answer `lsusb`
+  gets independently and which nothing in this project can perturb.
+- **There, re-capturing would have been the fix for the wrong artifact.** Here it is the
+  sanctioned one: AGENTS rule 4, "new device behavior lands as a profile in `corpus/` + a
+  note, **the day it is seen**", and the §3.2 convention that profiles are immutable and a
+  re-capture replaces wholesale. Rule 4 does not have an exception for behavior that is a
+  loss.
+- **The habit N63 warns about is intact.** "Corpus red means re-capture until green" is a
+  habit about *not saying why*; the arm's own message says "neither is fixed by re-capturing
+  without saying why", and the operative clause is the last four words. This entry is the
+  why. What would have been the N63 failure is re-capturing on 2026-08-11 with a one-line
+  commit message, and that is not what happened.
+
+There is a small piece of evidence that the two entries fit together rather than merely
+coexisting. The re-capture also re-recorded the node paths, at today's `/dev/video0`,
+`/dev/video1` rather than the captured `/dev/video4`, `/dev/video5`. Under N63 that field is
+no longer compared, so re-baking it can neither help nor harm — and the transcript shows it:
+after this re-capture the OBSBOT prints the *unadorned* enumeration line while the two
+Chicony cameras still print PF:22's renumbering annotation. Nothing about the kernel changed
+between those three lines; one document was rewritten and two were not. That is what "inert
+data" looks like from the outside, and it is why the objection N63 raised to re-capturing
+cannot be raised against this one.
+
+### What the corpus loses, and where it survives
+
+The committed record of a 3840×2160 mode and of 120 fps at 1920×1080 and 1280×720 is **gone
+from `corpus/profiles/`**, and it survives in exactly two places: the table at the top of
+this entry, and git history at `9c8b46a:corpus/profiles/obsbot-tiny3.json`. The owner
+accepted that trade on 2026-08-11 (below). It is a real loss — a test can load a profile and
+cannot load a table — and the honest accounting is that the 4K/120 record is now prose,
+which §3.2 says is the weaker form.
+
+What the re-capture does **not** cost is any of the probe findings this document carries for
+the registry walk in `crates/backends/fake/tests/corpus_replay.rs`, which was the live risk
+of replacing a document wholesale. Checked, before and after:
+
+- **PF:2** — `auto_exposure`'s sparse menu, indices {1, 3}: present in both.
+- **PF:4** — `zoom_continuous` reading 245 against a declared `-100..=100`: present in both,
+  and this profile is the corpus's **only** carrier of PF:4.
+- **PF:5** — `power_line_frequency` defaulting to 3 against a declared `0..=2`: present in
+  both, and again the only carrier.
+- **PF:8** — a camera reporting no serial: present in both.
+- **PF:9** — a compressed format reaching a larger size than an uncompressed one: present in
+  both, because the predicate is the *rule* and not the number (see below).
+- **PF:3** — live INACTIVE coupling: **newly** carried by this document. The 2026-08-08
+  capture caught the camera with `white_balance_automatic` off; today's caught it on, so
+  `blue_balance`, `red_balance` and `white_balance_temperature` all carry `0x10` in the state
+  block. Two other profiles already carried PF:3, so this is a gain rather than a rescue.
+
+The state block moved as the T3 split promises it may: `pan_absolute` 0 → −28800 and
+`tilt_absolute` 0 → −75600 (the motors are where P3e's sweep left them), `red_balance`
+147 → 143, `white_balance_automatic` 0 → 1. None of that is drift and none of it is
+compared; it is here so nobody re-derives it from the diff.
+
+**PF:9's example, and only its example, is retired.** The bullet reads "The OBSBOT offers
+MJPG up to 3840×2160 while YUYV stops at 640×480 (USB bandwidth) — frame-size enumeration
+must be nested under pixel format." The rule is untouched and is still asserted from a real
+document rather than from that sentence: `corpus_replay.rs`'s PF:9 row is "a compressed
+format reaching a larger size than an uncompressed one", which the OBSBOT satisfies today at
+1920×1440 against 640×480, and which two other profiles satisfy independently. The two doc
+comments that spelled the old numbers as present tense — `FormatInfo` in
+`crates/schema/src/camera.rs` and `V4l2Camera::sizes_for` in
+`crates/backends/v4l2/src/lib.rs` — now give both readings and cite both entries, which moved
+one line each in `schemas/webcam-handler-schema.json` and `schemas/webcam-handler-openrpc.json`.
+`crates/testkit/src/fixtures.rs` keeps 3840×2160: that document is a hand-built fixture
+carrying the *shape* of each edge and is not a claim about an attached device, which is why
+§3.2 keeps it out of `corpus/`.
+
+### The ruling
+
+**Re-capture, replacing wholesale.** Owner's decision, 2026-08-11, taken with the loss above
+stated: `corpus/profiles/obsbot-tiny3.json` is replaced by
+`wch --backend v4l2 profile capture`, not hand-edited, with provenance naming why
+("victor@costan.us (re-capture: the device stopped advertising 3840x2160 and 120 fps,
+PF:23)"). The diff is 11 insertions and 100 deletions.
+
+### What now notices this, and what deliberately does not change
+
+The class this finding names — **a device that silently stops offering a mode** — is now
+known to be real, and a green corpus arm says nothing about it. Three things changed and one
+thing was considered and refused.
+
+**No new gate, and the argument is that the detector already exists and worked.** The class
+is observable only against the device, so no predicate on a machine without one can see it;
+`just ci` runs on a host with no camera by design. The sensor is
+`hw_profile_capture_reproduces_the_committed_invariant_section`, it went red on 2026-08-11
+for exactly the right reason, and its message said in advance that a red here is a finding
+rather than a chore. A second sensor for the same signal would be two answers to one question
+(design §2.10), and the corpus's green after a sanctioned re-capture is not a weakened claim
+— **the corpus is the assertion**, and it now asserts something true where it previously
+asserted something false. What the day exposed is not a missing detector but three gaps
+around it:
+
+1. **The comparison's constraint on the format tree was untested below the top level.**
+   `invariant_matches` compares `formats` with `==`, and the only existing arm exercising that
+   pushed a whole new `FormatInfo`. `a_mode_the_device_stopped_advertising_reads_as_drift` in
+   `crates/schema/src/profile.rs` now pins both of today's depths: a size removed from a
+   format that still exists, and an interval removed from a size that still exists — the
+   second built so the size lists are *identical* on both sides, which is what makes it the
+   arm a shallower comparison would pass. Two buggy implementations were watched failing at
+   workspace scope (AGENTS rule 2): `formats` compared as a list of pixel formats, and — the
+   over-correction in N63's sense — `formats` compared down to sizes with the intervals
+   dropped. Each turned exactly one of 936 tests red, and it was this one, which is the
+   measurement that says nothing else in the workspace was holding that level.
+2. **The failure message named two hypotheses and today's cause was a third.** It said "the
+   corpus is stale or the kernel changed behaviour". Neither happened: the device changed what
+   it advertises, and no amount of reading our output distinguishes that from the other two.
+   The message now names three and points at `lsusb -v` on the frame descriptors, because that
+   is the step actually performed to reach this ruling and it is the only one whose answer does
+   not come through this code.
+3. **A green run left no record of what the device offered.** Every run before today printed
+   `obsbot-tiny3: a fresh capture reproduces the committed invariant section` — true, and
+   useless as a "before" column, which is why the shrink had to be reconstructed out of
+   committed JSON by hand. The arm now prints the shape it matched, the way the enumeration
+   arm prints the node paths it no longer asserts:
+
+   ```
+   obsbot-tiny3: a fresh capture reproduces the committed invariant section; it offers MJPG [1920x1080 9 rate(s) to 60fps, 1280x720 9 rate(s) to 60fps, 1280x960 6 rate(s) to 30fps, 1920x1440 6 rate(s) to 30fps] YUYV [640x360 1 rate(s) to 30fps, 640x480 1 rate(s) to 30fps], 24 control(s)
+   ```
+
+And one gap that is not about the format tree at all, found while answering "did anything else
+drift". Both corpus arms walk *attached cameras* and ask the corpus about each, so a committed
+profile whose device is not on the bus is never visited and was never mentioned: today three of
+four profiles were compared and `dell-u3224kb` — whose monitor is off the bus — went unnamed in
+a transcript that read as full coverage. That is AGENTS rule 3's "named, counted skip" missing
+in one direction while present in the other, and it matters *because* of this finding: the
+device that changed did so while nobody was looking at it, so "which profiles did this run
+actually check" is the number that bounds the claim. Both arms now end with
+
+```
+SKIP (partial): 1 committed profile(s) match no camera attached to this host, so this arm did not check them against a device: dell-u3224kb
+```
+
+### What would make the next one provable, and is not built here
+
+Nothing in a `DeviceProfile` could have decided between the four re-enumerations, because the
+document records nothing about the device that a re-enumeration could change. `bcdDevice`, the
+negotiated link speed, `bNumConfigurations` and the boot the capture was taken under are all
+absent, and all four had to be read out of `lsusb` and the journal by hand for this entry. A
+provenance block carrying them would have turned "the cause is unproved" into a narrower
+statement, and possibly into a measurement. It is **not** done here: `ProfileProvenance` is a
+wire type, so a new field moves `schemas/`, the OpenRPC document and every committed profile at
+once, and that is a schema change with an owner's decision in front of it rather than a
+tail-end of a corpus fix. Recorded so the next person with this problem does not re-derive the
+gap.
+
+**Retires when:** the OBSBOT advertises 3840×2160 or 120 fps again on a later enumeration —
+which would itself be the next finding, and a bigger one, because a capability that comes back
+is a device with a mode this project cannot predict and a corpus that cannot be trusted to be
+current between two captures. Also retires, differently, if a firmware release is identified
+that changed the descriptor set, at which point the cause stops being unproved and this becomes
+a dated record of one device's two firmwares rather than an open question.
+
+**Adjacent:** PF:22 and note N63 (the other 2026-08-11 corpus finding, and the entry whose
+"why a re-capture is not the fix" this one has to be read against); PF:9, whose example this
+retires and whose rule it leaves standing; PF:3, PF:4 and PF:5, whose only or partial carrier
+this document is; AGENTS rule 4, which is the whole authority for the ruling.

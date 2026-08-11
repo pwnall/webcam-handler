@@ -347,6 +347,92 @@ mod tests {
         assert!(!committed.invariant_matches(&refprofile));
     }
 
+    /// A profile of a camera offering one MJPG format with the given modes, each mode a
+    /// discrete size and the whole-number frame rates available *at that size*.
+    ///
+    /// The shape is the OBSBOT's, because that is the device PF:23 measured: sizes nested
+    /// under a pixel format and intervals nested under a size, so a mode can vanish at
+    /// either of the two inner levels.
+    fn profile_offering(modes: &[(u32, u32, &[u32])]) -> DeviceProfile {
+        use crate::camera::{FormatInfo, FrameInterval, FrameSize, FrameSizeInfo, PixelFormat};
+
+        let mut out = profile(Vec::new());
+        out.invariant.formats = vec![FormatInfo {
+            pixel_format: PixelFormat::MJPG,
+            description: "Motion-JPEG".to_owned(),
+            // V4L2_FMT_FLAG_COMPRESSED.
+            flags: 0x0001,
+            sizes: modes
+                .iter()
+                .map(|&(width, height, rates)| FrameSizeInfo {
+                    size: FrameSize::Discrete { width, height },
+                    intervals: rates
+                        .iter()
+                        .map(|&fps| FrameInterval::Discrete {
+                            numerator: 1,
+                            denominator: fps,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }];
+        out
+    }
+
+    #[test]
+    fn a_mode_the_device_stopped_advertising_reads_as_drift() {
+        // PF:23 as a property rather than as a transcript. Between 2026-08-08 and
+        // 2026-08-11 the OBSBOT Tiny 3 stopped advertising 3840×2160 at all and stopped
+        // offering 120 fps at the two sizes it kept — one loss at the *size* level and
+        // one at the *interval* level, from a device whose `CameraInfo` half was
+        // byte-identical across the two captures. Only the format tree moved.
+        //
+        // Both arms pass today, because `invariant_matches` compares `formats` with `==`.
+        // They are written down anyway, for the reason N63 gives for writing down its
+        // over-correction: the obvious next change to this method is a `formats` diff
+        // that *names* what moved, the way the `info` half got one, and such a diff has a
+        // characteristic wrong shape — it compares the size list and forgets that the
+        // intervals hang off it. The second arm is the one that catches that.
+        let modes: &[(u32, u32, &[u32])] = &[(1920, 1080, &[120, 60, 30]), (3840, 2160, &[30])];
+        let committed = profile_offering(modes);
+
+        // Non-vacuity first: two captures of an unchanged device still match. Without
+        // this, a builder that made every profile differ would satisfy both refusals.
+        assert!(
+            committed.invariant_matches(&profile_offering(modes)),
+            "the same modes twice are not drift"
+        );
+
+        // The size that vanished.
+        let no_4k = profile_offering(&[(1920, 1080, &[120, 60, 30])]);
+        assert!(
+            !committed.invariant_matches(&no_4k),
+            "a size the device stopped offering is the device changing shape"
+        );
+
+        // The interval that vanished, at a size the device kept. The size *list* is
+        // identical on both sides here, which is what makes this the arm a comparison
+        // written one level too shallow would let through.
+        let no_120 = profile_offering(&[(1920, 1080, &[60, 30]), (3840, 2160, &[30])]);
+        let sizes = |p: &DeviceProfile| -> Vec<crate::camera::FrameSize> {
+            p.invariant
+                .formats
+                .iter()
+                .flat_map(|f| f.sizes.iter().map(|entry| entry.size))
+                .collect()
+        };
+        assert_eq!(
+            sizes(&committed),
+            sizes(&no_120),
+            "this fixture has to differ from the committed one *only* in its intervals"
+        );
+        assert!(
+            !committed.invariant_matches(&no_120),
+            "a frame rate the device stopped offering is drift too, and it hides one \
+             level deeper than the size does"
+        );
+    }
+
     #[test]
     fn a_changed_range_does_read_as_drift() {
         // The inverse direction: if the *device* changes, the corpus must notice.

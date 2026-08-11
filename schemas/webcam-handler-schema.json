@@ -1684,7 +1684,7 @@
       ]
     },
     "FormatInfo": {
-      "description": "One pixel format and everything available in it.\n\nNesting is load-bearing: the OBSBOT offers MJPG up to 3840×2160 while YUYV stops at\n640×480 on the same cable, so a flat size list would be a lie [PF:9].",
+      "description": "One pixel format and everything available in it.\n\nNesting is load-bearing: the OBSBOT offers MJPG well past where YUYV stops on the same\ncable — 3840×2160 against 640×480 when PF:9 measured it, 1920×1440 against 640×480\ntoday — so a flat size list would be a lie [PF:9]. The numbers moved because the\ndevice stopped advertising its 4K mode and the corpus was re-captured [PF:23]; the\ngap they illustrate is what the nesting is for, and that did not.",
       "properties": {
         "description": {
           "description": "The driver's description string.",

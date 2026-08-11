@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "provenance": {
-    "captured_at": "2026-08-08T16:19:01.252812775Z",
+    "captured_at": "2026-08-11T21:54:09.425128405Z",
     "kernel": "7.0.0-29-generic",
     "tool_version": "0.1.0",
-    "capturer": "victor@costan.us (P1 corpus seed)",
+    "capturer": "victor@costan.us (re-capture: the device stopped advertising 3840x2160 and 120 fps, PF:23)",
     "backend": "v4l2"
   },
   "invariant": {
@@ -24,7 +24,7 @@
       "bus_info": "usb-0000:00:14.0-1",
       "nodes": [
         {
-          "path": "/dev/video4",
+          "path": "/dev/video0",
           "kind": {
             "kind": "video_capture"
           },
@@ -32,7 +32,7 @@
           "capabilities": 2225078273
         },
         {
-          "path": "/dev/video5",
+          "path": "/dev/video1",
           "kind": {
             "kind": "meta_capture"
           },
@@ -60,11 +60,6 @@
               "height": 1080
             },
             "intervals": [
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 120
-              },
               {
                 "kind": "discrete",
                 "numerator": 1,
@@ -115,54 +110,10 @@
           {
             "size": {
               "kind": "discrete",
-              "width": 3840,
-              "height": 2160
-            },
-            "intervals": [
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 30
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1003,
-                "denominator": 30060
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 25
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 24
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 20
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 15
-              }
-            ]
-          },
-          {
-            "size": {
-              "kind": "discrete",
               "width": 1280,
               "height": 720
             },
             "intervals": [
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 120
-              },
               {
                 "kind": "discrete",
                 "numerator": 1,
@@ -311,26 +262,6 @@
                 "kind": "discrete",
                 "numerator": 1,
                 "denominator": 30
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 25
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 24
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 20
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 15
               }
             ]
           },
@@ -345,26 +276,6 @@
                 "kind": "discrete",
                 "numerator": 1,
                 "denominator": 30
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 25
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 24
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 20
-              },
-              {
-                "kind": "discrete",
-                "numerator": 1,
-                "denominator": 15
               }
             ]
           }
@@ -992,7 +903,7 @@
       },
       "pan_absolute": {
         "kind": "int",
-        "value": 0
+        "value": -28800
       },
       "pan_speed": {
         "kind": "int",
@@ -1004,7 +915,7 @@
       },
       "red_balance": {
         "kind": "int",
-        "value": 147
+        "value": 143
       },
       "saturation": {
         "kind": "int",
@@ -1016,7 +927,7 @@
       },
       "tilt_absolute": {
         "kind": "int",
-        "value": 0
+        "value": -75600
       },
       "tilt_speed": {
         "kind": "int",
@@ -1024,7 +935,7 @@
       },
       "white_balance_automatic": {
         "kind": "int",
-        "value": 0
+        "value": 1
       },
       "white_balance_temperature": {
         "kind": "int",
@@ -1042,7 +953,7 @@
     "flags": {
       "auto_exposure": 0,
       "backlight_compensation": 4096,
-      "blue_balance": 4096,
+      "blue_balance": 4112,
       "brightness": 4096,
       "camera_controls": 68,
       "contrast": 4096,
@@ -1054,14 +965,14 @@
       "pan_absolute": 4096,
       "pan_speed": 4096,
       "power_line_frequency": 0,
-      "red_balance": 4096,
+      "red_balance": 4112,
       "saturation": 4096,
       "sharpness": 4096,
       "tilt_absolute": 4096,
       "tilt_speed": 4096,
       "user_controls": 68,
       "white_balance_automatic": 0,
-      "white_balance_temperature": 4096,
+      "white_balance_temperature": 4112,
       "zoom_absolute": 4096,
       "zoom_continuous": 4096
     }

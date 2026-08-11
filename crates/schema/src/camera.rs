@@ -759,8 +759,11 @@ pub struct FrameSizeInfo {
 
 /// One pixel format and everything available in it.
 ///
-/// Nesting is load-bearing: the OBSBOT offers MJPG up to 3840×2160 while YUYV stops at
-/// 640×480 on the same cable, so a flat size list would be a lie \[PF:9\].
+/// Nesting is load-bearing: the OBSBOT offers MJPG well past where YUYV stops on the same
+/// cable — 3840×2160 against 640×480 when PF:9 measured it, 1920×1440 against 640×480
+/// today — so a flat size list would be a lie \[PF:9\]. The numbers moved because the
+/// device stopped advertising its 4K mode and the corpus was re-captured \[PF:23\]; the
+/// gap they illustrate is what the nesting is for, and that did not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FormatInfo {
     /// The format.
