@@ -260,6 +260,33 @@ pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 /// Read by `daemon::shutdown`'s drain, which is the only thing that waits during a stop.
 pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 20_000;
 
+/// How much of the service manager's watchdog interval the daemon spends before pinging it.
+///
+/// systemd hands a `Type=notify` service `$WATCHDOG_USEC` and then kills it if no
+/// `WATCHDOG=1` arrives inside that window. Pinging *at* the interval is therefore a race the
+/// daemon loses on the first scheduling hiccup, and `sd_watchdog_enabled(3)` says so in as
+/// many words: send "in shorter intervals than the specified timeout, e.g. half". Two is that
+/// half, and it is the divisor rather than the halved number because the interval is the
+/// operator's — it arrives from the unit file at run time, so what belongs in this module is
+/// the *relation* between their number and ours.
+///
+/// **What a ping proves is smaller than it looks, and the honest size of it is stated where
+/// the number is.** `daemon::systemd`'s watchdog task is a tokio task that pings on a timer,
+/// so a ping means the runtime is still scheduling — it does not mean a camera answers, that
+/// the socket accepts, or that any request has ever completed. A watchdog that health-checked
+/// a device would have to open one, and D12's whole posture is that `wchd` running does not
+/// itself hold a camera; an availability check that took the camera would be the one failure
+/// mode it exists to prevent (AGENTS rule 7 — availability is not capability).
+///
+/// Read by `daemon::systemd::ping_interval`, which is the only thing that divides by it.
+pub const WATCHDOG_PING_DIVISOR: u32 = 2;
+
+// A divisor of zero is a panic in `Duration::checked_div`'s caller and a divisor of one is
+// the race the paragraph above is about — the daemon would ping exactly as its budget ran
+// out. Checked where the number is, in `CAMERA_IDLE_SWEEP_MS`'s tradition, because nothing
+// else reads it and a compile failure is the one red nothing can skip.
+const _: () = assert!(WATCHDOG_PING_DIVISOR > 1);
+
 /// How long an open camera may go unused before the next idle sweep closes it.
 ///
 /// D12's "the daemon never opens a camera until first use and closes on idle

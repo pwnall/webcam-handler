@@ -3,10 +3,43 @@
 //! > Logging: `tracing` everywhere; fmt layer foreground, journald layer (pure-Rust
 //! > protocol, no libsystemd) under systemd.
 //!
-//! P4b lands the first half. The journald layer arrives with the rest of the systemd
-//! integration (P4e-ii, the shutdown half of the split note N58 records), which is also
-//! where `sd_notify` and socket activation live; adding it here would put a later phase's
-//! criteria past their gate.
+//! P4b landed the first half; P4e-ii's second half lands the other, so both layers named in
+//! that sentence now exist and **this module is where the daemon chooses between them**.
+//!
+//! ## One layer, not two, and why that is the interesting part
+//!
+//! The obvious reading of design §2.6 is "install both and let each write where it writes".
+//! That is wrong, and measurably so: under systemd the daemon's **stderr already is the
+//! journal**, so a fmt layer beside a journald layer puts every line in the journal twice —
+//! once as a structured entry and once as a `_TRANSPORT=stdout` copy of the rendered text. So
+//! the choice is exclusive, and what decides it is not "are we under systemd" but the
+//! narrower question systemd itself documents: is *this process's stderr* the journal?
+//! `$JOURNAL_STREAM` carries a `device:inode` and the answer is a comparison against `fstat`
+//! of stderr — `crate::systemd::stderr_is_the_journal`, whose comparison is a pure function
+//! for the reason everything else in this workspace is (both directions have to be
+//! assertable, and neither can be arranged by a test that may not write the environment).
+//!
+//! Asking that narrow question is also what makes the daemon behave correctly in the case the
+//! broad one gets wrong: a `wchd` started from a unit but with its stderr redirected to a file
+//! inherits `$JOURNAL_STREAM` and is **not** on the journal, and a build that trusted the
+//! variable would send its whole log to a socket nobody is reading.
+//!
+//! **A journald layer that cannot be built is a `warn` and the fmt layer, never silence.**
+//! `tracing_journald::layer()` connects to `/run/systemd/journal/socket`, and a sandbox or a
+//! container can refuse that connect while `$JOURNAL_STREAM` still matches. Falling back is
+//! the direction AGENTS rule 3 requires: duplicated lines are noise, and a daemon logging into
+//! a socket that is not there is silence.
+//!
+//! ## Why this changes nothing about the rest of the suite
+//!
+//! Every subprocess test and shell predicate in this project learns that a daemon is up by
+//! **reading a line off its stderr** — `crates/daemon/tests/lock.rs`,
+//! `crates/daemon/tests/systemd.rs`, `scripts/gates/uds-permissions.sh` and
+//! `scripts/gates/socket-activation.sh`. None of them sets `$JOURNAL_STREAM`, and none of
+//! them is started by systemd, so [`install`] takes the fmt branch in all of them and the
+//! readiness line is exactly where it was. The one thing that *would* break them is a build
+//! that installed the journald layer on the strength of the variable being *set*, which is
+//! the failure the comparison above exists to prevent.
 //!
 //! ## Why installation lives in the composition root
 //!
@@ -36,6 +69,8 @@
 //! subject, because nothing in this module holds pixels.
 
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 /// The level the daemon logs at when the operator has not said otherwise.
 ///
@@ -47,20 +82,63 @@ use tracing_subscriber::EnvFilter;
 /// already misbehaving must not require a restart flag it was not started with.
 pub const DEFAULT_LOG_FILTER: &str = "info";
 
-/// Install the fmt layer on stderr. Called once, from `main`.
+/// Install the one layer this process should have. Called once, from `main`.
 ///
-/// Colour follows the terminal rather than the default (which is "always"): under systemd
-/// stderr is a journal socket, and escape sequences in a journal are noise nobody asked
-/// for.
+/// The journald layer when stderr already is the journal, the fmt layer otherwise — this
+/// module's header argues why that is exclusive rather than both, and why the question is
+/// about *this stderr* rather than about systemd.
+///
+/// The filter sits on the registry rather than on either layer, so `RUST_LOG` means the same
+/// thing on both paths: an operator raising the level on a misbehaving daemon must not get a
+/// different answer depending on how it was started.
 pub fn install() {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+    let registry = tracing_subscriber::registry().with(filter);
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    if crate::systemd::stderr_is_the_journal() {
+        match crate::systemd::journald_layer() {
+            Ok(journal) => {
+                registry.with(journal).init();
+                // After the subscriber exists, or the line that says which layer is
+                // installed would be the one line no layer carried.
+                tracing::debug!(
+                    "stderr is this process's journal stream; logging structured entries \
+                     through the journald layer instead of rendering them to stderr twice"
+                );
+                return;
+            }
+            Err(err) => {
+                // Not silence, and not a failure to start: the daemon logs somewhere.
+                registry.with(fmt_layer()).init();
+                tracing::warn!(
+                    error = %err,
+                    "stderr is this process's journal stream but the journald socket could \
+                     not be opened; falling back to rendering log lines on stderr, which \
+                     the journal will still capture as unstructured text"
+                );
+                return;
+            }
+        }
+    }
+
+    registry.with(fmt_layer()).init();
+}
+
+/// The fmt layer, on stderr.
+///
+/// Colour follows the terminal rather than the default (which is "always"): under systemd
+/// stderr is a journal socket, and escape sequences in a journal are noise nobody asked
+/// for. A function rather than a line in [`install`] because two branches build it — the
+/// ordinary one and the journald fallback — and two spellings of "how this daemon renders a
+/// log line" is how they come to differ.
+fn fmt_layer<S>() -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .init();
 }
 
 /// A `tracing` writer a test can read back.

@@ -1,0 +1,58 @@
+# The socket `wchd` serves, bound by systemd (docs/7 P4e-ii, design D11).
+#
+# A **user** socket unit, for the reason `wchd.service` gives at length: D11 puts the socket in
+# `$XDG_RUNTIME_DIR` and makes filesystem permissions on its directory the whole authentication
+# model, so this daemon belongs to one human and is reachable by them alone.
+#
+# Install as `~/.config/systemd/user/wchd.socket` beside `wchd.service`:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now wchd.socket
+#
+# After that the daemon is started by the first `wchc` that connects, and stops when it is
+# stopped — the socket stays listening either way, so nothing is lost by the daemon not
+# running, which is D12's whole argument for closing cameras on idle carried one level up.
+#
+# **What this unit is responsible for that the daemon cannot be.** `daemon::systemd` checks the
+# inherited socket's directory for 0700 and the right owner, with the same function the
+# self-bound path uses — but the bind already happened by then, so note N39's substitution
+# defence (hold the directory as a descriptor, bind relative to it) does not apply to an
+# activated socket. The daemon *detects*; `DirectoryMode=` below is what makes the directory
+# right in the first place. `scripts/gates/systemd-units.sh` asserts it, because a default
+# `DirectoryMode` here is 0755 and a `wchd` handed a socket in a 0755 directory refuses to
+# start rather than serving the camera to the machine.
+
+[Unit]
+Description=webcam-handler daemon socket
+Documentation=https://github.com/pwnall/webcam-handler
+
+[Socket]
+# `%t` is `$XDG_RUNTIME_DIR` for a user unit, and the two components after it are the two
+# constants the daemon composes the same path from: `engine::paths::APP_DIR` and
+# `schema::limits::DAEMON_SOCKET_FILE`. They are spelled out here because a unit file has no
+# way to ask a crate — which is exactly why `scripts/gates/systemd-units.sh` re-derives both
+# from the tree and compares, rather than trusting that this line was updated.
+ListenStream=%t/webcam-handler/wchd.sock
+
+# The socket inode, 0600. D11 is explicit that the *directory* is the boundary — `connect(2)`
+# checks search permission on every path component, and a socket created by `bind(2)` gets
+# `0777 & ~umask`, which is why `daemon::uds` asserts the directory's mode and deliberately
+# not the socket's. This is defence in depth rather than the model: it costs nothing and it
+# means a directory that is wrongly widened later still leaves the socket itself unwritable by
+# anybody else.
+SocketMode=0600
+
+# **The line that carries D11 on this path.** systemd creates the parent directories of
+# `ListenStream=` and the default mode is 0755 — every account on the machine could walk in
+# and reach the camera. 0700 is what `daemon::uds::SocketDir` asserts of a directory it
+# prepares itself, and `daemon::systemd::Activation::adopt` asserts of this one; a `wchd`
+# handed a socket in a wider directory refuses to start.
+DirectoryMode=0700
+
+# One connection does not mean one daemon: `wchd` serves many clients over one socket and
+# bounds them itself with `schema::limits::DAEMON_MAX_CONNECTIONS`, so systemd hands the
+# listening descriptor over once and stays out of the way.
+Accept=no
+
+[Install]
+WantedBy=sockets.target

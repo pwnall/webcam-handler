@@ -21,9 +21,9 @@ workspace = true
 # Arriving with the code that reads them, as everywhere else in this workspace — a
 # dependency nobody uses is the defect a constant nobody reads is (rubric A8), and
 # `cargo machete --with-metadata` is part of `just ci`. Design §2.8's inventory for this
-# crate also lists axum, tower-http and rust-embed (P5's web listener) and sd-notify,
-# listenfd and tracing-journald (P4e-ii's systemd integration); each arrives with the code
-# that reads it.
+# crate also lists axum, tower-http and rust-embed (P5's web listener), which arrive with
+# the code that reads them; its other three — sd-notify, listenfd and tracing-journald —
+# arrived here with P4e-ii's second half, and `daemon::systemd` is what reads all three.
 #
 # `jsonrpsee-server` rather than `jsonrpsee`'s `server` feature, and that is not a style
 # choice — note N38 has the measurement. `webcam-handler-api` depends on the facade, and
@@ -45,6 +45,15 @@ clap = { workspace = true, features = ["derive"] }
 # so this edge adds no feature to the shared `jsonrpsee` node (note N38).
 jsonrpsee = { workspace = true, features = ["server-core"] }
 jsonrpsee-server.workspace = true
+# Socket activation: the `LISTEN_FDS`/`LISTEN_PID` protocol, read once from the composition
+# root (`daemon::systemd::Activation`). Twenty lines of protocol we could have written, taken
+# as a dependency for the half that is not the protocol — `take_unix_listener` validates that
+# the descriptor systemd handed us really is a listening `AF_UNIX` stream socket before it
+# builds a `UnixListener` over it, which is the check that stops `from_raw_fd` on a passed-in
+# number being a lie this process then serves from. Apache-2.0. Its `libc` edge is its own:
+# this crate stays `#![forbid(unsafe_code)]` and adds no `libc` edge of its own (`rustix` is
+# the workspace's answer for that, note N39).
+listenfd.workspace = true
 # The `*at` family and `geteuid`, for note N39's socket-directory hardening: the directory
 # is held as a descriptor, `fstat`ed, and the socket bound relative to it, so what was
 # checked and what is served from are provably one inode rather than one name. `fs` for
@@ -54,6 +63,14 @@ jsonrpsee-server.workspace = true
 # hardening lands without moving the boundary `unsafe-scope.sh` asserts (note N39's
 # 2026-08-10 amendment).
 rustix = { workspace = true, features = ["fs", "net", "process"] }
+# `READY=1`, `STATUS=…`, `STOPPING=1` and `WATCHDOG=1` on `$NOTIFY_SOCKET` — the real
+# implementation of the [`daemon::shutdown::Notifying`] seam P4e-ii's first half shipped as a
+# trait (note **N58**'s split). **Pure Rust, no libsystemd**, which design §2.6 requires of
+# the whole systemd half; MIT OR Apache-2.0. Default features: `fdstore` is the only optional
+# one and it would add `sendfd` for a descriptor-store this daemon does not use. Its `notify`
+# is a no-op when `$NOTIFY_SOCKET` is unset, which is what lets `daemon::systemd::Supervisor`
+# run unconditionally rather than behind a "are we under systemd" guess.
+sd-notify.workspace = true
 # One `#[derive(Serialize)]`: the payload a lag close carries back to the subscriber that
 # lagged (`crate::events`). jsonrpsee's blanket `impl<T: ToString> From<T> for
 # SubscriptionError` would flatten that count into prose a client has to parse, and the
@@ -77,8 +94,16 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 # every build of the workspace.
 tokio-util.workspace = true
 tracing.workspace = true
+# Design §2.6's journald layer, "pure-Rust protocol, no libsystemd" — which is this crate
+# rather than the `systemd` bindings, and is why the requirement is met by a dependency
+# instead of by a feature flag on one. MIT. Installed **instead of** the fmt layer when
+# `$JOURNAL_STREAM` says stderr already is the journal, because both would write every line
+# twice; `daemon::logging` is where that decision lives and `daemon::systemd` is where the
+# comparison that makes it is a pure function.
+tracing-journald.workspace = true
 # `env-filter` so an operator can raise the level with `RUST_LOG` on a process that is
-# meant to keep running; design §2.6's journald layer waits for the rest of the systemd work.
+# meant to keep running. The layer the filter sits over is now one of two — fmt on a
+# terminal, journald under systemd — which is `daemon::logging`'s decision to make.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A session's identity is a UUIDv7 the *caller* mints: the engine reads no clock, so the
 # composition root is where "now" enters (design D9). Promoted from a dev-dependency when

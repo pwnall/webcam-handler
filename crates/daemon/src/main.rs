@@ -8,16 +8,31 @@
 //!
 //! ## Startup order, which is load-bearing
 //!
-//! 0. **The signal handlers** (P4e-ii), before this process owns anything at all — so there
-//!    is no window in which a daemon that already holds the lock and the socket is killed by
-//!    the disposition it was about to replace.
-//! 1. **The state-directory lock** (D9), taken once and held for the process's lifetime.
+//! 0. **Socket activation, asked about first** (P4e-ii). `listenfd` *removes* `LISTEN_FDS`
+//!    and `LISTEN_PID` from the environment as it reads them, so the one call that writes
+//!    this process's environment happens before anything reads it —
+//!    [`daemon::systemd::Activation::from_env`] carries the argument and the residual. The
+//!    answer decides steps 2 and 3: a socket a service manager bound is adopted, and a daemon
+//!    nobody activated binds its own.
+//! 1. **The signal handlers**, before this process owns anything at all — so there is no
+//!    window in which a daemon that already holds the lock and the socket is killed by the
+//!    disposition it was about to replace.
+//! 2. **The state-directory lock** (D9), taken once and held for the process's lifetime.
 //!    It is the daemon's mutual exclusion — a second `wchd` is refused right here — and
-//!    it is also what licenses step 3: a leftover socket file can only be removed by a
-//!    process that has already established no other daemon is alive.
-//! 2. **The socket directory**, created 0700 and *asserted* 0700 (D11).
-//! 3. **The socket**, replacing a file left by a dead daemon, then bound.
-//! 4. **Serving**, until the process is told to stop.
+//!    it is also what licenses step 4: a leftover socket file can only be removed by a
+//!    process that has already established no other daemon is alive. It is taken on **both**
+//!    startup paths: systemd binding the socket says nothing about who owns the state
+//!    directory, and two `wchd`s sharing one activated socket would be two writers of one
+//!    session tree.
+//! 3. **The socket directory**, created 0700 and *asserted* 0700 (D11) — on the self-bound
+//!    path. On the activated path the directory is the one the *inherited socket* is in, and
+//!    the same mode-and-owner check is made about it, by the same function; what cannot be
+//!    made is note N39's substitution defence, because the bind already happened elsewhere.
+//! 4. **The socket**, replacing a file left by a dead daemon, then bound — or, when a service
+//!    manager passed one in, adopted rather than bound.
+//! 5. **`READY=1`**, once there is a socket to serve on, with a status naming it and the
+//!    backend. The camera count follows it and does not gate it (see below).
+//! 6. **Serving**, until the process is told to stop.
 //!
 //! The backend is constructed before all of it, because a `--profile` that does not parse
 //! is a usage mistake and reporting it should not first take a lock, make a directory and
@@ -43,10 +58,36 @@
 //! releases the state lock, and the same sentence covers every camera descriptor its actors
 //! held.
 //!
-//! Which is why the systemd half is a separate landing and named here rather than assumed:
-//! `sd_notify` beyond the no-op seam, socket activation and the journald layer are still to
-//! come (note **N58**'s split), and this build passes `daemon::shutdown::Unsupervised` — a
-//! daemon nobody is supervising, which is exactly what a `wchd` started from a shell is.
+//! ## The systemd half, which is now here
+//!
+//! Note **N58** split this sub-milestone; this is the other side of it, and everything that
+//! paragraph used to defer is in [`daemon::systemd`]. This build passes
+//! [`daemon::systemd::Supervisor`] — the real `sd_notify` implementation — rather than
+//! `daemon::shutdown::Unsupervised`, and it does so **unconditionally**: `sd_notify::notify`
+//! answers `Ok(())` with `$NOTIFY_SOCKET` unset, so a `wchd` started from a shell opens
+//! nothing and says nothing, which is exactly what `Unsupervised` provided, while a `wchd`
+//! started from a unit gets `READY=1`, a `STATUS=` an operator can read in `systemctl status`,
+//! a watchdog ping if the unit asked for one, and `STOPPING=1` before the teardown takes any
+//! time. Socket activation and the journald layer are the same story told about a listener
+//! and a log line.
+//!
+//! **The camera count does not gate readiness.** `READY=1` goes out as soon as there is a
+//! socket, and the number of cameras this machine had at startup arrives afterwards as a
+//! second `STATUS=`, from a blocking thread. `daemon::systemd::publish_camera_count` argues
+//! it: enumeration is device work, a startup that waited for it would be a startup whose
+//! duration is a property of the hardware, and an enumeration that fails is a status line
+//! rather than a daemon that will not start (E3, AGENTS rule 7).
+//!
+//! **This daemon still never self-daemonizes.** There is no `fork` anywhere in this
+//! workspace, no `setsid`, no PID file, and no `Type=forking` unit — the process a supervisor
+//! starts is the process that serves, which is what makes `NotifyAccess=main` sufficient,
+//! what makes the pid in D9's lock record the pid systemd knows about, and what makes the
+//! `SIGTERM` a `systemctl stop` sends arrive at the handler installed above. Since P4e-ii
+//! that is a claim something checks rather than a sentence here:
+//! `scripts/gates/systemd-units.sh` derives it from the shipped unit files (`Type=notify`,
+//! never `Type=forking`, no `PIDFile=`), and `scripts/gates/socket-activation.sh` starts a
+//! real `wchd` under `systemd-socket-activate` and asserts the process that was started is
+//! the one holding the socket.
 //!
 //! `std::process::exit` is lint-banned in this workspace precisely so the release above stays
 //! true: main returns an [`ExitCode`] and the stack unwinds, releasing the lock on the way.
@@ -68,8 +109,9 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use daemon::logging;
 use daemon::server::Wchd;
-use daemon::shutdown::{self, Notifying as _, Shutdown, Signals, Unsupervised};
+use daemon::shutdown::{self, Notifying, Shutdown, Signals};
 use daemon::state::OwnedState;
+use daemon::systemd::{self, Activation, Supervisor};
 use daemon::uds::{self, SocketDir};
 use engine::paths::SystemEnv;
 use engine::store::SessionStore;
@@ -158,6 +200,13 @@ async fn run(args: &Args) -> Result<()> {
     let env = SystemEnv;
     let backend = backend_for(args)?;
 
+    // **The first thing this process does with its environment, because it is the only thing
+    // that writes it.** `listenfd` unsets `LISTEN_FDS`/`LISTEN_PID` as it reads them — the
+    // protocol requires that, so a child cannot re-adopt the descriptors — and every other
+    // read of the environment in this function happens after it (`daemon::systemd::Activation`
+    // states the residual: the runtime's worker threads already exist).
+    let activation = Activation::from_env()?;
+
     // **Before this process owns anything**, which is the whole reason it is here rather than
     // at the call that consumes it: registration is what turns a signal from the kernel's
     // default disposition (terminate now) into `daemon::shutdown`'s order, so every instant
@@ -174,12 +223,32 @@ async fn run(args: &Args) -> Result<()> {
     // lock that, by this protocol's definition, will not be free.
     let state = OwnedState::take(&env)?;
 
-    let dir = SocketDir::prepare(&env)?;
-    let listener = dir.bind(state.lock())?;
+    // Two startup paths, one socket. The lock above is taken on both — an activated socket
+    // says nothing about who owns the state directory — and everything below this match is
+    // identical, which is what stops "the daemon under systemd" and "the daemon in a
+    // terminal" from becoming two daemons.
+    let (listener, socket) = match activation {
+        Activation::Own => {
+            let dir = SocketDir::prepare(&env)?;
+            let listener = dir.bind(state.lock())?;
+            (listener, dir.socket_path())
+        }
+        // Bound by the service manager before this process existed. Its directory's mode and
+        // owner were checked with the same function the branch above uses, and
+        // `daemon::systemd::Activation::adopt` has already logged which path this is —
+        // including what N39's defence cannot do about a bind that was not ours.
+        Activation::Inherited { listener, socket } => (listener, socket),
+    };
 
-    // The one line an operator looks for. A socket path is not a frame and not derived
-    // from one (see `daemon::logging`).
-    tracing::info!(socket = %dir.socket_path(), backend = backend.name(), "wchd is serving");
+    // Taken before the backend is moved into the server, and read twice: once in the line an
+    // operator reads on stderr, once in the `STATUS=` an operator reads in `systemctl status`.
+    // Two spellings of "which backend is this" would be two answers to it.
+    let backend_name = backend.name();
+
+    // The one line an operator looks for, and the one every subprocess test and shell
+    // predicate in this project waits on. A socket path is not a frame and not derived from
+    // one (see `daemon::logging`).
+    tracing::info!(socket = %socket, backend = backend_name, "wchd is serving");
 
     // The wire surface is `webcam-handler-api`'s T5 surface, and the daemon *mounts* it
     // with the generated `into_rpc()` rather than registering methods of its own —
@@ -210,24 +279,51 @@ async fn run(args: &Args) -> Result<()> {
     // and ends itself, and `serve_until_stopped` joins it, so "housekeeping ended" is a fact
     // this process waited for rather than a consequence of the runtime being dropped.
     let housekeeping = wchd.spawn_idle_sweeps();
-    let mut serving = uds::serve(listener, daemon::server::mount(wchd)?);
+    let mut serving = uds::serve(listener, daemon::server::mount(wchd.clone())?);
 
-    // Nobody is listening unless the follow-up's `sd-notify` implementation is plugged into
-    // this seam, which is the honest state of a daemon started from a shell — and the reason
-    // the seam exists rather than a direct call: the *order* these are sent in relative to the
+    // The real supervisor, passed unconditionally: with `$NOTIFY_SOCKET` unset every one of
+    // these is a no-op, so a `wchd` in a terminal behaves exactly as it did when this was
+    // `Unsupervised` (`daemon::systemd::Supervisor` has the argument). Behind an `Arc`
+    // because two other things hold it — the startup status task and, from here, the teardown
+    // — and the seam is `&dyn` by design: the *order* these are sent in relative to the
     // teardown is a claim `daemon::shutdown` makes, and a claim about a side effect that
-    // leaves the process needs a double to be assertable at all.
-    let notify = Unsupervised;
-    notify.ready("serving");
+    // leaves the process needs a recording double to be assertable at all.
+    let notify: Arc<dyn Notifying> = Arc::new(Supervisor::new());
+    notify.ready(&format!("serving on {socket} ({backend_name})"));
+
+    // Second, and deliberately not part of readiness: enumeration is device work, and a
+    // daemon whose startup waited for a camera would fail to start on a host whose camera is
+    // wedged. It is a startup fact rather than a live one and the status says so.
+    systemd::publish_camera_count(wchd, Arc::clone(&notify));
+
+    // Only when a unit asked for one (`WatchdogSec=`), which is `$WATCHDOG_USEC` being set.
+    // Joined below rather than through `serve_until_stopped`, whose `housekeeping` parameter
+    // is D12's driver and singular by signature; by the time that call returns the token this
+    // task watches has been cancelled, so the await is a join and not a wait.
+    let watchdog = systemd::spawn_watchdog(&shutdown);
 
     // The daemon's main loop and its whole teardown; `daemon::shutdown`'s header is the order
     // and the argument for it. The `?` is the reason this answers a `Result`: a daemon that
     // gave up on `accept` has stopped serving, and reporting that as a clean exit would tell
     // `Restart=on-failure` not to restart it and leave the operator a socket file with nobody
     // behind it.
-    let served =
-        shutdown::serve_until_stopped(&mut serving, &shutdown, signals, &notify, housekeeping)
-            .await;
+    let served = shutdown::serve_until_stopped(
+        &mut serving,
+        &shutdown,
+        signals,
+        notify.as_ref(),
+        housekeeping,
+    )
+    .await;
+
+    if let Some(watchdog) = watchdog {
+        // A ping into a socket the service manager is about to stop listening on is harmless;
+        // a task still pinging after the process claimed to have stopped is not. Awaited for
+        // the same reason housekeeping is: an ending nothing waited for is a maybe.
+        if let Err(err) = watchdog.await {
+            tracing::warn!(error = %err, "the watchdog task did not end cleanly");
+        }
+    }
 
     // Said out loud rather than left to the end of a scope, because the order is the claim:
     // the state directory is released *after* the server has stopped answering and after every

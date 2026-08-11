@@ -638,6 +638,46 @@ fn check_mode_and_owner(path: &Utf8Path, found: &rustix::fs::Stat) -> Result<()>
     Ok(())
 }
 
+/// D11's two facts, asked about a directory this daemon did not open for itself.
+///
+/// [`SocketDir::prepare`] is the strong form of this: it opens the directory once, holds the
+/// descriptor for the daemon's life, and binds *relative to it*, so what was checked and what
+/// is served from are one inode rather than one name (note **N39**). That shape is available
+/// only to a process that does its own bind, and since P4e-ii there is a second startup path
+/// where the bind already happened somewhere else — `crate::systemd::Activation::adopt`, where
+/// a service manager passes a socket in. The question "is the directory 0700 and ours" is
+/// exactly as meaningful there, and [`check_mode_and_owner`] is its one home (design §2.10),
+/// so this is how the other caller reaches it rather than spelling the mode and the `geteuid`
+/// comparison a second time.
+///
+/// What it deliberately does **not** claim is N39's substitution defence. The open here is by
+/// name, because a name is all an inherited socket's `local_addr()` gives; `SOCKET_DIR_OFLAGS`
+/// still makes "is a directory, is not a symlink" the kernel's refusal, and that is the whole
+/// of what a name can buy. `crate::systemd::Activation::adopt` states the residual and names
+/// what closes it, which is the unit file's `DirectoryMode=`.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] when the directory cannot be opened, is a symlink or is not a
+/// directory, is not [`SOCKET_DIR_MODE`], or is owned by somebody other than this process's
+/// effective user.
+pub(crate) fn check_directory_mode_and_owner(path: &Utf8Path) -> Result<()> {
+    let dir = rustix::fs::open(path.as_std_path(), SOCKET_DIR_OFLAGS, Mode::empty()).map_err(
+        |errno| Error::StorageIo {
+            path: path.to_owned(),
+            errno: Some(errno.raw_os_error()),
+            message: format!(
+                "{errno} — is a symlink, or is not a directory, or cannot be opened. \
+                 Filesystem permissions on this directory are the whole of what \
+                 authenticates the daemon's socket (D11), so a socket inside one this \
+                 process cannot even look at is not one it will serve"
+            ),
+        },
+    )?;
+    let found = rustix::fs::fstat(&dir).map_err(|errno| errno_io(path, errno))?;
+    check_mode_and_owner(path, &found)
+}
+
 /// A running server, and the reason it will eventually stop.
 ///
 /// A value rather than a bare [`ServerHandle`] because *why* the accept loop ended is a

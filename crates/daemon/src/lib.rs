@@ -7,6 +7,7 @@
 //! | [`server`] | the server half of `webcam-handler-api`'s T5 surface (D10) |
 //! | [`shutdown`] | the order the daemon stops in, and the signal and supervisor seams (P4e-ii) |
 //! | [`state`] | D9's state-directory lock, held for the process's lifetime |
+//! | [`systemd`] | every protocol a service manager speaks: `sd_notify`, the watchdog, socket activation, `$JOURNAL_STREAM` (P4e-ii) |
 //! | [`uds`] | the Unix-socket transport — the one piece of transport code we own (D11) |
 //!
 //! The binary beside this library is the daemon's **composition root** (design §2.11):
@@ -34,4 +35,5 @@ pub mod logging;
 pub mod server;
 pub mod shutdown;
 pub mod state;
+pub mod systemd;
 pub mod uds;

@@ -1,0 +1,102 @@
+# wchd, as a systemd **user** service (docs/7 P4e-ii, design D9/D11/D12).
+#
+# A user unit and not a system one, and that is the whole posture rather than a packaging
+# preference. D11 puts the socket in `$XDG_RUNTIME_DIR` and makes the 0700 directory the only
+# thing authenticating it; D9 puts the state directory under `$XDG_STATE_HOME`; and AGENTS is
+# unambiguous that a frame may contain a person. All three say the same thing: this daemon
+# belongs to one human, runs as them, and is reachable by them. A system-wide `wchd` running as
+# root would serve every account on the machine a camera pointed at somebody's face.
+#
+# Install it as `~/.config/systemd/user/wchd.service` beside `wchd.socket`, then
+# `systemctl --user daemon-reload && systemctl --user enable --now wchd.socket`.
+#
+# `scripts/gates/systemd-units.sh` is what keeps the values below agreeing with the daemon:
+# every number and keyword it checks is re-derived from `crates/schema/src/limits.rs` rather
+# than transcribed, because a unit file that drifts from the binary is a unit file that stops
+# the daemon a different way than the daemon stops itself.
+
+[Unit]
+Description=webcam-handler daemon (V4L2 webcams over a Unix socket)
+Documentation=https://github.com/pwnall/webcam-handler
+# The socket is what gets enabled; this is the other half of that pair. `wchd` also serves
+# perfectly well when started directly (`systemctl --user start wchd.service`), because
+# `daemon::systemd::Activation` treats an empty `LISTEN_FDS` as "bind your own" — which is the
+# same daemon a person runs from a shell.
+Requires=wchd.socket
+After=wchd.socket
+
+[Service]
+# **Type=notify, and never Type=forking.** The daemon tells systemd `READY=1` over
+# `$NOTIFY_SOCKET` once its socket is bound and it is answering (`daemon::systemd::Supervisor`),
+# so "active (running)" means a client's request will be answered rather than "the process has
+# been spawned". `Type=forking` is the alternative this project does not have: there is no
+# `fork` anywhere in the workspace, no `setsid` and no PID file — the process systemd starts is
+# the process that serves. That is what makes `NotifyAccess=main` sufficient, what makes the
+# pid in D9's lock record the pid systemd knows, and what makes a `systemctl stop`'s SIGTERM
+# arrive at the handler `crates/daemon/src/main.rs` installs before it owns anything.
+Type=notify
+# Only the main process may notify, because only the main process exists. Widening this to
+# `all` would let anything in the cgroup declare the camera daemon ready.
+NotifyAccess=main
+ExecStart=%h/.cargo/bin/wchd
+
+# The daemon stops in the order `daemon::shutdown` states — tell the supervisor, cancel every
+# subscription **with a reason**, stop accepting, drain, join housekeeping, release the state
+# lock — and the drain is bounded by `schema::limits::DAEMON_SHUTDOWN_DRAIN_MS` (20 s).
+#
+# **This number must stay larger than that one**, and the pair is why
+# `scripts/gates/systemd-units.sh` exists: whichever bound is smaller is the one that fires,
+# and if it is systemd's the daemon is SIGKILLed mid-drain, its ordered release never runs, and
+# every sentence this project writes about *how* it stops describes a path that is never taken.
+# Forty-five seconds is the daemon's own bound with room for a slow drain around it, and it is
+# well under systemd's default 90 s so that a `systemctl --user stop` is still prompt.
+TimeoutStopSec=45s
+
+# A daemon that stopped serving must come back. `daemon::shutdown` is careful about which
+# endings are failures: a stop somebody asked for exits 0 even when the drain ran out of time
+# (restarting on a machine that is shutting down helps nobody), and an accept loop that gave up
+# after `limits::MAX_CONSECUTIVE_ACCEPT_FAILURES` exits non-zero, which is exactly the case
+# this line is for.
+Restart=on-failure
+RestartSec=1s
+
+# The two directories D9 and D11 name, created by systemd with the modes this project
+# requires rather than by the daemon with whatever the umask allowed. `RuntimeDirectoryMode`
+# is 0700 because that mode *is* the authentication model (D11) — `daemon::uds::SocketDir`
+# asserts it at startup and refuses to serve from anything else, so a wrong value here is a
+# daemon that will not start rather than one that serves the camera to the machine.
+#
+# `RuntimeDirectoryPreserve=yes` is load-bearing and not tidiness: without it systemd
+# *removes* the runtime directory when the service stops, and under socket activation the
+# socket the `.socket` unit is still listening on lives in it. A restart would then find the
+# directory and the socket gone while the manager still held a descriptor to an unlinked
+# inode, which is a daemon nobody can connect to and a `.socket` unit that reports no
+# problem.
+RuntimeDirectory=webcam-handler
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+StateDirectory=webcam-handler
+StateDirectoryMode=0700
+
+# The daemon logs through `tracing`, and under systemd its stderr *is* the journal — which
+# `daemon::logging` detects with `$JOURNAL_STREAM` and answers by installing the journald layer
+# **instead of** the stderr formatter, because both would write every line twice.
+StandardOutput=null
+StandardError=journal
+
+# Enough hardening to be worth having and no more, because this daemon's job is to open
+# `/dev/video*` and write to `$XDG_STATE_HOME`. Anything stricter would need a device
+# allowlist, and a camera that appears on a hotplug is exactly what a static allowlist gets
+# wrong (P4d's watch exists because the node set moves).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+
+# There is deliberately **no `[Install]` section**. The unit that gets enabled is
+# `wchd.socket`, so the daemon starts on the first connection rather than at login — D12's
+# posture, one level up: `wchd` running must not itself be the reason a camera is unavailable,
+# and a daemon that is not running is the strongest form of that. A person who wants it always
+# up runs `systemctl --user start wchd.service`, or adds an `[Install]` section of their own;
+# shipping one here would make "enabled" ambiguous between the two units.

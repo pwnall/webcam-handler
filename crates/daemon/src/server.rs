@@ -337,6 +337,20 @@ struct Waiters {
     live: tokio::sync::watch::Sender<usize>,
 }
 
+impl Inner {
+    /// The camera listing, assembled once for both callers that want one.
+    ///
+    /// `engine::resolve::list`'s assembly, reached through the registry — the same function
+    /// `wch list` reaches through T4's executor, because D1's "an empty enumeration is
+    /// diagnosed" is a rule and a rule copied to a second composition root is where the two
+    /// surfaces P4f's parity gate compares start to differ. The two callers here are the
+    /// `wch_list` handler and [`Wchd::list_cameras`], which is what the daemon's startup
+    /// status is built from.
+    fn list_cameras(&self) -> schema::Result<schema::report::CameraList> {
+        self.cameras.list()
+    }
+}
+
 impl Waiters {
     fn new() -> Waiters {
         Waiters {
@@ -517,6 +531,25 @@ impl Wchd {
     #[must_use]
     pub fn activity(&self) -> Vec<CameraActivity> {
         self.0.cameras.activity()
+    }
+
+    /// Enumerate, exactly as `wch_list` does.
+    ///
+    /// **Blocking** — an `open` and a walk of ioctls per node — which is why the RPC handler
+    /// reaches it through `Wchd::offload` and why `crate::systemd::publish_camera_count`
+    /// reaches it through a `spawn_blocking` of its own. It exists as a public method for
+    /// that second caller and for no other reason: the daemon's startup status names how many
+    /// cameras this machine had, and a composition root that enumerated through some other
+    /// path would be a second answer to "what does this daemon see" (design §2.10). Both go
+    /// through `Inner::list_cameras`, so there is one.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend refuses enumeration with. A host with no cameras is `Ok` with an
+    /// empty list and a hint, never an error — that distinction is `engine::resolve::list`'s
+    /// and E3's, and nothing here may flatten it.
+    pub fn list_cameras(&self) -> schema::Result<schema::report::CameraList> {
+        self.0.list_cameras()
     }
 
     /// Close every camera that has gone idle; answer which ones closed.
@@ -1265,11 +1298,9 @@ fn not_this_daemon(pid: i32) -> schema::Result<()> {
 #[async_trait]
 impl WchRpcServer for Wchd {
     async fn list(&self) -> Result<CameraList, WireError> {
-        // The assembly is `engine::resolve::list`'s, reached through the registry — the
-        // same function `wch list` reaches through T4's executor, because D1's "an empty
-        // enumeration is diagnosed" is a rule and a rule copied to a second composition
-        // root is where the two surfaces P4f's parity gate compares start to differ.
-        Ok(self.offload(|inner| inner.cameras.list()).await?)
+        // [`Inner::list_cameras`] is where the assembly and its argument live; this is the
+        // wire's way in, and `Wchd::list_cameras` is the composition root's.
+        Ok(self.offload(Inner::list_cameras).await?)
     }
 
     async fn info(&self, camera: CameraId) -> Result<CameraDetail, WireError> {
