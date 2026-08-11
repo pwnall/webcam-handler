@@ -324,8 +324,11 @@ impl SocketDir {
     ///
     /// `bind(2)` on an existing path is `EADDRINUSE` unconditionally — a Unix socket file
     /// is not a lock and outlives the process that made one — so a daemon that never
-    /// unlinks cannot restart after any exit that did not clean up, which at this
-    /// sub-milestone is *every* exit (P4e-ii owns the shutdown discipline). Unlinking
+    /// unlinks cannot restart after any exit that did not clean up, which is still *every*
+    /// exit: P4e-ii's shutdown discipline stops the daemon in an order and deliberately does
+    /// not add an unlink to it, because the exits that matter here are the ones that ran no
+    /// code at all (`SIGKILL`, a power cut) and a cleanup only the orderly path performs is a
+    /// cleanup the failing path cannot rely on. Unlinking
     /// something at the socket path is also, in most codebases, how one process hijacks
     /// another's socket. Both facts are answered by the same argument, and it is D9's,
     /// not a new law: the daemon holds the state directory's advisory lock
@@ -648,15 +651,25 @@ fn check_mode_and_owner(path: &Utf8Path, found: &rustix::fs::Stat) -> Result<()>
 #[must_use = "a server nobody waits on is a daemon that exits as soon as it starts"]
 pub struct Serving {
     handle: ServerHandle,
-    accepting: tokio::task::JoinHandle<Result<()>>,
+    /// The accept loop, until somebody has taken its answer. `None` afterwards, because a
+    /// [`tokio::task::JoinHandle`] polled after it has completed **panics**, and since
+    /// P4e-ii [`Serving::stopped`] is called twice on the ordinary path — once as a
+    /// `select!` arm waiting for a stop, once as the drain that bounds it.
+    accepting: Option<tokio::task::JoinHandle<Result<()>>>,
+    /// What the loop answered, kept so that answer survives being asked for twice.
+    ///
+    /// `Ok(())` until it has answered, which is not a placeholder: a loop that is still
+    /// running has refused nothing, and the only caller that reads this before then is one
+    /// whose own `select!` arm is about to be cancelled.
+    verdict: Result<()>,
 }
 
 impl Serving {
     /// Ask the server to stop. Idempotent from the caller's point of view.
     ///
-    /// Ending the accept loop is all this does — in-flight connections finish their
-    /// current answer and end. It is not a drain and not a signal handler; both are
-    /// P4e-ii's.
+    /// Ending the accept loop is all this does — in-flight connections finish their current
+    /// answer and end. It is not the drain and it is not the cancellation: `daemon::shutdown`
+    /// is where the order those three go in lives, and this is step four of it.
     pub fn stop(&self) {
         // `AlreadyStoppedError` means somebody already asked, including the accept loop
         // itself on its give-up path. That is the outcome this call wanted.
@@ -667,25 +680,43 @@ impl Serving {
     ///
     /// `Ok(())` for a stop somebody asked for; the accept loop's own refusal otherwise.
     ///
+    /// ## Cancel-safe, and asked twice on purpose
+    ///
+    /// `daemon::shutdown::serve_until_stopped` races this against a signal and then, having
+    /// stopped the server, awaits it again under [`limits::DAEMON_SHUTDOWN_DRAIN_MS`]. Both
+    /// halves of that need something this originally did not have. A `JoinHandle` that has
+    /// already yielded its value panics when it is polled again, and a `select!` arm is
+    /// *dropped* wherever it happened to be — including between the two awaits below, where
+    /// the accept loop's answer had been taken and the connections had not yet gone. So the
+    /// handle is taken out of the way and the answer is kept: dropping this future mid-flight
+    /// loses nothing, and asking twice is the same question with the same answer rather than
+    /// a panic on the daemon's stopping path.
+    ///
     /// # Errors
     ///
     /// [`Error::DeviceIo`] when the loop gave up after
     /// [`limits::MAX_CONSECUTIVE_ACCEPT_FAILURES`] consecutive `accept` failures, carrying
     /// the last one's errno, or when the accept task itself panicked or was cancelled.
     pub async fn stopped(&mut self) -> Result<()> {
-        let reason = match (&mut self.accepting).await {
-            Ok(reason) => reason,
-            Err(err) => Err(Error::DeviceIo {
-                operation: "accept connections on the daemon socket".to_owned(),
-                errno: None,
-                message: err.to_string(),
-            }),
-        };
+        if let Some(accepting) = self.accepting.as_mut() {
+            let reason = match accepting.await {
+                Ok(reason) => reason,
+                Err(err) => Err(Error::DeviceIo {
+                    operation: "accept connections on the daemon socket".to_owned(),
+                    errno: None,
+                    message: err.to_string(),
+                }),
+            };
+            // Only after the await has produced a value, so a cancellation before it leaves
+            // the handle exactly where the next call expects to find it.
+            self.accepting = None;
+            self.verdict = reason;
+        }
         // Then the connections, which is what `ServerHandle::stopped` is for. The accept
         // loop signals a stop on its way out, so this cannot wait forever on a client
         // holding an idle keep-alive connection open.
         self.handle.clone().stopped().await;
-        reason
+        self.verdict.clone()
     }
 }
 
@@ -715,16 +746,18 @@ impl Accepting for UnixListener {
 ///
 /// Returns immediately; the accept loop runs as a tokio task, so the caller must already
 /// be inside a runtime. [`Serving::stop`] ends the loop and [`Serving::stopped`] resolves
-/// once it and every connection it spawned are gone — which is the whole of P4b's
-/// lifecycle and is deliberately less than P4e-ii's: nothing here handles a signal, drains
-/// a subscription, or unlinks the socket on the way out. The socket file is left where it
-/// is on purpose; [`SocketDir::bind`] is what makes that harmless.
+/// once it and every connection it spawned are gone — which is the whole of this module's
+/// lifecycle and is deliberately less than the daemon's: nothing here handles a signal,
+/// bounds the wait, or unlinks the socket on the way out. `daemon::shutdown` is where those
+/// live, and it drives this pair as steps four and five of an order. The socket file is left
+/// where it is on purpose; [`SocketDir::bind`] is what makes that harmless.
 ///
 /// jsonrpsee spells the per-connection future `serve_with_graceful_shutdown`, and its
 /// "graceful" is about *one connection's* in-flight request finishing rather than being
-/// dropped mid-answer. It is not this daemon claiming a drain: P4e-ii's shutdown discipline —
-/// `CancellationToken` teardown, cancelled preview streams, an orderly store-lock release —
-/// is not here, and no name in this module should be read as standing in for it.
+/// dropped mid-answer. It is still not this daemon claiming a drain, and the distinction
+/// survives P4e-ii: what a subscription gets when the daemon stops is a **cancellation with
+/// a reason** from `daemon::shutdown`'s token, delivered before this transport is stopped at
+/// all, and no name in this module should be read as standing in for that.
 ///
 /// ## The connection bound is this loop's, not jsonrpsee's
 ///
@@ -874,7 +907,8 @@ fn serve_accepting<L: Accepting>(listener: L, methods: impl Into<Methods>) -> Se
 
     Serving {
         handle: server_handle,
-        accepting,
+        accepting: Some(accepting),
+        verdict: Ok(()),
     }
 }
 
@@ -945,6 +979,9 @@ mod tests {
     use schema::ErrorKind;
 
     use super::*;
+    // The one writer this crate's tests read a `tracing` line back through; `crate::logging`
+    // states why it has one home.
+    use crate::logging::capturing;
 
     /// A held lifetime lock over a throw-away state directory.
     ///
@@ -1356,54 +1393,6 @@ mod tests {
         );
     }
 
-    /// A `tracing` writer a test can read back.
-    ///
-    /// Thread-local through [`tracing::subscriber::with_default`], so it captures this
-    /// test's events and no other test's — `logging::install` deliberately runs only from
-    /// `main` for the same reason.
-    #[derive(Clone, Default)]
-    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl CapturedLog {
-        fn rendered(&self) -> String {
-            let bytes = self.0.lock().expect("nothing panicked holding this");
-            String::from_utf8_lossy(&bytes).into_owned()
-        }
-    }
-
-    impl std::io::Write for CapturedLog {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("nothing panicked holding this")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
-        type Writer = CapturedLog;
-
-        fn make_writer(&'a self) -> CapturedLog {
-            self.clone()
-        }
-    }
-
-    /// Run `body` with everything it logs captured.
-    fn capturing<T>(body: impl FnOnce() -> T) -> (T, String) {
-        let captured = CapturedLog::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(captured.clone())
-            .with_ansi(false)
-            .finish();
-        let value = tracing::subscriber::with_default(subscriber, body);
-        (value, captured.rendered())
-    }
-
     #[tokio::test]
     async fn a_bind_by_name_still_serves_and_says_that_it_is_the_unprotected_spelling() {
         // Note N39's residual 1: `/proc/self/fd` needs `/proc`, and a minimal container
@@ -1586,6 +1575,28 @@ mod tests {
             matches!(err, Error::DeviceIo { errno, .. } if errno == Some(EMFILE)),
             "the refusal dropped the kernel's own reason: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_reason_the_loop_ended_survives_being_asked_for_twice() {
+        // What `daemon::shutdown` does on every stop: it races `stopped()` against a signal
+        // and then, having stopped the server, awaits it again as the drain. Before P4e-ii
+        // that second call polled a `JoinHandle` that had already yielded, which **panics** —
+        // on the daemon's stopping path, in a task nobody joins, so the process would have
+        // exited without its teardown and without saying why.
+        //
+        // The give-up arm is used because it is the answer that has content: an ending that
+        // forgot what it was would come back as `Ok(())` and turn a daemon that stopped
+        // serving into a clean exit, which is the whole thing `Serving` exists to prevent.
+        const EMFILE: i32 = 24;
+
+        let mut serving = serve_accepting(NeverAccepts(EMFILE), RpcModule::new(()));
+        let first = serving.stopped().await.expect_err("the loop gave up");
+        let again = serving
+            .stopped()
+            .await
+            .expect_err("the second answer was not the first");
+        assert_eq!(first, again);
     }
 
     #[tokio::test]

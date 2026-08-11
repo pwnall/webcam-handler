@@ -122,6 +122,16 @@ struct Ended {
 /// branching on a sentence that no longer exists.
 pub const WATCH_STOPPED: &str = "the hotplug watch stopped";
 
+/// The token an `Ended` payload carries when the *daemon* is stopping (docs/7 P4e-ii).
+///
+/// [`WATCH_STOPPED`]'s sibling, pinned for its reason and telling the client something
+/// different: the source did not fail, the process is going away, and re-subscribing is worth
+/// doing against the daemon that starts next rather than immediately. It is the whole of what
+/// `crate::shutdown`'s step 3 buys — a stream that ends *with a reason* instead of a socket
+/// that closes underneath a client — so it is asserted from both sides, here and off a real
+/// stream in the daemon's subscription suite.
+pub const SHUTTING_DOWN: &str = "the daemon is shutting down";
+
 /// What one fan-out hands a subscriber: an event, or the end of the thing producing them.
 ///
 /// **The terminal travels in the channel rather than beside it**, and that ordering is the
@@ -174,11 +184,19 @@ pub(crate) struct Events {
     /// asserts the itemisation against it, so a bump that reached one and missed the other
     /// is a red test rather than a drift.
     lost: watch::Sender<u64>,
+    /// The daemon's "we are stopping" token, watched by every open subscription.
+    ///
+    /// A clone of the one `crate::shutdown::Shutdown` the composition root made, which is the
+    /// same token and not a second one (that type's header says why the distinction is worth
+    /// stating). It lives *here* rather than beside the streams because a subscription is the
+    /// only thing in this module that waits on anything: the fan-out never blocks a producer,
+    /// so the one place a stop has to arrive is the loop between a receiver and a socket.
+    shutdown: crate::shutdown::Shutdown,
 }
 
 impl Events {
     /// A daemon's event surface, with nothing running yet.
-    pub(crate) fn new() -> Events {
+    pub(crate) fn new(shutdown: crate::shutdown::Shutdown) -> Events {
         let live = watch::Sender::new(0);
         let lost = watch::Sender::new(0);
         Events {
@@ -186,7 +204,17 @@ impl Events {
             calibration: Fanout::new(live.clone(), lost.clone()),
             live,
             lost,
+            shutdown,
         }
+    }
+
+    /// The token every subscription this daemon opens is watching.
+    ///
+    /// Handed out rather than hidden for `crate::state::OwnedState::token`'s reason: the value
+    /// is shareable by construction, so a caller that has it is provably watching the daemon's
+    /// one stop rather than a token of its own.
+    pub(crate) fn shutdown(&self) -> &crate::shutdown::Shutdown {
+        &self.shutdown
     }
 
     /// What every subscription on this daemon is doing. See [`SubscriptionActivity`].
@@ -510,6 +538,22 @@ fn ended(reason: &'static str) -> SubscriptionError {
 /// to be told to stop, and one that stops when its last reader leaves never has to be. That
 /// property is published rather than asserted in prose — [`Hotplug::running`] — because a
 /// claim about a thread nothing can observe is a claim no test can make (rubric A8).
+///
+/// **P4e-ii lands, and that argument is still the whole of it: there is no shutdown token
+/// here, deliberately.** The stop reaches the *subscriptions* ([`forward`]'s new arm), each of
+/// which returns and drops its [`Attached`] on the way out; dropping it drops the
+/// `broadcast::Receiver` before the count it holds ([`Counted`], and that ordering is stated
+/// where it is enforced). So by the time the last cancelled subscription has ended,
+/// `receiver_count()` is zero, and [`Hotplug::give_up`] answers `true` on the watch thread's
+/// next turn — which is at most one [`limits::HOTPLUG_WATCH_DEADLINE_MS`] away, because that
+/// is what the thread's `next_event` deadline buys. Giving this thread a token of its own
+/// would add a second way for it to end, and a second way to end is a second interleaving to
+/// argue about in the one place note **N59** records getting an interleaving wrong.
+///
+/// What that costs, stated rather than discovered: a stop may outlive the daemon's own
+/// teardown by up to that deadline. It is bounded by a constant, it holds no lock and no
+/// camera, and the process exiting is what ends it — the same sentence this workspace already
+/// writes about the actors' device threads (`crate::shutdown`'s residual).
 #[derive(Debug)]
 pub(crate) struct Hotplug {
     events: Fanout<HotplugEvent>,
@@ -708,19 +752,29 @@ impl engine::progress::ProgressSink for ProgressBroadcast {
 /// twice — and a second copy is where the daemon would come to have two answers to "what
 /// happens when a subscriber stops reading".
 ///
-/// Four ways it ends, and each one releases the receiver on the way out, which is what
+/// Six ways it ends, and each one releases the receiver on the way out, which is what
 /// [`Attached`]'s `Drop` makes a property of the type rather than of this function:
 ///
 /// - the client went away or unsubscribed (`sink.closed()`, or a `Closed` from `try_send`)
 ///   — the case docs/7 calls "the subscription is reaped", and the reason it is a `select!`
 ///   rather than a send that eventually notices: a stream with no events would otherwise
 ///   hold a task for a client that is already gone;
+/// - the **daemon** is stopping ([`crate::shutdown::Shutdown`]), and the client is told
+///   [`SHUTTING_DOWN`] — see below;
 /// - the **source** stopped ([`Feed::Ended`]), which is a hotplug watch that failed — the
 ///   client is told, by name, so it can re-subscribe and re-enumerate;
 /// - the fan-out closed, which only happens when the daemon itself is going away;
 /// - the subscriber lagged and its stream's policy is [`OnLag::EndTheStream`];
 /// - the event could not be serialized, which is this process failing rather than the
 ///   client, and is the one arm that has never fired.
+///
+/// **Why the stop is an arm here rather than a socket that closes.** `crate::shutdown` cancels
+/// this token *before* it stops the transport, and the whole reason for that order is this
+/// `select!`: a subscription reached by the token ends with a payload naming
+/// [`SHUTTING_DOWN`], and one whose connection is simply torn out from under it ends with
+/// nothing a client can branch on. AGENTS says open streams are "cancelled, never awaited, on
+/// shutdown" — this is the cancelled half, and the reason it is not the same thing as waiting
+/// for a client to notice its socket went away.
 ///
 /// **`try_send` and never `send`.** `SubscriptionSink::send` waits for room, which would
 /// park this task on a client that stopped reading — and with it, nothing else, because the
@@ -732,6 +786,7 @@ async fn forward<T>(
     pending: PendingSubscriptionSink,
     mut attached: Attached<T>,
     counters: &Fanout<T>,
+    shutdown: &crate::shutdown::Shutdown,
     on_lag: OnLag,
 ) -> SubscriptionResult
 where
@@ -750,8 +805,14 @@ where
         // loop apart rather than one `select!` apart.
         let received = {
             let closed = std::pin::pin!(sink.closed());
+            // Both waits are cancel-safe and both are rebuilt every turn: `closed` reads the
+            // sink, and `Shutdown::cancelled` is a token that stays cancelled, so a stop that
+            // arrived while this task was between polls is still here when the arm is
+            // rebuilt. There is no edge to miss.
+            let stopping = std::pin::pin!(shutdown.cancelled());
             tokio::select! {
                 () = closed => return Ok(()),
+                () = stopping => return Err(ended(SHUTTING_DOWN)),
                 received = attached.events.recv() => received,
             }
         };
@@ -801,6 +862,7 @@ pub(crate) async fn subscribe_hotplug(
         pending,
         attached,
         &events.hotplug.events,
+        events.shutdown(),
         OnLag::EndTheStream,
     )
     .await
@@ -817,7 +879,14 @@ pub(crate) async fn subscribe_calibration(
     pending: PendingSubscriptionSink,
 ) -> SubscriptionResult {
     let attached = events.calibration.attach();
-    forward(pending, attached, &events.calibration, OnLag::KeepGoing).await
+    forward(
+        pending,
+        attached,
+        &events.calibration,
+        events.shutdown(),
+        OnLag::KeepGoing,
+    )
+    .await
 }
 
 /// Attach a hotplug subscriber, starting the watch if nothing is watching yet.

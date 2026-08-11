@@ -5,6 +5,7 @@
 //! | `events` | the two subscriptions' event sources, the fan-out, and its bounds (D10, P4e-i) |
 //! | [`logging`] | design §2.6's `tracing` fmt layer, and the rule that no frame reaches it |
 //! | [`server`] | the server half of `webcam-handler-api`'s T5 surface (D10) |
+//! | [`shutdown`] | the order the daemon stops in, and the signal and supervisor seams (P4e-ii) |
 //! | [`state`] | D9's state-directory lock, held for the process's lifetime |
 //! | [`uds`] | the Unix-socket transport — the one piece of transport code we own (D11) |
 //!
@@ -31,5 +32,6 @@
 pub mod events;
 pub mod logging;
 pub mod server;
+pub mod shutdown;
 pub mod state;
 pub mod uds;

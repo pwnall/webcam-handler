@@ -8,6 +8,9 @@
 //!
 //! ## Startup order, which is load-bearing
 //!
+//! 0. **The signal handlers** (P4e-ii), before this process owns anything at all — so there
+//!    is no window in which a daemon that already holds the lock and the socket is killed by
+//!    the disposition it was about to replace.
 //! 1. **The state-directory lock** (D9), taken once and held for the process's lifetime.
 //!    It is the daemon's mutual exclusion — a second `wchd` is refused right here — and
 //!    it is also what licenses step 3: a leftover socket file can only be removed by a
@@ -22,17 +25,31 @@
 //!
 //! ## What this build does about stopping, and what it does not claim
 //!
-//! Nothing here installs a signal handler, so SIGTERM and SIGINT both terminate the
-//! process — that is the kernel's default disposition, not a parity this daemon
-//! implements, and P4e-ii's "SIGTERM ≡ SIGINT" is a claim about *draining*, which this build
-//! does not do. What is nevertheless true, and is why an un-drained exit is survivable
-//! rather than a hole: Linux releases an `flock` when the last descriptor on its open
-//! file description closes, so a killed `wchd` releases the state lock, and the same
-//! sentence covers every camera descriptor its actors held. The socket file it leaves
-//! behind is handled by whoever starts next (`daemon::uds::SocketDir::bind`).
+//! It installs handlers for SIGTERM and SIGINT and treats them as one request (AGENTS's
+//! "SIGTERM ≡ SIGINT"), and it stops in the order [`daemon::shutdown`] states and argues:
+//! tell the supervisor, cancel every open subscription **with a reason**, stop accepting,
+//! drain what was already accepted under [`schema::limits::DAEMON_SHUTDOWN_DRAIN_MS`], join
+//! housekeeping, release the state directory. The order is the claim; that each of those
+//! happens at all is mostly older news.
 //!
-//! `std::process::exit` is lint-banned in this workspace precisely so that stays true:
-//! main returns an [`ExitCode`] and the stack unwinds, releasing the lock on the way.
+//! **What is still not claimed.** A cancellation reaches tokio tasks, and a camera actor is
+//! an OS thread by construction (D12) — so a command parked in a device ioctl is ended by the
+//! process exiting, not by the token, and the drain bound is what keeps that from making the
+//! stop unbounded (`daemon::shutdown`'s residual, note **N59**). The socket file is not
+//! unlinked: the exits that matter are the ones that run no code at all, and whoever starts
+//! next removes it under the state lock (`daemon::uds::SocketDir::bind`). And an un-drained
+//! exit is survivable rather than a hole for the reason it always was: Linux releases an
+//! `flock` when the last descriptor on its open file description closes, so a *killed* `wchd`
+//! releases the state lock, and the same sentence covers every camera descriptor its actors
+//! held.
+//!
+//! Which is why the systemd half is a separate landing and named here rather than assumed:
+//! `sd_notify` beyond the no-op seam, socket activation and the journald layer are still to
+//! come (note **N58**'s split), and this build passes `daemon::shutdown::Unsupervised` — a
+//! daemon nobody is supervising, which is exactly what a `wchd` started from a shell is.
+//!
+//! `std::process::exit` is lint-banned in this workspace precisely so the release above stays
+//! true: main returns an [`ExitCode`] and the stack unwinds, releasing the lock on the way.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -51,6 +68,7 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use daemon::logging;
 use daemon::server::Wchd;
+use daemon::shutdown::{self, Notifying as _, Shutdown, Signals, Unsupervised};
 use daemon::state::OwnedState;
 use daemon::uds::{self, SocketDir};
 use engine::paths::SystemEnv;
@@ -140,6 +158,16 @@ async fn run(args: &Args) -> Result<()> {
     let env = SystemEnv;
     let backend = backend_for(args)?;
 
+    // **Before this process owns anything**, which is the whole reason it is here rather than
+    // at the call that consumes it: registration is what turns a signal from the kernel's
+    // default disposition (terminate now) into `daemon::shutdown`'s order, so every instant
+    // between it and the exit is an instant in which a stop is a *drain*. Registering after
+    // the socket was bound would leave a window in which a `systemctl stop` killed a daemon
+    // that was already serving — small, survivable (the header says why), and avoidable for
+    // the price of one line in a different place. Measured on this host: an un-handled SIGINT
+    // in that window exits 130 and logs nothing.
+    let signals = Signals::real()?;
+
     // D9's daemon protocol, and this binding's lifetime is the lock's: `state` lives until
     // `run` returns, which is until the process stops serving. Never blocks — a second
     // `wchd` is answered with `StoreLocked` naming the holder rather than waiting for a
@@ -166,31 +194,45 @@ async fn run(args: &Args) -> Result<()> {
     // retaken: `flock` denies a second open file description in this process exactly as it
     // denies another's, so a daemon that took a second would answer its own clients
     // `StoreLocked` naming its own pid (`daemon::state`'s header).
+    //
+    // The stop token is made here and nowhere else, and handed to both halves of the process:
+    // the daemon that *watches* it (every open subscription, the idle-sweep driver) and the
+    // teardown that *cancels* it. A clone is the same token, so there is one answer to "is
+    // this daemon stopping" however many places ask.
+    let shutdown = Shutdown::new();
     let wchd = Wchd::new(
         backend,
         SessionStore::new(state.store().root()),
         state.token(),
+        shutdown.clone(),
     );
-    // D12's other half. The handle is dropped rather than held: dropping a `JoinHandle`
-    // detaches the task, and this build has nothing to say about when housekeeping ends —
-    // it ends with the runtime, which ends with the process. P4e-ii owns stopping it in an
-    // order.
-    drop(wchd.spawn_idle_sweeps());
-    let mut server = uds::serve(listener, daemon::server::mount(wchd)?);
+    // D12's other half, and since P4e-ii the handle is **held**: the driver observes the token
+    // and ends itself, and `serve_until_stopped` joins it, so "housekeeping ended" is a fact
+    // this process waited for rather than a consequence of the runtime being dropped.
+    let housekeeping = wchd.spawn_idle_sweeps();
+    let mut serving = uds::serve(listener, daemon::server::mount(wchd)?);
 
-    // Runs until the process is signalled. `stopped()` resolves when the accept loop and
-    // every connection it spawned are gone, which is what an integration test uses; here
-    // nothing calls `stop`, so this is the daemon's main loop — and the `?` is the whole
-    // reason it answers a `Result`: a daemon that gave up on `accept` has stopped serving,
-    // and reporting that as a clean exit would tell `Restart=on-failure` not to restart it
-    // and leave the operator a socket file with nobody behind it.
-    let served = server.stopped().await;
+    // Nobody is listening unless the follow-up's `sd-notify` implementation is plugged into
+    // this seam, which is the honest state of a daemon started from a shell — and the reason
+    // the seam exists rather than a direct call: the *order* these are sent in relative to the
+    // teardown is a claim `daemon::shutdown` makes, and a claim about a side effect that
+    // leaves the process needs a double to be assertable at all.
+    let notify = Unsupervised;
+    notify.ready("serving");
 
-    // Said out loud rather than left to the end of a scope, because it is the one thing
-    // this build does claim about stopping: the state directory is released, and released
-    // *after* the server has stopped answering. It is the orderly half of a release the
-    // kernel performs anyway when the process dies (see this file's header) — P4e-ii's
-    // shutdown discipline is about the order, never about whether it happens.
+    // The daemon's main loop and its whole teardown; `daemon::shutdown`'s header is the order
+    // and the argument for it. The `?` is the reason this answers a `Result`: a daemon that
+    // gave up on `accept` has stopped serving, and reporting that as a clean exit would tell
+    // `Restart=on-failure` not to restart it and leave the operator a socket file with nobody
+    // behind it.
+    let served =
+        shutdown::serve_until_stopped(&mut serving, &shutdown, signals, &notify, housekeeping)
+            .await;
+
+    // Said out loud rather than left to the end of a scope, because the order is the claim:
+    // the state directory is released *after* the server has stopped answering and after every
+    // subscription has been told why it ended. It is the orderly half of a release the kernel
+    // performs anyway when the process dies (see this file's header).
     drop(state);
     served
 }

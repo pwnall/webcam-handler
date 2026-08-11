@@ -49,6 +49,13 @@
 //!    the bound this sub-milestone's own transport removed, because a WebSocket connection
 //!    can hold arbitrarily many calls in flight where HTTP/1.1 could not (note **N59**).
 //!
+//! And one claim that is P4e-ii's rather than P4e-i's, because it is about these streams and
+//! there is one honest place to assert it: **a daemon that is stopping ends every open
+//! subscription with a reason** (`daemon::events::SHUTTING_DOWN`) rather than closing the
+//! socket under it, and the hotplug thread still goes down with its last reader without a
+//! token of its own. `daemon::shutdown` owns the order that makes the first true; this is the
+//! half of it a client can see.
+//!
 //! ## Answering afterwards is half of every claim
 //!
 //! A wedged daemon does not fail an assertion — it fails to return — so each hostile
@@ -1513,6 +1520,101 @@ async fn a_watch_that_stops_ends_the_streams_reading_it_and_names_why() {
 
     still_answers(&mut connection, &ask, "after a watch stopped").await;
     a_fresh_client_is_served(&fixture, &ask, "after a watch stopped").await;
+}
+
+/// Open `name` on `connection` and hand back the subscription id the daemon assigned.
+///
+/// The id is what a notification is matched against, and on a duplex connection carrying two
+/// subscriptions that matching is the whole assertion — "a stream ended" is not the claim,
+/// "*this* stream ended, naming why" is.
+async fn subscribed(connection: &mut Ws, name: &str) -> serde_json::Value {
+    let opened = connection.call(name, json!({})).await;
+    opened
+        .get("result")
+        .unwrap_or_else(|| panic!("{name} was refused: {opened}"))
+        .clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_is_stopping_ends_every_open_subscription_and_names_why() {
+    // **P4e-ii's step 3, from the outside** (`daemon::shutdown`'s header owns the order; this
+    // is the half of it a client can see). AGENTS says open streams are "cancelled, never
+    // awaited, on shutdown", and *cancelled with a reason* is the part that costs something:
+    // a daemon that simply stopped its transport would end both streams below too — with
+    // nothing at all, on a socket that closed, indistinguishable from the daemon crashing or
+    // the machine losing its network. What the token buys is the payload.
+    //
+    // Both subscriptions, on **one** connection, because the claim is about the daemon rather
+    // than about either stream: one cancellation reaches every open subscription, and the two
+    // have different lag policies, different producers and different bodies underneath.
+    let fixture = Fixture::start();
+    let mut subscribers = fixture.wchd.watch_subscribers();
+    let mut running = fixture.wchd.watch_hotplug();
+
+    let mut connection = Ws::connect(&fixture.socket).await;
+    let hotplug = subscribed(&mut connection, "wch_subscribe_events").await;
+    running
+        .wait_for(|running| *running)
+        .await
+        .expect("the daemon publishes whether it is watching");
+    let calibration = subscribed(&mut connection, "wch_subscribe_calibration").await;
+    subscribers
+        .wait_for(|live| *live == 2)
+        .await
+        .expect("the daemon publishes its subscriber count");
+
+    // The stop, asked for through the daemon's own token — which is what the shipped
+    // `serve_until_stopped` cancels, at a point in its order *before* it stops the transport.
+    // Doing it here, with the socket still up, is what makes the assertions below about the
+    // cancellation rather than about a connection that went away.
+    fixture.wchd.shutdown().cancel();
+
+    let endings = [
+        connection.notification().await,
+        connection.notification().await,
+    ];
+    for (subscription, stream) in [
+        (&hotplug, "wch_subscribe_events"),
+        (&calibration, "wch_subscribe_calibration"),
+    ] {
+        let ending = endings
+            .iter()
+            .find(|ending| &ending["subscription"] == subscription)
+            .unwrap_or_else(|| {
+                panic!("{stream} was left open by a daemon that is stopping: {endings:?}")
+            });
+        // `params.error` is jsonrpsee's `subscription_error` notification, the only carrier
+        // left after an accept, and the payload is typed rather than prose so a client
+        // branches instead of parsing a sentence — and branches on *this* reason rather than
+        // on `WATCH_STOPPED`, because "re-subscribe now" and "this daemon is going away" are
+        // different advice.
+        assert_eq!(
+            ending["error"],
+            json!({ "ended": daemon::events::SHUTTING_DOWN }),
+            "{stream} ended without telling its client why: {ending}"
+        );
+    }
+
+    // Reaped, not merely silent: both counts come back down, which is what makes the endings
+    // above the end of the subscriptions rather than one message on a stream still holding a
+    // task and a receiver.
+    subscribers
+        .wait_for(|live| *live == 0)
+        .await
+        .expect("the daemon publishes its subscriber count");
+    assert_eq!(fixture.wchd.subscriptions().live, 0);
+
+    // And the hotplug **thread** goes down with them, without a token of its own — the
+    // argument `daemon::events::Hotplug`'s header makes and P4e-ii deliberately did not
+    // replace. Cancelling the subscribers is what ends it: each cancelled subscription drops
+    // its `Attached`, that drops the `broadcast::Receiver`, and the thread's next turn — at
+    // most one `limits::HOTPLUG_WATCH_DEADLINE_MS` away — finds no readers left. This is the
+    // assertion that keeps that paragraph honest now that there is a second way for a
+    // subscription to end.
+    running
+        .wait_for(|running| !*running)
+        .await
+        .expect("the watch thread put the watch down after its cancelled readers left");
 }
 
 #[tokio::test(flavor = "multi_thread")]

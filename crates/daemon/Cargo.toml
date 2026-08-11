@@ -61,14 +61,24 @@ rustix = { workspace = true, features = ["fs", "net", "process"] }
 # `to_json_raw_value` that renders it is jsonrpsee's own re-export.
 serde = { workspace = true, features = ["derive"] }
 # `net` for `UnixListener`, `macros` for `select!` and `#[tokio::main]`, `sync` for the
-# `oneshot` a request hands to a camera actor, `time` for the idle-sweep cadence, and the
-# multi-threaded runtime because a connection task and the accept loop are concurrent by
-# construction. No `signal`: signal disposition is P4e-ii's and this build takes the
-# kernel's default (see `main.rs`).
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+# `oneshot` a request hands to a camera actor, `time` for the idle-sweep cadence and the
+# shutdown drain's `timeout`, and the multi-threaded runtime because a connection task and
+# the accept loop are concurrent by construction. `signal` is P4e-ii's: the daemon registers
+# SIGTERM and SIGINT and treats them as one request (`daemon::shutdown`), where before it took
+# the kernel's default disposition and could not drain at all.
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+# `CancellationToken`, which is the whole of this edge: one stop token, cloned to every open
+# subscription and to the idle-sweep driver (`daemon::shutdown::Shutdown`). **It carries no
+# feature**, deliberately and stated because the neighbouring dev-dependency does: `sync` is
+# unconditional in tokio-util 0.7.19's `src/lib.rs`, so the token needs nothing enabled, while
+# `tests/support/subscribe.rs` needs `compat` to bridge a `tokio::net::UnixStream` onto the
+# `futures::io` traits soketto takes. Same package, same pin, two entries — the dev one adds
+# the feature, this one must not, because a feature enabled on a normal edge is enabled for
+# every build of the workspace.
+tokio-util.workspace = true
 tracing.workspace = true
 # `env-filter` so an operator can raise the level with `RUST_LOG` on a process that is
-# meant to keep running; design §2.6's journald layer waits for the systemd work (P4e-ii).
+# meant to keep running; design §2.6's journald layer waits for the rest of the systemd work.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A session's identity is a UUIDv7 the *caller* mints: the engine reads no clock, so the
 # composition root is where "now" enters (design D9). Promoted from a dev-dependency when

@@ -62,3 +62,89 @@ pub fn install() {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
 }
+
+/// A `tracing` writer a test can read back.
+///
+/// Thread-local through [`tracing::subscriber::set_default`], so it captures the test that
+/// installed it and no other test's — [`install`] deliberately runs only from `main` for the
+/// same reason, and a `try_init` race between two tests would otherwise decide which one saw
+/// its own events.
+///
+/// It lives here rather than in the two modules that use it because "a line the daemon said"
+/// is this module's subject: `crate::uds` asserts that a downgraded bind announces itself and
+/// `crate::shutdown` asserts that an expired drain does, and both are the same claim — a
+/// bound that was silently exceeded is worse than the thing it was bounding (AGENTS rule 3).
+/// Two copies of the writer would be two answers to what "logged" means.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+#[cfg(test)]
+impl CapturedLog {
+    /// Everything written so far, as the operator would have read it.
+    pub(crate) fn rendered(&self) -> String {
+        let bytes = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// Make this the thread's subscriber until the guard is dropped.
+    fn installed(&self) -> tracing::subscriber::DefaultGuard {
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(self.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_default(subscriber)
+    }
+}
+
+#[cfg(test)]
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+    type Writer = CapturedLog;
+
+    fn make_writer(&'a self) -> CapturedLog {
+        self.clone()
+    }
+}
+
+/// Run `body` with everything it logs captured.
+#[cfg(test)]
+pub(crate) fn capturing<T>(body: impl FnOnce() -> T) -> (T, String) {
+    let captured = CapturedLog::default();
+    let guard = captured.installed();
+    let value = body();
+    drop(guard);
+    (value, captured.rendered())
+}
+
+/// The same, for a body that awaits.
+///
+/// The guard is held **across** the awaits rather than around a `block_on`, which is what
+/// makes this capture anything at all: the default subscriber is a thread-local, and a future
+/// is polled many times. That costs the future its `Send`, which is why every caller is a
+/// current-thread `#[tokio::test]` — the flavour `start_paused` already requires.
+#[cfg(test)]
+pub(crate) async fn captured<T>(body: impl Future<Output = T>) -> (T, String) {
+    let captured = CapturedLog::default();
+    let guard = captured.installed();
+    let value = body.await;
+    drop(guard);
+    (value, captured.rendered())
+}

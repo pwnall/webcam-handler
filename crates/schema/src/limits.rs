@@ -229,6 +229,37 @@ pub const HOTPLUG_WATCH_DEADLINE_MS: u64 = 1_000;
 /// and the daemon gives up rather than spinning.
 pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 
+/// How long a stop waits for the work the daemon had already accepted.
+///
+/// The bound on the *drain*, which is the one part of stopping that waits for anybody: by
+/// the time it starts, the accept loop is ending and every open subscription has already
+/// been told why it is over, so what is left is the requests that were in flight when the
+/// signal arrived. AGENTS lists "shutdown drains" among the things that get a number here
+/// precisely because the alternative — waiting for whatever is running — is unbounded, and
+/// what is running may be a calibration sweep.
+///
+/// **A sweep will usually reach this bound rather than end inside it, and that is the case
+/// the number is chosen for.** `daemon::server`'s `Inner::sessions` is held for the whole of
+/// `wch_calibrate_sweep`, which is minutes of camera time on real hardware, so a stop asked
+/// for mid-sweep does not get a tidy finish; it gets this long and then stops anyway, saying
+/// so at `warn` (rubric rule 3 — never a silence). What makes that survivable rather than a
+/// hole is D9's persisted pre-sweep snapshot: an interrupted sweep is recoverable from the
+/// session document the sweep has been writing all along, which is the mechanism
+/// `crates/engine/tests/crash_recovery.rs` pins and AGENTS rule 8 requires.
+///
+/// Twenty seconds, chosen against the one number outside this project that can overrule it:
+/// systemd's default `TimeoutStopSec` is 90 s, after which the service manager sends
+/// `SIGKILL`. A daemon whose own drain outlasted that would never reach its ordered release —
+/// the store lock, the sockets, the descriptors — because the kernel would perform the
+/// disorderly one first, and every sentence this project writes about *how* it stops would be
+/// describing a path that never runs. Being under it by a factor is what makes this bound the
+/// one that fires. It is deliberately far larger than a request's own budgets
+/// ([`CAMERA_ENQUEUE_WAIT_MS`], [`DEFAULT_SETTLE_DEADLINE_MS`]) so that a stop arriving during
+/// ordinary work waits for that work rather than cutting it in half.
+///
+/// Read by `daemon::shutdown`'s drain, which is the only thing that waits during a stop.
+pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 20_000;
+
 /// How long an open camera may go unused before the next idle sweep closes it.
 ///
 /// D12's "the daemon never opens a camera until first use and closes on idle

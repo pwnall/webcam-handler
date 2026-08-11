@@ -157,10 +157,15 @@ impl Fixture {
         // fixture keeps its own handle because the subscription suite asks the daemon what
         // its subscriptions are doing, which is a question no wire answers (note N17: "a
         // *query* on the sink, not a failure of `emit`").
+        // A stop token of this fixture's own, exactly as the shipped `main` makes one before
+        // it serves. It is not kept as a field: `Wchd::shutdown()` reaches the same token, so
+        // a suite that wants to stop this daemon asks the daemon — and note **N49** makes a
+        // field with one includer a `dead_code` failure in the other four anyway.
         let wchd = Wchd::new(
             wrap(&backend),
             SessionStore::new(state.root()),
             Arc::clone(&lock),
+            daemon::shutdown::Shutdown::new(),
         );
         let methods: Methods =
             daemon::server::mount(wchd.clone()).expect("the T5 surface mounts once");

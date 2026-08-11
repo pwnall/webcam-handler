@@ -394,10 +394,19 @@ impl Wchd {
     /// [`limits::CAMERA_IDLE_CLOSE_MS`].
     ///
     /// `lock` is the token [`crate::state::OwnedState`] took at startup, not a second one:
-    /// see this module's header for what a second would do.
+    /// see this module's header for what a second would do. `shutdown` is the daemon's one
+    /// stop token, and it is a *parameter* for the same reason: the composition root makes it
+    /// before anything is served, hands the same token to this value and to
+    /// `crate::shutdown::serve_until_stopped`, and a daemon that made its own would be
+    /// watching a fact nobody sets.
     #[must_use]
-    pub fn new(backend: Arc<dyn CameraBackend>, store: SessionStore, lock: Arc<StoreLock>) -> Wchd {
-        Wchd::with_idle_timeout(backend, store, lock, limits::CAMERA_IDLE_CLOSE_MS)
+    pub fn new(
+        backend: Arc<dyn CameraBackend>,
+        store: SessionStore,
+        lock: Arc<StoreLock>,
+        shutdown: crate::shutdown::Shutdown,
+    ) -> Wchd {
+        Wchd::with_idle_timeout(backend, store, lock, shutdown, limits::CAMERA_IDLE_CLOSE_MS)
     }
 
     /// The same, with D12's "configurable" idle timeout supplied.
@@ -411,6 +420,7 @@ impl Wchd {
         backend: Arc<dyn CameraBackend>,
         store: SessionStore,
         lock: Arc<StoreLock>,
+        shutdown: crate::shutdown::Shutdown,
         idle_after_ms: Millis,
     ) -> Wchd {
         Wchd(Arc::new(Inner {
@@ -418,9 +428,21 @@ impl Wchd {
             store,
             sessions: tokio::sync::Mutex::new(lock),
             clock: MonotonicClock::new(),
-            events: Arc::new(Events::new()),
+            events: Arc::new(Events::new(shutdown)),
             waiters: Waiters::new(),
         }))
+    }
+
+    /// The daemon's stop token — [`crate::shutdown::Shutdown`].
+    ///
+    /// One home, reached rather than copied: it is stored in `crate::events`'s `Events`,
+    /// because a subscription's forwarding loop is the only thing in this process that waits
+    /// on it, and everything else that needs it (the idle-sweep driver below, a test that
+    /// wants to cancel) asks here instead of holding a second field. A clone is the same
+    /// token, so "the daemon is stopping" cannot come to mean two things.
+    #[must_use]
+    pub fn shutdown(&self) -> &crate::shutdown::Shutdown {
+        self.0.events.shutdown()
     }
 
     /// What the daemon's subscriptions are doing right now (D10, P4e-i).
@@ -507,8 +529,8 @@ impl Wchd {
         self.0.cameras.sweep(self.0.clock.now_ms())
     }
 
-    /// Run [`Wchd::sweep_idle_cameras`] on this build's cadence, for as long as the
-    /// runtime lives.
+    /// Run [`Wchd::sweep_idle_cameras`] on this build's cadence, until the daemon is asked to
+    /// stop.
     ///
     /// The shipped caller, and the one reader of [`limits::CAMERA_IDLE_SWEEP_MS`]:
     /// everything about the driver is [`Wchd::spawn_idle_sweeps_every`]'s, so a test can
@@ -519,8 +541,8 @@ impl Wchd {
         self.spawn_idle_sweeps_every(limits::CAMERA_IDLE_SWEEP_MS)
     }
 
-    /// Run [`Wchd::sweep_idle_cameras`] every `cadence_ms`, for as long as the runtime
-    /// lives.
+    /// Run [`Wchd::sweep_idle_cameras`] every `cadence_ms`, until the daemon is asked to
+    /// stop.
     ///
     /// D12 says the daemon "closes on idle", and a deadline nobody checks is not a
     /// deadline: `engine::actor` computes idleness and **this is the thing that asks**.
@@ -543,17 +565,34 @@ impl Wchd {
     /// against the camera whose owner is using it. `idle_sweep_cadence` is where that decision
     /// is made and asserted.
     ///
-    /// Nothing stops this task: it ends when the runtime it was spawned on is dropped,
-    /// which is when the process is stopping. Ending it in an order is P4e-ii's shutdown
-    /// discipline; the returned handle is what a test uses to abort one it started.
+    /// **This task ends itself**, on the daemon's [`crate::shutdown::Shutdown`] token: the
+    /// cadence is raced against it, so a stop asked for between two passes ends the driver on
+    /// the spot rather than at the next tick, and a stop asked for *during* a pass ends it
+    /// when that pass returns. The returned handle is what
+    /// [`crate::shutdown::serve_until_stopped`] **awaits**, which is what makes "the
+    /// idle-sweep driver ended" a fact something waited for rather than a detached task's
+    /// maybe; a test that starts one of its own can still abort it.
+    ///
+    /// What it is deliberately *not* is a drain: a pass already in flight is allowed to
+    /// finish, because it is a round trip through an actor's command queue and abandoning it
+    /// would leave a camera the registry thinks is closing. That wait is the actor's own,
+    /// bounded by the command in front of it, and the whole of it sits inside
+    /// [`limits::DAEMON_SHUTDOWN_DRAIN_MS`] because the join happens after the drain.
     ///
     /// Must be called from inside a tokio runtime.
     pub fn spawn_idle_sweeps_every(&self, cadence_ms: Millis) -> tokio::task::JoinHandle<()> {
         let wchd = self.clone();
+        let stopping = self.shutdown().clone();
         tokio::spawn(async move {
             let mut cadence = idle_sweep_cadence(cadence_ms);
             loop {
-                cadence.tick().await;
+                // Both arms are cancel-safe: `Interval::tick` keeps its schedule across a
+                // cancelled poll, and a cancelled token stays cancelled, so racing them costs
+                // neither a tick nor an edge.
+                tokio::select! {
+                    () = stopping.cancelled() => break,
+                    _ = cadence.tick() => {}
+                }
                 let pass = wchd.clone();
                 let closed = tokio::task::spawn_blocking(move || pass.sweep_idle_cameras()).await;
                 match closed {
@@ -1898,6 +1937,7 @@ mod tests {
             Arc::clone(&backend) as Arc<dyn CameraBackend>,
             SessionStore::new(temp.root()),
             lifetime_lock(&temp),
+            crate::shutdown::Shutdown::new(),
             idle_after_ms,
         );
         (backend, temp, wchd)
@@ -2115,6 +2155,7 @@ mod tests {
             backend as Arc<dyn CameraBackend>,
             SessionStore::new(temp.root()),
             lifetime_lock(&temp),
+            crate::shutdown::Shutdown::new(),
             idle_after_ms,
         );
         (inner, closes, temp, wchd)
@@ -2563,6 +2604,7 @@ mod tests {
             Arc::new(Diagnosing),
             SessionStore::new(temp.root()),
             lifetime_lock(&temp),
+            crate::shutdown::Shutdown::new(),
         );
 
         let listed = wchd
@@ -2673,5 +2715,37 @@ mod tests {
         // while the handle was still open would be the one lie D12 cannot afford. The
         // bookkeeping is asserted where the pass is awaited instead.
         driver.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_idle_sweep_driver_ends_itself_when_the_daemon_is_asked_to_stop() {
+        // P4e-ii's step 6, at the end this module owns. Until now this task ended only with
+        // the runtime, and `main` dropped its handle — so "housekeeping stopped" was a
+        // consequence of the process exiting rather than something the daemon did, and
+        // nothing could wait for it.
+        //
+        // Two claims, and the second is the one that needed the token: the driver **ends**,
+        // and the handle **resolves** — a detached task that merely stopped ticking would
+        // satisfy an assertion about the first and hang on the second, which is the difference
+        // between `crate::shutdown` joining it and hoping.
+        //
+        // Nothing sleeps. The clock is paused, so a driver that ignored the token would sit on
+        // its cadence for ever and become a named nextest TIMEOUT rather than a green test —
+        // `advance` below is what proves it was still running, and the join is what proves it
+        // is not.
+        let (_backend, _temp, wchd) = daemon(0);
+        let driver = wchd.spawn_idle_sweeps_every(limits::CAMERA_IDLE_SWEEP_MS);
+
+        // One tick first, so what is asserted below is a *running* driver being ended rather
+        // than one that never started.
+        tokio::time::advance(std::time::Duration::from_millis(
+            limits::CAMERA_IDLE_SWEEP_MS,
+        ))
+        .await;
+
+        wchd.shutdown().cancel();
+        driver
+            .await
+            .expect("the idle-sweep driver ended without panicking");
     }
 }
