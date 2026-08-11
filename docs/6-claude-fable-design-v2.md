@@ -908,7 +908,15 @@ P4d as a direct edge of `webcam-handler-v4l2` (`net`) and `webcam-handler-daemon
 (`fs`, `net`, `process`) — already in the lock via fd-lock, already allowlisted, and
 chosen over `libc` because it is a **safe** wrapper whose `sockaddr_nl` is `linux-raw-sys`
 bindgen output: a `#![forbid(unsafe_code)]` crate can make the syscalls, and the one crate
-that may say `unsafe` did not have to), tokio 1.x / axum 0.8 / tower-http 0.7 / tokio-util (MIT), jsonrpsee 0.26 (MIT;
+that may say `unsafe` did not have to), tokio 1.x / axum 0.8 / tower-http 0.7 (MIT),
+tokio-util 0.7.19 (MIT; **promoted from a dev-only edge to a normal one at P4e-ii**. It
+arrived at P4e-i as a *dev*-dependency of `webcam-handler-daemon` for its `compat` bridge,
+which is what puts a `tokio::net::UnixStream` onto the `futures::io` traits soketto takes;
+P4e-ii made it a normal edge because `daemon::shutdown::Shutdown` is a `CancellationToken` —
+one stop token, cloned to every open subscription and to the idle-sweep driver. The normal
+edge deliberately carries **no feature**, because `sync` is unconditional in 0.7.19 and a
+feature enabled on a normal edge is enabled for every build of the workspace; the dev entry
+keeps `compat`, which is why one package is two entries), jsonrpsee 0.26 (MIT;
 0.x — minor pinned workspace-wide), rust-embed 8 (MIT; solo maintainer on a self-hosted
 forge — reviewed on bump, `include_dir` fallback), zune-jpeg 0.5 (MIT/Apache/Zlib), yuv
 0.8 (BSD-3/Apache), image 0.25 `default-features=false, features=["png","jpeg"]`
@@ -917,14 +925,28 @@ imageproc 0.27 (MIT), little_exif 0.6 (MIT/Apache; builds the APP1 bytes only �
 splice writes them, and the library's own JPEG writer never sees a camera file [PF:16]),
 y4m 0.8 (MIT), clap 4 + complete +
 mangen, comfy-table 8 (MIT), indicatif 0.18 (MIT), anstream/anstyle (MIT/Apache),
-thiserror 2 / anyhow 1, tracing + tracing-subscriber + tracing-journald (MIT, no
-libsystemd), serde/serde_json, toml 1 (config), schemars 1 (MIT), tempfile
+thiserror 2 / anyhow 1, tracing + tracing-subscriber + tracing-journald 0.3.2 (MIT, no
+libsystemd — the journald layer is *this crate* rather than the `systemd` bindings, which is
+how §2.6's "pure-Rust protocol" is met by a dependency instead of by a feature flag on one;
+pinned at P0 with no consumer and **adopted at P4e-ii**, where `daemon::logging` installs it
+**instead of** the fmt layer when `$JOURNAL_STREAM` says stderr already is the journal, both
+layers together being every line in the journal twice), serde/serde_json, toml 1 (config), schemars 1 (MIT), tempfile
 3, fd-lock 4, uuid 1 (v7), jiff 0.2 (Unlicense/MIT; RFC 3339 strings on disk make it
 swappable), camino 1, humantime 2, base64 0.23 (MIT/Apache; **`webcam-handler-api` only**
 — D10's "base64 in the JSON result" is a transport encoding and this is its one home, so
 `webcam-handler-schema` stays free of it; pinned at P0 with no consumer and adopted at
-P4a when the wire photo answer landed), sd-notify 0.5 + listenfd 1 (pure-Rust systemd
-protocols), soketto 0.8.1 (Apache-2.0 OR MIT, **dev-only** edge of `webcam-handler-daemon`,
+P4a when the wire photo answer landed), sd-notify 0.5.0 + listenfd 1.0.2 (pure-Rust systemd
+protocols, both pinned at P0 with no consumer and **adopted at P4e-ii**, where
+`daemon::systemd` is the one module that reads either. sd-notify (MIT OR Apache-2.0) is
+`READY=1`, `STATUS=…`, `STOPPING=1` and `WATCHDOG=1` on `$NOTIFY_SOCKET`, default features
+only — `fdstore` would add `sendfd` for a descriptor store this daemon does not use — and its
+`notify` answering `Ok(())` with the variable unset is what lets the real `Supervisor` run
+unconditionally instead of behind an "are we under systemd" guess. listenfd (Apache-2.0) is
+the `LISTEN_FDS`/`LISTEN_PID` protocol, taken as a dependency for the half that is *not* the
+protocol: `take_unix_listener` validates that the descriptor really is a listening `AF_UNIX`
+stream socket, which is the check that stops a `from_raw_fd` on a passed-in number being a lie
+this process then serves from. Its `libc` edge is its own — the daemon stays
+`#![forbid(unsafe_code)]` and adds none), soketto 0.8.1 (Apache-2.0 OR MIT, **dev-only** edge of `webcam-handler-daemon`,
 adopted at P4e-i: it is jsonrpsee-server's *own* WebSocket implementation and already in the
 lock through it, so the subscription suite's hand-driven upgrade over `AF_UNIX` and the
 daemon's frame layer cannot disagree about what a frame is. Deliberately not jsonrpsee's

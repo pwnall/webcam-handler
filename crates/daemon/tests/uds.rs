@@ -223,7 +223,10 @@ async fn the_server_stops_when_the_test_that_started_it_says_so() {
     // sleeps and then kills something — which this workspace bans by name.
     //
     // It is *not* a claim that shutdown is graceful, that anything drains, or that a
-    // stream is cancelled. Those are P4e-ii's and this build implements none of them.
+    // stream is cancelled. Those landed at P4e-ii and are asserted where they live —
+    // `daemon::shutdown`'s ordered teardown and its unit tests, and `tests/signals.rs`,
+    // which drives both of them into a real process with a real signal. This test drives
+    // `Serving` alone, which is the layer underneath all of it.
     let serving = Serving::start();
     let socket = serving.socket();
 
@@ -251,8 +254,11 @@ async fn the_server_stops_when_the_test_that_started_it_says_so() {
     );
 
     // And the socket file is still there, because nothing unlinks it on the way out.
-    // That is deliberate — P4e-ii owns the orderly exit — and it is exactly the leftover
-    // `SocketDir::bind` is written to survive.
+    // That is deliberate, and P4e-ii's orderly exit deliberately kept it that way: the exits
+    // that matter run no code at all, so a cleanup only the orderly path performs is one the
+    // failing path cannot rely on. It is exactly the leftover `SocketDir::bind` is written to
+    // survive, and `tests/signals.rs` asserts the same file is still there after a real
+    // SIGTERM has been drained.
     assert!(socket.as_std_path().exists(), "{socket}");
 }
 

@@ -55,8 +55,9 @@
 //!    rather than assumed. A detached task's ending is a maybe; a joined one's is a fact
 //!    something waited for, which is the only version of it a test can assert.
 //! 7. **Return.** `main` drops `OwnedState` afterwards, which is the ordered store-lock
-//!    release `crate::state`'s header defers to this sub-milestone — "P4e-ii's store-lock
-//!    release is about doing it in an order, not about doing it at all".
+//!    release `crate::state`'s header deferred here — it was always about doing it in an
+//!    *order* rather than about doing it at all, because a killed daemon releases the lock
+//!    too, and this is the order.
 //!
 //! ## SIGTERM ≡ SIGINT
 //!
@@ -274,9 +275,12 @@ fn stopped_by(stop: Stop, received: Option<()>) -> Stop {
 /// to be able to assert. A recording double is the only way to assert an order of
 /// side-effects that leave the process.
 ///
-/// This task ships the trait, [`Unsupervised`], and the recording double its tests use; the
-/// real `sd-notify` implementation, socket activation and the journald layer are the
-/// follow-up's (note **N58**'s split).
+/// The trait lives here, with the order that reads it; the implementation that actually
+/// speaks the protocol is [`crate::systemd::Supervisor`], one module along with socket
+/// activation and the journald layer. That is the seam doing its job rather than an
+/// accident of when the two halves landed (note **N58**'s split): this module owns *when*
+/// a supervisor is told, `crate::systemd` owns *how*, and neither has to know the other's
+/// argument.
 pub trait Notifying: Send + Sync {
     /// The daemon is serving. Sent once, from the composition root, after the socket is bound.
     fn ready(&self, status: &str);
@@ -292,8 +296,11 @@ pub trait Notifying: Send + Sync {
 
 /// Nobody is supervising this process, so there is nobody to tell.
 ///
-/// The shipped implementation until the follow-up swaps it, and the correct one for every
-/// `wchd` started from a shell. It is a no-op rather than a log line: what these calls carry
+/// **Not what `main` passes** — that is [`crate::systemd::Supervisor`], which is safe to use
+/// unconditionally because `sd_notify` answers `Ok(())` with `$NOTIFY_SOCKET` unset, so a
+/// `wchd` started from a shell already sends nothing. What this is for is a caller that wants
+/// to be *sure* nothing leaves the process, and the value the shutdown suite's recording
+/// double is compared against. It is a no-op rather than a log line: what these calls carry
 /// is already logged as the events they describe, and a second copy on stderr would be the
 /// daemon narrating its own bookkeeping.
 #[derive(Debug, Clone, Copy)]

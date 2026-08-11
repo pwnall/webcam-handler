@@ -30,9 +30,12 @@
 # announces nor exits would otherwise hang CI forever.
 #
 # Inspecting the directory *after* the daemon has been stopped is deliberate and it is
-# sound: this build never unlinks its socket (P4e-ii owns shutdown discipline), so the
-# directory and the socket file are exactly as the daemon left them, and a mode is a
-# property of a directory rather than of a process.
+# sound: this build never unlinks its socket, and P4e-ii's shutdown discipline deliberately
+# left it that way — the exits that matter run no code at all, so a cleanup only the orderly
+# path performs is one the failing path cannot rely on, and `crates/daemon/tests/signals.rs`
+# asserts the file is still there after a real SIGTERM. So the directory and the socket file
+# are exactly as the daemon left them, and a mode is a property of a directory rather than of
+# a process.
 #
 # $WCH_GATE_WCHD is the documented seam — the daemon-shaped program to drive. The selftest
 # points it at programs that get D11 wrong in one way each; `pass_case` always drives the

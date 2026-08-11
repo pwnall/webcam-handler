@@ -3645,6 +3645,49 @@ descriptor half of this entry has **retired**: what was "still open" is closed, 
 residuals 1 — now a branch tests drive, per correction 3 above — and 2 as the honest
 remainder.
 
+### Amendment, 2026-08-11: an **inherited** socket is checked by name, and the unit file is what closes it
+
+P4e-ii gave the daemon a second startup path, and this entry is where the residual belongs
+rather than in a new note: the substitution defence is *this* entry's argument, and what
+follows is a limit on that argument rather than a new law. (The alternative — a note of its
+own — would have put the strong claim and its one exception in two places, which is how a
+reader ends up quoting the wrong one.)
+
+**What changed.** `daemon::systemd::Activation::adopt` takes a socket **systemd bound**, from a
+`ListenStream=` string, before this process existed. There is nothing to *prepare*: the bind
+already happened. So D11's question — "is the directory 0700 and ours" — is asked through the
+same `check_mode_and_owner` the self-bound path uses (design §2.10's one home, reached by a new
+`check_directory_mode_and_owner`), about the parent of the path `local_addr()` reports. An
+abstract or unnamed address is refused outright rather than checked leniently: no directory, no
+mode, no owner, reachable by anything in the network namespace that can spell the name, so
+there is *nothing* to check rather than something this build cannot verify.
+
+**What is gone on that path, exactly.** The `O_DIRECTORY | O_NOFOLLOW | O_PATH` open still
+makes "is a directory, is not a symlink" the kernel's own refusal, and the mode and `st_uid`
+are still read off the descriptor this daemon opened. What cannot be reproduced is the
+*binding through it*: there is no second bind to perform, so what was checked and what is
+served from are one **name** and not provably one inode. A directory swapped between systemd's
+bind and this daemon's check is undetected. Substitution is **detected rather than defeated**
+on the activated path — which is what the pre-P4d state of the self-bound path was, recorded
+here so nobody reads this entry's headline as covering both.
+
+**What closes it is not this daemon.** `packaging/systemd/wchd.socket` sets
+`DirectoryMode=0700` (systemd's default is 0755) and `SocketMode=0600`, so the directory the
+manager creates is never reachable by another account in the first place, and
+`scripts/gates/systemd-units.sh` re-derives both rather than trusting the file. The daemon's
+part is to be legible: it says at startup which of the two paths it is on, so an operator
+reading the journal can tell a defended bind from a checked one. There is no way to do better
+without a `bindat(2)` Linux does not have (the amendment above measured that), and no way at
+all when the bind is another process's.
+
+**Also settled by P4e-ii:** this entry's "**Retires when:** P4e lands the orderly exit" has
+happened, and the answer is the one the entry predicted rather than the one it hoped for.
+`daemon::shutdown` stops the daemon in an order and deliberately adds **no** unlink to it —
+the exits that matter run no code at all, so a cleanup only the orderly path performs is one
+the failing path cannot rely on. The leftover socket did not become the exception; the rule
+stands exactly as written, and `crates/daemon/tests/signals.rs` now asserts the file is still
+there after a real `SIGTERM` has been drained.
+
 ---
 
 ## N40 — D13's `StoreLocked` gained a second field, because the refusal D9 writes turns on a fact the error could not carry
@@ -6287,6 +6330,42 @@ than unfavourable. What can be said now: P4e-i alone owes `just ci` and the muta
 (it edits `crates/api/src/wire.rs`, which is inside the floor's `examine_globs`) — two
 terminal rungs, which is N54's second rule met rather than broken.
 
+### The second half landed, 2026-08-11, in three commits rather than one
+
+The register is complete, so it is written here rather than left to the log. **P4e-ii is
+`ffa1ff7`** (the shutdown discipline and the `Notifying` seam with nobody on the other end of
+it), **`bb63e8a`** (the systemd half: `sd_notify` past that seam, the watchdog, `listenfd`
+socket activation with D11 asked of a socket this daemon did not bind, the journald layer, and
+two shipped unit files with `systemd-units.sh` and `socket-activation.sh` keeping them
+agreeing with the binary), and **`add421c`** (docs/9's commissioned signal-parity suite).
+
+Two things about that shape are worth the register's space.
+
+**The third commit was not planned, and it is where the sub-milestone earned its keep.** The
+plan had two halves and a suite riding along with the second; what happened is that the suite
+became its own commit because it found a defect in the first half — the cancel-then-stop race,
+note **N61** — and a commit that lands a test and the fix it forced is a different reviewable
+thing from one that lands a feature. That is N54's sizing rule applying one level down: the
+unit is the *story*, and "the ending a client is promised actually reaches it" is a story.
+
+**Every deferral this entry listed is discharged, and one is deliberately not.** `uds.rs`'s
+"not a drain and not a signal handler", `state.rs`'s ordering sentence and `server.rs`'s
+ordered end for the idle-sweep driver are all discharged in the module that named them, with a
+`g4` row selecting the three that live outside `daemon::shutdown` itself. The fourth —
+`tests/uds.rs`'s socket file that survives a stop *deliberately* — was never a debt and stays:
+P4e-ii sharpened its argument rather than reversing it, and `tests/signals.rs` now asserts the
+file is there after a real signal. Seven `g4` rows landed with the sub-milestone, taking the
+gate from 23 rows to 30.
+
+**And the prediction this entry could not measure stays unmeasured, honestly.** N54 asked for
+the cost of a split to be compared against an un-split equivalent; there is still no un-split
+P4e to compare against. What can be added is one observation, weaker than a measurement: the
+second half's own review surface was *not* smaller than the first's, because the systemd
+protocols are four wire formats somebody else defined and each needed its own arm. A reader
+looking for the split's payoff should look at the seam instead — P4e-ii's proof reused P4e-i's
+fixture exactly as this entry predicted it would, and `tests/support/wchd.rs` (note N49) is the
+third suite's worth of reuse that followed.
+
 **Retires when:** never by disproof — it is a record of a decision. It is superseded if a
 later plan revision re-merges the two halves, which would need the docs/9 row above to stop
 depending on a subscription.
@@ -6556,3 +6635,216 @@ and until it is, a second-direction failure means "investigate", never "delete t
 
 **Retires when:** the settle path in `engine`'s integration tests runs on a stepped clock,
 at which point this entry keeps only its last paragraph.
+
+---
+
+## N61 — A `cancel()` that does not *wait* buys the cheaper half of its own ordering, and only a test that stops a real process can see it
+
+**Doc:** AGENTS' daemon rule — "open MJPEG/WS streams are cancelled, never awaited, on
+shutdown" — design §2.6's shutdown sentence, docs/7 P4e-ii, and docs/9's commissioned
+signal-parity row ("one test per signal, real delivery, drain asserted with open subscription
++ mid-flight sweep"). Note **N58** is why that row is this half's. This entry is P4e-ii's real
+finding: the commissioned test was red on the *shipped* build, and it was right.
+
+**Believed:** that step 3 of the teardown — every open subscription ends carrying
+`events::SHUTTING_DOWN`, and it ends *before* the transport carrying it stops — was bought by
+writing the two statements in that order. `daemon::shutdown`'s header said so in as many
+words ("reversing steps 3 and 4 would silently buy the cheaper half"), and eleven unit tests
+over a recording double agreed with it: in every one, the token was cancelled before the
+transport was stopped, and the step's own test even stamped the transport-stop with how many
+subscriptions were still open when it happened.
+
+**True:** the ordering is *necessary and not sufficient*, because the thing being ordered is
+not the thing the client sees. `CancellationToken::cancel` wakes a subscription's task; that
+task then has to be scheduled, return, and have jsonrpsee put its close frame on the
+connection. jsonrpsee 0.26 sends a cancelled subscription's close frame **from a task it
+spawns after the subscription body returns**, and it holds no connection open for one — so a
+transport stopped in the meantime closes the connection with the ending still in flight. What
+the client gets is a socket that went away, which is exactly the half step 3 exists to refuse,
+bought by a race rather than by an ordering.
+
+**Why the whole workspace was blind to it, which is the part worth keeping.** Every test that
+had ever exercised this path was **in-process**: the fixture's server and the fixture's client
+live in one process, so the transport's own socket outlives the "daemon" no matter what the
+teardown does, and a frame still in flight arrives anyway. The two seams the unit tests drive
+are a recording `Notifying` and a scriptable `Stopping`, and neither can be late — they record
+synchronously, which is what makes an order assertable at all and also what makes them unable
+to reproduce a scheduler. `crates/daemon/tests/signals.rs` is the first test in this project
+that stops a real **process**, and the difference is not a matter of realism: when the process
+exits, everything it had not yet written is gone. That is the whole gap, and it is a gap no
+amount of in-process rigour closes.
+
+**What was measured.**
+
+- Against the shipped build (`ffa1ff7` + `bb63e8a`), the two signal tests failed **about half
+  the time** — the client read a closed connection where it expected a `SHUTTING_DOWN`
+  payload. Half is what a race between "the spawned close-frame task is scheduled" and "the
+  transport stops" looks like when nothing orders them.
+- With the wait in place: **0 failures in 80 runs under eight CPU spinners**, and **0 in 5
+  full-workspace runs**.
+- The residual, below, is **1 failure in 60** with the subscription on an *idle* connection
+  and eight spinners.
+
+**Changed.** Step 3 now cancels *and then waits for the live subscription count to reach
+zero*, on `Wchd::watch_subscribers` — the `watch::Receiver` P4e-i published for a different
+reason — so this is a wait on an event and never a poll of a counter (AGENTS bans the
+alternative by name). Two properties of the wait are decisions rather than details:
+
+- **It is one deadline, not two.** `limits::DAEMON_SHUTDOWN_DRAIN_MS` is taken once as a
+  `tokio::time::Instant` at the top of the teardown and *shared* between step 3's wait and
+  step 5's drain, so a teardown whose subscriptions were slow to end has that much less drain
+  and the daemon's worst case stays this number rather than a multiple of it. A fresh timeout
+  per step would have put the worst case within reach of the `TimeoutStopSec` this constant
+  was chosen to stay under by a factor — and the pair that would then have been wrong together
+  is exactly the pair `scripts/gates/systemd-units.sh` exists to keep honest. The bound is on
+  the *stop*, not on each of its parts.
+- **Expiry is a `warn!` with its own sentence**, different from the drain's, because it is a
+  different failure: a subscription that did not end is a client that will be told nothing,
+  where a drain that expired is a request that will not be answered. Never a silence (AGENTS
+  rule 3).
+
+**The residual, stated rather than hidden.** The live count drops one step *before* jsonrpsee
+queues the frame — the subscription's task decrements on its way out, and the frame is the
+spawned task's business afterwards — so the wait is a very good proxy and not the fact itself.
+Under heavy load an **idle** connection's subscription can therefore still lose its ending:
+measured 1 in 60 with eight spinners. `signals.rs` does not paper over it; it rides its
+subscription on **the connection carrying the in-flight sweep**, where graceful shutdown drives
+that call to completion and the close frame has the whole drain window behind it. That is a
+property of the fixture and it is written where the fixture is, so nobody later "simplifies"
+the suite by opening a second connection for the subscription. Closing the residual for real
+needs a signal from jsonrpsee that the frame has reached the transport, which 0.26 does not
+offer — the same shape as note **N57**'s missing transport signal, and recorded in docs/7's
+standing debts rather than worked around. docs/6 §2.6's shutdown sentence is unaffected: it
+says cancel, drain, release, and all three still happen in that relation.
+
+**`biased;` in `events::forward`'s `select!` was tried and reverted.** The idea was to make
+the `Shutdown::cancelled` arm win over a queued event so the ending is produced sooner. It is
+not a fix and it costs a property. Not a fix, because the window is not inside the body: the
+frame's fate is decided *after* the body returns, in a task jsonrpsee spawns, so arm order
+changes only which microsecond the body returns in and nothing about whether the frame is on
+the connection when the transport stops. And it costs the thing N59 landed: putting
+`Feed::Ended` **in** the channel was deliberate, so that a subscriber which is behind gets
+what it already has before it is told the source stopped; an arm that always wins over a
+deliverable event is that ending raced against the queue again, spelled as a scheduling hint.
+The wait is where the ordering belongs, because the wait is about the thing that is actually
+late.
+
+**Retires when:** jsonrpsee (or whatever transport succeeds it) offers a way to observe that a
+subscription's close frame has reached the connection. Then step 3 waits on *that* instead of
+on the live count, the 1-in-60 residual closes, and this entry keeps its second paragraph as
+the reason the wait exists at all.
+
+---
+
+## N62 — The fifo is the external hold: a subprocess sweep can be wedged only because a sample photo is written with a **blocking** `std::fs::write`
+
+**Doc:** AGENTS' "No `sleep` as synchronization", docs/9's signal-parity row (a drain asserted
+"with open subscription + mid-flight sweep"), and note **N51**, which is the entry this one
+depends on in the direction that matters — N51 made a photo's *destination* a non-blocking
+open, and the reason this technique works is that `calibrate.rs`'s sample writes deliberately
+did **not** move with it. Numbered separately from N61 rather than folded into it because its
+retirement condition is about a different file and a different change: N61 retires on a
+transport signal, this one on `calibrate.rs` moving a write.
+
+**Believed:** implicitly, that "hold a sweep mid-flight and then signal the process" was
+arrangeable the way the in-process suites arrange it. It is not. The in-process fixture arms a
+`Gate` decorator and releases it over a channel; a subprocess `wchd` has no such door — the
+fake has no timing knob reachable from a profile or an environment variable, `fake::Fault` is
+in-process only, and nothing in the fake or the engine sleeps. Without an answer, docs/9's row
+degrades to signalling an idle daemon, which asserts the drain of nothing.
+
+**True:** the daemon already contains one blocking call on the sweep's own path, and it is
+there on purpose. Sweep sample photos go through `photo::WhereverTheCallerSaid`'s
+`std::fs::write` — deliberately *not* N51's `WRONLY | CREATE | NONBLOCK | CLOEXEC` open, which
+`calibrate.rs` argues for the session's own files. So a **fifo at the second sample's photo
+path** wedges the sweep inside `open(2)` until the test opens the read end: a hold with no
+timer in it, released by an action rather than by a duration, which is the only kind this
+workspace allows. The path is derived from the `Session` the daemon answered with, so nothing
+is transcribed; and the bytes crossing the fifo are read and asserted, which is what says the
+wedge was the *sweep* and not the test's idea of where the sweep would be.
+
+**What was measured:** with the fifo in place the daemon is provably mid-sweep when the signal
+arrives (one sample answered, one in flight), and after the drain the samples the sweep
+answered with and the samples on disk agree at 2 — the drain claim a loaded machine cannot
+otherwise decide. The seeded "stop that does not drain" produces 1 of 2, on disk and in
+flight, which is the failure this arrangement exists to be able to see.
+
+**Changed:** `crates/daemon/tests/signals.rs` holds the technique, and the harness three
+suites now share (`tests/support/wchd.rs`, note **N49**'s boundaries) is what made a third
+hand-written spawn unnecessary.
+
+**Retires when:** `calibrate.rs` moves sample-photo writes onto a non-blocking path — which is
+a legitimate change, and N51's own argument points at it. On that day this suite's wedge stops
+working, and the requirement is that the tests are **re-armed rather than deleted**: the claim
+they make (a real signal, a real drain, a sweep provably in flight) is docs/9's commissioned
+row and does not become less true because its hold moved. The next hold has to be another
+*action*-released one; a sleep would be a worse test wearing the same name.
+
+---
+
+## E11 — G4 evidence: socket activation and the journal, against a real service manager, 2026-08-11
+
+E9 is the shape this follows: a dated run against something this project does not control. The
+two claims below cannot be produced by any in-process fixture or by
+`crates/daemon/tests/systemd.rs`, which binds a notify socket of its own — a descriptor passed
+in through `LISTEN_FDS` and a stderr that *is* the journal are things only a service manager
+does.
+
+**Host:** the P4d/P4e workstation, kernel `7.0.0-29-generic`, systemd user manager running.
+
+### Socket activation, compared by inode
+
+    $ ./scripts/gates/socket-activation.sh
+      note  the socket this gate has systemd bind is $XDG_RUNTIME_DIR/webcam-handler/wchd.sock
+      note  the daemon served inode 859855 at /tmp/wch-socket-activation.MHc70iZ6/adopting/webcam-handler/wchd.sock — the one systemd bound, not one of its own
+      note  the daemon's readiness line reached the journal as a structured entry (_TRANSPORT=journal), so the journald layer replaced the stderr formatter rather than joining it
+      ok    socket-activation: checked 1 activated daemon(s) serving the very socket systemd bound, compared by inode
+      ok    socket-activation: checked 1 startup refusal over an abstract-namespace socket passed in through LISTEN_FDS
+      ok    socket-activation: checked 1 startup refusal over two descriptors passed in through LISTEN_FDS
+      ok    socket-activation: checked 1 log line(s) from a daemon whose stderr is a real journal, checked for the transport that says which layer wrote it
+    PASS socket-activation — 4 items examined, 0 named skip(s)
+
+`systemd-socket-activate` bound the socket and started `wchd` on it. The inode is read twice —
+once when the activator says it is listening, once when the daemon says it is serving — so
+"never binds its own" is **asserted** rather than assumed: a daemon that unlinked the inherited
+socket and bound its own would leave a different inode at the same path, and every client that
+had already connected would be talking to nothing. The two refusals are the other half of D11
+asked of a socket this daemon did not bind: an abstract address has no directory, no mode and
+no owner, and two descriptors is a guess an operator cannot see.
+
+### The journald layer replaces the fmt layer
+
+The fourth claim ran under a transient `systemd-run --user` unit, and the discriminator is
+`_TRANSPORT`: an entry the journald layer wrote is `journal`, and the same line rendered to a
+stderr that systemd captured is `stdout`. It came back `journal`, which is the claim design
+§2.6 makes ("journald layer … under systemd") and the reason `daemon::logging` installs it
+**instead of** the fmt layer rather than beside it — both would put every line in the journal
+twice.
+
+### The unit files, re-derived rather than read
+
+    $ ./scripts/gates/systemd-units.sh
+      note  derived from the tree: socket $XDG_RUNTIME_DIR/webcam-handler/wchd.sock, shutdown drain 20000ms
+      note  packaging/systemd/wchd.service: TimeoutStopSec=45000ms > DAEMON_SHUTDOWN_DRAIN_MS=20000ms, so the daemon's own bound is what fires
+      ok    systemd-units: checked 1 service unit(s) checked for Type=notify, no fork, no PIDFile, NotifyAccess and Restart
+      ok    systemd-units: checked 1 socket unit(s) checked for SocketMode 0600, DirectoryMode 0700, and a ListenStream ending in webcam-handler/wchd.sock
+      ok    systemd-units: checked 1 (TimeoutStopSec, DAEMON_SHUTDOWN_DRAIN_MS) pair(s), each re-derived from the crate rather than transcribed
+    PASS systemd-units — 3 items examined, 0 named skip(s)
+
+The second note is the pair that can only be wrong together, printed with both numbers so the
+verdict is legible rather than trusted.
+
+### What this run establishes, and what it does not
+
+**Establishes:** on a host with systemd, `wchd` adopts the socket a service manager binds and
+serves that inode; it refuses the two inherited shapes D11 cannot authenticate; and its log
+reaches the journal as structured entries from the journald layer, not as captured stderr.
+**Every arm ran for real and no skip was taken** — the named counted skips exist and were
+exercised green by an arm of their own (`pass_case_a_host_that_cannot_pass_a_socket_in_declines_in_a_way_that_is_counted`),
+so a host without these tools declines in a way a reader of CI output can see.
+
+**Does not establish:** that systemd would *accept* the shipped units (`systemd-analyze
+verify` is not run — docs/9's gaps register says why); that the units behave under the *system*
+manager, since `wchd.service` is a **user** unit and this run used the user manager; or
+anything about the substitution window on the inherited path, which is closed by the unit's
+`DirectoryMode=0700` and not by this daemon (N39's amendment of the same date).
