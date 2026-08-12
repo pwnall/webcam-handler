@@ -1,12 +1,27 @@
 //! One real WebSocket connection to the daemon, and the JSON-RPC on top of it.
 //!
 //! Included by `subscriptions.rs`, which drives the two subscriptions an in-process daemon
-//! registers, and by `signals.rs`, which watches one across a **real signal** to a real `wchd`
-//! (docs/7 P4e-ii). Two includers rather than one, which is why this is a module of its own
-//! and `support/subscribe.rs` — [`crate::subscribe::Watching`], whose in-memory arm only a
-//! suite with a `Methods` value can construct — is still next door: a `#[path]`-included
+//! registers, by `signals.rs`, which watches one across a **real signal** to a real `wchd`
+//! (docs/7 P4e-ii), and since P5b by `web_rpc.rs`, which opens the same JSON-RPC over the TCP
+//! listener's WebSocket route. Three includers rather than one, which is why this is a module
+//! of its own and `support/subscribe.rs` — [`crate::subscribe::Watching`], whose in-memory arm
+//! only a suite with a `Methods` value can construct — is still next door: a `#[path]`-included
 //! module is compiled into every binary that includes it, so an item with one user has to live
 //! in a module with one includer, down to an enum variant nobody constructs (note **N49**).
+//!
+//! ## Why it is generic over the byte stream, and why that is one constructor and not two
+//!
+//! The daemon serves the same JSON-RPC over `AF_UNIX` and over TCP, and the *whole* of the
+//! difference is which stream the frames are on — which is the claim `web_rpc.rs` exists to
+//! make, so a second frame reader beside this one would make it a comparison between two test
+//! clients. [`Ws::upgrade`] therefore takes any tokio stream; [`Ws::connect`] is the Unix
+//! convenience two of the three includers use, and it is written in terms of `upgrade` rather
+//! than beside it.
+//!
+//! A `connect_tcp` sibling would be an item with one includer, which note N49 says is a
+//! `dead_code` failure in the other two. So [`Ws::upgrade`] is what a TCP suite calls
+//! directly, and it answers a `Result` rather than panicking, because a *refused* upgrade is
+//! something only the gated transport can produce and is one of the things that suite is for.
 //!
 //! ## Why it is hand-written
 //!
@@ -36,9 +51,9 @@ use tokio_util::compat::{Compat, TokioAsyncReadCompatExt as _};
 /// One connection, many requests: which is what
 /// `limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` is a bound *on*, so a fixture that opened
 /// a connection per subscription could not drive it at all.
-pub(crate) struct Ws {
-    sender: soketto::Sender<Compat<tokio::net::UnixStream>>,
-    receiver: soketto::Receiver<Compat<tokio::net::UnixStream>>,
+pub(crate) struct Ws<S> {
+    sender: soketto::Sender<Compat<S>>,
+    receiver: soketto::Receiver<Compat<S>>,
     /// The next request id. Ids are matched on the way back rather than assumed, because a
     /// notification can arrive between a request and its answer — which is the whole point
     /// of a duplex transport and the thing an HTTP client never has to think about.
@@ -59,30 +74,60 @@ pub(crate) struct Ws {
     queued: VecDeque<Value>,
 }
 
-impl Ws {
-    /// Upgrade a fresh connection to `socket`.
+impl Ws<tokio::net::UnixStream> {
+    /// Upgrade a fresh connection to the daemon's Unix socket, at the root path.
+    ///
+    /// `/` and not [`daemon::http::RPC_PATH`], deliberately: the Unix transport has **no
+    /// routing at all** — jsonrpsee's service is the whole of what answers there, and the
+    /// request target it is handed is ignored, which is one of the differences `web_rpc.rs`
+    /// establishes is *not* a difference in what the JSON-RPC means.
     ///
     /// # Panics
     ///
     /// If the daemon declines the upgrade, which is the assertion `tests/uds.rs` makes
     /// directly — a suite whose subject is what a subscription *carries* has nothing useful
-    /// to say after a refused handshake.
-    pub(crate) async fn connect(socket: &Utf8Path) -> Ws {
+    /// to say after a refused handshake. The transport with a gate in front of it is TCP's,
+    /// and that suite calls [`Ws::upgrade`] and reads the refusal.
+    pub(crate) async fn connect(socket: &Utf8Path) -> Ws<tokio::net::UnixStream> {
         let stream = tokio::net::UnixStream::connect(socket.as_std_path())
             .await
             .expect("the daemon is listening");
-        let mut client = soketto::handshake::Client::new(stream.compat(), "localhost", "/");
+        Ws::upgrade(stream, "localhost", "/")
+            .await
+            .unwrap_or_else(|status| panic!("the daemon declined a WebSocket upgrade: {status}"))
+    }
+}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Ws<S> {
+    /// Perform the handshake on `stream`, or answer the status the daemon refused with.
+    ///
+    /// `host` is what goes in the `Host` header and `target` is the request line's path —
+    /// including its query string, which is how a browser's `new WebSocket(url)` presents a
+    /// credential and therefore how the gated transport is opened at all (note **N74**,
+    /// `daemon::http::rpc`).
+    ///
+    /// The refusal is a **status and not a panic** because a declined upgrade is a real answer
+    /// on the transport D11 gates: an anonymous socket and one carrying a near-miss token both
+    /// end here, and both are things `web_rpc.rs` asserts rather than survives.
+    pub(crate) async fn upgrade(stream: S, host: &str, target: &str) -> Result<Ws<S>, u16> {
+        let mut client = soketto::handshake::Client::new(stream.compat(), host, target);
         match client.handshake().await.expect("the handshake completes") {
             soketto::handshake::ServerResponse::Accepted { .. } => {}
-            other => panic!("the daemon declined a WebSocket upgrade: {other:?}"),
+            soketto::handshake::ServerResponse::Rejected { status_code } => {
+                return Err(status_code);
+            }
+            // Nothing in this daemon redirects, and a redirect that appeared would be a
+            // routing decision nobody made — named rather than folded into the refusal above,
+            // so it would fail as itself.
+            other => panic!("the daemon answered a WebSocket upgrade with {other:?}"),
         }
         let (sender, receiver) = client.into_builder().finish();
-        Ws {
+        Ok(Ws {
             sender,
             receiver,
             next_id: 1,
             queued: VecDeque::new(),
-        }
+        })
     }
 
     /// One JSON-RPC frame, whatever it is.

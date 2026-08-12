@@ -53,14 +53,22 @@
 //!
 //! ## Stopping: what is **not** claimed
 //!
-//! **No bound on an in-flight response.** Everything this build serves is a file of a few
-//! kilobytes, so the graceful stop is bounded by a `write` to a socket; that is a property of
-//! what P5a serves, not a guarantee this module provides. P5b introduces the response that
-//! does not end on its own — the MJPEG preview, `multipart/x-mixed-replace`, which by
-//! construction runs until the client goes away — and design §2.6 states the requirement it
-//! brings ("an open MJPEG tab must not hang shutdown"). Meeting it needs the preview's own
-//! stream to watch the cancellation token, which is P5b's row and is deliberately not
-//! pre-built here: a bound written now would be a bound with nothing to bound (rubric A8).
+//! **No bound on an in-flight response.** Everything this build serves through the asset
+//! fallback is a file of a few kilobytes, so the graceful stop is bounded by a `write` to a
+//! socket; that is a property of what is served, not a guarantee this module provides. The
+//! response that does not end on its own is still the MJPEG preview,
+//! `multipart/x-mixed-replace`, which by construction runs until the client goes away, and
+//! design §2.6 states the requirement it brings ("an open MJPEG tab must not hang shutdown").
+//! Meeting it needs the preview's own stream to watch the cancellation token, and it is
+//! deliberately not pre-built here: a bound written now would be a bound with nothing to bound
+//! (rubric A8).
+//!
+//! **A WebSocket is not that response, and that is worth being explicit about**, because it
+//! looks like one. An upgraded connection stops belonging to axum the instant hyper hands the
+//! socket over — the connection future resolves, the graceful shutdown counts it as finished
+//! — so an open browser tab full of subscriptions cannot hold this stop open at all. What ends
+//! such a connection is jsonrpsee's `ServerHandle`, which [`Serving::stopped`] asks and whose
+//! *timing* is an ordering rather than a detail (see that method, and [`super::rpc`]).
 //!
 //! **No accept-failure policy of its own.** [`crate::uds::serve`] gives up after
 //! [`schema::limits::MAX_CONSECUTIVE_ACCEPT_FAILURES`] consecutive failures because that
@@ -83,17 +91,28 @@
 //! in one `match` over the posture, and the gate itself has no way to admit a request that did
 //! not present the token.
 //!
+//! **Every route, and since P5b that includes the WebSocket upgrade.** An upgrade request is
+//! an ordinary HTTP request with two headers on it, so it meets the gate before it meets the
+//! router, and an anonymous `new WebSocket("ws://…/rpc")` is answered with the same `401` an
+//! anonymous `GET /` is. That is not a second decision — it is `router` wrapping one thing
+//! instead of a list — and it is asserted over a real socket rather than inferred from the
+//! composition (`crates/daemon/tests/web_rpc.rs`).
+//!
 //! ## The client's own subresources, which this build's page does not have
 //!
-//! A finding worth writing down where the gate is, because it is P5b/P5c's to solve: **the
+//! A finding worth writing down where the gate is, because it is P5c's to solve: **the
 //! token rides the URL, and a browser does not carry a document's query string over to the
 //! subresources that document requests.** A page opened at `/?token=…` asks for `/app.css` —
 //! no query, no `Authorization`, no credential — and this gate refuses it, correctly. So the
 //! skeleton `webcam-handler-web` ships is a single self-contained file, and the real client
 //! (vanilla ES *modules*, which are subresources by definition, design §2.7) will need a
 //! decision made on purpose: a cookie set on the gated navigation, or a page that fetches its
-//! own modules with the `Authorization` header. Nothing here prejudges it; what P5a must not
-//! do is ship a page whose stylesheet 401s and call the listener finished.
+//! own modules with the `Authorization` header. Nothing here prejudges it, and P5b did not
+//! prejudge it either: the WebSocket endpoint authenticates with the `?token=` form the gate
+//! already reads (note **N74**), because that is what a `new WebSocket(url)` can carry, and no
+//! cookie is read, written or accepted anywhere in this daemon. [`super::rpc`]'s header
+//! records what that form costs on a socket rather than on a navigation, and the one fact
+//! that endpoint contributes to note N76's open question.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -102,11 +121,13 @@ use axum::Router;
 use axum::extract::Request;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use jsonrpsee_server::{Methods, ServerHandle};
 use schema::{Error, Result};
 use tokio::net::TcpListener;
 
 use super::gate;
 use super::posture::{Posture, TokenRule};
+use super::rpc;
 use super::token::Token;
 use crate::shutdown::Shutdown;
 
@@ -129,6 +150,12 @@ const NOT_FOUND: &str = "no such asset\n";
 /// URL and never checked, which is a lie an operator would act on. The **bind is third**, so a
 /// `--http` naming a port somebody else holds costs nothing but the refusal.
 ///
+/// `methods` is the T5 surface, taken as a **value** and never built here: it is the one
+/// [`crate::server::mount`] produced for the Unix socket, cloned, which is D10's "one wire
+/// surface, one home" and the reason [`super::rpc`] can serve a browser without declaring a
+/// method name. A parameter rather than a `Wchd` for the same reason `posture` and `token`
+/// are parameters — this module reads decisions, it does not make them.
+///
 /// [`Token::mint`]'s doc says it is called once, from the composition root, on the path that
 /// opens the TCP listener. It still is: this function is that path, called from `main` and
 /// from the suite that drives what `main` drives.
@@ -142,6 +169,7 @@ const NOT_FOUND: &str = "no such asset\n";
 pub async fn open(
     requested: SocketAddr,
     insecure_loopback_requested: bool,
+    methods: Methods,
     shutdown: Shutdown,
 ) -> Result<Serving> {
     let posture = Posture::of(requested, insecure_loopback_requested);
@@ -150,7 +178,7 @@ pub async fn open(
         TokenRule::NotRequired => None,
     };
     let listener = bind(requested).await?;
-    serve(listener, posture, token, shutdown)
+    serve(listener, posture, token, methods, shutdown)
 }
 
 /// Bind the address `--http` asked for.
@@ -195,6 +223,13 @@ pub struct Serving {
     /// `Some` exactly in the cells [`Posture::token`] says are gated — [`serve`] refuses to
     /// build anything else.
     token: Option<Arc<Token>>,
+    /// The WebSocket endpoint's stop, held here for the listener's life.
+    ///
+    /// It is jsonrpsee's `watch::Sender`, so **dropping this value stops the JSON-RPC
+    /// connections** whether or not anybody asked — which is the safety net under a dropped
+    /// [`Serving`], not the mechanism. The mechanism is [`Serving::stopped`], and *when* it
+    /// fires is an ordering rather than a detail: see [`super::rpc`]'s header.
+    ending: ServerHandle,
     serving: tokio::task::JoinHandle<()>,
 }
 
@@ -250,12 +285,40 @@ impl Serving {
     /// already cancelled the token this server watches, exactly as it does for the watchdog
     /// task.
     ///
+    /// ## This is also where the WebSocket connections are ended, and that is an ordering
+    ///
+    /// An upgraded connection stops belonging to axum the moment hyper hands the socket over,
+    /// so the graceful shutdown neither waits for one nor closes one; jsonrpsee's
+    /// [`ServerHandle`] is what ends them, and it is asked **here** rather than when the
+    /// daemon's token was cancelled. The difference is `crate::shutdown`'s step 3 against its
+    /// step 4, on the other transport: a cancelled subscription ends with
+    /// [`crate::events::SHUTTING_DOWN`] in a payload the client can branch on, and a transport
+    /// stopped in the same instant closes the connection with that reason still in flight —
+    /// which that module measured rather than reasoned about. By the time the composition root
+    /// joins this listener the teardown has already cancelled and waited for the subscribers,
+    /// so the stop below lands where step 4 lands.
+    ///
+    /// **A surviving mutant, recorded rather than left for a review to find.** Deleting the
+    /// `stop()` below leaves every test in this workspace passing, and it is not a gap a
+    /// better test would close: jsonrpsee's stop channel is a `watch::Sender`, so *dropping*
+    /// [`ServerHandle`] ends the connections exactly as asking it to does — and this value is
+    /// consumed here, so the drop happens a few instructions later whatever this line says.
+    /// What the explicit call buys is that "the WebSocket connections end at the join" is
+    /// something this code **says**, rather than a consequence of somebody else's channel
+    /// shape that the next edit could remove by moving a field. The *ordering* is not in the
+    /// same position: a mutant that stops the transport when the token is cancelled instead
+    /// fails `web_rpc.rs`'s ending test on most runs, which is the same race
+    /// `crate::shutdown`'s header measured one transport along.
+    ///
     /// # Errors
     ///
     /// [`Error::DeviceIo`] when the task panicked or was aborted. A server that *failed* — a
     /// fatal accept error — is not reported here: it said so at `error!` at the moment it
     /// happened, and this module's header argues why it is not this daemon's exit code.
     pub async fn stopped(self) -> Result<()> {
+        // `AlreadyStoppedError` is somebody having asked already, which is the outcome this
+        // call wanted — `crate::uds::Serving::stop` discards it for the same reason.
+        let _ = self.ending.stop();
         self.serving.await.map_err(|err| Error::DeviceIo {
             operation: "join the web listener".to_owned(),
             errno: None,
@@ -287,6 +350,7 @@ pub fn serve(
     listener: TcpListener,
     posture: Posture,
     token: Option<Arc<Token>>,
+    methods: Methods,
     shutdown: Shutdown,
 ) -> Result<Serving> {
     let bound = listener.local_addr().map_err(|err| Error::DeviceIo {
@@ -294,7 +358,9 @@ pub fn serve(
         errno: err.raw_os_error(),
         message: err.to_string(),
     })?;
-    let router = router(posture, token.clone())?;
+    let wire = rpc::mount(methods);
+    let ending = wire.ending.clone();
+    let router = router(posture, token.clone(), wire.route)?;
 
     let serving = tokio::spawn(async move {
         let served = axum::serve(listener, router)
@@ -316,24 +382,34 @@ pub fn serve(
         bound,
         posture,
         token,
+        ending,
         serving,
     })
 }
 
 /// The routes, and D11's gate over them or not at all.
 ///
-/// One `fallback` and no `route`: every path is answered by the same handler, which serves the
-/// asset of that name or refuses with `404`. A table of routes would be a second list of the
-/// client's files — one in `webcam-handler-web`'s `assets/` and one here — and the second copy
-/// is the one that stops being true when P5c adds a module.
+/// One `fallback` for the assets and no route table for them: every path that is not the
+/// wire's is answered by the same handler, which serves the asset of that name or refuses
+/// with `404`. A table of asset routes would be a second list of the client's files — one in
+/// `webcam-handler-web`'s `assets/` and one here — and the second copy is the one that stops
+/// being true when P5c adds a module.
+///
+/// `wire` is [`super::rpc`]'s single route, merged rather than declared here, so this function
+/// still holds no opinion about what the wire surface is — see that module's header for what
+/// mounting it does and does not cost. It is a *route* and the assets are the *fallback*, so
+/// the one path that is an endpoint takes precedence over the one that is a name in a table;
+/// a request for `/rpc` therefore never reaches `web::get`, which is a property this daemon
+/// gets from the router rather than from an asset that happens not to be called `rpc`.
 ///
 /// `Router::layer` wraps the fallback as well as the routes (it maps over `path_router`,
 /// `fallback_router` **and** `catch_all_fallback`), which is why the gate covers a request for
-/// a path that does not exist. `route_layer` is the one that would not, and it is the wrong
-/// tool here for exactly that reason: it would leave an anonymous request for `/anything`
-/// answered by the 404 handler, telling a stranger which paths this daemon has.
-fn router(posture: Posture, token: Option<Arc<Token>>) -> Result<Router> {
-    let routes = Router::new().fallback(asset);
+/// a path that does not exist **and** the WebSocket upgrade. `route_layer` is the one that
+/// would not, and it is the wrong tool here for exactly that reason: it would leave an
+/// anonymous request for `/anything` answered by the 404 handler, telling a stranger which
+/// paths this daemon has.
+fn router(posture: Posture, token: Option<Arc<Token>>, wire: Router) -> Result<Router> {
+    let routes = Router::new().merge(wire).fallback(asset);
     match (posture.token(), token) {
         // D11's three gated cells: loopback without the flag, and both non-loopback cells.
         (TokenRule::Required, Some(token)) => {
@@ -370,11 +446,11 @@ fn ungated(disagreement: &str) -> Error {
 
 /// One asset, or a `404`.
 ///
-/// Every method, deliberately: nothing this build serves changes anything, so `GET` and `POST`
-/// differ in nothing an operator could observe, and a `405` surface would be routing policy
-/// invented ahead of the endpoints that need it (P5b's WS upgrade and preview are where
-/// methods start to mean something). `HEAD` needs no special case — hyper omits the body of a
-/// response to one.
+/// Every method, deliberately: nothing the *asset* half serves changes anything, so `GET` and
+/// `POST` differ in nothing an operator could observe, and a `405` surface here would be
+/// routing policy invented for a fallback that has no verbs. Where methods do mean something
+/// is [`super::rpc`]'s route, and the answer there is jsonrpsee's rather than this file's.
+/// `HEAD` needs no special case — hyper omits the body of a response to one.
 async fn asset(request: Request) -> Response {
     match lookup(request.uri().path()) {
         Some(asset) => (
@@ -417,6 +493,18 @@ mod tests {
         text.parse().expect("a socket address the tests wrote")
     }
 
+    /// A wire surface with nothing on it.
+    ///
+    /// This module composes a listener; *what the listener serves over the wire* is
+    /// [`super::rpc`]'s claim and `crates/daemon/tests/web_rpc.rs`'s, over a real `Wchd` and
+    /// the registration `crate::server::mount` produced. An empty registration here is
+    /// therefore honest rather than lazy: every assertion below is about the posture, the
+    /// token, the URL or the asset table, and none of them would be made stronger by a
+    /// surface with methods on it.
+    fn no_methods() -> Methods {
+        Methods::new()
+    }
+
     #[test]
     fn the_index_page_is_what_the_root_path_means() {
         // The one path D11's ready-to-open URL points at. Both spellings answer the same file,
@@ -452,24 +540,33 @@ mod tests {
         let bind = address("127.0.0.1:0");
         let token = Arc::new(Token::mint().expect("the kernel has a CSPRNG"));
 
-        let gated_without_a_token = router(Posture::of(bind, false), None)
+        let gated_without_a_token = router(Posture::of(bind, false), None, wire())
             .expect_err("a gate with nothing to check is not a gate");
         assert_eq!(gated_without_a_token.kind(), schema::ErrorKind::DeviceIo);
 
-        let open_with_a_token = router(Posture::of(bind, true), Some(Arc::clone(&token)))
+        let open_with_a_token = router(Posture::of(bind, true), Some(Arc::clone(&token)), wire())
             .expect_err("a token that is never checked is a URL that lies");
         assert_eq!(open_with_a_token.kind(), schema::ErrorKind::DeviceIo);
 
         // ... and the two agreeing arrangements do get one, which is what makes the assertions
         // above about the disagreement rather than about `router` refusing everything.
         assert!(
-            router(Posture::of(bind, false), Some(token)).is_ok(),
+            router(Posture::of(bind, false), Some(token), wire()).is_ok(),
             "D11's default cell"
         );
         assert!(
-            router(Posture::of(bind, true), None).is_ok(),
+            router(Posture::of(bind, true), None, wire()).is_ok(),
             "D11's token-less cell"
         );
+    }
+
+    /// The wire route, mounted over an empty surface, as the parameter [`router`] takes.
+    ///
+    /// The [`rpc::Mounted::ending`] handle is dropped with the value, which stops a server
+    /// nothing ever started serving on — the routers built here are never handed to
+    /// `axum::serve`.
+    fn wire() -> Router {
+        rpc::mount(no_methods()).route
     }
 
     #[tokio::test]
@@ -478,9 +575,14 @@ mod tests {
         // line an operator copies. Port zero is a request and never an answer, so a URL
         // carrying it is a URL nobody can open.
         let shutdown = Shutdown::new();
-        let web = open(address("127.0.0.1:0"), false, shutdown.clone())
-            .await
-            .expect("loopback on an ephemeral port");
+        let web = open(
+            address("127.0.0.1:0"),
+            false,
+            no_methods(),
+            shutdown.clone(),
+        )
+        .await
+        .expect("loopback on an ephemeral port");
 
         let bound = web.bound();
         assert_ne!(bound.port(), 0, "the requested port reached the listener");
@@ -500,7 +602,7 @@ mod tests {
         // it — an empty one would read as a token that failed to render — and the posture asks
         // for no warning, because loopback is not what D11's warning is about.
         let shutdown = Shutdown::new();
-        let web = open(address("127.0.0.1:0"), true, shutdown.clone())
+        let web = open(address("127.0.0.1:0"), true, no_methods(), shutdown.clone())
             .await
             .expect("loopback on an ephemeral port");
 

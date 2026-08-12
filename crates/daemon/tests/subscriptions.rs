@@ -255,7 +255,7 @@ async fn until_the_sweep_stops(watching: &mut Watching) -> ProgressEvent {
 /// **Watched red**: expecting any other D13 code here fails every one of the seven hostile
 /// directions plus the disconnect test, in milliseconds — which is what says the second
 /// question is really asked and really answered by the daemon rather than by this helper.
-async fn still_answers(connection: &mut Ws, ask: &Ask, after: &str) {
+async fn still_answers(connection: &mut Ws<tokio::net::UnixStream>, ask: &Ask, after: &str) {
     let listed = connection.call("wch_list", json!({})).await;
     assert_eq!(
         listed["result"]["cameras"].as_array().map(Vec::len),
@@ -1529,7 +1529,7 @@ async fn a_watch_that_stops_ends_the_streams_reading_it_and_names_why() {
 /// The id is what a notification is matched against, and on a duplex connection carrying two
 /// subscriptions that matching is the whole assertion — "a stream ended" is not the claim,
 /// "*this* stream ended, naming why" is.
-async fn subscribed(connection: &mut Ws, name: &str) -> serde_json::Value {
+async fn subscribed(connection: &mut Ws<tokio::net::UnixStream>, name: &str) -> serde_json::Value {
     let opened = connection.call(name, json!({})).await;
     opened
         .get("result")
@@ -1819,7 +1819,7 @@ async fn a_flood_of_waiting_captures_is_bounded_and_never_the_daemon() {
 /// makes it a case is that nobody is reading. The request is built from the committed
 /// `schema::capture::PhotoRequest` rather than typed as JSON, so a field that moves moves
 /// this with it.
-async fn capture(connection: &mut Ws, ask: &Ask, wait: bool) {
+async fn capture(connection: &mut Ws<tokio::net::UnixStream>, ask: &Ask, wait: bool) {
     let request = schema::capture::PhotoRequest {
         stream: schema::capture::StreamRequest::default(),
         settle: schema::capture::SettlePolicy::default(),

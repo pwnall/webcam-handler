@@ -80,9 +80,16 @@
 //!    and it is why that pin is a list on purpose.
 //! 5. **It cannot see a method on the trait that nothing registered**, because there is no
 //!    second registration path: `into_rpc()` is the one, D10 exists to keep it that way, and
-//!    `uds.rs` never registers a `wch_`-prefixed name beside it. Removing a method from the
+//!    neither `uds.rs` nor `http::rpc` registers a `wch_`-prefixed name beside it. Removing a
+//!    method from the
 //!    trait is a *compile* failure here rather than a count failure, which is the stronger
 //!    direction and the reason it is not asserted.
+//!
+//!    **What this file cannot see at all is a second registration behind a *third* transport**
+//!    (P5b's WebSocket route on the TCP listener), because the two wires here are handed
+//!    `Fixture::methods` by construction and would agree with themselves. `web_rpc.rs` is that
+//!    claim's home and makes it the only way it can be made — over a real socket, with the
+//!    population read off `method_names()` and the failure being `-32601`.
 //! 6. **Non-vacuity depends on the fixture.** A refusal records its method name just as an
 //!    answer does, so a badly degraded fixture that refused everything would keep this green
 //!    on the count alone. Hence [`discriminating_refusals`]: the same client, over the same

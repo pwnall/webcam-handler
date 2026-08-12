@@ -6,6 +6,7 @@
 //! | [`gate`] | the token gate's policy: which parts of a request may carry a credential, and what more than one of them means |
 //! | [`listener`] | the axum server, the embedded client behind it, and the graceful stop |
 //! | [`posture`] | D11's bind × token matrix, decided from values before anything is bound |
+//! | [`rpc`] | the WebSocket JSON-RPC endpoint: the T5 surface `crate::server::mount` produced, reached over TCP |
 //! | [`token`] | the per-run bearer token: minted from the kernel, compared in constant time, printed as a URL |
 //!
 //! ## D11's paragraph, and what this crate does with it
@@ -51,19 +52,32 @@
 //! [`listener`] decides nothing: it is handed a decided [`Posture`] and a minted [`Token`],
 //! and installs [`gate`] or does not, according to what the first of those says.
 //!
+//! ## The third module, and what it deliberately is not
+//!
+//! [`rpc`] is P5b's first half: D11's "WS JSON-RPC", as **one route that calls the `Methods`
+//! value [`crate::server::mount`] produced** rather than a second registration of anything.
+//! It fits the arrangement above without disturbing it — it decides nothing, [`listener`]
+//! merges its route beside the asset fallback, and [`gate`] covers it because it covers
+//! everything. Its header carries the two things that are genuinely new: why jsonrpsee's own
+//! upgrade path is used instead of axum's `ws` feature, and what the `?token=` credential
+//! costs on a WebSocket rather than on a navigation (note **N76** is the constraint it works
+//! under; a `new WebSocket(url)` can set no headers, so the URL form is not a preference).
+//!
 //! ## What is still not here
 //!
-//! **The WebSocket endpoint and the MJPEG preview**, which are P5b: the WS transport speaking
-//! the same T5 surface, `multipart/x-mixed-replace` fed by the actor's latest-frame watch,
+//! **The MJPEG preview**: `multipart/x-mixed-replace` fed by the actor's latest-frame watch,
 //! slow-consumer drop semantics, and the compression layer that has to be excluded from the
 //! preview route. [`listener`]'s header states what the stop does *not* yet claim about an
-//! in-flight response, which is the same boundary seen from the other side.
+//! in-flight response, which is the same boundary seen from the other side — and says why an
+//! open WebSocket is not that response.
 
 pub mod gate;
 pub mod listener;
 pub mod posture;
+pub mod rpc;
 pub mod token;
 
 pub use listener::{Serving, bind, open, serve};
 pub use posture::{INSECURE_LOOPBACK_FLAG, Posture, Reach, TokenRule};
+pub use rpc::RPC_PATH;
 pub use token::{TOKEN_BYTES, TOKEN_QUERY_PARAM, Token};

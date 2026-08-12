@@ -57,8 +57,18 @@ workspace = true
 # on what it matched, and this gate deliberately branches on nothing; `tower-log` and
 # `tracing`, which are axum's own logging, where this daemon's is `daemon::logging`'s one
 # decision. `http2` is off because nothing reaches this listener but a browser on a socket
-# D11 defaults to loopback, and `ws` is P5b's — it arrives with the endpoint that reads it
-# (rubric A8).
+# D11 defaults to loopback.
+#
+# **`ws` is still off, and P5b is the sub-milestone that decided to leave it that way.** That
+# feature is `axum::extract::ws` — axum's own upgrade extractor and its own `Message` type,
+# which is a frame layer, and a frame layer under a JSON-RPC endpoint is a dispatcher waiting
+# to be written. The upgrade this daemon serves is **jsonrpsee's**: its service reads the
+# handshake with soketto (the same implementation `tests/support/ws.rs` speaks), takes
+# hyper's `OnUpgrade` extension out of the request axum handed it, and runs the same
+# subscription machinery the Unix socket runs — so the endpoint is one route calling one
+# service, and `webcam-handler-api`'s trait stays the only place a method is declared (D10).
+# `axum::serve` performs the handoff either way: it serves every connection with
+# `serve_connection_with_upgrades`, which is not feature-gated. See `daemon::http::rpc`.
 axum = { workspace = true, features = ["http1", "tokio"] }
 camino.workspace = true
 # The composition root's two flags, in the workspace's one argument parser. `wchd` links
@@ -118,6 +128,16 @@ serde = { workspace = true, features = ["derive"] }
 # SIGTERM and SIGINT and treats them as one request (`daemon::shutdown`), where before it took
 # the kernel's default disposition and could not drain at all.
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+# The `Service` trait, so that P5b's WebSocket endpoint can *call* the wire surface rather
+# than re-declare it (`daemon::http::rpc`). jsonrpsee hands its whole JSON-RPC service out as
+# a `tower::Service` — `Server::builder().set_config(…).to_service_builder().build(methods,
+# stop_handle)` — which is the same value `daemon::uds` serves over `AF_UNIX`, and D10 exists
+# to stop a second registration path being invented beside it. Neither `jsonrpsee-server` nor
+# `axum` re-exports `tower::Service`, so calling that value means naming the crate it comes
+# from; `tower::layer::util::Identity` is the second name, for the builder's type in a struct
+# field. **This is the whole use** — no `ServiceBuilder`, no layers, no `util` combinators —
+# and the workspace table has the licence and the "already in the lock" argument.
+tower.workspace = true
 # `CancellationToken`, which is the whole of this edge: one stop token, cloned to every open
 # subscription and to the idle-sweep driver (`daemon::shutdown::Shutdown`). **It carries no
 # feature**, deliberately and stated because the neighbouring dev-dependency does: `sync` is

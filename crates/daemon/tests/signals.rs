@@ -443,7 +443,7 @@ fn result(answer: Value, called: &str) -> Value {
 /// when the **daemon writes**, so a sweep that never emitted is a nextest `TIMEOUT` with a
 /// test's name on it rather than a hang (`.config/nextest.toml`).
 async fn until_the_first_sample_is_taken(
-    watching: &mut Ws,
+    watching: &mut Ws<tokio::net::UnixStream>,
     subscription: &Value,
 ) -> Vec<CalibrationProgress> {
     let mut seen = Vec::new();

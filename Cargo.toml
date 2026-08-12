@@ -110,6 +110,18 @@ thiserror = "2.0.20"
 tokio = "1.53.1"
 tokio-util = "0.7.19"
 toml = "1.1.4"
+# The `Service` trait itself, and the `Identity` layer its builders default to. Adopted at
+# P5b for one reason: jsonrpsee's wire surface is handed out as a `tower::Service`
+# (`TowerServiceBuilder::build`), and **neither `jsonrpsee-server` nor `axum` re-exports the
+# trait** — so a daemon that mounts that service on an axum route has to name `tower` to call
+# it. MIT. Already in `Cargo.lock` through both of them at exactly this version, so this
+# entry adds no package and no feature to the resolved graph; tower 0.5 declares **no
+# `default` feature**, and `Service`, `Layer` and `layer::util::Identity` are unconditional,
+# which is why there is no `default-features = false` beside it — there is nothing to turn
+# off. It is a `webcam-handler-daemon` edge only, and the daemon is already the one crate
+# that links the web stack (design §2.8), so no T6 wall moves: `dependency-walls.sh`'s wire
+# wall names `tower-http`, which this is not, and the pure crates name neither.
+tower = "0.5.3"
 tower-http = "0.7.0"
 tracing = "0.1.44"
 tracing-journald = "0.3.2"

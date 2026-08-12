@@ -17,6 +17,13 @@
 //! So a test that opens a listener this way and then opens the URL it published is asserting
 //! about the shipped daemon and not about a rehearsal of it.
 //!
+//! Both hand in a **surface with no methods on it** ([`no_methods`]), because the subject
+//! here is the gate and the matrix. What the WebSocket endpoint on the same listener carries,
+//! that it carries the registration `daemon::server::mount` produced and no second one, and
+//! that the gate covers an upgrade as readily as it covers a `GET`, is `web_rpc.rs`'s — over
+//! a real `Wchd` and beside the Unix socket serving the same value, which is the only
+//! arrangement in which "the same home" is a comparison rather than a sentence.
+//!
 //! [`Web::with_posture`] calls `daemon::http::serve` with a posture decided elsewhere, which
 //! is the only way D11's two non-loopback cells can be reached on a machine with one
 //! interface: the socket is bound to loopback and the posture is decided about
@@ -62,9 +69,14 @@ impl Web {
     /// another address are [`Web::with_posture`]'s.
     async fn opened(insecure_loopback: bool) -> Web {
         let shutdown = Shutdown::new();
-        let serving = http::open(address("127.0.0.1:0"), insecure_loopback, shutdown.clone())
-            .await
-            .expect("loopback on an ephemeral port");
+        let serving = http::open(
+            address("127.0.0.1:0"),
+            insecure_loopback,
+            no_methods(),
+            shutdown.clone(),
+        )
+        .await
+        .expect("loopback on an ephemeral port");
         Web { serving, shutdown }
     }
 
@@ -83,7 +95,7 @@ impl Web {
             TokenRule::Required => Some(Arc::new(Token::mint().expect("the kernel has a CSPRNG"))),
             TokenRule::NotRequired => None,
         };
-        let serving = http::serve(listener, posture, token, shutdown.clone())
+        let serving = http::serve(listener, posture, token, no_methods(), shutdown.clone())
             .expect("a posture and a token that agree");
         Web { serving, shutdown }
     }
@@ -146,6 +158,18 @@ impl Web {
 /// An address this file wrote, as a value.
 fn address(text: &str) -> SocketAddr {
     text.parse().expect("a socket address the tests wrote")
+}
+
+/// The wire surface this suite hands the listener: none.
+///
+/// See the header. The listener takes the T5 surface as a value, so a suite whose subject is
+/// the credential can hand it an empty one and still be driving the function `wchd` calls —
+/// and a suite that handed it a real one would be claiming, in this file, something
+/// `web_rpc.rs` claims properly. What it does **not** mean is that the endpoint is absent:
+/// `daemon::http::rpc`'s route is registered either way, which is why
+/// [`the_wire_route_is_behind_the_same_gate_as_everything_else`] can ask about it here.
+fn no_methods() -> jsonrpsee_server::Methods {
+    jsonrpsee_server::Methods::new()
 }
 
 /// An equal-length, one-digit-different token.
@@ -328,6 +352,36 @@ async fn a_request_carrying_two_credentials_is_served_only_when_they_agree() {
     .await
     .expect("the listener is up");
     is_the_refusal(&answered, "two Authorization headers that disagree");
+
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn the_wire_route_is_behind_the_same_gate_as_everything_else() {
+    // P5b's endpoint, asked the question this file is about and no other: **is it inside the
+    // wall?** The gate is a `Router::layer` over one router, so "every route" is a property of
+    // one call rather than of a list somebody keeps — and this is what says the list did not
+    // quietly acquire an exception when a second route was added to it (note **N75**).
+    //
+    // Anonymously it is the daemon's refusal, in full, exactly as `/` and `/nothing-here` are.
+    // With the token it is **405 and not 404**, which is two facts at once: the request got
+    // past the gate, and `/rpc` is a *route* rather than a name the asset fallback failed to
+    // find — jsonrpsee answers "POST is required" to a `GET` that is not an upgrade, and that
+    // answer could only have come from the wire surface. A build that registered the route on
+    // some other path would answer 404 here, from the asset table, with the same 401 in front
+    // of it.
+    let web = Web::opened(false).await;
+    let secret = web.secret();
+
+    is_the_refusal(
+        &web.anonymous(daemon::http::RPC_PATH).await,
+        "the wire route, anonymously",
+    );
+    assert_eq!(
+        web.bearing(daemon::http::RPC_PATH, &secret).await.status(),
+        405,
+        "the wire route answered as an asset that is not there"
+    );
 
     web.stop().await;
 }

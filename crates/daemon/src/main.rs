@@ -335,18 +335,31 @@ async fn run(args: &Args) -> Result<()> {
     // and ends itself, and `serve_until_stopped` joins it, so "housekeeping ended" is a fact
     // this process waited for rather than a consequence of the runtime being dropped.
     let housekeeping = wchd.spawn_idle_sweeps();
-    let mut serving = uds::serve(listener, daemon::server::mount(wchd.clone())?);
+    // **`mount` is called once in this process**, and what the two transports share is the
+    // value it produced rather than the call that produced it — a `Methods` clone is an `Arc`
+    // bump, so `wchc` over `AF_UNIX` and a browser over the WebSocket answer out of one
+    // registration. Two `mount` calls would compile, would pass every test that asks either
+    // wire a question, and would be the second registration path D10 exists to prevent.
+    let methods = daemon::server::mount(wchd.clone())?;
+    let mut serving = uds::serve(listener, methods.clone());
 
     // D11's other transport, and the one that exists only because somebody asked for it.
     // `daemon::http::open` is the whole composition — decide the posture from the requested
-    // address, mint a token in the cells that are gated, bind, serve — and this file's
-    // startup-order header says why it happens here: after the socket and before `READY=1`.
-    // The `?` is what makes a `--http` that cannot bind a refusal rather than a daemon that
-    // starts and quietly serves one transport of the two it was asked for.
+    // address, mint a token in the cells that are gated, bind, serve the assets and the wire
+    // surface — and this file's startup-order header says why it happens here: after the
+    // socket and before `READY=1`. The `?` is what makes a `--http` that cannot bind a refusal
+    // rather than a daemon that starts and quietly serves one transport of the two it was
+    // asked for.
     let web = match args.http {
         None => None,
         Some(requested) => {
-            let web = http::open(requested, args.http_insecure_loopback, shutdown.clone()).await?;
+            let web = http::open(
+                requested,
+                args.http_insecure_loopback,
+                methods,
+                shutdown.clone(),
+            )
+            .await?;
 
             // D11's warning, in the two cells that ask for one, and *before* the URL: the last
             // line an operator reads is the one they came to copy, and this one is the one

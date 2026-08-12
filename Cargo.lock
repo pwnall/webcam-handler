@@ -2603,6 +2603,7 @@ dependencies = [
  "soketto",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "tracing-journald",
  "tracing-subscriber",

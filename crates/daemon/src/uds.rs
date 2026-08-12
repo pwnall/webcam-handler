@@ -40,16 +40,23 @@
 //!    that stopped serving plain HTTP `POST` on a non-TCP transport, or whose
 //!    [`ServerHandle::stop`] stopped ending this accept loop, or that started answering a
 //!    WebSocket upgrade this build declines, goes red rather than shipping.
-//! 3. **The bounds this server runs under are set here, from `schema::limits`.**
+//! 3. **The bounds this server runs under come from `schema::limits`.**
 //!    jsonrpsee's own defaults (10 MB bodies, 100 connections, *unlimited* batches) are
 //!    somebody else's numbers for somebody else's deployment, and an unbounded batch on
 //!    the one socket the daemon always serves is not a bound this project is allowed to
 //!    inherit silently (AGENTS, "Bounded everything"). Five bounds are named here: the
-//!    four `ServerConfig` fields [`serve`] sets and the connection count [`serve`]
+//!    four `ServerConfig` fields the wire runs under and the connection count [`serve`]
 //!    enforces itself, because jsonrpsee's `max_connections` is not one — see [`serve`].
 //!
+//!    **Since P5b the `ServerConfig` is built one module away**, by
+//!    [`crate::server::wire_bounds`], because `crate::http::rpc` serves the same `Methods`
+//!    over the TCP listener's WebSocket route and two copies of that expression would be two
+//!    answers to the same question. The argument for each number stays here, where the
+//!    transport that has always carried them is; what moved is the expression, not the law.
+//!
 //!    What is *not* claimed: `ServerConfig` has nine more fields, and this build inherits
-//!    them. Two of them are bounds in AGENTS's sense — `message_buffer_capacity` and
+//!    them. Two of the ones that are set are bounds in AGENTS's sense —
+//!    `message_buffer_capacity` and
 //!    `max_subscriptions_per_connection` — and both govern the WebSocket surface only.
 //!    P4b turned that surface **off** rather than ship somebody else's channel depth behind
 //!    a transport no test drives; **P4e-i turns it on**, with
@@ -105,9 +112,7 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use engine::store::{LockProtocol, StoreLock};
-use jsonrpsee_server::{
-    BatchRequestConfig, Methods, Server, ServerConfig, ServerHandle, stop_channel,
-};
+use jsonrpsee_server::{Methods, Server, ServerHandle, stop_channel};
 use rustix::fs::{AtFlags, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
@@ -820,13 +825,19 @@ impl Accepting for UnixListener {
 /// unbounded, untested transport for a consumer that did not exist yet (rubric A8, note
 /// N38).
 ///
-/// P4e-i is that consumer, so the surface is on and both numbers are this project's:
-/// [`limits::WS_MESSAGE_BUFFER_CAPACITY`] bounds what one subscription may hold unwritten
+/// P4e-i is that consumer, so the surface is on and both numbers are this project's
+/// ([`crate::server::wire_bounds`], which is where the expression lives now that two
+/// transports read it): [`limits::WS_MESSAGE_BUFFER_CAPACITY`] bounds what one subscription
+/// may hold unwritten
 /// before the daemon drops and counts, and [`limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`]
 /// bounds how many streams one connection may open — refused as a `-32006` answer to the
 /// *subscribe call*, before any handler runs, so connect-and-abandon costs a client its own
 /// slots and nobody else's. `crate::events` is where what happens at the first bound is
 /// argued; `tests/subscriptions.rs` drives both.
+///
+/// P5b adds the second consumer and changes nothing here: `crate::http::rpc` mounts the same
+/// `Methods` on the TCP listener, so a browser's WebSocket runs under the same two numbers,
+/// through the same `enable_ws`, with a `ConnectionGuard` of its own.
 ///
 /// **What is deliberately still inherited:** `ping_config` is `None`, so a peer that opens
 /// a WebSocket, subscribes and then never reads again is never reaped by an inactivity
@@ -845,22 +856,12 @@ fn serve_accepting<L: Accepting>(listener: L, methods: impl Into<Methods>) -> Se
     let methods: Methods = methods.into();
     let (stop_handle, server_handle) = stop_channel();
 
+    // The six bounds, from the one function both transports read them through since P5b
+    // (`crate::server::wire_bounds`) — this module's header still argues *why* each of them
+    // is this project's number rather than jsonrpsee's, and that argument is the reason the
+    // function exists rather than a second copy of the expression.
     let service_builder = Server::builder()
-        .set_config(
-            ServerConfig::builder()
-                .max_connections(limits::DAEMON_MAX_CONNECTIONS)
-                .max_request_body_size(limits::RPC_MAX_REQUEST_BYTES)
-                .max_response_body_size(limits::RPC_MAX_RESPONSE_BYTES)
-                .set_batch_request_config(BatchRequestConfig::Limit(limits::RPC_MAX_BATCH))
-                // The WebSocket surface, and the two numbers it costs — see this
-                // function's doc. `set_message_buffer_capacity` panics on zero, which is
-                // why `schema::limits` carries a `const` assertion beside the constant
-                // rather than a hope: a panic on the daemon's startup path is not an
-                // available failure mode.
-                .max_subscriptions_per_connection(limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION)
-                .set_message_buffer_capacity(limits::WS_MESSAGE_BUFFER_CAPACITY)
-                .build(),
-        )
+        .set_config(crate::server::wire_bounds())
         .to_service_builder();
 
     // One permit per accepted connection, held for its whole life — see this function's

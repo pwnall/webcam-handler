@@ -225,6 +225,58 @@ pub fn mount(wchd: Wchd) -> schema::Result<jsonrpsee_server::Methods> {
     Ok(methods)
 }
 
+/// The bounds every transport that serves [`mount`]'s surface runs under.
+///
+/// **One home for the numbers, because since P5b there are two transports.** `crate::uds`
+/// serves this surface over `AF_UNIX` and `crate::http::rpc` serves it over the opt-in TCP
+/// listener's WebSocket route, and both build a jsonrpsee service from a
+/// [`jsonrpsee_server::ServerConfig`].
+/// Two copies of that expression would be two answers to "how big is a batch on the wire
+/// surface" — the second copy being the one that stops matching the day a constant moves —
+/// which is design §2.10's rule applied to a configuration instead of to a law. The
+/// *values* live in `schema::limits` and always did; what this function stops being copied
+/// is which of them the wire reads.
+///
+/// jsonrpsee's own defaults (10 MB bodies, 100 connections, *unlimited* batches, and 1024
+/// for both WebSocket numbers) are somebody else's numbers for somebody else's deployment,
+/// and AGENTS's "bounded everything" does not let this daemon inherit them silently. Six
+/// fields are set here:
+///
+/// - [`limits::DAEMON_MAX_CONNECTIONS`] — jsonrpsee's cap of that name, which is **not** the
+///   bound `crate::uds::serve` enforces at accept; that function's doc has the measurement
+///   and the distinction. On the WebSocket route it is nearer the name: jsonrpsee holds the
+///   permit for an upgraded connection's whole life, and a permit is per *builder*, so the
+///   two transports get a bound each rather than sharing one.
+/// - [`limits::RPC_MAX_REQUEST_BYTES`] and [`limits::RPC_MAX_RESPONSE_BYTES`] — a request
+///   this daemon will read and an answer it will write, the second sized for a photo.
+/// - [`limits::RPC_MAX_BATCH`] — an unbounded batch on a transport that carries a camera is
+///   the one default here that is a denial of service rather than a preference.
+/// - [`limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`] and
+///   [`limits::WS_MESSAGE_BUFFER_CAPACITY`] — the two the WebSocket surface costs, which
+///   P4b declined to inherit by turning that surface off and P4e-i took on when something
+///   subscribed (note **N38**, note **N57**). `set_message_buffer_capacity` panics on zero,
+///   which is why `schema::limits` carries a `const` assertion beside the constant rather
+///   than a hope: a panic on the daemon's startup path is not an available failure mode.
+///
+/// **What is not claimed:** `ServerConfig` has nine more fields and this build inherits them,
+/// `ping_config` (`None`) being the one with teeth — a peer that opens a WebSocket, subscribes
+/// and never reads again is never reaped by an inactivity timer. `crate::uds::serve`'s doc is
+/// where that residual is argued and note **N57** is where it is recorded; it is stated in one
+/// place rather than two, which is the same reason this function exists.
+#[must_use]
+pub fn wire_bounds() -> jsonrpsee_server::ServerConfig {
+    jsonrpsee_server::ServerConfig::builder()
+        .max_connections(limits::DAEMON_MAX_CONNECTIONS)
+        .max_request_body_size(limits::RPC_MAX_REQUEST_BYTES)
+        .max_response_body_size(limits::RPC_MAX_RESPONSE_BYTES)
+        .set_batch_request_config(jsonrpsee_server::BatchRequestConfig::Limit(
+            limits::RPC_MAX_BATCH,
+        ))
+        .max_subscriptions_per_connection(limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION)
+        .set_message_buffer_capacity(limits::WS_MESSAGE_BUFFER_CAPACITY)
+        .build()
+}
+
 /// The timer the idle-sweep driver runs on.
 ///
 /// A named function with a test on it, because the *decision* it carries is invisible in

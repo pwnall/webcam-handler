@@ -49,7 +49,7 @@ pub(crate) enum Watching {
     /// caller pays for — clippy names it, and here it costs one allocation per open
     /// subscription rather than a suppression.
     Ws {
-        connection: Box<Ws>,
+        connection: Box<Ws<tokio::net::UnixStream>>,
         subscription: Value,
     },
 }
@@ -106,7 +106,7 @@ impl Watching {
     /// # Panics
     ///
     /// On [`Watching::InMemory`], for the reason above.
-    pub(crate) fn connection(&mut self) -> &mut Ws {
+    pub(crate) fn connection(&mut self) -> &mut Ws<tokio::net::UnixStream> {
         match self {
             Watching::Ws { connection, .. } => connection,
             Watching::InMemory(_) => {
