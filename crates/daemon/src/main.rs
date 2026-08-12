@@ -30,9 +30,19 @@
 //!    made is note N39's substitution defence, because the bind already happened elsewhere.
 //! 4. **The socket**, replacing a file left by a dead daemon, then bound — or, when a service
 //!    manager passed one in, adopted rather than bound.
-//! 5. **`READY=1`**, once there is a socket to serve on, with a status naming it and the
-//!    backend. The camera count follows it and does not gate it (see below).
-//! 6. **Serving**, until the process is told to stop.
+//! 5. **The web listener, when `--http` asked for one** (D11, P5a). TCP is opt-in, so on most
+//!    runs this step does not happen at all. It is here — after the socket, before `READY=1` —
+//!    because design §2.6 makes readiness "once both listeners are up": a supervisor told
+//!    `READY=1` starts whatever depends on this unit, and a browser transport that is not yet
+//!    bound is a transport that is not yet there. [`daemon::http::open`] is the whole of it,
+//!    in the order that module argues: the posture is decided from the address the operator
+//!    *asked for*, before anything is bound; the token is minted only in the cells D11 gates;
+//!    and what comes back reports the address the kernel actually gave, which is what the URL
+//!    is built from.
+//! 6. **`READY=1`**, once there is a socket to serve on — both of them, when `--http` was
+//!    given — with a status naming it and the backend. The camera count follows it and does
+//!    not gate it (see below).
+//! 7. **Serving**, until the process is told to stop.
 //!
 //! The backend is constructed before all of it, because a `--profile` that does not parse
 //! is a usage mistake and reporting it should not first take a lock, make a directory and
@@ -47,6 +57,13 @@
 //! housekeeping, release the state directory. The order is the claim; that each of those
 //! happens at all is mostly older news.
 //!
+//! **The web listener is in that order rather than beside it.** It watches the same
+//! cancellation token every subscription watches, so it begins stopping at the order's step 3
+//! — not at a step of its own, and not when the process happens to end — and it is **joined**
+//! after the order returns, exactly as the watchdog task is. An ending nothing waited for is a
+//! maybe, and `daemon::http::listener`'s header is where that doctrine is argued for this
+//! transport.
+//!
 //! **What is still not claimed.** A cancellation reaches tokio tasks, and a camera actor is
 //! an OS thread by construction (D12) — so a command parked in a device ioctl is ended by the
 //! process exiting, not by the token, and the drain bound is what keeps that from making the
@@ -56,7 +73,10 @@
 //! exit is survivable rather than a hole for the reason it always was: Linux releases an
 //! `flock` when the last descriptor on its open file description closes, so a *killed* `wchd`
 //! releases the state lock, and the same sentence covers every camera descriptor its actors
-//! held.
+//! held. Nor is an in-flight **HTTP** response bounded: everything P5a serves is a file of a
+//! few kilobytes, and the response that does not end on its own — P5b's MJPEG preview — is
+//! where design §2.6's "an open MJPEG tab must not hang shutdown" becomes a thing to build
+//! rather than a thing to inherit.
 //!
 //! ## The systemd half, which is now here
 //!
@@ -102,11 +122,13 @@
     )
 )]
 
+use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 use clap::Parser;
+use daemon::http;
 use daemon::logging;
 use daemon::server::Wchd;
 use daemon::shutdown::{self, Notifying, Shutdown, Signals};
@@ -134,7 +156,41 @@ struct Args {
     /// vanished would see. A usage mistake must not be spelled like a device answer.
     #[arg(long, value_name = "PATH", required_if_eq("backend", "fake"))]
     profile: Vec<Utf8PathBuf>,
+
+    /// Also serve the web client over TCP, on ADDR.
+    ///
+    /// Opt-in, which is design D11's whole posture for this transport: a daemon nobody asked
+    /// to listen on TCP opens no socket and mints no token. The value is optional — `--http`
+    /// alone binds loopback on a port the kernel picks, and the daemon logs the URL it ended
+    /// up on, with the run's bearer token in it.
+    ///
+    /// An address, not a host name. How far the bind reaches is what decides whether a token
+    /// is required, and a name that resolves to several addresses is a name with several
+    /// answers to that question.
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = DEFAULT_HTTP_BIND)]
+    http: Option<SocketAddr>,
+
+    /// Serve the web client with no bearer token. Loopback only, and it needs `--http`.
+    ///
+    /// Design D11's "one named explicit flag", and the only way to reach the token-less cell
+    /// of its matrix. Off loopback it does not apply — "there is no flag that removes it" —
+    /// and the daemon warns at startup rather than leaving an operator to discover it as a
+    /// 401.
+    ///
+    /// It is refused without `--http` rather than accepted and ignored, which is the other
+    /// half of not being silently inert: there is no TCP listener for it to be about, and a
+    /// flag that parsed cleanly and did nothing is how somebody comes to believe in a
+    /// listener that is not there.
+    #[arg(long, requires = "http")]
+    http_insecure_loopback: bool,
 }
+
+/// Where `--http` binds when it is given no address — D11's default, spelled once.
+///
+/// "`--http [addr]`, default `127.0.0.1:0` → report the bound port". Loopback because D11's
+/// matrix makes that the cell an operator gets without asking for anything else, and port zero
+/// because a daemon that picked a number would eventually pick one somebody else holds.
+const DEFAULT_HTTP_BIND: &str = "127.0.0.1:0";
 
 /// `--backend`, parsed through the schema's own spelling.
 ///
@@ -281,6 +337,36 @@ async fn run(args: &Args) -> Result<()> {
     let housekeeping = wchd.spawn_idle_sweeps();
     let mut serving = uds::serve(listener, daemon::server::mount(wchd.clone())?);
 
+    // D11's other transport, and the one that exists only because somebody asked for it.
+    // `daemon::http::open` is the whole composition — decide the posture from the requested
+    // address, mint a token in the cells that are gated, bind, serve — and this file's
+    // startup-order header says why it happens here: after the socket and before `READY=1`.
+    // The `?` is what makes a `--http` that cannot bind a refusal rather than a daemon that
+    // starts and quietly serves one transport of the two it was asked for.
+    let web = match args.http {
+        None => None,
+        Some(requested) => {
+            let web = http::open(requested, args.http_insecure_loopback, shutdown.clone()).await?;
+
+            // D11's warning, in the two cells that ask for one, and *before* the URL: the last
+            // line an operator reads is the one they came to copy, and this one is the one
+            // they need to have read first.
+            if let Some(warning) = web.posture().warning() {
+                tracing::warn!("{warning}");
+            }
+
+            // The line D11 asks for — "printed as a ready-to-open URL" — and the one place in
+            // this daemon where a secret is written down on purpose (`daemon::http::token`).
+            // In the token-less cell it is the plain URL, because a `?token=` with nothing
+            // after it reads as a token that failed to render.
+            tracing::info!(
+                url = %web.ready_to_open_url(),
+                "wchd is serving the web client"
+            );
+            Some(web)
+        }
+    };
+
     // The real supervisor, passed unconditionally: with `$NOTIFY_SOCKET` unset every one of
     // these is a no-op, so a `wchd` in a terminal behaves exactly as it did when this was
     // `Unsupervised` (`daemon::systemd::Supervisor` has the argument). Behind an `Arc`
@@ -332,9 +418,20 @@ async fn run(args: &Args) -> Result<()> {
         }
     }
 
+    if let Some(web) = web {
+        // A join and not a wait, for the watchdog's reason: `serve_until_stopped` returned,
+        // which means the token this listener watches was cancelled at step 3 of the order and
+        // hyper has already been told to stop. Awaited rather than dropped because "the web
+        // listener ended" is a fact this process claims, and a detached task's ending is a
+        // maybe (`daemon::http::listener`).
+        if let Err(err) = web.stopped().await {
+            tracing::warn!(error = %err, "the web listener did not end cleanly");
+        }
+    }
+
     // Said out loud rather than left to the end of a scope, because the order is the claim:
-    // the state directory is released *after* the server has stopped answering and after every
-    // subscription has been told why it ended. It is the orderly half of a release the kernel
+    // the state directory is released *after* both transports have stopped answering and after
+    // every subscription has been told why it ended. It is the orderly half of a release the kernel
     // performs anyway when the process dies (see this file's header).
     drop(state);
     served
@@ -382,6 +479,87 @@ mod tests {
         }
         assert_eq!(backend_kind("fake"), Ok(BackendKind::Fake));
         assert_eq!(backend_kind("v4l2"), Ok(BackendKind::V4l2));
+    }
+
+    #[test]
+    fn a_daemon_nobody_asked_to_listen_on_tcp_has_no_web_listener_at_all() {
+        // D11's "TCP is **opt-in**", at the surface where it is opt-in. `None` is not a
+        // default address and not a disabled listener: it is the branch in `run` that opens no
+        // socket and mints no token, and a `--http` that had acquired a `default_value` would
+        // pass every other test in this file while putting a socket on every `wchd` on the
+        // machine.
+        let default = Args::try_parse_from(["wchd"]).expect("no arguments is a valid daemon");
+
+        assert_eq!(default.http, None);
+        assert!(!default.http_insecure_loopback);
+    }
+
+    #[test]
+    fn http_alone_means_loopback_on_a_port_the_kernel_picks() {
+        // D11's "`--http [addr]`, default `127.0.0.1:0`". The value is *optional*, which is
+        // three behaviours in one argument and all three are pinned here: the flag alone takes
+        // the default, the flag with an address takes the address, and the flag does not eat
+        // the argument that follows it — which is what `num_args = 0..=1` would do to a
+        // command line if clap did not stop at the next `--`.
+        let bare = Args::try_parse_from(["wchd", "--http"]).expect("the flag needs no value");
+        assert_eq!(
+            bare.http,
+            Some(DEFAULT_HTTP_BIND.parse().expect("D11's default parses"))
+        );
+        assert_eq!(
+            bare.http.map(|bind| bind.port()),
+            Some(0),
+            "the port is the kernel's to pick"
+        );
+
+        let followed = Args::try_parse_from(["wchd", "--http", "--backend", "v4l2"])
+            .expect("the flag before another flag");
+        assert_eq!(followed.http, bare.http);
+        assert_eq!(followed.backend, BackendKind::V4l2);
+    }
+
+    #[test]
+    fn http_with_an_address_binds_that_address_and_a_host_name_is_refused() {
+        // The other half of the optional value, and the shape of what it accepts. A host name
+        // is refused by the parser rather than resolved, because the *reach* of the bind is
+        // what decides whether D11 requires a token, and a name with two addresses behind it
+        // is a name with two answers to that question.
+        let wildcard = Args::try_parse_from(["wchd", "--http", "0.0.0.0:8080"])
+            .expect("an address and a port");
+        assert_eq!(
+            wildcard.http,
+            Some("0.0.0.0:8080".parse().expect("an address this test wrote"))
+        );
+
+        Args::try_parse_from(["wchd", "--http", "localhost:8080"])
+            .expect_err("a host name is not a bind address");
+        Args::try_parse_from(["wchd", "--http", "127.0.0.1"]).expect_err("an address with no port");
+    }
+
+    #[test]
+    fn the_insecure_flag_needs_a_listener_to_be_about_and_is_still_allowed_off_loopback() {
+        // Both halves of "meaningless without `--http`". Clap refuses the flag on its own, so
+        // it cannot be a flag that parsed cleanly and did nothing — which is the second way an
+        // operator comes to believe in a listener that is not there.
+        Args::try_parse_from(["wchd", "--http-insecure-loopback"])
+            .expect_err("a flag about a listener nobody asked for");
+
+        let insecure = Args::try_parse_from(["wchd", "--http", "--http-insecure-loopback"])
+            .expect("D11's token-less loopback cell");
+        assert!(insecure.http_insecure_loopback);
+
+        // And **not** refused off loopback, which is the fourth cell of D11's matrix and a
+        // deliberate non-refusal: the paragraph prescribes a token and a warning there, not a
+        // daemon that will not start. `daemon::http::posture` is what makes the flag inert and
+        // says so out loud.
+        let inert = Args::try_parse_from([
+            "wchd",
+            "--http",
+            "192.168.1.10:8080",
+            "--http-insecure-loopback",
+        ])
+        .expect("a bind D11 serves, gated, with a warning");
+        assert!(inert.http_insecure_loopback);
     }
 
     #[test]

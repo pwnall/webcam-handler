@@ -21,9 +21,13 @@ workspace = true
 # Arriving with the code that reads them, as everywhere else in this workspace — a
 # dependency nobody uses is the defect a constant nobody reads is (rubric A8), and
 # `cargo machete --with-metadata` is part of `just ci`. Design §2.8's inventory for this
-# crate also lists axum, tower-http and rust-embed (P5's web listener), which arrive with
-# the code that reads them; its other three — sd-notify, listenfd and tracing-journald —
-# arrived here with P4e-ii's second half, and `daemon::systemd` is what reads all three.
+# crate also lists axum, tower-http and rust-embed (P5's web listener): axum arrives here at
+# P5a with `daemon::http::listener`, rust-embed arrives one crate along in
+# `webcam-handler-web` — which is what this crate depends on instead, so the embed has one
+# reader — and **tower-http is still not here**, because the thing that reads it is P5b's
+# `CompressionLayer` and the preview route it has to be excluded from. Its other three —
+# sd-notify, listenfd and tracing-journald — arrived with P4e-ii's second half, and
+# `daemon::systemd` is what reads all three.
 #
 # `jsonrpsee-server` rather than `jsonrpsee`'s `server` feature, and that is not a style
 # choice — note N38 has the measurement. `webcam-handler-api` depends on the facade, and
@@ -33,6 +37,29 @@ workspace = true
 # `RpcModule` is `jsonrpsee-core`'s type either way, so the trait the daemon mounts is the
 # same type this crate serves.
 [dependencies]
+# The opt-in TCP transport D11 describes: the embedded client, the token gate over every
+# route of it, and the graceful stop the daemon's own token drives (`daemon::http`). MIT,
+# tokio-rs governance; design §2.8 pinned it at 0.8 and §7 records what it was chosen over
+# (actix-web, warp, poem, rouille, tiny_http, and hand-rolling JSON-RPC over it).
+#
+# **Two features, and they are minimal in the strong sense: `axum::serve` does not exist
+# without both.** The `serve` module is `#[cfg(all(feature = "tokio", any(feature = "http1",
+# feature = "http2")))]` — `tokio` is what lets a `tokio::net::TcpListener` be served on and
+# `http1` is the protocol a browser speaks to a loopback socket, so this pair is the smaller
+# of the two ways to satisfy that predicate.
+#
+# What the default set would have added, each off for a reason rather than for being small:
+# `json`, because this daemon's JSON is jsonrpsee's and a second codec on the wire surface
+# would be a second answer to D10; `form` and `query`, because the gate parses the query
+# string itself — "what does a request carrying two `token=` parameters present" is a
+# security decision and `Query`'s deserializer answers it quietly (`daemon::http::gate` has
+# the argument); `matched-path` and `original-uri`, which exist for middleware that branches
+# on what it matched, and this gate deliberately branches on nothing; `tower-log` and
+# `tracing`, which are axum's own logging, where this daemon's is `daemon::logging`'s one
+# decision. `http2` is off because nothing reaches this listener but a browser on a socket
+# D11 defaults to loopback, and `ws` is P5b's — it arrives with the endpoint that reads it
+# (rubric A8).
+axum = { workspace = true, features = ["http1", "tokio"] }
 camino.workspace = true
 # The composition root's two flags, in the workspace's one argument parser. `wchd` links
 # no `cli-core`: T4 is the *command* surface `wch` and `wchc` share, and the daemon has no
@@ -122,6 +149,12 @@ webcam-handler-engine.workspace = true
 webcam-handler-fake.workspace = true
 webcam-handler-schema.workspace = true
 webcam-handler-v4l2.workspace = true
+# The client's files, embedded (design §2.7's "assets embed"). This crate depends on the
+# asset crate and **not on `rust-embed`**: what a path holds is that crate's law and how
+# bytes become an HTTP response is this one's (design §2.10), so the embed machinery has one
+# home and one reader, and `daemon::http::listener` needs no derive and no trait in scope to
+# serve a page.
+webcam-handler-web.workspace = true
 
 [dev-dependencies]
 # `client-core` is the generated T5 client's supertrait (`ClientT`): the read-verb suite

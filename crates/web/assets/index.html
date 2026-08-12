@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webcam-handler</title>
+    <!--
+      The styles are inline, and at P5a that is not laziness. The token rides the URL
+      (D11), and a browser does not carry a document's query string over to the
+      subresources that document asks for: a `<link rel="stylesheet" href="app.css">` on
+      a page opened at `/?token=…` is fetched as `/app.css` with no credential at all,
+      which the token gate refuses — correctly. So the skeleton page is one file, and how
+      the real client's ES modules authenticate is a decision P5b/P5c makes on purpose
+      rather than one this page makes by accident. `daemon::http::listener`'s header
+      states the same finding where the gate is.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+
+      body {
+        margin: 0;
+        padding: 2rem 1.5rem;
+        font-family: system-ui, sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 38rem;
+        margin: 0 auto;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+        font-weight: 600;
+      }
+
+      code {
+        font-family: ui-monospace, monospace;
+        font-size: 0.9em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>webcam-handler</h1>
+      <p>
+        Served by <code>wchd</code> out of its own binary: no CDN, no npm, no build step.
+        Every byte of this page came from the daemon you are talking to.
+      </p>
+      <p>
+        The client itself — the camera list, the control panel generated from the
+        <code>controls</code> DTO, the live preview and the calibration view — is the next
+        sub-milestone. This page exists so that the listener has something to serve and the
+        token gate has something to protect.
+      </p>
+    </main>
+  </body>
+</html>
