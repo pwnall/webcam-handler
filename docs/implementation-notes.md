@@ -9423,3 +9423,368 @@ account of what a run did not claim — which is AGENTS rule 3, and it is not go
 The sixteen unit tests are the reason each term of the predicate exists, and a build that
 deletes one of them has deleted a disqualifier's only witness on a desk where no camera can
 produce it.
+
+### Amendment, 2026-08-11: the two instances this entry named in the sibling rung are closed
+
+The section above ends by naming three defects it found and did not fix. Two of them are
+**F4's own shape in `crates/backends/v4l2/tests/hardware.rs`** — the class this entry opened,
+left open twice in the file this entry's own comments cite as the place the lesson was already
+written down. They are closed here. The third is a gate and is **N73**, for the reason argued
+at the head of that entry.
+
+**Why an amendment and not a new entry, which is the opposite of what F4 and F5 got.** N72
+argued itself into being an N-entry rather than an E13 amendment on the ground that E13 is a
+*transcript* and its amendments correct sentences E13 itself wrote. An N-entry is not a
+transcript; it is the case law for one defect class, and its "Named and deliberately not
+fixed" list is that class's outstanding docket. Closing a docketed item changes nothing this
+entry claims and needs no argument this entry has not already made — the two arms below are
+repaired *on their own terms*, which is exactly the reason given above for not repairing them
+at the time, and that reason is a fact about scheduling rather than about the finding. A
+reader who arrives at `crates/backends/v4l2/tests/hardware.rs:1573` should meet one entry, not
+two that agree. Recording it separately would also break the thing N72 is useful for: **the
+"Retires when" section below is the class's, and a class whose instances are recorded in three
+places retires in three places.**
+
+The gate is the other way round on every one of those tests, which is why it is not here.
+
+#### F4a — the in-process calibration arm, the full shape
+
+`hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_restores` derived
+`stride = (span / 4).max(desc.range.effective_step())` after opening a session, ran
+`engine::calibrate::run` over it, and then asserted
+
+```
+assert!(outcome.samples.len() >= 3, "{control}: {} sample(s) is too few to show an ordering");
+```
+
+twenty lines below the sweep and **three hundred above `lifecycle::recover`**. A `brightness`
+declaring `0..=64` with a step of 64 plans two values, clears every term of
+`brightness_class_target`, and so was selected, photographed at each of its two values, and
+panicked on — the camera left at 64, because restoration is on the success path. It is F4
+with a longer fall.
+
+**Changed** the way F4 was: the planned size is asked of `engine::sweep::plan` through
+`testkit::battery::sweep_for`, from the `ControlDesc` alone, and a plan under the floor is a
+named `SKIP (partial)` taken **before `start_session`**. Before, and not after, for the reason
+F4 records one rung over and this rung confirms in its own transcript: `start_session` calls
+`lifecycle::discover_pairs`, whose printed line is `left the camera alone: true` — a claim
+about *restoration*, not about abstinence. The last moment genuinely before any write is
+before the session opens.
+
+The floor that stood there did not survive, because it can no longer fail. What replaced it is
+this arm's own claim, and it is not the client rung's claim in different words:
+
+```
+assert_eq!(outcome.plan.total(), planned,
+    "{}: {control}: this arm priced {planned} sample(s) from the descriptor the device \
+     enumerated before the session opened, and the executor's own re-read plans {}");
+```
+
+There, two plans are separated by a serialization. **Here they are separated by a second
+enumeration of the same device, across a write.** This arm prices from the descriptor
+`camera.controls()` answered at the top; `calibrate::run` prices from the one its own
+`describe` re-reads, and between them the pair probe wrote to the sensor and put it back. A
+camera that re-declares a control's range after being written to is the class \[PF:23\] was
+raised for — a device changing what it advertises while nobody was looking — and it is red
+here rather than a sweep that quietly takes a different number of photographs than the arm
+reports.
+
+#### F4b — the motion arm, and the "milder" was checked rather than taken on trust
+
+The claim above was that
+`assert!(values.len() >= 3, "…too few to move a motor and come back")` is the same shape
+without the second half, because everything above it is planner arithmetic. **Read rather than
+believed, and it holds**: `backend.open` and `camera.controls()` read; the two
+`engine::sweep::plan` calls that assert §5's "never implicit" and "the cap is real on this
+device's range" are folds over a `ControlDesc`; `bounded_motion_values` is arithmetic over
+five offsets; and the first write in the arm is `start_session`'s pair probe, twenty lines
+*below*. No motor was ever left anywhere by this assertion.
+
+That is the whole of the mildness, and it decided the shape of the repair rather than excusing
+it. A PTZ camera whose pan range holds two steps — or one parked where only two of the five
+offsets land inside its range — still turned a *device shape* into a red run, which is AGENTS
+rule 7 and the class rule 1 says becomes a test. Because the arithmetic was already in the one
+place where nothing is turning, the repair is **only** a decline: `bounded_motion_values`
+answers `Motion::Planned { values }` or `Motion::Declined(String)`, the caller prints a named
+`SKIP (partial)` and continues, and nothing moved.
+
+**The decline is taken after the two descriptor-only claims and not before them**, and the
+order is design §5's rather than tidiness. Those claims cost no travel, so a camera too narrow
+for this arm's trajectory still has "the product refuses a motion sweep without
+`--allow-motion`" and "the motion cap binds on this device's own range" asserted against it.
+Declining earlier would throw away two free claims to avoid a cost of zero.
+
+What replaced the floor is the claim the number was standing in for:
+
+```
+assert_eq!(outcome.plan.values, values, …);
+assert!(outcome.plan.adjustments.is_empty(), …);
+```
+
+**The motor went exactly where this arm bounded it, and nowhere else.** `SweepSpec::Explicit`
+clamps a value outside the range, aligns one off the step, drops a duplicate and subsamples a
+list over the cap — each recorded as a `SweepAdjustment`, none of them visible in
+`outcome.samples`, and every one of them a motor going somewhere this arm did not choose. It
+holds today because `battery::is_perturbable` already refuses a control whose current sits off
+its own step \[PF:4\]; the day that stops being true, this says so instead of spending the
+difference.
+
+#### `sweep_for` moved, and that is the third copy that did not get written
+
+N72's F5 moved a predicate because it was already written twice. `sweep_for` was written
+**once**, in `crates/client/tests/hardware.rs`, and the calibration arm above needed the
+identical arithmetic against the identical planner with an identical floor. Writing it again
+is how a rule becomes two rules, so it is now `testkit::battery::sweep_for`, beside
+`brightness_class_target` and for the same three reasons that entry gives. Both rungs ask it;
+what stays in each rung is the one thing that is genuinely its own, which is the floor.
+
+**The floor is not shared and the mechanism is**, and that distinction is a type.
+`SampleFloor { count, because }` carries an arm's number *and its argument for the number*
+into the `SKIP` line, because the two rungs decline at the same count for unrelated reasons —
+the client arm needs enough progress events to tell a live stream from a report delivered at
+the end (N69), the calibration arm needs enough samples for a metric to *rank* rather than
+compare two endpoints (N21) — and a transcript that printed "fewer than the 3 this arm needs"
+for both would make one number look like a law. `a_floor_of_zero_declines_nothing` is there
+because a caller's parameter should not have a hole at the bottom of itself. Each rung keeps
+its own `const _: () = assert!(…)` under the schema's ceiling, which is N70's F2 discipline
+where the number is.
+
+`ShortSweep` is the decline as a value rather than a `String`: `Refused` when the planner
+refused the range outright, `UnderFloor` when the plan is legal and small. The two carry
+*different* steps on purpose — `Refused` reports the step **as declared**, because a device
+declaring 0 is \[PF:4\] and a transcript that printed 1 would hide it, while `UnderFloor`
+reports the effective one, because that is the number the count was computed against.
+
+**The cost is one dependency edge and it is worth naming.** `webcam-handler-testkit` now has a
+normal dependency on `webcam-handler-engine`, which dev-depends on it. Cargo permits the cycle
+because the return edge is a dev-dependency and dev-dependencies do not link;
+`dependency-walls.sh` counts only normal edges and passed unchanged at 1699 items; the wall
+this could have touched — "`webcam-handler-client` links no engine" — is unmoved, because that
+crate's edge to the testkit is a dev one too. The alternative was for each rung to call
+`engine::sweep::plan` itself, which is the copy this move exists to avoid.
+
+#### Watched failing, both, at workspace scope
+
+Rule 2's shape for a guard is the shipped behaviour re-expressed, which is the guard neutered.
+
+**F4a and the shared floor** — `if samples < floor.count` replaced by `if false` in
+`battery::sweep_for`, which is what both rungs did before N72 and what the calibration arm did
+until today. One neuter, three crates red, which is the point of the move:
+
+```
+Summary [   4.747s] 980 tests run: 973 passed, 7 failed, 26 skipped
+```
+
+| test | failure |
+|---|---|
+| `battery::tests::a_range_under_the_floor_declines_as_a_value_and_names_the_count_the_planner_gave_it` | left `Planned { spec: Uniform { step: 64 }, samples: 2 }`, right `Declined(UnderFloor { control: ControlSlug("brightness"), min: 0, max: 64, step: 64, stride: 64, samples: 2, floor: SampleFloor { count: 3, because: "say anything about an arrival profile" } })` |
+| `battery::tests::the_two_rungs_decline_at_the_same_count_and_do_not_print_the_same_sentence` | `assertion left != right failed`, both sides `Planned { spec: Uniform { step: 1 }, samples: 2 }` |
+| `battery::tests::the_declared_step_reaches_the_refusal_and_the_effective_one_reaches_the_count` | the `UnderFloor` half planned instead of declining |
+| `v4l2::hardware the_calibration_arms_floor_declines_the_range_that_used_to_be_swept_and_then_panicked_on` | `a range that plans two samples is the shape this arm swept and then panicked on` |
+| the three client arms N72 wrote (`a_brightness_whose_step_is_its_whole_range_…`, `a_two_valued_brightness_…`, `a_single_valued_range_…`) | as that entry records them |
+
+That the client's three go red under a neuter made in another crate is the repair's own
+witness: there is one floor comparison in the workspace now, and seven arms across two rungs
+are looking at it.
+
+**F4b** — `if values.len() < MIN_MOTION_VALUES` replaced by `if false`, which is the shipped
+`bounded_motion_values`:
+
+```
+Summary [   4.516s] 980 tests run: 977 passed, 3 failed, 26 skipped
+```
+
+| test | failure |
+|---|---|
+| `a_pan_range_that_holds_two_positions_is_declined_rather_than_driven` | `ControlDesc { … range: ControlRange { min: 0, max: 1, step: 1 } … } was planned as the trajectory [0, 1] rather than declined` |
+| `a_step_that_is_most_of_the_range_leaves_a_motor_two_places_to_be` | the same, `min: 0, max: 100, step: 60`, `the trajectory [0, 60]` |
+| `a_single_position_range_is_declined_and_no_motor_is_asked_to_move` | the same, `min: 50, max: 50`, `the trajectory [50]` |
+
+Three arms hold the other direction and one of them is why the floor is a `<`:
+`the_pan_range_the_obsbot_declares_plans_five_positions_around_home` pins the two real motion
+ranges in `corpus/profiles/` (the OBSBOT Tiny 3's `-468000..=468000` step 3600 and the Dell
+U3224KB's `-144000..=144000`) at five positions each,
+`a_motor_parked_at_the_bottom_of_its_range_visits_only_the_positions_above_it` pins the
+asymmetric case *and* the difference between filtering the out-of-range offsets and clamping
+them — clamping answers `[0, 0, 0, 1, 2]`, which `dedup` shortens to three *different* values
+and a motor visits two of them twice — and
+`the_motion_floor_is_a_boundary_and_a_trajectory_that_just_clears_it_is_driven` pins exactly
+three.
+
+#### One more decline this change made dishonest, and repaired in passing
+
+Both arms end with a summary line for the case where nothing ran, and both named a reason.
+The calibration arm's said "no attached camera offered a brightness-class control **and a
+capture node**" — one sentence for two facts, which became one sentence for **three** the
+moment "a declared range too narrow to assert over" joined them. That is F5's shape arriving
+through the door F4's repair opened, in the same commit. Both tails now say only that nothing
+ran and point at the per-camera lines above, which are named and counted and are the only
+place a reason belongs.
+
+#### Hardware
+
+`just smoke-hw` at four cameras on ten nodes, on the tree this amendment lands with. The
+census, verbatim:
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+     Summary [  77.494s] 18 tests run: 18 passed, 988 skipped
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+smoke-hw: 18 of 18 selected test(s) ran — the suite is complete
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+Eight declines, the same eight as at `2a3a58c`, and **not one of them is new**. The
+calibration arm ran three sessions (the OBSBOT, the Chicony RGB and the Dell), five samples
+each, restore complete on 22 / 16 / 17 controls; the motion arm moved the OBSBOT's
+`pan_absolute` through `[0, 3600, 7200, 10800, 14400]` and the Dell's through
+`[-7200, -3600, 0, 3600, 7200]`, five samples and four steps of travel each, and both heads
+are back where they started.
+
+**What the hardware run does not establish, which is this entry's own point for the second
+time:** no camera on this desk exercised either new decline, and none can. Every attached
+camera with a `brightness` declares a range that plans five samples, and both motion ranges
+hold two hundred and sixty steps. The two guards are proved by the ten unit tests over values
+and by nothing on this desk — which is why the shared half is in a crate a unit test can
+reach, and why the two arms' own floors are pinned in the files that own them.
+
+`just ci` green at **980 tests** (from 967) and 22 predicates; `scripts/gates/selftest.sh`
+reports 38 pass arms and 160 fail arms (from 37 and 158), the two new pass/fail arms belonging
+to N73.
+
+### Named and deliberately not fixed, by the amendment
+
+- **`crates/backends/v4l2/tests/hardware.rs:2344`** — `assert!(held.len() > 1, "every sample
+  came back as the same position … the motor did not move")`, which fires between the motion
+  sweep and its restore and leaves the head where the sweep put it. It is **not** in the class
+  closed here and cannot be moved: a driver that reports the same read-back for every
+  commanded position is a finding about the device \[PF:18 is the neighbouring one\], and
+  nothing in the descriptor predicts it. It is E13's standing gap in its irreducible form —
+  "a hardware arm that fails between its sweep and its restore leaves the camera moved" — and
+  what it wants is a restoring wrapper around the whole arm, which is a change to how every
+  hardware arm is written rather than to this line.
+- **`crates/backends/v4l2/tests/hardware.rs:2130` and `:990`** — two `capture_node().is_none()`
+  arms that `continue` in silence, in the motion arm and in
+  `hw_a_stream_honours_a_size_the_camera_offers_and_reports_one_it_does_not`. Their three
+  siblings in the same file (`:882`, `:1193`, `:1466`) print a named `SKIP (partial)` for the
+  identical condition. AGENTS rule 3 wants the skip named and counted, and the cost of these
+  two is visible in the sentence repaired above: the motion arm's tail can only speak for the
+  cameras it *examined*, because the ones it passed over said nothing.
+
+## N73 — A gate read a sentence about an attribute as the attribute, and the guard it needed was already in the other half of the same file
+
+**Doc:** AGENTS rule **1** (a discovered defect class becomes a lint, a CI job, or a test that
+can go red), rule **2** (both directions, proven in `scripts/gates/selftest.sh`, and the
+inverse arm driven by the thing under test), rule **3**, the "Docs and dependencies" rule that
+this project's comments are essays that cite their own vocabulary, docs/9's gate suite, and
+**N72** — which met this three times in one commit, named it, and left it because
+`scripts/gates/` was outside that change's remit. Found by the **G4 adversarial review**,
+2026-08-11, and repaired on the tree at `2a3a58c`.
+
+**Not an amendment to N72, and the two halves of that judgement are worth keeping apart from
+the amendment above.** What N72 owns is a class about *hardware arms*: an assertion that turns
+a device shape into a red run. Its docket named three items; two of them are that class and
+are closed in the section above, and this one is not that class at all. It is a **gate**
+reading prose as code, its population is every `.rs` file in the tree rather than two test
+binaries, its verification is a pair of selftest arms rather than a unit test over
+`ControlDesc` values, and its retirement condition has nothing to do with sweeps. It also
+carries a lesson N72 does not: **a guard that exists in one half of a script is not a guard
+the other half has**. Filing it under N72 would make that entry's "Retires when" answer for a
+fact about awk.
+
+**The defect.** `scripts/gates/ignored-suites-have-recipes.sh:191`:
+
+```awk
+/#\[[[:space:]]*ignore/ { pending = 1 }
+pending && match($0, /fn[[:space:]]+[A-Za-z0-9_]+/) { … }
+```
+
+The token was matched wherever it appeared. A `//`, `///` or `//!` line that named it set
+`pending`, and the file's next `fn` — of any kind, `#[ignore]`d or not, a helper or a test —
+was then reported as an ignored test matching no declared suite prefix.
+
+**It fails closed, so nothing was ever wrong on a tree because of it.** The cost is a tax, and
+the tax is on exactly the thing this repository's rubric asks for. N72 paid it three times in
+one commit: the gate named `why_not_perturbable`, `driving_the_hardware` and `brightness` as
+unrouted ignored tests, and three sentences were reworded to appease it. Two module docs still
+carried a parenthesis apologising for naming the token, one of them a whole paragraph
+(`crates/backends/v4l2/tests/hardware.rs`: "the attribute is named around rather than written
+out, because …").
+
+**And the guard was already in the file.** The declaration half of this same script reads
+`grep -rHn '^# wch-suite:'`, anchored at column zero, and the header says why in as many
+words: "the indented copy above is prose, and the gate must not read its own documentation as
+a declaration". One half of the script knew that a sentence about a marker is not a marker.
+The other half did not use it.
+
+**Changed.** Each line is reduced to its **code** before either rule looks at it: string
+literals first, then whichever of `//` and `/*` comes earliest in what is left, with block
+comments carried across lines. The order is load-bearing in both directions and neither
+direction is hypothetical:
+
+- **Strings before comments**, because a reason string may contain `//` —
+  `#[ignore = "see http://…"]` is a legal attribute and truncating at the `//` would eat the
+  closing bracket.
+- **Line comments before block comments**, because a doc comment may contain `/*`:
+  `crates/backends/v4l2/src/holders.rs` writes `` `/proc/<pid>/fd/*` `` in its module doc, and
+  stripping block comments first would swallow the remaining twelve hundred lines of the file
+  and every attribute in them.
+
+**The tolerance cannot hide a real test, and that is the property the repair had to keep.** An
+attribute reaches an item at the head of its own line, with nothing before it for either
+stripper to trip over. What a reducer *can* do is go quietly wrong in the other direction, so
+every tolerated mention is counted and reported — `gate_checked "$prose"` — rather than
+dropped. On the tree the numbers are 26 ignored tests (unchanged from before the repair, which
+is the measurement that says no attribute was eaten) and 2 prose mentions.
+
+**Watched failing, at workspace scope, and the arm that proves it is not a stub.** Three
+selftest arms, and the pair is the point: a reducer that reads prose correctly and code
+incorrectly is a *worse* gate than the one it replaced, because the pass arm alone would go
+green and nothing would notice.
+
+- `pass_case_the_attribute_is_named_in_prose_and_not_read_as_one` seeds one file holding all
+  six shapes — module doc, doc comment, trailing comment, one-line block comment, multi-line
+  block comment, string literal — each followed by a plain `fn`. Against the **shipped**
+  predicate it is red, 8 violations over 38 examined items: the six seeded shapes plus the two
+  sentences this change restored in the tree. Against the repaired one it is green with those
+  8 counted as prose.
+- `fail_case_a_real_ignored_test_hidden_among_prose_about_the_attribute` seeds the same prose
+  with one genuine unrouted `#[ignore]`d test underneath it. Red, naming
+  `hidden_in_the_prose_and_nobody_runs_it`.
+- `fail_case_an_attribute_sharing_a_line_with_a_block_comment_that_closed` seeds a file whose
+  only unrouted test is declared on a line beginning `/* R3, one day */`. It is the only arm
+  that can say the reducer *resumes* after `*/` rather than dropping the rest of the line, and
+  it was checked by breaking exactly that: with the resume removed, the arm exits 0 and the
+  harness reports it as a problem.
+
+**Proved on real prose rather than asserted.** Two sentences were restored to the form the
+gate had refused — `crates/client/tests/hardware.rs`'s "Both arms above are `#[ignore]`d",
+which is one of N72's three, and the whole apologetic parenthesis in
+`crates/backends/v4l2/tests/hardware.rs`'s module doc, which predates it. Against the shipped
+predicate the tree is red with
+
+```
+FAIL  ignored-suites-have-recipes: webcam-handler-v4l2's ignored test 'attached' … matches no declared suite prefix
+FAIL  ignored-suites-have-recipes: webcam-handler-client's ignored test 'driving_the_hardware' … matches no declared suite prefix
+FAIL ignored-suites-have-recipes — 2 violation(s) over 32 examined items
+```
+
+— `driving_the_hardware` being the same false finding N72 recorded by name. Against the
+repaired one it is `PASS — 32 items examined, 0 named skip(s)`, with 26 real ignored tests
+still found. N72's other two reworded sentences are left as that entry wrote them; they read
+well, and one restored sentence per direction is what proves the gate rather than three.
+
+`scripts/gates/selftest.sh` now reports **22 predicates, 38 pass arm(s), 160 fail arm(s)**,
+from 37 and 158.
+
+### Retires when
+
+Never, in the sense that matters: the rule "an `#[ignore]`d test that no recipe runs is a test
+that will never run again" is not going anywhere, and a gate that reads Rust will always have
+to know which characters are code. The *reducer* retires the day this script parses Rust
+properly rather than lexically — which it will not, for the reason `unsafe-scope.sh` writes
+down for its own token: a rule a reader can verify by eye beats one that needs a parser. That
+gate makes the opposite trade on the two halves this one now handles, deliberately and with
+the argument recorded; it is a different predicate over a different population and its
+decision is left where it is.

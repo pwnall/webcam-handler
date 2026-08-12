@@ -78,11 +78,11 @@
 //!
 //! ## The parts that need no camera
 //!
-//! Both arms above are ignored and need a camera. The plain tests at the foot of this file
-//! do not: what they exercise is [`sweep_for`], a fold over a `ControlDesc`, and they run on
-//! every `just ci` on a machine with nothing plugged in — because the shapes they are about
-//! (a `brightness` whose step is its whole range) are not on this desk, and a guard against a
-//! device nobody here owns is still a guard that has to be able to go red.
+//! Both arms above are `#[ignore]`d and need a camera. The plain tests at the foot of this
+//! file do not: what they exercise is [`sweep_for`], a fold over a `ControlDesc`, and they
+//! run on every `just ci` on a machine with nothing plugged in — because the shapes they are
+//! about (a `brightness` whose step is its whole range) are not on this desk, and a guard
+//! against a device nobody here owns is still a guard that has to be able to go red.
 //!
 //! ## Nothing here sleeps
 //!
@@ -110,6 +110,7 @@ use schema::progress::{CalibrationProgress, ProgressEvent};
 use schema::report::CameraList;
 use schema::session::{SweepRequest, SweepSpec};
 use schema::snapshot::Snapshot;
+use testkit::battery;
 
 #[path = "support/fixture.rs"]
 mod fixture;
@@ -396,7 +397,8 @@ impl SweepWatcher for Recording {
     fn finish(&self) {}
 }
 
-/// How few samples make this arm's assertions worth making.
+/// How few samples make this arm's assertions worth making, and this arm's argument for the
+/// number.
 ///
 /// Three, and the number is this suite's rather than the product's, which is why it is here
 /// and not in [`schema::limits`]: nothing about the *daemon* changes at two samples, and a
@@ -406,91 +408,32 @@ impl SweepWatcher for Recording {
 /// events arrived as the work happened" from "they all landed at the end", which is the one
 /// property this arm exists to observe (note **N69**, and E13's 0.52 / 1.02 / 1.61 / 2.18 /
 /// 2.84 s column).
-const MIN_SAMPLES: u32 = 3;
+///
+/// The `because` clause carries that argument into the `SKIP` line, because the sibling rung
+/// declines at the same count for an entirely different reason and a transcript that said
+/// only "fewer than the 3 this arm needs" would make the two look like one rule.
+const MIN_SAMPLES: battery::SampleFloor = battery::SampleFloor {
+    count: 3,
+    because: "say anything about an arrival profile",
+};
 
 /// The floor has to sit under the schema's ceiling, or this arm would decline every plan the
 /// product allows and read as a suite that ran.
 ///
 /// A `const` assertion for note **N70**'s reason: a relation nothing can evaluate is a
 /// relation nobody has checked, and this one costs a compile rather than a run.
-const _: () = assert!(MIN_SAMPLES <= limits::MAX_SWEEP_SAMPLES);
+const _: () = assert!(MIN_SAMPLES.count <= limits::MAX_SWEEP_SAMPLES);
 
-/// What this arm will do with a control, decided from the descriptor and nothing else.
-#[derive(Debug)]
-enum Sweep {
-    /// Ask the daemon for this spec; the planner says it is this many samples.
-    Planned {
-        /// What goes on the wire.
-        spec: SweepSpec,
-        /// What the planner says that costs, before the wire sees it.
-        samples: u32,
-    },
-    /// Decline, with the sentence that says why — and decline *here*, where nothing has
-    /// been written yet.
-    Declined(String),
-}
-
-/// The sweep this arm would ask for over `desc`, priced by the **product's own planner**,
-/// before anything is written.
+/// The sweep this arm would ask the daemon for, priced from the descriptor before anything is
+/// written — [`testkit::battery::sweep_for`], which is where the whole of it lives.
 ///
-/// A stride of a quarter of the control's *declared* range, which is five values where the
-/// range divides and fewer where the control's own step does not let it: `brightness` is
-/// `0..=255` on one attached camera and `0..=100` on another, so a stride written down here
-/// would be a number about somebody's desk rather than about a device.
-///
-/// The count comes from [`engine::sweep::plan`] rather than from arithmetic repeated here.
-/// That is the same pure core the daemon runs a moment later — design §2.10's one home per
-/// law — so this is not a second planner with a second opinion; it is the planner, asked
-/// early. **That it is askable early is the entire repair.** `SweepPlan::total()` is a fact
-/// about a `ControlDesc`, and a `ControlDesc` is something this arm holds before it has
-/// opened a session, let alone moved a sensor.
-///
-/// Two ways out, and both are declines rather than failures (AGENTS rule 7):
-///
-/// - **Under [`MIN_SAMPLES`].** A `brightness` declaring `0..=64` with a step of 64 plans
-///   two values, and so does one declaring `0..=1`; both are ordinary devices this arm has
-///   nothing to say about. What used to happen is that the arm swept such a camera and then
-///   panicked with "too few to say anything about a sweep" — turning a device *shape* into a
-///   red run, which is the lesson `crates/backends/v4l2/tests/hardware.rs`'s enumeration arm
-///   carries in writing ("an `assert!(matched > 0)` … turned 'different hardware' into a red
-///   run") re-introduced one rung over. Worse, it panicked *after* the sweep and twenty
-///   lines before `calibrate_restore`, so it left the camera at the last value it wrote,
-///   which is one of the triggers under E13's "a hardware arm that fails between its sweep
-///   and its restore leaves the camera moved".
-/// - **The planner refused.** A typed refusal from `engine::sweep::plan` is the device
-///   saying its range is not one this tool sweeps (`empty_range`, `not_sweepable`), which is
-///   a fact to report rather than an error to raise here. It cannot fire for a control that
-///   cleared [`testkit::battery::brightness_class_target`] today; it is handled because the
-///   two predicates are different rules in different crates, and a `?` that becomes a panic
-///   the day they disagree is the shape this whole finding is about.
-fn sweep_for(desc: &ControlDesc) -> Sweep {
-    let span = desc.range.max.saturating_sub(desc.range.min);
-    let stride = (span / 4).max(desc.range.effective_step());
-    let spec = SweepSpec::Uniform { step: stride };
-    let planned = match engine::sweep::plan(desc, &spec, false) {
-        Ok(planned) => planned,
-        Err(refusal) => {
-            return Sweep::Declined(format!(
-                "the sweep planner refuses {} on its own declared range {}..={} (step {}): \
-                 {refusal}",
-                desc.slug, desc.range.min, desc.range.max, desc.range.step
-            ));
-        }
-    };
-    let samples = planned.total();
-    if samples < MIN_SAMPLES {
-        return Sweep::Declined(format!(
-            "{} declares {}..={} with a step of {}, which a stride of {stride} plans as \
-             {samples} sample(s) — fewer than the {MIN_SAMPLES} this arm needs to say \
-             anything about an arrival profile, so it declines before writing to the camera \
-             rather than after",
-            desc.slug,
-            desc.range.min,
-            desc.range.max,
-            desc.range.effective_step()
-        ));
-    }
-    Sweep::Planned { spec, samples }
+/// It was private to this file when note **N72** wrote it, and it is not any more: the
+/// in-process calibration arm in `crates/backends/v4l2/tests/hardware.rs` carried the same
+/// finding and needed the same arithmetic against the same planner, and a second copy of a
+/// rule is what F5 of that same note was about. What stays here is the one thing that is
+/// genuinely this arm's — [`MIN_SAMPLES`], the floor and the argument for it.
+fn sweep_for(desc: &ControlDesc) -> battery::SweepChoice {
+    battery::sweep_for(desc, MIN_SAMPLES)
 }
 
 /// What one control was holding when a snapshot was taken.
@@ -590,9 +533,9 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
     // the battery's, beside `is_perturbable` and `is_motorized`, where a unit test over
     // `ControlDesc` values can reach it and where the v4l2 rung asks the same question of
     // the same code.
-    let desc = match testkit::battery::brightness_class_target(&report.controls) {
-        testkit::battery::SweepTarget::Found(desc) => desc.clone(),
-        testkit::battery::SweepTarget::Declined(why) => {
+    let desc = match battery::brightness_class_target(&report.controls) {
+        battery::SweepTarget::Found(desc) => desc.clone(),
+        battery::SweepTarget::Declined(why) => {
             println!(
                 "SKIP (partial): {} {why}, so this arm declines it — which is a fact about {} \
                  and not about the socket",
@@ -613,8 +556,8 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
     // shape and the three times it was met by hand), so a question answerable from a
     // descriptor gets answered before the descriptor is all this arm has touched.
     let (spec, samples) = match sweep_for(&desc) {
-        Sweep::Planned { spec, samples } => (spec, samples),
-        Sweep::Declined(why) => {
+        battery::SweepChoice::Planned { spec, samples } => (spec, samples),
+        battery::SweepChoice::Declined(why) => {
             println!(
                 "SKIP (partial): {} {why} — which is a fact about this control's declared \
                  range on this sensor and not about the socket",
@@ -940,8 +883,8 @@ fn brightness(min: i64, max: i64, step: i64) -> ControlDesc {
 /// What [`sweep_for`] said, as text, so a test can read the sentence an operator would.
 fn declined(desc: &ControlDesc) -> String {
     match sweep_for(desc) {
-        Sweep::Declined(why) => why,
-        Sweep::Planned { spec, samples } => {
+        battery::SweepChoice::Declined(why) => why.to_string(),
+        battery::SweepChoice::Planned { spec, samples } => {
             panic!("{desc:?} was planned as {samples} sample(s) of {spec:?} rather than declined")
         }
     }
@@ -991,7 +934,7 @@ fn the_ranges_the_attached_cameras_declare_plan_the_five_samples_e13_transcribed
     // sweep, with the same five samples that entry's table carries.
     for (min, max, step, stride) in [(0_i64, 100_i64, 1_i64, 25_i64), (0, 255, 1, 63)] {
         let desc = brightness(min, max, step);
-        let Sweep::Planned { spec, samples } = sweep_for(&desc) else {
+        let battery::SweepChoice::Planned { spec, samples } = sweep_for(&desc) else {
             panic!("{min}..={max} is the range a camera on this desk declares");
         };
         assert_eq!(spec, SweepSpec::Uniform { step: stride });
@@ -1007,7 +950,7 @@ fn the_count_is_the_planners_and_not_arithmetic_repeated_here() {
     // computes would answer five samples; the planner answers four, and the planner is the
     // one the daemon runs. This is the assertion that would go red if the count here were
     // ever re-derived instead of asked for.
-    let Sweep::Planned { spec, samples } = sweep_for(&brightness(0, 100, 7)) else {
+    let battery::SweepChoice::Planned { spec, samples } = sweep_for(&brightness(0, 100, 7)) else {
         panic!("a 0..=100 range plans a sweep whatever its step");
     };
     assert_eq!(spec, SweepSpec::Uniform { step: 25 });
@@ -1036,8 +979,8 @@ fn the_floor_is_a_boundary_and_a_plan_that_just_clears_it_is_swept() {
     // guard that declined here would be this repair overshooting into the defect it is
     // named after — turning a device shape into a skip instead of into a red run, which is
     // quieter and no more honest.
-    let Sweep::Planned { samples, .. } = sweep_for(&brightness(0, 2, 1)) else {
+    let battery::SweepChoice::Planned { samples, .. } = sweep_for(&brightness(0, 2, 1)) else {
         panic!("a three-value plan is exactly what this arm can assert over");
     };
-    assert_eq!(samples, MIN_SAMPLES);
+    assert_eq!(samples, MIN_SAMPLES.count);
 }

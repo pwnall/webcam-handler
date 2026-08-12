@@ -22,5 +22,18 @@ camino.workspace = true
 image.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# **The sweep planner and nothing else** (`engine::sweep::plan`), because
+# `battery::sweep_for` prices a hardware arm's sweep from a descriptor *before* the arm
+# opens a session, and pricing it any other way would be a second planner with a second
+# opinion (design §2.10). Both calibration rungs ask this one function through this one
+# crate; note **N72** is what the previous arrangement — the same arithmetic written into
+# two `#[ignore]`d test binaries — cost.
+#
+# This closes a cycle with `webcam-handler-engine`, which dev-depends on this crate for the
+# battery. Cargo permits it because the return edge is a dev-dependency and dev-dependencies
+# do not link; `dependency-walls.sh` counts only normal edges, and the wall this could have
+# touched — "`webcam-handler-client` links no engine" — is unmoved, because the client's edge
+# to this crate is a dev one too. `testkit-is-dev-only.sh` is the gate that keeps it that way.
+webcam-handler-engine.workspace = true
 webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true

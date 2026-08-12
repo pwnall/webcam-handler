@@ -44,6 +44,7 @@ use schema::control::{
 use schema::error::Error;
 use schema::limits;
 use schema::pairing::looks_like_automation;
+use schema::session::SweepSpec;
 use schema::snapshot::{ControlRole, Snapshot, SnapshotEntry};
 use schema::time::Stamp;
 
@@ -1429,6 +1430,192 @@ pub fn brightness_class_target(controls: &[ControlDesc]) -> SweepTarget<'_> {
     })
 }
 
+// ------------------------------------------- how many samples a control's own range plans
+
+/// How few samples make an arm's assertions worth making, and the arm's own argument for
+/// the number.
+///
+/// The **number is not shared and the mechanism is**, which is the whole shape of this
+/// type. What a floor is *for* differs per arm — the R3-over-UDS sweep needs enough events
+/// to tell a live progress stream from a report delivered at the end, and the in-process
+/// calibration arm needs enough samples for a metric ordering to be a ranking rather than a
+/// comparison of two endpoints — so the count and its argument travel together and the
+/// `SKIP` line says both. A floor with no argument beside it is a magic number, and the one
+/// thing this repository's transcripts are for is telling a reader what a run did not claim.
+///
+/// Neither of these is [`schema::limits`]'s business: nothing about the *product* changes at
+/// two samples, and a two-sample sweep is a perfectly good sweep for an operator. Each arm
+/// holds its own `const` under the schema's ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleFloor {
+    /// The fewest samples the arm's claims can be made over.
+    pub count: u32,
+    /// Why *that* number, in the arm's own words, as the tail of "…the N this arm needs
+    /// to ___". Reaches the transcript, so it is written to be read there.
+    pub because: &'static str,
+}
+
+/// Why a control's own declared range cannot carry the sweep an arm wanted.
+///
+/// Both variants are facts about a **range a device declared**, which is what the caller's
+/// `SKIP` line says and why they share a type: neither is a defect, and neither is a fact
+/// about the socket, the backend, or the code under test. They are kept apart because they
+/// come from different authorities — the first is the product's planner refusing, the second
+/// is this suite's own floor — and note **N72**'s F5 is the entry about a decline that
+/// answered one sentence for several findings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShortSweep {
+    /// [`engine::sweep::plan`] refused the range outright.
+    Refused {
+        /// The control, so the sentence names it without the caller re-formatting.
+        control: ControlSlug,
+        /// Declared minimum.
+        min: i64,
+        /// Declared maximum.
+        max: i64,
+        /// Declared step, as declared — not the effective one, because a device that
+        /// declares a step of 0 \[PF:4\] should have that in the transcript.
+        step: i64,
+        /// The planner's own typed refusal, rendered.
+        refusal: String,
+    },
+    /// The plan is legal, and smaller than the arm's floor.
+    UnderFloor {
+        /// The control.
+        control: ControlSlug,
+        /// Declared minimum.
+        min: i64,
+        /// Declared maximum.
+        max: i64,
+        /// The effective step the count was computed against.
+        step: i64,
+        /// The stride the arm asked for.
+        stride: i64,
+        /// What the planner said that costs.
+        samples: u32,
+        /// The floor it fell under, with the arm's argument for it.
+        floor: SampleFloor,
+    },
+}
+
+impl fmt::Display for ShortSweep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ShortSweep::Refused {
+                control,
+                min,
+                max,
+                step,
+                refusal,
+            } => write!(
+                f,
+                "the sweep planner refuses {control} on its own declared range \
+                 {min}..={max} (step {step}): {refusal}"
+            ),
+            ShortSweep::UnderFloor {
+                control,
+                min,
+                max,
+                step,
+                stride,
+                samples,
+                floor,
+            } => write!(
+                f,
+                "{control} declares {min}..={max} with a step of {step}, which a stride of \
+                 {stride} plans as {samples} sample(s) — fewer than the {} this arm needs \
+                 to {}, so it declines before writing to the camera rather than after",
+                floor.count, floor.because
+            ),
+        }
+    }
+}
+
+/// What an arm will do with a control, decided from its descriptor and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SweepChoice {
+    /// Ask for this spec; the product's own planner says it costs this many samples.
+    Planned {
+        /// What goes to the executor, or on the wire.
+        spec: SweepSpec,
+        /// What the planner says that costs, before anything is written.
+        samples: u32,
+    },
+    /// Decline, with the sentence that says why — and decline *here*, where nothing has
+    /// been written yet.
+    Declined(ShortSweep),
+}
+
+/// The sweep an arm would ask for over `desc`, priced by the **product's own planner**,
+/// before anything is written.
+///
+/// A stride of a quarter of the control's *declared* range, which is five values where the
+/// range divides and fewer where the control's own step does not let it: `brightness` is
+/// `0..=255` on one attached camera and `0..=100` on another, so a stride written down in a
+/// suite would be a number about somebody's desk rather than about a device.
+///
+/// The count comes from [`engine::sweep::plan`] rather than from arithmetic repeated in a
+/// test. That is the same pure core the executor runs a moment later — design §2.10's one
+/// home per law — so this is not a second planner with a second opinion; it is the planner,
+/// asked early. **That it is askable early is the entire repair** (note **N72**):
+/// `SweepPlan::total()` is a fact about a `ControlDesc`, and a `ControlDesc` is something an
+/// arm holds before it has opened a session, let alone moved a sensor.
+///
+/// Two ways out, and both are declines rather than failures (AGENTS rule 7):
+///
+/// - **Under `floor`.** A `brightness` declaring `0..=64` with a step of 64 plans two
+///   values, and so does one declaring `0..=1`; both are ordinary devices an arm that needs
+///   three samples has nothing to say about. What used to happen in both rungs is that the
+///   arm swept such a camera and *then* panicked — turning a device *shape* into a red run,
+///   which is the lesson `crates/backends/v4l2/tests/hardware.rs`'s enumeration arm carries
+///   in writing ("an `assert!(matched > 0)` … turned 'different hardware' into a red run").
+///   Worse, it panicked between the sweep and the restore, so it left the camera at the last
+///   value it wrote — E13's "a hardware arm that fails between its sweep and its restore
+///   leaves the camera moved".
+/// - **The planner refused.** A typed refusal is the device saying its range is not one this
+///   tool sweeps (`empty_range`, `not_sweepable`), which is a fact to report rather than an
+///   error to raise in a test. It cannot fire for a control that cleared
+///   [`brightness_class_target`] today; it is handled because the two predicates are
+///   different rules, and a `?` that becomes a panic the day they disagree is the shape this
+///   whole finding is about.
+///
+/// **Shared between the two calibration rungs and written once.** It began as a private
+/// helper in `crates/client/tests/hardware.rs` (note **N72**), and the sibling rung needed
+/// the identical arithmetic against the identical planner for the identical reason. Moving
+/// one copy and leaving the other is what F5 cost — the same predicate written twice, and
+/// only one of the copies repaired.
+#[must_use]
+pub fn sweep_for(desc: &ControlDesc, floor: SampleFloor) -> SweepChoice {
+    let span = desc.range.max.saturating_sub(desc.range.min);
+    let stride = (span / 4).max(desc.range.effective_step());
+    let spec = SweepSpec::Uniform { step: stride };
+    let planned = match engine::sweep::plan(desc, &spec, false) {
+        Ok(planned) => planned,
+        Err(refusal) => {
+            return SweepChoice::Declined(ShortSweep::Refused {
+                control: desc.slug.clone(),
+                min: desc.range.min,
+                max: desc.range.max,
+                step: desc.range.step,
+                refusal: refusal.to_string(),
+            });
+        }
+    };
+    let samples = planned.total();
+    if samples < floor.count {
+        return SweepChoice::Declined(ShortSweep::UnderFloor {
+            control: desc.slug.clone(),
+            min: desc.range.min,
+            max: desc.range.max,
+            step: desc.range.effective_step(),
+            stride,
+            samples,
+            floor,
+        });
+    }
+    SweepChoice::Planned { spec, samples }
+}
+
 /// Whether the PF:6 clamp probe may use this control: an integer with room above its
 /// maximum, and no motor on the other end of it.
 fn is_clamp_probe_candidate(desc: &ControlDesc) -> bool {
@@ -2121,5 +2308,190 @@ mod tests {
         // day somebody adds `focus_absolute` to the list, this is the term that must fire.
         let desc = sweepable("zoom_absolute");
         assert_eq!(why_not_sweepable(&desc), Some(Disqualifier::Motorized));
+    }
+
+    // --------------------------------------- how big a sweep a range plans (N72, amended)
+    //
+    // [`sweep_for`] arrived here from `crates/client/tests/hardware.rs`, where N72 wrote it
+    // and where seven arms still pin it to *that* rung's floor and to the ranges E13
+    // transcribed. What belongs here is the half those arms cannot see, because a suite that
+    // only ever passes its own constant cannot notice that the constant is the only thing
+    // reaching the transcript: that the two rungs' floors produce two different sentences,
+    // and that both declines are values a reader can match on rather than prose.
+
+    /// The same control with a range and step a device declared.
+    fn ranged(slug: &str, min: i64, max: i64, step: i64) -> ControlDesc {
+        let desc = sweepable(slug);
+        ControlDesc {
+            range: ControlRange { min, max, step },
+            current: Some(ControlValue::Int(min)),
+            default: min,
+            ..desc
+        }
+    }
+
+    /// The two floors the workspace actually holds, spelled here so the assertion below is
+    /// about *them* and not about a pair invented for it.
+    const PROGRESS_FLOOR: SampleFloor = SampleFloor {
+        count: 3,
+        because: "say anything about an arrival profile",
+    };
+    const ORDERING_FLOOR: SampleFloor = SampleFloor {
+        count: 3,
+        because: "rank a metric across a sweep rather than compare its two ends",
+    };
+
+    #[test]
+    fn a_range_under_the_floor_declines_as_a_value_and_names_the_count_the_planner_gave_it() {
+        // The finding, as one test: `0..=64` with a step of 64 plans two values, clears every
+        // term of `brightness_class_target`, and was therefore selected, swept on a real
+        // sensor, and *then* panicked on — in both rungs, twenty lines above one restore and
+        // three hundred above the other.
+        let desc = ranged("brightness", 0, 64, 64);
+        assert_eq!(
+            sweep_for(&desc, PROGRESS_FLOOR),
+            SweepChoice::Declined(ShortSweep::UnderFloor {
+                control: ControlSlug::parse("brightness").expect("a literal slug"),
+                min: 0,
+                max: 64,
+                step: 64,
+                stride: 64,
+                samples: 2,
+                floor: PROGRESS_FLOOR,
+            })
+        );
+    }
+
+    #[test]
+    fn the_two_rungs_decline_at_the_same_count_and_do_not_print_the_same_sentence() {
+        // Two arms, one number, two unrelated reasons for it — and `SampleFloor::because` is
+        // the whole of what keeps them apart in a transcript. A build that dropped the clause
+        // would leave `smoke-hw.sh` printing one line for two findings, which is precisely
+        // the shape N72's F5 was about one type over.
+        let desc = ranged("brightness", 0, 1, 1);
+        let progress = sweep_for(&desc, PROGRESS_FLOOR);
+        let ordering = sweep_for(&desc, ORDERING_FLOOR);
+        assert_ne!(progress, ordering);
+
+        let SweepChoice::Declined(progress) = progress else {
+            panic!("a two-value range is under both floors");
+        };
+        let SweepChoice::Declined(ordering) = ordering else {
+            panic!("a two-value range is under both floors");
+        };
+        assert!(
+            progress
+                .to_string()
+                .contains("the 3 this arm needs to say anything about an arrival profile"),
+            "{progress}"
+        );
+        assert!(
+            ordering.to_string().contains(
+                "the 3 this arm needs to rank a metric across a sweep rather than compare \
+                 its two ends"
+            ),
+            "{ordering}"
+        );
+        // And the half both sentences must carry, because *when* the decline happened is the
+        // finding rather than a detail of it.
+        for why in [&progress, &ordering] {
+            assert!(
+                why.to_string()
+                    .contains("declines before writing to the camera rather than after"),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_range_the_planner_refuses_outright_is_a_decline_and_not_a_panic() {
+        // A descriptor whose maximum is below its minimum: represented, never corrected (D2),
+        // and refused by `engine::sweep::plan` as `empty_range`. Nothing either rung selects
+        // can be in that state today — `why_not_sweepable` requires `max > min` — and the two
+        // predicates are different rules, so the day they disagree this must be a named
+        // decline rather than a `?` that became a panic on somebody's hardware.
+        let SweepChoice::Declined(why) =
+            sweep_for(&ranged("brightness", 200, 100, 1), ORDERING_FLOOR)
+        else {
+            panic!("a backwards range is not plannable");
+        };
+        assert!(
+            matches!(
+                &why,
+                ShortSweep::Refused {
+                    min: 200,
+                    max: 100,
+                    step: 1,
+                    ..
+                }
+            ),
+            "{why:?}"
+        );
+        let text = why.to_string();
+        assert!(
+            text.contains("the sweep planner refuses brightness"),
+            "{text}"
+        );
+        assert!(text.contains("empty_range"), "{text}");
+    }
+
+    #[test]
+    fn the_declared_step_reaches_the_refusal_and_the_effective_one_reaches_the_count() {
+        // A device declaring a step of 0 is \[PF:4\] territory, and the two halves of this
+        // type deliberately report different numbers for it. `Refused` carries the step **as
+        // declared**, because a transcript that silently printed 1 would hide the finding;
+        // `UnderFloor` carries the *effective* step, because that is the number the count was
+        // computed against and a reader checking the arithmetic needs the one that was used.
+        let SweepChoice::Declined(refused) =
+            sweep_for(&ranged("brightness", 200, 100, 0), ORDERING_FLOOR)
+        else {
+            panic!("a backwards range is not plannable whatever its step");
+        };
+        assert!(refused.to_string().contains("(step 0)"), "{refused}");
+
+        let SweepChoice::Declined(under) =
+            sweep_for(&ranged("brightness", 0, 1, 0), ORDERING_FLOOR)
+        else {
+            panic!("a two-value range is under this floor");
+        };
+        assert!(under.to_string().contains("with a step of 1"), "{under}");
+    }
+
+    #[test]
+    fn the_count_is_the_planners_and_not_arithmetic_repeated_here() {
+        // A control whose own step is 7 cannot take a stride of 25, and `engine::sweep::plan`
+        // rounds the request up to 28 rather than writing values the device would silently
+        // align \[PF:6\]. Naive arithmetic over the stride this function computes would answer
+        // five samples; the planner answers four, and the planner is the one both executors
+        // run. This is the assertion that would go red if the count were ever re-derived
+        // instead of asked for.
+        assert_eq!(
+            sweep_for(&ranged("brightness", 0, 100, 7), ORDERING_FLOOR),
+            SweepChoice::Planned {
+                spec: SweepSpec::Uniform { step: 25 },
+                samples: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn a_floor_of_zero_declines_nothing_and_is_still_the_planners_answer() {
+        // The degenerate floor, and the reason the comparison is `samples < floor.count`
+        // rather than a special case: an arm that wants whatever the range offers passes a
+        // count of zero and gets a plan, including for the one-value range that a floor of
+        // three declines. Nothing in the workspace does this today; it is here because a
+        // `SampleFloor` is a caller's number and a fold over values should not have a hole at
+        // the bottom of its own parameter.
+        let floor = SampleFloor {
+            count: 0,
+            because: "assert nothing about how many samples there were",
+        };
+        assert_eq!(
+            sweep_for(&ranged("brightness", 50, 50, 1), floor),
+            SweepChoice::Planned {
+                spec: SweepSpec::Uniform { step: 1 },
+                samples: 1,
+            }
+        );
     }
 }

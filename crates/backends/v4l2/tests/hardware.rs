@@ -1,13 +1,15 @@
 //! R3 — the real-hardware rung (design §3.1, docs/7 G1).
 //!
-//! Every test here carries the ignore attribute by construction: shared CI has no camera,
-//! and that is this plan's largest honest hole (docs/9's recorded limits). `just smoke-hw`
-//! runs them on a machine that has one, and the results are recorded as evidence in
+//! Every test here carries `#[ignore]` by construction: shared CI has no camera, and that
+//! is this plan's largest honest hole (docs/9's recorded limits). `just smoke-hw` runs them
+//! on a machine that has one, and the results are recorded as evidence in
 //! `docs/implementation-notes.md`.
 //!
-//! (The attribute is named around rather than written out, because
-//! `ignored-suites-have-recipes.sh` scans for the token and would read this paragraph as a
-//! declaration — the same accommodation `unsafe-scope.sh` documents for its own token.)
+//! (Written out rather than named around, which this paragraph could not do until the
+//! amendment to note **N72** taught `ignored-suites-have-recipes.sh` to reduce a line to its
+//! code before reading it for attributes. `unsafe-scope.sh` charges the same toll on string
+//! literals and block comments, deliberately and with the argument written down; that is its
+//! own decision and is left where it is.)
 //!
 //! **What this rung asserts, and what it deliberately does not.** Invariants and
 //! *orderings*, never pixel content and never a specific camera: lighting varies, and a
@@ -1406,6 +1408,37 @@ fn scores(
         .collect()
 }
 
+/// How few samples make the calibration arm's assertions worth making, and this arm's own
+/// argument for the number.
+///
+/// Three, and the number is this suite's rather than the product's, which is why it is here
+/// and not in [`schema::limits`]: nothing about the *engine* changes at two samples, and a
+/// two-sample sweep is a perfectly good sweep for an operator. What needs three is the
+/// **claim**. This arm asserts an ordering (`mean_luma` at the dimmest sample against the
+/// brightest) and then a *ranking* (`rms_contrast` picked a winner and some other sample
+/// scored below it, which is the branch note **N21** exists to keep apart from a tie-break).
+/// Over two samples those are one statement: the winner is one of the pair and the loser is
+/// the other, whichever way the light fell. Three is the first count at which the plan has an
+/// interior — a winner can sit between two samples that both score under it — and that is
+/// what a calibration *selection* means.
+///
+/// The `because` clause travels into the `SKIP` line because
+/// `crates/client/tests/hardware.rs` declines at the same count for an entirely unrelated
+/// reason (it needs enough progress events to tell a live stream from a report delivered at
+/// the end), and a transcript that printed only "fewer than the 3 this arm needs" would make
+/// two different rules look like one.
+const MIN_SAMPLES: battery::SampleFloor = battery::SampleFloor {
+    count: 3,
+    because: "rank a metric across a sweep rather than compare its two ends",
+};
+
+/// The floor has to sit under the schema's ceiling, or this arm would decline every plan the
+/// product allows and read as a suite that ran.
+///
+/// A `const` assertion for note **N70**'s reason: a relation nothing can evaluate is a
+/// relation nobody has checked, and this one costs a compile rather than a run.
+const _: () = assert!(MIN_SAMPLES.count <= limits::MAX_SWEEP_SAMPLES);
+
 #[test]
 #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
 fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_restores() {
@@ -1463,6 +1496,46 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
             }
         };
         let control = desc.slug.clone();
+
+        // ---------------------------------------------- priced before anything is written
+        //
+        // The last decline this arm can take for free, and note **N72**'s F4 in the file
+        // that entry named and did not fix. What stood here was a bare
+        // `assert!(outcome.samples.len() >= 3, "too few to show an ordering")` **twenty
+        // lines below the sweep and three hundred above the restore**: a camera whose
+        // `brightness` declares `0..=64` with a step of 64 plans exactly two values, clears
+        // every term of `brightness_class_target`, and so was selected, photographed at each
+        // of its two values, and then panicked on — turning a device *shape* into a red run
+        // and leaving the sensor at 64, because `lifecycle::recover` is on the success path.
+        // That is E13's standing gap ("a hardware arm that fails between its sweep and its
+        // restore leaves the camera moved") reached by a route the descriptor could have
+        // predicted, and AGENTS rule 7 is the rule it broke: a range this arm cannot assert
+        // over is not a device that is broken.
+        //
+        // **Why here and not four lines lower.** Below this point `start_session` runs D3's
+        // empirical pair probe (N16), which writes to the camera and puts it back — its own
+        // transcript line says `left the camera alone: true`, which is a claim about
+        // restoration, not about abstinence. So the last moment that is genuinely before any
+        // write is before the session opens, which is where the guard goes. A guard against
+        // "a failure between the first write and the restore" that sat after the first write
+        // would be the finding wearing the fix's clothes.
+        //
+        // The count is [`engine::sweep::plan`]'s, asked through
+        // [`battery::sweep_for`] — the same pure core `calibrate::run` reaches a moment later
+        // (design §2.10, one home per law), and the same function
+        // `crates/client/tests/hardware.rs` asks, so the two calibration rungs price a sweep
+        // once between them.
+        let (spec, planned) = match battery::sweep_for(&desc, MIN_SAMPLES) {
+            battery::SweepChoice::Planned { spec, samples } => (spec, samples),
+            battery::SweepChoice::Declined(why) => {
+                println!(
+                    "SKIP (partial): {} {why} — which is a fact about this control's declared \
+                     range on this sensor and not about the backend",
+                    info.id
+                );
+                continue;
+            }
+        };
 
         let temp = engine::store::TempStore::new().expect("a scratch state directory");
         let lock = temp
@@ -1532,11 +1605,6 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
             }
         );
 
-        // Five values across the declared range, which the planner aligns to the control's
-        // own step. Derived from the device rather than written down: `brightness` is
-        // 0..=255 on one seed camera and 0..=100 on the other.
-        let span = desc.range.max.saturating_sub(desc.range.min);
-        let stride = (span / 4).max(desc.range.effective_step());
         let before = values_of(camera.as_mut());
         let progress = engine::progress::Recorder::new();
         let clock = engine::settle::MonotonicClock::new();
@@ -1552,7 +1620,10 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
             camera.as_mut(),
             &schema::session::SweepRequest {
                 control: control.clone(),
-                plan: SweepSpec::Uniform { step: stride },
+                // The spec `battery::sweep_for` priced, and the same value — not a second
+                // derivation of it, which is how the number this arm checked and the number
+                // it asked for stop being the same number.
+                plan: spec,
                 allow_motion: false,
                 stream: StreamRequest::default(),
                 settle: schema::capture::SettlePolicy::default(),
@@ -1569,10 +1640,30 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
             &outcome.plan,
             &outcome.samples,
         );
-        assert!(
-            outcome.samples.len() >= 3,
-            "{control}: {} sample(s) is too few to show an ordering",
-            outcome.samples.len()
+        // **The executor planned what this arm priced.** The floor that stood here can no
+        // longer be reached — `battery::sweep_for` declines a shorter plan before the session
+        // opens — and an assertion whose false branch is unreachable is decoration, which is
+        // the same rule as AGENTS' "no assertion inside a conditional whose false branch
+        // cannot go red".
+        //
+        // What replaces it is a claim only this arm can make, and it is not the client rung's
+        // claim wearing different words. There, the two plans are separated by a
+        // serialization. Here they are separated by **a second enumeration of the same
+        // device, across a write**: this arm priced from the descriptor `camera.controls()`
+        // answered at the top, `calibrate::run` prices from the one its own
+        // `describe` re-reads, and between the two `start_session` ran D3's pair probe and
+        // wrote to the sensor. A camera that re-declares a control's range after being
+        // written to is exactly the class \[PF:23\] was raised for — a device changing what it
+        // advertises while nobody was looking — and it is red here rather than a sweep that
+        // silently takes a different number of photographs than the one this arm reports.
+        assert_eq!(
+            outcome.plan.total(),
+            planned,
+            "{}: {control}: this arm priced {planned} sample(s) from the descriptor the \
+             device enumerated before the session opened, and the executor's own re-read \
+             plans {}",
+            info.id,
+            outcome.plan.total()
         );
         assert_eq!(
             progress.sequence().first().copied(),
@@ -1897,22 +1988,91 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
     }
 
     if sessions == 0 {
+        // The summary line names no reason of its own, and that is deliberate. It used to
+        // say "no attached camera offered a brightness-class control and a capture node",
+        // which was one sentence for two facts and became one sentence for **three** the
+        // moment a declared range too narrow to assert over joined them — the shape note
+        // **N72**'s F5 is about, arriving by the door its own repair opened. The reasons are
+        // above, one line per camera, each naming the term that refused; this line's job is
+        // to say that nothing ran, which is the one thing it can know.
         println!(
-            "SKIP: no attached camera offered a brightness-class control and a capture node, \
-             so no calibration session ran"
+            "SKIP: no calibration session ran — every attached camera declined above, by name \
+             and with the term that refused it"
         );
     }
 }
 
+/// How few positions make the travel worth spending, and this arm's argument for the number.
+///
+/// Three, and the number is about the **plan** rather than about the motor. Two positions is
+/// a move and its undo, and that claim is already made against these same controls without a
+/// session, a plan or a photograph, by
+/// `hw_a_write_reads_back_and_reports_what_the_driver_actually_took` and
+/// `hw_a_snapshot_perturb_restore_round_trip_leaves_every_control_where_it_started`. What
+/// this arm adds is that the **executor's sweep loop** drives a real motor through a
+/// trajectory and hands it back, and a trajectory needs an interior: at three the
+/// `held.len() > 1` non-vacuity check becomes a statement about a path rather than about a
+/// pair, and the `travel / step` column the run prints has a middle in it.
+///
+/// Below the floor the arm declines rather than asserting, which is note **N72**'s F4 shape
+/// in its milder form — see [`bounded_motion_values`] for what "milder" bought and why the
+/// decline still had to be taken.
+const MIN_MOTION_VALUES: usize = 3;
+
+/// The floor sits under the cap design §5 puts on a caller, or this arm would decline every
+/// plan the product allows and read as a suite that ran (note **N70**'s F2 discipline: a
+/// relation nothing can evaluate is a relation nobody has checked).
+const _: () = assert!(MIN_MOTION_VALUES <= limits::MAX_MOTION_SWEEP_SAMPLES as usize);
+
+/// What this arm will do with a motorized control, decided from its descriptor and nothing
+/// else.
+#[derive(Debug, PartialEq, Eq)]
+enum Motion {
+    /// Drive the motor through these positions.
+    Planned {
+        /// A few whole steps either side of where the motor is now, in ascending order and
+        /// inside the declared range.
+        values: Vec<i64>,
+    },
+    /// Decline, with the sentence that says why — and decline *here*, where the motor has
+    /// not turned.
+    Declined(String),
+}
+
 /// Values a motion sweep may visit: a few whole steps either side of where the motor is
-/// now, clamped into the declared range.
+/// now, clamped into the declared range — or a named decline when the device's own range
+/// cannot hold [`MIN_MOTION_VALUES`] of them.
 ///
 /// Deliberately far smaller than [`schema::limits::MAX_MOTION_SWEEP_SAMPLES`] allows.
 /// The cap is the ceiling §5 puts on a *caller*; what a test should spend is the least
 /// travel that still proves the loop, and the same paragraph's "motors wear" is why. That
 /// the cap is real on this device's own range is asserted separately, by the planner,
 /// without moving anything.
-fn bounded_motion_values(desc: &ControlDesc, from: i64) -> Vec<i64> {
+///
+/// **The decline is note N72's F4 in this arm's terms**, and that entry called this the
+/// *milder* instance. It is worth being exact about what "milder" means, because it decided
+/// the shape of the repair rather than excusing it. What stood where the caller now matches
+/// was
+///
+/// ```text
+/// assert!(values.len() >= 3, "{control}: {} value(s) around {home} is too few to move a
+///          motor and come back", values.len());
+/// ```
+///
+/// and everything above it — two `engine::sweep::plan` calls over the descriptor, and this
+/// function's arithmetic — is pure. Verified by reading the arm rather than taken on trust:
+/// `backend.open` and `camera.controls()` read, `sweep::plan` is a fold over a
+/// `ControlDesc`, and the first write in the arm is `start_session`'s pair probe, which is
+/// *below*. So the panic left no motor anywhere it should not be, and the whole of the cost
+/// was a red run — a PTZ camera whose pan range holds two steps, or one parked where only
+/// two of the five offsets land inside its range, reported as a defect in this workspace.
+///
+/// That is still AGENTS rule 7 ("no code or test converts availability into capability"),
+/// still a device *shape* answered with a panic, and still the class rule 1 says becomes a
+/// test that can go red rather than a sentence in a note. The mildness is why the repair is
+/// only a decline and not a re-ordering: nothing had to move, because the arithmetic was
+/// already in the one place where a motor is not yet turning.
+fn bounded_motion_values(desc: &ControlDesc, from: i64) -> Motion {
     let step = desc.range.effective_step();
     let mut values: Vec<i64> = (-2i64..=2)
         .filter_map(|k| {
@@ -1922,7 +2082,18 @@ fn bounded_motion_values(desc: &ControlDesc, from: i64) -> Vec<i64> {
         .filter(|value| desc.range.contains(*value))
         .collect();
     values.dedup();
-    values
+    if values.len() < MIN_MOTION_VALUES {
+        return Motion::Declined(format!(
+            "{} declares {}..={} with a step of {step}, which holds {} of the {MIN_MOTION_VALUES} \
+             position(s) this arm needs around {from} to drive a motor through a trajectory \
+             and give it back, so it declines before the motor turns rather than after",
+            desc.slug,
+            desc.range.min,
+            desc.range.max,
+            values.len()
+        ));
+    }
+    Motion::Planned { values }
 }
 
 #[test]
@@ -2055,12 +2226,26 @@ fn hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started() {
         }
 
         // (3) The sweep itself: a handful of steps either side of home.
-        let values = bounded_motion_values(&desc, home);
-        assert!(
-            values.len() >= 3,
-            "{control}: {} value(s) around {home} is too few to move a motor and come back",
-            values.len()
-        );
+        //
+        // The decline is taken **here**, after (1) and (2) and before anything turns. Order
+        // deliberate, and it is design §5's: (1) and (2) are claims about the descriptor and
+        // the planner that cost no travel, so a camera whose range is too narrow for this
+        // arm's trajectory still has them asserted against it — declining earlier would
+        // throw away two free claims to avoid a cost that is zero. What must not happen is
+        // the other order, and that is what note **N72** named at this line: an
+        // `assert!(values.len() >= 3)` here answered "this device's pan range is narrow"
+        // with a red run (AGENTS rule 7).
+        let values = match bounded_motion_values(&desc, home) {
+            Motion::Planned { values } => values,
+            Motion::Declined(why) => {
+                println!(
+                    "SKIP (partial): {} {why} — which is a fact about this control's declared \
+                     range on this sensor and not about the backend",
+                    info.id
+                );
+                continue;
+            }
+        };
         let travel = values
             .last()
             .copied()
@@ -2118,6 +2303,35 @@ fn hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started() {
         assert!(
             outcome.plan.total() <= schema::limits::MAX_MOTION_SWEEP_SAMPLES,
             "{control}: the executed plan is not bounded by the motion cap"
+        );
+        // **The motor went exactly where this arm bounded it, and nowhere else.** The floor
+        // that stood above the sweep can no longer be reached from here — the arm declines a
+        // narrow range before the session opens — and what takes its place is the claim that
+        // number was standing in for: the positions this arm chose survived
+        // `engine::sweep::plan` unaltered.
+        //
+        // It can fail, and the ways it can are the ways travel gets spent without anybody
+        // asking. `SweepSpec::Explicit` clamps a value outside the range, aligns one off the
+        // step, drops a duplicate and subsamples a list over the cap — each recorded as a
+        // `SweepAdjustment`, none of them visible in `outcome.samples`, and every one of them
+        // a motor going somewhere this arm did not choose. Asserting the empty adjustment
+        // list is how "the least travel that still proves the loop" stops being a comment on
+        // [`bounded_motion_values`] and becomes a checked property of the run: today it holds
+        // because `battery::is_perturbable` already refused a control whose current sits off
+        // its own step \[PF:4\], and the day that stops being true this says so instead of
+        // quietly spending the difference.
+        assert_eq!(
+            outcome.plan.values, values,
+            "{}: {control}: this arm bounded the travel to {values:?} and the planner walked \
+             {:?}",
+            info.id, outcome.plan.values
+        );
+        assert!(
+            outcome.plan.adjustments.is_empty(),
+            "{}: {control}: the planner adjusted a motion plan this arm had already bounded: \
+             {:?}",
+            info.id,
+            outcome.plan.adjustments
         );
         // Non-vacuity: a sweep that wrote five values while the motor stayed put would pass
         // every assertion above and have moved nothing.
@@ -2198,7 +2412,14 @@ fn hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started() {
     }
 
     if swept == 0 {
-        println!("SKIP: no attached camera exposes a motorized control this arm could sweep");
+        // "Examined" and not "attached", for the reason the calibration arm's tail carries
+        // and one more of this arm's own: the loop passes over a camera with no capture node
+        // without printing anything at all, so this line cannot honestly speak for every
+        // camera on the bus. It speaks for the ones that got as far as having a control set
+        // read, which are the ones whose declines are above.
+        println!(
+            "SKIP: this arm drove no motor — every camera it examined declined above, by name"
+        );
     }
 }
 
@@ -2629,4 +2850,167 @@ fn values_of(camera: &mut dyn Camera) -> std::collections::BTreeMap<String, Cont
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// ---------------------------------------- what these arms decide before a camera is touched
+//
+// **These tests need no camera and they are the point.** Every arm above carries the ignore
+// attribute and runs on a desk with hardware on it; what the two floors in this file decide
+// is a fold over a `ControlDesc`, and a fold over values is testable at every `just ci` on a
+// machine with nothing plugged in.
+//
+// That distinction is the finding, not a convenience. The shapes these tests are about — a
+// `brightness` whose step is its whole range, a pan control whose declared range holds two
+// positions — are not on this desk, and the four cameras attached the day this landed all
+// declare a wide `brightness` and (where they have one) a pan range of two hundred and sixty
+// steps. A hardware run would have proved these arms green and said nothing at all about the
+// guards, which is the population note **N70** describes: a test asserting the assumption
+// that produced the code. "I could not reproduce it on my hardware" is why the test has to be
+// a table of values, not a reason to skip writing it (notes **N67**, **N69**, **N72**).
+//
+// They carry no `hw_` prefix, so `scripts/smoke-hw.sh`'s `test(/(^|::)hw_/)` selection does
+// not see them and the workspace suite does.
+
+/// A control with the range a device declared, its current value at `current`, and nothing
+/// else unusual.
+fn declaring(slug: &str, min: i64, max: i64, step: i64, current: i64) -> ControlDesc {
+    ControlDesc {
+        id: schema::control::ControlId(0x009a_0908),
+        name: slug.to_owned(),
+        slug: ControlSlug::parse(slug).expect("a literal slug"),
+        control_type: ControlType::Integer,
+        range: schema::control::ControlRange { min, max, step },
+        default: min,
+        // HAS_WHICH_MIN_MAX, which most integer controls on this kernel carry \[PF:12\]: a
+        // fixture with a clean flag word would let a predicate that read the whole word
+        // instead of a bit pass by accident.
+        flags: schema::control::ControlFlags::from_raw(0x1000),
+        menu: std::collections::BTreeMap::new(),
+        elems: 1,
+        elem_size: 4,
+        dims: Vec::new(),
+        current: Some(ControlValue::Int(current)),
+    }
+}
+
+/// What [`bounded_motion_values`] said, as text, so a test can read the sentence an operator
+/// would.
+fn motion_declined(desc: &ControlDesc, from: i64) -> String {
+    match bounded_motion_values(desc, from) {
+        Motion::Declined(why) => why,
+        Motion::Planned { values } => {
+            panic!("{desc:?} was planned as the trajectory {values:?} rather than declined")
+        }
+    }
+}
+
+#[test]
+fn a_pan_range_that_holds_two_positions_is_declined_rather_than_driven() {
+    // The seed shape. A pan control declaring `0..=1` offers the motor two places to be, so
+    // the five offsets around home collapse to two, and what used to happen next was
+    // `assert!(values.len() >= 3)` — a device's declared range answered with a red run
+    // (AGENTS rule 7). Milder than the calibration arm's instance because nothing had turned
+    // yet, and still the class rule 1 says becomes a test.
+    let why = motion_declined(&declaring("pan_absolute", 0, 1, 1, 0), 0);
+    assert!(why.contains("2 of the 3 position(s)"), "{why}");
+    assert!(why.contains("0..=1 with a step of 1"), "{why}");
+    assert!(
+        why.contains("before the motor turns"),
+        "the decline has to say when it happened, because when is what made the sibling \
+         instance the severe one: {why}"
+    );
+}
+
+#[test]
+fn a_step_that_is_most_of_the_range_leaves_a_motor_two_places_to_be() {
+    // The same count from the other direction, and the shape that is easy to miss: the range
+    // is a hundred units wide and the *step* is sixty, so `home ± 1 step` is already outside
+    // it on one side and `± 2` on both. A range's width says nothing about how many positions
+    // it holds.
+    let why = motion_declined(&declaring("pan_absolute", 0, 100, 60, 0), 0);
+    assert!(why.contains("2 of the 3 position(s)"), "{why}");
+    assert!(why.contains("0..=100 with a step of 60"), "{why}");
+}
+
+#[test]
+fn a_single_position_range_is_declined_and_no_motor_is_asked_to_move() {
+    // `min == max` is a legal descriptor (D2: represented, never corrected). One position is
+    // below the floor, and a sweep of it would be a photograph with a session around it.
+    let why = motion_declined(&declaring("tilt_absolute", 50, 50, 1, 50), 50);
+    assert!(why.contains("1 of the 3 position(s)"), "{why}");
+}
+
+#[test]
+fn the_pan_range_the_obsbot_declares_plans_five_positions_around_home() {
+    // The direction that must also hold, or every assertion above is an arm that declines
+    // everything. These are the two real motion ranges in `corpus/profiles/` — the OBSBOT
+    // Tiny 3's `pan_absolute` at `-468000..=468000` step 3600 and the Dell U3224KB's at
+    // `-144000..=144000` — and both must still drive, five positions, two steps either side.
+    for (min, max) in [(-468_000_i64, 468_000_i64), (-144_000, 144_000)] {
+        let desc = declaring("pan_absolute", min, max, 3600, 0);
+        let Motion::Planned { values } = bounded_motion_values(&desc, 0) else {
+            panic!("{min}..={max} is the range a camera on this desk declares");
+        };
+        assert_eq!(values, vec![-7200, -3600, 0, 3600, 7200], "{min}..={max}");
+    }
+}
+
+#[test]
+fn a_motor_parked_at_the_bottom_of_its_range_visits_only_the_positions_above_it() {
+    // Asymmetry is ordinary and is not a decline: a head panned hard left has nothing below
+    // it, and three positions above it are still a trajectory. This is also the arm that
+    // would go red if the offsets were ever clamped into the range instead of filtered out
+    // of it — clamping would answer `[0, 0, 0, 1, 2]`, which `dedup` would shorten to three
+    // *different* values and a motor would visit two of them twice.
+    let desc = declaring("pan_absolute", 0, 10, 1, 0);
+    let Motion::Planned { values } = bounded_motion_values(&desc, 0) else {
+        panic!("three positions above home is a trajectory");
+    };
+    assert_eq!(values, vec![0, 1, 2]);
+}
+
+#[test]
+fn the_motion_floor_is_a_boundary_and_a_trajectory_that_just_clears_it_is_driven() {
+    // The other side of every decline above, and the reason the floor is a `<` and not a
+    // `<=`: a `0..=2` range offers exactly [`MIN_MOTION_VALUES`] positions and must still
+    // run. A guard that declined here would be this repair overshooting into the defect it is
+    // named after — turning a device shape into a skip instead of into a red run, which is
+    // quieter and no more honest.
+    let desc = declaring("tilt_absolute", 0, 2, 1, 1);
+    let Motion::Planned { values } = bounded_motion_values(&desc, 1) else {
+        panic!("a three-position trajectory is exactly what this arm can assert over");
+    };
+    assert_eq!(values.len(), MIN_MOTION_VALUES);
+}
+
+#[test]
+fn the_calibration_arms_floor_declines_the_range_that_used_to_be_swept_and_then_panicked_on() {
+    // This arm's own number against the device shapes it exists for, both directions. The
+    // *mechanism* is `testkit::battery::sweep_for` and is tested over values beside itself;
+    // what is this file's to pin is that [`MIN_SAMPLES`] is wired into the calibration arm at
+    // all, and that the sentence it produces carries **this** arm's argument rather than the
+    // client rung's — the two rungs decline at the same count for unrelated reasons, and a
+    // transcript that could not tell them apart is how one number quietly becomes a law.
+    let two_valued = declaring("brightness", 0, 64, 64, 0);
+    let battery::SweepChoice::Declined(why) = battery::sweep_for(&two_valued, MIN_SAMPLES) else {
+        panic!("a range that plans two samples is the shape this arm swept and then panicked on");
+    };
+    let why = why.to_string();
+    assert!(why.contains("2 sample(s)"), "{why}");
+    assert!(
+        why.contains("rank a metric across a sweep rather than compare its two ends"),
+        "the decline carries this arm's argument and not the sibling rung's: {why}"
+    );
+    assert!(why.contains("before writing to the camera"), "{why}");
+
+    // And the ranges the attached cameras declare, which E13 recorded sweeping at five
+    // samples each: the OBSBOT's `brightness` of `0..=100` and the Chicony RGB's `0..=255`.
+    for (min, max) in [(0_i64, 100_i64), (0, 255)] {
+        let battery::SweepChoice::Planned { samples, .. } =
+            battery::sweep_for(&declaring("brightness", min, max, 1, min), MIN_SAMPLES)
+        else {
+            panic!("{min}..={max} is the range a camera on this desk declares");
+        };
+        assert_eq!(samples, 5, "{min}..={max}");
+    }
 }

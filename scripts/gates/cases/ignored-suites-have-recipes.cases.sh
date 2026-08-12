@@ -27,6 +27,92 @@ RS
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+# ------------------------------------------- the attribute in prose, both directions (N72)
+#
+# The ignored-test half used to match the token wherever it appeared, so a `//` or `///` line
+# that named it made the file's next `fn` an unrouted ignored test. It fails closed, so the
+# cost was never a missed test — it was a tax on the essay comments this project's rubric
+# asks for, and note **N72** paid it three times in one commit. These two arms are the
+# tolerance and its limit, and the pair is the point: a stripper that reads prose correctly
+# and code incorrectly is a worse gate than the one it replaced, because the first arm below
+# would pass and nothing would notice.
+
+pass_case_the_attribute_is_named_in_prose_and_not_read_as_one() {
+    # Every shape the reducer has to handle, in one file: a module doc, a doc comment, a
+    # trailing comment, a block comment on one line, a block comment spanning several, and a
+    # string literal. None of them is an attribute, and the `fn` beneath each is a plain
+    # function no suite prefix matches — so under the old rule this file alone was six
+    # findings.
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/schema/src/prose.rs" <<'RS'
+//! Seeded by the gate selftest: this module's tests are `#[ignore]`d by construction.
+fn module_doc_named_it() {}
+
+/// Runs under `#[ignore]` on a machine with a camera attached.
+fn doc_comment_named_it() {}
+
+fn trailing_comment_named_it() {} // and it is `#[ignore]`d over there
+
+/* one line of #[ignore] in a block comment */
+fn one_line_block_named_it() {}
+
+/*
+ * Several lines, and the middle one writes #[ignore] out in full.
+ */
+fn many_line_block_named_it() {}
+
+fn a_string_named_it() {
+    let _ = "#[ignore]";
+}
+
+// The `fn` below is what makes the string above load-bearing: the old rule needed a
+// following function to misattribute the token to, and a seeded shape with nothing after it
+// proves only that the file ended.
+fn follows_the_string() {}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_real_ignored_test_hidden_among_prose_about_the_attribute() {
+    # The limit of the tolerance. The same prose as the arm above, and one genuine unrouted
+    # `#[ignore]`d test underneath it: a reducer that threw away too much of the line would
+    # let this through, and this arm is what says so.
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/schema/src/prose_and_a_test.rs" <<'RS'
+//! Seeded by the gate selftest: prose about `#[ignore]`, and then the real thing.
+/// The word appears here too, inside `#[ignore]`, and here: "#[ignore]".
+/* and once more, in a block: #[ignore] */
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "no recipe runs this, which is the point"]
+    fn hidden_in_the_prose_and_nobody_runs_it() {}
+}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_an_attribute_sharing_a_line_with_a_block_comment_that_closed() {
+    # The reducer resumes after `*/` rather than dropping the rest of the line, and this is
+    # the only arm that can say so: the file's one unrouted test is declared on a line whose
+    # first characters are a comment. Stop reading at `*/` and this file holds no ignored test
+    # at all, the gate goes green, and the harness reports the arm as a problem.
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/schema/src/after_a_block.rs" <<'RS'
+//! Seeded by the gate selftest.
+#[cfg(test)]
+mod tests {
+    #[test]
+    /* R3, one day */ #[ignore = "no recipe runs this either"]
+    fn declared_after_a_closed_block_comment() {}
+}
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 fail_case_ignored_test_no_suite_claims() {
     local tree
     tree="$(gate_scratch_tree)"

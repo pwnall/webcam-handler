@@ -158,7 +158,12 @@ mapfile -t package_dirs < <(gate_metadata |
     done | awk -F'\t' '{ print length($1) "\t" $0 }' | sort -rn | cut -f2-)
 
 ignored=0
-while IFS=$'\t' read -r file test_name; do
+prose=0
+while IFS=$'\t' read -r kind file test_name; do
+    if [[ "$kind" == "prose" ]]; then
+        prose=$((prose + 1))
+        continue
+    fi
     ignored=$((ignored + 1))
     rel="${file#"$root"/}"
 
@@ -187,18 +192,80 @@ while IFS=$'\t' read -r file test_name; do
         gate_fail "$package's ignored test '$test_name' ($rel) matches no declared suite prefix; add it to a suite or the recipe will never run it"
     fi
 done < <(while IFS= read -r -d '' file; do
+    # An attribute is code. A sentence about an attribute is not.
+    #
+    # This half used to match the token wherever it appeared, and a `//` or `///` line that
+    # named it made the file's *next* `fn` an ignored test with no suite. It fails closed, so
+    # nothing was ever wrong on a tree because of it — the cost was a tax on the essay
+    # comments this project's rubric asks for, paid by rewording. Note **N72** paid it three
+    # times in one commit and named the line; the header above shows the declaration half of
+    # this same script has guarded against exactly this since it was written ("the indented
+    # copy above is prose, and the gate must not read its own documentation as a
+    # declaration"), so the guard existed in the file and one of its two halves did not use
+    # it. Two rungs' module docs still carry a parenthesis apologising for naming the token.
+    #
+    # So each line is reduced to its *code* before either rule looks at it: string literals
+    # first, then whichever of `//` and `/*` comes earliest in what is left, and a block
+    # comment carries across lines. The order is load-bearing in both directions — a reason
+    # string may hold `//` (`#[ignore = "see http://…"]`), and a doc comment may hold `/*`,
+    # which is not hypothetical: `crates/backends/v4l2/src/holders.rs` writes `/proc/<pid>/fd/*`
+    # in its module doc, and stripping block comments first would swallow the rest of the file.
+    #
+    # The tolerance cannot hide a real test, and that is the property to keep: an attribute
+    # reaches an item at the head of its own line, with nothing before it for either stripper
+    # to trip over. What it *can* do is go quietly wrong in the other direction, so every
+    # tolerated mention is counted and reported rather than dropped — if that number ever
+    # jumps, the stripper is eating code.
     awk -v path="$file" '
-        /#\[[[:space:]]*ignore/ { pending = 1 }
-        pending && match($0, /fn[[:space:]]+[A-Za-z0-9_]+/) {
-            name = substr($0, RSTART, RLENGTH)
+        function strip(code,   i, j, k, rest) {
+            gsub(/"(\\.|[^"\\])*"/, "\"\"", code)
+            while (1) {
+                i = index(code, "//")
+                j = index(code, "/*")
+                if (i > 0 && (j == 0 || i < j)) {
+                    return substr(code, 1, i - 1)
+                }
+                if (j == 0) {
+                    return code
+                }
+                rest = substr(code, j + 2)
+                k = index(rest, "*/")
+                if (k == 0) {
+                    in_block = 1
+                    return substr(code, 1, j - 1)
+                }
+                code = substr(code, 1, j - 1) substr(rest, k + 2)
+            }
+        }
+        {
+            code = $0
+            if (in_block) {
+                k = index(code, "*/")
+                if (k == 0) {
+                    code = ""
+                } else {
+                    in_block = 0
+                    code = strip(substr(code, k + 2))
+                }
+            } else {
+                code = strip(code)
+            }
+            if (code !~ /#\[[[:space:]]*ignore/ && $0 ~ /#\[[[:space:]]*ignore/) {
+                printf "prose\t%s\t%d\n", path, FNR
+            }
+        }
+        code ~ /#\[[[:space:]]*ignore/ { pending = 1 }
+        pending && match(code, /fn[[:space:]]+[A-Za-z0-9_]+/) {
+            name = substr(code, RSTART, RLENGTH)
             sub(/fn[[:space:]]+/, "", name)
-            printf "%s\t%s\n", path, name
+            printf "test\t%s\t%s\n", path, name
             pending = 0
         }
     ' "$file"
 done < <(gate_rust_files))
 
 gate_checked "$ignored" "#[ignore]d tests matched against a declared suite prefix"
+gate_checked "$prose" "mention(s) of the attribute inside a comment or a string literal, read as prose rather than as an attribute"
 if ((ignored == 0)); then
     # Legitimate at P0: the first `#[ignore]`d suite is the R3 hardware rung, which lands
     # with the V4L2 backend at P1. The declaration half above is what carries this run.
