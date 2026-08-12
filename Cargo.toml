@@ -108,6 +108,15 @@ soketto = "0.8.1"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 tokio = "1.53.1"
+# `wrappers::ReceiverStream` and nothing else: the MJPEG preview's response body is a
+# `tokio::sync::mpsc::Receiver` of already-framed multipart parts, and `axum::body::Body::from_stream`
+# takes a `futures_core::TryStream`. Adopted at P5b as the smaller of the two ways to bridge
+# them — the other is a direct `futures-core` edge plus a hand-written `poll_next` over
+# `Receiver::poll_recv`, which is this crate's `ReceiverStream` copied into our tree. MIT,
+# tokio-rs, already in `Cargo.lock` at exactly this version through jsonrpsee, so the edge adds
+# no package. `default-features = false` drops its one default (`time`, which is a `StreamExt`
+# combinator set this daemon does not use); `wrappers::ReceiverStream` is unconditional.
+tokio-stream = { version = "0.1.19", default-features = false }
 tokio-util = "0.7.19"
 toml = "1.1.4"
 # The `Service` trait itself, and the `Identity` layer its builders default to. Adopted at
@@ -122,7 +131,25 @@ toml = "1.1.4"
 # that links the web stack (design §2.8), so no T6 wall moves: `dependency-walls.sh`'s wire
 # wall names `tower-http`, which this is not, and the pure crates name neither.
 tower = "0.5.3"
-tower-http = "0.7.0"
+# `CompressionLayer`, over the static assets and deliberately **not** over the MJPEG preview
+# (design §2.8 lists it for the daemon; `daemon::http::listener` is where the split is
+# composed and argued). MIT.
+#
+# **The version is 0.6, and design §2.8's table says 0.7.** The table was written before the
+# crate was adopted and 0.7 does not exist: 0.6.11 is the current release and the one that
+# resolves, so this line is the pin *at adoption*, which is what AGENTS asks for ("versions
+# pinned at adoption"). The doc reconciliation is P5b's close, with the notes; recorded here
+# rather than silently matched, because a manifest that quietly disagrees with the design
+# registry is how the registry stops being one.
+#
+# One feature, and it is the whole of what is enabled: `compression-gzip`. Gzip because it is
+# the one content coding every browser has sent in `accept-encoding` for two decades, so a
+# single algorithm costs nothing in coverage; brotli and zstd would each add an encoder crate
+# for a few percent on a page measured in kilobytes, and `compression-full` would add all
+# three. It brings `async-compression` (gzip → flate2, already in the lock through `image`),
+# `http-body`, and tokio-util's `io` — all MIT or MIT/Apache-2.0, all on cargo-deny's
+# allowlist.
+tower-http = { version = "0.6.11", default-features = false }
 tracing = "0.1.44"
 tracing-journald = "0.3.2"
 tracing-subscriber = "0.3.23"

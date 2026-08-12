@@ -73,6 +73,7 @@ impl Web {
             address("127.0.0.1:0"),
             insecure_loopback,
             no_methods(),
+            no_cameras(),
             shutdown.clone(),
         )
         .await
@@ -95,8 +96,15 @@ impl Web {
             TokenRule::Required => Some(Arc::new(Token::mint().expect("the kernel has a CSPRNG"))),
             TokenRule::NotRequired => None,
         };
-        let serving = http::serve(listener, posture, token, no_methods(), shutdown.clone())
-            .expect("a posture and a token that agree");
+        let serving = http::serve(
+            listener,
+            posture,
+            token,
+            no_methods(),
+            no_cameras(),
+            shutdown.clone(),
+        )
+        .expect("a posture and a token that agree");
         Web { serving, shutdown }
     }
 
@@ -170,6 +178,24 @@ fn address(text: &str) -> SocketAddr {
 /// [`the_wire_route_is_behind_the_same_gate_as_everything_else`] can ask about it here.
 fn no_methods() -> jsonrpsee_server::Methods {
     jsonrpsee_server::Methods::new()
+}
+
+/// The preview fan-out this suite hands the listener: one with no camera behind it.
+///
+/// [`no_methods`]'s argument, one route along. This file's subject is the credential, and the
+/// credential is checked before the router matches — so an anonymous `GET /preview?camera=…`
+/// is a `401` whether or not any camera exists, which is exactly what
+/// [`every_camera_bearing_route_is_behind_the_gate`] establishes. What a preview *does* once
+/// the token is right is `crates/daemon/tests/preview.rs`'s claim, over a real `Wchd` and the
+/// fake backend.
+fn no_cameras() -> daemon::preview::Previews {
+    daemon::preview::Previews::new(
+        Arc::new(engine::actor::Cameras::new(Arc::new(
+            fake::FakeBackend::new(Vec::new()).expect("a backend replaying no cameras"),
+        ))),
+        engine::settle::MonotonicClock::new(),
+        Shutdown::new(),
+    )
 }
 
 /// An equal-length, one-digit-different token.

@@ -28,6 +28,7 @@
 //! | [`mod@write`] | executing a write plan, and reporting one that stopped part way (D3) |
 //! | [`snapshot`] | taking a snapshot and putting it back, in D4's order |
 //! | [`capture`] | start, settle, one frame, stop — with the stop on every exit (D5) |
+//! | [`preview`] | the other capture shape: one frame per command off a stream that stays running (D12, §2.6) |
 //! | [`photo`] | the photo assembly and the file sinks (D6, D10) |
 //! | [`discover`] | empirical pair discovery, by toggling and diffing INACTIVE (D3, PF:3) |
 //! | [`store`] | the session directory, atomic state writes, and the one fd-lock (D9) |
@@ -45,6 +46,7 @@ pub mod lifecycle;
 pub mod pairing;
 pub mod paths;
 pub mod photo;
+pub mod preview;
 pub mod profile;
 pub mod progress;
 pub mod resolve;

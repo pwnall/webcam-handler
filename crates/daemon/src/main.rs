@@ -357,6 +357,11 @@ async fn run(args: &Args) -> Result<()> {
                 requested,
                 args.http_insecure_loopback,
                 methods,
+                // The preview's fan-out, handed over as a value exactly as the wire surface
+                // is: one per process, made by `Wchd` beside the camera registry it reads,
+                // so the listener composes a transport and decides nothing about cameras
+                // (docs/7 P5b).
+                wchd.previews(),
                 shutdown.clone(),
             )
             .await?;

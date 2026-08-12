@@ -108,6 +108,10 @@ async fn serving(fixture: &Fixture) -> http::Serving {
         address("127.0.0.1:0"),
         false,
         fixture.methods.clone(),
+        // The daemon's own fan-out, for the same reason the `Methods` value is the daemon's:
+        // this listener is the one `main` opens, and a preview route over a second fan-out
+        // would be a second answer to which cameras are being previewed (docs/7 P5b).
+        fixture.wchd.previews(),
         fixture.wchd.shutdown().clone(),
     )
     .await

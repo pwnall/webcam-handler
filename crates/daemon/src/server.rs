@@ -322,7 +322,12 @@ pub struct Wchd(Arc<Inner>);
 struct Inner {
     /// One actor per open camera, and the daemon's only handle on the backend the
     /// composition root chose (design §2.11).
-    cameras: Cameras,
+    ///
+    /// Behind an `Arc` since P5b, because [`Inner::previews`] holds the **same** registry: a
+    /// preview reaches a camera through the actor every other verb reaches it through, and a
+    /// second `Cameras` over one backend would be a second thread on one node — which is the
+    /// arrangement `engine::actor::Cameras`'s header says must stay unrepresentable.
+    cameras: Arc<Cameras>,
     /// D9's session tree, read without a lock (see this module's header).
     store: SessionStore,
     /// D9's token, behind the one thing that serializes this process against itself.
@@ -362,6 +367,15 @@ struct Inner {
     /// D12's `wait` flag parks a thread by construction, and this is the answer to "how
     /// many" — see [`Waiters`] and [`limits::CAMERA_ENQUEUE_WAITERS`].
     waiters: Waiters,
+    /// The MJPEG preview's latest-frame fan-out (D12, docs/7 P5b).
+    ///
+    /// Here rather than in the web listener because it is about **cameras**, and the listener
+    /// decides nothing about cameras: it is handed this value exactly as it is handed the
+    /// `Methods` value, and `crate::preview` is where every question about a feed is answered.
+    /// It shares this value's clock and this value's stop token, so a preview stamps the idle
+    /// deadline from the same timeline every other command does and ends on the same
+    /// cancellation every subscription does.
+    previews: crate::preview::Previews,
 }
 
 /// The permits a request that chose to wait for a place in a camera's queue has to hold.
@@ -489,14 +503,73 @@ impl Wchd {
         shutdown: crate::shutdown::Shutdown,
         idle_after_ms: Millis,
     ) -> Wchd {
+        let cameras = Arc::new(Cameras::with_idle_timeout(backend, idle_after_ms));
+        let clock = MonotonicClock::new();
         Wchd(Arc::new(Inner {
-            cameras: Cameras::with_idle_timeout(backend, idle_after_ms),
+            previews: crate::preview::Previews::new(
+                Arc::clone(&cameras),
+                clock.clone(),
+                shutdown.clone(),
+            ),
+            cameras,
             store,
             sessions: tokio::sync::Mutex::new(lock),
-            clock: MonotonicClock::new(),
+            clock,
             events: Arc::new(Events::new(shutdown)),
             waiters: Waiters::new(),
         }))
+    }
+
+    /// The MJPEG preview's fan-out, for the composition root to hand the web listener.
+    ///
+    /// A clone of the daemon's one [`crate::preview::Previews`] rather than a second — an
+    /// `Arc` bump, exactly like the `Methods` value beside it — because "one camera, one
+    /// stream" is a property of this process and a listener with a fan-out of its own would
+    /// be a second answer to which cameras are being previewed.
+    #[must_use]
+    pub fn previews(&self) -> crate::preview::Previews {
+        self.0.previews.clone()
+    }
+
+    /// How many preview frames this daemon has published, as something to **await**.
+    ///
+    /// [`Wchd::watch_subscribers`]' reason, on the other stream: publication is an event, and
+    /// a test that polled for it would be a test with a sleep in it (AGENTS). It is the
+    /// *capture* half of docs/7 P5b's stalled-reader criterion — this advances while a reader
+    /// that has stopped reading stays where it was.
+    #[must_use]
+    pub fn watch_preview_frames(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.previews.watch_published()
+    }
+
+    /// How many preview frames a reader never saw, as something to **await**.
+    ///
+    /// The number that says *dropped* rather than *queued*: the latest-frame `watch` channel
+    /// overwrites, so a reader that falls behind skips — and a build that put a queue there
+    /// would leave this at zero while delivering every frame late.
+    #[must_use]
+    pub fn watch_preview_drops(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.previews.watch_skipped()
+    }
+
+    /// How many cameras this daemon is previewing right now.
+    ///
+    /// The lifecycle observable: one feed per camera being watched, whatever the number of
+    /// tabs watching it, and none once the last of them leaves.
+    #[must_use]
+    pub fn previewed_cameras(&self) -> usize {
+        self.0.previews.feeds()
+    }
+
+    /// The same count, as something to **await**.
+    ///
+    /// [`Wchd::watch_subscribers`]' reason on the preview's stream: "the last tab closed and
+    /// the capture stopped" is an event, and the only honest way to wait for an event is to be
+    /// told. It is what lets the preview suite assert the *lifecycle* — first viewer starts a
+    /// feed, last viewer takes it away — without guessing how long a driver takes to notice.
+    #[must_use]
+    pub fn watch_previewed_cameras(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.0.previews.watch_feeds()
     }
 
     /// The daemon's stop token — [`crate::shutdown::Shutdown`].

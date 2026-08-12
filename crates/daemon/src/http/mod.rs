@@ -6,6 +6,7 @@
 //! | [`gate`] | the token gate's policy: which parts of a request may carry a credential, and what more than one of them means |
 //! | [`listener`] | the axum server, the embedded client behind it, and the graceful stop |
 //! | [`posture`] | D11's bind × token matrix, decided from values before anything is bound |
+//! | [`preview`] | the MJPEG preview: `multipart/x-mixed-replace` over the actor's latest-frame watch |
 //! | [`rpc`] | the WebSocket JSON-RPC endpoint: the T5 surface `crate::server::mount` produced, reached over TCP |
 //! | [`token`] | the per-run bearer token: minted from the kernel, compared in constant time, printed as a URL |
 //!
@@ -63,21 +64,58 @@
 //! costs on a WebSocket rather than on a navigation (note **N76** is the constraint it works
 //! under; a `new WebSocket(url)` can set no headers, so the URL form is not a preference).
 //!
-//! ## What is still not here
+//! ## The fourth module, and the one route that is a camera
 //!
-//! **The MJPEG preview**: `multipart/x-mixed-replace` fed by the actor's latest-frame watch,
-//! slow-consumer drop semantics, and the compression layer that has to be excluded from the
-//! preview route. [`listener`]'s header states what the stop does *not* yet claim about an
-//! in-flight response, which is the same boundary seen from the other side — and says why an
-//! open WebSocket is not that response.
+//! [`preview`] is P5b's second half: design §2.6's "MJPEG preview route
+//! (`multipart/x-mixed-replace`, fed from the actor's latest-frame watch channel so slow
+//! clients drop frames)". It sits beside [`rpc`] in the arrangement above — it decides nothing
+//! about postures, [`listener`] merges its route, and [`gate`] covers it — and it is the one
+//! response this listener writes that does not end on its own, which is why [`listener`]'s
+//! "what is not claimed" paragraph is now a paragraph about something that exists. The fan-out
+//! itself is not here: `crate::preview` owns the watch channel, the feed registry and the
+//! driver, because those are questions about cameras and this module is about a socket.
+//!
+//! ## The two routes that carry a camera, named
+//!
+//! [`CAMERA_BEARING_PATHS`] is the list, and it exists because of an owner ruling
+//! (2026-08-12): **static assets are served without authentication** — they are open-source
+//! code, not a secret — and **only the resources that carry or drive the camera are gated**.
+//! The piece that moves the gate from `Router::layer` over everything to those two routes is a
+//! separate one and is deliberately not landed here; what is landed here is the list it will
+//! move the gate over, so that "which routes stay gated" is a value in this crate rather than
+//! a memory in a commit message. Today the gate still covers every route, so the list is a
+//! *subset* claim rather than the whole policy — and the suite drives every path in it
+//! anonymously, which is a claim that survives the split.
 
 pub mod gate;
 pub mod listener;
 pub mod posture;
+pub mod preview;
 pub mod rpc;
 pub mod token;
 
 pub use listener::{Serving, bind, open, serve};
 pub use posture::{INSECURE_LOOPBACK_FLAG, Posture, Reach, TokenRule};
+pub use preview::{CAMERA_QUERY_PARAM, PREVIEW_PATH};
 pub use rpc::RPC_PATH;
 pub use token::{TOKEN_BYTES, TOKEN_QUERY_PARAM, Token};
+
+/// The routes that carry or drive the camera, and therefore stay behind D11's token.
+///
+/// One list, `pub` because it has three readers that must agree: this crate's own suite, which
+/// drives every path in it anonymously and requires a `401`; [`preview`]'s own tests, which
+/// assert that the preview is on it; and the piece that moves the gate onto exactly these
+/// routes when the owner's 2026-08-12 ruling is implemented.
+///
+/// **Being on this list is not what makes a route gated today** — `listener::router` wraps
+/// the whole router, so the gate covers these two and everything else besides — and the
+/// distinction is worth keeping honest rather than blurring. What the list is for is that
+/// after the split, "the preview is gated" must not depend on where the route happens to sit
+/// in a router; it depends on the route being named here, and on a test that reads this list
+/// rather than a copy of it.
+///
+/// The two entries are the WebSocket endpoint, which *drives* a camera (every T5 method that
+/// opens one is reachable over it), and the MJPEG preview, which *carries* one — its response
+/// body is a live picture of whatever the camera is pointed at, which is the whole reason the
+/// ruling kept a gate at all (AGENTS: "a frame may contain a person").
+pub const CAMERA_BEARING_PATHS: [&str; 2] = [rpc::RPC_PATH, preview::PREVIEW_PATH];

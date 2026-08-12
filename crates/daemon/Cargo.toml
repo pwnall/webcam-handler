@@ -138,6 +138,22 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 # field. **This is the whole use** — no `ServiceBuilder`, no layers, no `util` combinators —
 # and the workspace table has the licence and the "already in the lock" argument.
 tower.workspace = true
+# The MJPEG preview's response body: a channel of already-framed multipart parts turned into
+# the `futures_core::TryStream` `axum::body::Body::from_stream` takes. One type,
+# `wrappers::ReceiverStream`, and no combinators — the workspace table has the licence and the
+# argument for taking it over a hand-written `poll_next`.
+tokio-stream.workspace = true
+# `CompressionLayer`, over the asset half of the web listener and **not** over the preview
+# route (`daemon::http::listener`). This is the dependency the manifest comment above said was
+# "still not here, because the thing that reads it is P5b's `CompressionLayer` and the preview
+# route it has to be excluded from" — both of those are now here, so it is too.
+#
+# A compressing middleware over `multipart/x-mixed-replace` is not merely wasteful: it buffers,
+# and the framing a browser's `<img>` depends on is the thing being buffered, so a preview
+# under this layer is a picture that arrives in bursts or not at all. The exclusion is
+# structural — the layer is applied to a router the preview route is not in — rather than a
+# predicate, because a predicate is a second place to be wrong about which route this is.
+tower-http = { workspace = true, features = ["compression-gzip"] }
 # `CancellationToken`, which is the whole of this edge: one stop token, cloned to every open
 # subscription and to the idle-sweep driver (`daemon::shutdown::Shutdown`). **It carries no
 # feature**, deliberately and stated because the neighbouring dev-dependency does: `sync` is

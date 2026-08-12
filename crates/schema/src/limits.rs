@@ -408,6 +408,44 @@ pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 /// Read by `daemon::shutdown`'s drain, which is the only thing that waits during a stop.
 pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 20_000;
 
+/// How long the composition root waits for the **web listener** to finish stopping.
+///
+/// [`DAEMON_SHUTDOWN_DRAIN_MS`]'s smaller sibling, and it exists because of a case P5b
+/// measured rather than predicted: **an open MJPEG tab whose reader has stopped reading can
+/// make a graceful shutdown wait forever, and no amount of cancelling the stream fixes it.**
+///
+/// The mechanism is worth writing down, because the obvious mitigation is the one that does
+/// not work. `axum::serve`'s graceful shutdown waits for a response that is being written;
+/// design §2.6 says "an open MJPEG tab must not hang shutdown", so `daemon::http::preview`'s
+/// writer watches the cancellation and ends its body when it fires. That is necessary and it
+/// is not sufficient: ending a body means hyper has a final chunk to **write**, and a client
+/// that has stopped reading has a full socket, so the write cannot complete and the connection
+/// never finishes. The daemon is then waiting for a browser to be scrolled back into view.
+///
+/// So the transport's stop is bounded here, and AGENTS' rule is the one being satisfied: open
+/// streams are "cancelled, never awaited". On expiry the listener task is **aborted** — its
+/// sockets close with it — and the daemon says so at `warn`, naming the bound, because a
+/// bounded wait that expires silently is the skip-that-reads-as-pass this project refuses
+/// (rule 3).
+///
+/// Two seconds, and the two ends it sits between are both real. Below it is the ordinary case,
+/// which is not a wait at all: a page of a few kilobytes is already written, and a preview
+/// whose reader is alive ends in the time it takes one task to notice a cancelled token. Above
+/// it is [`DAEMON_SHUTDOWN_DRAIN_MS`], which this must stay far under — `daemon::shutdown`'s
+/// header argues that two full-length waits would put the daemon's worst case within reach of
+/// systemd's `TimeoutStopSec`, and this wait happens *after* that drain has already run, so it
+/// is added to it rather than shared with it.
+///
+/// Read by `daemon::http::Serving::stopped`, which is where the composition root joins the
+/// listener.
+pub const WEB_LISTENER_STOP_MS: u64 = 2_000;
+
+// The relation the paragraph above argues, checked where both numbers are. A web-listener
+// bound as large as the daemon's whole drain would double the stop's worst case, since the two
+// happen one after the other rather than at once.
+const _: () =
+    assert!(WEB_LISTENER_STOP_MS > 0 && WEB_LISTENER_STOP_MS * 4 < DAEMON_SHUTDOWN_DRAIN_MS);
+
 /// How much of the service manager's watchdog interval the daemon spends before pinging it.
 ///
 /// systemd hands a `Type=notify` service `$WATCHDOG_USEC` and then kills it if no
@@ -584,6 +622,139 @@ pub const CAMERA_ENQUEUE_WAITERS: u32 = 32;
 // The paragraph above is an argument about a *relation* between two numbers, so it is
 // checked where both of them are rather than believed.
 const _: () = assert!(CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS);
+
+/// The widest frame the MJPEG preview asks a camera for.
+///
+/// A *cap* rather than a size, and the word is load-bearing: `StreamRequest::choose` reads a
+/// width and a height as an upper bound and answers with the largest mode that fits inside
+/// them, so a camera whose smallest MJPEG mode is 1920×1080 still gets a preview — one that is
+/// bigger than this asked for, reported as an [`crate::capture::Adjustment`], because D5's
+/// "requested is not applied" is the rule here as everywhere else.
+///
+/// VGA because a preview is a *pane in a control panel*, not the capture. The two costs it
+/// sits between are both real: a preview at the sensor's maximum is a 4K JPEG per frame
+/// through a loopback socket for a picture the page draws at a few hundred pixels wide, and a
+/// preview far below VGA cannot show whether a focus control did anything, which is the one
+/// question the preview exists to answer while somebody drags a slider.
+///
+/// It is *not* what bounds the daemon's memory — a driver may hand back a frame larger than
+/// anything that was asked for, and validating what arrived is
+/// [`PREVIEW_MAX_FRAME_BYTES`]'s job (design §2.5: device-derived numbers are validated
+/// before use). This pair is what the daemon *asks* for; that one is what it will *hold*.
+///
+/// Read by `daemon::preview`, which builds the one [`crate::capture::StreamRequest`] every
+/// preview stream starts from.
+pub const PREVIEW_MAX_WIDTH: u32 = 640;
+
+/// The tallest frame the MJPEG preview asks a camera for.
+///
+/// [`PREVIEW_MAX_WIDTH`]'s other half; the two are one decision and are read together in one
+/// expression. Separate constants because `StreamRequest` has two fields and a single
+/// "preview size" constant would have to be unpacked by whoever read it.
+pub const PREVIEW_MAX_HEIGHT: u32 = 480;
+
+/// How long one turn of the preview loop waits for a frame off the device.
+///
+/// The preview holds a camera actor's thread for exactly one `next_frame` at a time (design
+/// D12 gives each open camera one blocking thread, and `engine::preview` takes **one** frame
+/// per command so the thread is free between frames). So this constant is two things at once,
+/// and they pull in opposite directions: it is the deadline that stops a stalled sensor
+/// blocking the actor forever, and it is the worst-case latency a `wch_set` pays when it
+/// arrives while the preview is inside a `DQBUF`.
+///
+/// One second is chosen from that pair. At any frame rate a webcam offers, a frame that has
+/// not arrived within a second is a device that has stopped rather than a device that is slow
+/// — 30 fps is 33 ms — so nothing legitimate is cut short; and a control write that waits at
+/// most one second behind a preview is a slider that feels attached to the camera rather than
+/// one that appears to have hung. It is deliberately **shorter** than
+/// [`FRAME_DEADLINE_MS`], which bounds the same call on the *photo* path where nothing else is
+/// waiting on the thread.
+///
+/// Read by `engine::preview::turn`, which is the only caller that converts it into a deadline.
+pub const PREVIEW_FRAME_WAIT_MS: u64 = 1_000;
+
+// The relation the paragraph above argues, checked where both numbers are rather than
+// believed — `CAMERA_IDLE_SWEEP_MS`'s tradition. A preview wait longer than the photo path's
+// own `DQBUF` bound would mean the preview holds the actor longer than the operation that has
+// the camera to itself, which is backwards.
+const _: () = assert!(PREVIEW_FRAME_WAIT_MS > 0 && PREVIEW_FRAME_WAIT_MS <= FRAME_DEADLINE_MS);
+
+/// How many consecutive frameless turns end a preview stream.
+///
+/// [`PREVIEW_FRAME_WAIT_MS`] bounds one turn; this bounds the *sequence* of turns that
+/// deliver nothing, and without it a camera that answered "no frame" forever would keep an
+/// actor, a descriptor and a `STREAMON` alive for as long as a browser tab stayed open. It is
+/// [`MAX_SETTLE_ROUNDS`]'s argument one path along: the deadline is the real bound and this
+/// covers the case the deadline cannot, which is a device that keeps answering promptly and
+/// never delivers.
+///
+/// Eight turns is eight seconds of silence at the wait above. Long enough that a camera being
+/// slow — a driver re-negotiating, a USB hub renegotiating power — is not mistaken for a
+/// camera that has stopped; short enough that a preview whose device really has gone away
+/// ends while the person watching is still looking at it.
+///
+/// A turn that could not be *submitted* counts here too, which is deliberate: a camera whose
+/// command queue is full is a camera doing something else, and after this many attempts the
+/// honest answer is that this preview is not the thing that camera is for right now.
+///
+/// Read by `daemon::preview`'s driver loop.
+pub const PREVIEW_MAX_EMPTY_TURNS: u32 = 8;
+
+/// The largest frame the preview will publish to its viewers.
+///
+/// **The bound on what the daemon holds, at the one place a device-derived number becomes an
+/// allocation this process keeps.** A frame arrives with a length the driver chose;
+/// [`PREVIEW_MAX_WIDTH`] is a request and a request is not an answer (D5), so a camera that
+/// negotiated 4K, or a driver that lied about `bytesused`, must meet a number rather than a
+/// hope. A frame over this cap is dropped and counted, exactly as a slow reader's frames are —
+/// the preview's answer to "too much" is never to hold it.
+///
+/// Four mebibytes is above every real MJPEG frame this project has measured — a 3840×2160
+/// JPEG off the seed hardware is one to two — and far below anything that would matter to a
+/// daemon that also holds a session store. The total a running preview can pin is this times
+/// [`PREVIEW_READER_QUEUE_DEPTH`] per viewer, plus one for the latest-frame channel itself,
+/// times [`PREVIEW_MAX_VIEWERS_PER_CAMERA`]: the arithmetic is small and finite, which is the
+/// only property that matters here.
+///
+/// Read by `daemon::preview`'s publisher, on every frame.
+pub const PREVIEW_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+
+/// How many rendered frames one preview reader may have queued ahead of its socket.
+///
+/// The bound on what **one slow client** can make the daemon hold, and it is one rather than
+/// zero for a reason: with a depth of one the daemon builds the next multipart part while the
+/// kernel is still writing the previous one, and with a depth of zero every frame would wait
+/// for a socket write to complete before the next was even framed.
+///
+/// It is not the mechanism that drops frames — that is the latest-frame `watch` channel, which
+/// keeps exactly one value and overwrites it, so a reader that is behind skips rather than
+/// backpressures (`daemon::preview` proves the property rather than restating it). This is the
+/// bound on the *rendered* side: the bytes a viewer's writer has already framed and handed to
+/// hyper. Two frames per viewer at the very most, both bounded by
+/// [`PREVIEW_MAX_FRAME_BYTES`].
+///
+/// Read by `daemon::http::preview`, where the channel between a viewer's writer and its
+/// response body is created.
+pub const PREVIEW_READER_QUEUE_DEPTH: usize = 1;
+
+/// How many preview readers one camera serves at once.
+///
+/// One camera is one stream (D12: "one actor per camera serializes device access by
+/// construction"; V4L2 allows one streamer per node), and every viewer past the first is a
+/// second reader of the *same* latest-frame channel rather than a second streamer — so this
+/// bounds readers, not devices. Without it a page that opened an `<img>` per repaint would
+/// cost one task, one channel and one held frame each, which is unbounded growth caused by a
+/// client, and this daemon's whole story is that a client cannot cause that (P4e-i).
+///
+/// Four is a person's screen: the page's own preview, a second tab, and room for the two that
+/// a reload leaves behind before the kernel notices the sockets are gone. A fifth is refused
+/// with [`crate::Error::Busy`] naming the camera — the refusal D12 already has for "this
+/// device is doing something" — rather than served a stream that would make the other four
+/// worse.
+///
+/// Read by `daemon::preview`'s attach path, which counts the live receivers on the feed's
+/// channel rather than a number it keeps of its own.
+pub const PREVIEW_MAX_VIEWERS_PER_CAMERA: usize = 4;
 
 /// The device-profile document version (design T3).
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;

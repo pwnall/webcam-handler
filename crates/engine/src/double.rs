@@ -92,6 +92,21 @@ pub(crate) struct ScriptedCamera {
     /// metadata-only shape, and it is the one way to make `start_stream` refuse without
     /// scripting a lie.
     formats: bool,
+    /// The one format this camera offers, when it offers one.
+    ///
+    /// A field rather than a constant because a *preview* is refused when the negotiation
+    /// answers something a browser cannot render (`crate::preview::start`), and both
+    /// directions of that refusal need a device: one that answers YUYV, and one that answers
+    /// a JPEG bitstream. Real cameras offer both \[PF:9\], which is why this is one knob and
+    /// not a second double.
+    offers: PixelFormat,
+    /// What `next_frame` refuses with instead of delivering, when a test asked for that.
+    ///
+    /// The frame-side fault menu, and it exists because "no frame right now" and "the camera
+    /// was unplugged" are answered by different code paths in the preview loop and the whole
+    /// point is that they must never be flattened into each other (E3, AGENTS rule 7).
+    /// Running out of scripted frames already covers the first; this covers the second.
+    frame_fault: Option<Error>,
     /// How many times the stream was stopped, so a test can assert that it was.
     pub(crate) stops: u32,
 }
@@ -108,8 +123,28 @@ impl ScriptedCamera {
             frames: Vec::new(),
             latched: std::collections::BTreeSet::new(),
             formats: true,
+            offers: PixelFormat::YUYV,
+            frame_fault: None,
             stops: 0,
         }
+    }
+
+    /// A camera whose one format is a JPEG bitstream — what a preview needs and what every
+    /// webcam this project has met offers \[PF:9\].
+    pub(crate) fn compressed(mut self) -> ScriptedCamera {
+        self.offers = PixelFormat::MJPG;
+        self
+    }
+
+    /// A camera whose `next_frame` refuses with `error` rather than delivering.
+    ///
+    /// Distinct from running out of frames, which is a *timeout*: this is the arm for the
+    /// failures that are not "nothing right now" — a node that vanished mid-stream, a `DQBUF`
+    /// that failed — and it exists so that a loop which turned one into the other can be
+    /// caught by a test rather than by a person watching a preview outlive its camera.
+    pub(crate) fn frames_refused(mut self, error: Error) -> ScriptedCamera {
+        self.frame_fault = Some(error);
+        self
     }
 
     /// A camera that enumerates no format — D1's metadata-only shape, which is listed and
@@ -199,9 +234,12 @@ impl Camera for ScriptedCamera {
             return Ok(Vec::new());
         }
         Ok(vec![FormatInfo {
-            pixel_format: PixelFormat::YUYV,
-            description: "YUYV 4:2:2".to_owned(),
-            flags: 0,
+            pixel_format: self.offers,
+            description: "the one format this double offers".to_owned(),
+            // V4L2_FMT_FLAG_COMPRESSED, and read off the format rather than written twice:
+            // a device that offers a JPEG bitstream and does not say so is a shape no driver
+            // produces.
+            flags: u32::from(self.offers.is_compressed()),
             sizes: vec![FrameSizeInfo {
                 size: FrameSize::Discrete {
                     width: 32,
@@ -324,11 +362,18 @@ impl Camera for ScriptedCamera {
             numerator: 1,
             denominator: 30,
         };
+        // Zero for a compressed format, which is what a driver reports and what
+        // `NegotiatedStream`'s own field says: a JPEG bitstream has no stride.
+        let bytes_per_line = if chosen.pixel_format.is_compressed() {
+            0
+        } else {
+            chosen.width * 2
+        };
         let negotiated = NegotiatedStream {
             pixel_format: chosen.pixel_format,
             width: chosen.width,
             height: chosen.height,
-            bytes_per_line: chosen.width * 2,
+            bytes_per_line,
             size_image: chosen.width * chosen.height * 2,
             interval,
             adjustments: NegotiatedStream::diff(
@@ -350,6 +395,12 @@ impl Camera for ScriptedCamera {
                 errno: None,
                 message: "the stream is not running".to_owned(),
             });
+        }
+        // The scripted failure first, because it is about the *device* and everything below
+        // is about the script running out: a camera that has been unplugged does not deliver
+        // the frames it still had queued.
+        if let Some(error) = &self.frame_fault {
+            return Err(error.clone());
         }
         // Running out of scripted frames is a camera that stopped delivering, which is
         // what the settle loop's deadline exists for. The error carries no frame count:
