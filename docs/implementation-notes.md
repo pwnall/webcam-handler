@@ -8577,6 +8577,56 @@ here, with the summary line quoted verbatim — because the lesson of this amend
 count in this repository is a line copied out of a run, never a subtraction performed on
 one.
 
+### Second amendment, 2026-08-11: the count exists now, and it was taken on a **wider** fixture than this entry's
+
+The standing condition above is discharged. The owner reattached the Dell U3224KB monitor and
+said to use it, so `just smoke-hw` ran at **`b436e62`** against **four cameras on ten nodes**
+— the fixture E9, E11, E12 and PF:22 had, and one camera wider than the run this entry is
+about. Quoted verbatim, which is what the paragraph above asks for:
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+     Summary [  73.338s] 18 tests run: 18 passed, 952 skipped
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+smoke-hw: 18 of 18 selected test(s) ran — the suite is complete
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+Exit 0. **Eighteen of eighteen, counted rather than inferred**, and the difference between
+this sentence and the one withdrawn above is the whole of what the amendment was for.
+
+Four things this run settles that the first one could not.
+
+- **N71's census is exercised on hardware.** It had been driven over recorded logs and a
+  throwaway crate outside the workspace, and its own report said the hardware path "has never
+  printed *the suite is complete*". It has now, on the run whose predecessor was the truncated
+  one that motivated it. `18 of 18` is the census agreeing with nextest's own summary rather
+  than a second opinion about it.
+- **All four committed profiles are compared against a device.** The `SKIP (partial): 1
+  committed profile(s) match no camera attached to this host … dell-u3224kb` that PF:23 added
+  is **absent from this run's eight declines**, because the camera it names is on the bus.
+  That skip existed for one afternoon and did exactly the job it was added for.
+- **The Dell has not drifted, which is a real answer to PF:23's open question and not an
+  absence of news.** Its own descriptors advertise all six committed sizes including
+  3840×2160, on the bus path the profile records, and both corpus arms pass. PF:23 could not
+  test it and said so.
+- **The arm that never started at 14:11 ran**, and
+  `hw_switching_an_automation_control_moves_its_partners_inactive_bit` is green with its own
+  declines now printed among the eight.
+
+**One thing it does not settle, and it is the interesting one.** The Dell is on a **5000 Mbps
+SuperSpeed** link and kept its 4K; the OBSBOT is on **480 Mbps** and lost its. Read alone that
+looks like the link-speed explanation PF:23 refuses. It is not, and PF:23's refusal stands
+unamended: the kernel log has the OBSBOT enumerating at high speed on 2026-08-08 as well, when
+it *did* advertise 3840×2160, so the counterexample is inside the same device at the same
+speed. What the Dell adds is a second device measured on the same afternoon that did not
+change at all — which narrows the population without naming the cause, and a correlation
+across two devices is not a mechanism. The cause stays unproved.
+
+**Retires this amendment:** nothing. It is the measurement the first amendment asked for, and
+what it replaces is not a wrong number but the absence of one.
+
 ---
 
 ## N70 — The tail N69 built was guarded by a filter that could not tell whose sweep had ended, bounded by a number nothing read, and ended by a payload that had not ended anything
