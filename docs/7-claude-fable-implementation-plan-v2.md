@@ -684,16 +684,71 @@ deterministic. Gate **G5** criteria are v1's, distributed below.
 
 ### P5a — The TCP listener and the token gate
 
-**Lands:** the opt-in axum listener (`--http [addr]`, default `127.0.0.1:0`, bound port
-reported); per-run bearer token, printed as a ready-to-open URL; the D11 bind × token
-matrix enforced *as written in D11* (the gate cites the paragraph, not a paraphrase):
-token-less loopback only behind `--http-insecure-loopback`; non-loopback always
-token-gated, no flag removes it, plus the warning naming what it exposes; rust-embed
-asset serving skeleton.
+**Lands** (`3a24550`, `5a7c5ea`, `ab1b22d`), in three commits cut so that the security
+decision lands before anything that could act on it. **First the two values, with no
+transport beside them:** `daemon::http::posture`, D11's bind × token matrix as a pure
+function over a `SocketAddr` and the one flag the paragraph names — quoted rather than
+paraphrased, because this section asks for it "enforced *as written in D11*" and a
+paraphrase of a security rule is a second copy of it one edit from meaning something
+else; and `daemon::http::token`, 32 bytes of `getrandom(2)` through a feature of a pin the
+workspace already carries, rendered as hex by hand rather than widening `base64`'s home
+(§2.8 pins it to `webcam-handler-api` "here only"), with no `Display`, a redacting `Debug`,
+one accessor whose name is the warning, and a comparison with no early exit. A listener is
+where getting the posture wrong stops being visible, because by then the failure is a
+socket that is open rather than an expression that is wrong. **Then the transport:**
+`daemon::http::listener` — two entry points, `serve` taking the posture and the token as
+values so that D11's two non-loopback cells are assertable on a machine with one
+interface, and `open` beside it composing what `main` calls, in the library because
+`main.rs` is a binary no integration test can reach — `daemon::http::gate` over every
+route of it, `crates/web` as a rust-embed asset crate with a skeleton page, and `--http` /
+`--http-insecure-loopback` in the composition root, wired into the startup order after the
+socket and before `READY=1`, because §2.6 makes readiness "once both listeners are up".
+**Then the gates**, all three arriving with the code they are about:
+`token-comparison-has-one-home.sh`, the non-vacuity arm on `no-external-fetch-in-web.sh`,
+and a T6 wall for `webcam-handler-web` in `dependency-walls.sh`.
 
-**Proves / gate rows:** 401-without/200-with; one test per matrix cell; the
-`no-external-fetch-in-web.sh` non-vacuity arm (an empty asset directory fails, so the
-gate cannot go green scanning nothing).
+**What it found, which is not what it planned.** Two things, and the second is the more
+expensive. (1) **A mutant survived**: `==` for `Token::verify` is behaviourally identical
+on every input and changes only how long the daemon takes to say no, so no test in this
+workspace can go red on it — which is what `token-comparison-has-one-home.sh` exists to
+answer, holding the *shape* the timing argument stands on rather than pretending to
+measure a clock (note **N78**). A second, prefix-comparison mutant survived the first pass
+for a duller reason — every negative case in the suite was equal-length — and was killed
+with a test rather than a gate. (2) **The token rides the URL, and a browser does not
+carry a document's query string to its subresources**, so a `<link href="app.css">` on a
+page opened at `/?token=…` is fetched with no credential and the gate refuses it,
+correctly. P5a's skeleton dodges it by being one self-contained file; §2.7's client is
+vanilla ES *modules*, which are subresources by definition and cannot inline their way out.
+Note **N76** records the constraint and the two candidate answers without choosing between
+them — **P5b/P5c must choose on purpose**, and this is the sub-milestone's one finding that
+changes what comes next rather than what came before.
+
+**Proves / gate rows:** ten new `g5` rows, the first in the table, and `just gate-g5`
+counts them. The three this section commissioned are all there — 401-without/200-with and
+one test per matrix cell are `binary(http)`, which drives both credential forms over a real
+socket and takes its token out of the URL the daemon printed rather than off the `Token`
+value; the `no-external-fetch-in-web.sh` non-vacuity arm is its own row. Beside them, one
+row per module the phase added (`posture`, `token`, `gate`, `listener`), because each
+establishes something the wire suite cannot and vice versa; the composition root's two
+flags, which is the half `crates/daemon/tests/http.rs` says out loud it cannot establish;
+`package(webcam-handler-web)`, where `debug-embed` is asserted rather than configured (note
+**N77**); and the two other gate predicates the phase moved.
+
+**What P5a did not land, of what its own text and D11's promise.** Three things, recorded
+here rather than discovered later. (1) **D11's "unless configured" has no surface.** The
+paragraph says the token is "generated per run and printed as a ready-to-open URL *unless
+configured*", and nothing above gives an operator a way to configure one — `Token` has a
+single constructor. Note **N79** records it as an open question against the design and
+says which of the two readings this project thinks is right; no flag was invented for it
+here. (2) **`g5` has no `run-all.sh`, `selftest.sh`, clippy or cargo-deny row**, so the
+sixteen selftest arms that prove `token-comparison-has-one-home.sh` can go red are
+reachable from `just ci` and from no phase gate, and the web stack that joined the lockfile
+at `5a7c5ea` is read by no `g5` cargo-deny row. Those are **P5e's**, under its "remaining
+criteria rows, counted" — but P4g found exactly this hole at G4 and had to fill it, so it
+is named here rather than left to be rediscovered. (3) **`scripts/gates/phase.sh`'s header
+is now stale about `g5`**: it says "`just gate-g5` and `just gate-g6` report exactly that
+today" of a phase with no rows, which was true until these ten landed and is true of `g6`
+alone now.
 
 ### P5b — WS RPC and the MJPEG preview
 

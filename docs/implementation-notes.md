@@ -10145,3 +10145,482 @@ recorded inside another entry's argument is a residual the next reader finds by 
 items: the residual list above, the candidate-count discipline (a review that wants a
 comparable false-positive rate has to commit its candidate list, not just its findings), and
 the widening `remote.rs` is waiting for.
+
+---
+
+## N74 — The token gate admits a request only when *every* credential it presents verifies, and first-wins and last-wins are refused by name
+
+**Doc:** design **D11** — TCP "requires a bearer token" — and docs/7 P5a's "401-without/200-with".
+Both sentences describe a gate that admits a correct credential and refuses a missing one.
+Neither says what a request carrying **two** credentials means, and that is the question a
+token gate is actually got wrong on.
+
+**Repo:** `daemon::http::gate` states the rule once, in its header, and implements it in one
+function over values: **every credential the request presents must verify, and it must present
+at least one.** No precedence, no fallback between the two forms, no "the header beats the
+query".
+
+- **Both forms are read**, and both are load-bearing. `Authorization: Bearer <token>` is what
+  code sends — the page's own requests, P5b's WebSocket and preview. `?token=<token>` is what a
+  **navigation** can carry: an operator opening a link performs a navigation, a navigation
+  carries the headers the browser chose, and there is no way to attach an `Authorization` to one
+  short of an extension. `Token::ready_to_open_url` writes exactly that form.
+- `headers.get_all(AUTHORIZATION)`, not `get`: two `Authorization` headers is a well-formed HTTP
+  request, and a gate that read the first would be the first-wins gate wearing a different hat.
+- The query string is **hand-parsed rather than deserialized**, which is why axum's `query`
+  feature is off in the daemon's manifest and why the manifest says so. A deserializer into a map
+  answers the duplicate-parameter question by picking one, silently, and that question is this
+  entry.
+- **The fold does not short-circuit**: `&=` over every credential rather than `Iterator::all`'s
+  early exit. The count of credentials a request carries is public and no timing claim lives here
+  — that is `Token::verify`'s, note **N78** — but a loop that stops at the first *failure* is one
+  rewrite away from stopping at the first *success*, which is the gate this entry refuses.
+
+**Why: a first-wins gate and a last-wins gate are different gates, and the difference is somebody
+else's to choose.** HTTP parameter pollution is a live technique precisely because the layers of a
+stack disagree about duplicates — a proxy, a browser, a URL library and a server-side
+deserializer each pick their own end of the string. A gate whose answer depends on that
+convention is a gate whose answer depends on which piece of software parsed the URL last, and the
+attacker's move is cheap, because getting one more `&token=…` appended to a URL an operator is
+about to open needs no access to this daemon at all. **This gate has no convention to disagree
+with**: if two `token=` parameters disagree, no answer is right, so the request is refused; if
+they agree, whichever one any layer picks is the same verified token. The argument applies letter
+for letter to a header beside a query parameter, and to two `Authorization` headers.
+
+A credential that is *malformed* is counted as one that **failed**, not as none at all. A request
+saying `Authorization: Basic …` has presented something, and answering it as though it had
+presented nothing would let a request with a wrong credential and a right query parameter in
+through a different path than the rule — which is the shape of every "fall back to the other
+form" bug.
+
+**The cost, stated rather than hidden.** A request carrying one good credential and one bad one is
+refused. No client this project ships sends two, and a request presenting two different
+credentials is a request whose author does not know what it is presenting — but a third-party
+client that appended its own `?token=` to a URL that already carried one would meet a 401 it would
+find surprising. That is the trade, and it errs closed, which is where D11 errs.
+
+**What it does not claim.** Nothing about *authorization*: there is one token and it opens
+everything the listener serves, because what it protects is a single-user machine's camera rather
+than a multi-tenant surface (D11). Nothing about the layers underneath — the HTTP parser that
+split these headers and the router that would have matched the path have timing of their own. And
+**no percent-decoding and no `+`-for-space**: the token is 64 lowercase hex digits, every one of
+them unreserved in a URL, so a decoder would only be a second way to spell the secret, in the one
+place in this daemon where "more ways" is the wrong direction.
+
+**Watched failing.** Each of the three distinguishing cases asserts with the *refused* gate named
+in its own failure message — "a first-wins gate serves this request", "a last-wins gate serves
+this request", "a header-wins gate serves this request" — and each is driven at both altitudes:
+over a `HeaderMap` and a query string in `gate.rs`'s own suite, and over a real socket in
+`crates/daemon/tests/http.rs`. Identical copies of one credential are asserted to be admitted, so
+the rule is "every one must verify" rather than "more than one is suspicious".
+
+**Retires when:** a client this project ships acquires a reason to send two different credentials
+at once, which would turn the cost above from theoretical into real. It does **not** retire on a
+client that sends one credential twice.
+
+---
+
+## N75 — In D11's token-less cell the gate is *absent*, not permissive, and it wraps the fallback so an anonymous 404 is a 401
+
+**Doc:** D11's bind × token matrix has exactly one cell where TCP is served without a token
+(loopback, behind `--http-insecure-loopback`). The natural reading of "the gate checks the token
+unless the posture says otherwise" is one middleware, always installed, answering yes in that
+cell.
+
+**Repo:** `daemon::http::listener::router` decides at **composition**, in one `match` over the
+posture. The three gated cells get `routes.layer(from_fn_with_state(token, gate::check))`; the
+token-less cell gets `routes`, with no middleware at all. `daemon::http::gate` itself has no
+branch that can admit a request which did not present the token. The two *disagreeing*
+arrangements are refused rather than resolved, in both directions — a token-requiring posture
+with nothing minted is a gate with nothing to check, and a token-less posture with a token minted
+is a secret printed in a URL and never checked — and the same test asserts that the two agreeing
+arrangements **do** get a router, so the refusals are about the disagreement rather than about a
+function that refuses everything.
+
+It is `Router::layer` and **not** `route_layer`. `layer` maps over `path_router`,
+`fallback_router` and `catch_all_fallback`, so the gate covers a request for a path that does not
+exist.
+
+**Why the absence rather than a permissive gate.** A bypass branch inside the one function whose
+entire job is to say no is where an inverted condition serves a live camera to anybody who asks.
+Here the branch is at composition — read once at startup, over a value a reviewer can read —
+rather than inside the hot path, and the thing that would have to go wrong to open the listener is
+a whole `match` arm rather than a negation. The failure mode this removes is not hypothetical in
+shape; it is the most common way an auth middleware ships open.
+
+**Why the fallback is inside the wall.** `route_layer` would leave an anonymous request for
+`/anything` answered by the 404 handler, which tells a stranger which paths this daemon has — the
+surface, for free, to somebody who has not authenticated, on the transport that carries a camera.
+So an anonymous request for a path this build does not serve is **401**, and the same path
+presented with the token is **404**. Both directions are asserted, because the 401 alone would
+also be true of a listener that had stopped serving anything.
+
+**The cost.** A client that mistypes a path while authenticated gets a useful 404; one that
+mistypes it while unauthenticated cannot tell "wrong path" from "wrong token". That asymmetry is
+the point — the distinction is only useful to somebody who already holds the credential. The
+refusal body is deliberately the same in both cases and carries no `error=` parameter beside its
+`WWW-Authenticate: Bearer` challenge, for the same reason.
+
+**Retires when:** never, as a rule. The mechanism retires if axum changes which routers `layer`
+maps over, which is why `listener.rs`'s header names the three by name rather than saying
+"everything".
+
+---
+
+## N76 — The token rides the URL, and a browser does not carry a query string to a document's subresources
+
+**Doc:** D11 — the token is "generated per run and printed as a ready-to-open URL". Design §2.7 —
+the web client is "Vanilla ES modules, no build step, no npm, no CDN (assets embed; external
+fetches would violate both the offline posture and the license inventory)". Both sentences are
+individually satisfiable, and **together they are a constraint neither of them names.**
+
+**The constraint, which is a fact about browsers rather than about this code.** An operator opens
+`http://127.0.0.1:34567/?token=<64 hex digits>`. The navigation carries the token, the gate admits
+it, the page is served. The page then asks for its own subresources — a stylesheet, a module, an
+icon — and a browser resolves those against the document's URL **without its query string**. So
+`<link rel="stylesheet" href="app.css">` is fetched as `GET /app.css`: no query, no
+`Authorization`, no credential in either form the gate reads. The gate refuses it, **and the gate
+is right** — that request presented nothing (note N74). What an operator sees is a page that
+renders unstyled in all three token-gated cells of D11's matrix, and a module that never runs.
+
+**Repo, at P5a:** `webcam-handler-web`'s skeleton is **one self-contained file** whose styles are
+inline. That is not tidiness, and it is not a placeholder — it is the only shape that works under
+the constraint without deciding anything. Both `crates/web/src/lib.rs`'s header and
+`daemon::http::listener`'s header carry the finding: once beside the asset crate that had to be
+shaped around it, and once beside the gate that produces it.
+
+**Why this cannot be left for P5c to discover.** §2.7's client is vanilla ES **modules**, which
+are subresources by definition: a module graph is fetched by the browser, one request per module,
+and no amount of inlining collapses it — inlining the entry point still leaves every `import` it
+names as a credential-less `GET`. So the client P5c is commissioned to build cannot be built at
+all until this is answered, and the worst moment to find that out is halfway through writing it.
+
+**The two candidate answers. This entry deliberately chooses neither.**
+
+1. **A cookie set on the gated navigation.** The document request carries the token and is
+   admitted; its response sets a session cookie; the browser then attaches that cookie to every
+   same-origin subresource automatically, module graph included. What it costs: a second
+   credential shape for the gate to check, and therefore a second answer to note N74's question;
+   decisions about `SameSite`, `HttpOnly` and `Secure` on a plain-HTTP loopback origin; and — the
+   part that needs real thought — a credential the browser will now send on requests **the page
+   did not make**, which is the ground CSRF lives on, against a daemon that drives a camera. What
+   it buys: subresources need no code at all, and P5c writes ordinary `import` statements.
+2. **A page that fetches its own modules with the `Authorization` header.** The entry point is
+   inline script that reads the token out of `location.search` and fetches each module with an
+   explicit header, instantiating the graph itself. What it costs: a hand-rolled module loader,
+   which spends the "no build step" simplicity §2.7 exists to protect on precisely the wrong
+   thing, and which interacts badly with `import` statements the browser would otherwise resolve
+   natively. What it buys: the gate keeps exactly one credential model, and no credential is ever
+   sent by the browser on its own initiative.
+
+There is a third that is **not** a candidate, named here so it is not re-proposed: **putting the
+token in every asset URL the page emits.** It works, and it writes the secret into the browser's
+history, into referrer headers, and into any log the page's own requests reach — which is the cost
+`ready_to_open_url` already accepts *once*, for one navigation, with its eyes open, and must not
+accept N times per page load.
+
+**What P5a must not do, and did not.** Ship a page whose stylesheet 401s and call the listener
+finished. The listener is finished; the client's authentication is not, and the boundary is
+written down here rather than left to whoever adds the second file to `assets/`.
+
+**Retires when:** P5b or P5c makes the choice on purpose and records it — including, if it is the
+cookie, what the gate now accepts and what that costs. Until then, a second file in `assets/` is
+the signal that this entry was not read: `no-external-fetch-in-web.sh`'s population is one file
+today, and every file added to it lands under this constraint.
+
+---
+
+## N77 — `debug-embed` is on, so a debug `wchd` does not serve the camera's control panel out of its author's source tree
+
+**Doc:** design §2.7 — "no build step, no npm, no CDN (**assets embed**; external fetches would
+violate both the offline posture and the license inventory)". "Assets embed" is the property the
+design asks for; it does not say which `rust-embed` feature makes it true, and the default does
+not.
+
+**Repo:** `crates/web/Cargo.toml` enables `debug-embed`, and it is that crate's only feature.
+
+**Why.** Without it, `rust-embed` embeds in **release** builds and reads `assets/` **from the
+filesystem** in debug ones, at the absolute path the crate was compiled from. Three consequences,
+and the third is what decided it.
+
+1. A debug `wchd` serves the camera's control panel out of its author's source tree: it works on
+   the machine that built it and serves nothing anywhere else.
+2. **The traversal question reopens.** With the feature on, `web::get` is a lookup in a table of
+   names fixed at compile time, so `../../etc/passwd` is not a traversal to be caught but a name
+   that is not in the table — the question is closed by the shape rather than by a check somebody
+   has to remember to keep. With it off, the lookup reaches a filesystem, and the daemon's single
+   leading-slash strip becomes the only thing between a request path and a directory.
+3. **Every test in `crates/daemon/tests/http.rs` would be exercising a different mechanism from
+   the one a release binary ships.** In this project the suite *is* the argument, and a suite that
+   proves a debug-only path proves nothing about the product. It is rubric rule 6's "the inverse
+   arm is driven by the thing under test, not by a model of it", one layer out: the *whole* suite
+   would have been driving a model.
+
+**Asserted rather than configured.** `the_assets_are_embedded_rather_than_read_from_this_source_tree`
+walks every asset and asserts its bytes are `Cow::Borrowed` — a slice of the binary — rather than
+`Cow::Owned`, which is a `Vec` that was just read from a directory that may not exist on the
+machine running `wchd`. Over **every** asset rather than a sample, because the feature is per-build
+and one sample would pass on a tree where somebody had added a file the walk could not reach.
+
+**The residual, stated rather than hidden:** editing `assets/` now needs a rebuild before `wchd`
+serves the change, because the bytes are in the binary. That is the cost of the property, it is
+one `cargo run` away, and P5c's client is developed against a daemon that is rebuilt anyway.
+
+**Adjacent — the rest of the feature posture, declined with reasons rather than by omission.**
+rust-embed 8 declares no `default` feature, so the one line in the manifest is the whole posture
+rather than half of it, and there is no `default-features = false` beside it because there is
+nothing to turn off. Left off: `axum-ex` and the other four framework integrations, which would
+give this crate its own axum and tokio edges — the edge `dependency-walls.sh`'s asset wall now
+makes impossible rather than merely argued against; `compression`, which keeps a second copy of
+every asset behind a decompression edge, for a page measured in kilobytes; `mime-guess`, a thousand-entry
+MIME table where four extensions plus a test that walks the embedded assets is the forcing
+function the table alone would not be; `interpolate-folder-path`, which lets an environment
+variable decide what gets embedded and is the exact opposite of the property above; and
+`include-exclude` and `deterministic-timestamps`, which have nothing to say about a directory this
+crate owns outright. (`mime_guess` still appears in `Cargo.lock`: it is a non-optional dependency
+of `rust-embed-impl`, which is a **proc macro**, so it runs at compile time on the host and is not
+linked into `wchd`.)
+
+**Retires when:** rust-embed changes its debug behaviour, or the client acquires a development
+mode that deliberately serves from disk — which would need a note of its own, because it would
+reintroduce all three consequences above on purpose.
+
+---
+
+## N78 — `==` for `Token::verify` survives every test in this workspace, so the answer is a gate over the shape rather than a test over the clock
+
+**Doc:** AGENTS rule **1** — "every anticipated or discovered defect class becomes a lint, a CI
+job, or a test that can go red" — and rule **2**, both directions. Design §2.10, one home per law.
+D11 makes the bearer token the whole of the TCP transport's auth model.
+
+**The finding.** P5a's second commit applied sixteen mutants to `daemon::http` by hand; fourteen
+went red. One of the two survivors is this entry's subject: replacing `Token::verify`'s
+constant-time body with `self.expose_secret() == presented` **leaves every test in this workspace
+passing.** It is not a gap a better test would close. The two implementations answer identically
+for every input; the only thing that changes is how long the daemon takes to say no, and a timing
+assertion would be a benchmark pretending to be a test — on a shared runner it would be a flake,
+and rubric rule 2's other half is that an assertion which cannot go red is worse than an argument
+that admits it is one. `token.rs`'s own doc had already written that down, as a limit rather than
+as a promise, which is what made the survivor a commissioning note rather than a surprise.
+
+**Repo:** `scripts/gates/token-comparison-has-one-home.sh` — the twenty-third predicate the suite
+has, with sixteen fail arms and two green ones. It cannot measure a clock, so it holds the
+**shape** the timing argument stands on, in four claims:
+
+1. **The secret has one reader.** `Token::expose_secret` is the one rendering that yields it, and
+   outside `token.rs` the accessor appears only inside `#[cfg(test)]`. The token gate is what this
+   is chiefly about: a comparison written in `gate.rs` needs the secret in hand, so `expose_secret`
+   in that file's product code is the defect arriving, spelled out, one line before the `==`.
+2. **The type refuses `==`.** No `PartialEq`, `Eq` or `Hash` for `Token` anywhere in the workspace,
+   derived or hand-written, and no `Display` — `str`'s `PartialEq` compares lengths and then bytes
+   and returns at the first difference, and a `Display` is the other way a secret reaches a
+   comparison or a log line without anybody typing the word `expose`.
+3. **`Debug` is hand-written and names no field**, with `Token`'s field names read out of the
+   declaration rather than typed into the predicate, so a renamed field is still a field this
+   refuses to see printed. Half of this claim is the gate's and half is a test's: *what* the
+   hand-written impl prints is asserted by
+   `the_debug_rendering_redacts_the_secret_and_the_named_rendering_yields_it`, which can go red,
+   and what the gate adds is the half that test cannot see — a derive would satisfy nothing there
+   and would still have to be caught before it printed.
+4. **Something still compares.** `verify` is declared in the home and `gate.rs`'s product code
+   calls it. Every claim above is true of a tree where the gate stopped checking the token, which
+   is a worse defect than any of them; this is `kill-is-never-a-fallback.sh`'s "the only caller
+   went away" arm, about a different absence.
+
+**Two decisions inside the predicate worth keeping.** Line comments are stripped before matching,
+so **prose does not count** — the opposite of `kill-is-never-a-fallback.sh`'s choice, and
+deliberately, because what defends the timing claim *is* the argument beside the code, `token.rs`
+names the accessor in prose while making that argument, and a gate that turned writing about the
+secret into a violation would push the argument out of the modules that need it. And a file whose
+product/test boundary the predicate cannot read — two `#[cfg(test)]` markers, or a marker that
+opens something other than a `mod` — is a **failure and not a pass**, which is `unsafe-scope.sh`'s
+price for a count it cannot read, charged here for a boundary it cannot find.
+
+**What it does not claim, and this is the entry's honest half.** It checks shape, and shape is not
+timing. **An early `return false` written *inside* `verify` passes all four claims**, because from
+outside it is the same function with the same name called from the same place. Nothing in this
+suite can go red on that. What defends it is the argument beside the code — `verify`'s doc states
+the claim, states that the length is deliberately public and why, and states that Rust makes no
+*guarantee* the accumulate-then-compare shape compiles without branches — and the person reading
+the diff. Saying so is better than a green that implies more.
+
+**The other survivor from the same pass, so the arithmetic is complete.** The `Serving` join in
+`main.rs`. No suite can reach it, because `main.rs` is a binary an integration test cannot call.
+It is mitigated rather than killed: the composition moved into `daemon::http::open`, which the
+suite *does* drive, and `Serving` is `#[must_use]` with a message that makes the naive drop a
+build failure rather than a detached task. The join statement itself stays unproven, which is the
+honest state of it.
+
+**A third mutant survived the first run and was killed rather than accepted**, and it is recorded
+because it is the ordinary outcome this entry's subject was denied: `starts_with` for `verify`,
+which serves any **prefix** of the token. Every negative case in the suite was equal-length, so
+nothing noticed. It now has a test at both altitudes — a truncated candidate in `gate.rs`'s suite,
+and a truncated token in the query string over a real socket.
+
+**Retires when:** the workspace adopts a constant-time comparison crate whose type makes `==`
+unavailable by construction, at which point claims 1–3 become the compiler's and only claim 4 has
+work left to do. It does **not** retire on a `verify` that looks obviously fine: the whole finding
+is that looking fine and being fine are indistinguishable to this suite.
+
+---
+
+## N79 — D11's "unless configured" has no surface, and `Token` has one constructor
+
+**Doc:** D11, in the sentence that commissions the token: TCP "requires a bearer token:
+**generated per run and printed as a ready-to-open URL unless configured**". The clause promises
+an operator some way to supply a token of their own; otherwise it describes nothing.
+
+**Repo:** there is no such way. `daemon::http::token::Token` has a single constructor, `mint`,
+which reads 32 bytes from `getrandom(2)`. `wchd` has two web flags, `--http` and
+`--http-insecure-loopback`, and neither carries a token. Nothing reads an environment variable or
+a file for one. Every run of `wchd --http` prints a fresh URL with a fresh secret in it.
+
+**This entry does not invent the flag.** P5a's remit was the listener and the gate, and adding a
+configuration surface for a credential is a security decision with a shape of its own: where the
+value comes from (argument, environment, file), what happens when it is too short or not hex,
+whether a configured token suppresses the printed URL, and whether an operator supplying one
+across restarts is a feature or a way to leave a long-lived camera credential in a shell history.
+None of that is a line of code, and all of it is D11's or a later sub-milestone's.
+
+**Which of the two readings this project thinks is right**, because an open question with no
+opinion in it is a question nobody closes. **The clause is a dangling promise, and the honest
+repair is to strike it from D11 rather than to build a flag for it.** Three reasons, in order of
+weight.
+
+1. **The token's value is that it is per-run, and "configured" is the negation of that.**
+   `ready_to_open_url`'s doc accepts a real cost — a secret in the browser's history, in omnibox
+   suggestions, and in the terminal scrollback of whoever started the daemon — and prices it
+   explicitly against the token's lifetime: one run of one daemon, "which is the reason D11 makes
+   it per-run rather than persisted". A configured token is by construction not per-run. It
+   survives restarts, it lives wherever it was configured, and it turns every one of those
+   exposures from bounded into permanent. The clause and the argument in the same paragraph pull
+   against each other, and the argument is the one carrying weight.
+2. **Nothing in the plan consumes it.** P5b, P5c and P5d are a WebSocket, a client and a browser
+   rung, and each is handed the token by the page it is already running in. No reader is
+   scheduled, and a flag with no reader is the rubric A8 shape this project refuses everywhere
+   else — the same test `wchd` applies to `tower-http`, which is *not* in its manifest yet because
+   the thing that reads it is P5b's.
+3. **The use it would serve already has a better answer.** The case for a fixed token is
+   scripting: something automating `wchd` that cannot read a startup line. But that consumer's
+   transport is the **Unix socket**, which is always served, whose auth model is the filesystem
+   (D11's own first sentence), and for which `wchc` exists. A configured TCP token would be a
+   second and weaker path to a surface that already has one, which is what §2.10 is about.
+
+**What would change this ruling:** a named consumer that must reach the daemon over TCP, cannot
+read its startup output, and cannot use the Unix socket. That is a real shape — a container that
+publishes a port, a reverse proxy in front of the daemon — and if one is commissioned then the
+clause is a promise to keep rather than to strike, and keeping it needs the four decisions listed
+above rather than a `--http-token` bolted on.
+
+**Retires when:** D11 is amended in one direction or the other. Until then this entry is what
+stops the clause being read as a feature that exists, and what stops a review reporting its
+absence as an oversight rather than as an open question against the design.
+
+---
+
+## N80 — Two answers `daemon::http::posture` gives that look wrong from outside and are deliberate
+
+**Doc:** D11's bind × token matrix, and its "additionally prints a warning naming what it exposes
+(a live camera)"; docs/7 P5a repeats the warning requirement.
+
+**Why one entry rather than two.** Both are answers `Posture` gives *about an address*; both look
+like defects to a reader comparing the module against the machine it runs on; and both come from
+one principle — **the posture describes what the operator typed and what the kernel actually
+routes, never an address this module could have invented.** Filing them apart would put one
+review-bait pair in two places, and a review that re-reports either is making the same mistake
+twice.
+
+### 1. `Posture::warning()` names the **requested** address, not the bound one
+
+**Repo:** `Posture` is decided from the address `--http` was given, before anything is bound, and
+it carries that address. So `wchd --http 0.0.0.0:0` warns about `0.0.0.0:0` while the URL printed
+by the same startup says `http://0.0.0.0:34567/…` — two lines, two ports, one of them a zero.
+
+**Why it is left alone.** The warning is about **reach**, and reach is a property of the address
+rather than of the port: `0.0.0.0` is what makes a live camera reachable from every interface this
+host has, and which port the kernel happened to pick changes nothing about that. Echoing what the
+operator typed is also what makes the line findable — somebody who bound a daemon an hour ago is
+looking for the string they wrote. And the alternative is worse in a specific, structural way:
+`Posture` would have to be constructed *after* the bind in order to know the port, which is
+exactly the ordering this module exists to avoid, since deciding the security posture once the
+socket is already open is deciding it too late.
+
+The port is not lost. `Serving::ready_to_open_url` is built from `local_addr()` and nothing else,
+so the line an operator copies carries the bound port, and `Serving::bound()` is the accessor for
+it. The two lines say two different things on purpose: one is "this is what you exposed", the
+other is "this is where to open it".
+
+### 2. The deprecated IPv4-**compatible** form is not unwrapped, so `::127.0.0.1` is not loopback
+
+**Repo:** `Reach::of` unwraps IPv4-**mapped** addresses with `to_ipv4_mapped` and asks the IPv4
+question of what it finds. That closes the real hole, since `Ipv6Addr::is_loopback` is `::1` and
+nothing else and answers **false** for `::ffff:127.0.0.1` — the form a dual-stack listener sees for
+every IPv4 client, and the one whose misclassification would fire D11's warning on the default
+case, which is how operators learn to ignore a warning. `to_ipv4_mapped` answers `None` for the
+IPv4-compatible form (`::127.0.0.1`, no `ffff`), so that address is classified `BeyondLoopback`.
+
+**Why it is left alone.** RFC 4291 deprecated the IPv4-compatible format, Linux does not route it,
+and `to_ipv4_mapped` declines it by design. Treating it as loopback would be this module inventing
+a loopback address the kernel does not have. Declining it errs **closed** — the token is required
+and a warning is printed, for an address nothing can reach anyway — which is the direction D11
+chose for everything else in the paragraph. An operator who somehow bound it meets a stricter
+posture than they expected, never a weaker one.
+
+**What neither of these is: an untested corner.** The warning's contents are asserted by name in
+`posture.rs` (it names the bind address and it names the camera, and in the fourth cell it names
+the flag that did nothing and says it did nothing) and again over a real socket in
+`crates/daemon/tests/http.rs`. The mapped form has a test of its own which additionally asserts
+that `std` still answers `false` for `::ffff:127.0.0.1`, so the day `std` changes its mind the test
+says its subject has moved rather than quietly passing.
+
+**Retires when:** for (1), a reason appears to prefer the bound address in the warning — which
+would mean deciding the posture after the bind, and would need `posture.rs`'s header answered
+first. For (2), Linux starts routing IPv4-compatible addresses.
+
+---
+
+## N81 — The web listener has no accept-failure policy and no bound on an in-flight response, deliberately unlike the Unix socket beside it
+
+**Doc:** AGENTS — "Bounded everything: settle deadlines, sweep caps, recording caps, channel
+depths, shutdown drains". Design §2.6 — "an open MJPEG tab must not hang shutdown".
+`daemon::uds::serve` gives up after `schema::limits::MAX_CONSECUTIVE_ACCEPT_FAILURES` consecutive
+accept failures, and that refusal reaches `main`'s exit code.
+
+**Repo:** `daemon::http::serve` does neither. A fatal accept error ends the server task, which says
+so at `error!` at the instant it happens and does not reach the process's exit code; and the
+graceful stop puts no bound on a response that is already being written.
+
+**Why the accept policy differs from the transport one module along.** The Unix socket is the
+daemon's **always-on** transport, and a daemon that has stopped accepting on it has stopped being a
+daemon — which is why its give-up becomes an exit code and therefore a systemd `Restart=on-failure`.
+The TCP listener is opt-in, the Unix socket is unaffected by anything that happens to it, and
+axum's own accept loop backs off and retries. Making the two match would mean this daemon exits
+non-zero, and asks a service manager to restart it, because a browser transport it was asked to add
+as an extra went away — taking the working transport down with it. So the difference is stated
+rather than removed, and the failure is reported **when it happens** rather than at the next
+teardown, because a listener that stopped accepting at 03:00 must not first be mentioned by a stop
+at 09:00.
+
+**Why the response bound is absent, and what makes that affordable at P5a.** Everything this
+sub-milestone serves is a file of a few kilobytes, so the graceful stop is bounded by a `write` to
+a socket — a property of *what is served*, not a guarantee this module provides, and
+`listener.rs`'s header says exactly that. The response that does not end on its own is **P5b's
+MJPEG preview** (`multipart/x-mixed-replace`, which by construction runs until the client goes
+away), and that is where §2.6's requirement becomes a thing to build rather than a thing to
+inherit: meeting it needs the preview's own stream to watch the cancellation token. A bound written
+now would be a bound with nothing to bound (rubric A8), written against a guess at the shape of a
+stream that does not exist yet.
+
+**What *is* claimed, so the absence above is not read as an absence of lifecycle.** The listener
+watches the daemon's one `Shutdown` token — the same clone the subscriptions and the idle-sweep
+driver watch — so it begins stopping at **step 3** of `crate::shutdown`'s order rather than at a
+step of its own; `axum::serve(..).with_graceful_shutdown(..)` is how that token reaches hyper. And
+`Serving::stopped` is **joined** by the composition root, so "the web listener ended" is a fact the
+process waited for rather than a consequence of the runtime being dropped at the end of `main`.
+`Serving` is `#[must_use]` with a message naming that, because a dropped handle drops the
+`JoinHandle` and detaches the task — and that is the one mitigation the unreachable `main.rs` join
+mutant has (note **N78**).
+
+**Retires when:** P5b lands the preview and with it the bound §2.6 requires, at which point this
+entry's second half becomes a statement about a past tree and the first half stands alone. The
+accept-policy difference does not retire while the web listener is opt-in.

@@ -831,12 +831,16 @@ webcam-handler/
                         #              links no backend and no engine (T6). A lib, not just a bin, so a
                         #              test can hand the executor a recording sweep watcher]
     daemon/             # webcam-handler-daemon  (bin wchd) [engine + both backends + factory match +
-                        #              jsonrpsee server, rustix(fs,net,process) — N39's dirfd-held
-                        #              socket directory, safe-wrapped so this crate stays
-                        #              #![forbid(unsafe_code)] — axum, tower-http, rust-embed, tokio,
+                        #              jsonrpsee server, rustix(fs,net,process,rand) — N39's dirfd-held
+                        #              socket directory and D11's getrandom(2) bearer token, both
+                        #              safe-wrapped so this crate stays #![forbid(unsafe_code)] —
+                        #              axum, tower-http, tokio,
                         #              tokio-util, sd-notify, listenfd, tracing-journald;
+                        #              rust-embed is `web`'s rather than this crate's, and the daemon
+                        #              depends on that crate instead, so the embed has one reader;
                         #              soketto **dev-only** (P4e-i's WebSocket test client)]
-    web/                # webcam-handler-web     [rust-embed asset crate; vanilla JS inside]
+    web/                # webcam-handler-web     [rust-embed asset crate; vanilla JS inside; links
+                        #              neither stack (T6 wall below)]
     testkit/            # webcam-handler-testkit [dev-only: corpus loader, synthetic fixtures, oracles]
   xtask/                # webcam-handler-xtask: completions (clap_complete), man pages (clap_mangen),
                         #              schema/openrpc emit
@@ -880,7 +884,17 @@ and gate-asserted for `api` specifically (measured at adoption: no axum, no hype
 tower in its tree); re-run N5's measurement on any jsonrpsee bump, and delete
 the exemption if a version makes the original wall satisfiable. Only `daemon` links the
 web stack; `client` links no backend and no
-engine (the thin-client property). Those are **linkage** walls, gate-asserted from
+engine (the thin-client property). **`webcam-handler-web` carries a wall of its own —
+neither stack: no tokio, and no axum, hyper or tower-http** (added at P5a, when the crate
+stopped being an empty scaffold and acquired a dependency to lose). It is its own row
+rather than a name on either list above, because the pure wall does not cover `tower-http`
+and the wire wall allows tokio for N5's reason, which has nothing to say about an asset
+crate. What it protects is §2.10's split made structural: *what these files are* is that
+crate's law and *how bytes become an HTTP response* is the daemon's, so the crate embeds a
+directory and answers values, and the moment it links a server it is answering requests.
+`rust-embed`'s framework-integration features are declined in its manifest on exactly that
+argument, and the wall is what lets something go red on it rather than leaving it a
+comment. Those are **linkage** walls, gate-asserted from
 `cargo metadata` (docs/9). The *behavioral* halves — the pure crates touch no filesystem
 outside explicit inputs, only `v4l2` touches `/dev` and `/sys`, only `engine` and the
 composition roots touch the state dir, and `api` never *starts* a runtime or spawns a
