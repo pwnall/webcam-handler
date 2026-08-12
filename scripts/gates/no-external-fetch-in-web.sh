@@ -11,6 +11,14 @@
 # Anchors (`<a href="https://…">`) are deliberately *not* violations: a link the user may
 # click is not a subresource the page loads. Everything that fetches without being asked
 # is below.
+#
+# **An asset directory with nothing in it is a failure** (docs/9 Part 2's non-vacuity row,
+# commissioned at P5a). Every rule below quantifies over the files this walk finds, so a walk
+# that finds none makes all ten of them vacuously true — the greenest this gate can be is the
+# state where it is checking nothing at all. That arm could not land before the assets did:
+# until P5a the emptiness was the honest answer and it was printed as a named, counted skip.
+# `crates/web/assets/index.html` is what makes the stronger claim assertable, and the skip is
+# gone with it.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -70,13 +78,11 @@ done < <(gate_find "$scan_dir" \
 gate_checked "${#rules[@]}" "off-origin patterns"
 gate_require_nonzero "${#rules[@]}" "off-origin patterns"
 
-if ((assets == 0)); then
-    # docs/9 Part 2 commissions the arm that makes an empty asset directory a failure —
-    # it lands at P5 with the assets themselves. Until then the emptiness is printed and
-    # counted, so nobody reads this gate's green as "the assets were checked".
-    gate_skip 0 "web asset files under $web_suffix/ — the client's HTML/CSS/JS lands at P5, and docs/9 Part 2 commissions the non-vacuity arm with it"
-else
-    gate_checked "$((assets * ${#rules[@]}))" "(asset file, off-origin pattern) pairs across $assets asset file(s)"
-fi
+gate_checked "$((assets * ${#rules[@]}))" "(asset file, off-origin pattern) pairs across $assets asset file(s) under $web_suffix/"
+
+# The non-vacuity arm this gate's header argues for. A missing directory reaches here the same
+# way an empty one does — `gate_find` walks what is there and says nothing about what is not —
+# and both answers are the same defect: a client whose files this gate never opened.
+gate_require_nonzero "$assets" "web asset files under $web_suffix/"
 
 gate_finish

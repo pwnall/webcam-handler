@@ -23,6 +23,27 @@
 #     construct, so "adding a backend needs no engine edit" (§2.11) is a fact about the
 #     graph, not a promise.
 #   * `webcam-handler-client` links no backend and no engine: the thin-client wall.
+#   * `webcam-handler-web` links **neither** stack — no tokio, no axum, no hyper, no
+#     tower-http. It is an asset crate: `rust-embed` and nothing else, which is why it is its
+#     own row rather than a name added to one of the lists above (the pure wall does not cover
+#     `tower-http`, and the wire wall allows tokio for a reason — note N5 — that has nothing to
+#     say about this crate).
+#
+#     The wall is design §2.10's split made structural. "What these files are" is that crate's
+#     law and "how bytes become an HTTP response" is the daemon's, and the crate's own header
+#     says so; its manifest turns the same argument down at the feature level, declining
+#     rust-embed's `axum-ex` integration precisely because "the axum one would give this crate
+#     its own axum and tokio edges, and serving is `webcam-handler-daemon`'s half of the seam".
+#     That is an argument in a comment until something can go red on it. What the wall buys is
+#     concrete: `crates/web` stays a crate a test can read without a runtime, and the daemon
+#     stays the one place a request is turned into a response — the arrangement that let
+#     `daemon::http::listener` answer every path from one `fallback` over `web::get`, with no
+#     route table in either crate.
+#
+#     **This wall is not in design §2.8's list**, which names the pure crates, the wire crate,
+#     the composition roots and the thin client, and was written when `web` had no dependency
+#     of its own to lose. The doc reconciliation is the next piece's; the gate is here because
+#     the edge landed here (AGENTS rule 1: a fix lands with its gate).
 #   * No V4L2 path escapes the V4L2 backend's own directory.
 #
 # Every population is computed: workspace membership, the normal-dependency closure of
@@ -52,6 +73,7 @@ findings="$(gate_metadata | jq -r \
     --argjson async_stack '["tokio","axum","hyper"]' \
     --argjson wire '["webcam-handler-api"]' \
     --argjson web_stack '["axum","hyper","tower-http"]' \
+    --argjson assets '["webcam-handler-web"]' \
     --argjson roots '["webcam-handler-cli","webcam-handler-daemon"]' \
     --arg client "webcam-handler-client" \
     --arg engine "webcam-handler-engine" '
@@ -80,10 +102,11 @@ findings="$(gate_metadata | jq -r \
     , "COUNT\tedges\t\([ $links[] | length ] | add // 0)\tnormal-dependency links across the workspace"
     , "COUNT\tpurewall\t\(($pure | length) * ($async_stack | length))\t(pure crate, async-stack crate) pairs"
     , "COUNT\twirewall\t\(($wire | length) * ($web_stack | length))\t(wire crate, web-stack crate) pairs"
+    , "COUNT\tassetwall\t\(($assets | length) * (($async_stack + $web_stack) | unique | length))\t(asset crate, runtime-or-web-stack crate) pairs"
     , "NOTE\t\([ $pkgs[] | .name ] | map(select(. as $n | $async_stack | index($n))) | unique | length) of \($async_stack | length) async-stack crates (\($async_stack | join(", "))) are in the graph at all"
 
     # Every named role must resolve to a real workspace member.
-    , ( ( $pure + $wire + $roots + [ $client, $engine ] )[]
+    , ( ( $pure + $wire + $assets + $roots + [ $client, $engine ] )[]
         | select($members[.] == null)
         | "VIOLATION\tpolicy names \(.), which is not a workspace member — the rule about it can no longer fail" )
     , ( if ($backends | length) == 0 then
@@ -108,6 +131,16 @@ findings="$(gate_metadata | jq -r \
         | select($deps | index($forbidden))
         | "VIOLATION\t\($w) links \($forbidden); only the daemon links the web stack (T6)" )
 
+    # Wall 1c — the asset crate links neither stack. The union of the two sets rather than
+    # either of them: what it may not have is a *reason to serve anything*, and both halves of
+    # that arrive as a linkage edge. See the header for why it is its own row.
+    , ( $assets[] as $a
+        | select($members[$a] != null)
+        | ($links[$a] // []) as $deps
+        | (($async_stack + $web_stack) | unique)[] as $forbidden
+        | select($deps | index($forbidden))
+        | "VIOLATION\t\($a) links \($forbidden); it embeds files and answers values, and turning those bytes into an HTTP response is the law of the daemon (T6, design §2.10, §2.7)" )
+
     # Wall 2 — only the composition roots link a backend.
     , ( $members | keys[] as $m
         | select(($roots | index($m)) == null)
@@ -126,7 +159,7 @@ findings="$(gate_metadata | jq -r \
     )
 ')"
 
-declare -A counts=([members]=0 [backends]=0 [edges]=0 [purewall]=0 [wirewall]=0)
+declare -A counts=([members]=0 [backends]=0 [edges]=0 [purewall]=0 [wirewall]=0 [assetwall]=0)
 while IFS=$'\t' read -r kind key value description; do
     case "$kind" in
     COUNT)
@@ -141,6 +174,7 @@ done <<<"$findings"
 gate_require_nonzero "${counts[members]}" "workspace members"
 gate_require_nonzero "${counts[purewall]}" "(pure crate, async-stack crate) pairs"
 gate_require_nonzero "${counts[wirewall]}" "(wire crate, web-stack crate) pairs"
+gate_require_nonzero "${counts[assetwall]}" "(asset crate, runtime-or-web-stack crate) pairs"
 
 # ------------------------------------------------------------------ the grep half
 #
