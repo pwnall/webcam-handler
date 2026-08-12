@@ -34,6 +34,52 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/wch-selftest.XXXXXXXX")"
 export WCH_GATE_SCRATCH="$scratch"
 trap 'rm -rf "$scratch"' EXIT
 
+# Reclaim one arm's scratch before the next arm starts.
+#
+# Every seeded violation is a `gate_scratch_tree` copy of the whole checkout — 26 MiB on the
+# tree this landed on — and until this function existed they all lived until the `EXIT` trap
+# above. Measured on this workstation with the population at 22 predicates and 195 arms: a
+# **12.3 GiB** high-water mark, against a `/tmp` that is a tmpfs with a user quota a little
+# over 12. It went over during the G4 review, and what it said when it did was
+#
+#     tar: ./README.md: Cannot write: Disk quota exceeded
+#     PROBLEM systemd-units pass_case_… exited 1; the predicate is red on a shape it must allow
+#
+# — a filesystem's ceiling reported as a predicate being wrong about the tree, in the arm
+# that happened to be running when the room ran out. That is notes **N52**, **N66** and
+# **N68** for the fourth time: a verdict that moves with the machine rather than with the
+# code, wearing the same word a real finding gets. N60 records the bill ("a gate that cries
+# wolf does not get believed, it gets re-run at `-j1` until it agrees").
+#
+# The alternative was a budget check and a `no_verdict`, which is what `scripts/mutants.sh`
+# does — right there, wrong here. The floor genuinely needs gigabytes to hold parallel build
+# trees; this harness needs **one** seeded tree at a time and was keeping 195 of them for no
+# reason but the order the `rm` happened to be written in. A resource a suite does not use
+# beats a resource it asks permission for.
+#
+# What this fixes is the *accumulation*, and that is the whole claim: the seeded copies no
+# longer add up, so the term that grew with every predicate this suite gains is gone. It is
+# not a promise about the total. Sampled every two seconds through a full run, `/tmp`'s
+# high-water mark went from over 12.1 GiB (where it hit the quota and the run died) to
+# **9.5 GiB**, and the scratch directory now holds exactly one entry at a time — which is
+# how the remaining 9.5 was identified rather than guessed at. It is **one arm**:
+# `counted-selections.sh`'s real-lister arm points `$WCH_GATE_ROOT` at a scratch copy and
+# `counted-selections.sh:40` runs `cargo nextest list --workspace` with that copy as its
+# working directory and no `CARGO_TARGET_DIR`, so cargo compiles the entire workspace into
+# `<copy>/target` — 9.7 GiB and a cold build, thrown away seconds later. Named and not
+# touched here: pointing it at the checkout's `target/` the way the schema-artifacts cases
+# do is a change to somebody else's arm and to the rubric-rule-6 claim that arm carries.
+#
+# Nothing carries across arms and this cannot break one: each case seeds its own copy inside
+# its own subshell, and the build directories that *are* shared between arms live under the
+# checkout's `target/` (`_shared_target_dir` in the schema-artifacts cases, which names the
+# repository, not this directory) precisely so that a scratch wipe does not cost a rebuild.
+# `-mindepth 1` rather than a `"$scratch"/*` glob, because the glob misses dotfiles and a
+# stub left behind as `.something` would survive every sweep.
+reclaim_scratch() {
+    find "$scratch" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+}
+
 # What the working tree looked like before any arm ran.
 #
 # The header above states the law — cases never mutate the checkout — and until now that
@@ -134,6 +180,9 @@ while IFS= read -r gate; do
     for fn in "${cases[@]}"; do
         output="$(run_case "$casefile" "$gate" "$fn")"
         status=$?
+        # This arm's verdict is in `$status` and `$output`; its scratch trees are dead
+        # weight from here on. See `reclaim_scratch`.
+        reclaim_scratch
         case "$fn" in
         pass_case*)
             pass_arms=$((pass_arms + 1))

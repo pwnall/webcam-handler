@@ -8392,12 +8392,19 @@ Sixteen arms before this sub-milestone, eighteen now, 28.1 s on one thread — t
 joined the `exclusive-device` nextest group and `just smoke-hw` **by being named `hw_*`**, and
 neither `.config/nextest.toml` nor `scripts/smoke-hw.sh` was edited.
 
+**Read again 2026-08-11, and the heading above overstates what happened:** this was not the
+whole suite. The summary line says `17/18 tests run`, not `18 tests run`, because nextest's
+default is fail-fast and the run was **cancelled at the first failure** — one arm never
+started. The transcript stays as it was printed; the amendment at the end of this entry says
+which arm, what it costs, and what it cost this entry's own arithmetic.
+
 The single failure is `hw_profile_capture_reproduces_the_committed_invariant_section`, red at
 HEAD as well as under this change, and it is **PF:23** — the OBSBOT's shrinking format tree,
 diagnosed the same afternoon and closed at `1a51c81` by a sanctioned re-capture. It is
 recorded here because it was seen here, and because a reader of this transcript needs to know
-that 17 of 18 was the honest count at 14:11 and 18 of 18 is the count at the commit this
-entry sits behind.
+that 17 of 18 was the honest count at 14:11 ~~and 18 of 18 is the count at the commit this
+entry sits behind~~. **Withdrawn 2026-08-11 by the G4 adversarial review: nobody ever took the
+second count. See the amendment below.**
 
 Three more things were seen and are named rather than fixed:
 
@@ -8490,6 +8497,85 @@ Three more things were seen and are named rather than fixed:
   `uvcvideo`, on a machine whose two USB cameras both negotiate High Speed. A `vivid` node or
   a SuperSpeed camera would take the same code path, which is an argument and not a
   measurement.
+
+### Amendment, 2026-08-11: "18 of 18" was never counted, and the run it was extrapolated from was itself truncated
+
+This entry's opening says an E-entry is "recorded once and not amended", and it means it —
+the transcript above is untouched, every number in it is what was printed, and this section
+is appended rather than folded in for the reason E1's amendments give: the point of a
+transcript is that it was true once. What is corrected here is not the transcript. It is a
+**sentence of this entry's own prose that reported a measurement nobody took**, found by the
+G4 adversarial review, and this project has no worse defect than that one.
+
+**The sentence.** "17 of 18 was the honest count at 14:11 and 18 of 18 is the count at the
+commit this entry sits behind." The first half is a reading of the summary line printed
+above it. The second half is an **inference** — the one red arm was PF:23, PF:23 was closed
+by the re-capture at `1a51c81`, therefore the eighteen would all be green — written in the
+grammar of a count, in an entry whose own header says it was transcribed from the 14:11 run
+rather than recalled. **No run of the full `hw_` suite has ever reported eighteen of
+eighteen.** The 14:11 log was kept, along with every transcript taken after it, and no
+eighteen-of-eighteen appears in any of them.
+
+Why that is the serious kind of wrong rather than a rounding of the truth: E-entries are
+what later work cites when it does not want to spend a camera. **N70** already cites this
+one for a hardware number ("a real sample at a real camera is about 500 ms"), and the whole
+apparatus of AGENTS rule 4 and docs/6 §1.2 — `declared` data until a probe makes it
+`measured`, and measured wins — depends on a reader being able to tell which of the two a
+sentence is. An inference in the register of a measurement is `declared` data wearing
+`measured` clothes, in the one place in this repository that exists to keep them apart.
+
+**And the 14:11 count was over a truncated run.** Chasing the first error found a second.
+`scripts/smoke-hw.sh` invoked `cargo nextest run` with no `--no-fail-fast`, and
+`.config/nextest.toml` sets no `fail-fast` policy either, so nextest's default applied and
+the run was cancelled at the first red arm. Under the last arm the log carries
+
+```
+warning: 1/18 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed
+```
+
+and the arm that never started is
+**`hw_switching_an_automation_control_moves_its_partners_inactive_bit`** — the D3 pairing
+arm, which has two `SKIP (partial)` paths of its own and printed neither, because it did not
+run. So the entry's "17 of 18" is not seventeen greens out of an eighteen-arm suite that
+finished; it is seventeen arms that started. That defect and its repair are note **N71**.
+
+**What is measured, and it is exactly this:**
+
+- **17 arms started at 14:11 on the tree that became `9c8b46a`; 16 passed and 1 failed.** The
+  failure is `hw_profile_capture_reproduces_the_committed_invariant_section`, and it is
+  PF:23 — diagnosed the same afternoon, closed at `1a51c81` by a sanctioned re-capture.
+- **After `1a51c81`, two arms were re-run individually and were green**:
+  `hw_profile_capture_reproduces_the_committed_invariant_section` — the arm PF:23 turned red,
+  so this is the re-capture doing what the re-capture was for — and its sibling
+  `hw_enumeration_matches_the_committed_profile`. Both compare the committed profile against
+  the device's own descriptors; neither opens a stream and neither takes a frame, which is
+  why they could be run on a desk where the integrated camera faces a person.
+
+**What is unmeasured, stated as plainly as this entry can manage:**
+
+- **The full 18-arm suite has never been run at HEAD.** Not at `1a51c81`, not at `5faa4ee`
+  where this entry landed, not at `f61b2ae`. The count at HEAD is **unknown**, and no
+  sentence anywhere may say otherwise until a run prints one.
+- Sixteen of the eighteen arms have not been executed since `9c8b46a` at all, including the
+  one that never started.
+- The two arms in `crates/client/tests/hardware.rs` were green at 14:11 against a
+  `crates/client/src/remote.rs` that **no longer exists**: `f61b2ae` rewrote the sweep's tail
+  and its guard (N70, 697 lines changed in that one file). The sweep arm is the arm that
+  proves N69's fix is load-bearing, so its last green is against the version of the fix N70
+  found three defects in. That is the arm whose absence of a fresh run is most worth a
+  reader's attention.
+
+**Standing: what closes this, and what it must not cost.** On the machine with these three
+cameras, `just smoke-hw` — the rung now runs every arm (`--no-fail-fast`) and refuses to
+report a truncated run as a complete one, so from N71 forward the number it prints is a
+count rather than a subtraction. Where the integrated camera faces a person, the motor
+exclusion is not the relevant knob (`WCH_NO_MOTION=1` excludes only `hw_motion_*`, and the
+photo and sweep arms take frames regardless): that is an owner's call about the room, not a
+flag. When it is run, the result lands as a new dated E-entry, or as a further amendment
+here, with the summary line quoted verbatim — because the lesson of this amendment is that a
+count in this repository is a line copied out of a run, never a subtraction performed on
+one.
 
 ---
 
@@ -8721,3 +8807,245 @@ of a bug fix. It is the strongest candidate the next widening has.
 condition is the same one: a daemon that can no longer answer a sweep before its own terminal
 event has left the process. Until then, the three tests named above are the reason each half
 of the guard exists, and a build that deletes one of them has deleted a defect's only witness.
+
+---
+
+## N71 — The rung counted the declined claims of tests that never started, and the one drift this repository anticipates in writing had nothing to catch it
+
+**Doc:** AGENTS rule **1** ("every anticipated or discovered defect class becomes a lint, a CI
+job, or a test that can go red"), rule **3** ("CI executes what it claims: counted selections
+… and every auto-skipping rung reports a **named, counted skip** — never silence"), rule
+**2** (construct the buggy implementation and watch it fail), note **N10**'s family — a gate
+that stayed green while checking less than it claimed — **E13**'s amendment of the same date,
+which is where the first of these was found and which the first of these had already
+corrupted, docs/9's derived-population rule, and `scripts/mutants.sh`'s
+`$WCH_MUTANTS_CLASSIFY` (the precedent for the seam added here). Found by the **G4
+adversarial review**, 2026-08-11, on the tree at `f61b2ae`, `just ci` green.
+
+**Two findings and one entry, because they are one shape.** Each is a claim this repository
+makes about itself with nothing in the tree able to contradict it. One is a number — "4
+claim(s) declined by tests that ran" — printed by a rung whose skip accounting could silently
+lose members. One is a sentence — "the deployed copy tracks this file" — written into the
+rules every agent here reads, with no gate, no case and no recipe behind it. A number nobody
+can falsify and a rule nobody can enforce fail the same way: they are believed.
+
+### 1. `scripts/smoke-hw.sh` ran fail-fast, so its counted skip could lose members without saying so
+
+`cargo nextest run` defaults to fail-fast, `.config/nextest.toml` sets no policy against it,
+and this rung's invocation asked for nothing else. It fired on the run E13 transcribes, which
+carries under its last arm
+
+```
+warning: 1/18 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+```
+
+and in which `hw_switching_an_automation_control_moves_its_partners_inactive_bit` never
+started.
+
+**Two consequences, both real and both this rung's own subject.**
+
+The first is the one that makes it a defect rather than an inconvenience. The accounting
+greps `SKIP` lines out of the log and reports "N claim(s) declined by tests that ran". An arm
+that never ran prints no `SKIP` lines, so the arms cancelled by the fail-fast are *silently
+absent from a named, counted skip* — and the arm this run dropped has two `SKIP (partial)`
+paths of its own. Rule 3 exists because a skip that reads as a pass is invisible; a **count**
+that quietly shrinks is worse, because a reader who sees a number believes somebody looked at
+all of them. It is N10's family with the subject changed from a selection to a census.
+
+The second is that a truncated run read as a complete one. Nothing parsed the cancellation
+warning, so "the suite ran and one arm failed" and "the suite stopped after seventeen
+eighteenths" produced the same shape of output. E13's summary sentence was written from such
+a run, and its amendment is the bill.
+
+**The fix is two things, and the second is not redundant with the first.**
+
+`--no-fail-fast`, so every arm runs. Between it and `--max-fail=all` there is no behavioural
+difference — nextest treats the older spelling as the newer one — so the choice is about the
+reader: `--no-fail-fast` is the spelling nextest's *own* cancellation warning offers first,
+which means whoever arrives at this script from that warning finds the words they were
+handed, and it is also cargo-test's spelling, so it does not quietly raise the nextest
+version this rung requires. A tool floor is a dependency, not a convenience. A numeric
+`--max-fail=N` was rejected outright: a middle setting is a truncation with a nicer name, and
+eighteen arms in twenty-eight seconds is not a budget in need of a stop-early switch.
+
+Then a **census**, because the flag cannot go red. A flag is a statement of intent; delete it
+in an edit two phases from now and this defect returns with nothing to notice. It also does
+not cover every truncation: a SIGINT, a binary that aborts before its siblings start, the
+per-test `slow-timeout … terminate-after` in `.config/nextest.toml`. So the run is made to
+account for itself in its own numbers — `Starting N tests` against the summary's `N tests
+run`, which nextest prints as `17/18` only when they differ — and a shortfall is a loud
+failure with a non-zero exit. Same discipline `counted-selections.sh` applies to the gate
+table: the claim is not that the selection is right, it is that the run measured what it says
+it measured.
+
+The comparison is on the **fact** (how many ran) and not on the **reason** (the warning
+line): the reason is English prose that changes between tool versions and only exists for the
+causes somebody anticipated, while the two counts are printed by every run and disagree for
+all of them. When nextest does give a reason it is quoted underneath, as context. A run whose
+census cannot be parsed at all is a failure too — if a future nextest stops printing either
+line this rung goes red saying so, which costs one commit; the alternative is a rung that
+silently stops checking, which is the whole subject of this entry.
+
+**Watched failing, and the buggy implementation here is the shipped one.** The rung cannot be
+run at these cameras — the laptop's integrated camera may be pointing at a person and the
+photo and sweep arms take frames — so the accounting was exercised the way `mutants.sh`
+exercises its classifier: over recorded logs, through a documented seam. `$WCH_SMOKE_HW_ACCOUNT`
+points the script at a saved run, and it accounts for it and stops; nothing is built, no node
+is opened, no camera is touched, and it announces itself in capitals for the reason
+`$WCH_MUTANTS_CLASSIFY` does.
+
+Over **E13's own 14:11 log**, unedited:
+
+```
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+  … eight SKIP lines …
+smoke-hw: FAIL — 17 of 18 selected test(s) ran, so 1 arm(s) never started and every claim
+above is over the ones that did; a truncated run must not read as a full one
+smoke-hw:   warning: 1/18 tests were not run due to test failure (…)
+-> exit 1
+```
+
+That is the census refusing the run this entry's amendment is about, on the log it was
+written from.
+
+Then both directions on a **live nextest**, because a recorded log proves the parser and not
+the flag. A throwaway five-test crate outside the workspace, one test failing, one of the
+others printing a `SKIP (partial)` line:
+
+| run | census | declined claims counted | exit |
+|---|---|---|---|
+| default (fail-fast) — the shipped behaviour | `2/5 tests run` | **0** — the `SKIP` line's test never started | 1 |
+| `--no-fail-fast` — the fix | `5 tests run` | **1** | 0 |
+
+The left column is the defect reproduced in miniature and the right column is it closed:
+same crate, same seeded failure, and the difference is whether the declining arm got to
+decline. Three more paths were driven: a real complete workspace run (`15 of 15 … the suite
+is complete`), an empty log (`FAIL — this run printed no census this script could read`), and
+a log captured with `--color always`, which the escape-stripping reads correctly — a census
+defeatable by a colour flag is not a census.
+
+**What is not proven, named rather than left for the next reader to discover.** The rung's
+own hardware path has not been executed: no camera was opened by anything in this change, so
+"the suite is complete" has never been printed by a real `hw_` run. The seam and the throwaway
+crate exercise the accounting, which is a pure function of a text file; they do not exercise
+`cargo nextest`'s behaviour inside `run_suite`. And `smoke-hw.sh` is a **rung, not a gate
+predicate**, so `scripts/gates/selftest.sh` never sees it and nothing re-runs the eight checks
+above — they are a session's evidence, not a standing arm. What would close that is a small
+predicate driving `$WCH_SMOKE_HW_ACCOUNT` over two committed fixture logs, one truncated and
+one complete; it is not built here because the fixtures are transcripts of a hardware run and
+committing them is a decision about what belongs in the tree, not a side effect of a bug fix.
+
+### 2. `AGENTS.md` and docs/10 had no gate, and the file says the drift is expected
+
+AGENTS.md's opening declares its own deployment: "Deploy at the repository root as
+`AGENTS.md`; the deployed copy tracks this file (one-directional; when they drift, reconcile
+deliberately and record which side was wrong)." Read the parenthesis again. It does not say
+they cannot drift — it says **what to do when they do**. A reconciliation procedure written
+into a document is the project naming an anticipated defect class in its own words, and rule
+1 says a named class becomes something that can go red. This one had nothing:
+`grep -rn 'docs/10\|10-claude-fable-agents' scripts/` returned empty, no selftest case existed,
+no recipe knew the two files were a pair.
+
+They are byte-identical today — 15115 bytes each, same digest at `f61b2ae` — and ten commits
+have moved them since the v2 series was issued at `f6bc5d9`, every one moving both. Ten for
+ten by hand is a good record and it is also the exact shape of a rule nobody has needed yet.
+The eleventh commit is the one that edits the root copy because that is the path an agent has
+open, or the doc because that is where the series lives, and the cost is not cosmetic: the
+root copy is what every agent working in this tree reads and the doc is what a review reads,
+so a divergence puts two different sets of non-negotiable rules in force at once with no
+reader able to tell.
+
+`scripts/gates/agents-md-current.sh` is the gate. Eight failing arms and three green ones in
+`cases/agents-md-current.cases.sh`; it joined `run-all.sh` and `selftest.sh` by existing,
+which is what those two derive their population for.
+
+**Byte-identical, with no allowance, and that was decided by reading rather than assumed.**
+The source doc's first line is `# AGENTS.md — webcam-handler (v2)`: it is written *in the
+deployed copy's voice*, names itself by the deployed filename, and its second sentence is the
+deploy instruction. There is nothing a root copy would need added and nothing it would need
+stripped. An allowance — "ignore a leading front-matter block", say — was considered and
+rejected as a hole with a nice name: the moment the predicate tolerates one line it cannot
+see, a paragraph fits through the same door, and the failure this gate exists to prevent
+arrives wearing the gate's approval. If a real divergence ever becomes necessary it lands in
+the predicate as a named exception with an argument and its own arm, decided once.
+
+**Nothing is transcribed.** The source is whichever `docs/*.md` **says it deploys**, and the
+deployed filename is read out of that same sentence — the trick `schema-artifacts-current.sh`
+uses when it reads `ARTIFACT_DIR` out of xtask's source. A v3 reissue or a renumbering
+follows the document instead of requiring an edit here, and a green arm proves it by renaming
+the source doc. `docs/historical/` is not scanned: `docs/historical/5-claude-fable-agents-v1.md`
+is v1 of this same file and still carries its own deploy sentence, and a superseded
+document's instruction is not an instruction.
+
+**The predicate's first version went red on the row that documents it, and the fix is the
+interesting part.** `pass_case` failed on the shipped tree the moment docs/9's predicate table
+gained the row describing this gate — because that row *quotes the rule it documents*. Two
+sources, said the predicate, looking at one declaration and one piece of prose about it. A
+gate that cannot tell those apart forbids writing about itself, which is an absurd tax on the
+documentation this project runs on. So the search is each document's **preamble**, everything
+above its first `##`: a statement about where a document deploys is a statement it makes about
+*itself*, and this series makes those in its opening block, where a reader meets them on
+opening the file; below the first heading a document is discussing the world. A green arm now
+holds that line from the other side by seeding the quoted sentence into another document's
+body. This was measured, not designed — which is the second time in this entry that chasing a
+claim found the claim's own machinery.
+
+**A symlink is a finding, not a shortcut.** If the root copy were a link to the doc the
+comparison would be a file against itself: unfalsifiable, PASS over a population of one,
+proving nothing while the tree looked right. That is `gate_require_nonzero`'s defect hiding
+somewhere it is harder to see, so the predicate reports it, and an arm seeds it.
+
+**Adding eleven arms ran the machine out of room, which is N66 for the fourth time — and it
+is fixed here rather than named.** Every arm is a `gate_scratch_tree` copy of the checkout,
+26 MiB on this tree, and `selftest.sh` kept every one of them until its `EXIT` trap. At 21
+predicates the run peaked a little over 12 GiB; at 22 it went over the user quota on this
+host's `/tmp` tmpfs and said
+
+```
+tar: ./README.md: Cannot write: Disk quota exceeded
+PROBLEM systemd-units pass_case_a_stop_timeout_written_in_systemds_other_spellings exited 1;
+        the predicate is red on a shape it must allow
+```
+
+— a filesystem's ceiling reported as a predicate being wrong about the tree, in whichever arm
+happened to be running when the room ran out. **`just ci` was red for it twice**, and it is
+precisely N52's, N66's and N68's finding in a fourth dimension: a verdict that moves with the
+machine, spelled with the word a real finding gets.
+
+The repair is `reclaim_scratch`, four lines: an arm's seeded trees are dead weight the moment
+its verdict is in hand, so they go before the next arm starts. Nothing carries across arms —
+each case seeds its own copy in its own subshell, and the build directories that *are* shared
+live under the checkout's `target/` (`_shared_target_dir`), so a scratch wipe costs no
+rebuild. Sampled every two seconds through a full run, `/tmp`'s high-water mark went from
+over 12.1 GiB to **9.5 GiB**, and — the point — the term that grew with every predicate this
+suite gains is gone rather than smaller. A budget check and a `no_verdict`, `mutants.sh`'s
+answer, was rejected because this harness does not *need* the room it was holding, and a
+resource a suite does not use beats a resource it asks permission for.
+
+Holding one entry at a time also **identified** the remaining 9.5 GiB instead of leaving it a
+mystery, and it is one arm: `counted-selections.sh`'s real-lister arm points
+`$WCH_GATE_ROOT` at a scratch copy, and `scripts/gates/counted-selections.sh:40` runs
+`cargo nextest list --workspace` with that copy as its working directory and no
+`CARGO_TARGET_DIR` — so cargo compiles the whole workspace into `<copy>/target`, 9.7 GiB and
+a cold build, deleted seconds later. Named and deliberately not touched: it is another arm's
+rubric-rule-6 claim, and changing where it builds is a decision about that claim rather than
+a side effect of this one.
+
+This is a change to the harness, which is the one part of the suite the selftest cannot
+self-test (docs/9's recorded bootstrap limit). What stands in for that here is that the run's
+own counts are unchanged across it — 22 predicates, 37 pass arms, 158 fail arms, before and
+after — so the sweep demonstrably removed storage and not coverage.
+
+**Why it gets no `g4` row of its own.** `run-all.sh`'s g4 row already exists for exactly this:
+its text says the population is derived rather than transcribed and names the predicates no
+row mentions. A `g4` row is for a criterion a phase commissioned, and docs/7 commissioned
+nothing here — this invariant has held since `f6bc5d9`, proves nothing P4 built, and a row
+claiming otherwise would inflate a count that is supposed to mean something. It arrives
+through `run-all.sh` and `selftest.sh` at g0, g1, g2, g3 **and** g4, which is the right reach
+for a rule that was never phase-scoped. The row's own arithmetic was updated with it: twenty-two
+predicates, ten of them named by no g4 row.
+
+**Retires when:** neither retires as a rule. The census retires if nextest ever refuses to
+start a run it cannot finish, which is not a thing a test runner can promise. The AGENTS gate
+retires if doc 10 stops being deployed — at which point its own preamble stops saying so and
+the predicate goes red until somebody says what replaced it, which is the correct handover.
