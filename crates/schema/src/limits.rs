@@ -218,17 +218,47 @@ const _: () = assert!(CLIENT_SUBSCRIPTION_BUFFER > WS_MESSAGE_BUFFER_CAPACITY as
 /// A quarter of a second is chosen from the delay it has to cover, which is one already-woken
 /// task waiting for a core — no device, no disk, and nothing that can be slow for a reason of
 /// its own. Measured at 34 µs; a woken thread on a host oversubscribed eightfold waits
-/// milliseconds, not hundreds of them. It is [`HOTPLUG_QUIET_MS`]'s order of magnitude for a
-/// related reason: long enough that the thing it waits for has already happened, short enough
-/// that a person watching a terminal never meets it.
+/// milliseconds, not hundreds of them. The ceiling is [`HOTPLUG_QUIET_MS`]'s, and the two
+/// numbers answer the same question for the same reader even though the mechanisms below
+/// them are unrelated: how long may this tool pause for something that has almost certainly
+/// already happened, before the pause is the thing a person notices? A quarter of a second
+/// is this project's answer, given once.
 ///
-/// Read by `wchc`'s `Remote::calibrate_sweep`, which is the only tail there is.
+/// Read by `wchc`'s `Remote::calibrate_sweep`, through `remote::SWEEP_DRAIN_BUDGET` — the one
+/// place the number becomes a `Duration` — and read *as a duration that has to be able to
+/// expire* by the test named
+/// `the_tail_waits_the_moment_out_and_the_budget_is_what_pays_for_it`,
+/// which delivers a sweep's terminal event a hundred milliseconds behind its answer on a
+/// paused clock and asserts the bar still gets it. That test exists because this number spent
+/// a day being read by nothing that could go red: every tail test passed `Duration::ZERO`, so
+/// **zero passed the entire workspace suite** — the fix note **N69** landed, deleted, with its
+/// code left in place (note **N70**, finding F2).
 pub const CLIENT_SWEEP_DRAIN_MS: u64 = 250;
 
-// A tail must cost less than the smallest piece of work the sweep it follows does, or
-// finishing a sweep would cost more than one of that sweep's samples. Checked where both
-// numbers are, in `CAMERA_IDLE_SWEEP_MS`'s tradition.
-const _: () = assert!(CLIENT_SWEEP_DRAIN_MS < FRAME_DEADLINE_MS);
+// The floor, and it is mechanical rather than a matter of taste: a tail that cannot wait
+// collects nothing. `Remote::calibrate_sweep`'s own doc records the measurement — this
+// client's queue is provably empty when its call answers (note N65), so the event a tail
+// exists for is one that has not arrived, and only waiting can collect it. Zero is therefore
+// not a smaller bound but a deleted one, which is exactly the edit nothing could see.
+const _: () = assert!(CLIENT_SWEEP_DRAIN_MS > 0);
+
+// The ceiling, related to the number the paragraph above actually derives it from.
+//
+// What stood here was `CLIENT_SWEEP_DRAIN_MS < FRAME_DEADLINE_MS` under a comment claiming "a
+// tail must cost less than the smallest piece of work the sweep it follows does".
+// `FRAME_DEADLINE_MS` is two seconds and it is an *upper bound on waiting for one frame*, not
+// the cost of one — a real sample at a real camera is about 500 ms [E13] — so the assert
+// admitted every value up to 1999 while the sentence above it described a bound of a
+// different order. An assert whose comment misdescribes it is worse than no assert, because
+// it reads as a checked relation (note **N70**, finding F2).
+//
+// `HOTPLUG_QUIET_MS` is what the doc above derives this number from, and equality is what
+// holds today: both are the longest this project is willing to pause for something that has
+// already happened. `<=` rather than `==` because the derivation is a ceiling and not an
+// identity — a tail shorter than the debounce is still a tail, and the day 34 µs is
+// re-measured on faster hardware this number may fall on its own. Checked where both numbers
+// are, in `CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS`' tradition.
+const _: () = assert!(CLIENT_SWEEP_DRAIN_MS <= HOTPLUG_QUIET_MS);
 
 /// How many unwritten notifications one subscription may hold before the daemon drops.
 ///

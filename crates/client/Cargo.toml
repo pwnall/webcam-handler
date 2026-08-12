@@ -87,6 +87,14 @@ rustix = { workspace = true, features = ["process"] }
 # and `TempRuntimeDir`/`TempStore` are the engine's for the reason the daemon's own suites
 # give — a third copy of a temp-directory fixture is a third answer to "where does this run".
 serde_json.workspace = true
+# `test-util`, and it is here rather than above for the reason a dev-dependency exists: a
+# shipped `wchc` must not be able to pause its own clock. The sweep tail's bound is the
+# *subject* of two tests (`remote::tests`, note **N70** finding F2) and AGENTS' rule for that
+# shape is a clock the test owns — `tokio::time::pause` plus auto-advance, so a hundred
+# simulated milliseconds cost nothing and the assertion is about the number rather than about
+# how loaded the machine was. Cargo resolves dev-dependency features for test targets only,
+# so the binary still links exactly the four features the normal edge above names.
+tokio = { workspace = true, features = ["test-util"] }
 webcam-handler-engine.workspace = true
 # Two predicates and nothing else: `battery::is_perturbable` and `battery::is_motorized` are
 # the conformance battery's own answers to "may a test write to this control" and "is there a

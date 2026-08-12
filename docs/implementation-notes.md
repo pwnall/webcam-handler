@@ -8490,3 +8490,234 @@ Three more things were seen and are named rather than fixed:
   `uvcvideo`, on a machine whose two USB cameras both negotiate High Speed. A `vivid` node or
   a SuperSpeed camera would take the same code path, which is an argument and not a
   measurement.
+
+---
+
+## N70 — The tail N69 built was guarded by a filter that could not tell whose sweep had ended, bounded by a number nothing read, and ended by a payload that had not ended anything
+
+**Doc:** notes **N69** (the bounded tail this entry repairs — its measurements and its
+reading of N65 stand; three things it did not check did not), **N65** (a drain that refuses
+to wait collects nothing, and why), **N57** (the per-client calibration stream, that dropping
+an event is allowed, and that the daemon counts what it drops), **N60** (a second-direction
+failure means investigate), **N25** (what an equivalent acceptance claims), **E13** (a real
+sample at a real camera is about 500 ms), AGENTS rule 2 ("construct the buggy implementation
+first and watch it fail, at workspace scope") and `schema::limits`' rule that something reads
+every number. Found by the **G4 adversarial review** of N69's own machinery, 2026-08-11, on
+the tree at `5faa4ee` — `just ci` green at 936 tests, the mutation floor passed that morning
+(526 mutants, 442 caught, 11 accepted survivors, 0 timeouts).
+
+**This entry does not amend N69.** That entry is the record of what was believed and measured
+when, and every measurement in it re-runs true: the 34 µs, the 2-in-150, the 0-of-30 empty
+queue, the 512 yields. What it shipped with is three holes around the edges of a correct
+middle, and the shape of all three is the same — **the fix was tested against the mechanism it
+was designed for and not against the world it runs in**.
+
+### Provenance: three findings, one entry, and why they are not three
+
+They land together because they are one review of one sub-system, they were repaired in one
+commit, and their common failure is a single sentence (below). Splitting them would repeat
+the provenance three times and hide the pattern, which is the part worth keeping.
+
+### F1 — the guard trusted a filter its own doc calls imprecise
+
+**Believed:** that `ended |= event.progress.is_terminal()`, over everything
+`SweepFilter::admits` let through, means "the daemon has said its last word about this sweep",
+so the tail can be skipped.
+
+**True:** `admits` is *session-only* under `--session <UUID>` and *control-only* under
+`--task <TEXT>`. Neither precision asks whether a terminal event belongs to **this sweep**,
+and a sweep is a session **and** a control. `wch_subscribe_calibration` fans out from one
+`Fanout<ProgressEvent>` for the whole daemon (`crates/daemon/src/events.rs`) and camera actors
+are one thread per camera, so two sweeps genuinely run at once and both put their last words
+on this socket:
+
+- **two cameras, `--task framing --control brightness` on each.** B's `SweepFinished` matches
+  A's control, so it is admitted, draws a spurious closing line on A's bar — and sets A's
+  `ended`. A's own terminal event then loses the 34 µs race, the guard skips the tail, and the
+  event is lost. **Exactly the defect N69 exists to prevent, arranged by N69's own guard.**
+- **one `--session S`, two controls.** The camera actor queues rather than refuses, so the
+  earlier sweep's `SweepFinished` carries the same session id and disarms the later client's
+  tail. The same collapse inside `drain_tail`, too: it stopped at *any* admitted terminal
+  event, one short of the one it came for.
+
+The existing test could not reach either. `another_sweeps_terminal_event_neither_draws_nor_
+ends_this_tail` uses `Uuid::from_u128(2)` — a **different session**, which the filter already
+rejects — so it pins the case that works and cannot express the case that does not.
+
+**Changed.** The filter now answers two questions with two precisions, and they err in
+opposite directions on purpose:
+
+- `SweepFilter::admits` still decides what is **drawn** and still errs toward showing;
+- `SweepFilter::is_mine_terminal` decides when the daemon has said its **last word** and
+  requires both halves — this sweep's control, and a session this process cannot tell apart
+  from its own.
+
+The second half of the pair is a fact `--task` does not have while the call is in flight, and
+**the answer supplies it**: `wch_calibrate_sweep` replies with the `Session`, one step before
+the tail needs it, and `SweepFilter::with_answer` is where it arrives (`SweepAnswer` is the
+one-method trait that keeps `sweep_and_watch` generic over an answer whose type is otherwise
+none of its business). So the loop records the *session id* of the last terminal event that
+could have been this sweep's — an id rather than a flag, because before the answer the
+question has no answer and a flag would have to guess one — and the guard is decided once, at
+the moment this process knows the most.
+
+**One id and not a set**, deliberately: the only error it can make is the safe one. If this
+sweep's own last word is followed by a neighbour's, the recorded id is the neighbour's, the
+tail is entered for a sweep that had already ended, and the cost is the bound once at the end
+of a sweep that took camera-minutes. A set would be a queue whose length is a property of how
+many sweeps a daemon ran, which is the unbounded shape AGENTS' "bounded everything" refuses.
+
+**Drawing was considered and deliberately not tightened**, which is the half worth arguing.
+Under `--session S` it would have been possible — the id is known from the start, so requiring
+the control too would stop another control's events repainting this bar. It is not done for
+two reasons. The first is that the two errors do not cost the same thing: an event drawn that
+was somebody else's costs a repainted bar, and a terminal event *credited* to this sweep that
+was somebody else's costs this sweep its last event, so one predicate cannot be right for
+both. The second is the failure mode of being wrong: `admits` is the only thing standing
+between a bar and no bar at all, and a client whose control spelling ever failed to match the
+daemon's would, under a tightened `admits`, draw **nothing** — where under this shape it draws
+everything and pays the bound. A committed assertion says the id wins over the control
+(`a_sweep_named_by_id_admits_that_sessions_events_and_no_others`); it was not inverted, and
+this paragraph is why.
+
+`SweepFilter`'s own residual paragraph is re-worded rather than left standing. Its claim was
+"Nothing is lost but a bar's accuracy" — **N69 falsified that sentence** and this change makes
+it true again: under `--task` a neighbour's events are still drawn while the call is in
+flight, and that is now the whole of the residual, because the same event can no longer end
+this sweep early.
+
+**Watched failing** (three tests, against the guard as N69 shipped it):
+
+| test | failure |
+|---|---|
+| `a_second_sweep_in_this_session_does_not_disarm_this_ones_tail` | `another sweep's last word disarmed this sweep's tail` — left `["focus_absolute", "brightness"]`, right `["focus_absolute", "brightness", "focus_absolute"]` |
+| `another_cameras_sweep_of_this_control_does_not_disarm_this_ones_tail` | `another camera's sweep disarmed this sweep's tail` — left `[…0001, …0002]`, right `[…0001, …0002, …0001]` |
+| `another_control_in_this_session_is_drawn_but_does_not_end_this_tail` | left `["sweep_finished"]`, right `["sweep_finished", "sweep_finished"]` |
+
+### F2 — nothing could go red on `CLIENT_SWEEP_DRAIN_MS`, and the assert beside it described a different number
+
+**(a) The value was read by nothing that could fail.** All eight of N69's tail tests pass
+`Duration::ZERO` — which is the honest way to drive `drain_tail`'s arms without a clock, and
+which is why it looked complete — and nothing asserted that `calibrate_sweep` passes the
+constant at all. **Measured, because "nothing reads it" is a claim: with
+`CLIENT_SWEEP_DRAIN_MS = 0` hand-applied, the workspace suite is 939 passed, 0 failed.** Zero
+is not a smaller bound, it is a deleted one: this client's queue is provably empty when its
+call answers (N65's measurement, N69's reading of it), so the event a tail exists for is one
+that has not arrived and only *waiting* collects it. The fix N69 landed could have been
+reverted to the shape its own doc says "cannot work" by editing one digit, and every gate in
+this repository would have stayed green. The mutation floor could not see it either —
+`.cargo/mutants.toml`'s `examine_globs` covers neither `crates/schema` nor `crates/client`.
+
+**Changed.** `remote::SWEEP_DRAIN_BUDGET` is the number as a `Duration`, in one place, and two
+tests are about it. `the_tail_waits_the_moment_out_and_the_budget_is_what_pays_for_it` delivers
+this sweep's terminal event **a hundred milliseconds behind the answer** on a paused
+`tokio::time` clock — AGENTS' `SteppedClock` shape, "a deadline that is the subject" — and
+asserts the bar gets it under the real constant, *and* that the tail ended on the event rather
+than on the timer (the "it is a bound and not a wait" sentence, which nothing had asserted
+either; the regression it guards against has already happened once, N69's 0.47 s → 0.77 s).
+`a_tail_with_no_budget_is_the_fix_deleted_and_that_is_visible_here` is the inverse arm: the
+same script at zero loses the same event.
+
+**(b) The const-assert did not check the sentence above it.** What stood there was
+`CLIENT_SWEEP_DRAIN_MS < FRAME_DEADLINE_MS`, under a comment claiming "a tail must cost less
+than the smallest piece of work the sweep it follows does". `FRAME_DEADLINE_MS` is 2000 and it
+is an upper bound on *waiting for one frame*, not the cost of one — a real sample at a real
+camera is about 500 ms \[E13\] — so the assert admitted every value up to 1999 while its
+comment described a bound of a different order. **An assert whose comment misdescribes it is
+worse than no assert**, because it reads to the next person as a checked relation. Replaced by
+the two relations that are true: `CLIENT_SWEEP_DRAIN_MS > 0`, the mechanical floor, and
+`CLIENT_SWEEP_DRAIN_MS <= HOTPLUG_QUIET_MS`, the ceiling the doc actually derives it from
+(`<=` and not `==`: the derivation is a ceiling, and the day 34 µs is re-measured on faster
+hardware this number may fall on its own).
+
+**Watched failing**, in three stages, because the floor and the test catch different things:
+
+| what was hand-applied | what went red |
+|---|---|
+| `CLIENT_SWEEP_DRAIN_MS = 0`, before the new test | **nothing** — 939 passed. This is the finding. |
+| `= 0`, with the new test | `the tail refused to wait 100ms for the event it exists to collect, under a budget of 0ns` — left `["sweep_started"]`, right `["sweep_started", "sweep_finished"]` |
+| `= 50`, which the const-assert cannot see | the same assertion, `under a budget of 50ms` |
+| `= 0`, with the const-assert | `error[E0080]: evaluation panicked: assertion failed: CLIENT_SWEEP_DRAIN_MS > 0` — the whole workspace stops compiling |
+
+### F3 — one undecodable notification was read as the end of the stream, and jsonrpsee disagrees
+
+**Believed** (`ProgressSource`'s own doc): "a stream the daemon closed and a payload this build
+cannot decode are both *nothing further is coming*", implemented as
+`Some(Err(_)) | None => None`.
+
+**True, and read out of the dependency rather than assumed:** `jsonrpsee-core` 0.26's
+`impl Stream for Subscription` (`src/client/mod.rs:429`) sets `is_closed` **only** on the arm
+where its receiver yields `None`. A `serde_json::from_str` failure is `Some(Err(_))` on a
+subscription that stays open and keeps delivering, with the rest of the queue behind it
+decodable.
+
+`CalibrationProgress` is an internally-tagged enum with no `#[serde(other)]` arm, so the
+condition has a name: **a `wchd` newer than the `wchc` talking to it**, emitting one variant
+this build has never heard of. What that cost was everything after it — `watching = false`,
+every remaining event discarded while sitting readable in the queue, and the tail skipped too
+(`watching` is its other guard). The bar freezes mid-sweep and the sweep's closing line never
+comes: **N69's symptom, from a cause N69 did not consider.**
+
+The seam could not express the fault. `next_event` answered `Option<ProgressEvent>` and the
+scripted double's fault menu had `Delivery::Ended` documented as covering "a lag close, a
+shutdown, or an undecodable payload" — so the collapse was asserted by a test that had been
+told to assert it. **A double's fault menu is a claim about the thing it stands in for, and
+this one was a claim nobody had checked against the crate it doubles.**
+
+**Changed.** `next_event` answers a three-valued `Arrival` — `Event`, `Undecodable`, `Ended` —
+the loop and the tail skip an `Undecodable` and read on, and `Delivery::Undecodable` joins the
+scripted menu. An undecodable payload does not extend the tail's deadline either: the deadline
+is an instant, so a daemon sending nothing this client understands still ends the tail at the
+bound.
+
+**They are not counted onto anything a person sees**, and that is N69's decision applied
+rather than a new one. `wch` cannot produce this condition at all — its sink is synchronous
+and nothing is serialized — so a line on `wchc`'s stderr would be a divergence between the two
+roots in the one place the parity gate does not look, for a rendering that is already what a
+dropped event looks like (N57). What `wchc` has to say to the operator, it says as a bar
+missing a line; the daemon is the hop that counts, and N57 already has it counting. Named here
+because the alternative was considered: a `cli_core` renderer beside `report_probe`, reachable
+from one root only. If the owner wants "your daemon is newer than your client" said out loud,
+that is where it goes and it is a product decision, not this repair.
+
+**Watched failing** — the collapse hand-applied to the widened type (`Arrival::Undecodable =>
+watching = false` in `sweep_and_watch`, `=> return Tail::Ended` in `drain_tail`), which is the
+shipped behaviour re-expressed:
+
+| test | failure |
+|---|---|
+| `a_payload_this_build_cannot_read_is_skipped_and_the_stream_read_on` | `one unreadable notification ended a sweep's progress` — left `["sweep_started"]`, right `["sweep_started", "sweep_finished"]` |
+| `a_payload_this_build_cannot_read_does_not_disarm_the_tail` | `an unreadable notification disarmed the tail` — same two lists |
+| `a_payload_this_build_cannot_read_does_not_end_a_tail_already_running` | left `Ended`, right `Terminal` |
+
+### What the three have in common, and it is the entry's point
+
+**Each was a test asserting the assumption that produced the code, in a shape that could not
+express the assumption being wrong.**
+
+- F1's other-sweep test used a session the filter already rejects, so it pinned the case that
+  works and could not reach the case that does not.
+- F2's eight tail tests passed `Duration::ZERO` — correct for the arms they drive, and
+  collectively an assertion that the number does not matter.
+- F3's fault menu had four variants and the missing fifth was the defect; its `Ended` variant's
+  doc *stated* the collapse, so the double agreed with the code by construction.
+
+N60's rule is "a second-direction failure means investigate, never delete the line". This is
+its neighbour: **a fault menu, a fixture id and a parameter value are each a claim about the
+world, and a test built from them can only ever be as true as the claim.** The three questions
+that would have caught all three of these are the same question asked of a double, a fixture
+and a constant — *what would this look like if it were wrong?* — and none of them needs a
+loaded machine, which is what separates this entry from N67 and N69.
+
+**What is left open, named rather than fixed:** `crates/client/src/remote.rs` is outside the
+mutation floor's `examine_globs` and this repair does not widen it. `SweepFilter` is now
+exactly the shape the floor is good at — a fold over values with unit tests beside it — but
+the file it lives in also owns a runtime, a socket and a `select!`, so widening to the file
+imports the triage `.cargo/mutants.toml` refuses for `engine::actor`, and splitting the filter
+into its own module is a decision somebody should make on purpose rather than as a side effect
+of a bug fix. It is the strongest candidate the next widening has.
+
+**Retires when:** N69 retires — the tail, its bound and its guard go together, and the
+condition is the same one: a daemon that can no longer answer a sweep before its own terminal
+event has left the process. Until then, the three tests named above are the reason each half
+of the guard exists, and a build that deletes one of them has deleted a defect's only witness.

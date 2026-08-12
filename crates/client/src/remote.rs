@@ -191,28 +191,58 @@ fn refusal(socket: &Utf8Path, error: &ClientError) -> Error {
 /// every event and "D10's parenthetical is answered by a consumer-side filter" (note N57).
 /// This is that filter, and it is a pure value so it can be driven without a daemon.
 ///
-/// It has two precisions because the caller has two ways of naming a session:
+/// It answers **two questions with two precisions**, and note **N70** exists because the
+/// first shape of it answered only one:
 ///
-/// - `--session <UUID>` names one, so the filter is **exact**: an event carries the id.
+/// - [`SweepFilter::admits`] decides what is **drawn**, and errs toward showing.
+/// - [`SweepFilter::is_mine_terminal`] decides when the daemon has said its **last word about
+///   this sweep**, and errs toward waiting.
+///
+/// They are deliberately not the same predicate, because the two errors do not cost the same
+/// thing. An event drawn that was somebody else's costs a repainted bar; a terminal event
+/// *credited* to this sweep that was somebody else's costs this sweep its own last event —
+/// `sweep_and_watch` skips the tail on the strength of it, and the tail is the only thing
+/// standing between a `SweepFinished` that lost the race and the floor (note **N69**). So
+/// drawing keeps the loose predicate and the guard takes the tight one.
+///
+/// ## What "this sweep" is, and how much of it this process knows
+///
+/// A sweep is a **session and a control**, not a session: the camera actor queues, so one
+/// session may run a second sweep of another control, and every event names both. What this
+/// process knows of that pair depends on how the caller named the session:
+///
+/// - `--session <UUID>` names it, so the session half is exact from the start.
 /// - `--task <TEXT>` names a slot, and which session occupies it is a fact only the daemon
-///   holds. Until the sweep answers — which is *after* every event has been rendered — this
-///   process does not know the id, so the filter falls back to the one thing the request
-///   does pin down: the control being swept, which every event names
-///   ([`schema::progress::CalibrationProgress::control`], an exhaustive accessor).
+///   holds. Until the sweep answers, this process does not know the id, so the request's
+///   control is the only half it has ([`schema::progress::CalibrationProgress::control`], an
+///   exhaustive accessor, is what makes that half available on every variant).
+/// - …and then **the answer names it** — `wch_calibrate_sweep` replies with the
+///   [`Session`] — which is one step before the tail needs it. [`SweepFilter::with_answer`]
+///   is where the second half arrives, and it is the whole reason a `--task` sweep can tell
+///   its own last word from another camera's (note **N70**, finding F1).
 ///
 /// **The residual is stated rather than hidden:** under `--task`, a second sweep of the
 /// *same control on a different camera*, running through the same daemon at the same moment,
-/// would also be admitted, and the bar would show both. The alternative was to resolve the
-/// task to an id with a `wch_calibrate_status` call before subscribing — rejected because it
-/// changes which D13 refusal a bad `--task` produces (the status verb's, not the sweep's),
-/// and the parity gate compares exactly that against `wch`. Nothing is lost but a bar's
-/// accuracy, and only on a daemon running two sweeps at once.
+/// is admitted while the call is in flight, and the bar shows both. The alternative was to
+/// resolve the task to an id with a `wch_calibrate_status` call before subscribing — rejected
+/// because it changes which D13 refusal a bad `--task` produces (the status verb's, not the
+/// sweep's), and the parity gate compares exactly that against `wch`. What is left is a bar's
+/// accuracy for as long as the call is outstanding — and **only** that, which is the sentence
+/// N69 falsified and this type's second predicate makes true again: the same event can no
+/// longer end this sweep early.
 #[derive(Debug)]
 struct SweepFilter {
     /// The session, when the caller named one by id.
     session: Option<Uuid>,
     /// The control this sweep asked for.
     control: ControlSlug,
+    /// The session the daemon named when it answered, for a caller who could not.
+    ///
+    /// `None` until the sweep answers, and `None` afterwards if it answered with a refusal —
+    /// a D13 error names no session. It never contradicts `session`: the two are the same
+    /// fact from two sources, and [`SweepFilter::known`] prefers the caller's because a
+    /// caller who named an id was asking about *that* session whatever the daemon replies.
+    answered: Option<Uuid>,
 }
 
 impl SweepFilter {
@@ -225,16 +255,104 @@ impl SweepFilter {
                 SessionRef::Task { .. } => None,
             },
             control: request.control.clone(),
+            // Nothing has answered yet; step 4 is where this stops being `None`.
+            answered: None,
         }
     }
 
-    /// Whether `event` belongs to the sweep this process asked for.
+    /// The same filter, knowing what the sweep's answer said about which session it was.
+    ///
+    /// It tightens [`SweepFilter::is_mine_terminal`] and deliberately **not**
+    /// [`SweepFilter::admits`]: what is drawn must not change its rules halfway through one
+    /// sweep, or a bar would start and stop showing a neighbour's events at a moment the
+    /// person watching cannot see. What may change is what this process is willing to call
+    /// its own ending, because that is a decision it is about to make for the first time.
+    fn with_answer(self, session: Option<Uuid>) -> SweepFilter {
+        SweepFilter {
+            answered: session,
+            ..self
+        }
+    }
+
+    /// Whether `event` belongs to the sweep this process asked for — the drawing half.
     fn admits(&self, event: &ProgressEvent) -> bool {
         match self.session {
             Some(session) => event.session == session,
             None => *event.progress.control() == self.control,
         }
     }
+
+    /// This sweep's session, as precisely as it is currently known.
+    fn known(&self) -> Option<Uuid> {
+        self.session.or(self.answered)
+    }
+
+    /// Whether `session` is this sweep's, as precisely as it is currently known.
+    ///
+    /// `true` for an unknown session is the honest answer and not a default: before the
+    /// answer arrives a `--task` sweep cannot rule anything out, and the caller is the one
+    /// that decides what to do with a maybe — [`sweep_and_watch`] records the id and asks
+    /// again once the answer has named one.
+    fn is_mine(&self, session: Uuid) -> bool {
+        self.known().is_none_or(|known| known == session)
+    }
+
+    /// Whether `event` is the last word about **this** sweep — the guard half.
+    ///
+    /// Both halves of the pair, where [`SweepFilter::admits`] takes whichever one the caller
+    /// supplied: a terminal event is this sweep's only if it is about this sweep's control
+    /// *and* about a session this process cannot tell apart from its own.
+    fn is_mine_terminal(&self, event: &ProgressEvent) -> bool {
+        event.progress.is_terminal()
+            && *event.progress.control() == self.control
+            && self.is_mine(event.session)
+    }
+}
+
+/// What a sweep's answer says about which session it was.
+///
+/// One method, for one fact, on the one value [`sweep_and_watch`] is otherwise generic over
+/// — and the genericity is the point: that function's subject is an *ordering*, so a test
+/// hands it a [`std::future::ready`] rather than a wire call. This trait is the smallest
+/// thing that keeps that true while letting the answer close the gap `--task` leaves open
+/// (note **N70**, finding F1).
+///
+/// `None` is a real answer and not an absence: a sweep that was refused names no session,
+/// and a filter told `None` is exactly as precise as it was before it asked.
+trait SweepAnswer {
+    /// The session the daemon says this sweep belonged to.
+    fn session(&self) -> Option<Uuid>;
+}
+
+impl SweepAnswer for std::result::Result<Session, ClientError> {
+    fn session(&self) -> Option<Uuid> {
+        self.as_ref().ok().map(|session| session.id)
+    }
+}
+
+/// What one ask of a [`ProgressSource`] produced.
+///
+/// **Three answers and not two**, and the third is the one this seam shipped without: a
+/// notification that arrived, was addressed to this subscription, and could not be turned
+/// into a [`ProgressEvent`] by this build. Collapsing it into "the stream ended" was an
+/// assumption about jsonrpsee that jsonrpsee does not hold, and note **N70** (finding F3)
+/// records both the reading and what it cost.
+#[derive(Debug)]
+enum Arrival {
+    /// One event.
+    Event(ProgressEvent),
+    /// A notification this build could not decode, on a stream that is **still open**.
+    ///
+    /// [`schema::progress::CalibrationProgress`] is an internally-tagged enum with no
+    /// catch-all arm, so a `wchd` newer than the `wchc` talking to it produces exactly this:
+    /// one variant this build has never heard of, one `serde_json` failure, and a queue of
+    /// perfectly decodable events behind it. It is skipped and never fatal — nothing about
+    /// one unreadable payload says anything about the next one, and there is no sweep-shaped
+    /// question it answers (which sweep it belonged to is itself inside the payload).
+    Undecodable,
+    /// Nothing further is coming: the daemon ended the stream, or dropped this client for
+    /// falling too far behind ([`limits::CLIENT_SUBSCRIPTION_BUFFER`]).
+    Ended,
 }
 
 /// Where a sweep's progress comes from, so the tail can be driven without a daemon.
@@ -244,26 +362,47 @@ impl SweepFilter {
 /// did and arrived after it — and a race cannot be arranged twice running. What a test can do
 /// is hold each ordering still, which is what the scripted source beside the tests does.
 ///
-/// It answers an [`Option`] rather than jsonrpsee's `Option<Result<…>>` because
-/// [`Remote::calibrate_sweep`]'s loop already treats the two ends alike: a stream the daemon
-/// closed and a payload this build cannot decode are both "nothing further is coming", and
-/// neither is this sweep's failure.
+/// It answers an [`Arrival`] rather than jsonrpsee's `Option<Result<…>>` so that the two
+/// failures that type carries stay two things. **They are not the same thing, and this file
+/// believed they were.** `jsonrpsee-core` 0.26's `Stream for Subscription` sets `is_closed`
+/// only where its receiver yields `None`; a `serde_json::from_str` that fails is
+/// `Some(Err(_))` on a subscription that stays open and keeps delivering. Reading
+/// `Some(Err(_)) | None => None` therefore turned one unreadable notification into the end of
+/// the sweep's progress — the bar froze mid-sweep and the tail was skipped too, which is
+/// N69's symptom from a cause N69 did not consider (note **N70**, finding F3).
+///
 /// It must be **cancel-safe**: [`sweep_and_watch`]'s `select!` drops the future it did not
 /// take, every turn, and an implementation that consumed an event on a poll it did not
 /// complete would lose one per turn of the sweep.
 trait ProgressSource {
-    /// The next event, or `None` when nothing further will arrive.
-    async fn next_event(&mut self) -> Option<ProgressEvent>;
+    /// The next arrival on this stream.
+    async fn next_event(&mut self) -> Arrival;
 }
 
 impl ProgressSource for Subscription<ProgressEvent> {
-    async fn next_event(&mut self) -> Option<ProgressEvent> {
+    async fn next_event(&mut self) -> Arrival {
         match self.next().await {
-            Some(Ok(event)) => Some(event),
-            Some(Err(_)) | None => None,
+            Some(Ok(event)) => Arrival::Event(event),
+            // The payload is deliberately not carried into the refusal or a log line: a
+            // progress event names a photo path and a session, and this crate does not put
+            // either in front of a reader to explain a decode failure (AGENTS "Hardware and
+            // privacy"; rubric A12).
+            Some(Err(_)) => Arrival::Undecodable,
+            None => Arrival::Ended,
         }
     }
 }
+
+/// The tail's budget, in the one place both the shipped path and the tests that are about it
+/// can name.
+///
+/// [`limits::CLIENT_SWEEP_DRAIN_MS`] as a [`std::time::Duration`], written once so that
+/// changing the number changes what a test asserts rather than only what a binary does.
+/// Before note **N70** (finding F2) every tail test passed `Duration::ZERO` and nothing at
+/// all read the constant, so setting it to zero — which deletes the fix while leaving its
+/// code in place — passed the entire workspace suite.
+const SWEEP_DRAIN_BUDGET: std::time::Duration =
+    std::time::Duration::from_millis(limits::CLIENT_SWEEP_DRAIN_MS);
 
 /// The sweep's state machine: watch the stream while the call is in flight, then take its
 /// tail.
@@ -274,46 +413,77 @@ impl ProgressSource for Subscription<ProgressEvent> {
 /// [`std::future::ready`] and a scripted stream, and can hold each of the two orderings still
 /// — including the one that costs a bar its last line, which against a real daemon happens on
 /// about one run in a hundred (note **N69**).
+///
+/// The one thing it does read out of that answer is [`SweepAnswer::session`], because the
+/// answer is where a `--task` sweep finally learns which session it was and the guard below
+/// is the first decision that needs it (note **N70**, finding F1).
 async fn sweep_and_watch<S, A>(
     events: &mut S,
     call: impl Future<Output = A>,
-    filter: &SweepFilter,
+    filter: SweepFilter,
     watch: &dyn SweepWatcher,
     budget: std::time::Duration,
 ) -> A
 where
     S: ProgressSource,
+    A: SweepAnswer,
 {
     // Pinned so the loop below can poll the same future more than once without moving it; a
     // fresh call per turn would be a fresh sweep.
     let mut call = std::pin::pin!(call);
     // `false` once the stream has ended, which takes its arm out of the `select!` rather
-    // than letting a closed stream answer `None` forever — the shape that would turn a
+    // than letting a closed stream answer `Ended` forever — the shape that would turn a
     // finished subscription into a spin.
     let mut watching = true;
-    // `true` once the daemon has said its last word about this sweep, which is the whole of
-    // whether the tail below has anything to wait for.
-    let mut ended = false;
+    // The session of the last terminal event that could have been this sweep's — an **id
+    // rather than a flag**, because under `--task` the question "was that mine?" has no
+    // answer yet and a flag would have to guess one. That is finding F1 in one variable
+    // (note **N70**): the shape this replaced was `ended |= event.progress.is_terminal()`
+    // over everything `admits` let through, so another camera's sweep of the same control
+    // disarmed this sweep's tail and the terminal event it was holding open for was lost.
+    //
+    // One id and not a set, deliberately, because the only error it can make is the safe
+    // one: if this sweep's own last word is followed by a neighbour's, the last id is the
+    // neighbour's, this sweep pays the bound once at the end of a sweep that took
+    // camera-minutes, and it loses nothing. A set would be a queue on a per-client stream
+    // whose length is a property of how many sweeps a daemon ran, which is the unbounded
+    // shape AGENTS' "bounded everything" refuses.
+    let mut last_terminal: Option<Uuid> = None;
     let answered = loop {
         tokio::select! {
             biased;
-            event = events.next_event(), if watching => match event {
-                Some(event) => {
+            arrival = events.next_event(), if watching => match arrival {
+                Arrival::Event(event) => {
                     if filter.admits(&event) {
-                        ended |= event.progress.is_terminal();
+                        if filter.is_mine_terminal(&event) {
+                            last_terminal = Some(event.session);
+                        }
                         watch.event(&event);
                     }
                 }
-                // A payload this build cannot decode, or a stream the daemon ended (a lag
-                // close, or a shutdown). Neither is this sweep's failure and neither is
-                // worth abandoning it for: the sweep is running on the camera and its
-                // answer is still coming. The bar simply stops moving, which is the honest
-                // rendering of "nothing is being told to me any more".
-                None => watching = false,
+                // A notification this build cannot read. **The stream is still open** and
+                // this is not the end of it (note **N70**, finding F3): jsonrpsee closes a
+                // subscription when its receiver runs dry and not when a payload fails to
+                // deserialize, so what is behind this one is still coming and is still
+                // decodable. Skipped, and the loop reads on — the shape this replaced took
+                // the stream's arm out of the `select!` here, and every remaining event of
+                // the sweep was discarded while it sat readable in the client's own queue.
+                Arrival::Undecodable => {}
+                // The stream the daemon ended: a lag close, or a shutdown. Not this sweep's
+                // failure and not worth abandoning it for — the sweep is running on the
+                // camera and its answer is still coming. The bar simply stops moving, which
+                // is the honest rendering of "nothing is being told to me any more".
+                Arrival::Ended => watching = false,
             },
             answered = &mut call => break answered,
         }
     };
+
+    // The answer is the last thing that can name this sweep's session, and it has just
+    // arrived — so the guard below is decided at the one moment this process knows the most,
+    // rather than event by event when it knew the least.
+    let filter = filter.with_answer(answered.session());
+    let ended = last_terminal.is_some_and(|session| filter.is_mine(session));
 
     // Step 4, entered only when there is something outstanding: the daemon has not said its
     // last word about this sweep (`ended`) and the stream it would say it on is still open
@@ -324,7 +494,7 @@ where
         // Which of the three ways the tail ended is not this call's answer: a sweep that
         // finished is a sweep that finished whether or not its last event beat the response
         // over the socket. The value exists so each of the three has a test.
-        let _tail = drain_tail(events, filter, watch, budget).await;
+        let _tail = drain_tail(events, &filter, watch, budget).await;
     }
 
     answered
@@ -335,8 +505,9 @@ where
 enum Tail {
     /// This sweep's terminal event arrived, so everything the daemon sent was rendered.
     Terminal,
-    /// The stream ended first: a lag close, a shutdown, or a payload this build could not
-    /// decode. Whatever was still in flight is not coming.
+    /// The stream ended first: a lag close or a shutdown. Whatever was still in flight is
+    /// not coming. A payload this build could not decode is **not** one of these — it is
+    /// skipped and the tail reads on (note **N70**, finding F3).
     Ended,
     /// The bound arrived first, which means no terminal event is coming — the daemon dropped
     /// it (note **N57**) or the fan-out never ran. The bar stops one event short, which is
@@ -357,14 +528,19 @@ enum Tail {
 ///
 /// **`budget` bounds the waiting, not the reading.** `tokio::time::timeout_at` polls the
 /// event before it polls the clock, so even a zero budget delivers whatever is already in
-/// hand — which is why the tests below can drive every arm of this function without a clock
-/// of any kind, and why an exhausted budget can never lose an event this client was already
-/// holding.
+/// hand — which is why most of the tests below can drive this function without a clock of any
+/// kind. What a zero budget cannot do is the thing the bound exists for, and that has a test
+/// of its own: on this client's current-thread runtime the queue is provably empty when the
+/// call answers (note **N65**'s measurement, note **N69**'s reading of it), so the event this
+/// drain came for is one that has not arrived yet and only *waiting* can collect it.
 ///
-/// Another sweep's events are neither drawn nor allowed to end this tail: the stream is per
-/// *client* (note **N57**), so a second sweep on the same daemon puts its own terminal event
-/// on this socket, and treating it as ours would stop the drain one event before the one it
-/// came for.
+/// Another sweep's terminal event is not allowed to end this tail: the fan-out is one per
+/// daemon and the stream is per *client* (note **N57**), so a second sweep — another
+/// session's, or this session's on another control — puts its own last word on this socket,
+/// and stopping at it would stop the drain one event before the one it came for. That is what
+/// [`SweepFilter::is_mine_terminal`] asks and [`SweepFilter::admits`] does not; the second
+/// sweep's events are still *drawn*, because drawing is `admits`' question and the two err in
+/// opposite directions on purpose.
 async fn drain_tail<S: ProgressSource>(
     events: &mut S,
     filter: &SweepFilter,
@@ -375,15 +551,20 @@ async fn drain_tail<S: ProgressSource>(
     loop {
         match tokio::time::timeout_at(deadline, events.next_event()).await {
             Err(_elapsed) => return Tail::Bounded,
-            Ok(None) => return Tail::Ended,
-            Ok(Some(event)) => {
+            Ok(Arrival::Ended) => return Tail::Ended,
+            // One payload this build cannot read is not the end of the stream behind it
+            // (note **N70**, finding F3). It does not extend the deadline either — the
+            // deadline is an instant and not a countdown — so a daemon sending nothing this
+            // client understands still ends this tail at the bound.
+            Ok(Arrival::Undecodable) => continue,
+            Ok(Arrival::Event(event)) => {
                 if !filter.admits(&event) {
                     continue;
                 }
                 // Read before the watcher takes it, because `watch.event` borrows it and the
                 // answer to "was that the last one" is a property of the event rather than of
                 // the rendering.
-                let terminal = event.progress.is_terminal();
+                let terminal = filter.is_mine_terminal(&event);
                 watch.event(&event);
                 if terminal {
                     return Tail::Terminal;
@@ -582,7 +763,38 @@ impl Executor for Remote {
     ///    finds nothing either — tokio's current-thread `block_on` re-polls a main future
     ///    whose waker has already fired without ever parking on the I/O driver, so the
     ///    connection's read task never touches the socket. Measured at 512 turns, zero
-    ///    events.
+    ///    events. **The number that does the waiting is checked by a test that is about the
+    ///    number** (`SWEEP_DRAIN_BUDGET`), because for one day it was checked by nothing at
+    ///    all and zero passed the whole suite (note **N70**, finding F2).
+    ///
+    /// ## What the guard on step 4 is allowed to believe
+    ///
+    /// The tail is skipped when this sweep has already had its last word, so *which* last
+    /// word counts is load-bearing in a way the first shape of this code did not treat it as
+    /// (note **N70**, finding F1). The fan-out is one per daemon and camera actors are one
+    /// per camera, so two sweeps genuinely run at once, and their events share this socket:
+    /// a `SweepFinished` for another camera's sweep of the same control, or for another
+    /// control in this same session, is admitted by `SweepFilter::admits` and drawn. It
+    /// must not be allowed to *end* this one. `SweepFilter::is_mine_terminal` is the tighter
+    /// question, and the session it compares against is the one the daemon names **in the
+    /// answer** — which is why `--task`, whose caller cannot name a session at all, is no
+    /// longer a precision this decision has to do without.
+    ///
+    /// ## A notification this build cannot read is not the end of the stream
+    ///
+    /// [`schema::progress::CalibrationProgress`] is internally tagged with no catch-all arm,
+    /// so a `wchd` newer than this `wchc` produces a decode failure per unknown variant.
+    /// jsonrpsee keeps such a subscription **open** — only a dry receiver closes it — so the
+    /// events behind it are still coming and still decodable. They are skipped one at a time
+    /// and neither the loop nor the tail ends on one (note **N70**, finding F3).
+    ///
+    /// **They are not counted onto anything a person sees**, and that is the same decision
+    /// N69 made for a dropped terminal event rather than a new one: `wch` cannot produce this
+    /// condition at all — its sink is synchronous and nothing is serialized — so a line on
+    /// `wchc`'s stderr would be a divergence between the two roots in the one place the
+    /// parity gate does not look, for a rendering that is already what a dropped event looks
+    /// like (note N57). What a person sees is a bar missing a line, and the daemon counts its
+    /// own drops for the operator who needs the number.
     ///
     /// # Errors
     ///
@@ -615,9 +827,9 @@ impl Executor for Remote {
             let answered = sweep_and_watch(
                 &mut events,
                 client.calibrate_sweep(camera.clone(), which.clone(), request.clone()),
-                &filter,
+                filter,
                 watch,
-                std::time::Duration::from_millis(limits::CLIENT_SWEEP_DRAIN_MS),
+                SWEEP_DRAIN_BUDGET,
             )
             .await;
 
@@ -767,7 +979,7 @@ mod tests {
     /// What a scripted progress stream does when it is asked for the next event.
     ///
     /// The fault menu of the thing it stands in for, matched exhaustively in
-    /// [`Scripted::next_event`] so a fifth thing a real subscription can do has to be added
+    /// [`Scripted::next_event`] so a seventh thing a real subscription can do has to be added
     /// here before it can be relied on anywhere.
     #[derive(Debug)]
     enum Delivery {
@@ -778,8 +990,26 @@ mod tests {
         /// whole tail exists for, held still — against a real daemon it is a scheduling race
         /// that lands about once in a hundred sweeps (note **N69**).
         Late(ProgressEvent),
-        /// The stream ends here: a lag close, a shutdown, or an undecodable payload, which
-        /// [`ProgressSource`] deliberately collapses into one answer.
+        /// One event that arrives **after a delay on the test's own clock**, which is the
+        /// only shape in this menu that makes the budget the subject: `Late` says "after the
+        /// answer" and this one says "after a wait a bound either covers or does not" (note
+        /// **N70**, finding F2). The sleep is on `tokio::time`'s clock, so a paused test
+        /// advances it without spending a millisecond of anyone's life (AGENTS: "no `sleep`
+        /// as synchronization — settle logic runs on a clock the test owns").
+        Delayed {
+            /// How long the daemon takes to say it.
+            after: std::time::Duration,
+            /// What it says.
+            event: ProgressEvent,
+        },
+        /// A notification this build cannot decode, on a stream that stays open.
+        ///
+        /// The one thing a real subscription does that this menu could not say, back when
+        /// [`Delivery::Ended`]'s own doc claimed to cover it — a menu that names a fault the
+        /// thing it doubles does not have is a claim, and that one was never checked against
+        /// jsonrpsee (note **N70**, finding F3).
+        Undecodable,
+        /// The stream ends here: a lag close, or a shutdown.
         Ended,
         /// Nothing, ever. The daemon has this sweep's terminal event and never sends it,
         /// which is the case the bound exists for and the one N65 is right about.
@@ -805,25 +1035,52 @@ mod tests {
     }
 
     impl ProgressSource for Scripted {
-        async fn next_event(&mut self) -> Option<ProgressEvent> {
+        async fn next_event(&mut self) -> Arrival {
             self.asked += 1;
+            // Peeked and waited on **before** anything is taken off the script, because the
+            // trait says this future must be cancel-safe and `select!` drops it every turn:
+            // a delay that popped first would lose its event to the turn the call answers on,
+            // which is the very turn every one of these scripts is about.
+            if let Some(Delivery::Delayed { after, .. }) = self.script.front() {
+                tokio::time::sleep(*after).await;
+            }
             match self.script.pop_front() {
-                Some(Delivery::Event(event)) => Some(event),
+                Some(Delivery::Event(event) | Delivery::Delayed { event, .. }) => {
+                    Arrival::Event(event)
+                }
                 // Put back at the head and answer nothing *this* turn: `select!` drops this
                 // future when the call answers, and the next ask — the tail's — delivers it.
                 Some(Delivery::Late(event)) => {
                     self.script.push_front(Delivery::Event(event));
                     std::future::pending().await
                 }
+                Some(Delivery::Undecodable) => Arrival::Undecodable,
                 // A script that ran out says what an ended stream says.
-                Some(Delivery::Ended) | None => None,
+                Some(Delivery::Ended) | None => Arrival::Ended,
                 Some(Delivery::Silence) => std::future::pending().await,
             }
         }
     }
 
-    /// The sweep's answer in these tests, which only has to be a value the ordering carries.
-    const ANSWERED: &str = "the session";
+    /// The sweep's answer in these tests: the one fact [`sweep_and_watch`] reads out of a
+    /// value it is otherwise generic over.
+    ///
+    /// A named session and not a string, because since note **N70** the answer is where a
+    /// `--task` sweep learns which session it was — so an answer that carried nothing would
+    /// be a test driving the guard with the one input it cannot have.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Answered(Option<Uuid>);
+
+    impl SweepAnswer for Answered {
+        fn session(&self) -> Option<Uuid> {
+            self.0
+        }
+    }
+
+    /// The answer a daemon gives a sweep it ran: this session, and no refusal.
+    fn answer(session: Uuid) -> Answered {
+        Answered(Some(session))
+    }
 
     /// Every event the tail put in front of a human, in order.
     #[derive(Debug, Default)]
@@ -857,6 +1114,17 @@ mod tests {
                 .expect("the watcher was not poisoned")
                 .iter()
                 .map(|event| event.session)
+                .collect()
+        }
+
+        /// Which controls it drew for, which is the other half of "whose event was that":
+        /// two sweeps of one session are told apart by their control and by nothing else.
+        fn controls(&self) -> Vec<String> {
+            self.0
+                .lock()
+                .expect("the watcher was not poisoned")
+                .iter()
+                .map(|event| event.progress.control().to_string())
                 .collect()
         }
     }
@@ -970,14 +1238,14 @@ mod tests {
 
         let answered = sweep_and_watch(
             &mut events,
-            std::future::ready(ANSWERED),
-            &filter,
+            std::future::ready(answer(session)),
+            filter,
             &watcher,
             std::time::Duration::ZERO,
         )
         .await;
 
-        assert_eq!(answered, ANSWERED);
+        assert_eq!(answered, answer(session));
         assert_eq!(
             watcher.drawn(),
             ["sweep_started", "sweep_finished"],
@@ -1005,14 +1273,14 @@ mod tests {
 
         let answered = sweep_and_watch(
             &mut events,
-            std::future::ready(ANSWERED),
-            &filter,
+            std::future::ready(answer(session)),
+            filter,
             &watcher,
             std::time::Duration::ZERO,
         )
         .await;
 
-        assert_eq!(answered, ANSWERED);
+        assert_eq!(answered, answer(session));
         assert_eq!(watcher.drawn(), ["sweep_started", "sweep_finished"]);
         assert_eq!(
             events.asked, 3,
@@ -1034,18 +1302,311 @@ mod tests {
 
         let answered = sweep_and_watch(
             &mut events,
-            std::future::ready(ANSWERED),
-            &filter,
+            std::future::ready(answer(session)),
+            filter,
             &watcher,
             std::time::Duration::ZERO,
         )
         .await;
 
-        assert_eq!(answered, ANSWERED);
+        assert_eq!(answered, answer(session));
         assert_eq!(watcher.drawn(), ["sweep_started"]);
         assert_eq!(
             events.asked, 2,
             "an ended stream was asked for a tail it cannot have"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_control_in_this_session_is_drawn_but_does_not_end_this_tail() {
+        // The half of the residual `admits` cannot see, because under `--session <UUID>` it
+        // asks about the session and stops there: a second sweep of a **different control**
+        // in this same session carries this session's id, so it is admitted — and a tail
+        // that stopped at any admitted terminal event would stop at somebody else's last
+        // word and abandon its own.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(finished(session, "brightness")),
+            Delivery::Event(finished(session, "focus_absolute")),
+        ]);
+
+        let tail = drain_tail(&mut events, &filter, &watcher, std::time::Duration::ZERO).await;
+
+        assert_eq!(tail, Tail::Terminal);
+        // Drawn, because `admits` is what draws and the caller named the session: the
+        // inaccuracy this leaves is a line on a bar, and the assertion below is the loss it
+        // must not leave.
+        assert_eq!(watcher.drawn(), ["sweep_finished", "sweep_finished"]);
+        assert_eq!(
+            watcher.controls(),
+            ["brightness", "focus_absolute"],
+            "the tail ended at another sweep's last word"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_sweep_in_this_session_does_not_disarm_this_ones_tail() {
+        // **F1, held still (note N70).** Two sweeps under one `--session S` — the camera
+        // actor queues rather than refuses — so the earlier one's `SweepFinished` carries
+        // *this* session's id and `admits` lets it through. A guard that took `ended` from
+        // any admitted terminal event was disarmed by it, skipped the tail, and lost this
+        // sweep's own last event when it lost the race to the answer.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(event(session, "focus_absolute")),
+            Delivery::Event(finished(session, "brightness")),
+            Delivery::Late(finished(session, "focus_absolute")),
+        ]);
+
+        let answered = sweep_and_watch(
+            &mut events,
+            std::future::ready(answer(session)),
+            filter,
+            &watcher,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(answered, answer(session));
+        assert_eq!(
+            watcher.controls(),
+            ["focus_absolute", "brightness", "focus_absolute"],
+            "another sweep's last word disarmed this sweep's tail"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_cameras_sweep_of_this_control_does_not_disarm_this_ones_tail() {
+        // **F1's headline, held still (note N70).** Two `wchc calibrate sweep --task framing
+        // --control brightness` on two cameras: the fan-out is one per daemon, so the other
+        // camera's `SweepFinished` arrives on this socket, and under `--task` the control is
+        // all this process has to filter on — so it is admitted. It must not be allowed to
+        // say that *this* sweep is over, and the session that decides is the one the daemon
+        // names in its **answer**, which arrives exactly one step before the tail needs it.
+        let mine = Uuid::from_u128(1);
+        let theirs = Uuid::from_u128(2);
+        let filter = SweepFilter::new(
+            &SessionRef::Task {
+                task: "framing".to_owned(),
+            },
+            &request("focus_absolute"),
+        );
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(event(mine, "focus_absolute")),
+            Delivery::Event(finished(theirs, "focus_absolute")),
+            Delivery::Late(finished(mine, "focus_absolute")),
+        ]);
+
+        let answered = sweep_and_watch(
+            &mut events,
+            std::future::ready(answer(mine)),
+            filter,
+            &watcher,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(answered, answer(mine));
+        assert_eq!(
+            watcher.sessions(),
+            [mine, theirs, mine],
+            "another camera's sweep disarmed this sweep's tail"
+        );
+    }
+
+    // ------------------------------------------- a payload this build cannot read
+
+    #[tokio::test]
+    async fn a_payload_this_build_cannot_read_is_skipped_and_the_stream_read_on() {
+        // **F3, held still (note N70).** `CalibrationProgress` is an internally-tagged enum
+        // with no catch-all arm, so one variant a newer `wchd` has and this `wchc` does not
+        // is one `serde_json` failure — and jsonrpsee hands that back as `Some(Err(_))` on a
+        // subscription that is **still open** with the rest of the sweep behind it. Reading
+        // it as the end of the stream discarded every remaining event while they sat
+        // decodable in the queue: a bar frozen mid-sweep, which is N69's symptom from a cause
+        // N69 did not consider.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(event(session, "focus_absolute")),
+            Delivery::Undecodable,
+            Delivery::Event(finished(session, "focus_absolute")),
+            // Silence rather than `Ended`, so nothing but the terminal event above can be
+            // what keeps the tail out of this: an ended stream would skip it for its own
+            // reason and this test would pass for the wrong one.
+            Delivery::Silence,
+        ]);
+
+        let answered = sweep_and_watch(
+            &mut events,
+            std::future::ready(answer(session)),
+            filter,
+            &watcher,
+            SWEEP_DRAIN_BUDGET,
+        )
+        .await;
+
+        assert_eq!(answered, answer(session));
+        assert_eq!(
+            watcher.drawn(),
+            ["sweep_started", "sweep_finished"],
+            "one unreadable notification ended a sweep's progress"
+        );
+        assert_eq!(
+            events.asked, 4,
+            "the stream stopped being read at the payload it could not decode"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payload_this_build_cannot_read_does_not_disarm_the_tail() {
+        // The same misreading at the other end of the same sweep, and the more expensive
+        // half: an undecodable payload that set `watching = false` took the tail away too, so
+        // the terminal event that lost its race to the answer had nothing left to collect it.
+        // One notification this build could not read, and a sweep loses both its remaining
+        // progress *and* its closing line.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(event(session, "focus_absolute")),
+            Delivery::Undecodable,
+            Delivery::Late(finished(session, "focus_absolute")),
+        ]);
+
+        let answered = sweep_and_watch(
+            &mut events,
+            std::future::ready(answer(session)),
+            filter,
+            &watcher,
+            SWEEP_DRAIN_BUDGET,
+        )
+        .await;
+
+        assert_eq!(answered, answer(session));
+        assert_eq!(
+            watcher.drawn(),
+            ["sweep_started", "sweep_finished"],
+            "an unreadable notification disarmed the tail"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payload_this_build_cannot_read_does_not_end_a_tail_already_running() {
+        // And once inside the tail, where the same collapse would have answered `Tail::Ended`
+        // — "the daemon has stopped talking" — to a stream that had this sweep's last word
+        // one notification further along. Told apart from the real thing by
+        // `a_stream_the_daemon_ended_ends_the_tail`, which is why both variants exist.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Undecodable,
+            Delivery::Event(finished(session, "focus_absolute")),
+        ]);
+
+        let tail = drain_tail(&mut events, &filter, &watcher, std::time::Duration::ZERO).await;
+
+        assert_eq!(tail, Tail::Terminal);
+        assert_eq!(watcher.drawn(), ["sweep_finished"]);
+    }
+
+    // ------------------------------------------------------------- the bound as the subject
+
+    /// A delay this bound is documented to cover.
+    ///
+    /// [`limits::CLIENT_SWEEP_DRAIN_MS`] is priced for "one already-woken task waiting for a
+    /// core" — measured at 34 µs (note **N69**), argued to be milliseconds rather than
+    /// hundreds of them on a host oversubscribed eightfold. A hundred milliseconds is three
+    /// orders of magnitude past the measurement and still inside the bound, so a build that
+    /// cannot deliver an event this late is a build whose budget has stopped covering the
+    /// case it exists for.
+    const A_MOMENT: std::time::Duration = std::time::Duration::from_millis(100);
+
+    #[tokio::test(start_paused = true)]
+    async fn the_tail_waits_the_moment_out_and_the_budget_is_what_pays_for_it() {
+        // **F2, held still (note N70).** Every other test in this file hands the tail
+        // `Duration::ZERO`, which drives every arm of `drain_tail` and asserts nothing at all
+        // about the number the shipped path passes — so `CLIENT_SWEEP_DRAIN_MS = 0` deleted
+        // N69's fix while leaving its code in place and the whole workspace suite stayed
+        // green. Here the budget is the subject: the terminal event is a hundred milliseconds
+        // behind the answer, on a clock this test owns, and the assertion is that the real
+        // constant is enough to collect it.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(event(session, "focus_absolute")),
+            Delivery::Delayed {
+                after: A_MOMENT,
+                event: finished(session, "focus_absolute"),
+            },
+        ]);
+
+        let started = tokio::time::Instant::now();
+        let answered = sweep_and_watch(
+            &mut events,
+            std::future::ready(answer(session)),
+            filter,
+            &watcher,
+            SWEEP_DRAIN_BUDGET,
+        )
+        .await;
+
+        assert_eq!(answered, answer(session));
+        assert_eq!(
+            watcher.drawn(),
+            ["sweep_started", "sweep_finished"],
+            "the tail refused to wait {A_MOMENT:?} for the event it exists to collect, under a \
+             budget of {SWEEP_DRAIN_BUDGET:?}"
+        );
+        // …and it ended on the event rather than on the timer, which is the sentence
+        // `CLIENT_SWEEP_DRAIN_MS`'s doc opens with ("it is a bound and not a wait") and which
+        // nothing asserted: a drain that waited its bound out would cost every sweep a
+        // quarter second, and that regression has already happened once (note N69, 0.47 s →
+        // 0.77 s).
+        assert!(
+            started.elapsed() < SWEEP_DRAIN_BUDGET,
+            "the tail waited out its bound instead of ending on the event: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tail_with_no_budget_is_the_fix_deleted_and_that_is_visible_here() {
+        // The inverse arm, and the one that makes the test above a statement about the
+        // *number*: the same script under a budget of zero loses the same event. AGENTS rule
+        // 2 in its own words — a test that cannot fail in the other direction is not a test —
+        // and the direction that matters here is the one a mutation to zero would take.
+        //
+        // It is also the shape N65 argued for and N69 measured failing: a drain that refuses
+        // to wait finds this client's queue provably empty, because the event it came for has
+        // not arrived yet.
+        let (session, filter) = mine();
+        let watcher = Recording::default();
+        let mut events = Scripted::of([
+            Delivery::Event(event(session, "focus_absolute")),
+            Delivery::Delayed {
+                after: A_MOMENT,
+                event: finished(session, "focus_absolute"),
+            },
+        ]);
+
+        let answered = sweep_and_watch(
+            &mut events,
+            std::future::ready(answer(session)),
+            filter,
+            &watcher,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(answered, answer(session));
+        assert_eq!(
+            watcher.drawn(),
+            ["sweep_started"],
+            "a budget of zero collected an event that had not arrived, which is not something \
+             a bound can do"
         );
     }
 
