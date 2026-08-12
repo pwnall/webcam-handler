@@ -10,17 +10,19 @@ reconciliation its meta-rule scheduled ("due at the first gate whose defects it 
 to predict, and no later than G4"): it is grounded on the P1 review (four confirmed
 defects) and the P2 review (thirty-one candidates, fifteen confirmed — notes entry E4),
 and Part E's record has since absorbed the G3 reconciliation (P3: thirty-one candidates,
-twelve confirmed over nine distinct defects — notes entry E6), whose rows are tagged
-[S:E6] where they landed. Rules that fired now carry local citations; rules yet unfired
-keep their transfer tags — three gates in, nothing has earned deletion. Part E's closing
-section is the reconciliation record.*
+twelve confirmed over nine distinct defects — notes entry E6) and the G4 one (P4: eight
+confirmed findings, seven fixed and one ruled on — notes N70–N73 and E13's two
+amendments, there being no evidence entry for that review to cite), whose rows are tagged
+[S:E6], [S:N69] and [S:N70] where they landed. Rules that fired now carry local citations;
+rules yet unfired keep their transfer tags — four gates in, nothing has earned deletion.
+Part E's closing section is the reconciliation record.*
 
 Provenance tags: **[SB]** transferred from the lm-switchboard rubric (predecessor
 project; its provenance chains are not restated here); **[V]** transferred from the
 vmcell rubric (the grand-predecessor — its unsafe/FFI rules were paid for by real
 defects, cited inline where the payment matters); **[BP]** best practice, unmatched to a
-surfaced defect yet; **[PF:n]** surfaced by hardware probes (docs/6
-§1.2, PF:1–16 — measured on real cameras and drivers); **[S:Nn]** / **[S:En]**
+surfaced defect yet; **[PF:n]** surfaced by hardware probes (docs/6 §1.2, continued in
+the notes through PF:23 — measured on real cameras and drivers); **[S:Nn]** / **[S:En]**
 repo-surfaced, citing implementation-note case law and evidence entries — the tags v1
 promised are now live.
 
@@ -110,7 +112,13 @@ impl · `review` human/agent judgment, no mechanical gate yet.
    round-trips, an error variant with no producer, a settle deadline that bounds nothing:
    for every constant, config field, and vocabulary entry, ask what *reads* it and what
    goes red when it stops being read. The camouflage to watch for: a green plumbing test
-   named for the whole.
+   named for the whole. **Ask the converse, because it is the same defect with the reader
+   present** [S:N70]: a constant the *product* reads whose value no test constrains.
+   `CLIENT_SWEEP_DRAIN_MS` was passed as `Duration::ZERO` by all eight of the tests around
+   it — correct for each arm and collectively an assertion that the number does not matter
+   — so editing one digit deleted the fix the number prices and left 939 tests green. And
+   the answer to "what reads it" goes stale: a doc comment saying a consumer *is still
+   owed* is itself a declaration about a reader, and needs the same pass the constant does.
 
 9. **The fake is faithful, driven, and failure-injectable — and a divergence is a
    finding against whichever side is wrong.** [SB A9/A20][E5][S:E4] The fake replays
@@ -120,7 +128,13 @@ impl · `review` human/agent judgment, no mechanical gate yet.
    real device exhibits is a finding against the fake — and the P2 review supplied the
    converse case: the fake refused the `Bytes`-at-a-scalar write the real backend
    mis-dispatched, so the divergence convicted the real side [S:E4]. Ask which side is
-   lying before assuming it is the stand-in.
+   lying before assuming it is the stand-in. **The rule is about every double, not only
+   the backend fake** [S:N70]: a fault menu is a claim about the thing it stands in for,
+   and it is checked against that thing rather than against the code that consumes it.
+   `ProgressSource`'s scripted menu documented an undecodable payload as end-of-stream;
+   `jsonrpsee-core` 0.26 sets `is_closed` only on the arm where its receiver yields `None`
+   (`src/client/mod.rs:429`), so the collapse the double asserted was a claim about a
+   dependency nobody had read.
 
 10. **Requested is not applied, anywhere in the stack.** [PF:6] The pair survives every
     layer: engine, session sample records, RPC DTOs, CLI output. A layer that collapses
@@ -426,22 +440,58 @@ PID 1's stack that tested green because the bytes landed in padding):
 - [ ] **The observation counter that counts non-observations** [S:E4] — a hardware arm
       that tallies "toggled an automation control" as evidence when the toggle moved
       nothing; an observation is a *diff*, not an attempt.
-- [ ] **The fixture that cannot exercise the rule** [S:E6] — a test that covers the right
-      code with the wrong data: the whole-device plan arm drafted the motor-less profile,
-      so the one line keeping PTZ controls calibratable could be inverted with the whole
-      workspace green while the motorised profile sat in the corpus, loaded by two other
-      tests in the same file. List-vs-list completeness seen from the data side; the
-      population a fixture *can* reach is part of what a test covers.
+- [ ] **The fixture that cannot exercise the rule** [S:E6][S:N70] — a test that covers
+      the right code with the wrong data: the whole-device plan arm drafted the
+      motor-less profile, so the one line keeping PTZ controls calibratable could be
+      inverted with the whole workspace green while the motorised profile sat in the
+      corpus, loaded by two other tests in the same file. List-vs-list completeness seen
+      from the data side; the population a fixture *can* reach is part of what a test
+      covers. **The second costume is an identifier, not a profile**, and it is why this
+      row is worth re-reading rather than nodding at: the test pinning "another sweep's
+      terminal event must not end this one's tail" named the other sweep with a session
+      id the filter under test *already rejects*, so it pinned the case that works and
+      could not express the case that does not [S:N70].
 - [ ] **The fake validating the fake** — a calibration test asserting the fake's optimum
       using the fake's own model as the expectation; the expectation comes from the
       profile/fixture, independently stated.
+- [ ] **The test that can only agree with the code** [S:N70] — the general form of three
+      rows above (the stub that agrees with its author, the fixture that cannot exercise
+      the rule, the fake validating the fake), and the one that catches what each of
+      them individually misses: *a test asserting the assumption that produced the code,
+      in a shape that cannot express the assumption being wrong*. A fault menu, a
+      fixture id and a parameter value are each a **claim about the world**, and a test
+      built on one is only as true as the claim. All three of N70's findings are
+      instances — a session id the filter rejects, a `Duration::ZERO` passed by every
+      test of a bound, and a fault menu whose own doc stated the collapse it was
+      supposed to catch. Note the corollary, because the positive requirement below
+      reads as covering it and does not: **an exhaustive walk over a fault menu cannot
+      see a variant the menu does not have.** Ask of every double, fixture and constant:
+      *what would this look like if it were wrong?*
+- [ ] **The green run with no load stated** [S:N69] — for a defect that is an ordering,
+      a green run is evidence only if the run's load is stated, and the load has to be
+      the one the defect was seen under. The level is a property of the race and not a
+      house constant, so it is measured per defect and written beside the rate: the lost
+      terminal event is 0 of 20 quiet, 0 of 20 at eight spinners, 0 of 20 at sixty-four,
+      and 2 of 150 under four concurrent workspace suites — four of those five levels
+      would have closed the investigation, and a fifth (a real camera, E13) makes it 2
+      of 10. Its mirror is a verdict that moved with the machine and was spelled with
+      the word a real finding gets [S:N52][S:N66][S:N68]. One rule, two faces: **a run's
+      resources are part of its result.**
 - [ ] **Restoration by assumption** — an R3 test that restores in teardown but never
       asserts the restoration happened (teardown failures vanish).
 - [ ] **Pixel-content assertions on real hardware** — lighting varies; assert
       invariants (decodability, dimensions, metric *orderings* under controlled
       perturbation), not pixels.
-- [ ] **Sleeps as synchronization** — settle logic is a policy object with a stepped
-      clock; a bare `sleep` in a test is a flake being scheduled.
+- [ ] **Sleeps as synchronization** — settle logic is a policy object on a clock the
+      test owns; a bare `sleep` in a test is a flake being scheduled. **Two shapes, and
+      naming only the first is what this row used to do** [S:N67]: a `SteppedClock`
+      where the deadline *is* the subject, and a `FrozenClock` where it is not. A test
+      with nothing to say about a duration wants a deadline that cannot expire, because
+      a real clock on that path lets a loaded machine answer `SettleTimeout` to a
+      question about a device — six of seventeen tests per run under sixty-four
+      spinners, over a population of seventeen sites that a symptom named one of.
+      `FrozenClock` is stateless and therefore `Sync` by construction, which is how this
+      was fixed without reopening N45.
 
 **Positive requirements:**
 
@@ -474,10 +524,21 @@ defect class surfacing in review without a gate files the gate in the same PR (r
   considered-and-not-adopted list, and the §1 non-goals are settled; a finding that
   re-litigates them without new evidence is noise. Implementation notes are case law.
 - **Mutations at workspace scope; absence claims name where they looked** (rule 2).
+- **A green run is evidence about a race only with its load stated** [S:N69] — measured
+  per defect, at the level the defect was seen under, and written beside the rate. Four
+  entries turn on a quiet machine read as proof (N65, N67, N69, E13) and four on a starved
+  one read as a finding (N52, N66, N68, N71). A refutation attempted at the wrong load is
+  not a refutation.
 - **Adversarial verification for every Critical/High finding** — attempt the refutation
   before reporting; a refuted finding teaches the rubric something either way.
 - **Every finding carries** `file:line`, category, the red test or fixture it lacks, and
   a direction. Confirm cited lines before fixing.
+- **The review's own record is a dated evidence entry** — candidate count, confirmed
+  count, and what the review looked for and did not find. E4 and E6 are the shape. G4's
+  went unwritten, its findings distributed across four notes and two amendments to a
+  transcript, each locally well argued; what fell between them was the arithmetic N54
+  reads a sub-milestone's sizing from and the absence list the reconciliation below has to
+  carry alone. Write the entry before the reconciliation, not after.
 - **Reconciliation at each phase gate** — the meta-rule. This revision is the first
   reconciliation; the next is due at G3 and each gate after, appended to the record
   below (a new doc version only when the accumulated deltas warrant one).
@@ -533,9 +594,171 @@ graded LOW were both structural rather than observable — a hand `const ALL` th
 longer owns, and a read-modify-write straddling the lock — and both are now closed by
 construction rather than by a test.
 
-**Not yet fired, retained:** the B6/B7 daemon/web/CLI-parity rows await P4–P5 subjects; the
-muxer rows await P6. [BP]-tagged items stay until a gate either pays for them or proves them
-dead — three gates in, nothing qualifies for deletion.
+**G4 (P4, eight confirmed findings — seven fixed, one ruled on and left; notes N70, N71,
+N72 with its amendment, and N73).** No candidate count survives, and the reason goes
+first: **G4's review has no evidence entry.** E4 and E6 are the P2 and P3 reviews as one
+dated record each; G4's landed as four notes plus two amendments to a transcript, every
+one argued locally and well (N72 says why it is not an E13 amendment, N73 why it is not an
+N72 one), and nothing held the review whole. The count, the false-positive rate N54 reads
+a sub-milestone's sizing from, and the absences below therefore exist nowhere else. Part E
+now asks for the entry by name.
+
+**Predicted by the rubric — and the most useful answer this record has produced is "yes,
+and it did not help".** G3's reconciliation added Part C's smell *a test whose fixture
+cannot exercise the rule it pins*. One gate later, with the row in the document, N70's F1
+(HIGH) is that smell: `another_sweeps_terminal_event_neither_draws_nor_ends_this_tail`
+names its other sweep with `Uuid::from_u128(2)` — **a session the filter under test
+already rejects** — so it pinned the case that works and could not reach the case that
+does not, which is a neighbouring sweep's `SweepFinished` disarming this sweep's tail and
+losing the terminal event N69 landed to save. **The defect N69 exists to prevent, arranged
+by N69's own guard.** Why a written row did not fire, in three parts, none of them "the
+row is badly written". It is a *review* instrument and a review runs a session after the
+fixture is chosen — the author of a fix is never the reader of this document at the moment
+they type a literal. Its worked example is a profile in the corpus, so a reader scanning
+for "the wrong device" does not recognise "the wrong session id"; the row carries both
+costumes now. And rule 1 wants a named class to become a lint, a job or a test: this one
+has none, its only mechanical proxy being the mutation floor, whose `examine_globs` cover
+neither `crates/client` nor `crates/schema` — where both HIGH findings lived. A row
+applicable only by a person reading the right file at the right moment is worth keeping
+and is **not** prevention.
+
+**What the rubric had no row for — first, the test that can only agree with the code.**
+N70's three findings are one sentence: *each was a test asserting the assumption that
+produced the code, in a shape that could not express the assumption being wrong.* F1's
+fixture id, above. F2's `Duration::ZERO`, passed by all eight of the tail's tests — right
+for each arm and collectively an assertion that the number does not matter, so
+`CLIENT_SWEEP_DRAIN_MS = 0` reverted N69's fix by one digit and left **939 tests green**;
+the const-assert beside it compared the number to `FRAME_DEADLINE_MS`, two seconds and an
+upper bound on *waiting* for a frame rather than the cost of one, so it admitted every
+value to 1999 while reading as a checked relation. F3's fault menu, whose
+`Delivery::Ended` variant's own doc *stated* the collapse it was meant to catch. Part C
+had three rows here — the stub that agrees with its author [S:N10], the fake validating
+the fake, the fixture that cannot exercise the rule [S:E6] — each naming one artefact; the
+general form is a row of its own now, with two corollaries. **An exhaustive walk over a
+fault menu cannot see a variant the menu does not have** — Part C's positive requirement
+was satisfied throughout and is the wrong question. And a double is a claim about the
+thing it stands in for, which for `ProgressSource` was `jsonrpsee-core` 0.26's
+`impl Stream for Subscription` (`src/client/mod.rs:429`), found to disagree; A9 said that
+of the fake and a device and says it of any double now. Unlike N67 and N69, **none of the
+three needed a loaded machine**.
+
+**Second, the load class.** N65, N67, N69 and E13 are four measurements taken on an
+unloaded machine and read as proof: a counting drain over five quiet runs; eight spinners
+where sixty-four and concurrent builds failed 20 of 20; 0/20 quiet, 0/20 at eight and 0/20
+at sixty-four against 2/150 under four concurrent workspace suites; and 0 of 3 quiet
+against 2 of 10 at the real cameras. N69 states the rule and nothing here carried it —
+**for a defect that is an ordering, a green run is evidence only if the run's load is
+stated, and the load has to be the one the defect was seen under** — so it is a Part C
+smell and a Part E step, governing the test that gets written *and* the refutation Part E
+demands before a High finding is reported. Its mirror is four entries deep on the other
+side (N52's verdict moving with `nproc`, N66's and N68's disk, N71's selftest running a
+tmpfs out of quota and reporting it as a predicate being wrong about the tree). One rule,
+two faces: **a run's resources are part of its result.**
+
+**What the rubric named but under-specified, and now says.** Part C's clock row said "a
+policy object with a stepped clock", which is one shape of two and not the one the broken
+path needed: N67's tests had nothing to say about a duration and wanted a deadline that
+*cannot expire*, and `FrozenClock` is stateless and therefore `Sync` by construction, so
+N45's ruling was untouched rather than worked around. AGENTS has named both shapes since
+`364ea5f`; this document does now. **A8 fired twice in one phase, once in each
+direction.** Forward, and not at the review — at P4g's check-off of N34 and N42: asking
+what reads `PhotoResponse::bytes_match_the_delivery` found its doc still saying a consumer
+"is still owed", naming `wchc` as owing it, two sub-milestones after `Remote::photo` began
+calling it. The declaration was sound and the *bookkeeping* was the stale artefact, which
+is A8's question answering correctly about a paragraph. Backward, at the review: F2 is
+A8's converse, a constant the **product** reads that no test constrains — which "a typed
+declaration nothing reads" cannot express, because something did read it. The row asks
+both halves now.
+
+**Rule 6 and [S:N10]'s family, twice more in one phase, and only one came from the
+adversarial session.** `smoke-hw.sh` printed "N claim(s) declined by tests that ran" out
+of a fail-fast run, so arms a cancellation dropped were silently absent from a named,
+counted skip and a truncated run read as a complete one — rule 3's defect with the subject
+changed from a selection to a census, and it had corrupted a sentence of E13's own prose
+before anybody looked (N71; the repair is a census comparing `Starting N tests` against `N
+tests run`, because a flag cannot go red). The other is P4g's row-accretion pass rather
+than the review's: `just gate-g4` had no `run-all.sh` row where g0–g3 all carry one, so
+**nine of the twenty-one shipped predicates were reachable from `just ci` and from no
+phase gate**, `counted-selections.sh` — v1's "`just gate-g4` counted" — among them. Which
+pass found which is the point: the session that adds a gate's last rows is itself a review
+of the gate, and in this register it out-found the adversarial one.
+
+**Rule 1, against a class this project had named in its own prose and left ungated.**
+AGENTS.md's opening declares its own deployment and then says what to do "when they
+drift": a reconciliation procedure written into a document is a project naming an
+anticipated defect class in its own words, and rule 1 says a named class becomes something
+that can go red. This one had nothing. Ten commits had moved the pair and every one moved
+both, which is the exact shape of a rule nobody has needed *yet* — the eleventh puts two
+different sets of non-negotiable rules in force at once with no reader able to tell.
+`agents-md-current.sh` is the gate (N71): byte-identical with no allowance, source and
+deployed filename read out of the document's own deploy sentence, a symlinked root copy
+reported rather than accepted. Its first version went red on **docs/9's row describing
+it**, which quotes the rule it documents — a gate that cannot tell a declaration from
+prose about one forbids writing about itself. N73 is that defect in a second gate, found
+while fixing F4 and F5: `ignored-suites-have-recipes.sh` read `#[ignore]` wherever the
+characters appeared and taxed three sentences of N72's own writing. Both close the same
+way, and the second script already had the guard **in its other half, with the reason
+written out**.
+
+**F7, confirmed and deliberately not changed.** Twelve predicates run twice per `just
+gate-g4`, once through their own row and once inside `run-all.sh`'s derived population.
+Kept: the named rows carry each criterion's claim in the words docs/7 uses, `run-all.sh`
+says only "22 predicates green", and the duplicated work is minutes against a first row
+that is the mutation floor's tens of them. The fix if it ever matters is exact-match
+de-duplication in `phase.sh`, safe because a `run-all.sh` failure still fails the gate.
+Recorded because a cost nobody wrote down is a cost the next reader re-discovers.
+
+**Two findings graded HIGH were in the phase's own newest code — four commits and under
+five hours old — and one of them silently deleted its own fix.** N69 landed at 13:06 with
+six buggy implementations watched failing and a measured 2-in-150; N70 found three defects
+around it at 17:53 the same day. A sub-milestone's code is reviewed by the session that
+wrote it, and this is what the session after is for. The MED band is the same story on
+hardware: an `assert!(… >= 3)` turning a device shape into a red run at three sites across
+two rungs, each firing after the camera had been written to and before the restore.
+
+**What the review did *not* find**, from the record rather than by assertion, and with no
+evidence entry to hold it this is where it lives. **No unsound `unsafe`, over the phase
+that put a second kernel socket in the tree**: `sys::uevent` carries no `unsafe` block at
+all, `rustix`'s `sockaddr_nl` coming from `linux-raw-sys`' bindgen output, and the one
+block P4 added — `Fd::as_fd` — exists *because* P4d's own review took a bare `RawFd` out
+of a signature. The residual register stands at eleven blocks and one `unsafe impl`, one
+obligation each, reconciled against the tree by `unsafe-scope.sh`'s third claim, which got
+its own `g4` row at P4g because no phase row at any letter had named it. **No state write
+outside D9's home**, over the phase that first put a process holding the state directory
+for its whole lifetime behind that rule, with `atomic-write-home.sh`'s raw-write
+population widened at P4e-i to see `rustix`'s spelling of an open. **The mutation floor
+clean on the review's own morning** — 526 mutants, 442 caught, 11 survivors, 0 timeouts,
+against eleven acceptances checked both ways (N25's six, N26's three, N27's one, N37's
+one) — and it was the floor, through N60's rule that a second-direction failure means
+investigate rather than delete the line, that surfaced N69 at all. **No
+availability-to-capability conversion in the product**: the one rule-7 finding is F5 and
+it is in a *test's prose*, a `SKIP` line claiming "a fact about this sensor's control set"
+for a predicate that also refused an INACTIVE `gain` [PF:3], a current outside its own
+declared range [PF:4] and four distinct capability terms. Its repair is fifteen typed
+disqualifiers in `testkit::battery` with sixteen unit tests beside them, because **no
+camera on this desk can produce the shapes that sentence was wrong about** — which is why
+they are unit tests over `ControlDesc` values and not another hardware run. And one
+absence is now known to have been the wrong question: G3's "no fault-menu variant without
+a driven inverse" held again, and F3 is why it is worth less than it reads — every variant
+had its driven inverse, and the variant that mattered was not in the menu.
+
+**Not yet fired, retained:** G4 is the first gate at which B6 and B7 have subjects, and
+their fourteen rows split three ways. **Six now have a full P4 subject** — the T5 trait as
+the only wire surface with the method-count walk driven from the registered `RpcModule`
+(P4a/P4c); the D13→RPC exhaustive match (P4a); disconnect-mid-sweep neither cancelling the
+sweep nor leaking the subscription (P4e-i); open-on-first-use and idle close observable
+through the status surface (P4b/P4c); one command surface with the parity gate green over
+a real socket (P4f); and `--json` as schema DTOs verbatim, now that two roots emit it and
+the bytes are compared. **Three are split, so G4 ticks half**: the shutdown row is
+P4e-ii's except for its MJPEG clause, which is P5b's; the listener row's UDS half is
+asserted at startup and by `uds-permissions.sh` while its TCP and token halves are P5a's;
+and B7·3 is G4's cleanest subject-present-test-absent — "progress bars suspend around log
+lines" has had a producer since P4f, has **no assertion anywhere** and no
+`ProgressBar::suspend` call in the tree, and E13 names the obstacle in its own "what it
+does not establish" (the bar draws nothing when standard error is not a terminal, and no
+test in this workspace owns one). **Five remain P5's**: the MJPEG route and the four web
+rows. The muxer rows await P6. [BP]-tagged items stay until a gate either pays for them or
+proves them dead — four gates in, nothing qualifies for deletion.
 
 ---
 

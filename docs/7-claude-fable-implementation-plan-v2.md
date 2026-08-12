@@ -18,7 +18,7 @@ gets a session of its own. Two work items were also added on standing instructio
 already recorded: the mutation floor docs/9 scheduled "before G4, not after" (P3f), and
 the `wch-priv` narrowing N8 tied to G6 (P6e).
 
-## Closure ledger — P0–P3
+## Closure ledger — P0–P4
 
 Recorded here so the plan does not restate what the notes and the criteria table
 already prove. Evidence entries live in `docs/implementation-notes.md`.
@@ -28,7 +28,26 @@ already prove. Evidence entries live in `docs/implementation-notes.md`.
 | P0 — foundations | `ddde6f7` | `g0`: 8 rows | — | gates selftested both directions from day one |
 | P1 — V4L2 read path | `59f8293`, fixes through `b7f84c3` | `g1`: 16 rows | E1 (+ its amendments) | 4 confirmed defects, fixed; PF:14–15 and N7 landed, and PF:13 (recorded while P0 was open) became corpus |
 | P2 — writes + photo | `52ec45c`, fixes in `7181aef` | `g2`: 25 rows | E2, E3, E4 | 31 candidates, 15 confirmed, fixed; PF:16 and N9 landed |
-| P3 — calibration | `abafc25`, `856170a`, fixes in the commit carrying E6 | `g3`: 31 rows | E5, E6 | 31 candidates, 12 confirmed (9 distinct defects), fixed; PF:17–20, N11–N21 landed as the phase ran, N22–N24 with the fixes; the eighth calibrate verb (`calibrate restore`) is the review's one surface change |
+| P3 — calibration | `abafc25`, `856170a`, fixes in the commit carrying E6 | `g3`: 31 rows | E5, E6, E7 | 31 candidates, 12 confirmed (9 distinct defects), fixed; PF:17–20, N11–N21 landed as the phase ran, N22–N24 with the fixes; the eighth calibrate verb (`calibrate restore`) is the review's one surface change |
+| P4 — daemon and daemon client | `06489e3`, `9c8b46a`, `5faa4ee`, fixes through `e69ffba`, closed by the commit carrying this row | `g4`: 42 rows | E8–E13 (+ E13's two amendments) | no candidate count was kept, and no evidence entry holds the review — the first gate of which both are true; **8 confirmed**, 7 fixed and 1 ruled on and left (twelve predicates run twice per `just gate-g4`, kept because the named rows carry each criterion's claim and `run-all.sh` says only "22 predicates green"). Two are HIGH and both are in the phase's own newest code, one of them silently deleting its own fix. PF:21–23 and N28–N69 landed as the phase ran, N70–N73 with the fixes. **No surface change** — the review added no verb and no flag; what it changed is `wchc`'s sweep tail, a hardware rung's decline vocabulary (fifteen typed disqualifiers where a `SKIP` line had one sentence), and two gates |
+
+Where E7 and E8 attach was open and is ruled here, because an evidence entry no row
+names is an entry nobody re-reads. **E7 is P3's and E8 is P4's.** The Evidence column
+records the dated entries a phase *produced*, not the entries its gate executes — which
+is the only reading under which P1's row can name E1 and P2's can name E2 at all, since
+for both of them the criterion is the carve-out's ("the recipe exists and selects tests;
+the run itself is evidence, not CI-gating") and the entry is the run. E7 is P3f's first
+run and its triage, and P3f is a numbered sub-milestone of P3 in this document. That it
+lands *after* P3e closed G3 is not an anomaly to be corrected away: the floor was
+commissioned "before G4, not after", so it sits inside P3 and points at G4, and **a
+phase and its gate are not the same object here** — this row is where that shows. E8 is
+the same job re-run over the scope **P4a** widened, on the strength of two survivors the
+P4a review found in `webcam-handler-api` by hand, so it belongs to the phase that
+widened it, as E10 belongs to the phase that widened it again. The alternative reading —
+attach both to P4 because `./scripts/mutants.sh` is a `g4` row — was rejected: it would
+file a 2026-08-09 entry recording work done under `## P3` into a row whose closing
+commits are all P4g's, and G4's mutation-floor row rests on the register in
+`scripts/mutants-accepted.txt` being clean in both directions, not on E7's transcript.
 
 Also landed along the way, outside any v1 phase: the privileged development helper
 `wch-priv` (§2.13, note N8) and the managed R2 rung (`just rung-vivid-managed`), which
@@ -631,14 +650,32 @@ byte-identical, with the daemon exiting 0 on the SIGTERM that ended the run.
 
 ### P4g — G4 close
 
-**Lands:** remaining criteria rows, counted; R3 evidence — the daemon against the real
-cameras: a photo over UDS, a calibrate sweep over UDS with live `wchc` progress —
-recorded in the notes. The **hotplug cycle is already recorded**, as note E9 at P4d, with
-the transcript and the two mutants that arm was watched failing; G4's own entry cites it
-rather than re-running it, because a transcript written twice is two transcripts nobody
-can tell apart. **Then, in its own session:** the
-adversarial review; fixes; evidence entry; rubric reconciliation (the per-gate cadence
-docs/8 Part E schedules — this appends G4's instance to its record).
+**Lands** (`06489e3`, `9c8b46a`, `1a51c81`, `5faa4ee`), in four commits: the remaining
+criteria rows, counted — seven of them, and the hole they filled was `run-all.sh`, which
+g0, g1, g2 and g3 all carry and g4 did not, so nine of the twenty-one shipped predicates
+were reachable from `just ci` and from no phase gate at all, `counted-selections.sh`
+among them; R3 evidence — the daemon against the real cameras: a photo over UDS, a
+calibrate sweep over UDS with live `wchc` progress — recorded in the notes as **E13**.
+The **hotplug cycle is already recorded**, as note E9 at P4d, with the transcript and
+the two mutants that arm was watched failing; G4's own entry cites it rather than
+re-running it, because a transcript written twice is two transcripts nobody can tell
+apart. [PF:23] is the one thing this sub-milestone did not plan: the OBSBOT stopped
+advertising 3840×2160 and 120 fps with nothing on our side of the cable moved, and the
+corpus was re-captured on the owner's ruling — the device is the authority on itself,
+and a committed profile is `declared` the moment the device stops agreeing with it.
+
+**Then, in its own session, and it is where the phase's headline is:** the adversarial
+review (`f61b2ae`, `b436e62`, `9142b81`, `2a3a58c`, `e69ffba`), whose eight confirmed
+findings are recorded as notes **N70–N73** and as two amendments to E13, and whose
+arithmetic is the ledger row above. Two are HIGH and both are in the newest code the
+phase had — the sweep tail N69 landed four commits and under five hours earlier, whose
+guard could not tell whose sweep had ended and whose bound nothing could turn red. Then
+this row of the closure ledger and the G4 rubric reconciliation (the per-gate cadence
+docs/8 Part E schedules — this appends G4's instance to its record). Both were
+deliberately deferred until the review had run, because both report on what it found;
+what the review did **not** produce is a dated evidence entry of its own, in E4's and
+E6's shape, so the absences and the candidate count live in the reconciliation or
+nowhere. Part E now asks for the entry by name.
 
 ## P5 — The web client
 
