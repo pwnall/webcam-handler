@@ -9788,3 +9788,360 @@ down for its own token: a rule a reader can verify by eye beats one that needs a
 gate makes the opposite trade on the two halves this one now handles, deliberately and with
 the argument recorded; it is a different predicate over a different population and its
 decision is left where it is.
+
+---
+
+## E14 — The P4 adversarial review, 2026-08-11
+
+docs/8 Part E asks for a review pass at each phase boundary and for the review's own record
+as a dated evidence entry. P1's findings are in E1's amendments, P2's is **E4**, P3's is
+**E6**. This is P4's, and it is the first one written *after* its own reconciliation instead
+of before it. docs/7's P4g commissions four things — "the adversarial review; fixes;
+**evidence entry**; rubric reconciliation" — and three of them landed on the day: the review
+ran against the P4g diff, seven of its eight findings were repaired across four commits
+(`f61b2ae`, `b436e62`, `2a3a58c`, `e69ffba`), and G4's reconciliation is the fourth block of
+docs/8's record at `4b2a7dd`. The entry was missed. The reconciliation says so in its own
+opening, records it in P4g's text rather than retro-fitting it, and Part E now asks for the
+entry by name; this is that entry, and writing it is the standing requirement discharged.
+
+**What lives here and in no other file.** N70, N71, N72 with its amendment and N73 each
+carry one finding or one pair, and each argues why it is not an amendment to something else
+— N72 says why it is not an E13 amendment, N73 says why it is not an N72 one — while E13
+carries two amendments of its own. Every one of those is locally right, and none of them
+holds the review whole. What falls between them is the census, the false-positive arithmetic
+**N54** reads a sub-milestone's sizing from, the mutation-floor run that certified the tree
+the review read, the three hardware runs the repairs were driven against, and the absence
+list. That is this entry, and it is deliberately not a re-telling: where a finding's argument
+already exists, this entry cites it and states the number instead.
+
+### The census, and the one number that was never taken
+
+**Eight findings, every one reported with an attempted refutation already written.** docs/8
+Part E requires adversarial verification before a Critical/High finding is reported, and this
+pass applied it to all eight rather than to the top band alone. **Seven fixed, one ruled on
+and left** — F7, kept deliberately, with the reasoning in `4b2a7dd`. By severity: **2 HIGH, 1
+MEDIUM-HIGH, 3 MEDIUM, 1 LOW/MEDIUM, 1 LOW**. **Nothing was rejected as not-real after it was
+reported**, so N54's "findings rejected as not-real" column reads **0 of 8** for this review.
+
+**And the candidate count cannot be recovered, so this entry states none.** E4 counts thirty-
+one candidates against fifteen survivors and sixteen refutations; E6 counts thirty-one
+against twelve, deduplicating to nine distinct defects, and nineteen refuted. Both numbers
+exist because those reviews raised candidates through several lenses and *then* handed each
+one to skeptics, which makes the candidate population an artifact somebody can count. This
+pass ran the refutation **inside** the find pass, before reporting, which is what Part E asks
+for and which has the side effect that a candidate that died left nothing behind. The find
+pass did produce a substantial **"checked and found sound" list** — negative results, each
+naming where it looked — but it was *reported* and not committed, so the only parts of it
+that survive are the absence paragraphs of docs/8's G4 reconciliation and the section below,
+both written from it. **A count nobody wrote down is a count this repository does not have**,
+which is E13's own lesson of this session arriving one entry later and pointed the other way:
+E13's amendment had to withdraw a number that was inferred rather than measured, and the
+honest answer here is the absence of a number rather than a reconstruction of one.
+
+**So the rate is not comparable, and this entry adds no G4 row to N54's table.** The column
+would read 0 of 8 beside four rows counting a different denominator, and a table whose rows
+are not the same measurement is worse than a table with a gap. N54 reads a *falling*
+false-positive rate as a saturation signal — a reviewer facing a diff it "never runs out of
+real material" in never has to reach for a marginal claim — and predicts that splitting a
+sub-milestone raises both the finding count *and* the false-positive rate. This review cannot
+test that prediction in either direction: its
+denominator is reported findings and N54's is raised candidates, its harness is one agent
+where N54's table is four sub-milestones of the same multi-lens harness, and neither its
+agent hours nor its tool calls were recorded. The prediction stays unfalsified and untested,
+and the next review that wants to settle it has to keep its candidate list.
+
+**Where the review was wrong while its finding stood**, which is the part of the
+false-positive question that *is* recoverable, because two repair sessions wrote it down:
+
+- `2a3a58c` records that the instruction it was handed said to read the planned sample size
+  from what `calibrate_plan` answers. It is not there — that verb returns a `Session` whose
+  per-control status is `Untouched`/`Blocked` and carries no sample count — and one call
+  earlier `wch_calibrate_start` runs D3's empirical pair probe, which **writes to the
+  camera**. F4 stood exactly as reported; the last genuinely pre-write moment was one call
+  earlier than the route described, which is where the guard went.
+- `4b2a7dd` records five statements in the reconciliation's brief that were wrong and were
+  corrected in the files rather than smoothed over, two of them arithmetic (it is **twelve**
+  predicates that double, not thirteen, because `selftest.sh` sits in `GATE_HARNESS_FILES`
+  and outside `run-all.sh`'s population) and one of them a provenance correction that this
+  entry inherits: `run-all.sh`'s missing g4 row was **P4g's row-accretion pass**, not an
+  adversarial-review finding, and it is not counted among the eight.
+
+**Three defects surfaced by the repairs rather than by the find pass**, and they are not in
+the eight either. Two are F4's own class still open in the sibling rung
+(`crates/backends/v4l2/tests/hardware.rs:1573` and `:2060`), named in N72's docket and closed
+by its amendment at `e69ffba` under AGENTS rule 1 — a class enforced in one of two files is a
+decoration. The third is **N73**, a gate reading prose as code, met three times while F4 and
+F5 were being written and closed in the same commit. The session that repairs a review's
+findings is itself a review, and in this register it found three more.
+
+### The eight findings
+
+| # | what it was | severity | landed |
+|---|---|---|---|
+| **F1** | `wchc`'s sweep tail armed `ended` from `SweepFilter::admits`, which is session-only under `--session` and control-only under `--task`, so a neighbouring sweep's terminal event disarmed this sweep's tail and lost the event N69 exists to save | HIGH | `f61b2ae` (N70) |
+| **F2** | `CLIENT_SWEEP_DRAIN_MS` was read by nothing that could go red — zero passes the suite — and the const-assert beside it compared it against a bound of a different order | HIGH | `f61b2ae` (N70) |
+| **F3** | an undecodable notification was read as the end of the subscription; `jsonrpsee-core` 0.26 closes only on `None`, so a `wchd` newer than its `wchc` silenced a stream that was still delivering | MEDIUM | `f61b2ae` (N70) |
+| **F4** | `assert!(samples.len() >= 3)` in the R3-over-UDS calibration arm fired **after** the sweep and **before** the restore, so a two-value `brightness` became a red run with the control left where the sweep put it | MEDIUM | `2a3a58c` (N72); the same shape closed in the sibling rung at `e69ffba` |
+| **F5** | one counted decline claimed "a fact about this sensor's control set" for a predicate that also refused an INACTIVE `gain` \[PF:3\] and a current outside its own declared range \[PF:4\] — AGENTS rule 7, in a test's prose | MEDIUM | `2a3a58c` (N72) |
+| **F6** | `smoke-hw.sh` counted the declined claims of arms that never started, so a truncated run read as a complete one — and E13's "18 of 18" was an inference written in the register of a measurement | MEDIUM-HIGH | `b436e62` (N71); the count itself taken at `9142b81` |
+| **F7** | twelve of the twenty-two predicates run twice per `just gate-g4`, once through their own row and once inside `run-all.sh`'s derived population | LOW | ruled on and kept, `4b2a7dd` |
+| **F8** | AGENTS.md declares its own deployment from docs/10 and says what to do "when they drift", and nothing in `scripts/` could tell — rule 1 against a class the project names in its own prose | LOW/MEDIUM | `b436e62` (N71), gate `agents-md-current.sh`, docs/9 row |
+
+Two things about that table's severity column, because a grade is a claim like any other.
+**F1's and F2's HIGH and F4's MED band are the only ones pinned in a committed document**
+before this entry — docs/8's G4 block states them in those words. The other five are the
+review's own grades, recorded here because no other file holds them, and a later reader who
+wants to re-grade them has the finding's own note to do it from.
+
+**What the eight cost and bought, in the numbers the commits state.** `just ci` goes from
+**936 tests at `5faa4ee` to 980 at `e69ffba`** — `f61b2ae` +8, `2a3a58c` +23, `e69ffba` +13,
+with `b436e62` and `9142b81` adding none — one new gate predicate (**22 from 21**), and
+`scripts/gates/selftest.sh` from **34 pass / 150 fail arms to 38 / 160**, eleven of those arms
+F8's and three N73's. Four commits, four trees: each note records the tree its repair session
+started from, which is why one review cites `5faa4ee` (N70), `f61b2ae` (N71), `9142b81` (N72)
+and `2a3a58c` (N73) for findings that were all reported at once.
+
+### The two HIGH findings, and both were in code four hours old
+
+Both are in `wchc`'s sweep tail, which is **N69**, which landed at **13:06:57** on the same
+day the review read it at **17:53:15** — four hours and forty-six minutes by the commit
+timestamps, which docs/8's reconciliation rounds up to forty-seven from the clock faces. N69
+is not a sketch: it ships an argued entry, **eight tests** over the tail's arms, a measured
+2-in-150 on the fake under four concurrent workspace suites, and — by 14:43 at `9c8b46a`, an
+hour and a half later — a hardware measurement of 2 in 10 at the real cameras (E13). That is
+the standard of care this project asks for, and it is what the two findings were found in.
+
+**F1 is the defect N69 exists to prevent, arranged by N69's own guard.** `admits` is
+session-only under `--session` and control-only under `--task`; neither precision asks whose
+sweep ended, and a sweep is a session **and** a control. One `Fanout<ProgressEvent>` per
+daemon and one actor thread per camera means two sweeps genuinely share the socket, so
+`--task framing --control brightness` on two cameras lets B's `SweepFinished` disarm A's tail
+and lose A's last event. The committed test for exactly this case
+(`another_sweeps_terminal_event_neither_draws_nor_ends_this_tail`) names its other sweep with
+`Uuid::from_u128(2)`, a session the filter already rejects — it pins the case that works. G3's
+reconciliation had *added* Part C's smell "a test whose fixture cannot exercise the rule it
+pins" one gate earlier; the row was in force, in writing, and did not fire, and docs/8 now
+carries three reasons why that is not a checklist somebody skipped.
+
+**F2 is the fix deleting itself by one character.** With `CLIENT_SWEEP_DRAIN_MS = 0`
+hand-applied the workspace is **939 passed, 0 failed** — that 939 is not the tree the review
+read (936 at `5faa4ee`) but the tree mid-repair, F1's three tests in and F2's two not yet,
+and `f61b2ae`'s eight new tests are three for F1, two for F2 and three for F3. Zero is not a
+smaller bound but a deleted one: this client's queue is provably empty when its call answers
+(N65's measurement, N69's reading of it), so the event a tail exists for is one that has not
+arrived, and only waiting collects it. Nothing in the suite, and nothing in any gate, could
+say so. **Neither could the mutation floor**, whose `examine_globs` name ten files in
+`crates/{api,engine,imaging}` and `crates/backends/v4l2/src/hotplug.rs` — and therefore
+neither `crates/schema`, where the constant lived, nor `crates/client`, where it is read.
+Both HIGH findings lived in the two crates the only mechanical proxy for their class cannot
+see, which is the reason docs/8 declines to call that row prevention.
+
+### The mutation floor's run at `5faa4ee`, which has no dated entry of its own
+
+E7, E8 and E10 each record a run; this one was taken during the review and recorded only as a
+parenthesis in N70 and a clause in docs/8, so its arithmetic goes here.
+
+**526 mutants: 442 caught, 11 missed, 73 unviable, 0 timed out. 42 m 07 s of wall clock, exit
+0.** All eleven survivors match recorded acceptances in `scripts/mutants-accepted.txt` and the
+register is checked both ways — N25's six, N26's three, N27's one, N37's one — so nothing is
+unaccounted for and no acceptance has stopped surviving. The scope has not moved since P4d
+(ten `examine_globs` lines, `.cargo/mutants.toml` unchanged), so the eleven mutants between
+E10's 515 and this run's 526 are what five of those ten files gained *since* P4d —
+`api/{codes,photo,wire}.rs`, `engine/settle.rs` and `engine/store.rs` are the files that
+moved, and `wire.rs` and N67's work in `settle.rs` are most of that diff.
+
+**It was taken on a deliberately frozen tree, and that is why the entry can quote it.** N68's
+finding is that a run whose input moves while it is reading it is a third outcome and not a
+verdict; the tree was held at `5faa4ee` for the duration. **Zero timeouts is worth its own
+sentence.** N52's loaded run produced 34 timeouts and 31 false survivors on the same
+workspace, and the pin (`minimum_test_timeout = 180.0`) plus the freeze is what buys a clean
+column here; the two numbers side by side are the whole argument for both disciplines. (N70
+and docs/8 both place these counts "that morning"; the run is this one, on the tree committed
+at 16:11, so *morning* there is the day and not the clock.)
+
+**It settles a question N69 raised.** The earlier floor run, on the stable tree at `4a76b1d`,
+reported the acceptance `crates/engine/src/session.rs: replace > with >= in
+sampled_precision` as no longer surviving — which under N60's rule means investigate rather
+than delete, and investigating it is how N69 exists at all. N69 argues the acceptance is
+correct and equivalent (the input is sorted and deduplicated, so every gap is at least 1) and
+re-measures it by hand at 935/935 over four runs of five, concluding that what actually failed
+was a `wchc` arm losing its terminal event. **This run confirms it from the tool's own side:
+the mutant is among the eleven survivors.** The register was right, the report was the flake,
+and the flake was a product defect — N60's pattern for the third time, now closed at both
+ends.
+
+**What the run does not establish** is what E7 and E10 already say and this entry does not
+weaken: nothing outside the ten files, nothing about mutants the tool does not generate (a
+defect of omission is not in its vocabulary), and nothing about the two crates that held F1
+and F2. N70 leaves the widening candidate named — `SweepFilter` is now exactly the fold over
+values the floor is good at, but `remote.rs` also owns a runtime, a socket and a `select!`,
+so splitting the filter into its own module is a decision to take on purpose rather than as a
+side effect of a bug fix.
+
+### The hardware runs, at a fixture that grew mid-session
+
+Three `just smoke-hw` runs carry this review's repairs, all **four cameras on ten nodes** —
+E9/E11/E12/PF:22's fixture — and all **18 of 18, exit 0, motors included, eight declines
+each**:
+
+| tree | wall | census line |
+|---|---|---|
+| `b436e62` | 73.338 s | `18 tests run: 18 passed, 952 skipped` / `18 of 18 selected test(s) ran — the suite is complete` |
+| `2a3a58c` | 72.295 s | `18 tests run: 18 passed, 975 skipped` / the same census line |
+| `e69ffba` | 77.494 s | `18 tests run: 18 passed, 988 skipped` / the same census line |
+
+**The four-camera fixture was available only for the later runs, and that is a fact about the
+desk rather than about the code.** E13's own run is **three** cameras on six nodes — the Dell
+U3224KB/A was off the bus — and the owner reattached it mid-session, which is why the count
+E13's first amendment declared unmeasured could be taken at all. The count itself is E13's
+second amendment (`9142b81`), and the sentence that matters there is that eighteen matching
+the withdrawn inference **does not retroactively justify having asserted it**.
+
+Three things those runs establish beyond "green". N71's census is exercised on hardware for
+the first time, on the successor to the very run whose silent truncation motivated it, and it
+agrees with nextest's own summary rather than offering a second opinion. All four committed
+profiles are compared against a device, so PF:23's one-afternoon `SKIP (partial)` for an
+unattached `dell-u3224kb` is absent from the eight declines. And both motor heads come back:
+the OBSBOT's `pan_absolute` through `[0, 3600, 7200, 10800, 14400]` to **7200**, the Dell's
+through `[-7200, -3600, 0, 3600, 7200]` to **0**, five samples and four steps of travel each,
+restore asserted rather than assumed (AGENTS rule 8).
+
+**And the eight declines are the same eight across all three runs — not one of them is new**,
+which is the point F5's repair keeps making about itself. No camera on this desk produced a
+`NoneUsable` decline, no attached `brightness` plans fewer than five samples, and both motion
+ranges hold 260 steps, so **neither of F5's fifteen typed disqualifiers nor either of F4's two
+sample floors was exercised by any camera here**. They are proved by unit tests over
+`ControlDesc` values — sixteen for F5's `Disqualifier`, ten for the two floors as N72's
+amendment counts them — and by nothing on this desk. That is the whole reason both predicates
+were moved into `testkit::battery`, where a unit test can reach them.
+
+### What the review did not find, each tied to what would have caught it
+
+E4 and E6 both hold that this section is worth as much as the findings, and G4's absences have
+had nowhere to live but docs/8's reconciliation. Verified against the tree rather than
+asserted:
+
+- **No unsound `unsafe`, over the phase that put a second kernel socket in the tree.** The
+  four repair commits add and remove no `unsafe` token in product code — every line in their
+  diff containing the word is prose *about* the word, in a module doc and in these notes.
+  `sys::uevent` carries no `unsafe` block at all (its `sockaddr_nl` is `linux-raw-sys`'
+  bindgen output through `rustix`), and the residual register stands at **eleven blocks and
+  one `unsafe impl`**, one obligation each, reconciled against the tree by `unsafe-scope.sh`'s
+  third claim — which got its own `g4` row at P4g because no phase row at any letter had
+  named it.
+- **No state write outside D9's home.** No repair touches `engine::store`, `write_json_atomic`
+  or the fd-lock; `atomic-write-home.sh` is green, with the raw-write population widened at
+  P4e-i to see `rustix`'s spelling of an open.
+- **No availability-to-capability conversion in the product, and the distinction is the
+  finding.** The one AGENTS rule 7 finding is **F5**, and it is in a *test's prose* — a `SKIP`
+  line claiming "a fact about this sensor's control set" for a predicate that was a
+  conjunction of capability *and* state terms. No shipped code converts one into the other;
+  what did was a sentence a rung prints verbatim as its account of what it declined, which is
+  rule 3's surface and rule 7's subject meeting in one line.
+- **The mutation floor clean**, 526/442/11/73/0 above, register checked both ways.
+- **No wire-surface and no schema-artifact change.** Nothing under `crates/api/` or
+  `schemas/` moved. The one `webcam-handler-schema` edit is `limits.rs`, and it is a doc
+  comment, one deleted const-assert and two added ones — `CLIENT_SWEEP_DRAIN_MS` is still
+  **250**. `schema-artifacts-current.sh` is the mechanism that would have said otherwise and
+  it is green, which matters because AGENTS' "Done means" records that editing prose in that
+  crate can move a committed artifact.
+- **No surface change at all: the review added no verb and no flag.** `crates/cli-core`,
+  `crates/cli` and `crates/daemon` are untouched by all four commits. The only new switch
+  anywhere is `$WCH_SMOKE_HW_ACCOUNT`, a documented dev seam in a rung script modelled on
+  `mutants.sh`'s `$WCH_MUTANTS_CLASSIFY` and incapable of touching a camera. What the review
+  *did* add is one gate predicate, a rung's decline vocabulary, and forty-four tests.
+- **No new PF-class finding.** Four N-entries and two amendments; no device behavior was seen
+  that the corpus did not already carry. PF:23 belongs to the sub-milestone before this one.
+- **And one absence is now known to be worth less than it reads.** G3's "no fault-menu variant
+  without a driven inverse" held again — every variant of `ProgressSource`'s menu had its
+  driven inverse — and **F3 is the variant that was not in the menu**. An exhaustive walk over
+  a fault menu cannot see a fault the menu does not have; docs/8 carries that as a corollary
+  now, and this entry records that the absence claim was satisfied and was the wrong question.
+
+### What the review did not cover, which matters more than the absences
+
+E12 and E13 established that a run states its own fixture before it states its result; a
+review owes the same.
+
+**One agent, one pass, over the P4g diff only.** The find pass read `4a76b1d..5faa4ee` — from
+N68's close to E13's landing — which is P4g and nothing else. P4a through P4f were reviewed at
+their own sub-milestones, so this pass is not a review of P4 and no sentence here should be
+read as one. It is also **one** lens where E6's had six and N54's table counts a multi-lens
+harness per sub-milestone, which is the second reason the census above cannot be compared with
+E4's and E6's.
+
+**It ran read-only, with compilation forbidden, because the mutation floor was running
+concurrently on the same host.** Every one of the eight was therefore settled *by reading* —
+the dependency's source for F3 (`jsonrpsee-core-0.26.0/src/client/mod.rs:429`), the filter's
+own doc for F1, the const-assert's operands for F2, the predicate's conjunction for F5 — and
+several were confirmed by execution only afterwards, in the repair sessions, which is where
+the 939-passed measurement and every watched-failing table in N70–N73 come from.
+
+What that buys: it is the only posture under which a review and a 42-minute floor run share a
+machine without either one's verdict being a function of the other's load, which is N52's,
+N66's, N68's and N71's finding four times over and the reason the floor's zero-timeout column
+is trustworthy. What it costs: **a finding that needs a loaded machine to see cannot be found
+this way.** N70's three all happen to be findings that need no load at all — a fixture id, a
+constant, a fault menu, each a claim about the world that a reading can check — and that is
+luck about this diff rather than a property of the method. The load class (N65, N67, N69,
+E13) is precisely what a read-only pass is blind to, and docs/8 now carries it as a Part C
+smell and a Part E step for exactly that reason.
+
+### The residuals this session named and nobody owns
+
+Seven items were named and deliberately not fixed across this session's commits, each in a
+note about something else. They are gathered here for the first time, because a residual
+recorded inside another entry's argument is a residual the next reader finds by accident:
+
+- **`crates/backends/v4l2/src/sys/uevent.rs:289`** — `assert!(!ready, "a quiet machine
+  broadcast a uevent during this test")`, in
+  `a_quiet_socket_answers_at_its_deadline_rather_than_erroring_or_hanging`. E13 names this
+  assertion; N69 names the *other* real-clock assertion in the same test five lines below
+  (`started.elapsed() < Duration::from_secs(1)`, `:294`), so the test has two ways to be about
+  a machine's quietness rather than about the socket. It **fired again during this session's
+  own `just ci` under concurrent load** — observed and not transcribed, so it is recorded here
+  as an occurrence and not as a rate. It is the population N67 discharged for `engine`'s
+  settle path and nobody has taken for this one.
+- **`crates/backends/v4l2/tests/hardware.rs:2344`** — `assert!(held.len() > 1, …)` between the
+  motion sweep and its restore. N72's amendment argues it is **not** in the class that
+  amendment closed: a driver reporting one read-back per commanded position is a device
+  finding \[PF:18 is the neighbouring one\] and nothing in a descriptor predicts it. What it
+  wants is a restoring wrapper around the whole arm, which is a change to how every hardware
+  arm is written.
+- **`crates/backends/v4l2/tests/hardware.rs:2130` and `:990`** — two `capture_node().is_none()`
+  guards that `continue` in silence where three siblings (`:882`, `:1193`, `:1466`) print a
+  named `SKIP (partial)` for the identical condition. AGENTS rule 3, and the cost is visible:
+  the motion arm's tail can speak only for the cameras it examined.
+- **`scripts/gates/counted-selections.sh:40`** — `cargo nextest list --workspace` with a
+  scratch copy as cwd and no `CARGO_TARGET_DIR`, so it cold-builds the workspace into
+  `<copy>/target`: **9.7 GiB**, deleted seconds later, and the whole of `selftest.sh`'s
+  remaining 9.5 GiB peak after N71's `reclaim_scratch`. Moving it touches that arm's rule-6
+  claim, so it is a decision rather than a cleanup.
+- **docs/9's predicate table has no row for `mutation-verdict.sh`**, which has had a `g4` row
+  in `scripts/gates/phase-criteria.tsv` since N68. The repo's files are authoritative and
+  docs/9 records deltas, so this is a missing delta rather than a missing gate.
+- **`crates/cli-core/src/lib.rs:1448`** — "The progress bar is suspended for the duration of
+  the rendering below", written above a `watcher.finish()` that runs first, about a
+  `ProgressBar::suspend` that **exists nowhere in the tree**. B7·3's clause is therefore
+  unasserted *and* its one piece of prose describes a mechanism that is not there.
+- **`crates/client/src/remote.rs` is outside the mutation floor's `examine_globs`**, named by
+  N70 and unchanged by its repair. It is the strongest candidate the next widening has, and
+  it is where a HIGH finding hid from the only mechanical proxy its class has.
+
+### What this entry does not establish
+
+- **Nothing about P4a–P4f.** The find pass read one sub-milestone's diff.
+- **Nothing about the candidate population.** Eight reported and eight confirmed is a
+  numerator over a denominator nobody wrote down, and no arithmetic in this entry pretends
+  otherwise.
+- **Nothing about the cost of the review as N54 prices it.** Agent hours and tool calls were
+  not recorded, so the sizing question P4g could have answered stays open.
+- **Nothing new about hardware.** The three runs above are the repairs' verification, not a
+  probe; the fixture, the eight declines and both motor ranges are what earlier entries
+  already establish, and the new predicates were exercised by unit tests rather than by a
+  camera.
+
+**Retires when:** never — this is dated evidence. What it hands forward is three standing
+items: the residual list above, the candidate-count discipline (a review that wants a
+comparable false-positive rate has to commit its candidate list, not just its findings), and
+the widening `remote.rs` is waiting for.
