@@ -1271,26 +1271,6 @@ fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_
 
 // ---------------------------------------------------------------- P3: calibration (D8)
 
-/// A control this rung may run a whole calibration session over.
-///
-/// Named in preference order rather than found by predicate, because "a brightness-class
-/// control" is what docs/7 P3e asks for and the three UVC controls that move luma directly
-/// are the population. Everything else about the choice is asked of the same predicates the
-/// battery uses, so a calibration arm can touch nothing a write arm may not.
-fn brightness_class_target(controls: &[ControlDesc]) -> Option<&ControlDesc> {
-    const BRIGHTNESS_CLASS: [&str; 3] = ["brightness", "gamma", "gain"];
-    BRIGHTNESS_CLASS.iter().find_map(|name| {
-        controls.iter().find(|desc| {
-            desc.slug.as_str() == *name
-                && battery::is_perturbable(desc)
-                && !battery::is_motorized(&desc.slug)
-                && !desc.is_inactive()
-                && desc.control_type == ControlType::Integer
-                && desc.range.max > desc.range.min
-        })
-    })
-}
-
 /// A session on a scratch store, started the way the product starts one: create, then probe
 /// the automation pairs empirically and persist the merge (D3, N16).
 ///
@@ -1463,12 +1443,24 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
         let controls = camera
             .controls()
             .unwrap_or_else(|error| panic!("{}: controls() failed: {error}", info.id));
-        let Some(desc) = brightness_class_target(&controls).cloned() else {
-            println!(
-                "SKIP (partial): {} exposes no sweepable brightness-class control",
-                info.id
-            );
-            continue;
+        // [`battery::brightness_class_target`] and not a predicate of this file's own: it
+        // was written here and again in `crates/client/tests/hardware.rs`, and the second
+        // copy's decline message is what note **N72** found. The two questions it keeps
+        // apart are AGENTS rule 7's — "this device has no brightness-class control" is a
+        // fact about a control *set*, and "it has one and an automation partner owns it" is
+        // a fact about a *state* that D3's pairing planner exists to clear — and a suite
+        // that prints one sentence for both has converted the second into the first.
+        let desc = match battery::brightness_class_target(&controls) {
+            battery::SweepTarget::Found(desc) => desc.clone(),
+            battery::SweepTarget::Declined(why) => {
+                println!(
+                    "SKIP (partial): {} {why}, so this arm declines it — which is a fact \
+                     about {} and not about the backend",
+                    info.id,
+                    why.is_a_fact_about()
+                );
+                continue;
+            }
         };
         let control = desc.slug.clone();
 

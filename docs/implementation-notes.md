@@ -9099,3 +9099,327 @@ predicates, ten of them named by no g4 row.
 start a run it cannot finish, which is not a thing a test runner can promise. The AGENTS gate
 retires if doc 10 stops being deployed — at which point its own preamble stops saying so and
 the predicate goes red until somebody says what replaced it, which is the correct handover.
+
+---
+
+## N72 — One decline stood for four different findings, and the assertion that should have been a decline fired after the camera had been written to
+
+**Doc:** AGENTS rule **7** ("availability is not capability … no code or test converts one
+into the other"), rule **3** (a named, counted skip is the rung's account of what it did not
+claim), rule **6** (represent the unknown), rule **8** (leave the camera as you found it),
+rule **2** (construct the buggy implementation first and watch it fail, at workspace scope),
+design **§2.10** (one home per law) and **§5** (motors wear), **D3** (the pairing planner
+exists to clear an INACTIVE partner), **E13** — the run these two arms were written for, its
+`SKIP (partial)` line quoted verbatim in its own transcript, and its standing gap "a hardware
+arm that fails *between* its sweep and its restore leaves the camera moved" — **N70** (a test
+that asserts the assumption that produced the code, in a shape that cannot express the
+assumption being wrong), **N71** (a claim this repository makes about itself with nothing able
+to contradict it), and \[PF:3\], \[PF:4\]. Found by the **G4 adversarial review**, 2026-08-11,
+on the tree at `9142b81` — `just ci` green at 944 tests and 22 predicates, `just smoke-hw`
+18 of 18 at `b436e62`.
+
+**Two findings, one entry, and it is not an amendment to E13.** That entry is a dated
+transcript of a run plus the reasoning around it, and both of its amendments correct
+*sentences E13 itself wrote* — a count nobody took, and a run that was truncated. Nothing
+here touches a number E13 printed or a claim E13 made: the sweep arm did what that entry says
+it did, on the cameras it says it did it on. What is repaired is **code that landed with it**,
+and the precedent for that is one commit old in each direction — N70 repaired N69's machinery
+without amending N69, and N71 repaired `smoke-hw.sh` without amending the entry whose
+transcript exposed it. An E-entry that grew a third amendment every time a later review found
+a defect in the code it exercised would stop being a transcript and start being a changelog.
+
+The two findings share a subject, which is why they are one entry: **`crates/client/tests/hardware.rs`
+answered "this camera is not taking part" for four different reasons and said the same
+sentence for all of them, and answered "this camera cannot be swept usefully" by panicking on
+a real device after writing to it.** Both are the same mistake about what a hardware suite is
+for. A rung against hardware nobody controls is an instrument, and an instrument that reports
+"different" as "broken" — or reports four different readings with one word — is not measuring.
+
+### F4 — an `assert!` turned a device shape into a red run, twenty lines above the restore
+
+**The shape.** The sweep arm derived its stride from the descriptor,
+`stride = (span / 4).max(desc.range.effective_step())`, handed it to the daemon as
+`SweepSpec::Uniform`, ran the sweep on the camera, and then asserted
+
+```
+assert!(total >= 3, "{control}: {total} sample(s) is too few to say anything about a sweep");
+```
+
+in `check_progress` — reached from `sweep_one_camera` **before** `calibrate_restore`.
+
+**What that costs on a device this desk does not have.** A `brightness` declaring `0..=64`
+with a step of 64 plans exactly two values, and so does one declaring `0..=1`. Both clear the
+target predicate — writable, active, integer-typed, maximum above minimum — so the arm
+*selects* such a control, opens a session, writes to the sensor five hundred milliseconds at
+a time, and then panics. The camera is left at the last value the sweep wrote, because the
+restore is twenty lines further down and restoration is on the success path.
+
+**This is a lesson the sibling rung already carries in writing**, in
+`crates/backends/v4l2/tests/hardware.rs`'s enumeration arm: "A host whose cameras are not in
+the corpus is a host this arm has nothing to say about, which the module doc promises and an
+`assert!(matched > 0)` broke: it turned 'different hardware' into a red run." The new file
+re-introduced the shape one rung over, and added the half the older one did not have — the
+older assert fires before anything is written.
+
+**Changed.** The planned size is asked of `engine::sweep::plan` — **the same pure core the
+daemon runs a moment later**, design §2.10's one home per law, not a second planner with a
+second opinion — and it is asked from the `ControlDesc` alone, so the answer exists before a
+session exists. `sweep_for` answers `Sweep::Planned { spec, samples }` or
+`Sweep::Declined(String)`, and the decline is a named `SKIP (partial)` line taken **before**
+`calibrate_start`.
+
+**Before `calibrate_start` and not, as the review suggested, after `calibrate_plan`**, and
+the difference is a write. `wch_calibrate_plan` answers a `Session` whose per-control status
+is `Untouched` or `Blocked`; it carries no sample count, so the number is not there to read.
+And one call earlier, `wch_calibrate_start` runs **D3's empirical pair probe (N16), which
+writes to the camera and puts it back** — `crates/daemon/src/server.rs`'s own comment says
+so. So the last moment that is genuinely before any write is before the session opens, which
+is where the guard went. A guard against "a failure between the sweep and the restore" that
+sits after the first write would have been the finding wearing the fix's clothes.
+
+The `assert!(total >= 3)` did not survive the move, because it could no longer fail — an
+assertion whose false branch is unreachable is decoration, which is the same rule as "no
+assertion inside a conditional whose false branch cannot go red". What replaced it is a claim
+only this rung can make:
+
+```
+assert_eq!(total, expected,
+    "{}: {control}: this client planned {expected} sample(s) from the device's declared \
+     range and the daemon's plan is {total}", info.id);
+```
+
+The client planned from the descriptor it read over the socket; the daemon planned from the
+descriptor its own camera actor read, through the same core, and answered a count that
+crossed a serialization to get here. A build that dropped `Uniform`'s step on the wire — the
+plan silently becoming `All`, every one of a `0..=255` range's 256 values — is red here
+rather than a sweep that takes two hundred and fifty-one extra photos and passes.
+
+`MAX_SWEEP_SAMPLES` is still checked and still the schema's. `MIN_SAMPLES` is this suite's
+own, argued in its doc comment as a fact about what *these assertions* can see rather than
+about what the product allows — two samples is a perfectly good sweep for an operator, and
+two of anything cannot tell a progress stream from a report delivered at the end, which is
+the one property the arm exists to observe. A `const` assertion holds it under the schema's
+ceiling, which is N70's F2 discipline applied to the one number this file owns.
+
+### F5 — a counted decline asserted a fact its predicate could not support
+
+**The sentence, as `scripts/smoke-hw.sh` printed it and E13 transcribed it:**
+
+```
+SKIP (partial): cam:… exposes no sweepable brightness-class control among its 3, so this arm
+declines it — which is a fact about this sensor's control set and not about the socket
+```
+
+**The predicate behind it** was a conjunction of five terms over three names, and only the
+first is about a control *set*. `testkit::battery::is_perturbable` alone requires
+`desc.current` to be `Some(Int(v))`, in range and step-aligned, plus writable, plus scalar,
+plus not volatile, plus not WRITE_ONLY; the conjunction then adds `!is_inactive()`,
+`control_type == Integer` and `range.max > range.min`. So the same sentence was printed for
+all of these:
+
+- **a `gain` that is present but INACTIVE** because `auto_exposure` is engaged \[PF:3\] — a
+  *state*, and D3's pairing planner exists precisely to clear it, so the next run with
+  automation off would sweep the control this line said the camera does not have;
+- **a `brightness` reporting a current outside its own declared range, or off its own step**
+  — the represented-unknown class AGENTS rule 6 names, a PF-class device finding of exactly
+  the kind \[PF:4\] was raised for, reported as an absent control;
+- **a read-only, DISABLED, VOLATILE or menu-typed one** — *capabilities*, and each a different
+  one.
+
+And `{N}` was `report.controls.len()`, which carries no information about which term failed.
+Rule 7 says no test converts availability into capability; a predicate that answers a bare
+`false` has already done the converting, because the caller is left holding a bool where the
+interesting half was **which term said no**.
+
+**Why nothing caught it.** E13's M7 mutant exercised the skip path — it replaced the three
+control names with names no camera has, every camera declined, the arm passed in 0.224 s and
+printed four counted `SKIP` lines. That mutant drives the **name-absent** arm, which is the
+one arm the sentence was true for. Every state arm is a shape no camera on this desk can
+produce: the three cameras E13 ran against, and the four attached today, either have a wide
+usable `brightness` or have no brightness-class control at all. It is N70's population
+exactly — a test asserting the assumption that produced the code, in a shape that cannot
+express the assumption being wrong — and it is N71's too, in the register that entry cares
+about: a sentence a rung prints about itself with nothing in the tree able to contradict it.
+
+**Where the predicate now lives, and the argument.** It moved to
+**`testkit::battery`**, beside `is_motorized` and `is_perturbable`, and both hardware rungs
+now ask it. Three reasons, in the order they decided it.
+
+1. **It was already written twice.** `crates/backends/v4l2/tests/hardware.rs` and
+   `crates/client/tests/hardware.rs` each carried a private `brightness_class_target` with
+   the same three names and the same five terms. The client copy's doc comment defended that
+   — "the workspace has nowhere shared to put a *selection* that is only ever made by a test"
+   — and the defence was wrong on its own terms: this crate is exactly that place, it is
+   dev-only by gate (`testkit-is-dev-only.sh`), and the two answers this same pair of files
+   already share live in this same module for this same reason. Moving one copy and leaving
+   the other would have been half a repair.
+2. **A private helper inside an ignored binary is a rule nothing can unit-test**, and that is
+   most of why this went unnoticed. In `testkit::battery` the predicate is a fold over
+   `ControlDesc` values with sixteen tests beside it, run by every `just ci` on a machine with
+   no camera attached. **A unit test over values is worth more here than another hardware
+   run**, because the shapes that matter are shapes this desk cannot produce — and "I could
+   not reproduce it on my hardware" is the reason the test is necessary, not a reason to skip
+   it (N67's and N69's lesson in a third costume).
+3. **The distinction belongs in a type, not in a `println!`.** What the old line asserted by
+   being typed, `Decline::is_a_fact_about` now answers as a value, and a test reads it.
+
+**The shape it took.** `why_not_perturbable` answers `Option<Disqualifier>` — fifteen variants
+naming one term each, with a `Display` that renders the phrase a `SKIP` line uses
+(`read-only`, `DISABLED`, `INACTIVE — an automation partner owns it [PF:3]`,
+`current 300 outside 0..=255 [PF:4]`, `type is Menu`, `range 5..=5 holds one value`). Three
+consequences worth naming:
+
+- **`is_perturbable` is now *defined* as that answering nothing**, rather than written a
+  second time beside it. A bool and a reason kept side by side are two rules that agree until
+  somebody edits one, and a test asserts the equivalence over every shape anyway.
+- **The verdict on writability stays with the schema and only the diagnosis is here.**
+  `ControlDesc::is_writable` folds READ_ONLY, DISABLED and the class header into one `false`;
+  the diagnosis takes them apart again and ends in a payload-carrying fallback arm —
+  "not writable, by a term this suite does not name yet" — because rule 6 applies to this
+  project's own vocabularies as much as to the kernel's, and the day somebody reads that
+  sentence in a transcript is the day the enum gets its next variant.
+- **The motor question is asked first**, before any term that would have refused anyway,
+  because design §5 is a law about hardware wear rather than a consequence of how three
+  controls happen to be spelled. It is unreachable through `BRIGHTNESS_CLASS` today and
+  asserted anyway; the day somebody adds `focus_absolute` to that list, it is the term that
+  must fire.
+
+`brightness_class_target` then answers `SweepTarget::Found` or `SweepTarget::Declined`, and
+the decline is one of two things: `NoneNamed { examined }`, a fact about the control set, or
+`NoneUsable(Vec<(ControlSlug, Disqualifier)>)`, a fact about a control the sensor *has* —
+**every** named one, not just the first, so a transcript does not send a reader hunting a
+`gain` fault the same run already diagnosed. The old sentence survives verbatim for the one
+case it was true for, which is the Chicony IR sensor and is what the rung still prints.
+
+### Watched failing, both findings, at workspace scope
+
+Rule 2's shape for a *new* predicate is the shipped one re-expressed, and that is what was
+built first in each case.
+
+**F5** — `why_not_perturbable` implemented as `if is_perturbable(desc) { None } else {
+Some(Disqualifier::NotWritable) }` (one word for every term) and `brightness_class_target`
+answering `NoneNamed` for every failure (the shipped conjunction). Full workspace suite,
+`--no-fail-fast`, because N71 is one commit old:
+
+```
+Summary [   4.596s] 960 tests run: 949 passed, 11 failed, 26 skipped
+```
+
+The eleven, and the two that carry the finding rather than a tick:
+
+| test | failure |
+|---|---|
+| `an_inactive_gain_is_a_fact_about_a_state_and_not_about_a_control_set` | left `NoneNamed { examined: 1 }`, right `NoneUsable([(ControlSlug("gain"), Inactive)])` |
+| `every_disqualified_control_is_a_fact_about_a_state_and_never_about_a_control_set` | `assertion left == right failed: exposes none of brightness, gamma, gain among its 1 control(s)` — left `"this sensor's control set"`, right `"the state of a control this sensor has"` |
+| `a_read_only_brightness_names_the_flag_that_refused_it` | `exposes none of brightness, gamma, gain among its 1 control(s)` |
+| `a_disabled_brightness_is_not_reported_as_a_read_only_one` | the same line |
+| `a_menu_typed_brightness_is_declined_by_its_type` | the same line |
+| `a_compound_typed_brightness_is_declined_before_its_payload_is_read` | the same line |
+| `a_one_value_brightness_range_is_declined_by_its_range` | the same line |
+| `a_volatile_brightness_and_a_write_only_one_name_their_own_flags` | the same line |
+| `a_brightness_whose_current_is_outside_its_own_range_names_the_reading` | the same line |
+| `a_brightness_sitting_off_its_own_step_names_the_step` | the same line |
+| `every_named_control_is_reported_and_not_only_the_first` | `exposes none of brightness, gamma, gain among its 2 control(s)` |
+
+That every one of them fails with the *same sentence* is the finding printed eleven times.
+Five arms stayed green under the buggy implementation and are there to keep it honest: a
+plain `brightness` is still found, a genuinely name-absent sensor still declines about its
+control set, and `is_perturbable` still agrees with its reason function.
+
+**F4** — the floor deleted (`if samples < MIN_SAMPLES` neutered), which is the shipped
+behaviour:
+
+```
+Summary [   4.669s] 967 tests run: 964 passed, 3 failed, 26 skipped
+```
+
+| test | failure |
+|---|---|
+| `a_brightness_whose_step_is_its_whole_range_is_declined_rather_than_swept` | `ControlDesc { … range: ControlRange { min: 0, max: 64, step: 64 } … } was planned as 2 sample(s) of Uniform { step: 64 } rather than declined` |
+| `a_two_valued_brightness_is_declined_rather_than_swept` | the same, `min: 0, max: 1, step: 1`, `2 sample(s) of Uniform { step: 1 }` |
+| `a_single_valued_range_is_declined_and_the_planner_is_not_asked_to_invent_a_second_value` | the same, `min: 50, max: 50`, `1 sample(s)` |
+
+Three more arms hold the other direction, and one of them is the reason the floor is a `<`
+and not a `<=`: `the_ranges_the_attached_cameras_declare_plan_the_five_samples_e13_transcribed`
+pins the two real ranges that entry recorded (`0..=100` at a stride of 25 and `0..=255` at a
+stride of 63, five samples each), `the_floor_is_a_boundary_and_a_plan_that_just_clears_it_is_swept`
+pins a three-sample plan running, and `the_count_is_the_planners_and_not_arithmetic_repeated_here`
+pins the one case where the two differ — a control whose own step is 7 cannot take a stride of
+25, so the planner rounds to 28 and answers four samples where arithmetic over the stride
+would say five. That last one is what would go red if the count here were ever re-derived
+instead of asked for.
+
+### Hardware
+
+`just smoke-hw` at four cameras on ten nodes, on the tree this entry lands with. The census,
+verbatim, which is what N71 requires of any number this rung reports:
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+     Summary [  72.295s] 18 tests run: 18 passed, 975 skipped
+smoke-hw: 8 claim(s) declined by tests that ran — each named above
+smoke-hw: 18 of 18 selected test(s) ran — the suite is complete
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+Eight declines, the same eight as at `b436e62`, and the two this change rewrote now read
+
+```
+SKIP (partial): cam:integrated-camera-integrated-i exposes none of brightness, gamma, gain
+among its 3 control(s), so this arm declines it — which is a fact about this sensor's control
+set and not about the socket
+SKIP (partial): cam:integrated-camera-integrated-i exposes none of brightness, gamma, gain
+among its 3 control(s), so this arm declines it — which is a fact about this sensor's control
+set and not about the backend
+```
+
+— the same claim as before, now made by a predicate entitled to make it, and made by **both**
+rungs through one piece of code. The two affected arms were also run alone and both are green:
+`hw_a_sweep_over_the_socket_delivers_its_progress_live_and_leaves_the_camera_where_it_found_it`
+swept and restored `brightness` on the OBSBOT, the Chicony RGB and the Dell (5 samples, 12
+events each, 22 / 15 / 17 non-volatile controls compared against the opening snapshot), and
+`hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_restores` did the
+same in process.
+
+**What the hardware run does not establish, and this is F5's own point turned on this entry:**
+not one of the four attached cameras produced a `NoneUsable` decline, because not one of them
+has a brightness-class control in a disqualified state. The line these arms print on this desk
+is the same line they printed before the repair. **The repair is proved by the sixteen unit
+tests and by nothing on this desk**, which is exactly why it is where it is.
+
+### Named and deliberately not fixed
+
+- **`crates/backends/v4l2/tests/hardware.rs:1573`** — `assert!(outcome.samples.len() >= 3,
+  "{control}: {} sample(s) is too few to show an ordering")`, in the in-process calibration
+  arm. This is F4's shape in the sibling rung, complete with the second half: it fires after
+  the sweep has run on the camera and before the session's restore. A camera whose
+  `brightness` declares `0..=64` step 64 turns that arm red and leaves the control at 64. It
+  is not fixed here because it needs the same treatment on a different arm's terms — that
+  suite plans through `engine::calibrate` rather than through a `SweepSpec` it built itself —
+  and because a repair to an arm this change is not otherwise touching should be its own
+  decision.
+- **`crates/backends/v4l2/tests/hardware.rs:2060`** — `assert!(values.len() >= 3, "…too few to
+  move a motor and come back")`, the same shape in `hw_motion_*` and the milder instance:
+  everything above it is planner arithmetic, so a device with a narrow pan range makes the arm
+  red without leaving a motor anywhere it should not be.
+- **`scripts/gates/ignored-suites-have-recipes.sh:191`** — the awk arm
+  `/#\[[[:space:]]*ignore/ { pending = 1 }` reads the attribute wherever it appears, comments
+  and doc comments included, and then reports the file's next `fn` as an ignored test with no
+  suite. Three sentences of this change's own prose tripped it: the gate named
+  `why_not_perturbable`, `driving_the_hardware` and `brightness` as ignored tests. It fails
+  **closed**, so nothing was ever wrong on the tree — the cost is that a file may not write
+  the attribute's name in prose, which is a real tax on a project whose comments are essays
+  and cite attributes by name. The declaration half of this same script already guards against
+  precisely this ("the gate must not read its own documentation as a declaration") and the
+  ignored-test half does not. The prose here was reworded instead, and `scripts/gates/` is
+  outside this change's remit.
+
+### Retires when
+
+Neither retires. F4's guard retires only if a hardware rung stops asserting anything that
+needs several samples, and F5's split retires only if `SKIP` lines stop being this project's
+account of what a run did not claim — which is AGENTS rule 3, and it is not going anywhere.
+The sixteen unit tests are the reason each term of the predicate exists, and a build that
+deletes one of them has deleted a disqualifier's only witness on a desk where no camera can
+produce it.

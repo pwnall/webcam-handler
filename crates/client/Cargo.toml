@@ -96,9 +96,11 @@ serde_json.workspace = true
 # so the binary still links exactly the four features the normal edge above names.
 tokio = { workspace = true, features = ["test-util"] }
 webcam-handler-engine.workspace = true
-# Two predicates and nothing else: `battery::is_perturbable` and `battery::is_motorized` are
-# the conformance battery's own answers to "may a test write to this control" and "is there a
-# motor on the other end of it", and the R3 arms here ask them rather than re-deciding — so
-# "may this test move the camera somebody is pointing at a person" has one answer in the
-# workspace (`crates/backends/v4l2/tests/hardware.rs` asks the same two).
+# The conformance battery's own answers to "may a test write to this control", "is there a
+# motor on the other end of it" and "which control may a brightness-class sweep run over" —
+# `is_perturbable`, `is_motorized` and `brightness_class_target`. The R3 arms here ask them
+# rather than re-deciding, so "may this test move the camera somebody is pointing at a
+# person" has one answer in the workspace and `crates/backends/v4l2/tests/hardware.rs` asks
+# the same code. The third one used to be a private copy in each of those two files; note
+# **N72** is what the second copy cost.
 webcam-handler-testkit.workspace = true

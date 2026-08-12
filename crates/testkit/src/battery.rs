@@ -1082,17 +1082,12 @@ pub fn is_motorized(slug: &ControlSlug) -> bool {
 ///
 /// Public for the same reason [`is_motorized`] is: the hardware rung perturbs controls
 /// too, and it must exclude exactly what this arm excludes.
+/// It is [`why_not_perturbable`] answering nothing, and *defined* that way rather than
+/// written twice: a bool and a reason kept side by side are two rules that agree until
+/// somebody edits one of them (note **N72**).
 #[must_use]
 pub fn is_perturbable(desc: &ControlDesc) -> bool {
-    desc.is_writable()
-        && desc.control_type.is_scalar()
-        && !desc.is_volatile()
-        && !desc.flags.has(KnownFlag::WriteOnly)
-        && matches!(
-            desc.current,
-            Some(ControlValue::Int(v))
-                if desc.range.contains(v) && is_step_aligned(&desc.range, v)
-        )
+    why_not_perturbable(desc).is_none()
 }
 
 /// Whether `value` sits on one of the control's steps, counting from its minimum.
@@ -1100,6 +1095,338 @@ fn is_step_aligned(range: &ControlRange, value: i64) -> bool {
     value
         .checked_sub(range.min)
         .is_some_and(|offset| offset % range.effective_step() == 0)
+}
+
+// ------------------------------------------------- which control a hardware arm may sweep
+
+/// One reason a control is not one a test may write to or sweep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Disqualifier {
+    /// The READ_ONLY flag is set.
+    ReadOnly,
+    /// The DISABLED flag is set.
+    Disabled,
+    /// A control-class header rather than a control.
+    ControlClass,
+    /// Not writable, by a term this enum does not name yet.
+    NotWritable,
+    /// The type carries a payload rather than a scalar.
+    NotScalar {
+        /// The type, so the message names it.
+        control_type: ControlType,
+    },
+    /// The VOLATILE flag is set.
+    Volatile,
+    /// The WRITE_ONLY flag is set.
+    WriteOnly,
+    /// The descriptor carries no current value.
+    CurrentUnknown,
+    /// The current value is not an integer.
+    CurrentNotAnInteger {
+        /// What it is instead.
+        current: ControlValue,
+    },
+    /// The current value sits outside the control's own declared range \[PF:4\].
+    CurrentOutsideRange {
+        /// As read.
+        current: i64,
+        /// Declared minimum.
+        min: i64,
+        /// Declared maximum.
+        max: i64,
+    },
+    /// The current value is not a whole number of steps above the minimum \[PF:4\].
+    CurrentOffStep {
+        /// As read.
+        current: i64,
+        /// Declared minimum.
+        min: i64,
+        /// The step it is counted against.
+        step: i64,
+    },
+    /// A motor turns when this control is written (design §5).
+    Motorized,
+    /// An automation partner owns the control right now \[PF:3\].
+    Inactive,
+    /// Scalar, but not the plain integer a uniform sweep walks.
+    NotAnInteger {
+        /// The type, so the message names it.
+        control_type: ControlType,
+    },
+    /// The declared range holds at most one value, so there is nothing to sweep.
+    OneValueRange {
+        /// Declared minimum.
+        min: i64,
+        /// Declared maximum.
+        max: i64,
+    },
+}
+
+impl fmt::Display for Disqualifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Disqualifier::ReadOnly => f.write_str("read-only"),
+            Disqualifier::Disabled => f.write_str("DISABLED"),
+            Disqualifier::ControlClass => {
+                f.write_str("a control-class header rather than a control")
+            }
+            Disqualifier::NotWritable => {
+                f.write_str("not writable, by a term this suite does not name yet")
+            }
+            Disqualifier::NotScalar { control_type } => {
+                write!(f, "type is {control_type:?}, which carries a payload")
+            }
+            Disqualifier::Volatile => f.write_str("VOLATILE, so its value is the device's"),
+            Disqualifier::WriteOnly => f.write_str("WRITE_ONLY, so there is nothing to read back"),
+            Disqualifier::CurrentUnknown => f.write_str("it reports no current value"),
+            Disqualifier::CurrentNotAnInteger { current } => {
+                write!(f, "its current value is {current}, not an integer")
+            }
+            Disqualifier::CurrentOutsideRange { current, min, max } => {
+                write!(f, "current {current} outside {min}..={max} [PF:4]")
+            }
+            Disqualifier::CurrentOffStep { current, min, step } => write!(
+                f,
+                "current {current} is not a whole number of steps of {step} above {min} [PF:4]"
+            ),
+            Disqualifier::Motorized => f.write_str("a motor turns when it is written"),
+            Disqualifier::Inactive => {
+                f.write_str("INACTIVE — an automation partner owns it [PF:3]")
+            }
+            Disqualifier::NotAnInteger { control_type } => write!(f, "type is {control_type:?}"),
+            Disqualifier::OneValueRange { min, max } => {
+                write!(f, "range {min}..={max} holds one value")
+            }
+        }
+    }
+}
+
+/// Why a camera is not taking part in a brightness-class sweep.
+///
+/// **Two answers rather than one, because they are facts about different things.** AGENTS
+/// rule 7 is "availability is not capability … no code or test converts one into the
+/// other", and a predicate that answers a bare `false` has already done the converting: the
+/// caller is left holding a bool where the interesting half was *which term said no*.
+///
+/// [`Decline::NoneNamed`] is a fact about the sensor's **control set**. The attached Chicony
+/// IR sensor enumerates three controls and not one of them is brightness-class; no amount of
+/// clearing automation would give it one, and the honest sentence is "this camera does not
+/// have that control".
+///
+/// [`Decline::NoneUsable`] is a fact about a control the sensor **has**, and every instance
+/// of it is a different story: a `gain` that is INACTIVE because `auto_exposure` is engaged
+/// is a *state*, and D3's pairing planner exists precisely to clear it; a `brightness` whose
+/// current sits outside its own declared range is the represented-unknown class \[PF:4\] and
+/// a device finding worth writing down; a read-only or menu-typed one is a *capability*. The
+/// shipped predicate printed the control-set sentence for all four (note **N72**).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decline {
+    /// The device enumerates none of [`BRIGHTNESS_CLASS`].
+    NoneNamed {
+        /// How many controls it does enumerate — so a reader can tell a three-control IR
+        /// sensor from a twenty-four-control PTZ camera that simply spells things
+        /// differently.
+        examined: usize,
+    },
+    /// The device enumerates one or more of them and every one is disqualified, each by the
+    /// term recorded beside it.
+    NoneUsable(Vec<(ControlSlug, Disqualifier)>),
+}
+
+impl Decline {
+    /// What this decline is a fact **about**, as the clause a `SKIP` line uses.
+    ///
+    /// The distinction AGENTS rule 7 keeps, held in a value a unit test can read rather than
+    /// in a sentence a `println!` asserts by being typed. That is the whole of N72's F5: the
+    /// old message claimed "a fact about this sensor's control set" over a predicate that
+    /// could equally have been refusing a state.
+    #[must_use]
+    pub const fn is_a_fact_about(&self) -> &'static str {
+        match self {
+            Decline::NoneNamed { .. } => "this sensor's control set",
+            Decline::NoneUsable(_) => "the state of a control this sensor has",
+        }
+    }
+}
+
+impl fmt::Display for Decline {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Decline::NoneNamed { examined } => write!(
+                f,
+                "exposes none of {} among its {examined} control(s)",
+                BRIGHTNESS_CLASS.join(", ")
+            ),
+            Decline::NoneUsable(refused) => {
+                let named: Vec<String> = refused
+                    .iter()
+                    .map(|(slug, why)| format!("{slug} ({why})"))
+                    .collect();
+                write!(
+                    f,
+                    "exposes {}, disqualified by the term in parentheses",
+                    named.join(", ")
+                )
+            }
+        }
+    }
+}
+
+/// What a hardware arm found when it went looking for something to sweep.
+#[derive(Debug)]
+pub enum SweepTarget<'a> {
+    /// A control the arm may run a whole session over.
+    Found(&'a ControlDesc),
+    /// Nothing it may run one over, and why — named, so the `SKIP` line is a reason rather
+    /// than a shrug.
+    Declined(Decline),
+}
+
+/// The three UVC controls that move luma directly, in the order an arm should prefer them.
+///
+/// "A brightness-class control" is what docs/7 asks of both calibration rungs, and these
+/// three are the population. The list lives here rather than in a suite because it was in
+/// *two* suites: `crates/backends/v4l2/tests/hardware.rs` and `crates/client/tests/hardware.rs`
+/// each carried a private copy of it and of the predicate below. A selection only a test
+/// ever makes still has one home, and this module is the one the workspace already keeps
+/// for that kind of answer — [`is_motorized`] and [`is_perturbable`] are here for the same
+/// reason, and a private copy inside an ignored hardware binary is a rule nothing can
+/// unit-test.
+pub const BRIGHTNESS_CLASS: [&str; 3] = ["brightness", "gamma", "gain"];
+
+/// Why a test may not perturb this control, when it may not.
+///
+/// The reason-answering sibling of [`is_perturbable`], and the **authority** of the pair:
+/// that predicate is defined as this one answering nothing, so the two cannot drift into two
+/// rules the way a `bool` and a message beside it can.
+///
+/// The terms are checked in the order [`is_perturbable`]'s conjunction reads, and the first
+/// one that fires is the answer. A control disqualified twice over names the first term; a
+/// reader who clears it and re-runs meets the second, which is the same conversation an
+/// operator has with a device anyway.
+#[must_use]
+pub fn why_not_perturbable(desc: &ControlDesc) -> Option<Disqualifier> {
+    if !desc.is_writable() {
+        // The **verdict** is [`ControlDesc::is_writable`]'s and stays there; only the
+        // *diagnosis* is here, because that predicate folds three device facts into one
+        // `false` and they are not the same news — DISABLED is the device saying "not on
+        // this model", READ_ONLY is "not by you", and a class header is not a control at
+        // all. The last arm is the payload-carrying fallback AGENTS rule 6 asks of every
+        // match on device vocabulary: if `is_writable` grows a fourth term, this reports
+        // an honest "by a term this suite does not name yet" instead of guessing one of
+        // the three, and the day somebody reads that sentence in a transcript is the day
+        // this arm gets its fourth variant.
+        return Some(if desc.flags.has(KnownFlag::ReadOnly) {
+            Disqualifier::ReadOnly
+        } else if desc.flags.has(KnownFlag::Disabled) {
+            Disqualifier::Disabled
+        } else if desc.control_type == ControlType::ControlClass {
+            Disqualifier::ControlClass
+        } else {
+            Disqualifier::NotWritable
+        });
+    }
+    if !desc.control_type.is_scalar() {
+        return Some(Disqualifier::NotScalar {
+            control_type: desc.control_type,
+        });
+    }
+    if desc.is_volatile() {
+        return Some(Disqualifier::Volatile);
+    }
+    if desc.flags.has(KnownFlag::WriteOnly) {
+        return Some(Disqualifier::WriteOnly);
+    }
+    match &desc.current {
+        None => Some(Disqualifier::CurrentUnknown),
+        Some(ControlValue::Int(v)) if !desc.range.contains(*v) => {
+            Some(Disqualifier::CurrentOutsideRange {
+                current: *v,
+                min: desc.range.min,
+                max: desc.range.max,
+            })
+        }
+        Some(ControlValue::Int(v)) if !is_step_aligned(&desc.range, *v) => {
+            Some(Disqualifier::CurrentOffStep {
+                current: *v,
+                min: desc.range.min,
+                step: desc.range.effective_step(),
+            })
+        }
+        Some(ControlValue::Int(_)) => None,
+        Some(other) => Some(Disqualifier::CurrentNotAnInteger {
+            current: other.clone(),
+        }),
+    }
+}
+
+/// Why this control cannot carry a brightness-class sweep, when it cannot.
+///
+/// [`why_not_perturbable`] plus the three terms a *sweep* adds to a *write*: an automation
+/// partner may not own the control (D3's business, and this arm is not the one to take it
+/// on), the type has to be the plain integer a uniform plan walks, and the declared range
+/// has to hold more than one value.
+///
+/// The motor question is asked first and deliberately so: design §5 is a law about hardware
+/// wear, so it is the term that must fire even if some later one would have refused anyway.
+#[must_use]
+pub fn why_not_sweepable(desc: &ControlDesc) -> Option<Disqualifier> {
+    if is_motorized(&desc.slug) {
+        return Some(Disqualifier::Motorized);
+    }
+    if let Some(why) = why_not_perturbable(desc) {
+        return Some(why);
+    }
+    if desc.is_inactive() {
+        return Some(Disqualifier::Inactive);
+    }
+    if desc.control_type != ControlType::Integer {
+        return Some(Disqualifier::NotAnInteger {
+            control_type: desc.control_type,
+        });
+    }
+    if desc.range.max <= desc.range.min {
+        return Some(Disqualifier::OneValueRange {
+            min: desc.range.min,
+            max: desc.range.max,
+        });
+    }
+    None
+}
+
+/// The first control of [`BRIGHTNESS_CLASS`] this device will let a test sweep, or a named
+/// reason there is none.
+/// **Two questions and not one**, which is the whole of the repair. The names are looked
+/// for first, and only a control the device actually has can be *disqualified*; a device
+/// that has none of them declines with a different answer, carrying a different sentence,
+/// distinguishable by [`Decline::is_a_fact_about`] rather than by a reader's guess.
+///
+/// The list is walked in preference order and the first control that is *usable* wins — not
+/// the first one that is *named*, which is the neighbouring bug: a camera whose `brightness`
+/// is read-only and whose `gamma` is fine would otherwise report that it has nothing to
+/// sweep.
+#[must_use]
+pub fn brightness_class_target(controls: &[ControlDesc]) -> SweepTarget<'_> {
+    let mut refused = Vec::new();
+    for name in BRIGHTNESS_CLASS {
+        let Some(desc) = controls.iter().find(|desc| desc.slug.as_str() == name) else {
+            continue;
+        };
+        match why_not_sweepable(desc) {
+            None => return SweepTarget::Found(desc),
+            Some(why) => refused.push((desc.slug.clone(), why)),
+        }
+    }
+    SweepTarget::Declined(if refused.is_empty() {
+        Decline::NoneNamed {
+            examined: controls.len(),
+        }
+    } else {
+        // Every named control, not only the first: a transcript that reported the
+        // read-only `brightness` and stayed quiet about the INACTIVE `gain` would send a
+        // reader looking for a fault this run had already diagnosed.
+        Decline::NoneUsable(refused)
+    })
 }
 
 /// Whether the PF:6 clamp probe may use this control: an integer with room above its
@@ -1244,6 +1571,7 @@ fn join_notes(notes: &[String], fallback: &str) -> String {
 mod tests {
     use schema::backend::HotplugWatch;
     use schema::camera::CameraId;
+    use schema::control::ControlFlags;
     use schema::error::Result;
 
     use super::*;
@@ -1430,5 +1758,368 @@ mod tests {
         for &arm in BatteryArm::ALL {
             assert!(seen.insert(arm.as_str()), "{arm} duplicates a name");
         }
+    }
+
+    // ------------------------------------------------- what a hardware arm may sweep (N72)
+    //
+    // These are the tests the finding asks for and the reason the predicate moved here at
+    // all. The M7 mutant note **E13** records exercised the *name-absent* arm — it replaced
+    // the three control names with names no camera has, so every camera declined and the
+    // suite passed in a fifth of a second — and that is the only arm a hardware run on this
+    // desk has ever reached, because the three attached cameras either have a usable
+    // `brightness` or have no brightness-class control at all. Every *state* arm below is a
+    // shape no fixture on this desk can produce, which is exactly the population note
+    // **N70** describes: a test that asserts the assumption that produced the code.
+    //
+    // A run at real hardware could not have found this and cannot now prove it fixed. A
+    // table of `ControlDesc` values can do both, which is why these are here rather than in
+    // a transcript.
+
+    /// A control this suite would sweep, so each test below can break exactly one thing.
+    fn sweepable(slug: &str) -> ControlDesc {
+        ControlDesc {
+            id: ControlId(0x0098_0900),
+            name: slug.to_owned(),
+            slug: ControlSlug::parse(slug).expect("a literal slug"),
+            control_type: ControlType::Integer,
+            range: ControlRange {
+                min: 0,
+                max: 255,
+                step: 1,
+            },
+            default: 128,
+            // HAS_WHICH_MIN_MAX, which most integer controls on this kernel carry [PF:12]:
+            // a fixture with a clean flag word would let a predicate that tested the whole
+            // word instead of a bit pass by accident.
+            flags: ControlFlags::from_raw(0x1000),
+            menu: BTreeMap::new(),
+            elems: 1,
+            elem_size: 4,
+            dims: Vec::new(),
+            current: Some(ControlValue::Int(128)),
+        }
+    }
+
+    /// The same control with `raw` or'd into its flag word.
+    fn flagged(slug: &str, raw: u32) -> ControlDesc {
+        let desc = sweepable(slug);
+        ControlDesc {
+            flags: ControlFlags::from_raw(0x1000 | raw),
+            ..desc
+        }
+    }
+
+    const DISABLED: u32 = 0x0001;
+    const READ_ONLY: u32 = 0x0004;
+    const INACTIVE: u32 = 0x0010;
+    const WRITE_ONLY: u32 = 0x0040;
+    const VOLATILE: u32 = 0x0080;
+
+    #[test]
+    fn a_camera_with_a_plain_brightness_is_given_it() {
+        // The direction that must also hold, or every test below proves nothing: this is
+        // the OBSBOT and the Chicony RGB, which is what E13's sweep arm ran against.
+        let controls = vec![sweepable("brightness")];
+        let SweepTarget::Found(desc) = brightness_class_target(&controls) else {
+            panic!("a plain integer brightness is sweepable");
+        };
+        assert_eq!(desc.slug.as_str(), "brightness");
+    }
+
+    #[test]
+    fn preference_order_is_the_list_and_a_disqualified_first_name_does_not_end_the_search() {
+        // `gamma` is second in `BRIGHTNESS_CLASS` and must be reached when `brightness`
+        // cannot be used — the bug where the list is searched for the first *named* control
+        // rather than the first *usable* one turns one camera's read-only brightness into a
+        // camera with nothing to sweep.
+        let controls = vec![flagged("brightness", READ_ONLY), sweepable("gamma")];
+        let SweepTarget::Found(desc) = brightness_class_target(&controls) else {
+            panic!("gamma is usable and second in the list");
+        };
+        assert_eq!(desc.slug.as_str(), "gamma");
+    }
+
+    #[test]
+    fn a_sensor_with_none_of_the_three_names_declines_about_its_control_set() {
+        // The Chicony IR sensor, as E13 transcribes it: three controls, none of them
+        // brightness-class. This is the one shape the old message was right about.
+        let controls = vec![
+            sweepable("user_controls"),
+            sweepable("region_of_interest_rectangle"),
+            sweepable("region_of_interest_auto_ctrls"),
+        ];
+        let SweepTarget::Declined(why) = brightness_class_target(&controls) else {
+            panic!("no control here is brightness-class");
+        };
+        assert_eq!(why, Decline::NoneNamed { examined: 3 });
+        assert_eq!(why.is_a_fact_about(), "this sensor's control set");
+        assert_eq!(
+            why.to_string(),
+            "exposes none of brightness, gamma, gain among its 3 control(s)"
+        );
+    }
+
+    #[test]
+    fn an_inactive_gain_is_a_fact_about_a_state_and_not_about_a_control_set() {
+        // **The finding, as one test.** `gain` is present; `auto_exposure` owns it [PF:3];
+        // D3's pairing planner exists precisely to clear that, so the next run with
+        // automation off would sweep it. The shipped message said this camera "exposes no
+        // sweepable brightness-class control among its N, so this arm declines it — which
+        // is a fact about this sensor's control set", which is false in both halves.
+        let controls = vec![flagged("gain", INACTIVE)];
+        let SweepTarget::Declined(why) = brightness_class_target(&controls) else {
+            panic!("an INACTIVE control is not sweepable");
+        };
+        assert_eq!(
+            why,
+            Decline::NoneUsable(vec![(
+                ControlSlug::parse("gain").expect("a literal slug"),
+                Disqualifier::Inactive
+            )])
+        );
+        assert_eq!(
+            why.is_a_fact_about(),
+            "the state of a control this sensor has"
+        );
+        assert_eq!(
+            why.to_string(),
+            "exposes gain (INACTIVE — an automation partner owns it [PF:3]), disqualified by \
+             the term in parentheses"
+        );
+    }
+
+    #[test]
+    fn a_brightness_whose_current_is_outside_its_own_range_names_the_reading() {
+        // AGENTS rule 6's represented-unknown class, and a PF-class device finding rather
+        // than a missing control: the OBSBOT's `Zoom, Continuous` really does report 245 in
+        // a range of -100..=100 [PF:4], and a `brightness` doing the same is the shape this
+        // arm must report rather than silently reclassify.
+        let mut desc = sweepable("brightness");
+        desc.current = Some(ControlValue::Int(300));
+        let SweepTarget::Declined(why) = brightness_class_target(std::slice::from_ref(&desc))
+        else {
+            panic!("an out-of-range current is not perturbable");
+        };
+        assert_eq!(
+            why.is_a_fact_about(),
+            "the state of a control this sensor has"
+        );
+        assert!(
+            why.to_string()
+                .contains("current 300 outside 0..=255 [PF:4]"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_brightness_sitting_off_its_own_step_names_the_step() {
+        let mut desc = sweepable("brightness");
+        desc.range = ControlRange {
+            min: 0,
+            max: 254,
+            step: 2,
+        };
+        desc.current = Some(ControlValue::Int(7));
+        let SweepTarget::Declined(why) = brightness_class_target(std::slice::from_ref(&desc))
+        else {
+            panic!("a current off its own step is not perturbable [PF:4]");
+        };
+        assert!(
+            why.to_string()
+                .contains("current 7 is not a whole number of steps of 2 above 0 [PF:4]"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_read_only_brightness_names_the_flag_that_refused_it() {
+        let controls = vec![flagged("brightness", READ_ONLY)];
+        let SweepTarget::Declined(why) = brightness_class_target(&controls) else {
+            panic!("a read-only control is not writable");
+        };
+        assert!(why.to_string().contains("brightness (read-only)"), "{why}");
+    }
+
+    #[test]
+    fn a_disabled_brightness_is_not_reported_as_a_read_only_one() {
+        // `ControlDesc::is_writable` folds READ_ONLY, DISABLED and the class header into one
+        // `false`; the diagnosis has to take them apart again, because DISABLED is the
+        // device saying "not on this model" and READ_ONLY is "not by you".
+        let controls = vec![flagged("brightness", DISABLED)];
+        let SweepTarget::Declined(why) = brightness_class_target(&controls) else {
+            panic!("a DISABLED control is not writable");
+        };
+        assert!(why.to_string().contains("brightness (DISABLED)"), "{why}");
+    }
+
+    #[test]
+    fn a_volatile_brightness_and_a_write_only_one_name_their_own_flags() {
+        for (raw, expected) in [
+            (VOLATILE, "VOLATILE, so its value is the device's"),
+            (WRITE_ONLY, "WRITE_ONLY, so there is nothing to read back"),
+        ] {
+            let controls = vec![flagged("brightness", raw)];
+            let SweepTarget::Declined(why) = brightness_class_target(&controls) else {
+                panic!("{expected}");
+            };
+            assert!(why.to_string().contains(expected), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_menu_typed_brightness_is_declined_by_its_type() {
+        // A menu is not a switch [PF:2] and it is not an integer sweep either. `Integer64`
+        // is the same finding in a second costume: both are *capabilities*, and neither is
+        // an absent control.
+        for control_type in [ControlType::Menu, ControlType::Integer64] {
+            let mut desc = sweepable("brightness");
+            desc.control_type = control_type;
+            let SweepTarget::Declined(why) = brightness_class_target(std::slice::from_ref(&desc))
+            else {
+                panic!("{control_type:?} is not a plain integer");
+            };
+            assert!(
+                why.to_string()
+                    .contains(&format!("brightness (type is {control_type:?})")),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compound_typed_brightness_is_declined_before_its_payload_is_read() {
+        // PF:1's shape: a type this build does not name, carrying bytes. It must decline as
+        // a *type*, never as a missing control and never by touching the payload.
+        let mut desc = sweepable("brightness");
+        desc.control_type = ControlType::Unknown { raw: 0x0fff };
+        desc.current = Some(ControlValue::Bytes(vec![0; 16]));
+        let SweepTarget::Declined(why) = brightness_class_target(std::slice::from_ref(&desc))
+        else {
+            panic!("an opaque payload is not scalar");
+        };
+        assert!(why.to_string().contains("which carries a payload"), "{why}");
+    }
+
+    #[test]
+    fn a_one_value_brightness_range_is_declined_by_its_range() {
+        let mut desc = sweepable("brightness");
+        desc.range = ControlRange {
+            min: 5,
+            max: 5,
+            step: 1,
+        };
+        desc.current = Some(ControlValue::Int(5));
+        let SweepTarget::Declined(why) = brightness_class_target(std::slice::from_ref(&desc))
+        else {
+            panic!("one value is not a sweep");
+        };
+        assert!(
+            why.to_string().contains("range 5..=5 holds one value"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn every_disqualified_control_is_a_fact_about_a_state_and_never_about_a_control_set() {
+        // The regression this entry exists for, asserted over the whole vocabulary at once
+        // rather than one shape at a time: whatever term refuses a control the device
+        // *has*, the sentence a `SKIP` line prints must not be the one about which controls
+        // the device has. A future term added to `why_not_sweepable` joins this test by
+        // being added to the table below, and a term that forgets to costs one line.
+        let mut shapes: Vec<ControlDesc> = vec![
+            flagged("brightness", READ_ONLY),
+            flagged("brightness", DISABLED),
+            flagged("brightness", INACTIVE),
+            flagged("brightness", VOLATILE),
+            flagged("brightness", WRITE_ONLY),
+        ];
+        let mut no_current = sweepable("brightness");
+        no_current.current = None;
+        shapes.push(no_current);
+        let mut text_current = sweepable("brightness");
+        text_current.current = Some(ControlValue::Text("bright".to_owned()));
+        shapes.push(text_current);
+        let mut out_of_range = sweepable("brightness");
+        out_of_range.current = Some(ControlValue::Int(-1));
+        shapes.push(out_of_range);
+        let mut menu_typed = sweepable("brightness");
+        menu_typed.control_type = ControlType::Menu;
+        shapes.push(menu_typed);
+        let mut single = sweepable("brightness");
+        single.range = ControlRange {
+            min: 1,
+            max: 1,
+            step: 1,
+        };
+        single.current = Some(ControlValue::Int(1));
+        shapes.push(single);
+
+        for desc in &shapes {
+            let SweepTarget::Declined(why) = brightness_class_target(std::slice::from_ref(desc))
+            else {
+                panic!("{desc:?} must not be swept");
+            };
+            assert_eq!(
+                why.is_a_fact_about(),
+                "the state of a control this sensor has",
+                "{why}"
+            );
+            assert!(
+                !why.to_string().contains("exposes none of"),
+                "a control the device has was reported as one it does not have: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_named_control_is_reported_and_not_only_the_first() {
+        // A camera with two brightness-class controls, both refused for different reasons,
+        // must say both: a transcript that named only `brightness` would send a reader
+        // looking for a `gain` fault that is already recorded.
+        let controls = vec![flagged("brightness", READ_ONLY), flagged("gain", INACTIVE)];
+        let SweepTarget::Declined(why) = brightness_class_target(&controls) else {
+            panic!("neither is usable");
+        };
+        let text = why.to_string();
+        assert!(text.contains("brightness (read-only)"), "{text}");
+        assert!(text.contains("gain (INACTIVE"), "{text}");
+    }
+
+    #[test]
+    fn is_perturbable_and_why_not_perturbable_are_one_rule_and_not_two() {
+        // The two must never drift, which is why the bool is *defined* as the reason
+        // answering nothing. This asserts the property over every shape above rather than
+        // trusting the definition to stay that way.
+        let mut shapes = vec![sweepable("brightness")];
+        for raw in [READ_ONLY, DISABLED, VOLATILE, WRITE_ONLY, INACTIVE] {
+            shapes.push(flagged("brightness", raw));
+        }
+        let mut opaque = sweepable("brightness");
+        opaque.control_type = ControlType::Unknown { raw: 0x0fff };
+        shapes.push(opaque);
+        let mut unread = sweepable("brightness");
+        unread.current = None;
+        shapes.push(unread);
+        let mut adrift = sweepable("brightness");
+        adrift.current = Some(ControlValue::Int(999));
+        shapes.push(adrift);
+
+        for desc in &shapes {
+            assert_eq!(
+                is_perturbable(desc),
+                why_not_perturbable(desc).is_none(),
+                "{desc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_motorized_control_is_refused_by_the_motor_rule_before_anything_else() {
+        // Not reachable through `BRIGHTNESS_CLASS` today — none of the three names contains
+        // a motor fragment — and asserted anyway, because design §5 is a law about hardware
+        // wear rather than a consequence of how three controls happen to be spelled. The
+        // day somebody adds `focus_absolute` to the list, this is the term that must fire.
+        let desc = sweepable("zoom_absolute");
+        assert_eq!(why_not_sweepable(&desc), Some(Disqualifier::Motorized));
     }
 }
