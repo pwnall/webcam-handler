@@ -62,7 +62,14 @@ listenfd.workspace = true
 # is `#![forbid(unsafe_code)]` and stays that way — rustix is a safe wrapper, so the
 # hardening lands without moving the boundary `unsafe-scope.sh` asserts (note N39's
 # 2026-08-10 amendment).
-rustix = { workspace = true, features = ["fs", "net", "process"] }
+#
+# `rand` is P5a's, and it is the same argument about a fourth syscall: `getrandom(2)` for
+# D11's per-run bearer token (`daemon::http::token`), which must come from the kernel's
+# CSPRNG and must not cost this crate an `unsafe` block or a second answer to "how does
+# this workspace reach the kernel" (design §2.10). It is a **feature on a pin the
+# workspace already carries**, not an adoption: rustix declares it as `rand = []`, so it
+# enables no optional dependency and adds no package to the resolved graph.
+rustix = { workspace = true, features = ["fs", "net", "process", "rand"] }
 # `READY=1`, `STATUS=…`, `STOPPING=1` and `WATCHDOG=1` on `$NOTIFY_SOCKET` — the real
 # implementation of the [`daemon::shutdown::Notifying`] seam P4e-ii's first half shipped as a
 # trait (note **N58**'s split). **Pure Rust, no libsystemd**, which design §2.6 requires of

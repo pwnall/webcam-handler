@@ -3,6 +3,7 @@
 //! | Module | Home of |
 //! |---|---|
 //! | `events` | the two subscriptions' event sources, the fan-out, and its bounds (D10, P4e-i) |
+//! | [`http`] | the opt-in TCP transport's posture: D11's bind × token matrix and the per-run bearer token (P5a) |
 //! | [`logging`] | design §2.6's `tracing` fmt layer, and the rule that no frame reaches it |
 //! | [`server`] | the server half of `webcam-handler-api`'s T5 surface (D10) |
 //! | [`shutdown`] | the order the daemon stops in, and the signal and supervisor seams (P4e-ii) |
@@ -31,6 +32,7 @@
 )]
 
 pub mod events;
+pub mod http;
 pub mod logging;
 pub mod server;
 pub mod shutdown;
