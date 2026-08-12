@@ -5,14 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>webcam-handler</title>
     <!--
-      The styles are inline, and at P5a that is not laziness. The token rides the URL
-      (D11), and a browser does not carry a document's query string over to the
-      subresources that document asks for: a `<link rel="stylesheet" href="app.css">` on
-      a page opened at `/?token=…` is fetched as `/app.css` with no credential at all,
-      which the token gate refuses — correctly. So the skeleton page is one file, and how
-      the real client's ES modules authenticate is a decision P5b/P5c makes on purpose
-      rather than one this page makes by accident. `daemon::http::listener`'s header
-      states the same finding where the gate is.
+      The styles are inline because a skeleton page and a stylesheet beside it would be
+      two files saying what one file says. Until 2026-08-12 there was a harder reason:
+      the token rides the URL (D11) and a browser does not carry a document's query
+      string over to the subresources that document asks for, so a `<link
+      rel="stylesheet" href="app.css">` on a page opened at `/?token=…` was fetched as
+      `/app.css` with no credential at all and the token gate refused it — correctly
+      (note N76). The owner then ruled that these files are open-source code rather than
+      a secret and are served without authentication, so P5c's ES modules are ordinary
+      `import`s and only the WS endpoint and the MJPEG preview stay behind the token
+      (note N82). `daemon::http::listener`'s header states it where the gate is.
     -->
     <style>
       :root {
@@ -52,8 +54,8 @@
       <p>
         The client itself — the camera list, the control panel generated from the
         <code>controls</code> DTO, the live preview and the calibration view — is the next
-        sub-milestone. This page exists so that the listener has something to serve and the
-        token gate has something to protect.
+        sub-milestone. This page exists so that the listener has something to serve. What the
+        bearer token protects is the camera: the JSON-RPC socket and the preview stream.
       </p>
     </main>
   </body>

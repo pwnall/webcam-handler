@@ -163,6 +163,67 @@ gate_rust_files() {
     gate_find "$(gate_root)" -name '*.rs'
 }
 
+# --------------------------------------------------------------- product code vs test code
+#
+# Two predicates make claims about what a *file* says and must not count what its own tests
+# say: `token-comparison-has-one-home.sh` (who may read the token's secret) and
+# `web-routes-are-gated.sh` (what may register a route). A test that builds a router of its
+# own, or holds a secret to construct a near miss with, is not the defect either is about —
+# and a gate that refused those is a gate somebody turns off.
+#
+# **The rule is one sentence, and it is the shape every module in this workspace writes: test
+# code is everything from a file's one `#[cfg(test)]` marker to the end of it.** A file this
+# cannot classify — two markers, or a marker that opens something other than a `mod` — is a
+# **failure and not a pass** in both callers, because a file whose boundary has no answer is a
+# file where the confinement has none either; that is `unsafe-scope.sh`'s price for a count it
+# cannot read, charged for a boundary. The residual is the other end: product code placed
+# *after* a trailing test module would not be seen. Nothing in this workspace is written that
+# way, and both predicates' `cases/` seed the shapes that are.
+#
+# One home rather than two copies, for `gate_tree_state`'s reason a few paragraphs down: the
+# second copy is the one that stops agreeing about what a test region is, and the two callers
+# would then disagree about which half of a file they were reading.
+
+# The line where $1's test region begins: 0 for a file with no test module, and -1 for a file
+# whose test region this cannot identify.
+gate_test_region_start() {
+    awk '
+        /^[[:space:]]*#\[cfg\(test\)\]/ {
+            markers++
+            if (!first) { first = NR }
+            expect_mod = NR + 1
+        }
+        NR == expect_mod && $0 !~ /^[[:space:]]*mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{/ {
+            unreadable = 1
+        }
+        END {
+            if (markers == 0) { print 0 }
+            else if (markers > 1 || unreadable) { print -1 }
+            else { print first }
+        }
+    ' "$1"
+}
+
+# The product half of $1 — everything above the test region that starts at line $2 — with line
+# comments stripped.
+#
+# **Prose does not count**, in both callers and for the same reason: what defends each claim is
+# the argument written beside the code, those arguments name the very spellings the predicates
+# match on, and a gate that turned writing about a rule into a violation would push the
+# reasoning out of the modules that need it. Block comments and string literals are not
+# stripped, for `unsafe-scope.sh`'s reason — the workspace writes `//` comments, and a rule that
+# fits in one sentence beats one that needs a Rust parser.
+gate_product_lines() {
+    local file="$1" start="$2" last='$'
+    if ((start == 1)); then
+        return 0
+    fi
+    if ((start > 1)); then
+        last=$((start - 1))
+    fi
+    sed -n "1,${last}p" "$file" | sed 's://.*::'
+}
+
 # --------------------------------------------------------------- cargo metadata
 #
 # `cargo metadata` is the authority on the dependency graph: manifests lie by omission

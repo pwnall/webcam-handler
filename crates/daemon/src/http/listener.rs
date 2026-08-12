@@ -1,5 +1,6 @@
 //! The opt-in TCP transport: one axum server, the embedded client behind it, and the token
-//! gate in front of everything (D11, docs/7 P5a).
+//! gate in front of the two routes that are the camera (D11 and its 2026-08-12 amendment,
+//! docs/7 P5a).
 //!
 //! [`crate::uds`] is this module's model and its counterweight. That transport is **always**
 //! served and its auth model is the filesystem; this one exists only because somebody typed
@@ -96,48 +97,66 @@
 //! exits non-zero — and asks a service manager to restart it — when a browser transport it was
 //! asked to add as an extra goes away.
 //!
-//! ## The gate is installed, or it is absent
+//! ## The gate is over the routes, and the assets are outside it
 //!
-//! In D11's three token-gated cells the router is wrapped in [`super::gate::check`]; in the
-//! token-less loopback cell it is **not wrapped at all**. The alternative — always install the
-//! middleware and let it answer "yes" when the posture says so — puts a bypass branch inside
-//! the one function in this daemon whose entire job is to say no, where an inverted condition
-//! is a listener serving a live camera to anybody who asks. Here the branch is at composition,
-//! in one `match` over the posture, and the gate itself has no way to admit a request that did
-//! not present the token.
+//! The owner ruled (2026-08-12) that **static assets are served without authentication** —
+//! the client is open-source code rather than a secret — and that only the resources which
+//! *carry or drive the camera* stay behind D11's token: the WebSocket endpoint and the MJPEG
+//! preview, which is exactly what [`super::CAMERA_BEARING_PATHS`] names. So in D11's three
+//! token-gated cells the gate is a [`Router::route_layer`] over the routes and the asset
+//! **fallback** is outside it; in the token-less loopback cell nothing is installed at all.
+//! Note **N82** carries the ruling and what it changed; it retires note N76.
 //!
-//! **Every route, and since P5b that includes the WebSocket upgrade and the MJPEG preview.**
-//! An upgrade request is an ordinary HTTP request with two headers on it, so it meets the gate
-//! before it meets the router, and an anonymous `new WebSocket("ws://…/rpc")` is answered with
-//! the same `401` an anonymous `GET /` is; an anonymous `GET /preview?camera=…` is answered
-//! with it too, and that one is the route where the refusal is a live camera rather than a
-//! page. Neither is a second decision — it is `router` wrapping one thing instead of a list —
-//! and both are asserted over a real socket rather than inferred from the composition
-//! (`crates/daemon/tests/web_rpc.rs`, `crates/daemon/tests/preview.rs`).
+//! **`route_layer` and not `layer`, which is the exact inverse of what note N75 argued and
+//! for the same reason.** `layer` maps over `path_router`, `fallback_router` **and**
+//! `catch_all_fallback`, so it wraps the request for a path that does not exist; `route_layer`
+//! maps over `path_router` alone. While the assets were behind the token, `layer` was the one
+//! tool that stopped an anonymous `GET /nothing-here` telling a stranger which paths this
+//! daemon has. With the assets open there is nothing left to tell — the path table is a
+//! directory in a public repository, and the two paths still behind the token are `const`s in
+//! the same one — so what is left to protect is the camera, and the camera is on the routes.
 //!
-//! **The owner's 2026-08-12 ruling narrows this, and the narrowing is not here.** Static
-//! assets are open-source code rather than a secret and are to be served without
-//! authentication; only the resources that carry or drive the camera stay gated, which is the
-//! two paths [`super::CAMERA_BEARING_PATHS`] names. That is a separate piece, and the order
-//! matters: a gate narrowed before the list it narrows onto exists is a window with no gate in
-//! it. What this module does today is wrap everything, and what the preview route does is say
-//! in its own header why it is one of the two that stay wrapped afterwards.
+//! **The gate is still absent rather than permissive in the token-less cell**, which is note
+//! N75's other half and is untouched by the ruling: the branch is one `match` arm at
+//! composition, over a value a reviewer can read, rather than a bypass inside the one function
+//! whose entire job is to say no.
 //!
-//! ## The client's own subresources, which this build's page does not have
+//! ### What the narrowing costs, and what pays for it
 //!
-//! A finding worth writing down where the gate is, because it is P5c's to solve: **the
-//! token rides the URL, and a browser does not carry a document's query string over to the
-//! subresources that document requests.** A page opened at `/?token=…` asks for `/app.css` —
-//! no query, no `Authorization`, no credential — and this gate refuses it, correctly. So the
-//! skeleton `webcam-handler-web` ships is a single self-contained file, and the real client
-//! (vanilla ES *modules*, which are subresources by definition, design §2.7) will need a
-//! decision made on purpose: a cookie set on the gated navigation, or a page that fetches its
-//! own modules with the `Authorization` header. Nothing here prejudges it, and P5b did not
-//! prejudge it either: the WebSocket endpoint authenticates with the `?token=` form the gate
-//! already reads (note **N74**), because that is what a `new WebSocket(url)` can carry, and no
-//! cookie is read, written or accepted anywhere in this daemon. [`super::rpc`]'s header
-//! records what that form costs on a socket rather than on a navigation, and the one fact
-//! that endpoint contributes to note N76's open question.
+//! "Every route is gated" used to be a property of one call: a request could not reach a
+//! handler without meeting the gate, and no list had to be kept. It is now a property of
+//! **where a route is registered** — `route_layer` wraps the routes that exist when it is
+//! called and says nothing about later ones — so a camera-bearing route merged after that line
+//! is a live camera served to strangers. That is a defect class this piece created, and AGENTS
+//! rule 1 applies to it. Two things can go red on it and neither implies the other:
+//!
+//! - **`scripts/gates/web-routes-are-gated.sh`** — every `.route(` in this crate registers a
+//!   path [`super::CAMERA_BEARING_PATHS`] names, so a route *nobody named* is a finding rather
+//!   than a discovery. A suite can only drive the paths it knows, and the path no test knows is
+//!   precisely the one nobody wrote down (`kill-is-never-a-fallback.sh`'s argument about an
+//!   absence, one transport along);
+//! - **`crates/daemon/tests/preview.rs`'s `every_camera_bearing_route_is_behind_the_gate`** —
+//!   every path on that list answers `401` to a request presenting nothing, over a real socket,
+//!   and answers something else with the token; and the assets answer `200` to the same
+//!   anonymous request, which is the ruling's own requirement rather than a permission.
+//!
+//! Together they are the partition: every route is named, and every name is gated.
+//!
+//! ## The client's own subresources, which the ruling is mostly about
+//!
+//! Note **N76** recorded the constraint this listener used to put on the client: the token
+//! rides the URL, a browser does not carry a document's query string over to the subresources
+//! that document requests, so `<link rel="stylesheet" href="app.css">` on a page opened at
+//! `/?token=…` was fetched with no credential at all and refused — the gate being right. That
+//! is why the skeleton `webcam-handler-web` ships is one self-contained file, and why P5c's ES
+//! *modules* (subresources by definition, design §2.7) could not be written until somebody
+//! chose between a session cookie and a hand-rolled module loader. **The ruling dissolves that
+//! question rather than answering it**: an asset request presents no credential and needs
+//! none, so the client's module graph is ordinary `import` statements, and no second
+//! credential shape was invented — no cookie is read, written or accepted anywhere in this
+//! daemon. What still authenticates is what the page drives the camera with: [`super::rpc`]'s
+//! `?token=` on the WebSocket (note **N74**'s rule, unchanged) and the same parameter on the
+//! preview's `<img src>`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -145,7 +164,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::Request;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jsonrpsee_server::{Methods, ServerHandle};
 use schema::{Error, Result, limits};
@@ -164,8 +183,25 @@ use crate::shutdown::Shutdown;
 /// A sentence rather than a body, and short on purpose: the only reader is a person who typed
 /// a URL by hand or a client of P5b's that is a version behind. A listing of what *does* exist
 /// would be this daemon volunteering its surface to whoever asked, which is a habit worth not
-/// having on the transport that carries a camera.
+/// having on the transport that carries a camera. Since the 2026-08-12 ruling this answer is
+/// reachable **without** the token, which strengthens the argument rather than changing it:
+/// "whoever asked" now includes somebody who has presented nothing.
 const NOT_FOUND: &str = "no such asset\n";
+
+/// The referrer policy every response this listener writes carries.
+///
+/// `no-referrer` and not `same-origin` or `strict-origin-when-cross-origin`, and the reason is
+/// the token's. It rides the document's URL ([`Token::ready_to_open_url`]), so the URL an
+/// operator's browser holds for this page **contains the key to their camera** — and a
+/// `Referer` header is that URL, sent to whatever the page linked to. Same-origin leakage back
+/// to this daemon is harmless, since the credential came from here; a link *out* of the page is
+/// not, and it costs nothing to be right about both. The page P5a ships has no links and P5c's
+/// may, which is the wrong order to discover a header in.
+///
+/// It is a header on the response rather than a `referrerpolicy=` attribute on an element,
+/// because the attribute is one anchor's and this is the document's — and because a policy the
+/// *daemon* states cannot be lost by a client edit that forgets one tag.
+const REFERRER_POLICY: &str = "no-referrer";
 
 /// Everything `--http` costs the composition root: the posture, the token, the socket, the
 /// server.
@@ -454,8 +490,8 @@ pub fn serve(
     })
 }
 
-/// The routes, the compression layer over the half that wants one, and D11's gate over all of
-/// them or not at all.
+/// The routes, the compression layer over the half that wants one, D11's gate over the routes
+/// or over nothing, and the referrer policy over everything.
 ///
 /// One `fallback` for the assets and no route table for them: every path that is not the
 /// wire's or the preview's is answered by the same handler, which serves the asset of that
@@ -470,6 +506,12 @@ pub fn serve(
 /// in a table; a request for `/rpc` therefore never reaches `web::get`, which is a property
 /// this daemon gets from the router rather than from an asset that happens not to be called
 /// `rpc`.
+///
+/// **That split is also the security boundary now**, which is worth saying where the two lines
+/// are: since the owner's 2026-08-12 ruling the gate is over the *routes* and not over the
+/// *fallback*, so "is this a route or a file?" and "does this need the token?" are the same
+/// question. Adding a route is therefore a security decision whatever else it is
+/// (`scripts/gates/web-routes-are-gated.sh`), and adding a file is not.
 ///
 /// ## The compression layer, and the route it is deliberately not over
 ///
@@ -487,19 +529,29 @@ pub fn serve(
 /// largest thing this daemon puts on that socket; the upgrade that shares the path is a `101`
 /// with no body, which the layer passes through untouched.
 ///
-/// ## The gate
+/// ## The gate, and the one word that carries the owner's ruling
 ///
-/// `Router::layer` wraps the fallback as well as the routes (it maps over `path_router`,
-/// `fallback_router` **and** `catch_all_fallback`), which is why the gate covers a request for
-/// a path that does not exist **and** the WebSocket upgrade **and** the preview. `route_layer`
-/// is the one that would not, and it is the wrong tool here for exactly that reason: it would
-/// leave an anonymous request for `/anything` answered by the 404 handler, telling a stranger
-/// which paths this daemon has.
+/// `Router::route_layer` maps over `path_router` and **neither** fallback, so the gate covers
+/// the WebSocket upgrade and the preview — the two routes — and does not cover a request for a
+/// path that is not one of them. That is the 2026-08-12 ruling in one word: the assets are
+/// served to anybody, and what stays behind D11's token is what carries or drives the camera.
+/// `Router::layer` is what this was, note **N75** argued for it at length, and the module
+/// header records why that argument inverted rather than merely lapsed.
 ///
-/// The owner's 2026-08-12 ruling narrows this to the two routes
-/// [`super::CAMERA_BEARING_PATHS`] names, and that narrowing is a separate piece: nothing here
-/// is un-gated in advance of it, because the order in which those two land is the difference
-/// between a narrower gate and a window with no gate at all.
+/// **Nothing may be merged into this router after that line.** `route_layer` wraps the routes
+/// that exist when it is called and says nothing about later ones, which is the defect class
+/// the header names and `scripts/gates/web-routes-are-gated.sh` answers. It *panics* on a
+/// router with no routes at all — axum refusing to install a layer that could not run — which
+/// is the one arrangement in which this call would silently do nothing.
+///
+/// ## The referrer policy, over everything and outermost
+///
+/// [`REFERRER_POLICY`] is applied with `Router::layer` and applied **last**, so it is the
+/// outermost middleware and lands on every response this listener writes — the page, the
+/// assets, the preview's frames, the `404`, and the gate's own `401`, which is a response to a
+/// request whose URL may have carried the token in the first place. A header that covered only
+/// the half of the router somebody remembered would be the second list this module spent the
+/// paragraph above refusing to keep.
 fn router(
     posture: Posture,
     token: Option<Arc<Token>>,
@@ -511,23 +563,43 @@ fn router(
         .fallback(asset)
         .layer(CompressionLayer::new())
         .merge(preview);
-    match (posture.token(), token) {
+    let served = match (posture.token(), token) {
         // D11's three gated cells: loopback without the flag, and both non-loopback cells.
         (TokenRule::Required, Some(token)) => {
-            Ok(routes.layer(axum::middleware::from_fn_with_state(token, gate::check)))
+            routes.route_layer(axum::middleware::from_fn_with_state(token, gate::check))
         }
         // D11's one token-less cell — loopback, and only behind the named flag. No gate,
         // rather than a gate that says yes.
-        (TokenRule::NotRequired, None) => Ok(routes),
-        (TokenRule::Required, None) => Err(ungated(
-            "D11 requires the bearer token for this bind and none was minted, so the gate \
-             would have nothing to check",
-        )),
-        (TokenRule::NotRequired, Some(_)) => Err(ungated(
-            "a token was minted for a bind D11 serves without one, so it would be printed in \
-             a URL and never checked",
-        )),
-    }
+        (TokenRule::NotRequired, None) => routes,
+        (TokenRule::Required, None) => {
+            return Err(ungated(
+                "D11 requires the bearer token for this bind and none was minted, so the gate \
+                 would have nothing to check",
+            ));
+        }
+        (TokenRule::NotRequired, Some(_)) => {
+            return Err(ungated(
+                "a token was minted for a bind D11 serves without one, so it would be printed \
+                 in a URL and never checked",
+            ));
+        }
+    };
+    Ok(served.layer(axum::middleware::map_response(no_referrer)))
+}
+
+/// Stamp [`REFERRER_POLICY`] on one response.
+///
+/// `insert` rather than `append`: this is the daemon's policy for its own responses, and two
+/// `Referrer-Policy` headers is a browser picking one of them — the same "whichever layer
+/// parsed it last" question [`super::gate`] refuses to have about a credential, in a place
+/// where the answer is only a policy. Nothing else in this daemon writes the header, so the
+/// value replaced is always this one.
+async fn no_referrer(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static(REFERRER_POLICY),
+    );
+    response
 }
 
 /// The refusal both halves of that disagreement share.

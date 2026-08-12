@@ -30,6 +30,14 @@
 //! in D11* (the gate cites the paragraph, not a paraphrase)" — and because a paraphrase of a
 //! security rule is a second copy of it that is one edit away from meaning something else.
 //!
+//! **D11 carries an amendment of 2026-08-12, and the sentence it amends is the one about the
+//! three things this transport serves.** "Requires a bearer token" is now about the two of them
+//! that are the camera — the WS JSON-RPC endpoint and the MJPEG preview — and not about the
+//! static assets, which are this client's own source code. The matrix is untouched, its reason
+//! is untouched ("a camera is a privacy-sensitive device; the daemon's exposure posture errs
+//! closed"), and what changed is which resources that reason is about. See D11's amended
+//! paragraph and note **N82**.
+//!
 //! Two facts about this daemon follow from that paragraph, and they are what the first two
 //! modules in the table are. **The posture is decided from values, before anything is bound** — so all
 //! four cells are asserted on a machine with one interface, and the decision is a value a
@@ -58,11 +66,11 @@
 //! [`rpc`] is P5b's first half: D11's "WS JSON-RPC", as **one route that calls the `Methods`
 //! value [`crate::server::mount`] produced** rather than a second registration of anything.
 //! It fits the arrangement above without disturbing it — it decides nothing, [`listener`]
-//! merges its route beside the asset fallback, and [`gate`] covers it because it covers
-//! everything. Its header carries the two things that are genuinely new: why jsonrpsee's own
-//! upgrade path is used instead of axum's `ws` feature, and what the `?token=` credential
-//! costs on a WebSocket rather than on a navigation (note **N76** is the constraint it works
-//! under; a `new WebSocket(url)` can set no headers, so the URL form is not a preference).
+//! merges its route beside the asset fallback, and [`gate`] covers it because it is one of the
+//! two routes that carry or drive a camera. Its header carries the two things that are
+//! genuinely new: why jsonrpsee's own upgrade path is used instead of axum's `ws` feature, and
+//! what the `?token=` credential costs on a WebSocket rather than on a navigation (a
+//! `new WebSocket(url)` can set no headers, so the URL form is not a preference).
 //!
 //! ## The fourth module, and the one route that is a camera
 //!
@@ -75,17 +83,21 @@
 //! itself is not here: `crate::preview` owns the watch channel, the feed registry and the
 //! driver, because those are questions about cameras and this module is about a socket.
 //!
-//! ## The two routes that carry a camera, named
+//! ## The two routes that carry a camera, and everything else is a file
 //!
 //! [`CAMERA_BEARING_PATHS`] is the list, and it exists because of an owner ruling
 //! (2026-08-12): **static assets are served without authentication** — they are open-source
 //! code, not a secret — and **only the resources that carry or drive the camera are gated**.
-//! The piece that moves the gate from `Router::layer` over everything to those two routes is a
-//! separate one and is deliberately not landed here; what is landed here is the list it will
-//! move the gate over, so that "which routes stay gated" is a value in this crate rather than
-//! a memory in a commit message. Today the gate still covers every route, so the list is a
-//! *subset* claim rather than the whole policy — and the suite drives every path in it
-//! anonymously, which is a claim that survives the split.
+//! Note **N82** carries the ruling, what it cost and what replaced the cost; it retires note
+//! N76, whose whole subject was a client that could not fetch its own modules.
+//!
+//! The list is now the *policy* rather than a subset claim: `listener::router` gates the
+//! routes and not the fallback, so "which paths need the token" and "which paths are routes"
+//! are the same question, and this list is the answer written down. Two things hold it —
+//! `crates/daemon/tests/preview.rs` drives every path in it anonymously over a real socket and
+//! requires a `401`, and `scripts/gates/web-routes-are-gated.sh` requires every `.route(` in
+//! this crate to name a path that is on it — because a test can only drive the paths somebody
+//! named, and the route nobody named is exactly the defect the narrowing created.
 
 pub mod gate;
 pub mod listener;
@@ -102,20 +114,22 @@ pub use token::{TOKEN_BYTES, TOKEN_QUERY_PARAM, Token};
 
 /// The routes that carry or drive the camera, and therefore stay behind D11's token.
 ///
-/// One list, `pub` because it has three readers that must agree: this crate's own suite, which
-/// drives every path in it anonymously and requires a `401`; [`preview`]'s own tests, which
-/// assert that the preview is on it; and the piece that moves the gate onto exactly these
-/// routes when the owner's 2026-08-12 ruling is implemented.
-///
-/// **Being on this list is not what makes a route gated today** — `listener::router` wraps
-/// the whole router, so the gate covers these two and everything else besides — and the
-/// distinction is worth keeping honest rather than blurring. What the list is for is that
-/// after the split, "the preview is gated" must not depend on where the route happens to sit
-/// in a router; it depends on the route being named here, and on a test that reads this list
-/// rather than a copy of it.
+/// One list, `pub` because it has four readers that must agree: `crates/daemon/tests/http.rs`
+/// and `crates/daemon/tests/preview.rs`, which drive every path in it anonymously and require
+/// the refusal in full; [`rpc`]'s and [`preview`]'s own tests, each asserting that its route is
+/// on it; and `scripts/gates/web-routes-are-gated.sh`, which reads the entries out of this
+/// declaration and requires every route registered in this crate to be one of them.
 ///
 /// The two entries are the WebSocket endpoint, which *drives* a camera (every T5 method that
 /// opens one is reachable over it), and the MJPEG preview, which *carries* one — its response
 /// body is a live picture of whatever the camera is pointed at, which is the whole reason the
 /// ruling kept a gate at all (AGENTS: "a frame may contain a person").
+///
+/// **What "carries or drives the camera" means as something checkable.** Nothing can read a
+/// handler and know whether a camera is behind it, so the predicate this project encodes is
+/// the one that is decidable and errs closed: **a route is gated; the only thing served
+/// without the token is a lookup in the embedded asset table** (`listener::router`,
+/// `webcam-handler-web`). Today those are the same set — the only reason this listener has a
+/// route at all is the camera — and the day one of them is not, this list is where the
+/// argument has to happen rather than where it can be skipped.
 pub const CAMERA_BEARING_PATHS: [&str; 2] = [rpc::RPC_PATH, preview::PREVIEW_PATH];

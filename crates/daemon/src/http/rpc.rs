@@ -69,9 +69,18 @@
 //! arguable, since the WebSocket constructor takes a URL and a subprotocol list and nothing
 //! else. So the credential this endpoint can be opened with is `?token=`, which
 //! [`super::gate`] already accepts and note **N74** already has the rule for. Nothing here
-//! widens the gate, and nothing here invents a second credential shape: the upgrade request
-//! is an ordinary HTTP request, `super::listener`'s router wraps **every** route including
-//! this one, and an anonymous upgrade meets the same `401` an anonymous `GET /` meets.
+//! widens the gate, and nothing here invents a second credential shape: the upgrade request is
+//! an ordinary HTTP request, so it meets the gate before it meets this handler, and an
+//! anonymous upgrade is a `401`.
+//!
+//! **This is one of the two routes the owner's 2026-08-12 ruling keeps gated**, and it is the
+//! "drives" half of "carries or drives the camera": every T5 method that opens a camera is
+//! reachable over this socket, so an anonymous upgrade is a control surface for somebody
+//! else's webcam. The other half is [`super::preview`], which carries the frames themselves.
+//! [`super::CAMERA_BEARING_PATHS`] is the list both are on, [`RPC_PATH`] comes from this
+//! module rather than being transcribed into it, and note **N82** carries the ruling. What
+//! changed with it is only what is *outside*: an anonymous `GET /` used to meet the same `401`
+//! this route answers and now meets the page.
 //!
 //! ### What the query form costs *for a WebSocket*, stated rather than left implied
 //!
@@ -98,15 +107,17 @@
 //!    the request **after** the gate has read it and before the service sees it, which costs
 //!    one function and removes a whole class rather than documenting it.
 //!
-//! **What this endpoint's shape says about note N76's open question, recorded and not
-//! decided.** N76 leaves two candidates for how the client's ES modules authenticate, one of
-//! them a session cookie. One fact this route contributes: **a WebSocket handshake is not
-//! subject to CORS.** Any page in any origin may open a socket to `127.0.0.1` and the
-//! browser will not stop it; what stops it here is that it cannot produce the token. A
-//! credential the browser attached *by itself* — which is what a cookie is — would be
-//! attached to exactly that cross-origin socket, and the gate would admit it. That is
-//! evidence for whoever closes N76 and is deliberately not a decision: no cookie is read,
-//! written or accepted anywhere in this daemon.
+//! **What this endpoint's shape said about note N76's question, kept now that the question is
+//! retired.** N76 left two candidates for how the client's ES modules would authenticate, one
+//! of them a session cookie; the owner's 2026-08-12 ruling dissolved the question by serving
+//! the modules unauthenticated (note **N82**), so no cookie was ever weighed on its merits.
+//! The fact this route contributed is worth keeping anyway, because it is the argument against
+//! the candidate that is still one plausible edit away: **a WebSocket handshake is not subject
+//! to CORS.** Any page in any origin may open a socket to `127.0.0.1` and the browser will not
+//! stop it; what stops it here is that it cannot produce the token. A credential the browser
+//! attached *by itself* — which is what a cookie is — would be attached to exactly that
+//! cross-origin socket, and the gate would admit it. No cookie is read, written or accepted
+//! anywhere in this daemon.
 //!
 //! ## Stopping
 //!
@@ -137,10 +148,12 @@ use tower::layer::util::Identity;
 
 /// The path the WebSocket JSON-RPC endpoint answers on.
 ///
-/// One spelling, `pub` because it has three readers that must agree: the route below, the
-/// suite that opens a socket at it, and P5c's client, which builds `ws://…/rpc?token=…` from
-/// the URL it was opened at. A literal in the page and a literal here would be the pair that
-/// stops matching.
+/// One spelling, `pub` because it has four readers that must agree: the route below;
+/// [`super::CAMERA_BEARING_PATHS`], which is what keeps this route behind D11's token now that
+/// the assets are not; the suite that opens a socket at it; and P5c's client, which builds
+/// `ws://…/rpc?token=…` from the URL it was opened at. A literal in the page and a literal here
+/// would be the pair that stops matching; a literal in the list and a literal here would be a
+/// gate over a path nothing serves.
 ///
 /// It is a path and not a scheme: a browser reaches this with `ws://` while an operator
 /// reaches the page with `http://`, and the two are the same listener and the same origin.
@@ -151,8 +164,9 @@ pub const RPC_PATH: &str = "/rpc";
 /// Named because it lives in a struct field. `Identity` is `tower`'s no-op layer and is what
 /// `Server::builder()` starts with in both slots; this daemon adds neither an HTTP nor an RPC
 /// middleware, because everything it would put in one is already somewhere better — the token
-/// gate is axum's layer over *every* route ([`super::gate`]), and the D13 error vocabulary is
-/// the handlers' (`crate::server`).
+/// gate is axum's layer over this route and the preview ([`super::gate`],
+/// `super::listener::router`), and the D13 error vocabulary is the handlers'
+/// (`crate::server`).
 type WireServiceBuilder = TowerServiceBuilder<Identity, Identity>;
 
 /// The route, and the handle whose `stop` ends the connections it accepted.
@@ -200,9 +214,9 @@ pub(super) fn mount(methods: Methods) -> Mounted {
     });
     let route = Router::new()
         // `any`, so the method policy is jsonrpsee's — see this module's header. The gate is
-        // **not** applied here: `super::listener::router` layers it over every route it
-        // serves at once, which is what makes "every route" a property of one call rather
-        // than of a checklist somebody keeps.
+        // **not** applied here: `super::listener::router` is the one place that decides which
+        // routes are behind D11's token, and a route that installed its own would be a second
+        // answer to that question in the file least likely to be read beside the first.
         .route(RPC_PATH, any(upgrade))
         .with_state(wire);
 
@@ -258,8 +272,8 @@ async fn upgrade(State(wire): State<Arc<Wire>>, request: Request) -> Response {
     }
 
     // The credential is stripped **here**, after the gate has read it and before the service
-    // logs it — see this module's header, residual 4. The gate is a layer over the whole
-    // router, so it has already run by the time axum matched this route.
+    // logs it — see this module's header, residual 4. The gate is a `route_layer` over this
+    // route, so it has already run by the time this handler is called.
     let request = match without_the_query(request.uri()) {
         Some(target) => {
             let mut request = request;
@@ -379,10 +393,24 @@ mod tests {
 
     #[test]
     fn the_path_is_one_spelling_and_it_is_a_path() {
-        // Three readers have to agree on it (see the constant). A value that stopped being a
+        // Four readers have to agree on it (see the constant). A value that stopped being a
         // path — a full URL, or a name with no leading slash — would register a route axum
         // never matches, which is a listener that answers 404 to its own client.
         assert!(RPC_PATH.starts_with('/'), "{RPC_PATH}");
         assert_eq!(target(RPC_PATH).path(), RPC_PATH);
+    }
+
+    #[test]
+    fn this_route_is_on_the_list_that_keeps_it_gated() {
+        // Since the owner's 2026-08-12 ruling the gate is over the camera-bearing routes and
+        // not over everything (note **N82**), so a route that fell off this list would be a
+        // JSON-RPC surface for somebody's camera served to anybody who asked. The same
+        // assertion is made one route along, in `super::preview`, because the two are on the
+        // list for two different reasons — this one *drives* a camera and that one *carries*
+        // one — and a list that lost either is a different defect.
+        assert!(
+            super::super::CAMERA_BEARING_PATHS.contains(&RPC_PATH),
+            "the wire route is not on the list of paths that stay gated"
+        );
     }
 }

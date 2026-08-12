@@ -1,11 +1,21 @@
-//! The token gate — D11's "requires a bearer token", as the one thing every TCP request
-//! passes through (docs/7 P5a).
+//! The token gate — D11's "requires a bearer token", as the one thing a request for the camera
+//! passes through (docs/7 P5a; D11's 2026-08-12 amendment).
 //!
 //! [`super::token`] is the secret and the comparison; this is the *policy* about a request:
 //! which parts of it may carry a credential, what it means when more than one does, and what
-//! a request that carries none is answered with. The listener installs it over every route it
-//! serves — [`super::listener::serve`] is where that is composed, and its header argues why
-//! the token-less cell has no gate rather than a gate that says yes.
+//! a request that carries none is answered with. The listener installs it over the two routes
+//! that carry or drive the camera — [`super::CAMERA_BEARING_PATHS`] — and over nothing else,
+//! because the owner ruled (2026-08-12) that the static assets are open-source code rather
+//! than a secret and are served without authentication (note **N82**).
+//! `super::listener::router` is where that is composed; its header argues both halves — why
+//! the assets are outside the gate, and why the token-less cell has no gate at all rather than
+//! a gate that says yes.
+//!
+//! **Nothing in this module changed when that ruling landed, and that is the point.** The
+//! credential shapes, the rule about presenting more than one, and the refusal are what they
+//! were; what moved is the set of requests that reach them. A gate narrowed by adding a
+//! `if path == …` branch to [`check`] would have been the same ruling implemented in the one
+//! function whose whole job is to say no.
 //!
 //! ## Two forms, and both are load-bearing
 //!
@@ -60,8 +70,11 @@
 //! router that would have matched the path, and the allocator all have timing of their own;
 //! [`super::token::Token::verify`]'s doc states the same residual about the comparison it
 //! owns. And nothing here is a claim about *authorization*: there is one token and it opens
-//! everything the listener serves, because what it protects is a single-user machine's
-//! camera, not a multi-tenant surface (D11).
+//! every route this gate is installed over, because what it protects is a single-user
+//! machine's camera, not a multi-tenant surface (D11). Which routes those are is
+//! `super::listener::router`'s decision and not this module's — a per-path opinion here
+//! would be a second home for it (design §2.10), and the wrong one, since the composition is
+//! read once at startup and this runs on every request.
 
 use std::sync::Arc;
 
@@ -89,19 +102,25 @@ pub const BEARER_CHALLENGE: &str = "Bearer";
 /// document. D13 is the *method* vocabulary — it crosses the JSON-RPC wire with a code a
 /// client branches on — and inventing an HTTP projection of it here would be a second home
 /// for the error law (design §2.10) built for one refusal that has no method behind it: the
-/// gate answers before any route has matched.
+/// gate answers before the route's handler has run, and a `401` is all a client has to branch
+/// on.
 pub const REFUSAL: &str = "this listener serves a live camera and needs the bearer token \
                            this run printed — open the URL wchd logged at startup, or send \
                            it as `Authorization: Bearer <token>`\n";
 
 /// The middleware itself: verify, or refuse without running the route.
 ///
-/// Installed with [`axum::middleware::from_fn_with_state`] over the whole router rather than
-/// per route, which is what makes "every route the TCP listener serves" a property of one
-/// call instead of a checklist — including the route that does not exist. An anonymous
-/// request for `/nothing-here` is answered `401` and not `404`, because the gate runs before
-/// the router matches; a build that let a stranger enumerate this daemon's paths would be
-/// telling them something for free.
+/// Installed with [`axum::middleware::from_fn_with_state`] and [`axum::Router::route_layer`],
+/// so it runs **only for a request that matched a route** — which since the 2026-08-12 ruling
+/// is the whole policy: the routes are the camera and the fallback is the asset table. An
+/// anonymous request for `/nothing-here` is therefore answered `404` by the assets and never
+/// reaches this function, and an anonymous request for [`super::PREVIEW_PATH`] is answered
+/// here.
+///
+/// It takes no path and reads none. What this function is installed over is a fact about the
+/// composition (`super::listener::router`), and a `match` on the request's path *here* would
+/// be the same policy written in the place where an inverted condition serves a camera to
+/// anybody who asks.
 pub async fn check(State(token): State<Arc<Token>>, request: Request, next: Next) -> Response {
     if admits(request.headers(), request.uri().query(), &token) {
         next.run(request).await

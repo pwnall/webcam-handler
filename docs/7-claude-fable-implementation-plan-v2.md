@@ -723,6 +723,15 @@ Note **N76** records the constraint and the two candidate answers without choosi
 them — **P5b/P5c must choose on purpose**, and this is the sub-milestone's one finding that
 changes what comes next rather than what came before.
 
+**Closed by the owner rather than by P5c (2026-08-12).** The ruling: the ES modules are not
+the secret, this software is open source, and the only resources that need authentication
+are the WS endpoint and the camera images. So the static assets are served without a
+credential, neither candidate was taken, and P5c writes ordinary `import` statements. D11
+carries the amendment, note **N82** carries what it cost — "every route is gated" was a
+property of the composition and is now a property of `daemon::http::CAMERA_BEARING_PATHS`,
+answered by `scripts/gates/web-routes-are-gated.sh` and by
+`every_camera_bearing_route_is_behind_the_gate` — and note N76 is retired there.
+
 **Proves / gate rows:** ten new `g5` rows, the first in the table, and `just gate-g5`
 counts them. The three this section commissioned are all there — 401-without/200-with and
 one test per matrix cell are `binary(http)`, which drives both credential forms over a real
@@ -781,7 +790,15 @@ named** without node — node is never a build dependency. Asserts in a real hea
 Chromium: the control panel renders from live DTOs (a sparse menu becomes a select with
 the right indices), the preview `<img>` paints successive MJPEG frames, WS JSON-RPC
 round-trips and survives reconnect, the calibration view tracks its subscription, and
-anonymous requests are refused.
+anonymous requests **for the camera** are refused — an anonymous `new WebSocket("ws://…/rpc")`
+and an `<img src="/preview?camera=…">` with no token, both of which the page can be made to
+attempt from a real browser. Not "anonymous requests are refused", which was written when
+every request was gated: since the owner's 2026-08-12 ruling the page itself loads with no
+credential, and a rung asserting otherwise would assert something false (D11's amendment,
+note **N82**). The other half is worth a browser too, because only a browser can show it:
+the client **works** when opened at the URL `wchd` printed — the module graph loads
+unauthenticated, and the two camera resources authenticate with the token the page was
+opened with.
 
 **Proves / gate rows:** the docs/9 R1-web row; on the dev machine the rung runs, and the
 gate close records whether it ran or skipped, by name.

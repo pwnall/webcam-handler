@@ -164,7 +164,13 @@ green and the notes current, and the phase review gets its own session.
   (gate-enforced); test captures go to gitignored scratch dirs; the daemon records
   nothing it wasn't asked to.
 - The web listener is opt-in, loopback + token by default; the UDS directory is 0700.
-  Weakening either is an owner decision, not a convenience fix.
+  The token gates the two routes that carry or drive the camera — `/rpc` and `/preview`,
+  which `daemon::http::CAMERA_BEARING_PATHS` names — and **not** the static assets, which
+  are this project's own open-source code (owner ruling, 2026-08-12; D11's amendment, N82).
+  A route added later without a gate is the defect class that ruling created:
+  `web-routes-are-gated.sh` and `every_camera_bearing_route_is_behind_the_gate` are the two
+  halves that can go red on it. Weakening any of this is an owner decision, not a
+  convenience fix.
 - Killing a process that holds the camera is an explicit command naming its target,
   never a fallback. The hardware `Privacy` control is honored, never worked around.
 - PTZ motors wear: sweeps are bounded by the `limits` caps everywhere. In *tests*

@@ -231,6 +231,13 @@ impl Token {
     /// lifetime — one run of one daemon — which is the reason D11 makes it per-run rather
     /// than persisted.
     ///
+    /// There was a fourth exposure on that list and it is **closed** rather than accepted: a
+    /// `Referer` header *is* this URL, so an `<a href>` out of the page would have handed the
+    /// token to a third party. Every response this listener writes carries
+    /// `Referrer-Policy: no-referrer` (D11's 2026-08-12 amendment, `super::listener`'s
+    /// `REFERRER_POLICY`), which costs a header and removes the class — the page P5a ships has
+    /// no links and P5c's may, which is the wrong order in which to discover a header.
+    ///
     /// The address is rendered by [`std::net::SocketAddr`]'s own `Display`, so an IPv6 bind
     /// comes out bracketed (`http://[::1]:34567/`) exactly as a URL needs it. A wildcard bind
     /// renders as the wildcard — `http://0.0.0.0:34567/` — which is what this daemon is

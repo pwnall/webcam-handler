@@ -7,6 +7,25 @@
 //! is answered, and that the server starts and stops on demand. What the client *shows* a
 //! person is P5c's, and what the WebSocket and the preview do is P5b's.
 //!
+//! ## Which requests the token is for, since 2026-08-12
+//!
+//! The owner ruled that **static assets are served without authentication** — the client is
+//! open-source code, not a secret — and that only the resources which carry or drive the camera
+//! stay behind D11's token: `daemon::http::CAMERA_BEARING_PATHS`, which is the WebSocket
+//! endpoint and the MJPEG preview (note **N82**). So the pair this file is built out of is no
+//! longer "401 without, 200 with" over one path. It is three answers to the *same* anonymous
+//! request, and a build can get any one of them wrong on its own:
+//!
+//!   * an asset is **200** — the ruling is a requirement rather than a permission, so a listener
+//!     that kept the gate over `/index.html` fails here;
+//!   * a path that names no asset is **404**, which used to be a 401 and is the visible half of
+//!     the property note N75 gave up;
+//!   * a camera-bearing route is **401**, in full — status, RFC 6750's challenge, and the
+//!     daemon's fixed body.
+//!
+//! Every test that presents a credential presents it on a **gated** route, because a credential
+//! presented to an ungated one proves nothing about a gate.
+//!
 //! ## What the suite drives, and what that is worth
 //!
 //! Two entry points, deliberately, because they establish different things.
@@ -50,7 +69,10 @@ mod tcp;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use daemon::http::{self, Posture, TOKEN_QUERY_PARAM, Token, TokenRule, gate};
+use daemon::http::{
+    self, CAMERA_BEARING_PATHS, PREVIEW_PATH, Posture, RPC_PATH, TOKEN_QUERY_PARAM, Token,
+    TokenRule, gate,
+};
 use daemon::shutdown::Shutdown;
 
 use crate::tcp::Answer;
@@ -175,7 +197,7 @@ fn address(text: &str) -> SocketAddr {
 /// and a suite that handed it a real one would be claiming, in this file, something
 /// `web_rpc.rs` claims properly. What it does **not** mean is that the endpoint is absent:
 /// `daemon::http::rpc`'s route is registered either way, which is why
-/// [`the_wire_route_is_behind_the_same_gate_as_everything_else`] can ask about it here.
+/// [`the_wire_route_is_gated_and_the_page_beside_it_is_not`] can ask about it here.
 fn no_methods() -> jsonrpsee_server::Methods {
     jsonrpsee_server::Methods::new()
 }
@@ -183,7 +205,7 @@ fn no_methods() -> jsonrpsee_server::Methods {
 /// The preview fan-out this suite hands the listener: one with no camera behind it.
 ///
 /// [`no_methods`]'s argument, one route along. This file's subject is the credential, and the
-/// credential is checked before the router matches — so an anonymous `GET /preview?camera=…`
+/// credential is checked before the route's handler runs — so an anonymous `GET /preview?camera=…`
 /// is a `401` whether or not any camera exists, which is exactly what
 /// [`every_camera_bearing_route_is_behind_the_gate`] establishes. What a preview *does* once
 /// the token is right is `crates/daemon/tests/preview.rs`'s claim, over a real `Wchd` and the
@@ -210,9 +232,13 @@ fn near_miss(secret: &str) -> String {
     digits.into_iter().collect()
 }
 
-/// The `?token=…` a navigation carries.
-fn query(secret: &str) -> String {
-    format!("/?{TOKEN_QUERY_PARAM}={secret}")
+/// `path` with the `?token=…` a navigation carries.
+///
+/// A path parameter rather than a fixed `/`, because since the 2026-08-12 ruling `/` needs no
+/// credential and a test that presented one there would be asserting about a gate that is not
+/// installed on it (note **N82**).
+fn with_token(path: &str, secret: &str) -> String {
+    format!("{path}?{TOKEN_QUERY_PARAM}={secret}")
 }
 
 /// Assert an answer is the gate's refusal, in full.
@@ -247,55 +273,88 @@ fn is_the_page(answer: &Answer, about: &str) {
 }
 
 #[tokio::test]
-async fn an_anonymous_request_is_refused_and_the_token_serves_the_page_in_either_form() {
-    // docs/9's "Token enforcement" row — 401-without/200-with — and both forms of the token,
-    // because they are two different mechanisms and a build can lose either one on its own:
-    // the header is what code sends, the query parameter is what a *navigation* can carry, and
-    // an operator's first request is a navigation.
+async fn an_anonymous_asset_is_served_and_an_anonymous_camera_route_is_not() {
+    // **The owner's 2026-08-12 ruling, as the three answers one anonymous client gets**, in the
+    // order a browser meets them. The first is a requirement and not a permission: a listener
+    // that kept the gate over the page would fail here, which is the direction this test was
+    // written to fail in.
+    //
+    // The second is the visible half of what the narrowing cost. A path this daemon does not
+    // serve is now **404 and not 401**, so a stranger can map the asset table — which is a
+    // directory in a public repository, and is why the property note N75 argued for stopped
+    // being worth its price rather than merely lapsing.
+    //
+    // The third is driven over `CAMERA_BEARING_PATHS` rather than over two literals: the list
+    // is the daemon's own, so a route that is on it and lost its gate fails here, and a route
+    // that is on it and does not exist fails here too — an unrouted path answers the asset
+    // table's 404, not a 401.
     let web = Web::opened(false).await;
-    let secret = web.secret();
 
-    is_the_refusal(&web.anonymous("/").await, "a request with no credential");
-    is_the_page(
-        &web.bearing("/", &secret).await,
-        "the header form, which is what the page's own requests will use",
+    is_the_page(&web.anonymous("/").await, "the page, with no credential");
+    is_the_page(&web.anonymous("/index.html").await, "the page by name");
+    assert_eq!(
+        web.anonymous("/nothing-here").await.status(),
+        404,
+        "a path that names no asset answered something other than the asset table's 404"
     );
-    is_the_page(
-        &web.anonymous(&query(&secret)).await,
-        "the query form, which is what a browser opening a link can carry",
+    for path in CAMERA_BEARING_PATHS {
+        is_the_refusal(&web.anonymous(path).await, path);
+    }
+
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn every_asset_this_build_embeds_is_served_to_a_request_presenting_nothing() {
+    // The same claim over the whole population rather than over the one file P5a shipped, and
+    // the population comes from `webcam-handler-web`'s own table (`web::paths`) rather than
+    // from a list here. P5c adds modules to that directory; each one joins this test by
+    // existing, which is the only arrangement in which "the client loads with no credential"
+    // keeps meaning what it means today — a module graph is one `GET` per module, and one 401
+    // in it is a client that does not run (note **N76**, retired by the ruling this asserts).
+    let web = Web::opened(false).await;
+
+    let mut served = 0_usize;
+    for name in web::paths() {
+        let answer = web.anonymous(&format!("/{name}")).await;
+        assert_eq!(answer.status(), 200, "/{name} was not served anonymously");
+        served += 1;
+    }
+    assert!(
+        served > 0,
+        "the asset table is empty and this test is about nothing"
     );
 
     web.stop().await;
 }
 
 #[tokio::test]
-async fn an_anonymous_request_for_the_asset_route_is_refused_whatever_it_asks_for() {
-    // The asset the gate protects is the page that drives the camera, so the asset route is
-    // the route that matters — a gate installed over everything *except* the file a browser
-    // actually loads would pass a test that only ever asked for `/`.
+async fn the_token_opens_a_gated_route_in_either_form() {
+    // docs/9's "Token enforcement" row, at the routes the token is now for. Both forms, because
+    // they are two mechanisms a build can lose one at a time: the header is what code sends —
+    // the page's own `fetch` and its `<img>` — and the query parameter is what a URL can carry,
+    // which is all a `new WebSocket(url)` has (note **N74**).
     //
-    // The third case is the one that says the gate is outside the router rather than inside
-    // it: a path this daemon does not serve is answered **401 and not 404** while it is
-    // anonymous, so a stranger cannot map the surface by watching which paths answer
-    // differently.
+    // "Past the gate" is asserted as an answer only the route behind it gives. `/rpc` answers
+    // **405** to a `GET` that is not an upgrade, which is jsonrpsee's answer and could have come
+    // from nowhere else; the preview answers **400** to a request that names no camera, which is
+    // its own. Neither is the gate's 401 and neither is the asset table's 404, so a build that
+    // registered either route elsewhere fails here rather than looking authenticated.
     let web = Web::opened(false).await;
     let secret = web.secret();
 
-    for target in ["/", "/index.html", "/nothing-here"] {
-        is_the_refusal(&web.anonymous(target).await, target);
+    for (path, past) in [(RPC_PATH, 405), (PREVIEW_PATH, 400)] {
+        assert_eq!(
+            web.bearing(path, &secret).await.status(),
+            past,
+            "{path} with the header form"
+        );
+        assert_eq!(
+            web.anonymous(&with_token(path, &secret)).await.status(),
+            past,
+            "{path} with the query form"
+        );
     }
-
-    // And with the token the router answers normally, which is what makes the assertions above
-    // about the *gate* rather than about a listener that refuses everything.
-    is_the_page(
-        &web.bearing("/index.html", &secret).await,
-        "the page by name",
-    );
-    assert_eq!(
-        web.bearing("/nothing-here", &secret).await.status(),
-        404,
-        "an authenticated request for a path this build does not serve"
-    );
 
     web.stop().await;
 }
@@ -304,29 +363,66 @@ async fn an_anonymous_request_for_the_asset_route_is_refused_whatever_it_asks_fo
 async fn a_near_miss_token_is_refused_over_the_wire() {
     // The gate is *checking*, not looking for a parameter. An equal-length, one-digit-different
     // token is the only candidate that reaches `Token::verify`'s comparison loop, and it is
-    // presented in both forms because they are two code paths into the same answer.
+    // presented in both forms because they are two code paths into the same answer — on **both**
+    // gated routes, because since the ruling there are two of them and one gate serving a near
+    // miss is one camera served to whoever guessed a digit.
     let web = Web::opened(false).await;
-    let wrong = near_miss(&web.secret());
-
-    is_the_refusal(&web.bearing("/", &wrong).await, "a near miss in the header");
-    is_the_refusal(
-        &web.anonymous(&query(&wrong)).await,
-        "a near miss in the query",
-    );
-
-    // And a **prefix**, which is the shape a wrapped or truncated URL arrives in — and the
-    // shape a gate that compared with `starts_with` instead of `Token::verify` would serve
-    // while refusing every equal-length candidate above.
     let secret = web.secret();
+    let wrong = near_miss(&secret);
+    // A **prefix**, which is the shape a wrapped or truncated URL arrives in — and the shape a
+    // gate that compared with `starts_with` instead of `Token::verify` would serve while
+    // refusing every equal-length candidate here.
     let truncated = &secret[..secret.len() - 8];
-    is_the_refusal(
-        &web.anonymous(&query(truncated)).await,
-        "a truncated token in the query",
+
+    for path in CAMERA_BEARING_PATHS {
+        is_the_refusal(&web.bearing(path, &wrong).await, path);
+        is_the_refusal(&web.anonymous(&with_token(path, &wrong)).await, path);
+        is_the_refusal(&web.anonymous(&with_token(path, truncated)).await, path);
+    }
+
+    // ... and the token these are all near misses *of* still gets past, so this is a statement
+    // about the digits and not about a route that refuses everything.
+    assert_eq!(
+        web.bearing(RPC_PATH, &secret).await.status(),
+        405,
+        "the real token"
     );
 
-    // ... and the token these are all near misses *of* still works, so this is a statement
-    // about the digits and not about a daemon that has stopped serving.
-    is_the_page(&web.bearing("/", &secret).await, "the real token");
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn every_answer_carries_the_no_referrer_policy() {
+    // The token rides the document's URL, so the URL a browser holds for this page **is** the
+    // key to a camera — and a `Referer` is that URL, handed to whatever the page links out to.
+    // Same-origin leakage back here is harmless; a link out is not, and P5c's client is the one
+    // that will have links in it.
+    //
+    // Four shapes, because the header is applied to the outermost layer and a build that
+    // stamped it inside the gate — or on the asset half alone — would pass a test that only
+    // asked for the page. The 401 is the interesting member: it is the answer to a request whose
+    // URL may have carried the token in the first place.
+    let web = Web::opened(false).await;
+    let secret = web.secret();
+
+    for (target, about) in [
+        ("/", "the page"),
+        ("/nothing-here", "the asset table's 404"),
+        (RPC_PATH, "the gate's refusal"),
+    ] {
+        assert_eq!(
+            web.anonymous(target).await.header("Referrer-Policy"),
+            Some("no-referrer"),
+            "{about}"
+        );
+    }
+    assert_eq!(
+        web.bearing(RPC_PATH, &secret)
+            .await
+            .header("Referrer-Policy"),
+        Some("no-referrer"),
+        "an answer from behind the gate"
+    );
 
     web.stop().await;
 }
@@ -337,29 +433,32 @@ async fn a_request_carrying_two_credentials_is_served_only_when_they_agree() {
     // credential a request presents must verify. The two shapes are the ones HTTP allows and
     // clients do not send — a header beside a query parameter, and the same parameter twice —
     // and each is served by exactly one of the two gates this project refused to build (first
-    // wins, last wins).
+    // wins, last wins). On a gated route, because that is where the rule has consequences.
     let web = Web::opened(false).await;
     let secret = web.secret();
     let wrong = near_miss(&secret);
 
-    is_the_page(
-        &web.bearing(&query(&secret), &secret).await,
-        "a page request made from a URL that still carries the token",
+    assert_eq!(
+        web.bearing(&with_token(RPC_PATH, &secret), &secret)
+            .await
+            .status(),
+        405,
+        "the page's own request, made from a URL that still carries the token"
     );
     is_the_refusal(
-        &web.bearing(&query(&wrong), &secret).await,
+        &web.bearing(&with_token(RPC_PATH, &wrong), &secret).await,
         "a good header beside a bad query parameter",
     );
     is_the_refusal(
         &web.anonymous(&format!(
-            "/?{TOKEN_QUERY_PARAM}={secret}&{TOKEN_QUERY_PARAM}={wrong}"
+            "{RPC_PATH}?{TOKEN_QUERY_PARAM}={secret}&{TOKEN_QUERY_PARAM}={wrong}"
         ))
         .await,
         "a good query parameter followed by a bad one",
     );
     is_the_refusal(
         &web.anonymous(&format!(
-            "/?{TOKEN_QUERY_PARAM}={wrong}&{TOKEN_QUERY_PARAM}={secret}"
+            "{RPC_PATH}?{TOKEN_QUERY_PARAM}={wrong}&{TOKEN_QUERY_PARAM}={secret}"
         ))
         .await,
         "a bad query parameter followed by a good one",
@@ -369,7 +468,7 @@ async fn a_request_carrying_two_credentials_is_served_only_when_they_agree() {
     // answer with only the first of.
     let answered = tcp::get(
         web.bound(),
-        "/",
+        RPC_PATH,
         &[
             ("Authorization", &format!("Bearer {secret}")),
             ("Authorization", &format!("Bearer {wrong}")),
@@ -383,30 +482,34 @@ async fn a_request_carrying_two_credentials_is_served_only_when_they_agree() {
 }
 
 #[tokio::test]
-async fn the_wire_route_is_behind_the_same_gate_as_everything_else() {
+async fn the_wire_route_is_gated_and_the_page_beside_it_is_not() {
     // P5b's endpoint, asked the question this file is about and no other: **is it inside the
-    // wall?** The gate is a `Router::layer` over one router, so "every route" is a property of
-    // one call rather than of a list somebody keeps — and this is what says the list did not
-    // quietly acquire an exception when a second route was added to it (note **N75**).
+    // wall?** Since the 2026-08-12 ruling the wall has two sides and both are asserted here,
+    // against the same listener in the same run, because "the camera routes are gated" and
+    // "the assets are not" are the two halves a build can get wrong in opposite directions.
     //
-    // Anonymously it is the daemon's refusal, in full, exactly as `/` and `/nothing-here` are.
-    // With the token it is **405 and not 404**, which is two facts at once: the request got
-    // past the gate, and `/rpc` is a *route* rather than a name the asset fallback failed to
-    // find — jsonrpsee answers "POST is required" to a `GET` that is not an upgrade, and that
-    // answer could only have come from the wire surface. A build that registered the route on
-    // some other path would answer 404 here, from the asset table, with the same 401 in front
-    // of it.
+    // Anonymously the wire route is the daemon's refusal, in full. With the token it is **405
+    // and not 404**, which is two facts at once: the request got past the gate, and `/rpc` is a
+    // *route* rather than a name the asset fallback failed to find — jsonrpsee answers "POST is
+    // required" to a `GET` that is not an upgrade, and that answer could only have come from the
+    // wire surface. A build that registered the route on some other path would answer 404 here,
+    // from the asset table, and would now do it **without** a 401 in front of it, which is the
+    // failure the ruling made louder rather than quieter.
     let web = Web::opened(false).await;
     let secret = web.secret();
 
     is_the_refusal(
-        &web.anonymous(daemon::http::RPC_PATH).await,
+        &web.anonymous(RPC_PATH).await,
         "the wire route, anonymously",
     );
     assert_eq!(
-        web.bearing(daemon::http::RPC_PATH, &secret).await.status(),
+        web.bearing(RPC_PATH, &secret).await.status(),
         405,
         "the wire route answered as an asset that is not there"
+    );
+    is_the_page(
+        &web.anonymous("/").await,
+        "the page beside it, with no credential at all",
     );
 
     web.stop().await;
@@ -424,8 +527,19 @@ async fn d11_loopback_without_the_flag_requires_the_token() {
         None,
         "warning about a socket only this machine can reach trains operators to ignore warnings"
     );
-    is_the_refusal(&web.anonymous("/").await, "the default cell, anonymously");
-    is_the_page(&web.bearing("/", &web.secret()).await, "the default cell");
+    is_the_refusal(
+        &web.anonymous(PREVIEW_PATH).await,
+        "the default cell, anonymously",
+    );
+    assert_eq!(
+        web.bearing(PREVIEW_PATH, &web.secret()).await.status(),
+        400,
+        "the default cell, with the token: the preview asks which camera"
+    );
+    is_the_page(
+        &web.anonymous("/").await,
+        "the asset half of the default cell",
+    );
 
     web.stop().await;
 }
@@ -436,6 +550,12 @@ async fn d11_loopback_with_the_named_flag_is_the_one_token_less_cell() {
     // The claim is stronger than "a request without a token is served" — it is that **no gate
     // is installed at all**, so the page comes back to a request carrying no credential in
     // either form, and the URL the daemon printed carries no token to leak.
+    //
+    // This is the cell the 2026-08-12 ruling leaves exactly as it was (note **N75**, whose
+    // absent-rather-than-permissive half the ruling does not touch), so the camera-bearing
+    // routes are asserted here too: in this one cell they answer *their own* answers to a
+    // request presenting nothing, which is the difference between a gate that was narrowed and
+    // a gate that was removed.
     let web = Web::opened(true).await;
 
     assert_eq!(web.serving.posture().token(), TokenRule::NotRequired);
@@ -449,6 +569,13 @@ async fn d11_loopback_with_the_named_flag_is_the_one_token_less_cell() {
     is_the_page(&web.anonymous("/index.html").await, "the asset by name");
     // The router is still a router: this cell removes the gate, not the 404.
     assert_eq!(web.anonymous("/nothing-here").await.status(), 404);
+    for (path, past) in [(RPC_PATH, 405), (PREVIEW_PATH, 400)] {
+        assert_eq!(
+            web.anonymous(path).await.status(),
+            past,
+            "{path} in the token-less cell answered something other than the route behind it"
+        );
+    }
 
     web.stop().await;
 }
@@ -470,10 +597,14 @@ async fn d11_a_non_loopback_bind_requires_the_token_with_no_flag_given() {
     assert!(warning.contains("192.168.1.10:8080"), "{warning}");
 
     is_the_refusal(
-        &web.anonymous("/").await,
+        &web.anonymous(PREVIEW_PATH).await,
         "a non-loopback bind, anonymously",
     );
-    is_the_page(&web.bearing("/", &web.secret()).await, "with the token");
+    assert_eq!(
+        web.bearing(PREVIEW_PATH, &web.secret()).await.status(),
+        400,
+        "with the token"
+    );
 
     web.stop().await;
 }
@@ -498,14 +629,18 @@ async fn d11_a_non_loopback_bind_requires_the_token_even_with_the_flag() {
     );
 
     is_the_refusal(
-        &web.anonymous("/").await,
+        &web.anonymous(RPC_PATH).await,
         "a wildcard bind with the insecure flag, anonymously",
     );
     is_the_refusal(
-        &web.anonymous(&query("")).await,
+        &web.anonymous(&with_token(RPC_PATH, "")).await,
         "an empty token parameter, which is what a truncated URL carries",
     );
-    is_the_page(&web.bearing("/", &web.secret()).await, "with the token");
+    assert_eq!(
+        web.bearing(RPC_PATH, &web.secret()).await.status(),
+        405,
+        "with the token"
+    );
 
     web.stop().await;
 }
@@ -515,8 +650,13 @@ async fn the_url_the_daemon_prints_carries_the_bound_port_and_opens_the_page() {
     // D11's "default `127.0.0.1:0` → report the bound port", asserted as the property that
     // makes the line worth printing: the URL an operator copies can be **opened**. It is taken
     // apart and used as a request rather than merely matched against a pattern, so a build
-    // that printed the requested address would fail here by sending this test to port zero —
-    // and one that printed a token the gate does not accept would fail with a 401.
+    // that printed the requested address would fail here by sending this test to port zero.
+    //
+    // **What this can no longer catch on its own is a build that published one secret and gated
+    // on another**, because since the 2026-08-12 ruling the page is served to a request with no
+    // credential at all and would come back whatever the URL carried. So the token the URL
+    // carries is presented to a *gated* route at the end, which is where a published secret the
+    // gate does not hold is a 401 rather than a page.
     let web = Web::opened(false).await;
 
     let bound = web.bound();
@@ -542,6 +682,15 @@ async fn the_url_the_daemon_prints_carries_the_bound_port_and_opens_the_page() {
         .expect("the listener is up");
     is_the_page(&answered, "the URL the daemon printed");
 
+    // ... and the credential that URL carries is the one the gate holds.
+    assert_eq!(
+        web.anonymous(&with_token(RPC_PATH, &web.secret()))
+            .await
+            .status(),
+        405,
+        "the published token did not open a gated route"
+    );
+
     web.stop().await;
 }
 
@@ -556,10 +705,7 @@ async fn the_listener_stops_when_the_shutdown_token_is_cancelled() {
     let bound = web.bound();
 
     // Alive first, so the assertion after the stop is about the stop.
-    is_the_page(
-        &web.bearing("/", &web.secret()).await,
-        "before the stop was asked for",
-    );
+    is_the_page(&web.anonymous("/").await, "before the stop was asked for");
 
     web.stop().await;
 

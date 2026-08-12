@@ -76,14 +76,12 @@
 # stripped, for `unsafe-scope.sh`'s reason — the workspace writes `//` comments and a rule that
 # fits in one sentence beats one that needs a Rust parser.
 #
-# **Test code is everything from a file's one `#[cfg(test)]` marker to the end of it**, which
-# is the shape every module in this workspace writes: one trailing `mod tests`. A file that
-# names the secret and is not in that shape — two markers, or a marker that opens something
-# other than a `mod` — is a **failure and not a pass**, because a file this cannot classify is
-# a file where the confinement has no answer, and `unsafe-scope.sh` already charges that price
-# for a count it cannot read. The residual is the other end: product code placed *after* a
-# trailing test module would not be seen. Nothing in this workspace is written that way, and
-# the arms in `cases/` seed the shapes that are.
+# **Test code is everything from a file's one `#[cfg(test)]` marker to the end of it**, and that
+# rule is `lib.sh`'s (`gate_test_region_start`, `gate_product_lines`) rather than this file's,
+# because `web-routes-are-gated.sh` reads a file's product half by the identical rule and two
+# copies of it is the pair that stops agreeing. What it costs here is stated there: a file this
+# cannot classify is a **failure and not a pass**, and product code written *after* a trailing
+# test module would not be seen. The arms in `cases/` seed both shapes.
 #
 # ## The populations
 #
@@ -126,39 +124,11 @@ home="$root/$home_rel"
 gate_module="$root/$gate_rel"
 
 # ------------------------------------------------------------------ reading the tree
-
-# The line where $1's test region begins: 0 for a file with no test module, and -1 for a file
-# whose test region this cannot identify. See "The matching rule" above.
-test_region_start() {
-    awk '
-        /^[[:space:]]*#\[cfg\(test\)\]/ {
-            markers++
-            if (!first) { first = NR }
-            expect_mod = NR + 1
-        }
-        NR == expect_mod && $0 !~ /^[[:space:]]*mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{/ {
-            unreadable = 1
-        }
-        END {
-            if (markers == 0) { print 0 }
-            else if (markers > 1 || unreadable) { print -1 }
-            else { print first }
-        }
-    ' "$1"
-}
-
-# The product half of $1 — everything above the test region that starts at line $2 — with line
-# comments stripped.
-product_lines() {
-    local file="$1" start="$2" last='$'
-    if ((start == 1)); then
-        return 0
-    fi
-    if ((start > 1)); then
-        last=$((start - 1))
-    fi
-    sed -n "1,${last}p" "$file" | sed 's://.*::'
-}
+#
+# `gate_test_region_start` and `gate_product_lines` are `lib.sh`'s: `web-routes-are-gated.sh`
+# needs the identical rule about what a file's test half is, and two copies of that rule is the
+# pair that stops agreeing (the same argument `gate_tree_state` carries). The matching rule this
+# header states is theirs, stated there as well.
 
 # How many lines of $1 match the ERE $2. Zero is an answer, not a failure.
 count_matching() {
@@ -185,8 +155,8 @@ if [[ ! -f "$home" ]]; then
     gate_finish
 fi
 
-home_product_start="$(test_region_start "$home")"
-home_product="$(product_lines "$home" "$home_product_start")"
+home_product_start="$(gate_test_region_start "$home")"
+home_product="$(gate_product_lines "$home" "$home_product_start")"
 
 for declaration in \
     "pub struct $type_name\b|the type that holds the secret" \
@@ -240,13 +210,13 @@ while IFS= read -r -d '' file; do
         continue
     fi
 
-    start="$(test_region_start "$file")"
+    start="$(gate_test_region_start "$file")"
     if ((start < 0)); then
         gate_fail "$rel names \`$accessor\` and this gate cannot tell its product code from its test code: it carries more than one \`#[cfg(test)]\` marker, or its marker does not open a \`mod\`. One trailing test module per file is what makes that readable, and a file nobody can classify is a finding rather than a pass"
         continue
     fi
 
-    product="$(product_lines "$file" "$start")"
+    product="$(gate_product_lines "$file" "$start")"
     mentions="$(count_matching "$product" "$accessor")"
     if ((mentions > 0)); then
         gate_fail "$rel reads the token's secret outside \`#[cfg(test)]\` ($mentions line(s)); \`$accessor\` is the one rendering that yields it and $home_rel is the one place that may, because a caller holding the secret is one \`==\` away from comparing it itself"
@@ -371,11 +341,11 @@ fi
 # it.
 
 if [[ -f "$gate_module" ]]; then
-    gate_product_start="$(test_region_start "$gate_module")"
+    gate_product_start="$(gate_test_region_start "$gate_module")"
     if ((gate_product_start < 0)); then
         gate_fail "$gate_rel does not carry the one trailing \`#[cfg(test)] mod\` this gate reads a file's product half by; the call count below would be a count of nothing in particular"
     else
-        gate_product="$(product_lines "$gate_module" "$gate_product_start")"
+        gate_product="$(gate_product_lines "$gate_module" "$gate_product_start")"
         calls="$(count_matching "$gate_product" "\.$comparison\(")"
         if ((calls == 0)); then
             gate_fail "nothing in $gate_rel's product code calls \`.$comparison(\`; the token gate is the one caller of the constant-time comparison, and a gate that stopped calling it is a listener admitting requests on some other basis — every other claim here is true of that tree"

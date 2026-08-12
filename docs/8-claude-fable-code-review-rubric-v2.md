@@ -297,9 +297,14 @@ impl · `review` human/agent judgment, no mechanical gate yet.
       subscription (both asserted). `test`
 - [ ] Shutdown: SIGTERM and SIGINT each tested; open MJPEG/WS connections cancel within
       the bound; the state lock releases; sd-notify STOPPING emitted. `test`
-- [ ] The TCP listener requires the token; token-less requests 401; non-loopback bind
-      warns naming the exposure; the UDS directory is 0700 (asserted at startup and in
-      tests). `test`
+- [ ] The TCP listener requires the token **for the resources that carry or drive the
+      camera** — `daemon::http::CAMERA_BEARING_PATHS`, which is the WS endpoint and the
+      MJPEG preview — and those answer a token-less request 401; the static assets are
+      served *without* one, which is a requirement and not a permission (owner ruling
+      2026-08-12, D11's amendment, N82). A route that is not on that list is a finding
+      whatever else it does, because since that ruling the gate is over the routes rather
+      than over the router. Non-loopback bind warns naming the exposure; the UDS directory
+      is 0700 (asserted at startup and in tests). `test`
 - [ ] The MJPEG route: latest-frame drop semantics proven with a stalled reader (capture
       frame counter advances while the reader's does not); CompressionLayer provably
       absent on the route. `test`

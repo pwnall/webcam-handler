@@ -53,6 +53,7 @@ names its source, so a reviewer can check the absorption against the record:
 | The structural-gap register is regenerated: single-host evidence and the mid-stream device-loss limit join it | §3.3 | E3 (notes), N8 |
 | The PF registry runs PF:1–16; PF:13–16 were measured during implementation | §1.2 | notes |
 | Testing exercises every control by default, motors included; `WCH_NO_MOTION=1` is the opt-out, and the product's `--allow-motion` posture is unchanged | §5 | owner ruling, 2026-08-08 |
+| The TCP bearer token is required for the two resources that carry or drive the camera — the WS JSON-RPC endpoint and the MJPEG preview — and **not** for the static assets, which are this project's own open-source code; served responses carry `Referrer-Policy: no-referrer`. The bind × token matrix and its reasoning are unchanged | D11, §2.7 | owner ruling, 2026-08-12 (N82) |
 
 ## TL;DR
 
@@ -521,6 +522,24 @@ prints a warning naming what it exposes (a live camera). Loopback + token becaus
 loopback alone is not an auth boundary on a multi-user machine. A camera is a
 privacy-sensitive device; the daemon's exposure posture errs closed.
 
+**Amended (owner ruling, 2026-08-12): the token is for the camera, not for the client's
+own source.** Of the three things this transport serves, the bearer token is required for
+the two that carry or drive the camera — the WS JSON-RPC endpoint and the MJPEG preview —
+and **not** for the static assets, which are this project's open-source HTML and ES
+modules: the modules are not the secret. The matrix above is unchanged and so is the
+sentence that justifies it; what the amendment settles is which resources that sentence is
+about, and it is precisely the two that are the camera. Nothing else moves: no cookie, no
+second credential form, no configuration surface, and the token-less loopback cell still
+installs no gate at all. Two consequences are part of the ruling rather than of its
+implementation. Served responses carry **`Referrer-Policy: no-referrer`**, because the
+token rides the document's URL and an outbound link would otherwise hand it to a third
+party in a `Referer`. And an anonymous request for a path this build does not serve is now
+a `404` rather than a `401`, which was a deliberate property and is the price: the asset
+table is a directory in a public repository, so what it told a stranger stopped being
+worth a gate. Note **N82** records the ruling, what it cost — "every route is gated" was a
+property of the composition and is now a property of a list — and the two things that can
+go red in its place; it retires note N76.
+
 **D12 — Concurrency and ownership** — see §2.1. One additional rule: the actor enforces
 *exclusive streaming* (V4L2 allows one streamer per node); control reads/writes interleave
 with streaming, but a second capture request queues or is refused with `Busy` per its
@@ -793,9 +812,13 @@ and buckets the rest with a reason apiece.
 external fetches would violate both the offline posture and the license inventory): a
 ~50-line JSON-RPC-over-WebSocket helper, `<img>` for MJPEG preview, controls rendered
 from the `controls` DTO (range → slider, menu → select with sparse indices [PF:2], flags
-surfaced), calibration session view fed by the subscription. If a UI library ever earns
-its keep it gets vendored under `webcam-handler-web/vendor/` with its license file, and §2.8's
-inventory learns it. The browser half is CI-tested in a real headless Chromium via the
+surfaced), calibration session view fed by the subscription. **Its files are served without
+authentication** (D11's 2026-08-12 amendment): a module graph is one request per module and
+a browser carries no query string to a document's subresources, so a gated asset is a client
+that does not run — and the modules are not the secret. What the token is for is the socket
+and the preview, both of which the page reaches with the credential it was opened with. If a
+UI library ever earns its keep it gets vendored under `webcam-handler-web/vendor/` with its
+license file, and §2.8's inventory learns it. The browser half is CI-tested in a real headless Chromium via the
 pinned Playwright rung (§3.1 R1-web). **Browser support policy (owner ruling): Chrome is
 the supported target.** Modern platform APIs are used freely at Chrome's feature level; Firefox and
 Safari compatibility is welcome when free but never justifies added complexity, feature

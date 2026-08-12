@@ -2,9 +2,11 @@
 //! the *same* `Methods` value the Unix socket serves (design **D10**, **D11**; docs/7 P5b).
 //!
 //! `http.rs` is this suite's neighbour and they divide the transport between them.
-//! That file's subject is the **credential and the matrix** — 401-without, 200-with, one test
-//! per D11 cell — and it hands the listener a surface with no methods on it, because none of
-//! its claims would be made truer by one. This file's subject is **what the listener carries**,
+//! That file's subject is the **credential, the matrix and the split** — which requests need
+//! the token at all since the owner's 2026-08-12 ruling, 401-without and past-the-gate-with on
+//! the two camera-bearing routes, the client's own files served to a request presenting
+//! nothing, and one test per D11 cell — and it hands the listener a surface with no methods on
+//! it, because none of its claims would be made truer by one. This file's subject is **what the listener carries**,
 //! so it needs a real daemon, and it gets the one every other suite in this crate uses
 //! (`support/fixture.rs`): two replayed cameras, a session store, a Unix socket, and the
 //! `Methods` value `daemon::server::mount` produced. The web listener here is opened over
@@ -368,8 +370,10 @@ async fn the_typed_refusals_are_the_same_three_over_every_transport() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_anonymous_upgrade_is_refused_and_so_is_a_near_miss() {
     // **D11's gate, on the request that carries a camera's whole control surface.** An
-    // upgrade is an ordinary HTTP request, so it meets `daemon::http::gate` before it meets
-    // the router — but "so it does" is a composition argument, and this is the socket.
+    // upgrade is an ordinary HTTP request, so it meets `daemon::http::gate` before it reaches
+    // the handler that would upgrade it — and since the owner's 2026-08-12 ruling this route
+    // is one of the two the gate is still over (note **N82**). But "so it is" is a composition
+    // argument, and this is the socket.
     //
     // Three answers, and the third is what makes the first two about the credential rather
     // than about a route that refuses everything: nothing is a `401`, an equal-length

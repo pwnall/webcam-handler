@@ -486,6 +486,33 @@ impl Part {
     }
 }
 
+/// An equal-length, one-digit-different token.
+///
+/// `http.rs` and `web_rpc.rs` each carry the same six lines, and the duplication is deliberate
+/// there and here: what they share is a *fact about the token* — 64 hex digits — and each suite
+/// presents it to a different surface. It is the only candidate that reaches `Token::verify`'s
+/// comparison loop at all, since everything shorter or longer is refused by the length check.
+fn near_miss(secret: &str) -> String {
+    let mut digits: Vec<char> = secret.chars().collect();
+    let first = digits.first_mut().expect("a token is not empty");
+    *first = if *first == '0' { '1' } else { '0' };
+    digits.into_iter().collect()
+}
+
+/// The status code out of a whole answer read by [`get`].
+///
+/// A number rather than a `starts_with`, because the assertions it serves are *inequalities* —
+/// "this is not the gate's 401 and not the asset table's 404" — and a prefix match cannot say
+/// that about an answer whose status it does not know.
+fn status_of(answer: &str) -> u16 {
+    answer
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("no status code in {answer:.64}"))
+}
+
 /// The first position of `needle` in `haystack`.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
@@ -665,16 +692,9 @@ async fn the_preview_is_uncompressed_while_compression_is_on_everywhere_else() {
     let preview = Preview::start().await;
     let bound = preview.serving.bound();
 
-    let page = get(
-        bound,
-        &format!(
-            "/?{token}={secret}",
-            token = http::TOKEN_QUERY_PARAM,
-            secret = preview.token
-        ),
-        &[("Accept-Encoding", "gzip")],
-    )
-    .await;
+    // No credential on the asset half: since the 2026-08-12 ruling it needs none, and a request
+    // that presented one here would read as though it did.
+    let page = get(bound, "/", &[("Accept-Encoding", "gzip")]).await;
     assert!(page.starts_with("HTTP/1.1 200"), "{page:.64}");
     assert!(
         page.to_ascii_lowercase().contains("content-encoding: gzip"),
@@ -812,18 +832,39 @@ async fn two_tabs_on_one_camera_are_one_streamer() {
 
 #[tokio::test]
 async fn every_camera_bearing_route_is_behind_the_gate() {
-    // The owner's 2026-08-12 ruling keeps two routes gated — the WebSocket endpoint and this
-    // one — and `daemon::http::CAMERA_BEARING_PATHS` is the list. The population is **read off
-    // that list** rather than written here, so a third camera-bearing route added without a
-    // gate is a failure in this test rather than a discovery in a review.
+    // **The invariant the owner's 2026-08-12 ruling made load-bearing.** Before it, every route
+    // was gated by one `Router::layer` over one router and this test was a belt beside braces.
+    // After it the gate is a `route_layer` over the routes and the assets are outside it, so
+    // "the camera is behind the token" is a property of a *list* — `daemon::http::CAMERA_BEARING_PATHS`
+    // — and a list can be wrong. Note **N82** carries the ruling; this is the behavioural half
+    // of what replaced the property it dissolved, and `scripts/gates/web-routes-are-gated.sh`
+    // is the structural half (a route nobody put on the list is a route no test can drive).
     //
-    // Today the gate covers every route, so this passes for a reason wider than the list. That
-    // is the point of driving the list rather than the router: the assertion survives the
-    // narrowing, and it is the narrowing that would otherwise be the moment a route quietly
-    // lost its gate.
+    // Four claims per path, and none implies the others:
+    //
+    //   1. **nothing is refused** — 401 with RFC 6750's challenge, which is the whole of what
+    //      an anonymous client gets;
+    //   2. **a near miss is refused**, in both credential forms, so the gate is *comparing*
+    //      rather than looking for a parameter's presence — a route whose gate had been
+    //      replaced by a "is there a token= in this URL" check passes claim 1 and fails this;
+    //   3. **the token gets past, and what is behind is a route** — the answer is neither the
+    //      gate's 401 nor the asset table's 404, so a path that is on this list and is *not*
+    //      registered fails here rather than passing claim 1 by falling through to the assets;
+    //   4. **the population is not empty**, because every claim above quantifies over it.
+    //
+    // Claim 3 is the one the ruling sharpened. While the assets were gated, a path on this list
+    // that named no route still answered 401 — from the fallback — so the list could name
+    // anything and claim 1 would hold. Now an unrouted path answers the asset table's 404 to an
+    // anonymous request, and claim 1 catches it on its own.
     let preview = Preview::start().await;
+    let bound = preview.serving.bound();
+    let wrong = near_miss(&preview.token);
+
+    let mut driven = 0_usize;
     for path in http::CAMERA_BEARING_PATHS {
-        let anonymous = get(preview.serving.bound(), path, &[]).await;
+        driven += 1;
+
+        let anonymous = get(bound, path, &[]).await;
         assert!(
             anonymous.starts_with("HTTP/1.1 401"),
             "{path} answered a request with no credential: {anonymous:.64}"
@@ -836,10 +877,64 @@ async fn every_camera_bearing_route_is_behind_the_gate() {
                 .contains("www-authenticate: bearer"),
             "{path} refused without the challenge RFC 6750 asks for"
         );
-    }
 
-    // And the preview with the credential is a `200`, so the assertions above are about the
-    // credential rather than about a route that refuses everything.
+        for near in [
+            get(
+                bound,
+                &format!("{path}?{token}={wrong}", token = http::TOKEN_QUERY_PARAM),
+                &[],
+            )
+            .await,
+            get(
+                bound,
+                path,
+                &[("Authorization", &format!("Bearer {wrong}"))],
+            )
+            .await,
+        ] {
+            assert!(
+                near.starts_with("HTTP/1.1 401"),
+                "{path} admitted a one-digit-different token: {near:.64}"
+            );
+        }
+
+        let credentialled = status_of(
+            &get(
+                bound,
+                path,
+                &[(
+                    "Authorization",
+                    &format!("Bearer {token}", token = preview.token),
+                )],
+            )
+            .await,
+        );
+        assert_ne!(
+            credentialled, 401,
+            "{path} refused the token this run printed"
+        );
+        assert_ne!(
+            credentialled, 404,
+            "{path} is on the camera-bearing list and is not a route: the asset table answered it"
+        );
+    }
+    assert!(
+        driven > 0,
+        "the camera-bearing list is empty, so every claim above quantified over nothing"
+    );
+
+    // The other side of the same ruling, asserted against the same listener in the same run:
+    // the page is served to a request presenting **nothing**. A build that put the gate back
+    // over everything would satisfy every claim above and fail here, which is what makes this
+    // test about the split rather than about the gate alone.
+    let page = get(bound, "/", &[]).await;
+    assert!(
+        page.starts_with("HTTP/1.1 200"),
+        "the client's own page was not served anonymously: {page:.64}"
+    );
+
+    // And the preview with the credential is a `200` carrying frames, so the refusals above are
+    // about the credential rather than about a route that refuses everybody.
     let watching = preview.watching().await;
     assert_eq!(watching.status(), 200);
 }

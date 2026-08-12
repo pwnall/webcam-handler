@@ -10265,6 +10265,37 @@ refusal body is deliberately the same in both cases and carries no `error=` para
 maps over, which is why `listener.rs`'s header names the three by name rather than saying
 "everything".
 
+### Amendment, 2026-08-12: the fallback is outside the wall now, and the first half is untouched
+
+The owner ruled that static assets are served without authentication and that only the
+resources which carry or drive the camera stay gated (note **N82**). This entry has two halves
+and the ruling lands on exactly one of them.
+
+**"The absence rather than a permissive gate" stands, unchanged and unweakened.** The
+token-less cell still gets `routes` with no middleware at all, the decision is still one
+`match` arm at composition over a value a reviewer can read, and `daemon::http::gate` still has
+no branch that can admit a request which presented nothing. Nothing about the ruling touches
+that argument, and the same test asserts the same four cells.
+
+**"Why the fallback is inside the wall" is superseded, and the mechanism inverts with it.** The
+gate is `Router::route_layer` now — the tool this entry named as the wrong one, for the reason
+that made it wrong then and makes it right now: it maps over `path_router` alone, so the asset
+fallback is outside the gate and the routes are inside it. An anonymous request for
+`/nothing-here` is therefore **404 and not 401**, which is the property this entry argued for,
+priced, and now gives up.
+
+**What that property was worth, restated honestly, because the price was paid twice.** The
+argument was that a 404 tells a stranger which paths this daemon has. That is true and it
+stopped mattering: the paths are `crates/web/assets/` and two `pub const`s in a public
+repository, so the surface it protected was already published, and what was left was the cost
+this entry recorded — a client that mistypes a path while unauthenticated cannot tell "wrong
+path" from "wrong token". The asymmetry is gone in both directions. The refusal body and the
+absent `error=` parameter are unchanged, because those are about the *token* and not about the
+path.
+
+The mechanism's dependence on axum moves with it: what retires this half is a change to which
+routers `route_layer` maps over, and `listener.rs`'s header names that one too.
+
 ---
 
 ## N76 — The token rides the URL, and a browser does not carry a query string to a document's subresources
@@ -10327,6 +10358,45 @@ written down here rather than left to whoever adds the second file to `assets/`.
 cookie, what the gate now accepts and what that costs. Until then, a second file in `assets/` is
 the signal that this entry was not read: `no-external-fetch-in-web.sh`'s population is one file
 today, and every file added to it lands under this constraint.
+
+### Retired by the owner's ruling of 2026-08-12 — the premise dissolved rather than the question answered
+
+> "How about just exposing the ES module code without requiring any authentication? The modules
+> aren't the secret — this software is open source anyway."
+
+Neither candidate was chosen. The **constraint** was removed: static assets are served without
+authentication, so a document's subresources present no credential and need none, and P5c's
+module graph is ordinary `import` statements. Note **N82** is the ruling, what it cost and what
+paid for it.
+
+**It retires on its own condition, by a decider this entry did not anticipate.** The clause
+above says "P5b or P5c makes the choice on purpose and records it", and the choosing was the
+owner's rather than a sub-milestone's — which is the one authority above the clause. This is
+worth spelling out because the file's rule is that an entry retires on empirical disproof: no
+measurement here was wrong, and nothing above has been shown false. What went is the question.
+
+**What survives, and is the reason the ruling is right rather than merely permitted.** The fact
+this entry measured — a browser resolves a document's subresources against its URL *without the
+query string*, so `<link href="app.css">` on a page opened at `/?token=…` is a credential-less
+`GET /app.css` — is a fact about browsers and stands. It is now the argument for the ruling: a
+gated asset table is a client that cannot load itself, and the two ways out were a credential
+the browser attaches by itself (a cookie, on a daemon that drives a camera and answers
+WebSocket handshakes that are not subject to CORS — `daemon::http::rpc`'s header keeps that
+finding) or a hand-rolled module loader spending §2.7's "no build step" on the wrong thing.
+Both were costs paid to protect a secret that does not exist.
+
+**What stays refused.** The third answer this entry named as *not* a candidate — putting the
+token in every asset URL the page emits — is still refused, and is now unreachable rather than
+merely declined: an asset URL carries no credential at all, so there is no secret to write into
+the browser's history N times per page load.
+
+**One standing item this hands to P5c, in place of the constraint.** A second file in `assets/`
+is now an ordinary file rather than a signal, but everything in that directory is served to
+whoever can reach the port — including, in D11's two non-loopback cells, whoever can route to
+it. `webcam-handler-web` embeds its **committed** files (note N77's `debug-embed`, asserted per
+asset), so nothing about the machine `wchd` runs on can reach that table today, and anything
+generated *would* be a route and therefore gated. The rule that keeps it that way: the client's
+files say nothing about this host, and a page that had to would be a handler rather than a file.
 
 ---
 
@@ -10624,3 +10694,133 @@ mutant has (note **N78**).
 **Retires when:** P5b lands the preview and with it the bound §2.6 requires, at which point this
 entry's second half becomes a statement about a past tree and the first half stands alone. The
 accept-policy difference does not retire while the web listener is opt-in.
+
+---
+
+## N82 — The token is for the camera, not for the client's own source, and "every route is gated" stopped being a property of the composition
+
+**The ruling (owner, 2026-08-12), verbatim:**
+
+> "How about just exposing the ES module code without requiring any authentication? The modules
+> aren't the secret — this software is open source anyway. The only resources that need
+> authentication are the WS that talks to the daemon and the camera images."
+
+**Doc:** design **D11**, whose sentence made the bearer token a property of the *transport* —
+TCP "serves the web client (static assets + WS JSON-RPC + MJPEG preview `<img>` endpoint), and
+requires a bearer token". D11 now carries a dated amendment: the token is required for the two
+resources that carry or drive the camera and not for the static assets. The bind × token matrix
+and the sentence that justifies it — "a camera is a privacy-sensitive device; the daemon's
+exposure posture errs closed" — are unchanged, and now apply precisely to the two routes that
+*are* the camera.
+
+**Repo:** one word in `daemon::http::listener::router`. `Router::layer` became
+`Router::route_layer`, which maps over `path_router` and neither fallback, so the gate covers
+`/rpc` and `/preview` and the asset fallback is outside it. Beside it, one layer that was not
+there: every response carries `Referrer-Policy: no-referrer`. **The gate itself did not change**
+— not one line of `daemon::http::gate`'s code, only the paragraphs that described what it was
+installed over — and that is the shape of the thing: the credential model is N74's, the
+token-less cell's absent middleware is N75's, and no cookie is read, written or accepted
+anywhere in this daemon. A ruling implemented as an `if request.uri().path() == …` inside
+`check` would have put the whole of it in the one function whose job is to say no.
+
+### What it cost, which is the whole of why this entry is long
+
+**"Every route is gated" was true by construction and is now true by list.** `Router::layer`
+wrapped the routes, the fallback router and the catch-all, so a request could not reach a
+handler without meeting the gate; there was nothing to keep current and nothing to forget.
+After the ruling, gating is a property of *where a route is registered*: `route_layer` wraps
+the routes that exist when it is called, and a route merged after that line — P5c's, P6's,
+anybody's — is served open. A camera-bearing route added that way is a live camera served to
+strangers, and it would be **green in this workspace**, because a test can only ask for a path
+somebody named.
+
+That is a defect class this change created. AGENTS rule 1 has no exemption for one that arrives
+with a ruling, so it becomes two things that can go red, and neither implies the other:
+
+1. **`scripts/gates/web-routes-are-gated.sh`** — the structural half, and the 24th predicate.
+   Its claims: `CAMERA_BEARING_PATHS` exists, is non-empty and names *constants* rather than
+   literals, each declared in the daemon's `http` tree; every `.route(`/`.route_service(`/
+   `.nest(`/`.nest_service(` in the workspace's product code passes one of those constants,
+   from inside those modules; `.fallback(`/`.fallback_service(` appears once, in the
+   composition, naming the asset handler — the door claim 2 does not watch, since a fallback is
+   what this listener now serves *without* the token; and the composition still installs
+   `gate::check` exactly once with exactly one `route_layer(`, because every claim above is true
+   both of a tree that stopped gating anything and of a tree that put the gate back over
+   everything. Sixteen fail arms and four green ones — the shipped tree, a comment that names
+   a route without registering one, a test building a router of its own, and a declaration
+   rustfmt wrapped onto two lines, which is a formatting event and must never be a finding.
+2. **`every_camera_bearing_route_is_behind_the_gate`** (`crates/daemon/tests/preview.rs`) — the
+   behavioural half, driven over a real socket against a real camera, four claims per path:
+   nothing is `401` with RFC 6750's challenge; a near miss is `401` in **both** credential
+   forms, so the gate is comparing rather than looking for a parameter; the token gets past to
+   an answer that is neither the gate's `401` nor the asset table's `404`; and the population is
+   not empty. Beside them, the ruling's own requirement in the same run: `GET /` with no
+   credential is the page.
+
+**Together they are a partition and that is the point.** The gate says every route is named; the
+test says every name is gated. A route added without a name fails the first; a name that lost
+its gate, or that never had a route, fails the second.
+
+### "Carries or drives the camera", as something a predicate can decide
+
+The phrase is a reason, not a test — nothing can read a handler and know whether a camera is
+behind it. What this repository encodes is the decidable question that is exact today and errs
+closed tomorrow: **a route is gated; the only thing served without the token is a lookup in the
+embedded asset table.** The only reason this listener has a route at all is the camera — `/rpc`
+drives one, `/preview` carries one — and everything else it serves is a file compiled into the
+binary from a committed directory (note **N77**). A future route with no camera in it is red at
+the gate above, deliberately: that is where the argument has to be made, in a diff, rather than
+in a router.
+
+### `Referrer-Policy: no-referrer`, which is part of the ruling rather than of its implementation
+
+The token rides the document's URL, so the URL a browser holds for this page **is** the key to a
+camera, and a `Referer` header is that URL handed to whatever the page links out to. Same-origin
+leakage back to the daemon is harmless — the credential came from there. A link out is not. It
+is applied outermost, over both halves of the router, so it lands on the page, the assets, the
+preview's frames, the `404` and the gate's own `401`; a header stamped on the half somebody
+remembered would be the second list this composition spends its argument refusing to keep. The
+page P5a ships has no links; P5c's may, and that is the wrong order in which to discover a
+header. `Token::ready_to_open_url`'s doc priced three exposures of the URL form and now records
+this one as **closed** rather than accepted.
+
+### Four consequences, stated because they are consequences rather than intentions
+
+1. **An anonymous request for an unknown path is `404` and not `401`.** That was note N75's
+   deliberate property — a stranger cannot map the surface — and it is retired in that entry's
+   own amendment. The surface it protected is a directory in a public repository, so what it
+   bought was already published; what it cost (an unauthenticated client cannot tell "wrong
+   path" from "wrong token") is gone with it.
+2. **The pre-authentication attack surface widened**, and this is the consequence with the most
+   in it. Before the ruling an unauthenticated request reached the token gate and nothing else.
+   It now reaches the router, the asset lookup, one allocation per request, and the compression
+   layer. That is three pure functions and a table fixed at compile time, and the traversal
+   question stays closed by shape rather than by a check (note **N77** again) — but it is a
+   widening, and on D11's two non-loopback cells the reachable-from set is "whoever can route to
+   the port" rather than "whoever is on this host".
+3. **On a non-loopback bind, the client page is now served to that whole network.** D11 warns
+   there that what is exposed is "a live camera"; the camera is still behind the token and the
+   *page* is not. An operator who read the warning as "nothing here answers without the token"
+   will find otherwise. This is the sentence in this entry most worth disagreeing with, so it is
+   the one written plainest: nothing in `assets/` says anything about the host it is served
+   from, and anything that had to would be a handler — a route — and therefore gated.
+4. **docs/7 P5d's Playwright criterion changes meaning.** "Anonymous requests are refused" was
+   written when every request was gated; a browser rung asserting it of `/` would now assert
+   something false, and one asserting it of the preview and the WebSocket asserts what the
+   ruling actually protects. That line is amended in the plan rather than left for P5d to
+   discover halfway through a Chromium suite.
+
+### What this retires and what it does not
+
+It retires note **N76** — the two candidate answers for authenticating the client's ES modules —
+by dissolving the premise rather than choosing between them; that entry carries the retirement
+and what survives of it. It amends note **N75**'s second half (the fallback inside the wall) and
+leaves its first half (absent rather than permissive) exactly as written. It touches **N74** not
+at all: the rule is still that every credential a request presents must verify and it must
+present at least one, in both forms, on the routes where a credential is asked for. **N78**'s
+gate is unaffected — the token still has one comparison and one reader.
+
+**Retires when:** never, as a ruling. The mechanism retires if axum changes which routers
+`route_layer` maps over — the same standing risk N75 recorded about `layer`, moved one method
+along — or if a route this listener serves acquires a genuine reason to be ungated, at which
+point `web-routes-are-gated.sh` is the file where that reason has to be written down.

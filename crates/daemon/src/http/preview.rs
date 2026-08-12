@@ -12,11 +12,15 @@
 //! **Permanently, and by name.** The owner ruled (2026-08-12) that static assets are served
 //! without authentication — they are open-source code, not a secret — and that only the
 //! resources which carry or drive the camera stay behind D11's bearer token: the WebSocket
-//! endpoint and this one. So the gate over this route is not an accident of where it happens
-//! to sit in a router, and must not become one: [`super::CAMERA_BEARING_PATHS`] names the two
-//! paths, this module's path comes from it rather than the other way round, and
-//! `crates/daemon/tests/preview.rs` drives every path in that list anonymously over a real
-//! socket and requires a `401`.
+//! endpoint and this one (note **N82**). Since that ruling landed, the gate over this route is
+//! no longer an accident of where it sits in a router — it is `super::listener::router`'s
+//! `route_layer` over the routes, and this route is one of them. What keeps it that way is a
+//! pair, because neither half can see what the other does:
+//! `crates/daemon/tests/preview.rs`'s `every_camera_bearing_route_is_behind_the_gate` drives
+//! every path in [`super::CAMERA_BEARING_PATHS`] over a real socket and requires the refusal,
+//! and `scripts/gates/web-routes-are-gated.sh` requires every route registration in this crate
+//! to name a path on that list — so a *third* route added without one is a finding rather than
+//! a discovery.
 //!
 //! What is behind the credential here is not a document: it is a live view of whatever the
 //! camera is pointed at, which on a laptop is a person's room (AGENTS: "a frame may contain a
@@ -158,17 +162,18 @@ const FRAME_SEQUENCE_HEADER: &str = "X-Wch-Frame-Sequence";
 ///
 /// A sentence, for [`super::listener`]'s `NOT_FOUND` reason: the reader is a person who typed
 /// a URL or a client one version behind, and a listing of this daemon's cameras would be a
-/// camera inventory served to whoever asked. The token is required to reach this line at all,
-/// but "the operator authenticated" is not a reason to volunteer more than was asked for.
+/// camera inventory served to whoever asked. The token is still required to reach this line —
+/// this is one of the two routes the 2026-08-12 ruling kept gated — but "the operator
+/// authenticated" is not a reason to volunteer more than was asked for.
 const NO_CAMERA: &str = "name a camera: /preview?camera=<id>\n";
 
 /// Mount the preview route over `previews`.
 ///
 /// Returns a `Router` for `super::listener::router` to merge, in [`super::rpc::mount`]'s
 /// shape and for its reason: this module owns what its route does and owns nothing about where
-/// the route sits. There is no gate applied here — the listener layers it over every route it
-/// serves at once, which is what makes "every route" a property of one call rather than of a
-/// checklist (note **N75**) — and no compression layer, which is the point.
+/// the route sits. There is no gate applied here — which routes are behind D11's token is one
+/// decision in one `match`, and a route that installed its own would be a second home for it
+/// (design §2.10) — and no compression layer, which is the point.
 ///
 /// `get` and not `any`: unlike the wire route, this endpoint's method policy is *this
 /// module's*, because there is no service behind it with an opinion. A preview is a read of a

@@ -10,21 +10,25 @@
 //!
 //! A **skeleton**: one page, whose styles are inline. P5c lands the client — the camera list,
 //! the control panel generated from the `controls` DTO, the preview `<img>`, the calibration
-//! view. What P5a needs from this crate is exactly what a listener and a token gate need to
-//! be *about* something: bytes with a content type, at a path, that a browser will render and
-//! that an anonymous request must not be able to fetch.
+//! view. What P5a needed from this crate is exactly what a listener and a token gate need to
+//! be *about* something: bytes with a content type, at a path, that a browser will render.
 //!
-//! **One file rather than a page and a stylesheet, and the reason is D11's.** The token rides
-//! the URL, and a browser does not carry a document's query string over to the subresources
-//! that document asks for — so `<link rel="stylesheet" href="app.css">` on a page opened at
-//! `/?token=…` is fetched as `/app.css` with no credential, and the gate refuses it, which is
-//! the gate being right. A skeleton that shipped that would be a page that renders unstyled
-//! in every token-gated cell. The real client cannot inline its way out of this (§2.7's
-//! vanilla ES modules are subresources by definition), so how *its* files authenticate — a
-//! cookie set on the gated navigation, or a page that fetches its own modules with the
-//! `Authorization` header — is P5b/P5c's decision to make on purpose.
-//! `daemon::http::listener`'s header carries the same finding beside the gate that produces
-//! it.
+//! **One file rather than a page and a stylesheet, and the reason has since been ruled away.**
+//! The token rides the URL, and a browser does not carry a document's query string over to the
+//! subresources that document asks for — so `<link rel="stylesheet" href="app.css">` on a page
+//! opened at `/?token=…` was fetched as `/app.css` with no credential, and the gate refused it,
+//! which was the gate being right. A skeleton that shipped that would have been a page that
+//! rendered unstyled in every token-gated cell, and the real client could not have inlined its
+//! way out (§2.7's vanilla ES modules are subresources by definition). Note **N76** recorded
+//! that constraint and its two candidate answers.
+//!
+//! The owner ruled on 2026-08-12 that **static assets are served without authentication** —
+//! these files are open-source code rather than a secret — and only the WS endpoint and the
+//! MJPEG preview stay behind D11's token (note **N82**, which retires N76;
+//! `daemon::http::listener`'s header carries the same finding beside the gate). So P5c's module
+//! graph is ordinary `import` statements and a second file here is an ordinary file. This one
+//! keeps its inline styles because a skeleton with a stylesheet beside it would be two files
+//! saying what one file says, not because it must.
 //!
 //! ## The seam, and why the daemon does not link `rust-embed`
 //!
