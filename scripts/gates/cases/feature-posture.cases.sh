@@ -61,7 +61,7 @@ fail_case_posture_crate_left_the_graph() {
 # An empty or unreadable graph must not read as "nothing wrong".
 fail_case_empty_metadata() {
     local md
-    md="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-empty.XXXXXXXX")"
+    md="$(mktemp "$(gate_scratch_root)/wch-empty.XXXXXXXX")"
     : >"$md"
     WCH_GATE_METADATA="$md" "$GATE"
 }

@@ -72,7 +72,7 @@ if ((committed_count == 0)); then
     gate_finish
 fi
 
-regenerated="$(mktemp -d "${TMPDIR:-/tmp}/wch-artifacts.XXXXXXXX")"
+regenerated="$(mktemp -d "$(gate_scratch_root)/wch-artifacts.XXXXXXXX")"
 trap 'rm -rf "$regenerated"' EXIT
 
 emit_status=0

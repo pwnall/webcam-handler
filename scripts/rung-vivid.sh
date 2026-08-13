@@ -24,6 +24,15 @@ set -euo pipefail
 selection='test(/(^|::)vivid_/)'
 prefix='vivid_'
 
+# Sourced for `gate_scratch_root` and nothing else, which is `scripts/mutants.sh`'s
+# arrangement and its reason: where temporary data goes is one decision (the 2026-08-12
+# ruling, note N84), and a runner that spelled it itself would be one more copy of it. This
+# is not a gate predicate and it keeps its own reporting vocabulary.
+#
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=gates/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gates/lib.sh"
+
 root="$(git rev-parse --show-toplevel)"
 skips=0
 
@@ -40,7 +49,7 @@ skips=0
 # the *good* path; the `|| true` is that trap handled rather than tripped over.
 run_suite() {
     local selection="$1" label="$2" log
-    log="$(mktemp "${TMPDIR:-/tmp}/wch-${label}.XXXXXXXX")"
+    log="$(mktemp "$(gate_scratch_root)/wch-${label}.XXXXXXXX")"
 
     local status=0
     cargo nextest run --locked --offline --workspace --run-ignored all \

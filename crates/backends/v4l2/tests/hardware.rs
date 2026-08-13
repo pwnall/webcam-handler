@@ -1187,7 +1187,7 @@ fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_
         return;
     };
 
-    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
     let mut taken = 0usize;
     for info in &cameras {
         if info.capture_node().is_none() {

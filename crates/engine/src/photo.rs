@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn a_photo_written_to_a_path_reports_the_path_and_the_bytes_it_holds() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = crate::paths::scratch_dir().expect("a scratch directory");
         let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("shot.jpg"))
             .expect("utf-8 temp dir");
         let mut camera = camera_from("chicony-rgb");
@@ -585,7 +585,7 @@ mod tests {
     fn a_png_sink_moves_the_pixels_instead_and_swaps_the_axes() {
         // The other direction of the same claim, so `is_verbatim` and
         // `TransformApplication` are both measuring something.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = crate::paths::scratch_dir().expect("a scratch directory");
         let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("shot.png"))
             .expect("utf-8 temp dir");
         let mut camera = camera_from("chicony-rgb");
@@ -969,7 +969,7 @@ mod tests {
         // whole settle budget and dequeued a frame of whoever was in front of the lens
         // before refusing — which is what this pipeline did until the check was hoisted to
         // `take`'s first statement.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = crate::paths::scratch_dir().expect("a scratch directory");
         let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("shot.webp"))
             .expect("utf-8 temp dir");
         let (backend, mut camera) = watched_camera_from("chicony-rgb");

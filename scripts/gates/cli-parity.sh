@@ -238,11 +238,15 @@ wchd="$resolved"
 # runs — which is the whole point: two processes read one state directory concurrently, and
 # the read verbs answering while the daemon holds it is the property the header names.
 #
-# Under `$TMPDIR` rather than under the tree, because the session tree holds sample photos
-# and the repository holds no frames (`no-frame-bytes-in-repo.sh`), and because a Unix socket
-# path is capped at 107 bytes — a scratch directory nested any deeper produces a socket the
-# daemon refuses to bind on behalf of the client that could not name it.
-scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-cli-parity.XXXXXXXX")"
+# From `gate_socket_scratch_root` and not from `gate_scratch_root`, which is the one place
+# that trade is argued: the 2026-08-12 ruling moved test scratch under `target/`, and a Unix
+# socket path is capped at 107 bytes, which a directory that deep blows by 17 on this checkout
+# alone. Both of this fixture's original reasons still hold at the shorter root — the session
+# tree holds sample photos and the repository holds no frames
+# (`no-frame-bytes-in-repo.sh`), and a socket the daemon refuses to bind is a client that
+# could not name it — and what is new is that a `kill -9` here is reclaimed by
+# `gate_scratch_sweep` rather than by nobody.
+scratch="$(mktemp -d "$(gate_socket_scratch_root)/wch-cli-parity.XXXXXXXX")"
 runtime="$scratch/run"
 state="$scratch/state"
 mkdir -p "$runtime" "$state"

@@ -64,8 +64,10 @@ fi
 # produces by running `snapshot` first.
 #
 # `photo` takes a `-o` under a temporary directory: `--json` requires one (the bytes and
-# the document cannot share standard output), and writing outside the tree is what keeps
-# `no-frame-bytes-in-repo.sh` true even though these frames are synthetic.
+# the document cannot share standard output), and writing where no tree walk looks is what
+# keeps `no-frame-bytes-in-repo.sh` true even though these frames are synthetic. Since the
+# 2026-08-12 ruling that is under `target/`, which `gate_find` prunes, rather than outside
+# the worktree (note N84).
 # The `calibrate` rows are **ordered**: they are one session, driven from `start` to
 # `apply`, because a calibration verb's answer only exists once the verbs before it have
 # run. That is not a weakness of the check — it is what makes the documents real. The
@@ -131,9 +133,11 @@ if ((value < control_min)); then value="$control_min"; fi
 if ((value > control_max)); then value="$control_max"; fi
 gate_note "writing $control=$value (declared range $control_min..$control_max)"
 
-# Scratch space for the documents and bytes these rows produce. Outside the tree, so
-# `no-frame-bytes-in-repo.sh` stays true and a failed run leaves nothing behind.
-scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-json-validates.XXXXXXXX")"
+# Scratch space for the documents and bytes these rows produce. Under `target/` since the
+# 2026-08-12 ruling, which is outside every tree walk — `gate_find` prunes `target` — so
+# `no-frame-bytes-in-repo.sh` stays true of a directory full of sample photos, and a failed
+# run leaves nothing behind that the next `gate_scratch_sweep` will not take.
+scratch="$(mktemp -d "$(gate_scratch_root)/wch-json-validates.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 # The calibration verbs write a session tree (D9), and it goes in the scratch directory

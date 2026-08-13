@@ -70,7 +70,7 @@ _red_because() {
 # problem: the one outcome that cannot be mistaken for a working arm.
 _mutated_predicate() {
     local script="$1" present="$2" gone="$3" dir mutant
-    dir="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-parity-rows.XXXXXXXX")"
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-parity-rows.XXXXXXXX")"
     mutant="$dir/$(basename "$GATE")"
     cp "$(dirname "$GATE")/lib.sh" "$dir/lib.sh"
     sed "$script" "$GATE" >"$mutant"
@@ -187,7 +187,7 @@ fail_case_a_row_naming_a_verb_the_surface_does_not_offer() {
 fail_case_a_verb_wchc_cannot_serve_is_a_local_only_verb() {
     local stub wchc
     wchc="$(git rev-parse --show-toplevel)/target/debug/wchc"
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchc.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchc.XXXXXXXX")"
     cat >"$stub" <<STUB
 #!/usr/bin/env bash
 set -euo pipefail
@@ -209,7 +209,7 @@ STUB
 # answer it must never give is "pass" (AGENTS.md rule 3).
 fail_case_a_daemon_that_never_serves_leaves_nothing_to_compare() {
     local stub
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     cat >"$stub" <<'STUB'
 #!/usr/bin/env bash
 printf 'wchd cannot serve\n' >&2
@@ -230,7 +230,7 @@ fail_case_a_daemon_that_announces_a_socket_and_is_not_there() {
         "$root/crates/schema/src/paths.rs" | head -n1)"
     socket_file="$(sed -n 's/^pub const DAEMON_SOCKET_FILE: &str = "\([^"]*\)".*/\1/p' \
         "$root/crates/schema/src/limits.rs" | head -n1)"
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     cat >"$stub" <<STUB
 #!/usr/bin/env bash
 set -euo pipefail

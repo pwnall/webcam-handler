@@ -222,3 +222,17 @@ mutants *args:
 # man pages). `schema-artifacts-current.sh` proves the committed copies match.
 generate:
     cargo run --locked -p webcam-handler-xtask -- generate
+
+# ---------------------------------------------------------------- scratch
+
+# The other half of cleanup, and the half a trap cannot do (owner ruling, 2026-08-12; note
+# N84). Every producer of scratch deletes its own when it finishes; none of them finishes
+# after a `kill -9`, which is how 76 abandoned copies of this repository came to be sitting
+# in a tmpfs (E15). `just ci` sweeps anything over a day old on its way past; this is the
+# same sweep with no grace period, for when nothing is running.
+#
+# Takes an age in minutes as an argument (`just scratch-sweep 60`); 0 by default.
+#
+# Reclaim abandoned test scratch from both roots.
+scratch-sweep *args:
+    ./scripts/scratch-sweep.sh {{args}}

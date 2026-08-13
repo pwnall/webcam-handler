@@ -49,7 +49,7 @@ fn repo_root() -> Utf8PathBuf {
     Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// A state directory outside the repository, thrown away with the test.
+/// A state directory under the one scratch root (note N84), thrown away with the test.
 struct Scratch {
     dir: tempfile::TempDir,
 }
@@ -57,7 +57,7 @@ struct Scratch {
 impl Scratch {
     fn new() -> Scratch {
         Scratch {
-            dir: tempfile::tempdir().expect("a scratch directory"),
+            dir: engine::paths::scratch_dir().expect("a scratch directory"),
         }
     }
 
@@ -1466,19 +1466,30 @@ fn list_shows_every_session_and_one_cameras_when_a_camera_is_named() {
 }
 
 #[test]
-fn nothing_a_calibration_writes_lands_in_the_repository() {
+fn nothing_a_calibration_writes_lands_where_the_repository_can_see_it() {
     // Rubric A12 as a habit: sample photos are frames, and a frame may contain a person.
     // These are synthetic; the discipline is the point, and this asserts the state
-    // directory really is outside the tree.
+    // directory really is somewhere the repository cannot mistake for its own.
+    //
+    // **This asserted "outside the tree" until the 2026-08-12 ruling made that false on
+    // purpose** (note N84): test scratch lives under `target/` now. The replacement is in
+    // two halves and is stronger than what it replaces — `schema::paths`'s own tests carry
+    // the general law (the root is inside the build directory, and the `.gitignore` beside
+    // it names `/target/`), and this asserts the local one: a whole session tree, sample
+    // photos and all, is under that root.
     let scratch = Scratch::new();
     let wch = calibrated_session(&scratch);
-    let repo = repo_root()
+    let root = schema::paths::scratch_root()
+        .expect("a scratch root")
         .canonicalize_utf8()
-        .expect("the repository root resolves");
-    let dir = wch.only_session_dir();
+        .expect("the scratch root resolves");
+    let dir = wch
+        .only_session_dir()
+        .canonicalize_utf8()
+        .expect("the session directory resolves");
     assert!(
-        !dir.starts_with(&repo),
-        "{dir} is inside {repo}; sessions must not be written into the tree"
+        dir.starts_with(&root),
+        "{dir} is not under {root}; a session tree belongs in the one scratch root and nowhere else"
     );
     let photos = dir.join(schema::limits::SESSION_PHOTOS_DIR);
     assert!(photos.is_dir(), "{photos} should hold the sample photos");

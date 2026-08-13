@@ -94,7 +94,7 @@ fi
 # assertion — it is the bound that turns "hangs forever" into "fails".
 deadline=60
 
-scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-uds-permissions.XXXXXXXX")"
+scratch="$(mktemp -d "$(gate_socket_scratch_root)/wch-uds-permissions.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 # `mktemp -d` creates 0700, which would make the other-uid arm below pass for the wrong
 # reason: a second account blocked by *our scratch directory* proves nothing about the

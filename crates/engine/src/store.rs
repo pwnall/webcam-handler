@@ -1007,8 +1007,10 @@ fn corrupt(path: &Utf8Path, message: impl Into<String>) -> Error {
 /// tests, the daemon's integration tests and the CLI's subprocess tests all need a state
 /// directory that is real, empty, and gone afterwards, and three copies of that fixture
 /// is three copies of a law (design §2.10). It also keeps the privacy rule mechanical —
-/// a test store lives under `$TMPDIR`, so nothing a test writes can land in the
-/// repository (rubric A12).
+/// a test store lives under [`crate::paths::scratch_dir`], which is inside `target/` and
+/// therefore both gitignored and pruned by every gate that walks the tree, so nothing a
+/// test writes can land in the repository or be mistaken for something that did
+/// (rubric A12, note **N84**).
 #[derive(Debug)]
 pub struct TempStore {
     /// Dropped last of all, which removes the tree.
@@ -1017,18 +1019,18 @@ pub struct TempStore {
 }
 
 impl TempStore {
-    /// A new, empty store under `$TMPDIR`.
+    /// A new, empty store under [`crate::paths::scratch_dir`].
     ///
     /// # Errors
     ///
     /// [`Error::StorageIo`] when the temporary directory cannot be made, or when its
-    /// path is not UTF-8 — every path in this tool is a [`camino`] path, and a
-    /// `$TMPDIR` we cannot represent is one we cannot use.
+    /// path is not UTF-8 — every path in this tool is a [`camino`] path, and a scratch
+    /// root we cannot represent is one we cannot use.
     pub fn new() -> Result<TempStore> {
-        let dir = tempfile::TempDir::new().map_err(|err| storage_io("$TMPDIR".into(), &err))?;
+        let dir = crate::paths::scratch_dir()?;
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).map_err(|path| {
             corrupt(
-                "$TMPDIR".into(),
+                "the scratch root".into(),
                 format!("is not valid UTF-8: {}", path.display()),
             )
         })?;

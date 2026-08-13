@@ -87,7 +87,7 @@ STUB
 }
 
 _stub_path() {
-    mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-floor.XXXXXXXX"
+    mktemp "$(gate_scratch_root)/wch-stub-floor.XXXXXXXX"
 }
 
 pass_case() {

@@ -21,7 +21,6 @@ camino.workspace = true
 # it is the whole of this crate's use of the dependency (`images` re-exports the rest).
 image.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 # **The sweep planner and nothing else** (`engine::sweep::plan`), because
 # `battery::sweep_for` prices a hardware arm's sweep from a descriptor *before* the arm
 # opens a session, and pricing it any other way would be a second planner with a second

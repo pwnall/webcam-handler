@@ -2737,7 +2737,6 @@ dependencies = [
  "camino",
  "image",
  "serde_json",
- "tempfile",
  "webcam-handler-engine",
  "webcam-handler-imaging",
  "webcam-handler-schema",

@@ -1,7 +1,12 @@
+# Also where every test's temporary data lives, under `target/wch-scratch/` (owner ruling,
+# 2026-08-12; note N84). A camera frame never enters the repository (design §5), and this
+# line is only half of why: the other half is that `gate_find` prunes `target`, so a sample
+# photo written by a test is invisible to the walk in
+# `scripts/gates/no-frame-bytes-in-repo.sh` rather than merely uncommittable. There used to
+# be a `/scratch/` entry here saying the first half; it was ignored by git and *not* ignored
+# by that walk, which made `just ci` red on eight gitignored JPEGs during hardware
+# validation (note E15). One directory, ignored by both.
 /target/
-# Test captures land in gitignored scratch dirs — a camera frame never enters the
-# repository (design §5).
-/scratch/
 **/*.rs.bk
 .DS_Store
 .claude/

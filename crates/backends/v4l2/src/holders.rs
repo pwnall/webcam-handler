@@ -203,7 +203,7 @@ mod tests {
         // The walk is exercised against a file this test opens itself, so it runs on any
         // host, camera or no camera — and it is the *positive* direction, which a walk
         // that always returned nothing would fail.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("held")).expect("utf-8 temp dir");
         let held = std::fs::File::create(&path).expect("create");
@@ -243,7 +243,7 @@ mod tests {
         // Both directions over the same file, and the negative one is what stops a verb
         // built on this from signalling a pid on the strength of an answer that is always
         // `true`.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("held")).expect("utf-8 temp dir");
         let held = std::fs::File::create(&path).expect("create");
@@ -269,7 +269,7 @@ mod tests {
     fn the_walk_stops_at_the_reporting_cap() {
         // Rubric A14. The cap is the reason a refusal stays readable on a busy machine,
         // and a cap nothing enforces is a comment.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("held")).expect("utf-8 temp dir");
         let _held = std::fs::File::create(&path).expect("create");
@@ -288,7 +288,7 @@ mod tests {
         // `holder` answers about this pid either way. What makes the arm non-vacuous is the
         // pairing — the same pid, the same node, one answer from a bounded walk and one
         // from a direct question.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("held")).expect("utf-8 temp dir");
         let held = std::fs::File::create(&path).expect("create");

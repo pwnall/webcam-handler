@@ -100,7 +100,7 @@ activate="${WCH_GATE_SOCKET_ACTIVATE:-systemd-socket-activate}"
 deadline=60
 journal_deadline=20
 
-scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-socket-activation.XXXXXXXX")"
+scratch="$(mktemp -d "$(gate_socket_scratch_root)/wch-socket-activation.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 announced=0

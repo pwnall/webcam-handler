@@ -1748,7 +1748,13 @@ mod tests {
 
     #[test]
     fn a_written_profile_lands_on_disk_with_a_trailing_newline_and_says_where() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        // `TempDir::new_in` over the one scratch root rather than `tempfile::tempdir()`,
+        // which reads `$TMPDIR` (the 2026-08-12 ruling, note N84). This crate is the thin
+        // client's half and links no engine, so it reaches the root through
+        // `schema::paths` — where the choice is made — instead of through
+        // `engine::paths::scratch_dir`, which is the same root wearing a constructor.
+        let root = schema::paths::scratch_root().expect("a scratch root");
+        let dir = tempfile::TempDir::new_in(&root).expect("a scratch directory");
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("p.json")).expect("utf-8 temp dir");
         let (mut out, stdout, stderr) = captured();

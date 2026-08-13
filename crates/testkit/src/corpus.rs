@@ -182,7 +182,7 @@ mod tests {
     fn a_malformed_profile_is_a_loud_failure_not_a_skipped_file() {
         // The inverse direction of the test above: the loader must not be able to report
         // "all clear" over a directory it could not read.
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("UTF-8 temp dir");
 
         let good = root.join("good.json");
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_profile_from_a_future_version_is_refused_by_version_before_anything_else() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("UTF-8 temp dir");
         let mut profile = crate::fixtures::synthetic_basic();
         profile.schema_version = schema::limits::PROFILE_SCHEMA_VERSION + 1;
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn a_profile_loads_by_name_and_a_name_nothing_answers_to_says_which_file_it_looked_for() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("UTF-8 temp dir");
         std::fs::write(
             root.join("obsbot-tiny3.json"),
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn a_non_json_file_in_the_corpus_is_ignored_rather_than_parsed() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("UTF-8 temp dir");
         std::fs::write(root.join("README.md"), b"why these profiles exist").expect("write");
         assert!(load_dir(&root).expect("no profiles").is_empty());

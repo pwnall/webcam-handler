@@ -30,7 +30,20 @@ gates_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 lib="$gates_dir/lib.sh"
 cases_dir="$gates_dir/cases"
 
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/wch-selftest.XXXXXXXX")"
+# Before this run makes any of its own: reclaim what an earlier run was killed before it
+# could.
+#
+# The `trap` below and the per-arm `reclaim_scratch` further down are the normal path, and
+# neither of them runs after `kill -9`, a full disk or a laptop that closed — which is
+# precisely how the 76 abandoned copies E15 measured came to exist. A cleanup that only
+# happens when the run finishes is a cleanup that is absent exactly when it is needed, so
+# the *next* run does it: this call, and `just scratch-sweep` for a person who wants the
+# room back now. A day is the presumed-live threshold, which is comfortably longer than
+# anything here and shorter than an accumulation nobody notices; `gate_scratch_sweep` says
+# what it took.
+gate_scratch_sweep 1440
+
+scratch="$(mktemp -d "$(gate_scratch_root)/wch-selftest.XXXXXXXX")"
 export WCH_GATE_SCRATCH="$scratch"
 trap 'rm -rf "$scratch"' EXIT
 
@@ -59,10 +72,13 @@ trap 'rm -rf "$scratch"' EXIT
 #
 # What this fixes is the *accumulation*, and that is the whole claim: the seeded copies no
 # longer add up, so the term that grew with every predicate this suite gains is gone. It is
-# not a promise about the total. Sampled every two seconds through a full run, `/tmp`'s
-# high-water mark went from over 12.1 GiB (where it hit the quota and the run died) to
-# **9.5 GiB**, and the scratch directory now holds exactly one entry at a time — which is
-# how the remaining 9.5 was identified rather than guessed at. It is **one arm**:
+# not a promise about the total. Sampled every two seconds through a full run, the scratch
+# filesystem's high-water mark went from over 12.1 GiB (where it hit the quota and the run
+# died) to **9.5 GiB**, and the scratch directory now holds exactly one entry at a time —
+# which is how the remaining 9.5 was identified rather than guessed at. Since the 2026-08-12
+# ruling that room is under `target/` on a disk with 156 GB free rather than in a 16 GB
+# tmpfs, so the same number is no longer near anything's ceiling; it is still the number, and
+# it is still **one arm**:
 # `counted-selections.sh`'s real-lister arm points `$WCH_GATE_ROOT` at a scratch copy and
 # `counted-selections.sh:40` runs `cargo nextest list --workspace` with that copy as its
 # working directory and no `CARGO_TARGET_DIR`, so cargo compiles the entire workspace into
@@ -71,9 +87,12 @@ trap 'rm -rf "$scratch"' EXIT
 # do is a change to somebody else's arm and to the rubric-rule-6 claim that arm carries.
 #
 # Nothing carries across arms and this cannot break one: each case seeds its own copy inside
-# its own subshell, and the build directories that *are* shared between arms live under the
-# checkout's `target/` (`_shared_target_dir` in the schema-artifacts cases, which names the
-# repository, not this directory) precisely so that a scratch wipe does not cost a rebuild.
+# its own subshell, and the build directories that *are* shared between arms live at
+# `target/gate-selftest/` (`_shared_target_dir` in the schema-artifacts cases, and the
+# `cli-parity-fork` directory beside it) precisely so that a scratch wipe does not cost a
+# rebuild. Since the 2026-08-12 ruling this directory is under `target/` as well, so the
+# distinction is no longer which filesystem they are on — it is that those two are named,
+# reused and outside `$scratch`, and this one is `mktemp`'d per run and wiped per arm.
 # `-mindepth 1` rather than a `"$scratch"/*` glob, because the glob misses dotfiles and a
 # stub left behind as `.something` would survive every sweep.
 reclaim_scratch() {

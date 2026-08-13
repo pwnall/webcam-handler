@@ -64,7 +64,7 @@ pass_case() {
 # defect the row exists for: every account on the box can then reach the camera.
 fail_case_a_daemon_that_serves_from_a_world_traversable_directory() {
     local stub
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0755 bind serve
     WCH_GATE_WCHD="$stub" "$GATE"
 }
@@ -74,7 +74,7 @@ fail_case_a_daemon_that_serves_from_a_world_traversable_directory() {
 # check would mean nothing.
 fail_case_a_daemon_that_announces_a_socket_it_never_bound() {
     local stub
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0700 announce-only serve
     WCH_GATE_WCHD="$stub" "$GATE"
 }
@@ -85,7 +85,7 @@ fail_case_a_daemon_that_announces_a_socket_it_never_bound() {
 # been reached (note N39). Nothing but this arm distinguishes it from the shipped daemon.
 fail_case_a_daemon_that_repairs_a_widened_directory_instead_of_refusing() {
     local stub
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0700 bind serve
     WCH_GATE_WCHD="$stub" "$GATE"
 }
@@ -98,7 +98,7 @@ fail_case_a_daemon_that_repairs_a_widened_directory_instead_of_refusing() {
 fail_case_a_daemon_that_serves_through_a_symlinked_socket_directory() {
     local stub app_dir socket_file
     { read -r app_dir; read -r socket_file; } < <(_socket_names)
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     cat >"$stub" <<STUB
 #!/usr/bin/env bash
 set -euo pipefail
@@ -121,7 +121,7 @@ STUB
 # that examined nothing must not report a pass (AGENTS.md rule 3).
 fail_case_a_daemon_that_never_serves_leaves_nothing_to_check() {
     local stub
-    stub="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX")"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0700 bind refuse
     WCH_GATE_WCHD="$stub" "$GATE"
 }

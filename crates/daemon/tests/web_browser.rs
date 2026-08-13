@@ -41,9 +41,11 @@
 //!
 //! A frame may contain a person (AGENTS, "Hardware and privacy"). This rung drives the **fake**
 //! backend — the camera it previews is `synthetic_basic`, whose frames are generated — so there
-//! is no camera in the room anywhere near it. Everything the browser writes still goes to a
-//! gitignored scratch directory outside any package: traces on failure, screenshots on failure,
-//! and the JSON report. Nothing it produces can be committed by accident.
+//! is no camera in the room anywhere near it. Everything the browser writes still goes to the
+//! one scratch root under `target/` (note **N84**): traces on failure, screenshots on failure,
+//! and the JSON report. Nothing it produces can be committed by accident, and — which is the
+//! half `scratch/` could not offer — nothing it produces is even visible to the walk that
+//! sniffs this tree for frames.
 //!
 //! ## Playwright's place in the dependency inventory
 //!
@@ -239,7 +241,7 @@ fn suite_dir() -> Utf8PathBuf {
     Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/browser")
 }
 
-/// The workspace root, which is where the gitignored scratch directory lives.
+/// The workspace root, which is what the no-build-script claim below walks.
 fn workspace_root() -> Utf8PathBuf {
     Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -380,10 +382,17 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
         }
     };
 
-    // Everything the browser writes lands here, and `/scratch/` is gitignored: a trace holds
-    // DOM snapshots and a screenshot holds pixels, and neither belongs in a repository whose
-    // whole privacy rule is that frames do not enter it.
-    let output = workspace_root().join("scratch/r1-web");
+    // Everything the browser writes lands here: a trace holds DOM snapshots and a screenshot
+    // holds pixels, and neither belongs in a repository whose whole privacy rule is that
+    // frames do not enter it. P5d put this at `scratch/r1-web/`, an in-tree directory
+    // gitignored by a `/scratch/` line; the 2026-08-12 ruling supersedes both (note **N84**),
+    // and the new home is better on the point that mattered — `target/` is gitignored *and*
+    // pruned by `gate_find`, so these artifacts are invisible to the privacy walk instead of
+    // merely uncommittable, which is the collision E15 recorded. It is named rather than
+    // `mktemp`'d and it is not swept: a trace exists to be opened after a failing run.
+    let output = schema::paths::scratch_root()
+        .expect("a scratch root")
+        .join("r1-web");
     std::fs::create_dir_all(&output).expect("a scratch directory for this rung's artifacts");
     let report_path = output.join("run-claims.json");
     let _ = std::fs::remove_file(&report_path);

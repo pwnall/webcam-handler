@@ -27,7 +27,7 @@ fn wch() -> Command {
     Command::new(env!("CARGO_BIN_EXE_wch"))
 }
 
-/// A scratch directory outside the repository, and the paths under it.
+/// A scratch directory under the one scratch root (note N84), and the paths under it.
 struct Scratch {
     dir: tempfile::TempDir,
 }
@@ -35,7 +35,7 @@ struct Scratch {
 impl Scratch {
     fn new() -> Scratch {
         Scratch {
-            dir: tempfile::tempdir().expect("a scratch directory"),
+            dir: engine::paths::scratch_dir().expect("a scratch directory"),
         }
     }
 
@@ -295,20 +295,36 @@ fn wch_photo_without_a_path_writes_the_image_to_standard_output_and_the_table_to
 }
 
 #[test]
-fn a_photo_never_lands_in_the_repository() {
+fn a_photo_never_lands_where_the_repository_can_see_it() {
     // Rubric A12 as a habit rather than a hope: every test above writes under a scratch
-    // directory, and this asserts the directory really is outside the tree. A frame may
-    // contain a person, and `no-frame-bytes-in-repo.sh` scans what is committed — this is
-    // the half that keeps an *uncommitted* one from appearing either.
+    // directory, and this asserts the directory really is somewhere a frame cannot be
+    // mistaken for part of this project. A frame may contain a person, and
+    // `no-frame-bytes-in-repo.sh` sniffs every file its walk finds — this is the half that
+    // keeps an *uncommitted* one from appearing to it either.
+    //
+    // **This test used to assert the path was outside the worktree, and the 2026-08-12
+    // ruling made that false on purpose** (note N84): test scratch now lives under
+    // `target/`. What replaces it is stronger rather than weaker, and it is deliberately
+    // two claims in two places — the general law is asserted once, in
+    // `schema::paths`'s own tests, where the choice is made ("the scratch root is inside
+    // the build directory, and the `.gitignore` beside it names `/target/`"), and this
+    // file asserts the local one: the frame this binary writes is under that root and
+    // nowhere else. The old wording could only ever have said where the photo is *not*.
     let scratch = Scratch::new();
     let path = scratch.path("shot.jpg");
-    let repo = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let repo = repo
+    let root = schema::paths::scratch_root()
+        .expect("a scratch root")
         .canonicalize_utf8()
-        .expect("the repository root resolves");
+        .expect("the scratch root resolves");
+    let resolved = scratch
+        .dir
+        .path()
+        .canonicalize()
+        .expect("the scratch directory resolves");
+    let resolved = Utf8PathBuf::from_path_buf(resolved).expect("a utf-8 scratch directory");
     assert!(
-        !path.starts_with(&repo),
-        "{path} is inside {repo}; photos must not be written into the tree"
+        resolved.starts_with(&root),
+        "{resolved} is not under {root}; a photo belongs in the one scratch root and nowhere else"
     );
 
     let device = replayed("chicony-rgb", "cam:integrated-camera-integrated-c");

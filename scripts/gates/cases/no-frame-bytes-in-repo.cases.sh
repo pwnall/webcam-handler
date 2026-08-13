@@ -93,6 +93,6 @@ fail_case_fixture_in_an_unexpected_format() {
 # An empty tree sniffs nothing, and a check that examined nothing cannot go red.
 fail_case_nothing_to_scan() {
     local tree
-    tree="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-empty-tree.XXXXXXXX")"
+    tree="$(mktemp -d "$(gate_scratch_root)/wch-empty-tree.XXXXXXXX")"
     WCH_GATE_ROOT="$tree" "$GATE"
 }

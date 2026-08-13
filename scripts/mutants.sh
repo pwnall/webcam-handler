@@ -146,7 +146,11 @@ no_verdict() {
     exit "$GATE_NO_VERDICT"
 }
 
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/wch-mutants.XXXXXXXX")"
+# This run's own bookkeeping — survivor lists, the sorted register, a throw-away criteria
+# table — which is kilobytes and goes where all test scratch goes since the 2026-08-12 ruling
+# (note N84). The *build* root is a different question and is answered further down, at
+# `build_root`, where the measurement that decides it lives.
+scratch="$(mktemp -d "$(gate_scratch_root)/wch-mutants.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 # ---------------------------------------------------------------- the tree, recorded
@@ -295,8 +299,20 @@ else
     # dimension, and N60 records what the reflex costs — a run that is re-run until it agrees is
     # a run nobody reads. So the figure stays the measurement it is, and the *budget* leaves a
     # tree's worth of room.
+    # **The one thing the 2026-08-12 ruling deliberately did not move** (note N84). That
+    # ruling put test scratch under `target/` because a leak filled a tmpfs; this is not that
+    # leak and moving it would be a knowing 7× regression in the measurement two paragraphs
+    # up — the same run with its build directories on the disk that holds `target/` went from
+    # about seven mutants a minute to under one. It is also already bounded in the way the
+    # ruling asks for: the budget below reserves a whole build tree and answers a shortfall
+    # with a no-verdict rather than a FAIL, the `EXIT` trap and cargo-mutants' own cleanup
+    # take the trees on the normal path, and `gate_scratch_sweep` reaches this root too. What
+    # the sweep does *not* reach is what cargo-mutants names itself, `cargo-mutants-*`, which
+    # note N84 records as a residual rather than pretending otherwise.
+    # wch-scratch-exempt: the mutation floor's build trees, measured at 7× on tmpfs (E7, N66)
     build_root="${WCH_MUTANTS_BUILD_ROOT:-${TMPDIR:-/tmp}}"
     mkdir -p "$build_root"
+    # wch-scratch-exempt: cargo-mutants reads the build root out of the environment
     export TMPDIR="$build_root"
 
     per_job_gib=3

@@ -37,7 +37,7 @@ _real_wchd() {
 }
 
 _scratch_program() {
-    mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-stub-wchd.XXXXXXXX"
+    mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX"
 }
 
 pass_case() {

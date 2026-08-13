@@ -68,6 +68,37 @@ pub fn state_dir(env: &dyn Env) -> Result<Utf8PathBuf> {
     })
 }
 
+/// A temporary directory under [`schema::paths::scratch_root`], removed when it is dropped.
+///
+/// **The one constructor for a scratch directory in this workspace's Rust**, and the reason it
+/// is one rather than fifteen is the 2026-08-12 ruling (note **N84**): `tempfile::tempdir()`
+/// reads `$TMPDIR`, `$TMPDIR` is a 16 GB tmpfs on the machine this project is developed on,
+/// and "where does test scratch go" is a decision that has to be revisable in one place to be
+/// revisable at all. `scripts/gates/scratch-has-one-home.sh` is what keeps it one: a
+/// `tempfile::tempdir()` typed out of habit is red there.
+///
+/// It is here rather than beside the path it joins for this module header's reason —
+/// `webcam-handler-schema` carries no `tempfile` edge and is not gaining one for a fixture —
+/// and it is public, and un-gated by any feature, for [`crate::store::TempStore`]'s reason:
+/// the daemon's tests, the CLI's, the backend's and `wchc`'s all need it, and a
+/// `#[cfg(test)]` helper is a helper only this crate can use.
+///
+/// [`TempRuntimeDir`] below is the deliberate exception and the two are worth reading
+/// together.
+///
+/// # Errors
+///
+/// Whatever [`schema::paths::scratch_root`] refuses with, or [`Error::StorageIo`] when the
+/// directory cannot be created inside it.
+pub fn scratch_dir() -> Result<tempfile::TempDir> {
+    let root = schema::paths::scratch_root()?;
+    tempfile::TempDir::new_in(&root).map_err(|err| Error::StorageIo {
+        path: root.as_str().into(),
+        errno: err.raw_os_error(),
+        message: err.to_string(),
+    })
+}
+
 /// A private `$XDG_RUNTIME_DIR` that disappears with the value.
 ///
 /// The runtime half of [`crate::store::TempStore`], and public for the same reason: the
@@ -105,10 +136,30 @@ pub struct TempRuntimeDir {
 impl TempRuntimeDir {
     /// A new, empty runtime base under `$TMPDIR`.
     ///
-    /// The prefix is three characters on purpose. A Unix socket path is bounded by
-    /// `sockaddr_un::sun_path` (108 bytes on Linux) and `$TMPDIR` is not always `/tmp` —
-    /// `scripts/mutants.sh` exports a scratch one inside `target/` — so a chatty prefix
-    /// would turn a socket test into an `ENAMETOOLONG` nobody expected.
+    /// **`$TMPDIR` and not [`scratch_dir`], and this is the one exception the 2026-08-12
+    /// ruling has** (note **N84**). Everything else in this workspace's tests moved under
+    /// `target/`; a directory whose entire purpose is to hold a socket did not, because
+    /// `sockaddr_un::sun_path` is 108 bytes on Linux — 107 once the NUL is counted, which is
+    /// [`schema::limits::MAX_UNIX_SOCKET_PATH_BYTES`] — and `target/` is 37 bytes deep before
+    /// anything is joined to it on the checkout this was measured on:
+    ///
+    /// ```text
+    /// 41 bytes  /tmp/wchXXXXXXXX/webcam-handler/wchd.sock
+    /// 93 bytes  <checkout>/target/wch-scratch/wchXXXXXXXX/webcam-handler/wchd.sock
+    /// ```
+    ///
+    /// 93 fits, with fourteen bytes of headroom that belong to *where somebody cloned this
+    /// repository* rather than to anything in this file — and a suite whose verdict moves with
+    /// the checkout path is notes N52, N66 and N68 in a fourth dimension. What is bounded by a
+    /// kernel constant is kept on the shortest path available; the tmpfs the ruling was about
+    /// is not at risk from a socket and an empty directory. `scripts/gates/lib.sh`'s
+    /// `gate_socket_scratch_root` is the same decision for the shell gates that bind one, with
+    /// the measurement for their deeper paths (146 bytes against a bound of 107).
+    ///
+    /// The prefix is three characters for the other half of the same arithmetic: `$TMPDIR` is
+    /// not always `/tmp` — `scripts/mutants.sh` exports a build root through it — so a chatty
+    /// prefix would turn a socket test into an `ENAMETOOLONG` nobody expected. What reclaims
+    /// one of these after a `kill -9` is `gate_scratch_sweep`, which sweeps this root too.
     ///
     /// # Errors
     ///
@@ -118,6 +169,7 @@ impl TempRuntimeDir {
     pub fn new() -> Result<TempRuntimeDir> {
         let dir = tempfile::Builder::new()
             .prefix("wch")
+            // wch-scratch-exempt: a socket lives here and `sun_path` is 107 bytes; see above
             .tempdir()
             .map_err(|err| Error::StorageIo {
                 path: "$TMPDIR".into(),

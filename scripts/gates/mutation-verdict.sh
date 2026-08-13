@@ -90,7 +90,7 @@ if [[ ! -f "$accepted_file" ]]; then
 fi
 gate_note "driving $floor and $phase_runner"
 
-scratch="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-mutation-verdict.XXXXXXXX")"
+scratch="$(mktemp -d "$(gate_scratch_root)/wch-mutation-verdict.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 # ------------------------------------------------------------------ the fixtures

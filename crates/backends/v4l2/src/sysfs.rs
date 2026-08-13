@@ -267,7 +267,7 @@ mod tests {
 
     impl FakeSysfs {
         fn new() -> FakeSysfs {
-            let dir = tempfile::tempdir().expect("temp dir");
+            let dir = engine::paths::scratch_dir().expect("a scratch directory");
             let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("utf-8 temp dir");
             std::fs::create_dir_all(root.join("class").as_std_path()).expect("class dir");
             FakeSysfs { _dir: dir, root }
@@ -468,7 +468,7 @@ mod tests {
 
     /// Build a `/sys/bus/usb/devices`-shaped directory.
     fn usb_tree(interfaces: &[(&str, &str, bool)]) -> (tempfile::TempDir, Utf8PathBuf) {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = engine::paths::scratch_dir().expect("a scratch directory");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("utf-8 temp dir");
         for (name, class, bound) in interfaces {
             let iface = root.join(name);

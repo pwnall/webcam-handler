@@ -167,7 +167,7 @@ fail_case_the_openrpc_document_is_emitted_but_not_committed() {
 _emitter_without_the_openrpc_document() {
     local root script
     root="$(gate_root)"
-    script="$(mktemp "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-emitter.XXXXXXXX")"
+    script="$(mktemp "$(gate_scratch_root)/wch-emitter.XXXXXXXX")"
     cat >"$script" <<SH
 #!/usr/bin/env bash
 set -euo pipefail

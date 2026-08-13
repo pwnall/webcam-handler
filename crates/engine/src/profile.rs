@@ -413,7 +413,7 @@ mod tests {
         // T3's round trip through the one reader both composition roots use. The document
         // is produced by `capture` rather than written out by hand, so this cannot drift
         // from the shape the tool actually writes.
-        let dir = tempfile::tempdir().expect("a temporary directory");
+        let dir = crate::paths::scratch_dir().expect("a scratch directory");
         let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("profile.json"))
             .expect("a UTF-8 temporary directory");
         let captured =

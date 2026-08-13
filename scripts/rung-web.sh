@@ -25,10 +25,19 @@ set -euo pipefail
 # `binary(web_browser)` is how nextest spells "that target".
 selection='package(webcam-handler-daemon) and binary(web_browser)'
 
+# Sourced for `gate_scratch_root` and nothing else, which is `scripts/mutants.sh`'s
+# arrangement and its reason: where temporary data goes is one decision (the 2026-08-12
+# ruling, note N84), and a runner that spelled it itself would be the twentieth copy of it.
+# This is not a gate predicate and it keeps its own `rung-web:` reporting vocabulary.
+#
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=gates/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gates/lib.sh"
+
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
-log="$(mktemp "${TMPDIR:-/tmp}/wch-rung-web.XXXXXXXX")"
+log="$(mktemp "$(gate_scratch_root)/wch-rung-web.XXXXXXXX")"
 trap 'rm -f "$log"' EXIT
 
 status=0
@@ -48,7 +57,7 @@ if ((status != 0)); then
     # saying "the rung failed" about that would be this script guessing. The trace is named
     # because it exists exactly when the browser was the thing that went red.
     printf 'rung-web: FAIL — nextest exited %s over %s; if the browser ran, its trace is under %s\n' \
-        "$status" "$selection" "$root/scratch/r1-web" >&2
+        "$status" "$selection" "$(gate_scratch_root)/r1-web" >&2
     exit "$status"
 fi
 

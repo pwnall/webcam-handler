@@ -86,7 +86,7 @@ fail_case_the_corpus_has_no_profile_to_replay() {
 # implementation" rather than N10's stub that agrees with its author.
 fail_case_a_calibrate_subverb_loses_its_validation_row() {
     local dir mutant
-    dir="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-json-rows.XXXXXXXX")"
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-json-rows.XXXXXXXX")"
     mutant="$dir/$(basename "$GATE")"
     cp "$(dirname "$GATE")/lib.sh" "$dir/lib.sh"
     # One row, named rather than positional, so a reordering of the table does not silently
