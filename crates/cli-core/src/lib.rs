@@ -625,6 +625,11 @@ impl StreamArgs {
             height: self.size.map(|s| s.height),
             interval: None,
             buffer_count: schema::limits::DEFAULT_BUFFER_COUNT,
+            // Not a command-line flag and deliberately not one: D5's 2026-08-13 amendment
+            // derives it from where the photo is going, and `PhotoRequest::stream_for_sink`
+            // is the one place that happens — for `wchc` as much as for `wch`, since the
+            // derivation runs where the photo is taken rather than where it is typed.
+            sink_fidelity: schema::camera::SinkFidelity::default(),
         }
     }
 }

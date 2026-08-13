@@ -54,6 +54,7 @@ names its source, so a reviewer can check the absorption against the record:
 | The PF registry runs PF:1–16; PF:13–16 were measured during implementation | §1.2 | notes |
 | Testing exercises every control by default, motors included; `WCH_NO_MOTION=1` is the opt-out, and the product's `--allow-motion` posture is unchanged | §5 | owner ruling, 2026-08-08 |
 | The TCP bearer token is required for the two resources that carry or drive the camera — the WS JSON-RPC endpoint and the MJPEG preview — and **not** for the static assets, which are this project's own open-source code; served responses carry `Referrer-Policy: no-referrer`. The bind × token matrix and its reasoning are unchanged | D11, §2.7 | owner ruling, 2026-08-12 (N82) |
+| An unspecified stream request resolves by re-ranking the device's formats — most pixels first, less lossy second, the driver's enumeration order demoted to the last tiebreak — with the lossiness tiebreak coupled to the sink; an explicit request and the negotiated-result reporting are unchanged | D5 | owner ruling, 2026-08-13 (N85, PF:26) |
 
 ## TL;DR
 
@@ -406,6 +407,59 @@ exactly, and answering 1920×1080 "as an adjustment" would be false [notes, E4].
 the taken frame is copied out at `bytesused` and the stream torn down. Capture never
 re-encodes what it doesn't have to: an MJPG frame destined for a `.jpg` sink is written
 verbatim (E6).
+
+**Amended (owner ruling, 2026-08-13): an unspecified request is resolved by *re-ranking*
+the device's formats, not by taking the one the driver enumerated first.** The ruling:
+*"Let's re-rank the formats offered by the device and ignore the ordering. Our intended
+usage benefits from higher-quality photos, even if they cost more bandwidth or latency. So,
+let's re-rank — higher-resolution formats are preferred to lower-resolution formats, and
+less lossy encodings are preferred to more lossy encodings."*
+
+What it overturns was argued and the argument was sound: `StreamRequest::choose` took the
+device's first format at its first size entry's maximum, because "the order
+`VIDIOC_ENUM_FMT` returns is the driver's own preference, and second-guessing it is how a
+tool ends up defaulting to a mode the camera is worse at". **PF:26** is the measurement that
+charges for it. The BRIO enumerates YUYV first at 640×480, so the default photograph was a
+re-encoded VGA from a camera offering verbatim 4096×2160 — 3.5% of its pixels — and the Dell
+did the same with NV12; across five cameras only two delivered the camera's own bytes by
+default. That is not a flaw in the old argument. It is a consumer the old argument did not
+know about: the Expected-usage statement of 2026-08-12 named an agent that diffs photographs
+of a device under test, and against *that* consumer a driver's idea of its own preferred
+mode is not evidence about which photograph is better.
+
+The rule, whose one home stays `StreamRequest::choose` and its `rank_formats`. **Resolution
+is the primary key and lossiness the tiebreak** — the ruling's sentence admits the other
+reading and this is the reading taken. A format's resolution is the largest its size list
+offers, and the chosen format is then streamed at that size rather than at its first entry,
+which is the same defect one level down. Two keys sit outside the ruling's own wording and
+both are stated rather than smuggled: a format whose size entries this build cannot
+interpret loses to one it can, and **a FourCC this build has never heard of ranks behind
+every one it can name, ahead of resolution** — a format `imaging::decode` cannot decode
+yields no photograph at all, only `FormatUnsupported`, and the ruling is about which
+photograph is better. It is ranked rather than filtered, so a device offering nothing else
+still resolves. Last of all comes the driver's enumeration order: D5's original rule is not
+deleted, it is demoted to the tiebreak of last resort, where it still makes the answer a
+function of the device rather than of iteration order.
+
+**The tiebreak is coupled to the sink, and that is the ruling's one open question answered.**
+No camera in `corpus/` offers an uncompressed format at the same maximum as a compressed one,
+but a device that did would have "less lossy" pick the uncompressed one — which must then be
+*encoded*, losing the camera's own bytes on the very sink that could have carried them. So
+lossiness is measured over the whole path from sensor to file: into a JPEG sink a compressed
+format wins, because it arrives byte for byte (E6) while the uncompressed candidate would be
+run through our encoder and acquire artefacts the camera's own encoder did not make; into a
+PNG or PPM sink the uncompressed format wins, because that sink adds no loss and the
+compressed candidate arrives already quantised. `SinkFidelity` is the one bit that says
+which, `PhotoRequest::stream_for_sink` is the one place it is derived, and the chooser's
+answer carries a `ChoiceReason` naming the rule that fired.
+
+Everything else in D5 is untouched, and two things deliberately so. **An explicit request
+still wins**: a caller that names a format and a size gets them or a typed refusal, and the
+ranking is only for the request that named neither. And the **negotiated result is still
+reported whenever it differs from what was asked** — the ranking chooses, `NegotiatedStream`
+and `Adjustment` describe, and the ruling moves the first without touching the second. Note
+**N85** records the ruling, what the five committed profiles default to before and after, and
+what would retire it.
 
 **D6 — Photo outputs.** Supported source formats, stated closed: MJPG, YUYV, GREY (the
 Chicony IR camera is a seed corpus device — grayscale is not optional), and NV12 (the

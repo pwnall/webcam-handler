@@ -17,8 +17,9 @@
 //! suite that measures this machine's JPEG encoder rather than this daemon's fan-out.
 //!
 //! So the profile is doctored, in the licence `support/fixture.rs`'s own `replaying`
-//! constructor states: **a field is rewritten into a shape a device really exhibits.** 160×120
-//! MJPG is a mode real webcams offer, and it makes every frame in this file a few kilobytes.
+//! constructor states: **a field is rewritten into a shape a device really exhibits.** 320×240
+//! MJPG over 160×120 YUYV is a shape real webcams have, and it makes every frame in this file
+//! a few kilobytes.
 //! Note **N49** is the other half of the reason this is local rather than shared: a
 //! `#[path]`-included module is compiled into every binary that includes it, so joining the
 //! shared fixture would mean using every item in it.
@@ -271,27 +272,38 @@ fn secret(serving: &http::Serving) -> String {
         .expect("D11's default cell publishes a token")
 }
 
-/// The committed profile with its MJPEG modes rewritten small.
+/// The committed profile with its modes rewritten small, MJPEG still on top.
 ///
-/// A rewrite rather than a second committed document, and only into a shape a device really
-/// has: 160×120 at 30 fps is an ordinary webcam mode. What it buys is that every frame in this
-/// file is kilobytes rather than a quarter-megapixel render, so the suite exercises the daemon
-/// rather than the fake's JPEG encoder. The YUYV entry is left exactly as it was, because a
-/// camera that offers only one format is not the shape \[PF:9\] records.
+/// A rewrite rather than a second committed document, and only into shapes a device really
+/// has: 320×240 MJPG and 160×120 YUYV at 30 fps are ordinary webcam modes. What it buys is
+/// that every frame in this file is kilobytes rather than a quarter-megapixel render, so the
+/// suite exercises the daemon rather than the fake's JPEG encoder.
+///
+/// **Both formats are rewritten, and that is D5's 2026-08-13 amendment showing through.**
+/// Until the owner re-ranked the format tree this function shrank MJPG alone and left YUYV at
+/// 640×480, because the default landed on MJPG for being *enumerated first* whatever its
+/// sizes said. Under the re-ranking a camera whose compressed format is its smallest is a
+/// camera whose best photograph is uncompressed — correctly — so the fixture stopped being
+/// the device these tests describe and started failing them on the verbatim claim. The shape
+/// is unchanged in the way that matters: MJPG still tops out above YUYV, which is what
+/// \[PF:9\] records and why sizes nest under formats at all.
 fn small_mjpeg_camera() -> schema::profile::DeviceProfile {
+    fn only(width: u32, height: u32) -> Vec<FrameSizeInfo> {
+        vec![FrameSizeInfo {
+            size: FrameSize::Discrete { width, height },
+            intervals: vec![FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30,
+            }],
+        }]
+    }
+
     let mut profile = testkit::fixtures::synthetic_basic();
     for format in &mut profile.invariant.formats {
         if format.pixel_format == PixelFormat::MJPG {
-            format.sizes = vec![FrameSizeInfo {
-                size: FrameSize::Discrete {
-                    width: 160,
-                    height: 120,
-                },
-                intervals: vec![FrameInterval::Discrete {
-                    numerator: 1,
-                    denominator: 30,
-                }],
-            }];
+            format.sizes = only(320, 240);
+        } else if format.pixel_format == PixelFormat::YUYV {
+            format.sizes = only(160, 120);
         }
     }
     profile

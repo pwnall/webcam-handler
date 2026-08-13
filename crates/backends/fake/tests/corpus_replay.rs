@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fake::FakeBackend;
 use schema::backend::CameraBackend;
-use schema::camera::{NodeKind, PixelFormat};
+use schema::camera::{NodeKind, PixelFormat, SinkFidelity};
+use schema::capture::{ChoiceReason, StreamRequest};
 use schema::control::{ControlType, ControlValue, KnownFlag};
 use schema::profile::DeviceProfile;
 use testkit::battery::{self, BatteryArm};
@@ -563,4 +564,190 @@ fn the_greyscale_camera_is_in_the_corpus_because_grayscale_is_not_optional() {
         "no committed profile offers greyscale only; D6's grayscale path would have no \
          device-shaped fixture"
     );
+}
+
+/// What an unspecified request resolves to on each committed profile, after the owner's
+/// re-ranking ruling of 2026-08-13 (design D5's amendment, note **N85**).
+///
+/// A table rather than five tests, so a profile added to the corpus without a row here
+/// fails the walk below rather than sliding in unmeasured. Each row is
+/// `(file stem, fourcc, width, height)` and every one of them is the profile's **largest**
+/// mode — which is the ruling, checked against the documents it was ruled on rather than
+/// against the summary somebody typed into a note.
+///
+/// The `before` column is not here because it is not a fact about the corpus: it is what
+/// the *previous* rule would have answered, and it lives in N85 where the comparison
+/// belongs. What this table pins is the answer this build gives.
+const RANKED_DEFAULT: &[(&str, [u8; 4], u32, u32)] = &[
+    ("chicony-ir", *b"GREY", 640, 360),
+    ("chicony-rgb", *b"MJPG", 2592, 1944),
+    ("dell-u3224kb", *b"MJPG", 3840, 2160),
+    ("logitech-brio", *b"MJPG", 4096, 2160),
+    ("obsbot-tiny3", *b"MJPG", 1920, 1440),
+];
+
+#[test]
+fn every_committed_profile_resolves_an_unspecified_request_to_its_largest_mode() {
+    // The ruling, run over the five real format trees this project has captured. The
+    // chooser is a pure function over values — no device, no I/O — so the documents go
+    // through it directly and the answer is the one `wch photo` with no flags would get.
+    let profiles = corpus::load_all().expect("the corpus parses");
+    assert!(!profiles.is_empty(), "the corpus is empty");
+    let mut seen = BTreeSet::new();
+
+    for (path, profile) in &profiles {
+        let stem = path
+            .file_stem()
+            .expect("a committed profile is a named file");
+        let (_, fourcc, width, height) = RANKED_DEFAULT
+            .iter()
+            .find(|(name, ..)| *name == stem)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{stem} is in the corpus and not in RANKED_DEFAULT: a new device is a \
+                     new answer to what an unspecified photo request means, and it has to \
+                     be stated rather than discovered"
+                )
+            });
+        seen.insert(stem);
+
+        let chosen = StreamRequest::default()
+            .choose(&profile.invariant.formats)
+            .unwrap_or_else(|| panic!("{stem} offers no format with a readable size"));
+        assert_eq!(
+            (chosen.pixel_format, chosen.width, chosen.height),
+            (PixelFormat(*fourcc), *width, *height),
+            "{stem}"
+        );
+
+        // ... and it really is the device's largest mode, derived from the document rather
+        // than transcribed into the table above: a row that agreed with the chooser and
+        // disagreed with the camera would pin a shared mistake.
+        let largest = profile
+            .invariant
+            .formats
+            .iter()
+            .flat_map(|format| format.sizes.iter())
+            .filter_map(|entry| entry.size.max_dimensions())
+            .map(|(w, h)| u64::from(w) * u64::from(h))
+            .max()
+            .expect("a captured camera offers at least one readable size");
+        assert_eq!(
+            u64::from(chosen.width) * u64::from(chosen.height),
+            largest,
+            "{stem}: the chosen mode is not the largest the device enumerates"
+        );
+    }
+
+    let missing: Vec<&str> = RANKED_DEFAULT
+        .iter()
+        .map(|(name, ..)| *name)
+        .filter(|name| !seen.contains(name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "RANKED_DEFAULT names profiles the corpus does not hold: {missing:?}"
+    );
+}
+
+#[test]
+fn the_ruling_costs_nothing_on_the_hardware_this_project_has_met() {
+    // The claim that makes the re-ranking cheap to adopt, measured rather than asserted:
+    // on every camera in the corpus the highest-resolution format is *also* the compressed
+    // one, so resolution-first and AGENTS' "verbatim camera JPEG when the sink allows"
+    // agree everywhere there is evidence. The interesting cases — a tie between a
+    // compressed and an uncompressed format at one resolution — are hypothetical, which is
+    // why they are argued in `schema::capture`'s unit tests over fixtures and here only as
+    // an absence.
+    //
+    // The Chicony IR sensor is the honest exception and it is named: it has no compressed
+    // format at all, so there is nothing for the ruling to prefer.
+    let profiles = corpus::load_all().expect("the corpus parses");
+    let mut without_compressed = Vec::new();
+
+    for (path, profile) in &profiles {
+        let stem = path.file_stem().expect("a named file");
+        let chosen = StreamRequest::default()
+            .choose(&profile.invariant.formats)
+            .unwrap_or_else(|| panic!("{stem} offers no format with a readable size"));
+        let offers_compressed = profile
+            .invariant
+            .formats
+            .iter()
+            .any(|format| format.pixel_format.is_compressed());
+        if offers_compressed {
+            assert!(
+                chosen.pixel_format.is_compressed(),
+                "{stem}: the ranking chose {} on a camera that also offers a compressed \
+                 format — the ruling and E6's verbatim path disagree here and the \
+                 disagreement is not recorded anywhere",
+                chosen.pixel_format
+            );
+        } else {
+            without_compressed.push(stem);
+        }
+    }
+
+    assert_eq!(
+        without_compressed,
+        vec!["chicony-ir"],
+        "the set of cameras with no compressed format at all has changed; PF:26's \
+         reading of the corpus and N85's cost estimate both rest on it"
+    );
+}
+
+#[test]
+fn the_dells_two_uncompressed_formats_tie_and_the_less_subsampled_one_wins() {
+    // The tiebreak, on the one real device that exercises it. NV12 and YUYV stop at the
+    // same 1920×1080 in `corpus/profiles/dell-u3224kb.json`, so the ruling's primary key
+    // cannot separate them; 4:2:0 keeps a quarter of the chroma where 4:2:2 keeps half.
+    //
+    // MJPG is filtered out rather than absent, because on the whole tree it wins outright
+    // on resolution and the tie would never be reached — which is itself worth stating:
+    // this pair is a fact about the device that the *default* never has to decide.
+    let (_, dell) = corpus::load_all()
+        .expect("the corpus parses")
+        .into_iter()
+        .find(|(path, _)| path.file_stem() == Some("dell-u3224kb"))
+        .expect("the Dell U3224KB/A is in the corpus");
+
+    let uncompressed: Vec<_> = dell
+        .invariant
+        .formats
+        .iter()
+        .filter(|format| !format.pixel_format.is_compressed())
+        .cloned()
+        .collect();
+    assert_eq!(
+        uncompressed.len(),
+        2,
+        "the Dell's uncompressed pair is NV12 and YUYV"
+    );
+    let maxima: BTreeSet<u64> = uncompressed
+        .iter()
+        .map(|format| {
+            format
+                .sizes
+                .iter()
+                .filter_map(|entry| entry.size.max_dimensions())
+                .map(|(w, h)| u64::from(w) * u64::from(h))
+                .max()
+                .expect("a captured format offers a readable size")
+        })
+        .collect();
+    assert_eq!(maxima.len(), 1, "the pair no longer ties on resolution");
+
+    for sink in [
+        SinkFidelity::PassesCompressedThrough,
+        SinkFidelity::EncodesLosslessly,
+    ] {
+        let (winner, reason) =
+            schema::capture::rank_formats(&uncompressed, sink).expect("two candidates");
+        assert_eq!(winner.pixel_format, PixelFormat::YUYV, "{sink:?}");
+        assert_eq!(
+            reason,
+            ChoiceReason::LeastLossyOfTheLargest { sink },
+            "{sink:?}: the answer does not name the rule that decided it"
+        );
+    }
 }

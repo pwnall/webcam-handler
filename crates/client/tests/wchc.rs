@@ -451,6 +451,7 @@ fn a_sweep_delivers_its_progress_while_the_call_it_belongs_to_is_still_in_flight
                     height: None,
                     interval: None,
                     buffer_count: schema::limits::DEFAULT_BUFFER_COUNT,
+                    ..StreamRequest::default()
                 },
                 settle: SettlePolicy::default(),
                 photo_format: PhotoFormat::Jpeg,

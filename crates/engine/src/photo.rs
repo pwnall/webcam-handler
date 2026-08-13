@@ -245,6 +245,13 @@ pub fn take(
             gap: None,
         };
     }
+    // The same sink, asked the *other* question it can answer: whether it can carry the
+    // camera's own bitstream. D5's 2026-08-13 amendment ranks two formats tied on
+    // resolution by how much of the sensor's output survives the whole path to the file,
+    // and that path ends here — `PhotoRequest::stream_for_sink` is the one place the two
+    // halves of this request meet, and it is deliberately below the refusal above so a
+    // request nobody was going to honour never gets as far as choosing a mode for it.
+    let stream = request.stream_for_sink();
     // Read *before* the stream starts. A control read is an ioctl on the same fd, and the
     // values that describe a photo are the ones in effect when it was taken — asking
     // after the frame would report values a caller could have changed in between. It is
@@ -253,7 +260,7 @@ pub fn take(
     let controls = controls_in_effect(camera);
     let (captured, gap) =
         crate::preview::while_suspended(&mut *camera, request.settle.deadline_ms, |camera| {
-            capture::grab(camera, &request.stream, request.settle, clock)
+            capture::grab(camera, &stream, request.settle, clock)
         });
     let outcome = captured
         .and_then(|captured| from_capture(camera, &captured, request, destination, controls, now));
@@ -444,6 +451,141 @@ mod tests {
             .id;
         let camera = backend.open(&id).expect("opens");
         (backend, camera)
+    }
+
+    /// The Chicony with its MJPG list trimmed to the one size its YUYV list also offers.
+    ///
+    /// A rewrite of a committed profile into a shape a device really has — most webcams
+    /// offer both formats at VGA — and it is the only way to reach the case D5's amendment
+    /// of 2026-08-13 had to decide: **a compressed and an uncompressed format tied at one
+    /// resolution.** No camera in `corpus/` has it, which is exactly why it is built here
+    /// rather than waited for; the ruling's primary key cannot separate the two and the
+    /// destination is what breaks the tie.
+    fn tied_formats_camera() -> Box<dyn Camera> {
+        use schema::camera::{FrameSize, PixelFormat};
+
+        let mut profile = testkit::corpus::load("chicony-rgb").expect("a committed profile");
+        for format in &mut profile.invariant.formats {
+            if format.pixel_format == PixelFormat::MJPG {
+                format.sizes.retain(|entry| {
+                    entry.size
+                        == FrameSize::Discrete {
+                            width: 640,
+                            height: 480,
+                        }
+                });
+            }
+        }
+        let maxima: Vec<(PixelFormat, Option<(u32, u32)>)> = profile
+            .invariant
+            .formats
+            .iter()
+            .map(|format| {
+                (
+                    format.pixel_format,
+                    format
+                        .sizes
+                        .iter()
+                        .filter_map(|entry| entry.size.max_dimensions())
+                        .max_by_key(|(w, h)| u64::from(*w) * u64::from(*h)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            maxima,
+            vec![
+                (PixelFormat::MJPG, Some((640, 480))),
+                (PixelFormat::YUYV, Some((640, 480))),
+            ],
+            "the fixture stopped being a tie, so the tests below stopped being about one"
+        );
+
+        let backend = std::sync::Arc::new(FakeBackend::from_profile(profile).expect("replays"));
+        let id = backend
+            .enumerate()
+            .expect("enumerate")
+            .into_iter()
+            .next()
+            .expect("one camera")
+            .id;
+        backend.open(&id).expect("opens")
+    }
+
+    #[test]
+    fn a_tie_between_a_compressed_and_an_uncompressed_format_is_decided_by_the_sink() {
+        // **Question 2 of the owner's ruling, end to end** (note N85). "Less lossy" taken
+        // over the driver's buffer alone picks YUYV both times, which on a `.jpg` sink
+        // throws away the camera's own bitstream to hand our encoder a frame it had no
+        // reason to touch — Expected usage item 3's "a pipeline that silently re-encodes is
+        // a pipeline that fabricates evidence in a test". Taken over the whole path from
+        // sensor to file it picks the format that arrives least altered, which is a
+        // different format for each destination.
+        //
+        // The assertions are on `rendering`, so what is being checked is the bytes that
+        // landed rather than a field the chooser filled in.
+        let mut camera = tied_formats_camera();
+        let jpeg = take(
+            camera.as_mut(),
+            &request(
+                Sink::ReturnBytes {
+                    format: PhotoFormat::Jpeg,
+                },
+                Transform::None,
+            ),
+            &mut WhereverTheCallerSaid,
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        )
+        .outcome
+        .expect("takes a photo");
+        assert_eq!(
+            jpeg.report.rendering,
+            schema::capture::PhotoRendering::Verbatim {
+                source: PixelFormat::MJPG
+            },
+            "a JPEG sink that chose the uncompressed half of a tie would re-encode a frame \
+             the camera had already encoded"
+        );
+        assert!(jpeg.report.rendering.is_verbatim());
+
+        let mut camera = tied_formats_camera();
+        let png = take(
+            camera.as_mut(),
+            &request(
+                Sink::ReturnBytes {
+                    format: PhotoFormat::Png,
+                },
+                Transform::None,
+            ),
+            &mut WhereverTheCallerSaid,
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        )
+        .outcome
+        .expect("takes a photo");
+        assert_eq!(
+            png.report.rendering,
+            schema::capture::PhotoRendering::ConvertedAndEncoded {
+                source: PixelFormat::YUYV,
+                target: PhotoFormat::Png,
+            },
+            "a PNG sink encodes losslessly, so the source that never met the camera's \
+             quantiser is the one that reaches the file intact — choosing MJPG here would \
+             decode a lossy bitstream and write the loss into a lossless container"
+        );
+
+        // Same camera, same request but for the encoding, and the device was asked for two
+        // different modes. That difference is the whole of question 2's answer, and it is
+        // asserted rather than left to the two claims above to imply.
+        assert_ne!(
+            png.report.negotiated.pixel_format,
+            jpeg.report.negotiated.pixel_format
+        );
+        // Neither answer reports an adjustment: nothing was requested for either of them to
+        // differ from, and a default photo that read as negotiated-away would be a lie in
+        // every `--json` document (D5's reporting rule, untouched by the amendment).
+        assert!(jpeg.report.negotiated.is_exact());
+        assert!(png.report.negotiated.is_exact());
     }
 
     #[test]

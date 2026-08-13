@@ -906,6 +906,7 @@ mod tests {
                 height: None,
                 interval: None,
                 buffer_count: limits::DEFAULT_BUFFER_COUNT,
+                ..schema::capture::StreamRequest::default()
             },
             settle: schema::capture::SettlePolicy::default(),
             photo_format: schema::capture::PhotoFormat::Jpeg,

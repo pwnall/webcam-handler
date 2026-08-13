@@ -53,6 +53,7 @@ use engine::store::{LockProtocol, SessionStore, StoreLock, TempStore};
 use fake::{FakeBackend, Fault};
 use schema::ErrorKind;
 use schema::backend::{Camera, CameraBackend};
+use schema::capture::StreamRequest;
 use schema::control::ControlSlug;
 use schema::metrics::MetricName;
 use schema::progress::{CalibrationProgress, ProgressEvent};
@@ -66,6 +67,29 @@ use uuid::Uuid;
 /// [`the_fixture_declares_the_optimum_this_suite_states`] before anything asserts a sweep
 /// found it. See this module's header for why it is not read out of the fake.
 const FOCUS_OPTIMUM: i64 = 512;
+
+/// A sweep of `control` under `plan`, at a size this suite chose rather than one the camera
+/// did.
+///
+/// [`SweepRequest::new`] leaves the stream unspecified, and since D5's amendment of
+/// 2026-08-13 an unspecified stream resolves to the device's **largest** mode — 3840×2160 on
+/// this fixture, which the fake renders and JPEG-encodes in software once per sample. That
+/// is the right answer for a photograph of a device under test and thirty seconds of waste
+/// for a suite whose subject is the state machine, so every sweep here names a size instead.
+///
+/// Naming one is the documented way out rather than a workaround: an explicit request wins
+/// over the ranking, which is exactly the property `schema::capture`'s
+/// `an_explicit_request_beats_the_ranking_in_both_of_its_halves` pins.
+fn sweep_request(control: ControlSlug, plan: SweepSpec) -> SweepRequest {
+    SweepRequest {
+        stream: StreamRequest {
+            width: Some(640),
+            height: Some(480),
+            ..StreamRequest::default()
+        },
+        ..SweepRequest::new(control, plan)
+    }
+}
 
 /// The control the headline criterion sweeps.
 const FOCUS: &str = "focus_absolute";
@@ -212,7 +236,7 @@ fn a_scripted_session_calibrates_focus_at_the_optimum_the_fixture_declares() {
         &context(temp.store(), &lock, &clock, &recorder),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), five_across_focus()),
+        &sweep_request(control.clone(), five_across_focus()),
     )
     .expect("a willing camera and a writable store");
     assert_eq!(outcome.taken(), 5);
@@ -292,7 +316,7 @@ fn the_optimum_wins_and_every_other_sample_loses() {
         &context(temp.store(), &lock, &clock, &engine::progress::Silent),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), five_across_focus()),
+        &sweep_request(control.clone(), five_across_focus()),
     )
     .expect("a willing camera");
 
@@ -360,7 +384,7 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
         &context(temp.store(), &lock, &clock, &saboteur),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), five_across_focus()),
+        &sweep_request(control.clone(), five_across_focus()),
     )
     .expect_err("the camera disappears during the third sample");
     assert_eq!(
@@ -519,7 +543,7 @@ fn a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_aga
         &context(temp.store(), &lock, &clock, &Recorder::new()),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), five_across_focus()),
+        &sweep_request(control.clone(), five_across_focus()),
     )
     .expect_err("the camera disappears during the first sample");
     assert_eq!(
@@ -561,7 +585,7 @@ fn a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_aga
         &context(temp.store(), &lock, &clock, &Recorder::new()),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), five_across_focus()),
+        &sweep_request(control.clone(), five_across_focus()),
     )
     .expect("a control nothing was recorded against must be sweepable again");
     assert_eq!(outcome.taken(), 5);
@@ -607,7 +631,7 @@ fn a_refinement_pass_cannot_overwrite_the_frames_the_coarse_pass_scored() {
         &context(temp.store(), &lock, &clock, &Recorder::new()),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), five_across_focus()),
+        &sweep_request(control.clone(), five_across_focus()),
     )
     .expect("a willing camera");
     lifecycle::commit(
@@ -628,7 +652,7 @@ fn a_refinement_pass_cannot_overwrite_the_frames_the_coarse_pass_scored() {
         &context(temp.store(), &lock, &clock, &Recorder::new()),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(control.clone(), fine.clone()),
+        &sweep_request(control.clone(), fine.clone()),
     )
     .expect("a refinement pass is legal");
     assert!(
@@ -698,7 +722,7 @@ fn a_session_directory_relocates_as_a_unit_with_every_sample_photo_intact() {
         &context(temp.store(), &lock, &clock, &engine::progress::Silent),
         &mut session,
         camera.as_mut(),
-        &SweepRequest::new(
+        &sweep_request(
             control.clone(),
             SweepSpec::Explicit {
                 values: vec![0, 128, 255],

@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::slug::{Separator, slugify};
+use crate::vocabulary::closed_vocabulary;
 
 /// The name RPC calls and CLI arguments use: `cam:<card-slug>[-<n>]`.
 ///
@@ -574,6 +575,164 @@ impl fmt::Display for PixelFormat {
             }
         }
         Ok(())
+    }
+}
+
+/// How much of what the sensor produced a pixel format keeps (design D5, amended
+/// 2026-08-13).
+///
+/// **A fact about a format, not about a device**, which is why it lives here beside
+/// [`PixelFormat`] rather than in a backend: the same FourCC means the same thing on every
+/// camera, and a second copy of this table would let the fake and the hardware disagree
+/// about which of two modes is the better photograph.
+///
+/// The owner's ruling of 2026-08-13 asks for "less lossy encodings are preferred to more
+/// lossy encodings", and that sentence needs a scale to be a rule.
+/// [`StreamRequest::choose`](crate::capture::StreamRequest::choose) is the one consumer.
+///
+/// [`Lossiness::Unknown`] is AGENTS rule 6's fallback arm and it **carries its payload**:
+/// a FourCC this build has never heard of is data, not a surprise, and it is ranked rather
+/// than dropped — see [`Lossiness::rank_for`] for where it lands and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lossiness {
+    /// Every sample the sensor handed the driver, at full rate.
+    ///
+    /// `GREY` is this project's instance: an IR sensor's luma has no chroma to subsample
+    /// and no quantiser in front of it.
+    Lossless,
+    /// Luma at full rate, chroma at a fraction of it.
+    ///
+    /// The fraction is carried rather than named, because the two members of this class
+    /// this project has met differ *only* in it and the difference is the whole tiebreak:
+    /// `YUYV` is 4:2:2 and keeps half the chroma samples, `NV12` is 4:2:0 and keeps a
+    /// quarter [PF:26's Dell].
+    ChromaSubsampled {
+        /// Chroma samples kept, as a percentage of the luma rate: 50 for 4:2:2, 25 for
+        /// 4:2:0.
+        chroma_percent: u8,
+    },
+    /// A quantised bitstream — `MJPG` and `JPEG`, the two spellings of the same thing.
+    ///
+    /// Where this ranks depends on where the frames are going, which is the only place in
+    /// this vocabulary the destination gets a vote: see [`Lossiness::rank_for`].
+    Compressed,
+    /// A FourCC this build has never heard of, carried whole.
+    Unknown {
+        /// The four characters the driver enumerated, preserved exactly.
+        fourcc: PixelFormat,
+    },
+}
+
+closed_vocabulary! {
+    /// What the destination these frames are going to can do with them (design D5, amended
+    /// 2026-08-13).
+    ///
+    /// One bit, and it is the one bit the re-ranking's tiebreak cannot be written without.
+    /// Two formats tied on resolution are not tied on *fidelity to the device under test*,
+    /// and which of them wins inverts with the destination:
+    ///
+    /// - a JPEG destination takes an `MJPG` frame **byte for byte** (E6), so a compressed
+    ///   format is the only one that arrives with nothing this program did in it — and the
+    ///   uncompressed candidate would have to be run through our encoder, inserting exactly
+    ///   the artefacts Expected usage item 3 says fabricate evidence in a test;
+    /// - a PNG or PPM destination encodes losslessly whatever arrives, so an uncompressed
+    ///   format arrives with the sensor's own samples intact and the compressed candidate
+    ///   arrives having already been through the camera's quantiser.
+    ///
+    /// So "less lossy" is measured over the whole path from sensor to file rather than over
+    /// the driver's buffer alone, and that is what makes one rule out of two answers. The
+    /// two answers are a closed vocabulary with an `ALL`, so a test walks the destinations
+    /// rather than naming the ones it remembers. The map from a
+    /// [`PhotoFormat`](crate::capture::PhotoFormat) to one of these lives beside the
+    /// encodings it reads rather than here.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum SinkFidelity {
+        /// A JPEG file, an MJPEG preview, an MJPEG-in-AVI recording: a camera bitstream
+        /// reaches it unmodified.
+        ///
+        /// The default, because it is what every destination in this build that can carry
+        /// a camera's own bytes is, and because it is the answer that never adds an encode
+        /// the camera did not already perform.
+        #[default]
+        PassesCompressedThrough,
+        /// A PNG or PPM file: whatever pixels arrive are written without further loss, and
+        /// a compressed frame has to be decoded to get there.
+        EncodesLosslessly,
+    }
+}
+
+impl Lossiness {
+    /// Classify a FourCC.
+    ///
+    /// The five arms are the five formats [`PixelFormat`] names, which are also exactly
+    /// the five `imaging::decode::SourceFormat` can turn into pixels (design D6 closes that
+    /// set). That coincidence is load-bearing rather than lucky — the ranking below sorts
+    /// what it cannot classify to the back precisely because it cannot decode it either —
+    /// so `imaging` asserts it from its own side rather than leaving it to be noticed.
+    #[must_use]
+    pub fn of(format: PixelFormat) -> Self {
+        match format {
+            PixelFormat::MJPG | PixelFormat::JPEG => Lossiness::Compressed,
+            PixelFormat::YUYV => Lossiness::ChromaSubsampled { chroma_percent: 50 },
+            PixelFormat::NV12 => Lossiness::ChromaSubsampled { chroma_percent: 25 },
+            PixelFormat::GREY => Lossiness::Lossless,
+            // AGENTS rule 6: a `match` on device vocabulary has a payload-carrying
+            // fallback arm. The FourCC comes back out, so a caller — or a panic message
+            // that never happens — can say *which* format it was.
+            other => Lossiness::Unknown { fourcc: other },
+        }
+    }
+
+    /// Where this sits on the preference scale for a given destination: **higher keeps
+    /// more of what the sensor produced**, once the destination has had its say.
+    ///
+    /// The pair is `(class, chroma)`. The second half only ever discriminates *within*
+    /// [`Lossiness::ChromaSubsampled`] — two members of any other class have the same
+    /// class rank and the same filler — which is what lets one comparable value order both
+    /// "4:2:2 beats 4:2:0" and "compressed beats subsampled, or does not, depending on
+    /// where these frames are going".
+    ///
+    /// [`Lossiness::Unknown`] ranks **last in both columns**, and not because an
+    /// unrecognised format is bad: it is because nothing here can say it is good. A format
+    /// this build cannot classify is a format `imaging::decode` cannot decode, so
+    /// preferring it would trade a photograph for a
+    /// [`FormatUnsupported`](crate::Error::FormatUnsupported) — and the ruling is about
+    /// which photograph is better, not which mode number is biggest. It is ranked rather
+    /// than filtered so that a device offering nothing else still resolves to something
+    /// deterministic instead of to `None`.
+    ///
+    /// The match is over both vocabularies at once so the compiler owns the table: a sixth
+    /// format or a third destination cannot be added without an arm here.
+    #[must_use]
+    pub const fn rank_for(self, sink: SinkFidelity) -> (u8, u8) {
+        /// The filler for the classes where chroma does not discriminate.
+        const WHOLE: u8 = 100;
+        match (self, sink) {
+            (Lossiness::Unknown { .. }, _) => (0, 0),
+            // The verbatim path (E6): nothing this program did is in the answer.
+            (Lossiness::Compressed, SinkFidelity::PassesCompressedThrough) => (3, WHOLE),
+            (Lossiness::Lossless, SinkFidelity::PassesCompressedThrough) => (2, WHOLE),
+            (
+                Lossiness::ChromaSubsampled { chroma_percent },
+                SinkFidelity::PassesCompressedThrough,
+            ) => (1, chroma_percent),
+            // The lossless-encode path: the camera's quantiser is the only loss that
+            // cannot be undone, so the format that never met one wins.
+            (Lossiness::Lossless, SinkFidelity::EncodesLosslessly) => (3, WHOLE),
+            (Lossiness::ChromaSubsampled { chroma_percent }, SinkFidelity::EncodesLosslessly) => {
+                (2, chroma_percent)
+            }
+            (Lossiness::Compressed, SinkFidelity::EncodesLosslessly) => (1, WHOLE),
+        }
+    }
+
+    /// Whether this build could name the format at all.
+    ///
+    /// The ranking's first question, ahead of resolution — see [`Lossiness::rank_for`] for
+    /// the argument.
+    #[must_use]
+    pub const fn is_named(self) -> bool {
+        !matches!(self, Lossiness::Unknown { .. })
     }
 }
 

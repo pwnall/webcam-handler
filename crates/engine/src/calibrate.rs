@@ -53,6 +53,7 @@
 //! story; a second door here would be a second chance to get that ordering wrong.
 
 use schema::backend::Camera;
+use schema::camera::SinkFidelity;
 use schema::capture::{PhotoRequest, Sink, Transform};
 use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::pairing::AutomationPair;
@@ -373,7 +374,16 @@ fn one_sample(
     // are the values the photo is *of*, and reading them afterwards would report whatever
     // the device holds by then.
     let controls = photo::controls_in_effect(camera);
-    let captured = capture::grab(camera, &step.request.stream, step.request.settle, clock)?;
+    // The sweep's samples are written in one encoding for the whole session, so the format
+    // ranking is told what that encoding can carry exactly as `photo::take` tells it (D5's
+    // 2026-08-13 amendment). A sweep whose choice of mode differed from the photo verb's
+    // would produce samples nobody could reproduce with `wch photo` afterwards, which is the
+    // same reason `StreamArgs` is one declaration flattened into both verbs.
+    let stream_request = step
+        .request
+        .stream
+        .for_sink(SinkFidelity::of(step.request.photo_format));
+    let captured = capture::grab(camera, &stream_request, step.request.settle, clock)?;
 
     // The frame that is scored is the frame that is stored. One decode, from the frame the
     // device just delivered — not from the file, which on the verbatim path is the same
@@ -523,6 +533,26 @@ mod tests {
     use testkit::fixtures;
 
     use super::*;
+
+    /// A sweep of `control` under `plan`, at a size this module chose rather than one the
+    /// camera did.
+    ///
+    /// [`SweepRequest::new`] leaves the stream unspecified, and since D5's amendment of
+    /// 2026-08-13 that resolves to the device's **largest** mode — 3840×2160 on the
+    /// synthetic fixture, rendered and JPEG-encoded in software once per sample. These
+    /// tests are about the order of a sweep's steps, so they name a size and pay for
+    /// 640×480. An explicit request wins over the ranking by design, which is what makes
+    /// this a use of the mechanism rather than a way around it.
+    fn sweep_request(control: ControlSlug, plan: SweepSpec) -> SweepRequest {
+        SweepRequest {
+            stream: schema::capture::StreamRequest {
+                width: Some(640),
+                height: Some(480),
+                ..schema::capture::StreamRequest::default()
+            },
+            ..SweepRequest::new(control, plan)
+        }
+    }
     use crate::lifecycle::SessionSpec;
     use crate::progress::{Recorder, Silent};
     use crate::settle::FrozenClock;
@@ -646,7 +676,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(control.clone(), five_across_focus()),
+            &sweep_request(control.clone(), five_across_focus()),
         )
         .expect("a willing camera and a writable store");
 
@@ -700,7 +730,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(
+            &sweep_request(
                 control.clone(),
                 SweepSpec::Explicit {
                     values: vec![0, 128, 255],
@@ -765,7 +795,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(
+            &sweep_request(
                 control.clone(),
                 SweepSpec::Explicit {
                     values: vec![0, 255],
@@ -835,7 +865,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(
+            &sweep_request(
                 control.clone(),
                 SweepSpec::Explicit {
                     values: vec![2_800, 6_500],
@@ -866,7 +896,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut unguarded,
             fresh.as_mut(),
-            &SweepRequest::new(
+            &sweep_request(
                 control,
                 SweepSpec::Explicit {
                     values: vec![2_800],
@@ -989,7 +1019,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(control.clone(), SweepSpec::Explicit { values: vec![255] }),
+            &sweep_request(control.clone(), SweepSpec::Explicit { values: vec![255] }),
         )
         .expect("a willing camera");
         let settled_luma = outcome.samples[0].metrics[&MetricName::MeanLuma];
@@ -1024,7 +1054,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(
+            &sweep_request(
                 control,
                 SweepSpec::Explicit {
                     values: vec![0, 128, 255],
@@ -1060,7 +1090,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(control.clone(), SweepSpec::All),
+            &sweep_request(control.clone(), SweepSpec::All),
         )
         .expect_err("a compound control has no ordered range to walk");
         assert_eq!(error.kind(), ErrorKind::IllegalTransition);
@@ -1086,7 +1116,7 @@ mod tests {
             &context(&temp, &lock, &clock, &Silent),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(control, SweepSpec::All),
+            &sweep_request(control, SweepSpec::All),
         )
         .expect_err("no such control");
         assert_eq!(error.kind(), ErrorKind::ControlUnknown);
@@ -1113,7 +1143,7 @@ mod tests {
             &context(&temp, &lock, &clock, &recorder),
             &mut session,
             camera.as_mut(),
-            &SweepRequest::new(
+            &sweep_request(
                 control.clone(),
                 SweepSpec::Explicit {
                     values: vec![0, 128],

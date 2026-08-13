@@ -11463,6 +11463,14 @@ to be zero, and that the two cameras it costs the most are the two **4K** ones.
 the default's argument false in the other direction (a driver listing a mode it is *worse* at
 first), which is the case that argument was written against and which nothing here has seen.
 
+**Acted on (owner ruling, 2026-08-13; note N85):** the first of those two conditions is met —
+D5's default is re-ranked and this entry is the measurement that forced it. The entry is **not**
+retired, because nothing here has been disproved: the BRIO still enumerates YUYV first at 640×480
+and the Dell still starts at NV12, and those two facts are what a reader of N85 needs in order to
+believe it. What is no longer current is the closing paragraph's "nothing is changed"; the table of
+what each camera now defaults to is in N85, and the second retirement condition above is unchanged
+and still unmet.
+
 **Corpus:** `corpus/profiles/logitech-brio.json`, captured 2026-08-12 by `wch profile capture`
 against `cam:logitech-brio` before any write, replayed by
 `every_committed_profile_replays_through_the_conformance_battery` on the corpus walk.
@@ -12270,3 +12278,229 @@ ever becomes reachable from a checkout path deep enough that even `/tmp` does no
 answer then is an abstract socket or a `/run/user/<uid>` directory, not a shorter prefix — or if
 `target/` stops being a directory this project may write to, which would be cargo changing what a
 build directory is.
+
+---
+
+## N85 — The formats are re-ranked and the driver's enumeration order is demoted to the last tiebreak, with the lossiness tiebreak coupled to the sink
+
+**The ruling (owner, 2026-08-13),** in answer to \[PF:26\]:
+
+> "Let's re-rank the formats offered by the device and ignore the ordering. Our intended usage
+> benefits from higher-quality photos, even if they cost more bandwidth or latency. So, let's
+> re-rank — higher-resolution formats are preferred to lower-resolution formats, and less lossy
+> encodings are preferred to more lossy encodings."
+
+**Doc:** design **D5** says format negotiation "prefers the requested format/resolution/rate", and
+`StreamRequest::choose` implemented the unspecified case as *the device's first enumerated format
+at its first size entry's maximum*, arguing: "the order `VIDIOC_ENUM_FMT` returns is the driver's
+own preference, and second-guessing it is how a tool ends up defaulting to a mode the camera is
+worse at."
+
+**Repo:** `schema::camera` gains `Lossiness` and `SinkFidelity`; `schema::capture` gains
+`rank_formats`, `ChoiceReason`, `ChosenFormat::reason`, `StreamRequest::sink_fidelity`,
+`StreamRequest::for_sink` and `PhotoRequest::stream_for_sink`; `engine::photo::take` and
+`engine::calibrate` derive the sink's answer before the request reaches a device. D5 is amended in
+the design, in the design's voice, with the amendment ledger row beside it.
+
+### This is not a re-litigation, and the distinction matters
+
+D5's argument was not wrong when it was written and it is not refuted now. What happened is that a
+consumer it did not know about was written down. The Expected-usage statement of 2026-08-12 named
+an **agent that photographs a device under test and diffs the photographs**, and item 3 said what a
+re-encode costs it: "a pipeline that silently re-encodes is a pipeline that fabricates evidence in
+a test." Against that consumer, a driver's own idea of its preferred mode is not evidence about
+which photograph is better — it is evidence about which mode the driver would rather serve, which
+is a different question and one nobody in this deployment is asking. The old rule was sound
+reasoning from the facts available; the ruling overrules it with a fact that was not.
+
+\[PF:26\] is the measurement that charges for it, and it is where the numbers live: the BRIO's
+default photograph was a re-encoded 640×480 YUYV frame from a camera offering verbatim 4096×2160 —
+**3.5% of its pixels** — and the Dell's was a re-encoded 640×480 NV12 frame from a camera with a
+3840×2160 MJPG branch. Two of five cameras delivered the camera's own bytes by default.
+
+### What each camera defaults to, before and after
+
+Measured by running the five committed profiles through the chooser, which is what
+`every_committed_profile_resolves_an_unspecified_request_to_its_largest_mode` does on every run:
+
+| camera | before | after | pixels |
+|---|---|---|---|
+| chicony-rgb | MJPG 1280×720, verbatim | **MJPG 2592×1944**, verbatim | 0.9 MP → 5.0 MP |
+| chicony-ir | GREY 640×360, re-encoded | GREY 640×360, re-encoded | unchanged |
+| dell-u3224kb | NV12 640×480, re-encoded | **MJPG 3840×2160**, verbatim | 0.3 MP → 8.3 MP |
+| logitech-brio | YUYV 640×480, re-encoded | **MJPG 4096×2160**, verbatim | 0.3 MP → 8.8 MP |
+| obsbot-tiny3 | MJPG 1920×1080, verbatim | **MJPG 1920×1440**, verbatim | 2.1 MP → 2.8 MP |
+
+Four of the five moved, three of them by more than an order of magnitude, and the count of cameras
+delivering the camera's own bitstream by default goes from two to four. The fifth is the Chicony IR
+sensor, which has no compressed format at all and one size — the honest case, and the reason the
+"after" column has a re-encode in it.
+
+**On every camera this project has met, resolution-first selects MJPG, which is also the verbatim
+path.** So the ruling and AGENTS' "verbatim camera JPEG when the sink allows — byte fidelity is the
+product" agree everywhere there is evidence, and the ruling costs nothing on known hardware. That
+is worth saying plainly, because it means the two decisions below are about cases that are
+currently hypothetical, and a reader should know which parts of this entry are measured and which
+are argued. `the_ruling_costs_nothing_on_the_hardware_this_project_has_met` asserts the agreement
+over the corpus, and names the IR sensor as the one camera the claim is vacuous for.
+
+### Decision 1: resolution is the primary key, lossiness the tiebreak
+
+The owner's sentence lists resolution first and lossiness second, and it admits the other reading —
+"less lossy, and among equally lossy the largest" is a grammatical reading of the same words. The
+reading taken is **resolution primary, lossiness secondary**, and it is written down here because a
+future reader deserves to know which was taken rather than to re-derive it from a `max_by_key`.
+
+The reason is the deployment. Item 2 makes repeatability beat prettiness, and both readings are
+equally repeatable; item 3 makes byte fidelity the product, and that argues for lossiness; but the
+thing the agent is doing with the photograph is *looking at a device under test*, and 8.8
+megapixels of a slightly quantised display beats 0.3 megapixels of an unquantised one at telling
+whether a driver drew the right thing. Resolution is the key that changes what is legible in the
+picture; lossiness is the key that changes how faithfully the legible thing is recorded.
+
+The **Dell exercises the tiebreak for real**: NV12 and YUYV stop at the same 1920×1080, and 4:2:0
+chroma subsampling keeps a quarter of the chroma where 4:2:2 keeps half, so YUYV wins that pair —
+from second place in the driver's order, which is the demotion in one line.
+`the_dells_two_uncompressed_formats_tie_and_the_less_subsampled_one_wins` asserts it from the
+committed document. It is a pair the *default* never has to decide, because MJPG beats both
+outright on the whole tree — which is itself the shape of this ruling: the tiebreak is real and
+rarely reached.
+
+### Decision 2: the tiebreak is coupled to the sink
+
+The case the ruling leaves open: a device offering an uncompressed format at the **same** maximum
+resolution as a compressed one. No camera in `corpus/` has it. "Less lossy" alone picks the
+uncompressed one, which must then be **encoded** — so on a `.jpg` sink the ruling would throw away
+the camera's own bitstream to hand our encoder a frame it had no reason to touch, which is exactly
+what Expected usage item 3 warns about and exactly what E6 exists to prevent.
+
+The resolution is that **lossiness is measured over the whole path from sensor to file, not over
+the driver's buffer**:
+
+- into a **JPEG** sink, the compressed format wins. It arrives byte for byte (E6, and the EXIF
+  stamp is a header splice \[PF:16\]), so nothing this program did is in the answer; the
+  uncompressed candidate would acquire artefacts the camera's own encoder did not make.
+- into a **PNG or PPM** sink, the uncompressed format wins. That sink adds no loss to whatever
+  arrives, so an uncompressed source reaches the file with the sensor's own samples, while the
+  compressed candidate arrives having already been through the camera's quantiser and would have
+  that loss written into a lossless container.
+
+This is one rule with two answers rather than an exception, and it is why `SinkFidelity` exists.
+Three consequences are part of the decision rather than of its implementation:
+
+- **Determinism survives.** The choice is a pure function of (format tree, sink), so two photographs
+  an hour apart with the same command still differ only where the device does — Expected usage item
+  2 is intact. What is *not* guaranteed is that `-o a.jpg` and `-o a.png` stream the same mode, and
+  they should not: they are different products of the same camera.
+- **`SinkFidelity` is derived, never sent.** `PhotoRequest::stream_for_sink` is the one place it is
+  written, from the sink the same request already carries, at the moment the request reaches a
+  device. The field on `StreamRequest` is `#[serde(skip)]`, so it does not cross the wire: a client
+  that could set it would be able to say `png` in one field and `.jpg` in another, and the sink is
+  the authority on what the sink can carry. It rides on the request rather than beside it because
+  T1's `start_stream` takes one `StreamRequest` and the backends are what call `choose` — that is
+  the only seat from which the chooser can be told, and the alternative is a parameter on the
+  backend trait for a bit only one of its callers has. `just generate` regenerates both committed
+  artifacts unchanged, which is the evidence that the field stays out of the wire vocabulary.
+- **`wch` and `wchc` cannot disagree.** Because the derivation happens where the photo is taken
+  rather than where it is typed, the in-process CLI and the daemon compute it from the same sink;
+  the wire carries nothing new and the parity gate has nothing new to compare.
+
+### The third key, which is not in the ruling's words: an unrecognised FourCC ranks last
+
+The ruling says higher resolution wins. Taken literally that prefers an `H264` or `HEVC` mode —
+formats offered at a device's *largest* sizes, precisely — which `imaging::decode` cannot decode, so
+the photograph would be a `FormatUnsupported` instead of a picture. The hazard existed before (the
+old rule would have taken an unknown format that happened to be enumerated first) and **the ruling
+makes it likelier**, because hardware encoders advertise the big modes.
+
+So a FourCC this build cannot name ranks behind every one it can, ahead of resolution, and the
+argument is stated rather than assumed: this is not a claim that an unknown encoding is bad, it is
+the observation that nothing here can claim it is *good*, and that the ruling is about which
+photograph is better rather than which mode number is biggest. It is **ranked rather than
+filtered** — AGENTS rule 6 — so a device offering nothing else still resolves to something
+deterministic at that format's largest size, and the caller gets the same typed refusal it would
+have got anyway.
+
+That key rests on the schema's five named FourCCs being the same five `imaging::decode::SourceFormat`
+can read. Nothing structural holds those two sets together, so
+`the_format_ranking_never_prefers_a_format_this_crate_cannot_decode` holds them, in the crate that
+owns the decoder, in both directions.
+
+### What did not move
+
+**An explicit request still wins.** A caller that names a format and a size gets them, or a typed
+refusal; the ranking is only for the request that named neither, and
+`an_explicit_request_beats_the_ranking_in_both_of_its_halves` asserts it with its own inverse
+beside it. This is also why PF:26 could close with "nothing is changed" on the day it was measured:
+`--size` and `--format` reached the right modes then and reach them now.
+
+**The negotiated result is still surfaced whenever it differs from the request.** The ranking
+chooses; `NegotiatedStream::diff` and `Adjustment` describe. The amendment moves the first and does
+not touch the second, and the daemon's
+`the_negotiated_format_and_size_are_surfaced_when_they_differ_from_the_request` is unchanged and
+still green.
+
+### What it broke, including one thing nobody asked for
+
+- **A fixture stopped describing the device it was written for.** `crates/daemon/tests/preview.rs`
+  shrank the synthetic camera's MJPG list to 160×120 and left YUYV at 640×480, because under the old
+  rule MJPG won for being *first* whatever its sizes said. Under the ruling that profile is a camera
+  whose best photograph is uncompressed — correctly — and two preview tests went red on the verbatim
+  claim. The fixture now shrinks both formats (320×240 MJPG over 160×120 YUYV) and says why. **This
+  is the general shape of what the ruling breaks**: any device or fixture whose compressed format is
+  its *smallest* now defaults to an uncompressed one, which is the ruling working rather than
+  failing, and is the case PF:26's own retirement condition anticipated from the other side.
+- **The test suite got three times slower, and that was worth fixing rather than accepting.**
+  `just test` went 29 s → 86 s. The cause is not the product: the fake *synthesises* frames in
+  software, and `testkit::fixtures::synthetic_basic` offers 3840×2160 MJPG, so every default-request
+  photo in a calibration-sweep test became an 8-megapixel render and JPEG encode — 21 of them per
+  sweep. The sweep suites now name a size, which is the mechanism the ruling explicitly preserves,
+  and the runtime is back to 28.7 s. The fixture is deliberately not shrunk: a 4K mode in a shared
+  fixture is *more* valuable now that the ranking is what picks it.
+- **A calibration sweep of a 4K camera is now a sweep at 4K**, on real hardware as well as in tests,
+  because the sweep asks the device the same question the photo verb asks (deliberately — a sweep
+  whose modes differed would produce samples nobody could reproduce with `wch photo`). Twenty-one
+  captures, decodes and writes at 8.3 megapixels instead of at 0.3 is a real cost to a
+  start-of-run activity a human is waiting on (Expected usage item 9). Nothing is changed for it
+  here: the owner accepted "more bandwidth or latency", `--size` is one flag away, and the honest
+  time to decide whether a sweep should default smaller than a photograph is when somebody has run
+  one and been annoyed.
+
+### What can go red
+
+Seven hand-applied mutants, each watched red at workspace scope over all 1 119 tests and restored:
+
+| mutant | tests red |
+|---|---|
+| the ordering reversed (`max_by_key` → `min_by_key`) | 23 |
+| the explicit request ignored | 5, plus the Chromium rung timing out |
+| the size rule reverted to the format's *first* entry | 6 |
+| the tiebreak dropped (fidelity out of the key) | 4 |
+| the tiebreak made primary (fidelity above pixels) | 3 |
+| the negotiated-format report suppressed | 2 |
+| an unknown format sorted to the front | 1 |
+
+Two of those numbers are worth reading rather than counting. **The tiebreak mutants are invisible
+to the corpus**: on all five committed profiles, ranking by fidelity first and by resolution first
+give the same answer, because MJPG is both the largest and the compressed format on every one of
+them. That is the same fact as "the ruling costs nothing on known hardware", seen from the mutation
+side, and it is why the tiebreak's evidence is fixtures rather than devices. **The unknown-format
+key is held by one test** — the key this entry argues hardest for, and the one nothing else in the
+workspace happens to cover, because a camera with an `H264` 4K mode beside an `MJPG` 1080p one is a
+device nobody here owns. The negotiated-format mutant was held by one test until this session added
+the second; suppressing the pixel-format arm of `diff` left every size-adjustment assertion in the
+workspace green, which is a reminder that "the difference is surfaced" is three claims and each
+needs its own.
+
+**No `g5` rows.** The g5 criteria are what P5 — the web client — establishes, and this establishes
+nothing about a browser: it changes which mode a camera is asked for, one crate below anything the
+page can see. It is a D5 change and its evidence is where D5's evidence is — the schema's unit
+tests, the corpus walk in `webcam-handler-fake`, and the engine's photo tests, all of which are
+already in g0's and g1's counted populations by package. A g5 row here would claim P5 asked for it.
+
+**Retires when:** a device is measured whose largest mode is one the tool photographs *worse* —
+which is the case D5's original argument was written against and which nothing has yet seen — or
+when the owner rules again. The sink coupling retires separately and on its own evidence: the first
+camera that offers an uncompressed format at the same maximum resolution as a compressed one makes
+Decision 2 measurable instead of argued, and it should be re-read against that device rather than
+trusted.

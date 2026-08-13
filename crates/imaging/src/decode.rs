@@ -575,6 +575,37 @@ mod tests {
     }
 
     #[test]
+    fn the_format_ranking_never_prefers_a_format_this_crate_cannot_decode() {
+        // D5's amendment of 2026-08-13 sorts a FourCC the schema cannot classify behind
+        // every one it can, *ahead of resolution*, and the argument for that ordering is
+        // this crate: a format outside D6's set produces no photograph, only a
+        // `FormatUnsupported`. The argument holds only while the two sets are the same
+        // set, and nothing but this test says so — the schema knows nothing about which
+        // crate decodes what, and this crate knows nothing about the ranking.
+        //
+        // Both directions, because a check that only ever sees agreement cannot
+        // discriminate: every format this crate reads is one the schema names, and a
+        // format the schema does not name is one this crate refuses.
+        for &source in SourceFormat::ALL {
+            let format = source.pixel_format();
+            assert!(
+                schema::camera::Lossiness::of(format).is_named(),
+                "{format} decodes here and ranks as unknown in the schema, so the ranking \
+                 would sort a decodable format to the back"
+            );
+        }
+        for name in ["H264", "HEVC", "RGB3", "Y16 "] {
+            let format = PixelFormat::parse(name).expect("four characters");
+            assert_eq!(SourceFormat::from_pixel_format(format), None, "{name}");
+            assert!(
+                !schema::camera::Lossiness::of(format).is_named(),
+                "{name} ranks as a known format in the schema and cannot be decoded here, \
+                 so the ranking could prefer it and hand a caller a refusal"
+            );
+        }
+    }
+
+    #[test]
     fn an_unsupported_format_names_what_we_can_read_instead() {
         // The actionable half: a caller holding an H.264 frame needs to know which
         // format to renegotiate to, not merely that this one failed.
