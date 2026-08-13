@@ -7,6 +7,32 @@ drift, reconcile deliberately and record which side was wrong). Terse by design;
 reasoning lives in `docs/8-claude-fable-code-review-rubric-v2.md` (rubric) and
 `docs/6-claude-fable-design-v2.md` (design).
 
+## Who runs this, and why (owner, 2026-08-12)
+
+`wchd` runs on a computer whose cameras are **pointed at a device under test**. Two
+consumers, shaped nothing alike:
+
+- **An AI agent harness (Claude Code or similar) drives the client to photograph the device
+  under test, to check its own work** — e.g. a display driver is validated by photographing
+  the device's display. Primary, continuous, unattended. The same agent also wants
+  **video**, to validate animations and transitions: a very desirable secondary use case,
+  which makes P6 agent-facing rather than trailing, and makes frame *timing* a payload
+  rather than metadata.
+- **The owner uses the web client from time to time** to check up on the cameras, and to
+  **calibrate them at the start of a development run**. Occasional, interactive, supervisory.
+
+Four consequences, because they decide trade-offs rather than decorate them. **The primary
+consumer has no hands** — a verb needing a call sequence, or a failure that reads as prose,
+is a defect for the consumer that matters most. **The product is comparability across time,
+not a good picture**: two photos an hour apart must differ only where the *device* differs,
+so when image quality and repeatability conflict, repeatability wins. **The two consumers
+overlap on one camera as the normal case**, not as a race (note N83). **The error vocabulary
+is read unsupervised**: `Busy` means retry, `DeviceGone` means stop and tell the human,
+`PermissionDenied` means a setup problem — collapsing them makes the agent guess.
+
+The full statement, its reasoning, and what would change it are at the top of
+`docs/implementation-notes.md`.
+
 ## What this is
 
 webcam-handler drives V4L2 webcams for humans and AI agents: enumerate cameras, list

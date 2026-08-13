@@ -88,6 +88,24 @@ names its source, so a reviewer can check the absorption against the record:
 
 ## 1. Scope
 
+**Expected usage (owner, 2026-08-12).** `wchd` runs on a computer whose cameras are pointed
+at a **device under test**. The primary consumer is an **AI agent harness** — Claude Code or
+similar — which drives the client to photograph the device under test in order to check its
+own work; the worked example is a display driver, whose correctness is validated by
+photographing the device's display. The same agent also wants **video of the device under
+test, to validate animations and transitions** — photographs are the primary case, video a
+very desirable secondary one — which makes **P6 agent-facing rather than trailing**, and
+makes frame timing a payload rather than metadata (D7's measured-interval rewrite). The
+other consumer is the **owner at the web client**, occasionally, to check up on the cameras
+and to calibrate them at the beginning of a development run. Everything below was designed for that deployment before it was written
+down; it is recorded here because it is what settles a trade-off. The three it settles most
+often: the primary consumer is unattended, so a verb that needs a call sequence and an error
+that cannot be branched on are defects rather than rough edges (D13, T4); the product is
+**comparability across time** rather than image quality, so when the two conflict
+repeatability wins (D3, D4, D8); and the two consumers meet on one camera as the ordinary
+case rather than as a race (D12, note N83). The full statement, with its consequences and
+what would change them, is at the top of `docs/implementation-notes.md`.
+
 **Goals (v1).** A Rust 2024 edition Cargo workspace providing, for V4L2 webcams on Linux,
 behind a pluggable backend trait:
 

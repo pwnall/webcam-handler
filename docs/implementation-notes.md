@@ -7,6 +7,11 @@ disproof.
 
 Each entry states: what the doc says, what the repo does, why, and what would retire it.
 
+**Before making a design trade-off, read "Expected usage" immediately below.** It is not case
+law and it is not an entry — it is the thing the entries are *for*, recorded because until
+2026-08-12 it lived only in the owner's head, and a trade-off judged without it is a
+trade-off judged against a guess.
+
 **Doc series versioning (2026-08-08):** docs/6–10 (v2) supersede docs/1–5 (v1, now under
 `docs/historical/`; v2 preserves v1's section and registry numbering, so the citations
 below still resolve). The v2 revision absorbed the design- and gate-facing halves of the
@@ -14,6 +19,140 @@ entries below and PF:13–16 into the current docs; each absorbed entry carries 
 **Absorbed:** line naming the new home. Absorption does not retire an entry — these
 remain the measurement record and the reasoning of record. Entries dated before this
 line cite docs/1–5; later entries cite docs/6–10.
+
+---
+
+# Expected usage — who runs this, and what they are doing with it
+
+**Stated by the owner, 2026-08-12.** Design §1 says what the tool *does*; this says what it
+is *for*, which is the half that decides trade-offs. Nothing below is a new requirement — it
+is the deployment every existing requirement was implicitly about, written down so the next
+design iteration argues against the real case instead of an imagined one.
+
+## The deployment
+
+`wchd` runs on a computer whose one or more cameras are **pointed at a device under test**.
+Two consumers reach it, and they are shaped nothing alike:
+
+- **An AI agent harness — Claude Code or similar — drives the client to take photos of the
+  device under test, to check its own work.** This is the primary consumer and the
+  continuous one. The worked example the owner gave: *developing a display driver is
+  validated by photographing the device under test's display.* The agent writes code, runs
+  it on the device, photographs the result, and decides from the photograph whether what it
+  wrote works.
+- **The same agent also wants to record video of the device under test** (owner, 2026-08-12,
+  amending the paragraph above). Photographs are "definitely the primary use case"; video is
+  a "very desirable secondary" one, and it exists for the thing a photograph cannot answer:
+  **animations and transitions**. A still frame cannot tell a correct fade from a stutter,
+  or a 200 ms transition from a 2 s one — so the questions video answers are questions about
+  *time*, and item 10 below is what that costs.
+- **The owner uses the web client from time to time**, to check up on the cameras, and to
+  **calibrate them at the beginning of a development run**. Occasional, interactive,
+  supervisory.
+
+## What follows for trade-offs
+
+1. **The primary consumer has no hands.** A verb that needs a sequence of calls, a flag whose
+   meaning depends on state the caller has to remember, or a failure that reads as prose is a
+   defect *for the consumer that matters most* — not a rough edge. This is why the tool is
+   built for agents to drive (design §1) and why `--json` fidelity and the T4 one-verb-once
+   surface are product features rather than conveniences. It is also why the `wch`/`wchc`
+   parity gate exists: the harness may hold either root.
+
+2. **The product is comparability across time, not a good-looking picture.** Two photos of
+   the same device taken an hour apart must differ *only where the device differs*. That is
+   what calibration (D8), snapshot/restore (D4) and D3's guarded writes are for, and it is
+   why auto-exposure and auto-white-balance are adversaries rather than features: they make
+   the camera a variable in an experiment about something else. **A prettier default that
+   moves between shots is worse than a duller one that does not.** When a trade-off is
+   between image quality and repeatability, repeatability wins, and this paragraph is the
+   reason.
+
+3. **Byte fidelity has a named consumer now.** "Verbatim camera JPEG when the sink allows"
+   (AGENTS, D6) is not aesthetics: the agent may diff two photographs or feed them to a
+   vision model, and a re-encode inserts differences the device under test did not make. A
+   pipeline that silently re-encodes is a pipeline that fabricates evidence in a test.
+
+4. **The two consumers overlap, and that is the normal case rather than an exception.** The
+   owner's preview tab and the agent's photo land on one camera at the same time — that is
+   the ordinary Tuesday of this deployment, not a race to be documented. It is exactly what
+   note **N83**'s suspend/resume was built for, and this section promotes that mechanism from
+   a nicety to a core requirement. The same sentence covers exclusive streaming (D12), the
+   `Busy` holder diagnosis, and every place two callers meet one device.
+
+5. **Idle is the resting state.** Photographs arrive "from time to time" across a long run,
+   so the camera is unheld for most of it. Open-on-first-use and close-when-idle (D12) are
+   right, and a daemon that held the device continuously would block every other program on
+   that machine for the large majority of the time nothing is being photographed.
+
+6. **The failure vocabulary decides the agent's next move, and it decides it unsupervised.**
+   AGENTS rule 7 — availability is not capability — is load-bearing here rather than
+   fastidious: `Busy` means *retry*, `DeviceGone` means *stop and tell the human*,
+   `PermissionDenied` means *this is a setup problem and no amount of retrying fixes it*. An
+   error that collapses them makes the agent guess, and an agent that guesses wrong either
+   spins against a camera that will never come back or abandons a run over a camera that was
+   fine. D13's registry is the interface to that decision.
+
+7. **Motors move the experiment, not just the lens.** A PTZ camera aimed at a device under
+   test is aimed *deliberately*, usually by the owner at the start of the run. A sweep that
+   leaves it pointing somewhere else has invalidated every photograph taken afterwards, not
+   only the one being taken — the agent will keep working, and its evidence will silently be
+   about the wrong thing. AGENTS rule 8 ("leave the camera as you found it") is protecting
+   the validity of a development run, which is a stronger claim than tidiness.
+
+8. **The privacy rule does not relax.** The usual subject is a circuit board or a display,
+   not a person — and the rule stays exactly as written. The camera is in a room, the
+   motor-moving opt-out (`WCH_NO_MOTION`) exists precisely because a camera can be pointed at
+   people, and a default that costs nothing should not be weakened on the strength of a
+   typical case.
+
+9. **Calibration is a start-of-run activity whose result outlives the session that made it.**
+   D9's inspectable session directories and "apply later" match the shape the owner
+   described: calibrate once, interactively, then let many unattended agent-driven photographs
+   use the result.
+
+10. **Video is an agent-facing feature, and it re-prices P6.** The recording phase is last in
+    the plan, which reads as "least important" and is not: an agent validating an animation
+    needs it, and no photograph substitutes. Four things follow that a trailing nice-to-have
+    would not have had to answer.
+
+    **Frame timing is the payload.** For a photograph the timestamps are metadata; for a
+    transition they *are* the measurement, because "did this take 200 ms or 2 s" is the
+    question being asked. D7's close-time rewrite of the AVI header to the **measured** mean
+    frame interval is therefore load-bearing rather than a tidy-up, and a recording that
+    silently reports nominal fps while delivering something else is answering the agent's
+    question wrongly. Whatever P6 does about a variable capture rate, it must not make a
+    dropped frame look like a slow transition.
+
+    **Byte fidelity extends to it, for item 3's reason.** MJPEG remuxed verbatim keeps the
+    frames the camera produced; a re-encode inserts motion artefacts exactly where the agent
+    is looking for them. A transcoding step would fabricate evidence about smoothness, which
+    is the one property being judged.
+
+    **The bounds are the agent's, not a human's.** A transition is seconds; the caps in
+    `schema::limits` must comfortably hold one without an agent learning to work around
+    them, while still bounding a runaway. A cap tuned for a human who notices a growing file
+    is the wrong cap for an unattended caller that will not.
+
+    **A recording and the preview collide in a way a photograph does not, and P6 owes an
+    answer.** Note **N83**'s suspend/resume works because a photograph holds the stream for
+    milliseconds; a recording holds it for the whole take, so the same trick would leave the
+    owner's preview tab dark for seconds or minutes with no explanation. Item 4 says the two
+    consumers overlapping is the ordinary case, so "the preview simply stops" is not
+    automatically acceptable — the honest options are that the preview is fed *from* the
+    recording's own frames while it runs, or that the preview is told, in a way the page can
+    render, that a recording owns the camera and for roughly how long. Deciding this is P6's
+    and it is written here so P6 does not discover it late, the way P5 nearly discovered
+    N76.
+
+## What would change this
+
+A second human on another machine (which is what D11's non-loopback cells and note **N79**'s
+reverse-proxy shape are already about); a device under test that must be *filmed* rather than
+sampled, which is P6's recording and would make the preview path a product surface rather
+than a supervisory one; or an agent harness that wants to watch a stream continuously rather
+than take photographs from time to time, which would move the MJPEG preview from the second
+consumer's column into the first's and re-price everything in item 4.
 
 ---
 
