@@ -45,7 +45,7 @@ use schema::error::Error;
 use schema::limits;
 use schema::pairing::looks_like_automation;
 use schema::session::SweepSpec;
-use schema::snapshot::{ControlRole, Snapshot, SnapshotEntry};
+use schema::snapshot::{ControlRole, RestoreOutcome, RestoreReport, Snapshot, SnapshotEntry};
 use schema::time::Stamp;
 
 use crate::vocabulary::closed_vocabulary;
@@ -1616,6 +1616,206 @@ pub fn sweep_for(desc: &ControlDesc, floor: SampleFloor) -> SweepChoice {
     SweepChoice::Planned { spec, samples }
 }
 
+// ------------------------------------- which controls a restore report will answer for
+
+/// What a [`RestoreReport`] undertakes to have put back, and what it declines to speak for
+/// — the population an AGENTS rule 8 arm may compare against the device, and the named,
+/// counted sentence for the rest.
+///
+/// **Four hardware arms and one answer.** `crates/backends/v4l2/tests/hardware.rs` restores
+/// a snapshot after a one-step perturbation, after a calibration session and across a
+/// `uvcvideo` cycle, and `crates/client/tests/hardware.rs` restores one over the socket;
+/// each then re-reads the device and asserts the values came back, which is what makes rule
+/// 8 a checked claim rather than a sentence in a header. Three of them filtered that
+/// comparison on the snapshot's own `was_volatile` flag and the fourth filtered it on the
+/// report's outcomes, and the difference between those two is a **device finding**, not a
+/// style: `VOLATILE` is not how a device says that the value of a control belongs to an
+/// algorithm \[PF:24\]. The Logitech BRIO's `white_balance_temperature` is INACTIVE, is
+/// **not** VOLATILE, and its own AWB moves it between a restore that reported itself
+/// complete and the re-read that checks it — so the arms keyed on the flag were asserting a
+/// number against a running algorithm, and went red for it on a schedule nobody controls
+/// (PF:24's 2026-08-13 amendment: red in a lit room, green in a dark one, no code between
+/// the two runs).
+///
+/// So the population comes off the **report**, which is the only party that knows.
+/// [`RestoreOutcome::OwnedByAutomation`] is the engine having deferred the control, written
+/// every automation control, re-read the device and found the partner holding it again —
+/// INACTIVE when the snapshot was taken *and* INACTIVE now, which is exactly the narrow
+/// predicate PF:24 argued for and which no test can derive for itself without keeping a
+/// second copy of D4's two-pass rule. The wide predicate ("exempt everything INACTIVE")
+/// would stop asserting restoration for a control a sweep legitimately moved and put back;
+/// a **name** — `white_balance_temperature` — would be the repair AGENTS rule 7 forbids
+/// outright, because "this control's value is the device's" is a fact the device states and
+/// "this control failed today" is a fact about a run.
+///
+/// The type lives here and not in one of the four suites for the reason [`BRIGHTNESS_CLASS`]
+/// does (note **N72**): the same two `#[ignore]`d binaries had already grown two copies of a
+/// selection rule once, and a rule inside an ignored hardware binary is a rule nothing can
+/// unit-test. `webcam-handler-v4l2` and `webcam-handler-client` both dev-depend on this
+/// crate, so one home is reachable from both without a `#[path]` include and without the
+/// one-user-per-item tax note **N49** puts on those.
+///
+/// [`RestoreOutcome::Unrestorable`] is deliberately in neither population: what a control
+/// nobody could put back costs a run is [`RestoreReport::is_complete`]'s to decide, and
+/// every one of the four arms asserts that separately. Naming it here as well would give
+/// one verdict two homes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorationClaim {
+    /// The controls the report says it wrote, or found already holding the recorded value.
+    claimed: BTreeSet<String>,
+    /// The controls whose automation owns them again \[PF:24\], each with the partner the
+    /// pair set named — or `None` where it named none, which is itself worth printing.
+    owned: Vec<(ControlSlug, Option<ControlSlug>)>,
+    /// How many outcomes the report carried, so a report that spoke about nothing at all
+    /// can be told from one that spoke about everything and claimed none of it.
+    outcomes: usize,
+}
+
+impl RestorationClaim {
+    /// Whether an arm may assert that this control reads back at its recorded value.
+    ///
+    /// Takes a `&str` because the four call sites hold their "before" values in three
+    /// different containers — a `BTreeMap<String, _>` read off the device, a [`Snapshot`]'s
+    /// entries, and a snapshot that arrived over a socket — and the one thing all three
+    /// share is the slug's text. Re-parsing each of them into a [`ControlSlug`] to ask a
+    /// question about a name would be validating a string this workspace produced, which is
+    /// why the claimed set is kept as text and the declined list is not: one is only ever
+    /// *looked up*, the other is only ever printed and asserted.
+    #[must_use]
+    pub fn speaks_for(&self, slug: &str) -> bool {
+        self.claimed.contains(slug)
+    }
+
+    /// The controls left to their automation, in slug order, with the partner that owns
+    /// each one.
+    ///
+    /// Exposed so a suite can assert *which* controls were declined rather than only how
+    /// many — the difference between a decline a reader can audit and a number.
+    #[must_use]
+    pub fn left_to_automation(&self) -> &[(ControlSlug, Option<ControlSlug>)] {
+        &self.owned
+    }
+
+    /// Say what this restore was and was not checked on, and refuse a run that checked
+    /// nothing.
+    ///
+    /// `compared` is what the caller actually asserted against the device, passed in rather
+    /// than recomputed here: this type knows what the *report* offered, and only the arm
+    /// knows how much of that its own "before" reading could be compared with. Two numbers
+    /// that should agree, printed together, is how they stop agreeing loudly instead of
+    /// quietly.
+    ///
+    /// **The empty-claim case fails rather than skips, and that is the choice.** A restore
+    /// whose every outcome is [`RestoreOutcome::OwnedByAutomation`] passes
+    /// [`RestoreReport::is_complete`] — that is the whole point of note N9 — so an arm that
+    /// excluded all of them would print a green line having asserted nothing at all about
+    /// rule 8. That is "skip == pass, in a costume" (docs/8 Part C) reached by arithmetic
+    /// rather than by a `continue`, and the only defence against arithmetic is a count that
+    /// can go red. It is not a reachable state on any device measured so far — a sweep's
+    /// target is refused while it is INACTIVE ([`why_not_sweepable`]), and a perturbation's
+    /// target has to have moved — which is exactly why it needs an assertion rather than a
+    /// comment: an unreachable branch nobody checks is how the next device's finding arrives
+    /// as a green run.
+    ///
+    /// A report with **no outcomes at all** is the other thing entirely and is not a
+    /// failure: a camera with nothing writable on it has nothing to restore, and turning
+    /// that into a red arm would be converting a fact about a device into a fact about the
+    /// code (AGENTS rule 7). It gets its own counted line, because a suite that says nothing
+    /// about a camera is a suite a reader cannot tell from one that passed.
+    ///
+    /// # Panics
+    ///
+    /// When the report carried outcomes and `compared` is zero.
+    pub fn account_for(&self, camera: &str, compared: usize) {
+        if self.outcomes == 0 {
+            println!(
+                "SKIP (partial): {camera} — the restore reported no outcome at all, so this \
+                 arm compared nothing against the device; a camera with no writable control \
+                 has nothing to put back"
+            );
+            return;
+        }
+        if !self.owned.is_empty() {
+            println!(
+                "SKIP (partial): {camera} — {} of {} restored control(s) are left to their \
+                 automation [PF:24], so this arm compared {compared} against the device and \
+                 claims nothing about these: {}",
+                self.owned.len(),
+                self.outcomes,
+                self,
+            );
+        }
+        assert!(
+            compared > 0,
+            "{camera}: the restore reported {} outcome(s) and this arm checked none of them \
+             against the device — {} left to their automation, {} claimed. A restoration \
+             claim nobody could check is AGENTS rule 8 reading as a pass",
+            self.outcomes,
+            self.owned.len(),
+            self.claimed.len()
+        );
+    }
+}
+
+impl fmt::Display for RestorationClaim {
+    /// The controls left to their automation, each followed by the partner that owns it.
+    ///
+    /// The partner is named because it is what makes the exclusion auditable: a reader who
+    /// sees `white_balance_temperature (white_balance_automatic)` can go and switch that
+    /// automation off and watch the control become this arm's business again, which is
+    /// PF:24's own inverse arm. An unnamed one says so rather than reading as an omission —
+    /// the pair set not knowing an owner is a fact about D3's discovery on this device.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let named: Vec<String> = self
+            .owned
+            .iter()
+            .map(|(control, automation)| match automation {
+                Some(automation) => format!("{control} ({automation})"),
+                None => format!("{control} (no partner in this device's pair set)"),
+            })
+            .collect();
+        f.write_str(&named.join(", "))
+    }
+}
+
+/// Read a restore report as the two populations an arm may and may not assert over.
+///
+/// A fold over [`RestoreReport::outcomes`] and nothing else: the device is not consulted,
+/// no slug is spelled out here, and the exhaustive match is the point — a fifth outcome
+/// added to the schema stops this compiling rather than landing silently in the population
+/// that happens to be the default.
+#[must_use]
+pub fn restoration_claim(report: &RestoreReport) -> RestorationClaim {
+    let mut claimed = BTreeSet::new();
+    let mut owned = Vec::new();
+    for outcome in &report.outcomes {
+        match outcome {
+            RestoreOutcome::Restored { applied } => {
+                claimed.insert(applied.slug.to_string());
+            }
+            RestoreOutcome::AlreadyCorrect { control } => {
+                claimed.insert(control.to_string());
+            }
+            RestoreOutcome::OwnedByAutomation {
+                control,
+                automation,
+            } => owned.push((control.clone(), automation.clone())),
+            // Left to `RestoreReport::is_complete`, which is the one place that decides
+            // what a control nobody could put back costs the run.
+            RestoreOutcome::Unrestorable { .. } => {}
+        }
+    }
+    // Slug order rather than attempt order, so two runs of the same suite on the same desk
+    // print the same sentence and a reader can diff them. The report's own order is a
+    // promise about the *writes* and belongs to the report.
+    owned.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+    RestorationClaim {
+        claimed,
+        owned,
+        outcomes: report.outcomes.len(),
+    }
+}
+
 /// Whether the PF:6 clamp probe may use this control: an integer with room above its
 /// maximum, and no motor on the other end of it.
 fn is_clamp_probe_candidate(desc: &ControlDesc) -> bool {
@@ -2493,5 +2693,135 @@ mod tests {
                 samples: 1,
             }
         );
+    }
+
+    // ------------------------- what a restore report will answer for \[PF:24\]
+    //
+    // The same population argument the sweep tests above make, and for a stronger reason:
+    // the shape these are about **is on this desk and cannot be scheduled**. PF:24's
+    // amendment measured both hardware arms green on the drifting camera because the room
+    // was dark, so a hardware run can neither find this nor prove it fixed — it can only
+    // agree with whatever the last hour's light did. A table of `RestoreOutcome` values can
+    // do both, on a machine with nothing plugged in.
+
+    fn slug(text: &str) -> ControlSlug {
+        ControlSlug::parse(text).expect("a literal slug")
+    }
+
+    /// A control the report says it wrote, exactly as asked.
+    fn restored(control: &str) -> RestoreOutcome {
+        RestoreOutcome::Restored {
+            applied: schema::control::Applied {
+                control: ControlId(0x0098_0900),
+                slug: slug(control),
+                requested: ControlValue::Int(128),
+                applied: ControlValue::Int(128),
+                warnings: Vec::new(),
+            },
+        }
+    }
+
+    /// A control whose automation owns it again — PF:24's outcome, and note N9's success.
+    fn owned(control: &str, automation: Option<&str>) -> RestoreOutcome {
+        RestoreOutcome::OwnedByAutomation {
+            control: slug(control),
+            automation: automation.map(slug),
+        }
+    }
+
+    #[test]
+    fn a_control_left_to_its_automation_is_not_one_the_arm_may_assert_a_number_for() {
+        // The defect, as a value. `white_balance_temperature` is INACTIVE at both ends of
+        // the restore, so its read-back is the AWB algorithm's answer and not a setting
+        // \[PF:24\]; `brightness` was written and is the arm's business. The two must not be
+        // in the same population, and nothing here spells either name — the outcomes do.
+        let claim = restoration_claim(&RestoreReport {
+            outcomes: vec![
+                restored("brightness"),
+                owned("white_balance_temperature", Some("white_balance_automatic")),
+            ],
+        });
+        assert!(claim.speaks_for("brightness"));
+        assert!(!claim.speaks_for("white_balance_temperature"));
+        assert_eq!(
+            claim.left_to_automation(),
+            [(
+                slug("white_balance_temperature"),
+                Some(slug("white_balance_automatic"))
+            )]
+        );
+    }
+
+    #[test]
+    fn the_decline_names_every_excluded_control_and_the_automation_that_owns_it() {
+        // The audit trail the exclusion is paid for with (AGENTS rule 3): a reader has to be
+        // able to switch the named automation off and watch the control become the arm's
+        // business again, which is PF:24's own inverse arm. A count on its own would not let
+        // them.
+        let claim = restoration_claim(&RestoreReport {
+            outcomes: vec![
+                owned("white_balance_temperature", Some("white_balance_automatic")),
+                owned("exposure_time_absolute", Some("auto_exposure")),
+                owned("focus_absolute", None),
+                restored("brightness"),
+            ],
+        });
+        assert_eq!(
+            claim.to_string(),
+            "exposure_time_absolute (auto_exposure), focus_absolute (no partner in this \
+             device's pair set), white_balance_temperature (white_balance_automatic)"
+        );
+    }
+
+    #[test]
+    fn an_unrestorable_control_belongs_to_is_complete_and_to_neither_population_here() {
+        // One verdict, one home. A control nobody could put back is a red run by
+        // `RestoreReport::is_complete`, which every arm asserts separately — so counting it
+        // here as "left to its automation" would excuse it, and counting it as claimed would
+        // make the arm assert a value against a control the restore has already said it
+        // could not write.
+        let claim = restoration_claim(&RestoreReport {
+            outcomes: vec![
+                restored("brightness"),
+                RestoreOutcome::Unrestorable {
+                    control: slug("gamma"),
+                    reason: schema::snapshot::UnrestorableReason::StillInactive {
+                        automation: Some(slug("gain_automatic")),
+                    },
+                },
+            ],
+        });
+        assert!(!claim.speaks_for("gamma"));
+        assert!(claim.left_to_automation().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "reading as a pass")]
+    fn a_restore_that_claimed_nothing_at_all_is_a_failure_and_not_a_quiet_success() {
+        // The whole exclusion, taken to its end: every outcome is `OwnedByAutomation`, so
+        // `is_complete()` is **true** (note N9) and an arm filtering on this claim would
+        // compare nothing, print a green line and have said nothing whatever about AGENTS
+        // rule 8. This is the assertion that stops the repair from becoming the defect it
+        // was written against.
+        let claim = restoration_claim(&RestoreReport {
+            outcomes: vec![
+                owned("white_balance_temperature", Some("white_balance_automatic")),
+                owned("exposure_time_absolute", Some("auto_exposure")),
+            ],
+        });
+        claim.account_for("cam:nothing-left-to-check", 0);
+    }
+
+    #[test]
+    fn a_camera_with_nothing_writable_declines_by_name_rather_than_failing() {
+        // The other side of the line above, and AGENTS rule 7 is where it sits: "this
+        // restore checked nothing because everything was an algorithm's" is a defect in the
+        // suite, and "this restore checked nothing because the device has no writable
+        // control" is a fact about the device. An empty report must not panic — the counted
+        // line it prints instead is what keeps it from reading as a pass.
+        restoration_claim(&RestoreReport {
+            outcomes: Vec::new(),
+        })
+        .account_for("cam:three-read-only-controls", 0);
     }
 }

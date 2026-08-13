@@ -11330,6 +11330,74 @@ some scenes and red on others, which is exactly what a device-driven read-back l
 suite. It also means the suite's red count is not a stable number to quote: the run in \[E15\] had
 two, the run on 2026-08-13 had one, and the one it had was neither of these two.
 
+### Amendment, 2026-08-13 (second): the arms were red in daylight, and the repair was a value three of four suites were not reading
+
+The amendment above records both arms **green in the dark** and says plainly that green-on-some-
+scenes-and-red-on-others is what a device-driven read-back looks like from a suite. This is the
+other side, measured the same day in a lit room, and it is what the repair was driven from.
+
+**The measurement.** `just gate-g3`'s `smoke-hw` row, and then the two arms alone, three times:
+
+| run | arm | snapshot | found |
+|---|---|---|---|
+| gate-g3 | the client rung's session | 4880 | 4720 |
+| gate-g3 | `hardware.rs`'s brightness sweep | 4750 | 4880 |
+| alone, at `ef8748f` | the client rung's session | 4850 | 4640 |
+| alone, at `ef8748f` | `hardware.rs`'s brightness sweep | 4860 | 4850 |
+
+**A different pair of numbers every time**, which is the part the dark-room amendment could not
+supply: a stale constant would repeat, and this does not. All four are `cam:logitech-brio`'s
+`white_balance_temperature`. The three cameras beside it were re-probed with the shipped binary the
+same afternoon and do not move at all — Chicony RGB 4600, Dell 5000, OBSBOT 4500, each unchanged
+across `get` → `photo` → `get`. So the drift is this device's, on this scene, and the control group
+is PF:24's own probe reproduced two days later.
+
+**The repair is the narrow one this entry named, and it needed no new engine code.**
+`schema::snapshot::RestoreOutcome::OwnedByAutomation` — produced by `engine::snapshot::restore`'s
+second pass, and meaning INACTIVE at snapshot time *and* INACTIVE now — already is the predicate
+this entry asked for. What was missing is that **three of the four suites that compare a restore
+were not reading it**, and filtered on `was_volatile` instead, which PF:24 exists to say is the
+wrong flag. One arm (the hotplug one) had it right and had had it right since P1. So this entry's
+"either way it is a design decision" was over-priced: the decision had been taken, and only one
+caller had noticed. `testkit::battery::restoration_claim` is now the one home and all four arms
+read it.
+
+**A fourth arm was in the class and had never been red.**
+`hw_a_snapshot_perturb_restore_round_trip_leaves_every_control_where_it_started` makes the identical
+comparison behind the identical wrong filter. It has stayed green because it takes no photo, and
+this entry's mechanism needs the sensor to be *streaming* — so it is a latent instance rather than
+a lucky one, and a device that drifted while idle would find it identically.
+
+**And rule 3 came apart at a `println!`.** The one arm that already declined these controls printed
+its `[PF:24]` line without a `SKIP` prefix, so `scripts/smoke-hw.sh`'s census — which counts lines
+matching `^[[:space:]]*SKIP` — never counted it. Named but not counted is how a count quietly stops
+meaning anything: the rung reported **9** declined claims across the suite and now reports **21**,
+and twelve of that difference are declines it was already making. The new twelve are not new
+behaviour; they are behaviour that had been invisible to the accounting AGENTS rule 3 asks for.
+
+**One device fact worth keeping, free from the same run.** The partner named for the same control
+differs between arms, and both answers are right: the hotplug arm restores through
+`restore_in_effect`, whose pair discovery is shape-only, so the OBSBOT's `red_balance` and
+`blue_balance` print *"no partner in this device's pair set"*; the calibration arms restore against
+the session's **D3-measured** pairs and print `(white_balance_automatic)`. Same device, same run,
+two vocabularies — a compact argument for why D3's empirical probe exists beside the declared table.
+
+**The honest limit on this repair's evidence, and it is a real one.** The BRIO was **unplugged from
+this desk partway through the session**, between the runs tabulated above and the run that verified
+the fix — the rig went from five logical cameras to four, and `hw_enumeration_matches_the_committed_profile`
+began declining `logitech-brio` by name as a profile matching no attached device. So **the fix was
+never observed turning that red green.** What was done instead: the drift was *staged*, by injecting
+a move on exactly the controls the report names `OwnedByAutomation`, and the arms were watched
+failing without the repair, passing with it, and **still failing when a claimed control was moved
+instead** — which is the assertion that says nothing was weakened. That is a stronger demonstration
+than one lit-room run, because it does not depend on the weather; it is not the same claim, and the
+difference is exactly the kind this entry's first amendment was written to keep visible.
+
+**Retired as an open question by this amendment.** The clause above says this entry retires "when
+the restore comparison stops keying on `VOLATILE` alone, at which point this entry becomes the
+reason rather than the defect". That is what happened, and the reason is now cited by four arms and
+five unit tests over values.
+
 ---
 
 ## PF:25 — A `uvcvideo` cycle re-parks the OBSBOT Tiny 3's gimbal and re-initialises its processing unit; the three cameras beside it keep everything

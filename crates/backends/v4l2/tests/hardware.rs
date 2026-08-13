@@ -31,6 +31,17 @@
 //! motorized controls by asking [`testkit::battery::is_motorized`], so renaming the motion
 //! arm out of its prefix cannot quietly make the rest of the file move the camera.
 //!
+//! **What "it put the camera back" is asserted *over*, and the one control class it is
+//! not.** Three arms here restore a snapshot and re-read the device — the round trip, the
+//! calibration session, and the hotplug cycle — and each compares the population the
+//! restore *report* says it put back, via [`testkit::battery::restoration_claim`]. A
+//! control the device's own automation owns at both ends of the restore is excluded there,
+//! by name and counted on a `SKIP (partial)` line, because its read-back is an algorithm's
+//! answer rather than a setting and `VOLATILE` is not how a device says so \[PF:24\]. That
+//! is the whole of the exclusion: `is_complete()` still refuses a control nobody could put
+//! back, the swept and perturbed controls are still asserted individually, and a restore
+//! whose exclusions left nothing to compare is a red arm rather than a quiet green one.
+//!
 //! **One arm *restores* a motorized control, and the distinction is measured rather than
 //! asserted.** The hotplug arm snapshots every camera before its `uvcvideo` cycle and puts
 //! the snapshot back afterwards, pan and tilt included, because the aim is what that cycle
@@ -1140,20 +1151,28 @@ fn hw_a_snapshot_perturb_restore_round_trip_leaves_every_control_where_it_starte
             .unwrap_or_else(|error| panic!("{}: restore failed: {error}", info.id));
         let after = values_of(camera.as_mut());
 
-        // Every control the snapshot recorded is back. Volatile ones are excluded by the
-        // report, not by this comparison: their value is the device's to choose, and
-        // demanding it be identical would be asserting the device is not what it says.
-        let volatile: BTreeSet<String> = snapshot
-            .entries
-            .iter()
-            .filter(|entry| entry.was_volatile)
-            .map(|entry| entry.control.to_string())
-            .collect();
+        // Every control the restore **claimed** is back, and the claim is the report's own
+        // ([`battery::restoration_claim`]). The comparison used to key on the snapshot's
+        // `was_volatile` flag, which is a different population and — measured \[PF:24\] — the
+        // wrong one: a device whose automation writes a control's value does not have to set
+        // `VOLATILE` to say so, and on the Logitech BRIO it does not. Nothing is *lost* by
+        // moving off the flag, because a volatile entry reaches the report as
+        // `Unrestorable { Volatile }` and the `is_complete()` assertion below already
+        // refuses it; what is gained is the INACTIVE-at-both-ends exclusion the flag cannot
+        // express.
+        //
+        // This arm has never gone red on it, and that is a fact about what it does rather
+        // than about the class: it perturbs one control and reads back, and PF:24's drift
+        // needs the sensor to be *streaming*. A device whose automation moves a value while
+        // idle would find this arm exactly as the two calibration arms were found.
+        let claim = battery::restoration_claim(&report);
+        let mut compared = 0usize;
         for entry in &snapshot.entries {
-            if volatile.contains(entry.control.as_str()) {
+            let slug = entry.control.as_str();
+            if !claim.speaks_for(slug) {
                 continue;
             }
-            let slug = entry.control.as_str();
+            compared += 1;
             assert_eq!(
                 after.get(slug),
                 before.get(slug),
@@ -1171,11 +1190,12 @@ fn hw_a_snapshot_perturb_restore_round_trip_leaves_every_control_where_it_starte
         );
         round_trips += 1;
         println!(
-            "{}: snapshot({}) → perturb {} → restore, every control back",
+            "{}: snapshot({}) → perturb {} → restore, {compared} claimed control(s) back",
             info.id,
             snapshot.entries.len(),
             target.slug
         );
+        claim.account_for(info.id.as_str(), compared);
     }
 
     if round_trips == 0 {
@@ -1941,18 +1961,6 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
 
         // And back. This is the same call an ordinary session end and a crash recovery both
         // make (§6), reading the snapshot that was persisted before the sweep's first write.
-        let volatile: BTreeSet<String> = session
-            .pre_snapshot
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.was_volatile)
-                    .map(|entry| entry.control.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
         let pairs = session.pairs.clone();
         let recovery = engine::lifecycle::recover(
             temp.store(),
@@ -1976,11 +1984,33 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
             session.pre_snapshot.is_none(),
             "{control}: a complete recovery must consume the snapshot"
         );
+        // The report is checked against the device rather than believed, over the controls
+        // the report **says it put back** — [`battery::restoration_claim`], the same reading
+        // the hotplug arm's restore makes of the same type.
+        //
+        // This comparison keyed on the pre-sweep snapshot's `was_volatile` flag until PF:24
+        // said what that flag is not. The sweep photographs the scene at every sample, and a
+        // camera's own auto-white-balance reacts to exactly that: on the Logitech BRIO
+        // `white_balance_temperature` is INACTIVE, is not VOLATILE, and moved between a
+        // restore that reported itself complete and the line below — twice, with different
+        // numbers each run, which is what a read-back of a running algorithm looks like from
+        // a suite. The exclusion is the *report's*, so it names the device's answer rather
+        // than a control this file distrusts; a name in this file would be AGENTS rule 7
+        // ("availability is not capability") in its restore-shaped form, a run's bad luck
+        // recorded as a device's incapacity.
+        //
+        // Nothing was weakened to buy it. `is_complete()` above still refuses a control the
+        // restore could not put back — including a VOLATILE one, which reaches the report as
+        // `Unrestorable` — and `account_for` below refuses a run in which the exclusion ate
+        // the whole population.
+        let claim = battery::restoration_claim(restore);
         let after = values_of(camera.as_mut());
+        let mut compared = 0usize;
         for (slug, was) in &before {
-            if volatile.contains(slug) {
+            if !claim.speaks_for(slug) {
                 continue;
             }
+            compared += 1;
             assert_eq!(
                 after.get(slug),
                 Some(was),
@@ -1991,13 +2021,14 @@ fn hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_rest
         }
         sessions += 1;
         println!(
-            "{}: calibration session {} — {} sample(s), restore complete, {} control(s) back \
-             where the sweep found them",
+            "{}: calibration session {} — {} sample(s), restore complete, {compared} of {} \
+             control(s) back where the sweep found them",
             info.id,
             session.id,
             outcome.samples.len(),
             before.len()
         );
+        claim.account_for(info.id.as_str(), compared);
     }
 
     if sessions == 0 {
@@ -2662,9 +2693,12 @@ fn spawn_the_cycle(helper: &Utf8Path) -> (std::process::Child, schema::time::Sta
 /// - the report is *complete*, so a control that could not be put back is a red run rather
 ///   than a line nobody reads;
 /// - every control the report says it **wrote or found correct** reads back at its recorded
-///   value. Controls the report names [`RestoreOutcome::OwnedByAutomation`] are excluded by
-///   the report rather than by a list here: their value is the automation's \[PF:24\], and
-///   demanding a number from an algorithm is asserting the device is not what it says.
+///   value. Controls the report names `OwnedByAutomation` are excluded by the report rather
+///   than by a list here: their value is the automation's \[PF:24\], and demanding a number
+///   from an algorithm is asserting the device is not what it says. That reading of a report
+///   used to live in this function and now lives in [`battery::restoration_claim`], because
+///   two calibration arms and the round-trip arm above owed the same exclusion and were
+///   keying on `VOLATILE` instead — see that type for what the difference cost.
 /// - what needed putting back is printed rather than asserted. A cycle that disturbed
 ///   nothing is a legitimate answer on a desk with no gimbal on it, and asserting that the
 ///   device misbehaves would make this arm fail on somebody else's hardware.
@@ -2721,30 +2755,15 @@ fn restore_every_camera(
         // The two populations come off the *report*, never off a list written here: which
         // controls a restore claims to have put back is the restore's answer, and a test
         // that decided it for itself would be asserting against its own opinion.
-        let mut owned: BTreeSet<&str> = BTreeSet::new();
-        let mut claimed: BTreeSet<&str> = BTreeSet::new();
-        for outcome in &report.outcomes {
-            match outcome {
-                schema::snapshot::RestoreOutcome::OwnedByAutomation { control, .. } => {
-                    owned.insert(control.as_str());
-                }
-                schema::snapshot::RestoreOutcome::Restored { applied } => {
-                    claimed.insert(applied.slug.as_str());
-                }
-                schema::snapshot::RestoreOutcome::AlreadyCorrect { control } => {
-                    claimed.insert(control.as_str());
-                }
-                // Left to `is_complete()` below, which is the one place that decides what a
-                // control nobody could put back costs the run.
-                schema::snapshot::RestoreOutcome::Unrestorable { .. } => {}
-            }
-        }
+        let claim = battery::restoration_claim(&report);
+        let mut compared = 0usize;
         let mut moved: Vec<String> = Vec::new();
         for entry in &snapshot.entries {
             let slug = entry.control.as_str();
-            if !claimed.contains(slug) {
+            if !claim.speaks_for(slug) {
                 continue;
             }
+            compared += 1;
             assert_eq!(
                 after_restore.get(slug),
                 Some(&entry.value),
@@ -2785,14 +2804,11 @@ fn restore_every_camera(
                 moved.join(", ")
             );
         }
-        if !owned.is_empty() {
-            println!(
-                "  {} control(s) left to their automation on {} [PF:24]: {}",
-                owned.len(),
-                info.id,
-                owned.iter().copied().collect::<Vec<_>>().join(", ")
-            );
-        }
+        // …and what it did **not** claim, in the vocabulary `scripts/smoke-hw.sh` counts.
+        // This line used to be a plain `println!` naming the same controls, which meant the
+        // one arm that already knew about PF:24 was declining claims the rung's own census
+        // never counted — AGENTS rule 3's "named, counted" with the second half missing.
+        claim.account_for(info.id.as_str(), compared);
     }
 }
 

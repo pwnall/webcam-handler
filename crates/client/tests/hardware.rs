@@ -43,7 +43,12 @@
 //! **The sweep writes to the camera and puts it back** (AGENTS rule 8). The restoration is
 //! the product's own — `calibrate restore`, the same call a crash recovery makes — and it is
 //! *asserted* against a snapshot this suite took before the session opened, over the same
-//! socket, so a restore that reported success without writing fails here.
+//! socket, so a restore that reported success without writing fails here. The population it
+//! is asserted over is the restore report's own claim
+//! ([`testkit::battery::restoration_claim`]): a control the device's automation owns at both
+//! ends is excluded, named and counted, because its read-back is an algorithm's answer and
+//! not a setting \[PF:24\] — and a restore whose exclusions left nothing to compare fails
+//! rather than passing quietly.
 //!
 //! **No motor moves.** A brightness-class control is swept, `allow_motion` is false, and the
 //! target predicate asks [`testkit::battery::is_motorized`] — the same question the
@@ -635,16 +640,37 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
         restore.unrestored()
     );
     // …and the report is checked against the device rather than believed. A second snapshot
-    // over the same socket, compared with the first: every control that was not VOLATILE at
-    // witness time is back where the session found it. A volatile value cannot be
-    // meaningfully restored and the snapshot says which those are, which is why they are
-    // skipped here rather than silently tolerated.
+    // over the same socket, compared with the first: every control **the report says it put
+    // back** is where the session found it, and which those are is
+    // [`testkit::battery::restoration_claim`]'s answer rather than this file's.
+    //
+    // The filter was the witness snapshot's own `was_volatile` flag until PF:24 measured
+    // what that flag does not say. A sweep photographs the scene at every sample and a
+    // camera's auto-white-balance reacts to precisely that, so on the Logitech BRIO
+    // `white_balance_temperature` — INACTIVE, **not** VOLATILE — moved between a
+    // `calibrate restore` that reported itself complete and the closing snapshot two
+    // round-trips later. Nothing about the socket, the daemon or the engine was wrong in
+    // those runs; the arm was demanding a number from an algorithm.
+    //
+    // Asking the report is what makes the exclusion the *device's* statement. It is
+    // `OwnedByAutomation` only for a control that was INACTIVE when the snapshot was taken
+    // **and** is INACTIVE now — a control this session's own sweep switched an automation
+    // off for and then handed back stays in the population, which is the half a blanket
+    // "skip INACTIVE controls" rule would have thrown away along with the defect. Excluding
+    // by *name* would have been the version AGENTS rule 7 forbids outright.
+    //
+    // Two things are still asserted and neither is negotiable: the swept control itself
+    // below, and `restore.is_complete()` above, which is where a control nobody could put
+    // back — VOLATILE ones included, since those reach the report as `Unrestorable` — costs
+    // the run. `account_for` adds the third: a restore whose exclusions ate the whole
+    // population is a red arm, not a green one that compared nothing.
     let after = remote
         .snapshot(&info.id)
         .unwrap_or_else(|error| panic!("{}: the closing snapshot failed: {error}", info.id));
+    let claim = battery::restoration_claim(&restore);
     let mut compared = 0usize;
     for entry in &witness.entries {
-        if entry.was_volatile {
+        if !claim.speaks_for(entry.control.as_str()) {
             continue;
         }
         compared += 1;
@@ -658,6 +684,11 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
             entry.value
         );
     }
+    // The swept control is asserted whatever the claim says about anything else, and it can
+    // never be excluded by it: `brightness_class_target` refuses an INACTIVE control before
+    // the session opens, so a sweep target that came back as `OwnedByAutomation` would mean
+    // the sweep left an automation holding the control it borrowed — which is a defect this
+    // line is entitled to report as one.
     assert_eq!(
         recorded(&after, &control),
         Some(&held),
@@ -665,11 +696,12 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
         info.id
     );
     println!(
-        "{}: restored — {} outcome(s), {compared} non-volatile control(s) compared against the \
+        "{}: restored — {} outcome(s), {compared} claimed control(s) compared against the \
          opening snapshot, {control} back at {held:?}",
         info.id,
         restore.outcomes.len()
     );
+    claim.account_for(info.id.as_str(), compared);
     Some(control)
 }
 
