@@ -192,6 +192,27 @@ fn offered_modes(invariant: &schema::profile::ProfileInvariant) -> String {
         .join(" ")
 }
 
+/// The format tree's two magnitudes: how many sizes it offers across every pixel format,
+/// and how many frame intervals hang off those sizes.
+///
+/// [`offered_modes`] already carries all of this and more, and it is two hundred characters
+/// wide. These two numbers exist because `smoke-hw.sh`'s census greps *only* lines beginning
+/// `SKIP` out of the run log and reprints them as the suite's declined claims, so whatever a
+/// decline wants a reader to know a week later has to fit on that first line. PF:23's whole
+/// cost was that the shrink from seven sizes to six had to be re-derived out of committed
+/// JSON by hand; "7 size(s)/48 rate(s) against 6/32" in the census is the cheapest possible
+/// version of that column, and the full trees follow underneath for anyone reading the
+/// transcript itself.
+fn tree_extent(invariant: &schema::profile::ProfileInvariant) -> (usize, usize) {
+    let sizes: Vec<&schema::camera::FrameSizeInfo> = invariant
+        .formats
+        .iter()
+        .flat_map(|entry| entry.sizes.iter())
+        .collect();
+    let intervals = sizes.iter().map(|offered| offered.intervals.len()).sum();
+    (sizes.len(), intervals)
+}
+
 #[test]
 #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
 fn hw_controls_enumerate_on_every_node_without_panicking() {
@@ -361,16 +382,50 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
     // block is excluded by construction — the camera has been used since.
     //
     // This arm is the second consumer of the same comparison the arm above uses:
-    // `invariant_matches` compares formats, controls and pairs exactly and hands the
+    // `invariant_difference` compares formats, controls and pairs exactly and hands the
     // `info` half to `CameraInfo::differing_fields`. It had the identical defect and
     // never got to show it, because the suite stopped at the first failure — `capture`
     // copies `camera.info()` verbatim into the invariant section, node paths and all, so
     // the old `self.invariant == other.invariant` compared them too [PF:22, note N63].
+    //
+    // **A difference confined to the format tree is a device fact and is declined rather
+    // than failed** (owner's ruling, 2026-08-13: "a camera's advertised support may change
+    // each time the camera is plugged in … we don't need to worry about support changing
+    // while the camera is connected"). That is not this arm going soft, and the reason is
+    // that the ruling is narrow and PF:23 measured the narrowness twice. On 2026-08-11 the
+    // OBSBOT Tiny 3 stopped advertising 3840x2160 and 120 fps while its `CameraInfo` half
+    // answered `differing_fields` == [] and its control set stayed identical, "all 24
+    // controls, byte for byte"; on 2026-08-13 the entire tree came back, to the same seven
+    // sizes and forty-eight intervals it had on 2026-08-08, again with nothing else moving,
+    // and this time with a bus disconnect and re-enumeration in the journal to point at. So
+    // the section that a plug event has been seen to move is `formats`, and only `formats`
+    // — which is why the branch below asks
+    // `InvariantDifference::is_only_the_format_tree` rather than "did the formats differ".
+    // A formats difference with a control difference beside it is two findings, one of them
+    // unexplained, and it stays red; so does anything touching identity or the measured
+    // pairs.
+    //
+    // **What this arm gives up by declining, and why the give-up is bounded.** A decline
+    // means nobody is asserting that the corpus still describes what this device offers,
+    // and PF:23 is emphatic that a document describing a device wrongly is "the one thing a
+    // corpus may not be". The defence is that the decline is loud: it prints what the
+    // corpus says and what the device says, in sizes and rates and then in full, so a stale
+    // corpus is a paragraph in the transcript rather than an absence. What it must never
+    // become is the habit note N63 names — "corpus red means re-capture until green" — and
+    // the guard against that is the same one PF:23 already wrote down: the operative clause
+    // is *without saying why*, and a re-capture still lands with a note or not at all.
+    //
+    // The sibling arm above needs none of this. `hw_enumeration_matches_the_committed_
+    // profile` compares `CameraInfo::differing_fields` and nothing else — the format tree
+    // never reaches it — so the 2026-08-13 ruling has exactly one home in this file
+    // (design §2.10), and a camera whose *identity* moved is still that arm's hard failure
+    // and this one's too.
     let Some((backend, cameras)) = attached() else {
         return;
     };
 
     let mut compared = 0usize;
+    let mut declined = 0usize;
     for info in &cameras {
         let Some((name, committed)) = committed_for(info) else {
             continue;
@@ -394,47 +449,101 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
         )
         .unwrap_or_else(|error| panic!("{name}: capture failed: {error}"));
 
-        assert!(
-            fresh.invariant_matches(&committed),
-            "{name}: a fresh capture's invariant section differs from the committed one \
-             (info: {:?}).\n\
-             committed offers: {}\n\
-             fresh offers:     {}\n\
-             Three things do this and they are not answered the same way: the corpus is \
-             stale, the kernel changed behaviour, or the device changed what it \
-             advertises. The third is the one this tool cannot tell from the other two \
-             on its own, and it is what happened on 2026-08-11, when the OBSBOT stopped \
-             advertising 3840x2160 and 120 fps with nothing about this code or this \
-             kernel having moved [PF:23]. Read the device's own frame descriptors — \
-             `lsusb -d VID:PID -v | grep -E 'wWidth|wHeight|dwFrameInterval'` — because \
-             that answer comes from the hardware without passing through anything here. \
-             None of the three is fixed by re-capturing without saying why.\n\
-             committed: {:#?}\nfresh: {:#?}",
-            committed
-                .invariant
-                .info
-                .differing_fields(&fresh.invariant.info),
-            offered_modes(&committed.invariant),
-            offered_modes(&fresh.invariant),
-            committed.invariant,
-            fresh.invariant
-        );
+        // Provenance first, and unconditionally: it is a fact about the two documents
+        // rather than about the device, so the branch below must not be able to skip it.
         assert_ne!(
             fresh.provenance, committed.provenance,
             "{name}: a re-capture must carry its own provenance"
         );
         compared += 1;
-        // What matched, not just that something did: a green line reading only "matches"
-        // is what every run before 2026-08-11 printed, and it left the next reader with
-        // no record of what the device used to offer [PF:23].
-        println!(
-            "{name}: a fresh capture reproduces the committed invariant section; it \
-             offers {}, {} control(s)",
-            offered_modes(&fresh.invariant),
-            fresh.invariant.controls.len()
-        );
+
+        // Three arms, and the order of the last two is the safety property: the decline is
+        // reached only by a difference that answered `is_only_the_format_tree`, and every
+        // other difference — including one in a section added to `ProfileInvariant` after
+        // this was written — falls through to the panic. This fails closed. Writing it the
+        // other way round, with the panic guarded and the decline as the catch-all, would
+        // read the same today and would silently grant the 2026-08-13 ruling to the next
+        // section somebody adds, which is the one thing that ruling does not say.
+        match committed.invariant_difference(&fresh) {
+            None => {
+                // What matched, not just that something did: a green line reading only
+                // "matches" is what every run before 2026-08-11 printed, and it left the
+                // next reader with no record of what the device used to offer [PF:23].
+                println!(
+                    "{name}: a fresh capture reproduces the committed invariant section; it \
+                     offers {}, {} control(s)",
+                    offered_modes(&fresh.invariant),
+                    fresh.invariant.controls.len()
+                );
+            }
+            Some(difference) if difference.is_only_the_format_tree() => {
+                declined += 1;
+                let (was_sizes, was_rates) = tree_extent(&committed.invariant);
+                let (now_sizes, now_rates) = tree_extent(&fresh.invariant);
+                // The counts sit on the `SKIP` line because that is the only line the
+                // suite's census reprints; the trees follow because the counts cannot say
+                // *which* mode moved, and PF:23's two events differ at both depths of the
+                // tree. The word "stale" is in here deliberately: a decline that only said
+                // "the device changed" would let a corpus nobody re-captured read as a
+                // healthy one for as long as somebody left it.
+                println!(
+                    "SKIP (partial): {name} — a fresh capture differs from the committed \
+                     profile in the format tree and in nothing else \
+                     ({now_sizes} size(s)/{now_rates} rate(s) fresh against \
+                     {was_sizes}/{was_rates} committed), which the owner's ruling of \
+                     2026-08-13 makes a fact about the device rather than a defect: a \
+                     camera's advertised support may change each time it is plugged in, and \
+                     PF:23 measured this device's tree shrinking and then returning whole \
+                     with its identity and its control set unmoved through both. So this \
+                     arm compared identity, {} control(s) and {} measured pair(s) against \
+                     the device and claims nothing about the modes on offer. The committed \
+                     profile is stale in the strict sense — it describes a tree this device \
+                     is not advertising — and PF:23's own answer to that is a re-capture \
+                     that says why, never a re-capture that merely goes green.\n\
+                     committed offers: {}\n\
+                     fresh offers:     {}",
+                    fresh.invariant.controls.len(),
+                    fresh.invariant.measured_pairs.len(),
+                    offered_modes(&committed.invariant),
+                    offered_modes(&fresh.invariant),
+                );
+            }
+            Some(difference) => panic!(
+                "{name}: a fresh capture's invariant section differs from the committed one \
+                 in {difference}.\n\
+                 committed offers: {}\n\
+                 fresh offers:     {}\n\
+                 The format tree alone would be declined here [PF:23; owner's ruling, \
+                 2026-08-13] and this difference is not confined to it, so it is one of the \
+                 three the ruling does not cover: the corpus is stale, the kernel changed \
+                 behaviour, or the device changed something nobody has licensed it to \
+                 change. The third is the one this tool cannot tell from the other two on \
+                 its own — it is what happened on 2026-08-11, when the OBSBOT stopped \
+                 advertising 3840x2160 and 120 fps with nothing about this code or this \
+                 kernel having moved [PF:23]. Read the device's own frame descriptors — \
+                 `lsusb -d VID:PID -v | grep -E 'wWidth|wHeight|dwFrameInterval'` — and its \
+                 control set, because those answers come from the hardware without passing \
+                 through anything here. None of the three is fixed by re-capturing without \
+                 saying why.\n\
+                 committed: {:#?}\nfresh: {:#?}",
+                offered_modes(&committed.invariant),
+                offered_modes(&fresh.invariant),
+                committed.invariant,
+                fresh.invariant
+            ),
+        }
     }
 
+    if declined > 0 {
+        // The mirror of the enumeration arm's renumbering tally, and for the same reason:
+        // a per-camera line answers "what did this device do", and only a count answers
+        // "how much of what this arm compared did it end up claiming".
+        println!(
+            "{declined} of {compared} compared camera(s) advertise a format tree the corpus \
+             does not carry, so this arm made no claim about their modes [PF:23; owner's \
+             ruling, 2026-08-13]"
+        );
+    }
     if compared == 0 {
         println!("SKIP: no attached camera matches a committed profile, so nothing was compared");
     }

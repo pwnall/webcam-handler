@@ -578,12 +578,25 @@ fn the_greyscale_camera_is_in_the_corpus_because_grayscale_is_not_optional() {
 /// The `before` column is not here because it is not a fact about the corpus: it is what
 /// the *previous* rule would have answered, and it lives in N85 where the comparison
 /// belongs. What this table pins is the answer this build gives.
+///
+/// **A row here moves when a device changes what it advertises, and one just did.**
+/// `obsbot-tiny3` read `MJPG 1920x1440` from the day N85 landed until 2026-08-13, because
+/// the corpus was captured while the camera had stopped offering 3840×2160 \[PF:23\]. The
+/// tree came back whole on a replug, the corpus was re-captured to it under the owner's
+/// ruling of that day — advertised support may change at each plug event — and the largest
+/// mode moved with it. That is not a re-ranking and nothing about D5 was touched: the rule
+/// asked the same question and the *device* gave a different answer. It is recorded here
+/// rather than left as a number that changed, because this row is the one place in the
+/// workspace where a plug event visibly reaches the product — `wch photo` with no flags
+/// takes a 4K frame off this camera today and took a 1920×1440 one last week, and a reader
+/// comparing two sessions' output deserves to be told why rather than to go looking for the
+/// commit that re-ranked something.
 const RANKED_DEFAULT: &[(&str, [u8; 4], u32, u32)] = &[
     ("chicony-ir", *b"GREY", 640, 360),
     ("chicony-rgb", *b"MJPG", 2592, 1944),
     ("dell-u3224kb", *b"MJPG", 3840, 2160),
     ("logitech-brio", *b"MJPG", 4096, 2160),
-    ("obsbot-tiny3", *b"MJPG", 1920, 1440),
+    ("obsbot-tiny3", *b"MJPG", 3840, 2160),
 ];
 
 #[test]

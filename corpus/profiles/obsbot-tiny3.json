@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "provenance": {
-    "captured_at": "2026-08-11T21:54:09.425128405Z",
+    "captured_at": "2026-08-13T18:34:09.371805456Z",
     "kernel": "7.0.0-29-generic",
     "tool_version": "0.1.0",
-    "capturer": "victor@costan.us (re-capture: the device stopped advertising 3840x2160 and 120 fps, PF:23)",
+    "capturer": "victor@costan.us (re-capture: the device advertises 3840x2160 and 120 fps again, PF:23; owner's ruling 2026-08-13 — advertised support may change at each plug event)",
     "backend": "v4l2"
   },
   "invariant": {
@@ -24,7 +24,7 @@
       "bus_info": "usb-0000:00:14.0-1",
       "nodes": [
         {
-          "path": "/dev/video0",
+          "path": "/dev/video8",
           "kind": {
             "kind": "video_capture"
           },
@@ -32,7 +32,7 @@
           "capabilities": 2225078273
         },
         {
-          "path": "/dev/video1",
+          "path": "/dev/video9",
           "kind": {
             "kind": "meta_capture"
           },
@@ -60,6 +60,11 @@
               "height": 1080
             },
             "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 120
+              },
               {
                 "kind": "discrete",
                 "numerator": 1,
@@ -110,10 +115,54 @@
           {
             "size": {
               "kind": "discrete",
+              "width": 3840,
+              "height": 2160
+            },
+            "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 30
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1003,
+                "denominator": 30060
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 25
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 24
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 20
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 15
+              }
+            ]
+          },
+          {
+            "size": {
+              "kind": "discrete",
               "width": 1280,
               "height": 720
             },
             "intervals": [
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 120
+              },
               {
                 "kind": "discrete",
                 "numerator": 1,
@@ -262,6 +311,26 @@
                 "kind": "discrete",
                 "numerator": 1,
                 "denominator": 30
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 25
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 24
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 20
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 15
               }
             ]
           },
@@ -276,6 +345,26 @@
                 "kind": "discrete",
                 "numerator": 1,
                 "denominator": 30
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 25
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 24
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 20
+              },
+              {
+                "kind": "discrete",
+                "numerator": 1,
+                "denominator": 15
               }
             ]
           }
@@ -903,7 +992,7 @@
       },
       "pan_absolute": {
         "kind": "int",
-        "value": -28800
+        "value": 0
       },
       "pan_speed": {
         "kind": "int",
@@ -927,7 +1016,7 @@
       },
       "tilt_absolute": {
         "kind": "int",
-        "value": -75600
+        "value": 0
       },
       "tilt_speed": {
         "kind": "int",

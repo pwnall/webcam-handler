@@ -13276,3 +13276,95 @@ drawn at that emit, and moving anything across it moves the law with it.
 
 **Retires when:** nothing retires it. It is a property of a stream with readers who did not
 make the call.
+
+## N89 — A camera's advertised support may change at each plug event, so the format tree is invariant *within a connection* and nowhere else
+
+**Doc:** AGENTS rule 4 ("the device is the only authority on itself"; measured wins; new
+hardware behaviour lands as corpus + a note the day it is seen); design **T3** (the profile's
+two sections and their differing comparison semantics); \[PF:23\], whose second amendment
+predicted this exact question; \[PF:9\], whose retired example is involved.
+
+**The ruling (owner, 2026-08-13):** *"we need to be prepared for the fact that a camera's
+advertised support may change each time the camera is plugged in. I don't think we need to
+worry about support changing while the camera is connected."* Asked to choose between
+re-capturing the stale profile and changing what the arm treats as invariant, the owner
+answered **both**.
+
+**Repo:** `DeviceProfile::invariant_difference` and `InvariantDifference` in
+`webcam-handler-schema`; the three-way match in
+`hw_profile_capture_reproduces_the_committed_invariant_section`; a re-captured
+`corpus/profiles/obsbot-tiny3.json`; one row of `RANKED_DEFAULT` in
+`crates/backends/fake/tests/corpus_replay.rs`.
+
+### Why `formats` and only `formats`, which is the load-bearing part
+
+The narrowness is **measured twice, in opposite directions**. When the OBSBOT stopped
+advertising 3840×2160 and 120 fps, PF:23 recorded that its `CameraInfo` half was identical
+(`differing_fields` answered `[]`) and its control set was identical, "all 24 controls, byte
+for byte" — only the format tree moved. When the whole tree came back two days later it came
+back the same way, and the re-capture confirmed the control set byte-identical again, with the
+only `info` difference the `/dev/videoN` paths note **N63** already made inert. Two
+observations, opposite directions, exactly one of the four sections moving in each.
+
+So `formats` gets a predicate and the other three do not. **The day a control set is measured
+moving across a plug event is the day this shape is wrong**, and that is this decision's
+retirement condition rather than a hypothetical.
+
+### The predicate fails closed, and its obvious spelling fails open
+
+`is_only_the_format_tree` is `self.sections() == [FORMATS]`. The spelling that reads
+identically in review — `formats && info.is_empty() && !controls && !measured_pairs` — keeps
+answering `true` when a *fifth* section is added later, which would silently extend the
+owner's ruling to something nobody was asked about. The equality answers `false` for anything
+it does not recognise. This was written the wrong way first and caught by re-reading a comment
+against the code it described; it is recorded because the two spellings are indistinguishable
+at a glance and only one of them is safe to add a field beside.
+
+### What the decline costs, and it is not free
+
+This is **the first `SKIP (partial)` in the hardware suite that hides the corpus being wrong
+rather than the hardware lacking something.** Every other decline in that suite is "no
+compound control", "no motor", "no perturbable control" — facts about a device's shape.
+This one says a committed document does not describe the device in front of it, and passes.
+
+Nothing bounds how long a stale corpus may sit behind that line. The only defence is that the
+line is loud: it names the extent (`7 size(s)/48 rate(s) fresh against 6/32 committed`), it
+uses the word *stale* about our own corpus, and it prints both trees underneath. **A session
+that meets this decline owes a re-capture with a reason; leaving it is a decision and not a
+default.** The abrasive wording is deliberate — the softer phrasing ("the device changed")
+would let a corpus nobody re-captured read as healthy indefinitely, which is the failure this
+whole design exists to prevent.
+
+### The plug event reached the product, once, visibly
+
+`RANKED_DEFAULT`'s OBSBOT row moved `MJPG 1920×1440` → `MJPG 3840×2160`, so **an unflagged
+`wch photo` on this camera returns a 4K frame today and returned a 1920×1440 one last week,
+because the camera was unplugged and plugged back in.** D5 and note N85 were not touched: the
+ranking rule asked the same question and the device gave a different answer. This is the first
+measured instance of a plug-event capability change propagating through the format ranking into
+what an agent gets back, and it is the concrete form of the thing \[PF:26\] is about.
+
+### What is now owed, and it is a schema decision rather than a note
+
+PF:23's "what would make the next one provable" gap asks for a `ProfileProvenance` carrying
+`bcdDevice`, the negotiated link speed and the boot, and defers it as a wire change needing an
+owner's decision. **Under this ruling that stops being a nice-to-have.** If advertised support
+changes at every plug event, a profile that cannot say *which enumeration it was taken under*
+is structurally unable to answer "is this document stale, and since when" — which is precisely
+the question the decline above leaves open. Recorded here as the successor question, not
+answered.
+
+Measured this session and worth having in one place when it is: ten enumerations of this
+device since 2026-08-08, every one `high-speed` (480 Mbps, USB 2.00) and every one
+`bcdDevice 5.10`. **Neither link speed nor the USB-reported device version distinguishes the
+two capability sets**, so a provenance field carrying those two alone would not have answered
+it; what separates the observations is the enumeration itself. A future session must not treat
+`bcdDevice` as a firmware witness on this device — the owner updated its firmware in the
+02:47→03:01 window on 2026-08-13 and the field did not move.
+
+**Amend this note if** a device is measured changing its advertised support *without* a plug
+event, which is the half the owner's ruling explicitly sets aside — that would make the
+decline above unsound rather than merely loud.
+
+**Retires when:** a control set, an identity or a measured pair set is seen moving across a
+plug event, at which point the one-section predicate stops describing the hardware.
