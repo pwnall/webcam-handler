@@ -51,6 +51,32 @@
 //! [`crate::lifecycle::sweep_write`], every time. It persists the pre-sweep snapshot
 //! before the first write reaches the camera, which is the whole of design §6's crash
 //! story; a second door here would be a second chance to get that ordering wrong.
+//!
+//! ## One start, one end
+//!
+//! A sweep that emits [`CalibrationProgress::SweepStarted`] emits **exactly one** terminal
+//! event — `SweepFinished` or `SweepInterrupted`, the two
+//! [`CalibrationProgress::is_terminal`] answers — on every path out of [`run`].
+//!
+//! It is a law rather than a courtesy because the stream is read by consumers that are not
+//! the caller. Whoever made the call learns of a refusal from its own answer; a *subscriber*
+//! has nothing else to read. P4e's subscription is per client, the web client's calibration
+//! view exists to track a sweep it did not start, and an agent watching a session another
+//! process drives is in the same position — to all of them a start with no end is
+//! indistinguishable from a sweep still running, and stays that way. `wchc` pays for it from
+//! the other side: the bounded tail notes N69 and N70 built ends on `is_terminal`, so an
+//! ending that is never coming costs it the whole budget and still renders a sweep that
+//! stops mid-sentence. AGENTS' "who runs this" is what makes that decisive rather than
+//! untidy — the primary consumer is an unattended agent harness with no hands, and a
+//! progress stream is the only thing it can watch.
+//!
+//! The guarantee is structural: the private `execute` is everything between the two events,
+//! every one of its refusals is one `Result` arriving at one `match` in [`run`], and the
+//! private `interrupted` is the only place that turns one into a terminal event. A `?` added
+//! anywhere inside that body is covered the day it is written. It was a property of three
+//! separate return sites before, and all three of them were wrong: the photo directory's
+//! name, the directory's creation and the closing `SweepFinished` commit each returned with
+//! the stream still open.
 
 use schema::backend::Camera;
 use schema::camera::SinkFidelity;
@@ -149,6 +175,12 @@ impl std::fmt::Debug for SweepContext<'_> {
 /// camera or the store said at the sample that stopped it. A sweep that stops part way
 /// leaves the samples it already took on the record — they happened — and the control
 /// mid-sweep rather than in a terminal state.
+///
+/// Every one of those refusals that happens **after** the sweep has announced itself also
+/// emits [`CalibrationProgress::SweepInterrupted`] first, and every other exit emits
+/// [`CalibrationProgress::SweepFinished`]: this module's "one start, one end" is a property
+/// of the error type as much as of the event stream, and the two halves are the same
+/// `match`.
 pub fn run(
     cx: &SweepContext<'_>,
     session: &mut Session,
@@ -168,7 +200,6 @@ pub fn run(
     // `limits::MAX_SWEEP_SAMPLES` and `limits::MAX_MOTION_SWEEP_SAMPLES` and widens the
     // stride rather than truncating the range. Nothing in this module re-derives it.
     let plan = sweep::plan(&desc, &request.plan, request.allow_motion)?;
-    let total = plan.total();
     let pairs = session.pairs.clone();
     // Which pass this is, read before the sweep starts: the count of samples the control
     // already carries is the index this pass's first sample will take, and it is what keeps
@@ -180,92 +211,131 @@ pub fn run(
         .controls
         .get(&request.control)
         .map_or(0, |entry| entry.samples.len());
+    let sweeping = Sweeping {
+        request,
+        pairs: &pairs,
+        plan: &plan,
+        pass_from,
+        total: plan.total(),
+    };
 
+    // Nothing above this line is announced, so nothing above it owes an ending: a control
+    // this camera does not have, a plan the planner refuses and a transition the D8 machine
+    // refuses are all sweeps that never started. `begin_sweep` is on this side of the line
+    // deliberately — the document says yes before the stream says "started", so a refused
+    // transition cannot announce a sweep that is not happening.
     lifecycle::commit(store, lock, session, stream.at(clock), |draft, now| {
-        session::begin_sweep(draft, &request.control, &request.plan, total, now)
+        session::begin_sweep(draft, &request.control, &request.plan, sweeping.total, now)
     })?;
     stream.emit(
         clock,
         CalibrationProgress::SweepStarted {
             control: request.control.clone(),
             plan: request.plan.clone(),
-            total,
+            total: sweeping.total,
         },
     );
 
-    let session_dir = store.session_dir(session);
-    let photo_dir_rel = crate::store::SessionStore::photo_dir_rel(&request.control, pass_from)?;
-    store.create_photo_dir(lock, &session_dir, &request.control, pass_from)?;
-
+    // And below it, one ending on each arm and nowhere else. The `match` is the whole
+    // mechanism: [`execute`] cannot leave except through its `Result`, so a fallible step
+    // added inside it — a directory, a commit, a fourth thing nobody has thought of — is
+    // announced as an interruption without anybody remembering to announce it.
     let mut samples: Vec<Sample> = Vec::with_capacity(plan.values.len());
-    for (index, &value) in plan.values.iter().enumerate() {
+    match execute(cx, session, camera, &sweeping, &stream, &mut samples) {
+        Ok(taken) => {
+            stream.emit(
+                clock,
+                CalibrationProgress::SweepFinished {
+                    control: request.control.clone(),
+                    samples: taken,
+                },
+            );
+            Ok(SweepOutcome {
+                control: request.control.clone(),
+                plan,
+                samples,
+            })
+        }
+        Err(error) => Err(interrupted(
+            cx, session, &sweeping, &stream, &samples, error,
+        )),
+    }
+}
+
+/// One announced sweep: what its body needs at every sample, and the count its terminal
+/// event reports.
+///
+/// Bundled for the reason [`SweepContext`] is, and for one more: [`execute`] and
+/// [`interrupted`] are two halves of one `match` and have to agree about `total` and about
+/// which control is being swept. Two parameter lists agreeing by convention is how a
+/// `SweepInterrupted` comes to report a total no `SweepStarted` announced.
+struct Sweeping<'a> {
+    request: &'a SweepRequest,
+    pairs: &'a [AutomationPair],
+    plan: &'a SweepPlan,
+    /// The sample count the control already carried, which is this pass's photo directory
+    /// (note N22).
+    pass_from: usize,
+    /// [`SweepPlan::total`], derived once: the number `begin_sweep` recorded, the number
+    /// `SweepStarted` announced, and the number both terminal events report.
+    total: u32,
+}
+
+/// Everything a sweep does between its two events, and the count the ending carries.
+///
+/// **The property this shape exists for**: a sweep that emitted `SweepStarted` emits exactly
+/// one terminal event. That is structural here and not reviewed. Every failure inside this
+/// function — the photo directory's name, the directory itself, a sample, the closing commit
+/// — leaves through the one `Result` that [`run`]'s `match` reads, so the obligation is
+/// discharged by the shape of the call rather than by each `?` remembering it. The previous
+/// arrangement discharged it at one `return` out of four, and the three that forgot were not
+/// exotic: a slug with no directory name, an `ENOSPC`/`EEXIST` on the photo directory, and
+/// the `SweepFinished` commit itself — a sweep that took every one of its samples and then
+/// could not write down that it had.
+///
+/// The closing commit is **inside** for exactly that last case. It is what makes
+/// `SweepFinished` mean "the document says this sweep finished" rather than "the executor
+/// believes it did": if it refuses, the control is still `Sweeping { done: total }` on disk
+/// and the honest live event is the interruption, carrying the store's `errno` and a `taken`
+/// that equals `total`. Emitting `SweepFinished` there would announce a state that never
+/// landed, and the next process to read the document would disagree with the client that
+/// watched the sweep.
+///
+/// # Errors
+///
+/// [`Error::ControlUnknown`] for a slug with no usable directory name, [`Error::StorageIo`]
+/// when the pass's photo directory cannot be made or the closing transition cannot be
+/// persisted, and whatever the camera or the store said at the sample that stopped it.
+fn execute(
+    cx: &SweepContext<'_>,
+    session: &mut Session,
+    camera: &mut dyn Camera,
+    sweeping: &Sweeping<'_>,
+    stream: &Stream<'_>,
+    samples: &mut Vec<Sample>,
+) -> Result<u32> {
+    let (store, lock, clock) = (cx.store, cx.lock, cx.clock);
+    let request = sweeping.request;
+
+    let session_dir = store.session_dir(session);
+    let photo_dir_rel = SessionStore::photo_dir_rel(&request.control, sweeping.pass_from)?;
+    store.create_photo_dir(lock, &session_dir, &request.control, sweeping.pass_from)?;
+
+    for (index, &value) in sweeping.plan.values.iter().enumerate() {
         let index = u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX);
         let step = Step {
             request,
-            pairs: &pairs,
+            pairs: sweeping.pairs,
             photo_dir_rel: &photo_dir_rel,
             session_dir: &session_dir,
             index,
-            total,
+            total: sweeping.total,
             value,
         };
-        match one_sample(cx, session, camera, &step, &stream) {
-            Ok(sample) => samples.push(sample),
-            Err(error) => {
-                // The samples already recorded stand, and the control stays mid-sweep:
-                // this is a sweep that stopped, not a sweep that failed to happen.
-                //
-                // Unless nothing was recorded at all, in which case it *is* a sweep that
-                // failed to happen, and `Sweeping { done: 0 }` is a state with no exit
-                // (`session::abandon_sweep` names them). Best effort by the same reasoning
-                // as the log line below: the sweep already has a refusal to report, and the
-                // store's would displace it.
-                let taken = u32::try_from(samples.len()).unwrap_or(u32::MAX);
-                if samples.is_empty() {
-                    let _ = lifecycle::commit_state(
-                        store,
-                        lock,
-                        session,
-                        stream.at(clock),
-                        |draft, now| session::abandon_sweep(draft, &request.control, now),
-                    );
-                }
-                stream.emit(
-                    clock,
-                    CalibrationProgress::SweepInterrupted {
-                        control: request.control.clone(),
-                        taken,
-                        total,
-                        failure: error.kind(),
-                        detail: error.to_string(),
-                    },
-                );
-                // And the durable half, for the reader who arrives after the terminal is
-                // gone: `calibrate status` shows a control stopped at 3 of 16, and without
-                // this line nothing on disk says whether the camera was unplugged, the
-                // sensor never settled, or the disk filled.
-                //
-                // Best effort **by construction**. The sweep already has a refusal to
-                // report, and answering the caller with the store's instead would say "the
-                // disk is full" to somebody whose camera was pulled out — the one
-                // conversion AGENTS rule 7 forbids. A store that cannot take this line
-                // cannot take the next operation's either, and the caller meets it there.
-                let _ = lifecycle::note(
-                    store,
-                    lock,
-                    session,
-                    stream.at(clock),
-                    SessionEvent::SweepInterrupted {
-                        control: request.control.clone(),
-                        taken,
-                        total,
-                        failure: error.kind(),
-                        detail: error.to_string(),
-                    },
-                );
-                return Err(error);
-            }
-        }
+        // Pushed as it is taken rather than collected at the end, because the caller's
+        // `samples` is what [`interrupted`] counts: a sweep that stops at sample 12 of 16
+        // has to be able to say 12, and a `Vec` the failing call still owned would say 0.
+        samples.push(one_sample(cx, session, camera, &step, stream)?);
     }
 
     let taken = u32::try_from(samples.len()).unwrap_or(u32::MAX);
@@ -276,19 +346,80 @@ pub fn run(
             samples: taken,
         })
     })?;
+    Ok(taken)
+}
+
+/// Stop an announced sweep: put the control back if nothing was recorded, say so live, say
+/// so durably, and hand back the refusal that stopped it.
+///
+/// The one place that ends a sweep unhappily, which is what makes "exactly one terminal
+/// event" checkable by reading rather than by walking the exits. It used to be the tail of
+/// the sample loop's error arm, and being *there* is why the three failures outside that loop
+/// got none of it.
+///
+/// **The error goes in and the same error comes out.** The signature is AGENTS rule 7 in
+/// type form: the sweep already has a refusal to report, and neither of the two store writes
+/// below may displace it — answering "the disk is full" to somebody whose camera was pulled
+/// out is the one conversion that rule forbids. Both are therefore best effort **by
+/// construction**, and a store that cannot take them cannot take the next operation's either,
+/// so the caller meets it there rather than here.
+///
+/// What each of the three does:
+///
+/// - **The samples already recorded stand** and the control stays mid-sweep: this is a sweep
+///   that stopped, not a sweep that failed to happen. Unless nothing was recorded at all, in
+///   which case it *is* a sweep that failed to happen, and `Sweeping { done: 0 }` is a state
+///   with no exit — [`crate::session::abandon_sweep`] is what gives the control back
+///   (note N24, which walked every one of the closed exits). A plan is never empty (the
+///   planner and `begin_sweep` both refuse `total = 0`), so "no samples" here always means a
+///   failure, never a sweep with nothing to do.
+/// - **The live event** is what a watching client is waiting on, and its `taken`/`total` are
+///   where the sweep got to.
+/// - **The durable line**, for the reader who arrives after the terminal is gone:
+///   `calibrate status` shows a control stopped at 3 of 16, and without it nothing on disk
+///   says whether the camera was unplugged, the sensor never settled \[PF:11\], or the disk
+///   filled (note N18).
+fn interrupted(
+    cx: &SweepContext<'_>,
+    session: &mut Session,
+    sweeping: &Sweeping<'_>,
+    stream: &Stream<'_>,
+    samples: &[Sample],
+    error: Error,
+) -> Error {
+    let (store, lock, clock) = (cx.store, cx.lock, cx.clock);
+    let control = &sweeping.request.control;
+    let taken = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+
+    if samples.is_empty() {
+        let _ = lifecycle::commit_state(store, lock, session, stream.at(clock), |draft, now| {
+            session::abandon_sweep(draft, control, now)
+        });
+    }
     stream.emit(
         clock,
-        CalibrationProgress::SweepFinished {
-            control: request.control.clone(),
-            samples: taken,
+        CalibrationProgress::SweepInterrupted {
+            control: control.clone(),
+            taken,
+            total: sweeping.total,
+            failure: error.kind(),
+            detail: error.to_string(),
         },
     );
-
-    Ok(SweepOutcome {
-        control: request.control.clone(),
-        plan,
-        samples,
-    })
+    let _ = lifecycle::note(
+        store,
+        lock,
+        session,
+        stream.at(clock),
+        SessionEvent::SweepInterrupted {
+            control: control.clone(),
+            taken,
+            total: sweeping.total,
+            failure: error.kind(),
+            detail: error.to_string(),
+        },
+    );
+    error
 }
 
 /// One value's worth of work, so the interruption path has one place to catch.
@@ -1184,5 +1315,121 @@ mod tests {
             })
             .collect();
         assert_eq!(indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_sweep_that_cannot_name_its_photo_directory_still_ends_the_stream_it_opened() {
+        // "One start, one end", at the first of the three exits that used to leak from it —
+        // and the one no device in this workspace can produce, which is why it is driven
+        // here. [`SessionStore::photo_dir_rel`] refuses a slug that names no directory, and
+        // it is asked *after* `SweepStarted` is on the wire, so before this the answer to
+        // "what does a client that saw the start see next?" was "nothing, ever".
+        //
+        // The scripted double rather than the fake: the fake replays a captured profile and
+        // no real device enumerates a control whose name slugifies to nothing (E5 — a fake
+        // capability no real device exhibits is a bug in the fake). A hand-assembled camera
+        // is exactly the thing this module's `double` exists to be, and `ControlSlug::parse`
+        // is the constructor that takes a caller's slug verbatim — which is how such a slug
+        // reaches the engine in the first place: off a hand-edited session file or an RPC
+        // request, never off a device.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera =
+            crate::double::ScriptedCamera::new(vec![crate::double::integer("---", 50)]);
+        let control = slug("---");
+        let mut session = session_for(temp.store(), &lock, &mut camera, &control);
+
+        let recorder = Recorder::new();
+        let clock = FrozenClock;
+        let error = run(
+            &context(&temp, &lock, &clock, &recorder),
+            &mut session,
+            &mut camera,
+            &sweep_request(
+                control.clone(),
+                SweepSpec::Explicit {
+                    values: vec![0, 50],
+                },
+            ),
+        )
+        .expect_err("punctuation names no photo directory");
+        assert_eq!(
+            error.kind(),
+            ErrorKind::ControlUnknown,
+            "the store's own refusal was reshaped on its way out: {error}"
+        );
+
+        assert_eq!(
+            recorder.sequence(),
+            vec!["sweep_started", "sweep_interrupted"],
+            "a client that saw the start is still waiting for the end"
+        );
+        let last = recorder
+            .events()
+            .last()
+            .expect("the stream is not empty")
+            .progress
+            .clone();
+        assert!(
+            last.is_terminal(),
+            "the sweep's last event does not end it: {last:?}"
+        );
+        let CalibrationProgress::SweepInterrupted {
+            taken,
+            total,
+            failure,
+            ref detail,
+            ..
+        } = last
+        else {
+            panic!("the sweep ended with {last:?}");
+        };
+        assert_eq!((taken, total), (0, 2));
+        assert_eq!(
+            (failure, detail.as_str()),
+            (ErrorKind::ControlUnknown, error.to_string().as_str()),
+            "the terminal event does not carry the refusal that produced it"
+        );
+        // And the control is handed back rather than left in `Sweeping { done: 0 }` (N24).
+        assert_eq!(
+            session.controls[&control].status,
+            ControlStatus::Untouched,
+            "a sweep that took no samples left the control mid-sweep with no way out"
+        );
+
+        // The twin: the same double, a slug that *does* name a directory, and the sweep gets
+        // past the directory to the first sample — where this camera, which has no frames
+        // scripted, answers `SettleTimeout`. So the refusal above came from the naming and
+        // not from the double being unable to sweep at all, and the `value_set` in between
+        // is where the difference shows. The other terminal event is
+        // `a_clean_sweep_emits_started_then_a_pair_per_sample_then_finished`, over a camera
+        // that delivers frames.
+        let mut named_camera =
+            crate::double::ScriptedCamera::new(vec![crate::double::integer("brightness", 50)]);
+        let named = slug("brightness");
+        let mut named_session = session_for(temp.store(), &lock, &mut named_camera, &named);
+        let further = Recorder::new();
+        let error = run(
+            &context(&temp, &lock, &clock, &further),
+            &mut named_session,
+            &mut named_camera,
+            &sweep_request(
+                named,
+                SweepSpec::Explicit {
+                    values: vec![0, 50],
+                },
+            ),
+        )
+        .expect_err("this double delivers no frames");
+        assert_eq!(
+            error.kind(),
+            ErrorKind::SettleTimeout,
+            "the sweep stopped somewhere else: {error}"
+        );
+        assert_eq!(
+            further.sequence(),
+            vec!["sweep_started", "value_set", "sweep_interrupted"],
+            "a nameable directory did not get the sweep as far as its first sample"
+        );
     }
 }

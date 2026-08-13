@@ -13103,3 +13103,108 @@ three loops that resemble each other.
 
 **Retires when:** nothing retires it. The race it is about is a property of a duplex transport with
 two writers, and the repair is the discipline rather than a bound on the race.
+
+## N88 — A sweep that announced itself ends the stream it opened, and the guarantee is one `match` rather than four `return`s
+
+**Doc:** **D8** (the sweep's execution order and its terminal vocabulary); **N18** (why the
+durable `SweepInterrupted` append is best-effort rather than a swallowed error); **N24**
+(`Sweeping { done: 0 }` is a state with no exit); **N69**/**N70** (the per-client stream, and
+the bounded tail that ends on `is_terminal`); AGENTS rule 7 and "Who runs this, and why".
+
+**Believed:** that the sweep's interruption path was the sample loop's error arm, which emits
+`CalibrationProgress::SweepInterrupted`, writes the durable `SessionEvent::SweepInterrupted`
+best-effort, and returns the refusal. That arm is correct and has been since P3c. What was
+believed without being written down is that it was the *only* way out after the sweep had
+announced itself.
+
+**True:** it was one of four, and the other three were wrong. Between
+`stream.emit(SweepStarted)` and the two terminal emits, `engine::calibrate::run` had three
+fallible steps whose `?` returned with the stream still open — the photo directory's **name**
+(`SessionStore::photo_dir_rel`), the directory's **creation** (`create_photo_dir`), and the
+**closing commit** that writes `SessionEvent::SweepFinished`, which ran *before* the live
+`SweepFinished` was emitted. Nothing closed them one layer up either:
+`crates/daemon/src/server.rs` calls `engine::calibrate::run(…)?` and the refusal goes to the
+RPC answer.
+
+**Repo:** `engine::calibrate::execute` and `engine::calibrate::interrupted`, both private; the
+law is stated in `calibrate.rs`'s module header as "One start, one end"; one `g3` row over
+three tests.
+
+### Who is actually hurt, which is not the caller
+
+Whoever made the call learns of a refusal from its own answer, so for them a missing event is
+untidy rather than harmful. The stream's other readers have nothing else to read. P4e's
+subscription is per *client*; the web client's calibration view exists to track a sweep it did
+not start; an agent watching a session another process drives is in the same position. To all
+of them **a start with no end is indistinguishable from a sweep still running**, and stays
+that way for the life of the process. `wchc` pays from the other side: N69 and N70's bounded
+tail ends on `is_terminal`, so an ending that is never coming costs the whole budget and then
+renders a sweep that stops mid-sentence.
+
+AGENTS' "who runs this" is what makes that decisive rather than a matter of taste. The primary
+consumer is an unattended agent harness with no hands, and a progress stream is the only thing
+it can watch.
+
+### The N24 half, which is the part that was worse than a missing event
+
+`abandon_sweep` lived **inside** the loop's error arm. So a sweep stopped by either photo
+directory failure left the control at `Sweeping { done: 0 }` on disk — precisely the state
+note N24 walks exit by exit to forbid — with no `SessionEvent` line saying why. That control
+could never be swept again and the (camera, task) slot never settled.
+
+N24's *reasoning* was right and its *placement* is what leaked: it reasoned about the exits
+the sample loop takes, and the sweep had exits the sample loop does not. Folding the arm into
+one place repairs that half by construction rather than by a second call.
+
+### Why the shape, and not three fixes
+
+Three of four exits were wrong, which says the review that would have caught the fourth is the
+review that missed these three. So the obligation is discharged where it can be discharged
+once: everything between the two events is a private `execute` returning `Result`, every
+refusal arrives at one `match` in `run`, and one private `interrupted` turns an `Err` into the
+terminal event, the `abandon_sweep` and the durable note. A `?` added inside that body is
+covered the day it is written rather than the day somebody notices it.
+
+**The closing commit moved *inside*, and that is a semantic change rather than a mechanical
+one.** `SweepFinished` now means "the document says this sweep finished" and not "the executor
+believes it did". A refused close is reported honestly as `SweepInterrupted { taken: total,
+total }` carrying the store's `errno` — because the alternative announces a state that never
+landed, and leaves the watching client disagreeing with the next process to read the session.
+
+### The fixtures, and why the store's own fault menu is not one of them
+
+`StoreFault::DiskFull` cannot reach any of these holes: a blanket refusal fails the
+`begin_sweep` commit, which is deliberately on the *near* side of the announcement, so the
+sweep never starts. Nor can the menu be re-armed mid-sweep — `TempStore::arrange` takes
+`&mut` and the sweep holds the store shared. So each hole is driven by a real arrangement:
+
+- **the name** — the scripted double with a control whose slug is `---`. It has to be the
+  double rather than the fake: no device enumerates such a name and `ControlSlug::from_name`
+  refuses it, so a fake that exhibited it would be a fake claiming something no profile
+  replays (E5, AGENTS "The fake resembles"). `parse` is how one reaches the engine — a
+  hand-edited session file, or an RPC request. Its twin sweeps a real control on the same
+  double and gets one step further, which is what proves the refusal came from the naming.
+- **the directory** — a **dangling symlink** where the pass's photo directory goes, so
+  `create_dir_all` meets `EEXIST` and the `is_dir` retry follows the link to nothing. A plain
+  file was tried first and `atomic-write-home.sh` correctly called it a bypass; the symlink
+  needs no write primitive and tells a truer story anyway (photos aimed at a disk that is not
+  mounted).
+- **the closing write** — a progress sink that, on the last `SampleTaken`, replaces
+  `session.json` with a **directory**, so the only remaining store write fails at `rename`
+  with `EISDIR`. Chosen over a chmod because it is deterministic for every user including
+  root. The log is a separate file, so the durable `SweepInterrupted` still lands, and the
+  test asserts both that and the absence of a `SweepFinished` line.
+
+### The honest limit
+
+This is a guarantee about `Result` exits and nothing more. A panic inside the sweep, or a
+process that dies mid-sweep, still emits nothing — that is design §6's crash story and the
+actor's liveness handling, and it is named here so the law is not read as wider than it is.
+The durable record is what covers that case, which is why `interrupted` writes one.
+
+**Amend this note if** a fallible step is ever added *above* the `SweepStarted` emit that
+ought to announce itself — the line between "never started" and "started and stopped" is
+drawn at that emit, and moving anything across it moves the law with it.
+
+**Retires when:** nothing retires it. It is a property of a stream with readers who did not
+make the call.

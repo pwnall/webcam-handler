@@ -603,6 +603,324 @@ fn a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_aga
     );
 }
 
+// ---------------------------------------------------------------- one start, one end
+
+#[test]
+fn a_sweep_that_cannot_make_its_photo_directory_still_ends_the_stream_it_opened() {
+    // "One start, one end": a sweep that emitted `SweepStarted` emits exactly one terminal
+    // event, whatever stops it. The sample loop always did; the two store calls that prepare
+    // the pass's photo directory sat *between* the start event and the loop, so an operator
+    // who could not write there got a stream that began and never ended. Whoever made the
+    // call still got the refusal as its answer; a subscriber — the web client tracking a
+    // sweep it did not start, an agent watching a session another process drives — got a
+    // sweep that reads as still running, and `wchc`'s tail (notes N69, N70) spent its whole
+    // budget on an `is_terminal` that was never coming.
+    //
+    // Arranged for real rather than scripted, because the store's fault menu cannot express
+    // "healthy until here": a blanket `StoreFault::DiskFull` fails the `begin_sweep` commit
+    // that runs *before* the start event, so it never reaches this hole (N10's lesson —
+    // arrange the real condition wherever the real condition can be arranged).
+    //
+    // The obstruction is a **dangling symlink** where this pass's directory goes, which is
+    // what `create_dir_all` meets when somebody has pointed a session's photos at an external
+    // disk that is not mounted today — plausible for this tool, whose photo directories are
+    // the big thing in the tree. `mkdir` answers `EEXIST` and the `is_dir` retry follows the
+    // link to nothing, so the failure lands on the store call and not on the sweep. It is
+    // also a fixture this file may write: `atomic-write-home` counts a raw write primitive in
+    // any file that names the state directory as a bypass of `write_json_atomic`, and this
+    // one names it in every test.
+    let temp = TempStore::new().expect("a temp dir");
+    let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+    let backend = backend();
+    let mut camera = open(&backend);
+    let control = slug(FOCUS);
+    let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
+
+    let dir = temp.store().session_dir(&session);
+    let photos = SessionStore::photo_dir(&dir, &control, 0).expect("a usable slug");
+    std::fs::create_dir_all(
+        photos
+            .parent()
+            .expect("a pass directory has a control directory over it")
+            .as_std_path(),
+    )
+    .expect("a writable scratch dir");
+    let unmounted = temp.root().join("an-external-disk-that-is-not-here");
+    std::os::unix::fs::symlink(unmounted.as_std_path(), photos.as_std_path())
+        .expect("a writable scratch dir");
+    assert!(
+        !photos.is_dir() && photos.symlink_metadata().is_ok(),
+        "{photos} is not the dangling link this test needs it to be"
+    );
+
+    let clock = FrozenClock;
+    let recorder = Recorder::new();
+    let error = calibrate::run(
+        &context(temp.store(), &lock, &clock, &recorder),
+        &mut session,
+        camera.as_mut(),
+        &sweep_request(control.clone(), five_across_focus()),
+    )
+    .expect_err("a file is in the way of this pass's photo directory");
+    assert_eq!(
+        error.kind(),
+        ErrorKind::StorageIo,
+        "the filesystem's own answer was reshaped on its way out: {error}"
+    );
+
+    assert_eq!(
+        recorder.sequence(),
+        vec!["sweep_started", "sweep_interrupted"],
+        "a client that saw the start is still waiting for the end"
+    );
+    let last = recorder
+        .events()
+        .last()
+        .expect("the stream is not empty")
+        .progress
+        .clone();
+    assert!(
+        last.is_terminal(),
+        "the sweep's last event does not end it: {last:?}"
+    );
+    let CalibrationProgress::SweepInterrupted {
+        taken,
+        total,
+        failure,
+        ref detail,
+        ..
+    } = last
+    else {
+        panic!("the sweep ended with {last:?}");
+    };
+    assert_eq!(
+        (taken, total),
+        (0, 5),
+        "nothing was photographed, and the count has to say so"
+    );
+    assert_eq!(
+        (failure, detail.as_str()),
+        (ErrorKind::StorageIo, error.to_string().as_str()),
+        "the terminal event does not carry the refusal that produced it"
+    );
+
+    // The durable half, for the reader who arrives after the terminal is gone (N18).
+    let history = temp
+        .store()
+        .load_log(&temp.store().session_dir(&session))
+        .expect("readable");
+    assert!(
+        history.iter().any(|entry| matches!(
+            entry.event,
+            SessionEvent::SweepInterrupted {
+                taken: 0,
+                failure: ErrorKind::StorageIo,
+                ..
+            }
+        )),
+        "the session's history does not say why the sweep stopped: {history:?}"
+    );
+
+    // And the control is handed back rather than left in `Sweeping { done: 0 }`, the state
+    // with no exit note N24 walked: nothing was recorded, so nothing happened. That arm ran
+    // for a camera that vanished and not for a directory that could not be made, which is the
+    // same defect twice — a transient availability failure converted into a permanent
+    // capability refusal for that control (AGENTS rule 7, one layer up).
+    let stored = temp
+        .store()
+        .load_session(&temp.store().session_dir(&session))
+        .expect("readable");
+    assert_eq!(
+        stored.controls.get(&control).map(|entry| &entry.status),
+        Some(&ControlStatus::Untouched),
+        "a sweep that took no samples left the control mid-sweep with no way out"
+    );
+
+    // The twin: remove the obstruction and the same sweep runs to a terminal event of the
+    // other kind. Without it this test could not tell "the sweep ends its stream" from "the
+    // sweep always interrupts".
+    std::fs::remove_file(photos.as_std_path()).expect("removable");
+    let healthy = Recorder::new();
+    let outcome = calibrate::run(
+        &context(temp.store(), &lock, &clock, &healthy),
+        &mut session,
+        camera.as_mut(),
+        &sweep_request(control.clone(), five_across_focus()),
+    )
+    .expect("nothing is in the way now");
+    assert_eq!(outcome.taken(), 5);
+    assert_eq!(
+        healthy.sequence().last().copied(),
+        Some("sweep_finished"),
+        "{:?}",
+        healthy.sequence()
+    );
+}
+
+/// A progress sink that records, and — once the last sample is in — puts a **directory**
+/// where `session.json` belongs.
+///
+/// The seam earning its keep a second time, in the one window nothing else can reach: every
+/// sample has been committed, and the only store write left is the sweep's own closing
+/// `SweepFinished` transition. `write_json_atomic` publishes by renaming its temp file over
+/// that path, and `rename(file, directory)` is `EISDIR` for every user including root — which
+/// is why this and not a read-only directory, whose refusal a suite running as root would not
+/// get. The store's scripted menu cannot be re-armed mid-sweep: `TempStore::arrange` takes
+/// `&mut`, and the sweep is holding the store by shared reference for the duration.
+#[derive(Debug)]
+struct SealTheDocumentAfterTheLastSample {
+    recorder: Recorder,
+    document: Utf8PathBuf,
+}
+
+impl ProgressSink for SealTheDocumentAfterTheLastSample {
+    fn emit(&self, event: &ProgressEvent) {
+        self.recorder.emit(event);
+        if let CalibrationProgress::SampleTaken { index, total, .. } = event.progress
+            && index == total
+        {
+            std::fs::remove_file(self.document.as_std_path()).expect("the document is there");
+            std::fs::create_dir(self.document.as_std_path()).expect("a writable scratch dir");
+        }
+    }
+}
+
+#[test]
+fn a_sweep_whose_closing_write_refuses_reports_an_interruption_rather_than_a_finish() {
+    // The third exit "one start, one end" used to leak from, and the subtlest: every sample
+    // was taken and scored, and the store refused the transition that says so. The live event
+    // has to be the interruption — the document still reads `Sweeping { done: 5 }`, so a
+    // `SweepFinished` would announce a state that never landed and leave the client that
+    // watched the sweep disagreeing with the next process to read the session.
+    let temp = TempStore::new().expect("a temp dir");
+    let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+    let backend = backend();
+    let mut camera = open(&backend);
+    let control = slug(FOCUS);
+    let mut session = start_session(temp.store(), &lock, camera.as_mut(), &control);
+
+    let plan = SweepSpec::Explicit {
+        values: vec![256, FOCUS_OPTIMUM],
+    };
+    let dir = temp.store().session_dir(&session);
+    let saboteur = SealTheDocumentAfterTheLastSample {
+        recorder: Recorder::new(),
+        document: dir.join(schema::limits::SESSION_FILE),
+    };
+    let clock = FrozenClock;
+    let error = calibrate::run(
+        &context(temp.store(), &lock, &clock, &saboteur),
+        &mut session,
+        camera.as_mut(),
+        &sweep_request(control.clone(), plan.clone()),
+    )
+    .expect_err("the closing transition cannot be published");
+    assert_eq!(
+        error.kind(),
+        ErrorKind::StorageIo,
+        "the store's own answer was reshaped on its way out: {error}"
+    );
+
+    assert_eq!(
+        saboteur.recorder.sequence(),
+        vec![
+            "sweep_started",
+            "value_set",
+            "sample_taken",
+            "value_set",
+            "sample_taken",
+            "sweep_interrupted",
+        ],
+        "the sweep took every sample it planned and then said nothing about how it ended"
+    );
+    let last = saboteur
+        .recorder
+        .events()
+        .last()
+        .expect("the stream is not empty")
+        .progress
+        .clone();
+    let CalibrationProgress::SweepInterrupted {
+        taken,
+        total,
+        failure,
+        ref detail,
+        ..
+    } = last
+    else {
+        panic!("the sweep ended with {last:?}");
+    };
+    assert_eq!(
+        (taken, total),
+        (2, 2),
+        "an interruption at the closing write is a sweep that took everything it planned"
+    );
+    assert_eq!(
+        (failure, detail.as_str()),
+        (ErrorKind::StorageIo, error.to_string().as_str()),
+        "the terminal event does not carry the refusal that produced it"
+    );
+
+    // The durable halves: the interruption is logged, and nothing claims the sweep finished.
+    // The log is a second file, so the fault that took the document does not take the record
+    // of why it went — which is what makes the best-effort line worth writing (N18).
+    let history = temp.store().load_log(&dir).expect("readable");
+    assert!(
+        history.iter().any(|entry| matches!(
+            entry.event,
+            SessionEvent::SweepInterrupted {
+                taken: 2,
+                total: 2,
+                failure: ErrorKind::StorageIo,
+                ..
+            }
+        )),
+        "the session's history does not say why the sweep stopped: {history:?}"
+    );
+    assert!(
+        !history
+            .iter()
+            .any(|entry| matches!(entry.event, SessionEvent::SweepFinished { .. })),
+        "a sweep whose finish was refused recorded that it finished: {history:?}"
+    );
+
+    // The twin, and the proof that "interrupted" is the honest word: the two samples are real,
+    // they are selectable, and with the document writable again a refinement pass over the
+    // same control ends on the other terminal event.
+    std::fs::remove_dir(dir.join(schema::limits::SESSION_FILE).as_std_path())
+        .expect("the sabotage is removable");
+    temp.store()
+        .save_session(&lock, &session)
+        .expect("a writable store again");
+    assert_eq!(
+        session.controls[&control].samples.len(),
+        2,
+        "the samples the sweep took before the refusal were lost"
+    );
+    lifecycle::commit(
+        temp.store(),
+        &lock,
+        &mut session,
+        started(),
+        |draft, now| session::select_by_metric(draft, &control, MetricName::Sharpness, now),
+    )
+    .expect("a swept control selects, whatever its closing write did");
+    let healthy = Recorder::new();
+    calibrate::run(
+        &context(temp.store(), &lock, &clock, &healthy),
+        &mut session,
+        camera.as_mut(),
+        &sweep_request(control, plan),
+    )
+    .expect("a refinement pass over a writable store");
+    assert_eq!(
+        healthy.sequence().last().copied(),
+        Some("sweep_finished"),
+        "{:?}",
+        healthy.sequence()
+    );
+}
+
 // ---------------------------------------------------------------- the refinement pass
 
 #[test]
