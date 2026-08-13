@@ -1,0 +1,291 @@
+/*
+ * The whole of the client's styling, hand-written and served from the binary that serves
+ * the camera (design §2.7: "no build step, no npm, no CDN"). There is no reset, no
+ * framework and no font file: a stylesheet that fetched a font would be an off-origin
+ * request from a page with a live camera in it, which is the thing
+ * `scripts/gates/no-external-fetch-in-web.sh` exists to keep out.
+ *
+ * Chrome is the supported target (owner ruling, design §2.7), so `color-scheme` and
+ * `color-mix()` are used where they are the clearest spelling rather than hedged around.
+ * Firefox and Safari get whatever falls out for free; nothing here is shaped by them, and
+ * nothing here is a compatibility layer — §2.7 says a Firefox-only defect is recorded, not
+ * necessarily fixed.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --edge: color-mix(in srgb, currentcolor 20%, transparent);
+  --sunken: color-mix(in srgb, currentcolor 6%, transparent);
+  /* The three things this page says about a control, and each is a different claim: the
+   * device refuses the write, the device is telling us something unexpected about itself,
+   * and something else owns the control right now. Distinct colours because collapsing
+   * them is the same defect as collapsing the errors behind them (AGENTS rule 7). */
+  --refused: color-mix(in srgb, currentcolor 45%, transparent);
+  --surprising: #b45309;
+  --owned: #1d4ed8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surprising: #fbbf24;
+    --owned: #93c5fd;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 1.5rem;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+  align-items: baseline;
+  border-bottom: 1px solid var(--edge);
+  padding-bottom: 0.5rem;
+}
+
+h1 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin: 0 0 0.5rem;
+}
+
+main {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.status,
+.report {
+  font-size: 0.85rem;
+  color: var(--refused);
+  margin: 0.25rem 0;
+}
+
+.status.failed {
+  color: var(--surprising);
+}
+
+code,
+.mono {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
+/* ------------------------------------------------------------------ cameras */
+
+ul.cameras,
+ul.hints,
+ul.sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+ul.hints,
+ul.sessions {
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.cameras button {
+  font: inherit;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--edge);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cameras button[aria-pressed="true"] {
+  background: var(--sunken);
+  border-color: currentcolor;
+}
+
+.cameras .where {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--refused);
+}
+
+/* ------------------------------------------------------- preview and photos */
+
+.stage {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.stage figure {
+  margin: 0;
+}
+
+.stage img {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--edge);
+  border-radius: 0.4rem;
+  background: var(--sunken);
+  /* Zero-height until a picture arrives, so an empty frame is empty rather than a grey
+   * rectangle a reader could mistake for a camera pointed at a wall. */
+  min-height: 0;
+}
+
+.stage img:not([src]) {
+  display: none;
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--edge);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ------------------------------------------------------------- control panel */
+
+.panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.control {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--edge);
+  border-radius: 0.5rem;
+}
+
+.control > .name {
+  font-weight: 600;
+}
+
+.control > .name .slug {
+  font-weight: 400;
+  color: var(--refused);
+}
+
+.control .widget {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.control input[type="range"] {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.control input[type="number"] {
+  width: 8rem;
+  font: inherit;
+}
+
+.control input[type="text"] {
+  flex: 1 1 12rem;
+  font: inherit;
+}
+
+.control select {
+  font: inherit;
+  flex: 1 1 12rem;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--edge);
+  border-radius: 0.8rem;
+  white-space: nowrap;
+}
+
+/* A flag the device set that this build cannot name, and a control type it cannot name
+ * either: both are carried rather than dropped (AGENTS rule 6), so both are visible. */
+.badge.unknown {
+  border-color: var(--surprising);
+  color: var(--surprising);
+}
+
+.badge.owned {
+  border-color: var(--owned);
+  color: var(--owned);
+}
+
+.note {
+  font-size: 0.8rem;
+}
+
+.note.surprising {
+  color: var(--surprising);
+}
+
+.note.owned {
+  color: var(--owned);
+}
+
+/* ------------------------------------------------------------- calibration */
+
+.session,
+.sweep {
+  font-size: 0.85rem;
+}
+
+ol.sweep {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+  /* A sweep is minutes of events; the view keeps the last of them rather than growing
+   * without bound, and the box says so by being a box. */
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--edge);
+  padding: 0.2rem 0.6rem 0.2rem 0;
+  text-align: left;
+  vertical-align: top;
+}

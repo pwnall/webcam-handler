@@ -6,29 +6,49 @@
 //! hand-written HTML, CSS and, from P5c, ES modules; `rust-embed` turns it into a table
 //! compiled into `wchd`, and [`get`] is the only way back out.
 //!
-//! ## What is here at P5a, and what is not
+//! ## What is here
 //!
-//! A **skeleton**: one page, whose styles are inline. P5c lands the client — the camera list,
-//! the control panel generated from the `controls` DTO, the preview `<img>`, the calibration
-//! view. What P5a needed from this crate is exactly what a listener and a token gate need to
-//! be *about* something: bytes with a content type, at a path, that a browser will render.
+//! Ten files, and P5c is the sub-milestone that made them a client rather than a skeleton: a
+//! page, a stylesheet, and eight ES modules — the JSON-RPC-over-WebSocket helper, the
+//! credential, a DOM helper, and one module each for the camera list's composition root, the
+//! control panel, the preview, the photo trigger and the calibration view. Every one of them
+//! is hand-written; nothing here was generated, bundled, minified or vendored (§2.7, AGENTS:
+//! "the web client vendors or hand-writes everything — no CDN, no npm").
 //!
-//! **One file rather than a page and a stylesheet, and the reason has since been ruled away.**
-//! The token rides the URL, and a browser does not carry a document's query string over to the
-//! subresources that document asks for — so `<link rel="stylesheet" href="app.css">` on a page
-//! opened at `/?token=…` was fetched as `/app.css` with no credential, and the gate refused it,
-//! which was the gate being right. A skeleton that shipped that would have been a page that
-//! rendered unstyled in every token-gated cell, and the real client could not have inlined its
-//! way out (§2.7's vanilla ES modules are subresources by definition). Note **N76** recorded
-//! that constraint and its two candidate answers.
+//! **They are ordinary subresources, and until 2026-08-12 they could not have been.** The
+//! token rides the URL, and a browser does not carry a document's query string over to the
+//! subresources that document asks for — so `<link rel="stylesheet" …>` on a page opened at
+//! `/?token=…` was fetched with no credential and the gate refused it, which was the gate
+//! being right. A module graph is one request per module, so §2.7's vanilla ES modules could
+//! not have inlined their way out. Note **N76** recorded that constraint and its two candidate
+//! answers.
 //!
 //! The owner ruled on 2026-08-12 that **static assets are served without authentication** —
 //! these files are open-source code rather than a secret — and only the WS endpoint and the
 //! MJPEG preview stay behind D11's token (note **N82**, which retires N76;
-//! `daemon::http::listener`'s header carries the same finding beside the gate). So P5c's module
-//! graph is ordinary `import` statements and a second file here is an ordinary file. This one
-//! keeps its inline styles because a skeleton with a stylesheet beside it would be two files
-//! saying what one file says, not because it must.
+//! `daemon::http::listener`'s header carries the same finding beside the gate). So the module
+//! graph below is ordinary `import` statements, and the one place in it that writes the
+//! credential into a URL is `assets/credential.js`, which writes it into exactly the two
+//! routes `daemon::http::CAMERA_BEARING_PATHS` names.
+//!
+//! ## What this crate asserts about those files, and what it deliberately does not
+//!
+//! Four things, and all four are properties of *bytes in a table* rather than of a running
+//! page: every asset is embedded rather than read off a source tree
+//! (`the_assets_are_embedded_rather_than_read_from_this_source_tree`), every asset has a
+//! content type this crate can name (`every_asset_has_a_content_type`), **every file the
+//! client refers to is a file this build embeds and every embedded file is referred to**
+//! (`every_reference_the_client_makes_names_a_file_this_build_embeds`) — which is what stops a
+//! renamed module from becoming a `404` in a module graph, and therefore a page that loads
+//! nothing — and the page declares every script it loads as a module
+//! (`the_page_declares_every_script_it_loads_as_a_module`), because a classic script may not
+//! `import` and the resulting page renders perfectly while doing nothing at all.
+//!
+//! What is **not** asserted here, or anywhere in Rust, is that any of it renders. docs/7 P5c
+//! draws that line in as many words — "a browser behavior verified only through the JSON the
+//! page consumes is not verified" — so the claim that a sparse menu becomes a `<select>`
+//! carrying the device's own indices belongs to P5d's Chromium rung, and an approximation of
+//! it here would be worse than its absence.
 //!
 //! ## The seam, and why the daemon does not link `rust-embed`
 //!
@@ -157,13 +177,13 @@ pub fn paths() -> impl Iterator<Item = Cow<'static, str>> {
 /// forcing function is not the table's size, it is
 /// `every_asset_has_a_content_type`'s walk over the assets that actually exist.
 ///
-/// Three of the four have no shipped asset yet, and that is said out loud rather than left to
-/// be noticed: the skeleton is one HTML file (this module's header says why it is not two).
-/// They are here because §2.7 names them as what P5c is made of and each is one line, while
-/// the failure they prevent — a module served as `application/octet-stream`, which a browser
-/// declines to execute — costs a debugging session. The test below covers the fallback arm,
-/// so the entries that have no asset are still not the only thing keeping this function
-/// honest.
+/// Three of the four now have shipped assets — P5c's client is one page, one stylesheet and
+/// eight modules — and `.mjs` is the one that does not, kept because it is the other spelling
+/// the ecosystem uses for the thing this directory is full of and because the failure it
+/// prevents is expensive and quiet: a module served as `application/octet-stream` is a script
+/// a browser declines to execute, on a page that then does nothing and says nothing. The test
+/// below covers the fallback arm, so the entry with no asset is not the only thing keeping
+/// this function honest.
 ///
 /// `charset=utf-8` on the text types because the files are UTF-8 and saying so is what stops
 /// a browser guessing; the guess is usually right and "usually" is not a property to serve a
@@ -182,7 +202,19 @@ fn content_type(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    /// The markers a reference to another file in this directory begins with.
+    ///
+    /// Four, because four is what a page and a module graph with no build step can produce:
+    /// `import … from "x"` and a bare `import "x"` in JavaScript (and `@import "x"` in CSS,
+    /// which the same marker catches), and `src=`/`href=` in HTML. There is no dynamic
+    /// `import()` in this client and no `new URL(…, import.meta.url)`, both of which would
+    /// be a reference this scan cannot see — which is a reason not to write one rather than
+    /// a reason to write a parser.
+    const REFERENCE_MARKERS: [&str; 4] = ["from ", "import ", "src=", "href="];
 
     #[test]
     fn the_index_page_is_embedded_and_is_html() {
@@ -269,5 +301,137 @@ mod tests {
         // The extension is the part after the *last* dot, so a name that merely contains one
         // is not typed by it — `app.css.bak` is not a stylesheet.
         assert_eq!(content_type("app.css.bak"), UNKNOWN_CONTENT_TYPE);
+    }
+
+    #[test]
+    fn every_reference_the_client_makes_names_a_file_this_build_embeds() {
+        // **The module graph, closed and with nothing orphaned in it.** Two claims, walked
+        // together from [`INDEX`] because that is the only file the daemon names:
+        //
+        // 1. every reference resolves to an asset this build embeds — a renamed module is a
+        //    `404` inside a module graph, which a browser reports by running *nothing*, and
+        //    is therefore the cheapest way to ship a page that silently does not work;
+        // 2. every asset is reachable — a file nobody imports is bytes in `wchd` that no
+        //    request will ever ask for, and the honest fix for one is to delete it.
+        //
+        // Neither implies the other, and neither is a claim about a browser: this is a graph
+        // over a table of names fixed at compile time, which is exactly the kind of thing
+        // that *can* be settled without one. Whether Chrome then executes what it fetched is
+        // P5d's, in Chrome.
+        let mut reached: BTreeSet<String> = BTreeSet::new();
+        let mut queue = vec![INDEX.to_owned()];
+        let mut references = 0_usize;
+        while let Some(name) = queue.pop() {
+            if !reached.insert(name.clone()) {
+                continue;
+            }
+            let asset = get(&name)
+                .unwrap_or_else(|| panic!("the client refers to {name}, which is not embedded"));
+            for reference in loadable(&name, asset.bytes()) {
+                references += 1;
+                queue.push(reference);
+            }
+        }
+
+        let embedded: BTreeSet<String> = paths().map(|path| path.into_owned()).collect();
+        assert_eq!(
+            reached, embedded,
+            "the client's module graph and this crate's asset table are not the same set of \
+             files"
+        );
+        // Not vacuous in either direction: a page with no references at all would satisfy
+        // the equality above on a directory holding only the page.
+        assert!(references > 0, "nothing in this client refers to anything");
+        assert!(embedded.len() > 1, "{embedded:?}");
+    }
+
+    #[test]
+    fn the_page_declares_every_script_it_loads_as_a_module() {
+        // §2.7's client is ES *modules*, and a classic script may not `import` — so a
+        // `<script>` on this page without `type="module"` is a file the browser fetches,
+        // parses, and refuses at the first import statement. The failure is quiet enough to
+        // be worth a test: the page still renders, and none of it does anything.
+        //
+        // A claim about the document's bytes, not about a browser's behaviour: what is
+        // asserted is that the attribute is written, which is the half that lives in this
+        // directory.
+        let index = get(INDEX).expect("the client's page");
+        let text = String::from_utf8(index.bytes().to_vec()).expect("the page is UTF-8");
+        let mut scripts = 0_usize;
+        for tag in text.split("<script").skip(1) {
+            scripts += 1;
+            let opening = tag.split_once('>').map_or(tag, |(opening, _rest)| opening);
+            assert!(
+                opening.contains(r#"type="module""#),
+                "a <script{opening}> that is not a module"
+            );
+        }
+        assert_eq!(scripts, 1, "the page loads more than one entry point");
+    }
+
+    /// The parts of one asset that can refer to another, as text.
+    ///
+    /// Comments are removed first, and that is what keeps this a dozen lines instead of two
+    /// parsers: every module in `assets/` opens with a long header that argues about
+    /// `import`, credentials and `<img>` elements, and a scan that read those would find
+    /// references to files nobody ships. The rule is deliberately coarse — a *whole-line*
+    /// `//` comment in JavaScript and CSS, an `<!-- … -->` in HTML — so its cost is stated
+    /// rather than hidden: a **trailing** comment on a line of code, carrying one of
+    /// [`REFERENCE_MARKERS`] followed by a quote, would be read as a reference and would
+    /// fail this test. That is a rule about how to write a comment in this directory, and it
+    /// is cheaper than the alternative, which is a JavaScript parser in an asset crate whose
+    /// dependency wall is `rust-embed` and nothing else (T6).
+    fn loadable(name: &str, bytes: &[u8]) -> Vec<String> {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        let code = if name.ends_with(".html") {
+            let mut out = String::with_capacity(text.len());
+            let mut rest = text.as_str();
+            while let Some((before, after)) = rest.split_once("<!--") {
+                out.push_str(before);
+                rest = after.split_once("-->").map_or("", |(_comment, tail)| tail);
+            }
+            out.push_str(rest);
+            out
+        } else {
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        references(&code)
+    }
+
+    /// Every quoted file name `code` refers to, keyed off [`REFERENCE_MARKERS`].
+    ///
+    /// A leading `./` or `/` is stripped, because those are the two spellings a relative
+    /// module specifier and an absolute request path take, and `get`'s table is keyed on
+    /// neither (the daemon strips the one leading `/` an HTTP path has — `lookup` in
+    /// `daemon::http::listener`).
+    fn references(code: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for marker in REFERENCE_MARKERS {
+            let mut rest = code;
+            while let Some(at) = rest.find(marker) {
+                let after = rest.split_at(at + marker.len()).1;
+                rest = after;
+                let after = after.trim_start();
+                let mut characters = after.chars();
+                let Some(quote @ ('"' | '\'')) = characters.next() else {
+                    continue;
+                };
+                let body = characters.as_str();
+                let Some(end) = body.find(quote) else {
+                    continue;
+                };
+                let name = body.split_at(end).0;
+                found.push(
+                    name.strip_prefix("./")
+                        .or_else(|| name.strip_prefix('/'))
+                        .unwrap_or(name)
+                        .to_owned(),
+                );
+            }
+        }
+        found
     }
 }

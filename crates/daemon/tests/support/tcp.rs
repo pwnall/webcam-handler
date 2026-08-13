@@ -1,13 +1,14 @@
 //! The one HTTP/1.1-over-TCP client this crate's tests use.
 //!
-//! Included by `http.rs` and by nothing else — the only suite whose subject is the transport
-//! D11 makes opt-in. **Who includes this is load-bearing, which is why that is a sentence**
-//! (note **N49**): a `#[path]`-included module is compiled into *every* binary that includes
-//! it and this workspace builds warnings as errors, so an item used by only some of them is a
-//! `dead_code` failure in the rest. Adding a consumer means every item here has to be used by
-//! it — which is why this is a module of its own rather than three more items in
-//! `support/mod.rs`, whose five includers speak JSON-RPC over `AF_UNIX` and would inherit a
-//! TCP client none of them opens.
+//! Included by `http.rs`, whose subject is the transport D11 makes opt-in, and since P5c by
+//! `web_client.rs`, which fetches the client's own module graph the way a browser fetches it —
+//! anonymously, and asking what content type each file arrives with. **Who includes this is
+//! load-bearing, which is why that is a sentence** (note **N49**): a `#[path]`-included module
+//! is compiled into *every* binary that includes it and this workspace builds warnings as
+//! errors, so an item used by only some of them is a `dead_code` failure in the rest. Adding a
+//! consumer means every item here has to be used by it — which is why this is a module of its
+//! own rather than three more items in `support/mod.rs`, whose five includers speak JSON-RPC
+//! over `AF_UNIX` and would inherit a TCP client none of them opens.
 //!
 //! ## Why it is hand-written
 //!

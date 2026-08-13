@@ -5,58 +5,84 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>webcam-handler</title>
     <!--
-      The styles are inline because a skeleton page and a stylesheet beside it would be
-      two files saying what one file says. Until 2026-08-12 there was a harder reason:
-      the token rides the URL (D11) and a browser does not carry a document's query
-      string over to the subresources that document asks for, so a `<link
-      rel="stylesheet" href="app.css">` on a page opened at `/?token=…` was fetched as
-      `/app.css` with no credential at all and the token gate refused it — correctly
-      (note N76). The owner then ruled that these files are open-source code rather than
-      a secret and are served without authentication, so P5c's ES modules are ordinary
-      `import`s and only the WS endpoint and the MJPEG preview stay behind the token
-      (note N82). `daemon::http::listener`'s header states it where the gate is.
+      The stylesheet and the module graph are ordinary subresources, which they could not
+      be until 2026-08-12: the token rides the document's URL (D11) and a browser does not
+      carry a query string over to the subresources a document asks for, so every one of
+      them was fetched with no credential and the gate refused it — correctly (note N76).
+      The owner then ruled that these files are open-source code rather than a secret and
+      are served unauthenticated; only the WebSocket and the MJPEG preview stay behind the
+      token (note N82, D11's amendment). So this page is a page and app.js is a module,
+      with no bundler, no inlining and no second credential form between them.
+
+      `type="module"` is load-bearing rather than modern: a classic script may not
+      `import`, so a document that named app.js without it would fetch every module in
+      this directory and run none of them.
     -->
-    <style>
-      :root {
-        color-scheme: light dark;
-      }
-
-      body {
-        margin: 0;
-        padding: 2rem 1.5rem;
-        font-family: system-ui, sans-serif;
-        line-height: 1.5;
-      }
-
-      main {
-        max-width: 38rem;
-        margin: 0 auto;
-      }
-
-      h1 {
-        font-size: 1.5rem;
-        font-weight: 600;
-      }
-
-      code {
-        font-family: ui-monospace, monospace;
-        font-size: 0.9em;
-      }
-    </style>
+    <link rel="stylesheet" href="app.css" />
+    <script type="module" src="app.js"></script>
   </head>
   <body>
-    <main>
+    <header>
       <h1>webcam-handler</h1>
-      <p>
-        Served by <code>wchd</code> out of its own binary: no CDN, no npm, no build step.
-        Every byte of this page came from the daemon you are talking to.
-      </p>
-      <p>
-        The client itself — the camera list, the control panel generated from the
-        <code>controls</code> DTO, the live preview and the calibration view — is the next
-        sub-milestone. This page exists so that the listener has something to serve. What the
-        bearer token protects is the camera: the JSON-RPC socket and the preview stream.
-      </p>
+      <p id="connection" class="status">connecting…</p>
+    </header>
+
+    <main>
+      <!--
+        Every region below is filled by a module and empty here. The alternative — markup
+        that shows a plausible camera and a plausible control until the daemon answers —
+        is a page that lies for as long as it takes a socket to open, on a document whose
+        whole subject is what a device actually reports (D2, AGENTS rule 4).
+      -->
+      <section id="cameras" aria-labelledby="cameras-heading">
+        <h2 id="cameras-heading">Cameras</h2>
+        <ul id="camera-list" class="cameras"></ul>
+        <ul id="camera-hints" class="hints"></ul>
+      </section>
+
+      <section id="stage" aria-labelledby="stage-heading">
+        <h2 id="stage-heading">Preview</h2>
+        <div class="stage">
+          <figure class="live">
+            <!--
+              The `<img>` has no `src` until a camera is chosen, and it is set from
+              preview.js rather than written here: the URL carries the credential the page
+              was opened with, and a credential does not belong in a file this daemon
+              serves to anybody who asks (note N82).
+            -->
+            <img id="preview-frame" alt="" />
+            <figcaption id="preview-status" class="status"></figcaption>
+          </figure>
+          <div class="capture">
+            <button id="take-photo" type="button" disabled>Take a photo</button>
+            <p id="photo-status" class="status"></p>
+            <figure class="shot">
+              <img id="photo-frame" alt="" />
+              <figcaption id="photo-report" class="report"></figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section id="controls" aria-labelledby="controls-heading">
+        <h2 id="controls-heading">Controls</h2>
+        <p class="status">
+          <label>
+            <input id="guarded" type="checkbox" checked />
+            switch automation off first (D3)
+          </label>
+        </p>
+        <p id="controls-status" class="status"></p>
+        <div id="control-panel" class="panel"></div>
+      </section>
+
+      <section id="calibration" aria-labelledby="calibration-heading">
+        <h2 id="calibration-heading">Calibration</h2>
+        <p id="calibration-status" class="status"></p>
+        <ul id="session-list" class="sessions"></ul>
+        <div id="session-detail" class="session"></div>
+        <ol id="sweep-log" class="sweep"></ol>
+      </section>
     </main>
   </body>
 </html>
