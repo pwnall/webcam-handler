@@ -60,6 +60,11 @@ const nodes = {
   calibrationStatus: byId("calibration-status"),
   sessions: byId("session-list"),
   session: byId("session-detail"),
+  // The sweep subscription's own line. It was `calibrationStatus` until P5d's browser rung
+  // found the two views overwriting each other in the same element — index.html says what
+  // that cost — and the fix is two elements rather than one because the two *lifetimes*
+  // differ: the session list is re-read per camera and the subscription is opened once.
+  sweepStatus: byId("sweep-status"),
   sweeps: byId("sweep-log"),
 };
 
@@ -99,7 +104,7 @@ async function main() {
   say(nodes.connection, "connected");
 
   await calibration.watchSweeps(state.rpc, {
-    status: nodes.calibrationStatus,
+    status: nodes.sweepStatus,
     log: nodes.sweeps,
   });
   await watchDevices();

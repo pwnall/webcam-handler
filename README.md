@@ -52,6 +52,8 @@ just ci          # everything CI runs, offline: fmt, clippy, tests, docs, licens
 just gate-g0     # a phase gate — named, counted, re-runnable
 just selftest    # proves every gate predicate can go red, in both directions
 just smoke-hw    # the real-hardware rung; needs a camera, moves no motors by default
+just rung-web    # the browser rung, in a pinned headless Chromium; declines by name without
+                 # node — `just rung-web-install` is what supplies it
 ```
 
 Read `AGENTS.md` before changing anything. The reasoning behind every rule it states lives

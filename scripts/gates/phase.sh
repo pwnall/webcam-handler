@@ -10,8 +10,10 @@
 # to check nothing is the defect class this whole suite exists to prevent. `just gate-g6`
 # reports exactly that today, which is the truth about it — criteria accrete row by row, in
 # the commit that lands the thing each row proves. `g5` left that state at P5a, with the
-# ten rows the TCP listener and the token gate earned; it is not closed, and the rows P5e
-# owes it are named in docs/7 §P5a rather than left for its close to rediscover.
+# ten rows the TCP listener and the token gate earned, and has grown with every
+# sub-milestone since — how many it holds now is the table's to report and not this
+# header's; it is not closed, and the rows P5e owes it are named in docs/7 §P5a rather than
+# left for its close to rediscover.
 #
 # ## A criterion has three answers, and this runner keeps them apart
 #

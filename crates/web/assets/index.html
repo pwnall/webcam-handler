@@ -78,9 +78,21 @@
 
       <section id="calibration" aria-labelledby="calibration-heading">
         <h2 id="calibration-heading">Calibration</h2>
+        <!--
+          Two status lines, because there are two independent things to be wrong about and
+          they were sharing one until the browser rung looked (P5d). `#calibration-status`
+          belongs to the session *list*, which is re-read on every camera switch;
+          `#sweep-status` belongs to the live sweep *subscription*, which is opened once at
+          startup and outlives every switch. With one element between them the list's line
+          was written milliseconds after the subscription's and overwrote it — so "the
+          daemon refused a sweep subscription" and "the sweep stream ended" were both
+          replaced by "no calibration sessions recorded for this camera", and a calibration
+          view that had silently stopped being live looked exactly like a healthy one.
+        -->
         <p id="calibration-status" class="status"></p>
         <ul id="session-list" class="sessions"></ul>
         <div id="session-detail" class="session"></div>
+        <p id="sweep-status" class="status"></p>
         <ol id="sweep-log" class="sweep"></ol>
       </section>
     </main>

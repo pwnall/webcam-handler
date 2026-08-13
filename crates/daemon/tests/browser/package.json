@@ -1,0 +1,15 @@
+{
+  "name": "webcam-handler-r1-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "R1-web (design 6 §3.1): the pinned Playwright + Chromium rung. A test-time tool, never a build dependency and never shipped — the product is crates/web/assets/, which vendors or hand-writes everything.",
+  "license": "MIT OR Apache-2.0",
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  },
+  "wch": {
+    "chromiumBuild": "1234",
+    "chromiumVersion": "151.0.7922.34"
+  }
+}

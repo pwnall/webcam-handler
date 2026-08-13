@@ -60,3 +60,26 @@ test-group = 'exclusive-device'
 # minutes is a legitimate runtime here and three of them is not. Still bounded — a
 # hardware test that hangs is a hang like any other.
 slow-timeout = { period = "300s", terminate-after = 4 }
+
+# ## Why one binary's *successful* output is shown
+#
+# `crates/daemon/tests/web_browser.rs` is R1-web, the browser rung (design §3.1), and it is
+# the one suite in this workspace that **auto-skips on a host that cannot run it** — no node,
+# no pinned Playwright, no pinned browser. AGENTS rule 3 says every auto-skipping rung reports
+# a named, counted skip and never silence, and nextest hides a passing test's output: without
+# this line the decline would be printed into a void and `just ci` would carry a skip nobody
+# could see, which is exactly "skip reads as pass".
+#
+# `final` rather than `immediate` so the line lands in the run's summary, where the other
+# rungs' counted skips are read.
+#
+# The suite is **not** in the `exclusive-device` group and must not be: it drives the fake
+# backend over a loopback socket and opens no `/dev/video*`, so serialising it with the
+# hardware rungs would be a claim about contention that does not exist.
+[[profile.default.overrides]]
+filter = 'binary(web_browser)'
+success-output = "final"
+# Longer than the default for one reason: this test's runtime is a child process launching a
+# browser, and a cold Chromium start on a loaded machine is seconds rather than milliseconds.
+# Still bounded, and still not synchronisation — nothing waits on this to learn anything.
+slow-timeout = { period = "120s", terminate-after = 3 }

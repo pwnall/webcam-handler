@@ -11871,3 +11871,177 @@ processing-unit integers at `50 / 65 / 60 / 50 / 70`; the Dell at `pan 0 / tilt 
 BRIO at `pan 0 / tilt 0 / zoom 320` and `white_balance_automatic=1`. The three values that do not
 compare are the OBSBOT's `red_balance`, `blue_balance` and `white_balance_temperature`, which
 PF:24 explains and which no write can restore while the automation that owns them is on.
+
+---
+
+## E16 — The R1-web browser rung's first run, and the two client defects it found, 2026-08-13
+
+The first execution of the pinned Playwright + Chromium rung (design §3.1 R1-web, docs/7 P5d),
+recorded once and not amended. It is dated evidence rather than case law: nothing below is a
+deviation from a doc, and the two defects it names were fixed in the same working tree rather
+than justified.
+
+Its whole reason for existing is one sentence of rubric B7, which `crates/daemon/tests/
+web_client.rs` quotes about itself in its own header: **a browser behavior verified only
+through the JSON the page consumes is not verified.** P5c landed ten files of hand-written
+HTML, CSS and ES modules and asserted, deliberately, nothing about whether any of them render.
+This is the run that asked.
+
+### The fixture
+
+**Host:** the P4/P5 workstation, kernel `7.0.0-29-generic` (x86_64), on the tree at `8c27a81`
+plus this sub-milestone's working tree. **Backend: the fake** — `testkit::fixtures::
+synthetic_basic` with its MJPEG modes rewritten to 160×120, `web_client.rs`'s fixture and its
+argument — so **no camera was opened and no frame anything captured could contain a person**;
+every artifact the browser wrote went to the gitignored `scratch/r1-web/`.
+
+**node** v24.18.0 · **@playwright/test** 1.62.1, exact, with `package-lock.json` committed
+beside it · **Chromium** build 1234, `Google Chrome for Testing 151.0.7922.34`, launched from
+Playwright's own download and asserted by the rung to be that build and that version.
+
+```
+Running 10 tests using 1 worker
+  ✓  1 a sparse menu becomes a select carrying the device's own indices (191ms)
+  ✓  2 an INACTIVE control is still usable and names what owns it (167ms)
+  ✓  3 a current outside its declared range renders with no min and no max (163ms)
+  ✓  4 a control type this build cannot name shows its raw discriminant (140ms)
+  ✓  5 a clamp snaps the slider back and says both numbers (179ms)
+  ✓  6 the preview paints successive frames and keeps painting across a photo (642ms)
+  ✓  7 the calibration view tracks a sweep it did not start (191ms)
+  ✓  8 the client loads with no credential and the camera is still refused (123ms)
+  ✓  9 the page reports a lost socket and works again on the next one (269ms)
+  ✓ 10 the browser this rung drove is the pinned one (1ms)
+  10 passed (2.5s)
+r1-web: 10 browser claim(s) and 79 assertion(s) ran in Chromium 1234
+```
+
+The last line is the harness, not the runner: `tests/browser/claims-reporter.mjs` counts one
+entry per test and one assertion per top-level `expect` from inside Playwright, and
+`web_browser.rs` compares that against `tests/browser/claims.json` on every green run. The two
+numbers exist because the *decline* has to report them — a skip that cannot say what it did not
+do is the skip that reads as a pass — and a number nothing checks is a number that rots.
+
+### 1. The calibration view's status line was written by two views, and the second one won
+
+**Found on the first run**, as `#calibration-status` reading `no calibration sessions recorded
+for this camera` where the rung expected `watching every sweep this daemon runs`.
+
+`app.js` handed the same element to `calibration.watchSweeps` and to
+`calibration.showSessions`. The first is opened once at startup; the second runs on every
+camera selection, milliseconds later, and overwrites it. So the sweep subscription's line was
+never readable — including **the daemon refused a sweep subscription** and **the sweep stream
+ended: …**, which are the two sentences that tell an operator the calibration view has stopped
+being live. A view that had silently died looked exactly like a healthy one, which is the
+"skip reads as pass" defect class wearing a UI.
+
+Fixed by giving the subscription its own element: `#sweep-status` in `index.html`, `sweepStatus`
+in `app.js`. Two elements rather than one because the two *lifetimes* differ — the session list
+is re-read per camera and the subscription outlives every switch — and that is the property
+that made one element wrong rather than merely crowded.
+
+**Only a browser could find this.** Both writes are correct calls to a correct function with
+correct arguments; nothing about the JSON is wrong, and no protocol test has an element for the
+second write to overwrite.
+
+### 2. A page opened with no token said the connection had closed, instead of saying what was wrong
+
+**Found on the same run**, as `#connection` reading `the connection to wchd closed; reload the
+URL wchd printed` on a page opened at `/` with no credential.
+
+`rpc.js` registers its `close` handler before awaiting the open. A refused handshake fires
+`error` **and then** `close`, so `connect` rejected — and `app.js` wrote its careful two-candidate
+sentence, *"either the token this page was opened with is not this run's, or nothing is listening
+on this port any more"* — and then the `close` handler fired `onClose` for a connection that had
+never opened and replaced it. The page also disabled its photo button and tore down a preview it
+never had.
+
+That is the most common failure this client has: an operator opens `/` by hand after reading the
+port off a log, or opens a stale URL from yesterday's run. The diagnosis was written and then
+destroyed.
+
+Fixed in `rpc.js` with a two-line `opened` flag: `onClose` means "the connection I gave you has
+ended", and a connection that never started has not ended. `connect` rejects on the same event,
+so the caller is told once, by the path that knows what happened.
+
+### 3. Not a defect: the pair provenance a browser shows is `declared`, and it should be
+
+The rung expected `(D3, measured)` on the INACTIVE control's note, because the fixture records
+that pair as measured. It read `(D3, declared)`, and the expectation was wrong.
+`engine::pairing::in_effect` is handed no measured pairs by any read verb — measuring pairs
+writes to the camera and is its own operation (note **N30**) — so what the page renders is the
+UVC table's claim, labelled as one. A page that said `measured` there would be claiming a probe
+nobody ran. Recorded because the first reading of it was "the browser found a provenance bug",
+and it took reading `in_effect`'s own doc comment to see that the browser had found the design.
+
+### 4. Recorded, not fixed: a live preview and a sweep on one camera collide
+
+Driving `wch_calibrate_sweep` from a second socket while the page previewed the same camera was
+refused:
+
+```
+{"code":-32013,"message":"/dev/video0 is busy: held by an unidentified process",
+ "data":{"kind":"busy","path":"/dev/video0","holders":[]}}
+```
+
+`engine::preview::while_suspended` is what lets a capture interleave with a live preview (note
+**N83**), and `engine::photo::take` is its **only** caller — so a photo suspends the preview and
+a *sweep* meets `Busy`. The refusal is correct in D13's vocabulary and correct about the device;
+what is worth writing down is that the "Expected usage" section's own deployment produces it.
+The owner "uses the web client from time to time … to calibrate them at the beginning of a
+development run", and the client deliberately starts no sweeps — so the sweep comes from `wchc`
+while the owner is watching the preview, which is exactly the arrangement above.
+
+Nothing was changed for it. Suspending a preview for the duration of a sweep is minutes of black
+picture rather than one frame's pause, so whether N83's mechanism should extend to a sweep, extend
+per *sample*, or stay where it is, is a design decision with an owner in it and not a fix. It is
+named here so P5e's review meets it as a recorded finding rather than as a surprise. The rung's
+calibration claim aborts the preview request to get a free camera, and says so in the file.
+
+### 5. What the platform does that the design assumed otherwise
+
+**Chrome fires exactly one `load` event for a `multipart/x-mixed-replace` `<img>`** and replaces
+every later part silently. The obvious way to assert "the preview paints successive frames" —
+count `load` events — measures zero after the first, and measuring zero looks identical to a
+preview that stopped. What the rung does instead is write `brightness` through the panel and
+watch the picture's **mean luma** follow the fake's declared gain (`fake::frames`: brightness is
+a monotonic gain from 25% to 200%), with the element's identity checked at the end so a page that
+re-opened its request cannot pass. That is an *ordering* over a device model rather than a pixel
+value, which is the rule the hardware suites already run under.
+
+**`BrowserContext.setOffline(true)` does not close an established WebSocket** in this Chromium,
+which is worth recording because it looks as though it should. The reconnect claim proxies the
+socket with `page.routeWebSocket` and drops it from the middle instead, so the page's socket
+really ends while the daemon is still up and still holding its side.
+
+### The decline, driven
+
+The rung runs on every push where the host has node, and declines everywhere else — so its
+decline is the line standing between "this was checked" and "nobody knows", and it was exercised
+rather than trusted:
+
+```
+SKIP r1-web: no usable node at `/nonexistent/node` — install Node.js, or point WCH_E2E_NODE at
+one — node is a test-host convenience here and never a build dependency, so every crate still
+builds without it; 10 browser claim(s) and 79 assertion(s) were not run
+r1-web:   - a sparse menu becomes a select carrying the device's own indices (5 assertions) — …
+[ten lines, one per claim]
+rung-web: SKIPPED — the rung declined, 1 time(s), each naming what was missing and what it
+therefore did not claim
+```
+
+Three preconditions, three different sentences, each with its own remedy, all three driven by
+`a_declined_rung_names_what_was_missing_and_counts_what_it_did_not_run`. `.config/nextest.toml`
+gives the binary `success-output = "final"` so the decline is visible in a plain `just ci`
+rather than printed into a void, which is the difference between a counted skip and a silent one.
+
+### What this run does not establish
+
+- **Nothing about a real camera.** It drives the fake, on purpose: the rung is deterministic and
+  needs no device, and design §3.1 says so. What a browser does with a *real* MJPEG stream at a
+  real frame rate is unexercised.
+- **Nothing about Firefox or Safari** (owner ruling, design §2.7; docs/9's gaps list already
+  carries this).
+- **Nothing about a second tab.** Two browsers previewing one camera is D12's arrangement and
+  `preview.rs` asserts it at the protocol level; no browser claim opens two contexts.
+- **Nothing about the page under a proxy or over TLS.** `credential.js` upgrades `http:` to
+  `ws:` and `https:` to `wss:`, and only the first half has ever run.

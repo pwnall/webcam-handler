@@ -1,0 +1,68 @@
+{
+  "_": [
+    "The claims this rung makes, and how many assertions each one is.",
+    "",
+    "Two readers, and they are the reason this file exists rather than a number in a sentence.",
+    "When the rung RUNS, crates/daemon/tests/web_browser.rs compares this list against",
+    "Playwright's own JSON report — every title, in order, and every title's count of",
+    "`expect` steps — so a claim added to a spec and not to this file is red, and so is a",
+    "claim that quietly stopped asserting half of what it used to. When the rung SKIPS, this",
+    "is where the skip line gets the number it reports: `N claims, M assertions, not run`.",
+    "A skip that cannot say what it did not do is the skip that reads as a pass.",
+    "",
+    "The counts are measured, never estimated: they come out of a green run's report, and",
+    "the harness names this file in its failure message when they drift."
+  ],
+  "claims": [
+    {
+      "title": "a sparse menu becomes a select carrying the device's own indices",
+      "assertions": 5,
+      "what": "PF:2 — the device's own menu indices reach a <select>, holes and all"
+    },
+    {
+      "title": "an INACTIVE control is still usable and names what owns it",
+      "assertions": 8,
+      "what": "PF:3 — an INACTIVE control renders enabled, badged and named, beside a READ_ONLY one that does not [PF:12]"
+    },
+    {
+      "title": "a current outside its declared range renders with no min and no max",
+      "assertions": 6,
+      "what": "PF:4 — an out-of-range current is shown, and no attribute bounds it"
+    },
+    {
+      "title": "a control type this build cannot name shows its raw discriminant",
+      "assertions": 5,
+      "what": "PF:1 — an unnameable control type renders its discriminant and payload"
+    },
+    {
+      "title": "a clamp snaps the slider back and says both numbers",
+      "assertions": 6,
+      "what": "PF:6/D3 — a clamped write moves the slider back and shows both numbers"
+    },
+    {
+      "title": "the preview paints successive frames and keeps painting across a photo",
+      "assertions": 16,
+      "what": "the MJPEG <img> paints successive parts, and keeps painting across a photo (N83)"
+    },
+    {
+      "title": "the calibration view tracks a sweep it did not start",
+      "assertions": 9,
+      "what": "the calibration view paints a sweep started on another socket"
+    },
+    {
+      "title": "the client loads with no credential and the camera is still refused",
+      "assertions": 8,
+      "what": "N82 — the module graph loads and runs anonymously; the two camera routes do not"
+    },
+    {
+      "title": "the page reports a lost socket and works again on the next one",
+      "assertions": 10,
+      "what": "the socket's loss is reported, the preview is ended, and the next socket works"
+    },
+    {
+      "title": "the browser this rung drove is the pinned one",
+      "assertions": 6,
+      "what": "the Playwright package and the Chromium build that ran are the pinned ones"
+    }
+  ]
+}

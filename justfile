@@ -157,6 +157,31 @@ priv-doctor:
 
 # ---------------------------------------------------------------- rungs
 
+# Unlike the two rungs below it this suite is not `#[ignore]`d: design §3.1 puts it on "every
+# push where the host has node", so `just ci`'s `test` step already runs it and
+# `.config/nextest.toml` makes its decline visible there. This recipe is the *accounting* — it
+# runs the same one binary and ends on a named verdict, RAN or SKIPPED, which is what
+# `just gate-g5` records.
+#
+# R1-web — the pinned Playwright + Chromium browser rung.
+rung-web:
+    ./scripts/rung-web.sh
+
+# Reaches the network, which is why it is a recipe somebody runs rather than something a test
+# does on their behalf: `npm ci` installs exactly the tree `package-lock.json` pins, and the
+# Playwright CLI it just installed fetches exactly the browser build that CLI names — so
+# neither half can drift to whatever is newest.
+#
+# What R1-web needs and the build does not: the pinned Playwright and the pinned Chromium.
+rung-web-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd crates/daemon/tests/browser
+    npm ci
+    # The pinned CLI, not `npx`: `npx playwright` would happily resolve some other version and
+    # fetch some other browser, which is the whole failure the pin exists to prevent.
+    node node_modules/@playwright/test/cli.js install chromium
+
 # Runs where the module is loadable; reports a named, counted skip elsewhere.
 #
 # R2 — the vivid virtual-driver rung.

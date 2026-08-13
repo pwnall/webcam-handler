@@ -143,9 +143,21 @@ gate_finish() {
 # --------------------------------------------------------------- tree traversal
 #
 # Populations are derived by walking the tree, never transcribed (docs/9's second
-# structural rule). `target/`, `.git/` and `vendor/` are excluded everywhere: the first
-# two are not source, and `vendor/v4l2-webcam-skill/` is a read-only upstream reference
-# this project does not own.
+# structural rule). `target/`, `.git/`, `vendor/` and `node_modules/` are excluded
+# everywhere: the first two are not source, `vendor/v4l2-webcam-skill/` is a read-only
+# upstream reference this project does not own, and `node_modules/` is the R1-web rung's
+# installed tooling (design §3.1) — gitignored, restored by `just rung-web-install` from a
+# committed lockfile, and no more ours than `target/` is.
+#
+# **The fourth name was added at P5d and it is worth saying what it cost**, because a
+# privacy gate that quietly stops looking somewhere is the class this suite exists for:
+# `no-frame-bytes-in-repo.sh` sniffs every file this walk finds, and Playwright ships two
+# `appIcon.png`s. Neither can reach the repository — the directory is gitignored and the
+# gate's own sentence is about what is *committed* — but the walk had no way to say so, and
+# an installed dependency tree is not a place a camera frame can appear. What is *not* done
+# here, deliberately, is switching the walk to `git ls-files`: a frame written into the tree
+# and not yet committed is precisely what that gate is for, and asking git would stop seeing
+# it.
 
 # Print, NUL-separated, every file under $1 (default: the whole tree) matching the
 # remaining `find` predicates.
@@ -154,7 +166,7 @@ gate_find() {
     shift
     [[ -d "$dir" ]] || return 0
     find "$dir" \
-        \( -name target -o -name .git -o -name vendor \) -prune -o \
+        \( -name target -o -name .git -o -name vendor -o -name node_modules \) -prune -o \
         -type f "$@" -print0
 }
 

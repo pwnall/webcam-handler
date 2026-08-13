@@ -10,3 +10,11 @@
 # committed: git does not preserve xattrs, so a committed copy would be an un-capped
 # binary that looks blessed, and anything that DID preserve them would be shipping root.
 /.wch-bin/
+
+# The R1-web rung's own tooling (design §3.1). `package.json` and `package-lock.json` are
+# committed — they are the pin, and a pin that is not in the repository is not a pin — but
+# the installed tree is not: it is tens of megabytes of somebody else's code, `just
+# rung-web-install` puts it back from the lockfile, and its absence is a named, counted skip
+# rather than a failure. Node is never a build dependency, so a clone without this still
+# builds every crate.
+/crates/daemon/tests/browser/node_modules/

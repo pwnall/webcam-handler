@@ -61,6 +61,17 @@ export async function connect(url, { onClose } = {}) {
   const pending = new Map();
   const streams = new Map();
   let next = 1;
+  // Whether this socket ever opened, which decides whether `onClose` is a true statement.
+  //
+  // A refused handshake fires `error` **and then** `close`, so without this the caller was
+  // told "the connection closed" about a connection it never had — and since `connect`
+  // rejects on the same event, the caller's own, more accurate sentence was written first
+  // and then overwritten by that one. P5d's browser rung found it: a page opened without a
+  // token said "the connection to wchd closed; reload the URL wchd printed" instead of
+  // naming the two things that are actually wrong, which is the sentence an operator needs
+  // in the most common failure this page has. `onClose` means "the connection I gave you
+  // has ended"; a connection that never started has not ended.
+  let opened = false;
 
   socket.addEventListener("message", (event) => {
     const frame = JSON.parse(event.data);
@@ -92,12 +103,21 @@ export async function connect(url, { onClose } = {}) {
     }
     pending.clear();
     streams.clear();
-    onClose?.();
+    if (opened) {
+      onClose?.();
+    }
   });
 
   const refused = () => new Error("wchd did not accept a WebSocket");
-  await new Promise((opened, failed) => {
-    socket.addEventListener("open", opened, { once: true });
+  await new Promise((resolve, failed) => {
+    socket.addEventListener(
+      "open",
+      () => {
+        opened = true;
+        resolve();
+      },
+      { once: true },
+    );
     socket.addEventListener("error", () => failed(refused()), { once: true });
   });
 

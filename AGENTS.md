@@ -179,7 +179,12 @@ green and the notes current, and the phase review gets its own session.
 - The browser half is asserted in a real browser: the pinned Playwright/Chromium rung
   (design §3.1 R1-web) self-skips counted without node — node is never a build
   dependency — and a browser behavior verified only through the JSON the page consumes
-  is not verified. Miri runs the unsafe-adjacent pure decode units.
+  is not verified. It landed at P5d as `crates/daemon/tests/web_browser.rs` driving
+  `crates/daemon/tests/browser/`, and it is **not** `#[ignore]`d: design puts it on every
+  push where the host has node, so `just ci` runs it and its decline names the missing
+  precondition, its remedy and every claim it cost. `just rung-web-install` gives a host
+  the pinned package and the pinned browser; `just rung-web` ends on RAN or SKIPPED, which
+  is what `just gate-g5` records. Miri runs the unsafe-adjacent pure decode units.
 - No assertion inside a conditional whose false branch cannot go red; no skip that reads
   as pass.
 
