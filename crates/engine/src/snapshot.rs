@@ -41,6 +41,17 @@
 //! benign case is why pass one defers on the device's present state as well as on the
 //! snapshot's record of it.
 //!
+//! ## Which side of the disturbance a snapshot belongs on
+//!
+//! A snapshot is only worth restoring if it describes the camera *before* whatever
+//! disturbed it. That is obvious and it is also unenforceable by reading code: snapshot,
+//! disturb, restore and disturb, snapshot, restore are the same three calls in a different
+//! order, and the second one puts the disturbance back rather than undoing it. On a device
+//! whose read-back changes across a driver reload that is worse than a no-op — the restore
+//! writes back the number the reload produced \[PF:28\]. [`restore_across`] is the door for
+//! that case: it takes the instant the disturbance began and refuses a snapshot stamped
+//! after it.
+//!
 //! Both passes write through this module's own one-control-at-a-time path, and **not** through
 //! [`crate::write::execute`]. That is deliberate rather than an omission: a plan is an
 //! ordered set of writes that must all happen, and it stops at the first refusal — which
@@ -235,6 +246,58 @@ pub fn restore(
 pub fn restore_in_effect(camera: &mut dyn Camera, snapshot: &Snapshot) -> Result<RestoreReport> {
     let pairs = pairing::in_effect(&camera.controls()?, Vec::new());
     restore(camera, &pairs, snapshot)
+}
+
+/// Put a snapshot back **across a disturbance** — a driver reload, a replug, a firmware
+/// reset — refusing one that was taken after it.
+///
+/// [`restore_in_effect`] with an ordering law in front of it, and the law is the whole
+/// reason this exists. After a disturbance a control's read-back can describe the
+/// disturbance rather than the camera: measured \[PF:28\], a `uvcvideo` cycle leaves the
+/// OBSBOT Tiny 3's `tilt_absolute` reporting a position nobody commanded, on a camera whose
+/// aim did not measurably move. A snapshot taken *after* such an event records that number,
+/// so restoring it **introduces** the error it was supposed to undo — and a build that
+/// swapped the two steps would look identical from the outside while being actively wrong.
+/// It would also be silent: with the ordering reversed the report reads `AlreadyCorrect`,
+/// because the snapshot recorded exactly the state it was meant to undo.
+///
+/// So the ordering is not left to the order two lines happen to sit in. The snapshot's own
+/// `taken_at` is compared against the instant the disturbance began, and a snapshot from
+/// the wrong side of it is refused **before anything is written**. Both stamps come from
+/// the acts they are about — the snapshot's from the read, the disturbance's from the
+/// caller starting it — which is why moving the call is not enough to defeat the check.
+///
+/// **The comparison is `>` rather than `>=`**, so a snapshot stamped in the same
+/// millisecond as the disturbance is allowed through. A disturbance worth guarding against
+/// takes orders of magnitude longer than a stamp's resolution — a `uvcvideo` cycle on this
+/// host takes about a second — so a tie can only ever be the honest case, and refusing it
+/// would fail a correct caller for being quick.
+///
+/// **What this does not claim.** A restore is a *command*, not a measurement: V4L2 offers
+/// no way to read a mechanism's actual position \[PF:18\], so "the head is back" is
+/// believed rather than verified. What licenses believing it is PF:28's calibration — on an
+/// image metric whose noise floor is 0.40, a commanded 2° move scores 10.97 and commanding
+/// an absolute position and returning scores 0.42.
+///
+/// # Errors
+///
+/// [`Error::IllegalTransition`] naming both stamps when the snapshot post-dates the
+/// disturbance, in which case nothing was written. Otherwise as [`restore_in_effect`].
+pub fn restore_across(
+    camera: &mut dyn Camera,
+    snapshot: &Snapshot,
+    disturbance_began: Stamp,
+) -> Result<RestoreReport> {
+    if snapshot.taken_at > disturbance_began {
+        return Err(crate::refusal::illegal(
+            format!(
+                "snapshot_after_the_disturbance(taken_at={}, disturbance_began={disturbance_began})",
+                snapshot.taken_at
+            ),
+            format!("restore {}", snapshot.camera.bus_path),
+        ));
+    }
+    restore_in_effect(camera, snapshot)
 }
 
 /// The slugs the device reports INACTIVE at this instant.
@@ -657,6 +720,95 @@ mod tests {
                 .any(|o| matches!(o, RestoreOutcome::Restored { .. })),
             "the control that could be restored was"
         );
+    }
+
+    /// A stamp `millis` milliseconds after the epoch, so the two sides of an ordering can
+    /// be written down instead of raced for.
+    fn at(millis: i64) -> Stamp {
+        Stamp::from_millis(millis).expect("in range")
+    }
+
+    #[test]
+    fn a_snapshot_taken_before_the_disturbance_is_put_back() {
+        // The direction that must hold, or the guard below is a restore nobody can use.
+        let mut camera = ScriptedCamera::new(vec![integer("pan_absolute", -46800)]);
+        let snapshot = take(&mut camera, &[], at(1_000)).expect("snapshots");
+
+        // The disturbance: the device comes back reporting a position 3600 units from the
+        // one it was left in, which is the shape PF:28 measured on the OBSBOT.
+        force(&mut camera, "pan_absolute", ControlValue::Int(-43200));
+        camera.writes.clear();
+
+        let report = restore_across(&mut camera, &snapshot, at(2_000)).expect("restores");
+        assert_eq!(
+            camera
+                .writes
+                .iter()
+                .map(|(s, v)| (s.as_str(), v.clone()))
+                .collect::<Vec<_>>(),
+            vec![("pan_absolute", ControlValue::Int(-46800))],
+            "the recorded position is what goes back"
+        );
+        assert!(report.is_complete(), "{report:?}");
+    }
+
+    #[test]
+    fn a_snapshot_taken_after_the_disturbance_is_refused_and_nothing_is_written() {
+        // The whole point. A caller that snapshots *after* the event it means to undo has
+        // recorded the event, and on PF:28's device the recording is a lie about where the
+        // head is — so restoring it would command the camera 1° away from where the
+        // operator left it and report success. The refusal has to happen before the write,
+        // which is why `camera.writes` is the assertion and the error is only half of it.
+        let mut camera = ScriptedCamera::new(vec![integer("pan_absolute", -43200)]);
+        let snapshot = take(&mut camera, &[], at(3_000)).expect("snapshots");
+        camera.writes.clear();
+
+        let error = restore_across(&mut camera, &snapshot, at(2_000))
+            .expect_err("a snapshot from after the disturbance describes the disturbance");
+        assert_eq!(error.kind(), schema::ErrorKind::IllegalTransition);
+        assert!(camera.writes.is_empty(), "the refusal wrote nothing");
+        // Both stamps in the message, because "your ordering is wrong" is not actionable
+        // and "this reading is one second younger than the reload" is.
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("snapshot_after_the_disturbance"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("1970-01-01T00:00:03Z"), "{rendered}");
+        assert!(rendered.contains("1970-01-01T00:00:02Z"), "{rendered}");
+    }
+
+    #[test]
+    fn a_snapshot_stamped_in_the_disturbances_own_millisecond_is_the_honest_case() {
+        // The boundary, and it is a `>` on purpose: stamps are milliseconds and a
+        // disturbance worth guarding against lasts about a second, so a tie is a quick
+        // caller rather than a swapped one. A `>=` here would fail correct code on a fast
+        // machine, which is the way a guard gets deleted rather than fixed.
+        let mut camera = ScriptedCamera::new(vec![integer("brightness", 50)]);
+        let snapshot = take(&mut camera, &[], at(2_000)).expect("snapshots");
+        force(&mut camera, "brightness", ControlValue::Int(9));
+        camera.writes.clear();
+
+        let report = restore_across(&mut camera, &snapshot, at(2_000)).expect("restores");
+        assert!(report.is_complete(), "{report:?}");
+        assert_eq!(camera.value_of("brightness"), Some(ControlValue::Int(50)));
+    }
+
+    #[test]
+    fn the_ordering_guard_runs_before_the_fingerprint_check_and_still_writes_nothing() {
+        // Two refusals can apply at once, and the arrangement matters only in that neither
+        // of them may touch the camera. This is the belt-and-braces case a hardware arm
+        // hits: a snapshot from the wrong side of a driver reload *and* from a camera whose
+        // fingerprint moved across it.
+        let mut origin =
+            ScriptedCamera::new(vec![integer("brightness", 50)]).identified("cam:a", "3-4:1.0");
+        let snapshot = take(&mut origin, &[], at(3_000)).expect("snapshots");
+
+        let mut other =
+            ScriptedCamera::new(vec![integer("brightness", 10)]).identified("cam:b", "3-1:1.0");
+        let error = restore_across(&mut other, &snapshot, at(2_000)).expect_err("refused");
+        assert_eq!(error.kind(), schema::ErrorKind::IllegalTransition);
+        assert!(other.writes.is_empty(), "the refusal wrote nothing");
     }
 
     #[test]

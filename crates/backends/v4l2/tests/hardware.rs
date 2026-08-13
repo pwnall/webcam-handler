@@ -31,6 +31,18 @@
 //! motorized controls by asking [`testkit::battery::is_motorized`], so renaming the motion
 //! arm out of its prefix cannot quietly make the rest of the file move the camera.
 //!
+//! **One arm *restores* a motorized control, and the distinction is measured rather than
+//! asserted.** The hotplug arm snapshots every camera before its `uvcvideo` cycle and puts
+//! the snapshot back afterwards, pan and tilt included, because the aim is what that cycle
+//! leaves wrong \[PF:25, PF:28\]. That is not the act `is_motorized` guards against — it
+//! guards against a suite pointing a camera somewhere *new*, and this writes back the aim
+//! the operator had. \[PF:28\] is why that is a fair reading: across every cycle measured on
+//! 2026-08-13 it is the read-back that moves and not, detectably, the head — against a noise
+//! floor of 0.40, a commanded 2° move scores 10.97 and a whole cycle scores 0.40–0.74. It runs
+//! under WCH_NO_MOTION=1 like the rest of the arm, and note **N86** says why that is the
+//! honest side of the trade rather than an oversight: the alternative is a run that leaves
+//! the camera reporting an aim it does not have.
+//!
 //! wch-suite: prefix=hw_ recipe=smoke-hw
 
 use std::collections::BTreeSet;
@@ -2564,6 +2576,226 @@ fn listed_video_nodes() -> BTreeSet<Utf8PathBuf> {
     nodes
 }
 
+/// Every attached camera's control state, read now — the reading the restore after the
+/// cycle is against.
+///
+/// **The stamp is read here, beside the camera, and that is the load-bearing part.**
+/// `snapshot::take_in_effect` takes `now` as an argument because the engine reads no clock,
+/// so somebody has to read one; doing it in the same expression as the read of the device
+/// is what makes the stamp a fact about *when this snapshot was taken* rather than a number
+/// a caller chose. [`engine::snapshot::restore_across`] compares it with the instant the
+/// cycle began, so a build that moved this call below the cycle would stamp its snapshot
+/// from the wrong side of the event and be **refused** rather than believed \[PF:28\].
+///
+/// A camera that cannot be opened or cannot be read is a named partial skip and not a
+/// failure: this arm's subject is hotplug, and a desk where one device is busy still has
+/// something to say about a driver cycle. What it must not do is guard nothing quietly.
+///
+/// Each handle is dropped at the end of its iteration, before the arm's holder check runs —
+/// a snapshot that left a node open would trip the very interlock the arm depends on.
+fn snapshot_every_camera(
+    backend: &V4l2Backend,
+    cameras: &[schema::camera::CameraInfo],
+) -> Vec<(String, schema::snapshot::Snapshot)> {
+    let mut taken = Vec::new();
+    for info in cameras {
+        let mut camera = match backend.open(&info.id) {
+            Ok(camera) => camera,
+            Err(error) => {
+                println!(
+                    "SKIP (partial): {} could not be opened before the cycle ({error}), so its \
+                     controls are not guarded across it",
+                    info.id
+                );
+                continue;
+            }
+        };
+        match engine::snapshot::take_in_effect(camera.as_mut(), schema::time::Stamp::now()) {
+            Ok(snapshot) => {
+                println!(
+                    "  before the cycle: {} control(s) recorded for {}",
+                    snapshot.entries.len(),
+                    info.id
+                );
+                taken.push((info.fingerprint.bus_path.clone(), snapshot));
+            }
+            Err(error) => println!(
+                "SKIP (partial): {} refused a snapshot before the cycle ({error}), so its \
+                 controls are not guarded across it",
+                info.id
+            ),
+        }
+    }
+    taken
+}
+
+/// Start the driver cycle, and stamp the instant it began.
+///
+/// One function, so the stamp cannot drift from the act it is about. The ordering the
+/// restore asserts is only worth something if the disturbance's instant is produced by the
+/// disturbance — a stamp taken somewhere else in the arm is a line an edit can move, and
+/// this is not.
+///
+/// Stamped **before** the spawn rather than after it, which is the conservative side: an
+/// instant slightly earlier than the true start can only ever refuse a snapshot this arm
+/// should not have trusted, while a later one would admit a snapshot taken *during* the
+/// cycle — which is the reading PF:28 says is a lie.
+fn spawn_the_cycle(helper: &Utf8Path) -> (std::process::Child, schema::time::Stamp) {
+    let began = schema::time::Stamp::now();
+    let child = Command::new(helper.as_std_path())
+        .args(["uvcvideo", "cycle"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("could not run {helper}: {error}"));
+    (child, began)
+}
+
+/// Put every pre-cycle snapshot back on the camera it came from, and assert that it went.
+///
+/// AGENTS rule 8 across a driver reload (PF:25, PF:28, and the fix the owner chose over
+/// excluding this arm from aimed runs). Three things are asserted and one is only printed:
+///
+/// - the restore is refused if this arm's snapshot is younger than its cycle, which is the
+///   ordering the whole fix turns on — [`engine::snapshot::restore_across`] owns that law
+///   and this arm consumes it;
+/// - the report is *complete*, so a control that could not be put back is a red run rather
+///   than a line nobody reads;
+/// - every control the report says it **wrote or found correct** reads back at its recorded
+///   value. Controls the report names [`RestoreOutcome::OwnedByAutomation`] are excluded by
+///   the report rather than by a list here: their value is the automation's \[PF:24\], and
+///   demanding a number from an algorithm is asserting the device is not what it says.
+/// - what needed putting back is printed rather than asserted. A cycle that disturbed
+///   nothing is a legitimate answer on a desk with no gimbal on it, and asserting that the
+///   device misbehaves would make this arm fail on somebody else's hardware.
+///
+/// **It restores motorized controls too, and that is the point rather than an oversight.**
+/// Everything else in this file excludes them by asking `battery::is_motorized`, because a
+/// suite must not *point* a camera somewhere new. Putting a head back where the operator
+/// aimed it is the opposite act, and PF:28 is what makes that reading a fair one: across
+/// every cycle measured the read-back moves and the aim does not detectably, so what this
+/// issues is a command to the aim the camera already has. The module header carries the
+/// same sentence, because this file's claim about motors lives there, and note N86 carries
+/// the part that is the owner's to overrule — this runs under WCH_NO_MOTION=1 too.
+fn restore_every_camera(
+    backend: &V4l2Backend,
+    taken: &[(String, schema::snapshot::Snapshot)],
+    cycle_began: schema::time::Stamp,
+) {
+    let cameras = backend.enumerate().unwrap_or_else(|error| {
+        panic!("the cameras could not be enumerated after the cycle for the restore: {error}")
+    });
+    for (bus_path, snapshot) in taken {
+        let Some(info) = cameras
+            .iter()
+            .find(|info| &info.fingerprint.bus_path == bus_path)
+        else {
+            // Not asserted here: "every camera came back" is the arm's own claim further
+            // down, with the recovery command in its message. Two homes for one verdict is
+            // how a transcript ends up with two opinions about the same desk.
+            println!(
+                "SKIP (partial): {bus_path} is not on the bus after the cycle, so its {} \
+                 recorded control(s) could not be put back",
+                snapshot.entries.len()
+            );
+            continue;
+        };
+        let mut camera = backend.open(&info.id).unwrap_or_else(|error| {
+            panic!(
+                "{}: could not be opened to be put back after the cycle: {error}",
+                info.id
+            )
+        });
+
+        let before_restore = values_of(camera.as_mut());
+        let report = engine::snapshot::restore_across(camera.as_mut(), snapshot, cycle_began)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: the restore across the cycle was refused: {error}. A snapshot younger \
+                     than the cycle records the cycle — see PF:28",
+                    info.id
+                )
+            });
+        let after_restore = values_of(camera.as_mut());
+
+        // The two populations come off the *report*, never off a list written here: which
+        // controls a restore claims to have put back is the restore's answer, and a test
+        // that decided it for itself would be asserting against its own opinion.
+        let mut owned: BTreeSet<&str> = BTreeSet::new();
+        let mut claimed: BTreeSet<&str> = BTreeSet::new();
+        for outcome in &report.outcomes {
+            match outcome {
+                schema::snapshot::RestoreOutcome::OwnedByAutomation { control, .. } => {
+                    owned.insert(control.as_str());
+                }
+                schema::snapshot::RestoreOutcome::Restored { applied } => {
+                    claimed.insert(applied.slug.as_str());
+                }
+                schema::snapshot::RestoreOutcome::AlreadyCorrect { control } => {
+                    claimed.insert(control.as_str());
+                }
+                // Left to `is_complete()` below, which is the one place that decides what a
+                // control nobody could put back costs the run.
+                schema::snapshot::RestoreOutcome::Unrestorable { .. } => {}
+            }
+        }
+        let mut moved: Vec<String> = Vec::new();
+        for entry in &snapshot.entries {
+            let slug = entry.control.as_str();
+            if !claimed.contains(slug) {
+                continue;
+            }
+            assert_eq!(
+                after_restore.get(slug),
+                Some(&entry.value),
+                "{}: {slug} reads {:?} after the restore and the snapshot recorded {:?}",
+                info.id,
+                after_restore.get(slug),
+                entry.value
+            );
+            if before_restore.get(slug) != Some(&entry.value) {
+                moved.push(format!(
+                    "{slug} {:?}→{:?}",
+                    before_restore.get(slug),
+                    entry.value
+                ));
+            }
+        }
+        assert!(
+            report.is_complete(),
+            "{}: the restore across the cycle reported itself incomplete: {:?}",
+            info.id,
+            report.unrestored()
+        );
+
+        // The transcript PF:25 had to be reconstructed by hand from outside the suite: what
+        // the cycle changed, on which camera, in the run's own output.
+        if moved.is_empty() {
+            println!(
+                "{}: {} control(s) recorded, none of them changed by the cycle",
+                info.id,
+                snapshot.entries.len()
+            );
+        } else {
+            println!(
+                "{}: {} of {} control(s) needed putting back after the cycle: {}",
+                info.id,
+                moved.len(),
+                snapshot.entries.len(),
+                moved.join(", ")
+            );
+        }
+        if !owned.is_empty() {
+            println!(
+                "  {} control(s) left to their automation on {} [PF:24]: {}",
+                owned.len(),
+                info.id,
+                owned.iter().copied().collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+}
+
 /// Whether `events` carries a removal that is followed by an arrival.
 ///
 /// The claim is an *ordering*, not a census: a cycle takes the nodes away and brings them
@@ -2632,9 +2864,20 @@ fn hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_rea
             .join(", ")
     );
 
+    // **AGENTS rule 8 across a driver reload, and the ordering is the whole fix.** A
+    // `uvcvideo` cycle does not leave every camera as it found it: the OBSBOT Tiny 3 comes
+    // back reporting a `tilt_absolute` 3600 units from the one the head is in \[PF:25,
+    // PF:28\], and until this arm carried a snapshot, the number the *next* arm read as
+    // "home" was that one. So the state is recorded here — **before** the cycle, because a
+    // snapshot taken afterwards records the lie and restoring it would introduce the error
+    // rather than undo it. The stamp `snapshot_every_camera` reads is what makes that
+    // ordering assertable instead of merely intended; `restore_every_camera` refuses a
+    // snapshot younger than the cycle.
+    let taken_before_the_cycle = snapshot_every_camera(&backend, &before);
+
     // Asked as late as possible, because the answer is about *now*: the enumeration above
-    // opened every node for `QUERYCAP` and closed each one again, and this is the check
-    // that says so from outside this process.
+    // opened every node for `QUERYCAP` and closed each one again, the snapshots above did
+    // the same, and this is the check that says so from outside this process.
     if !no_camera_holders(&helper) {
         return;
     }
@@ -2648,12 +2891,7 @@ fn hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_rea
     // N53), so a cycle that has already finished when the first poll happens is
     // invisible — the tree it left behind is the tree it started with. A subscriber sees
     // a cycle by watching while it happens, so that is what this does.
-    let mut child = Command::new(helper.as_std_path())
-        .args(["uvcvideo", "cycle"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error| panic!("could not run {helper}: {error}"));
+    let (mut child, cycle_began) = spawn_the_cycle(&helper);
 
     // Two readings — the removals, then the arrivals — each bounded by the debounce's own
     // ceiling, and one more of the same for scheduling this arm does not control. Nothing
@@ -2736,6 +2974,14 @@ fn hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_rea
         );
         return;
     }
+
+    // Put the cameras back **here**, as early as the driver allows, rather than at the end
+    // of the arm. Everything below this line is an assertion about the event stream, and a
+    // desk should not keep a re-parked gimbal because a debounce disagreed with a kernel
+    // \[PF:25\]. The two returns above need no restore for the same reason they are skips:
+    // the interlock refused the unload, or the unload did not take, so nothing was
+    // re-initialised.
+    restore_every_camera(&backend, &taken_before_the_cycle, cycle_began);
 
     // Shapes, never counts. The debounce coalesces a burst and the *turn* — the first
     // arrival after a run of removals — is what ends it (note N53), so the reading that

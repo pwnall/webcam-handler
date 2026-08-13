@@ -8281,6 +8281,63 @@ a dated record of one device's two firmwares rather than an open question.
 retires and whose rule it leaves standing; PF:3, PF:4 and PF:5, whose only or partial carrier
 this document is; AGENTS rule 4, which is the whole authority for the ruling.
 
+### Amendment, 2026-08-13: the modes came back, exactly, and this entry's retirement condition is met
+
+Seen while landing \[PF:28\], by the arm this entry exists for going red the other way round.
+`hw_profile_capture_reproduces_the_committed_invariant_section` now fails because a fresh capture
+offers **more** than the corpus: 3840×2160 is back, 120 fps is back at 1920×1080 and 1280×720, and
+the two uncompressed sizes are back to five rates each.
+
+Read off the wire with this entry's own instrument, so the claim does not pass through our code —
+`lsusb -d 3564:ff02 -v`, same port, same 480 Mbps link, `bcdDevice= 5.10` unchanged:
+
+```
+FORMAT_MJPEG          bNumFrameDescriptors 5      (was 4)
+  1920x1080  bFrameIntervalType 10  dwFrameInterval(0)  83333   (120.0 fps)
+  3840x2160  bFrameIntervalType  6                              (was absent)
+  1280x720   bFrameIntervalType 10  dwFrameInterval(0)  83333   (120.0 fps)
+  1280x960   bFrameIntervalType  6
+  1920x1440  bFrameIntervalType  6
+FORMAT_UNCOMPRESSED   bNumFrameDescriptors 2
+  640x360    bFrameIntervalType  5                              (was 1)
+  640x480    bFrameIntervalType  5                              (was 1)
+```
+
+**Seven frame sizes and forty-eight interval entries — the 2026-08-08 numbers exactly.** Not "some
+modes returned": the descriptor set this entry recorded as lost is back whole, and the corpus that
+was re-captured to record the loss is now stale in the opposite direction.
+
+**And there is an event in the journal this time**, which is what the original could not produce.
+The device was gone from the bus for fourteen minutes overnight:
+
+```
+Aug 13 02:47:35 kernel: usb 3-1: USB disconnect, device number 2
+Aug 13 03:01:42 kernel: usb 3-1: new high-speed USB device number 29 using xhci_hcd
+Aug 13 03:01:43 kernel: usb 3-1: New USB device found, idVendor=3564, idProduct=ff02, bcdDevice= 5.10
+```
+
+A `uvcvideo` cycle produces no such line. The same journal holds twenty-six
+`registered new interface driver uvcvideo` lines for that day — this project's own probes reloading
+the driver over and over — and exactly one enumeration of this device, the one above. A driver
+cycle does not re-enumerate a camera; a replug does. So this is a **replug or a power cycle**, and
+it lands on the same side as the power outage this entry named
+as its favoured explanation: the capability set is decided when the camera's rail comes up, and it
+has now been seen to go both ways. That is a stronger reading than the entry could support on
+2026-08-11 and it is still a reading — nothing here identifies *what* the firmware decides on, and
+"it was unplugged and came back different" is a correlation with one instance in each direction.
+
+**What this costs, and what is deliberately not done here.** `just smoke-hw` has one red — this
+arm, on this device, for this reason. It is a device finding rather than a defect, and the session
+that met it was landing PF:28's fix, so the corpus is left as committed: a re-capture replaces a
+document wholesale (§3.2) and this entry's own long argument about when that is right is the thing
+a re-capture would have to be weighed against, in a session that has read it. What the next session
+owes is a decision, not a command: re-capture and record which of the device's two descriptor sets
+the corpus now claims to describe, or leave the corpus at the 2026-08-11 state and carry the red as
+a known device finding. **This entry is retired as an open question** — its retirement clause names
+this exact observation, and the answer to "does the capability come back" is now *yes* — and what
+replaces it is the sharper question it predicted: a device whose advertised capability set is not
+stable across power cycles, which no corpus can be current for by construction.
+
 ---
 
 ## E13 — G4 evidence: the daemon at the real cameras — a photo and a calibrate sweep over the socket, 2026-08-11
@@ -11248,6 +11305,24 @@ becomes the reason rather than the defect.
 **Adjacent:** PF:3 (the flag, not the value), PF:4 (currents outside the declared range — the
 OBSBOT's `0` is a second instance), PF:25 (the OBSBOT half of the same measurement).
 
+### Amendment, 2026-08-13: both arms were green in the dark, which is the same finding from the other side
+
+Recorded so that a reader comparing two runs does not conclude this was fixed. The
+2026-08-13 `just smoke-hw` run that landed \[PF:28\]'s fix (note **N86**) had **both** of the arms
+above passing — `hardware.rs`'s brightness sweep and the client rung's session, on the same BRIO,
+with no code touching `engine::snapshot`'s VOLATILE exemption. The run happened after dark, and the
+room was dark enough that the sensor's own frames were nearly black: measured on this device's
+neighbour with the shipped `wch photo`, mean luma 2.58/255 with a maximum of 10.
+
+Nothing about the finding changes; if anything it sharpens. This entry's mechanism is that "the
+value moves when the sensor *streams*" — the AWB algorithm reacting to a scene — and a scene with
+no light in it is a scene the algorithm has nothing to react to. **That the darkness is what made
+the arms green is a reading and not a measurement**: no controlled comparison was run, the room was
+not the variable anybody was changing, and the honest statement is that these two arms are green on
+some scenes and red on others, which is exactly what a device-driven read-back looks like from a
+suite. It also means the suite's red count is not a stable number to quote: the run in \[E15\] had
+two, the run on 2026-08-13 had one, and the one it had was neither of these two.
+
 ---
 
 ## PF:25 — A `uvcvideo` cycle re-parks the OBSBOT Tiny 3's gimbal and re-initialises its processing unit; the three cameras beside it keep everything
@@ -11257,6 +11332,10 @@ logical cameras, three `uvcvideo` cycles through `wch-priv` \[N8\]. Continues th
 registry; cite it as `[PF:25]`. The control group below is four of the five: the Chicony IR
 sensor has three controls and none of them is comparable, which is the same control poverty it
 declines seven R3 claims for.
+
+**Amended 2026-08-13, and the title's first clause does not survive it** — photographed against a
+calibrated metric, the gimbal does not move across a cycle; the read-back does. Read the amendment
+at the end of this entry before citing the title, and \[PF:28\] for the hazard that replaces it.
 
 PF:22 measured what a `uvcvideo` reload does to *node numbering* and concluded, correctly, that
 it "changed nothing about any of them". That conclusion was drawn over `card`, `bus_info`, node
@@ -11368,6 +11447,124 @@ issued \[PF:18\].
 **Adjacent:** PF:22 (the same event, the half that is harmless), PF:18 (why "restored" is a claim
 about a command), PF:20 (why the control group is the right control group), PF:24 (the three
 zeros), E9 (the arm that performs the cycle), E15 (this run).
+
+### Amendment, 2026-08-13: photographed, the gimbal does not move — the read-back does, and the hazard inverts
+
+Everything above stands as the transcript of what was read. What it *concluded* does not, and the
+correction is not a softening: the title's first clause — "re-parks the OBSBOT Tiny 3's gimbal" —
+was inferred from a control's value, and a control's value is the one thing on this axis that is
+not evidence of a mechanism \[PF:18\]. Photographed, five cycles across two sessions moved the aim
+by less than the noise floor of a metric that resolves 2°. **What moves is the number.** The finding that replaces
+it is \[PF:28\], and this amendment says how it was reached, what it leaves unexplained, and what
+landed on the strength of it (note **N86**).
+
+**The metric had to be repaired before it could mean anything, and that is the first result.** The
+opening attempt — photograph before, cycle, photograph after, compare — was worthless, because auto
+white balance moves the picture between two shots of a scene where nothing has changed. That is
+\[PF:24\]'s mechanism, met on this entry's own device rather than on the BRIO. So AWB was pinned
+off, the image controls were held fixed for the duration, the photographs were downscaled to
+320×180 greyscale and compared by mean absolute difference — and then, because a difference with no
+scale under it cannot say "nothing moved", the metric was calibrated against moves of a known size:
+
+| comparison — OBSBOT, room scene, nothing else moving | mean abs diff |
+|---|---|
+| same commanded position, two shots — **the noise floor** | **0.40** |
+| commanded 2° away (pan 28800 → 36000) | **10.97** |
+| commanded 2° away and back | **0.42** |
+
+A 1–2° move is **26× the noise floor**, and commanding an absolute position returns the aim to
+within noise. Only with those three numbers in hand does the experiment below have a verdict rather
+than a reading.
+
+**The experiment.** Three consecutive `wch-priv uvcvideo cycle`s from a settled position, each
+preceded by commanding pan 28800 / tilt −46800:
+
+| trial | reported tilt, before → after | image difference |
+|---|---|---|
+| 1 | −46800 → **−43200** | 0.735 |
+| 2 | −46800 → **−43200** | 0.401 |
+| 3 | −46800 → **−43200** | 0.464 |
+
+Every image difference sits at the noise floor, 26× below what a real 1–2° move looks like, while
+the reported tilt moves by exactly one step every time.
+
+**A second session the same day re-measured it with different instruments, and the finding survives
+while its arithmetic does not.** The scene was dark by then, so the metric was rebuilt at
+`gain=128`, `exposure_time_absolute=2500` — held fixed across every shot, including across the
+cycle, since \[PF:25\]'s own body says a cycle can re-initialise the processing unit and an
+exposure change would swamp an aim change — and re-calibrated. Three photographs per position with
+the last two compared, because a photograph taken the instant a write returns catches the head in
+flight (PF:18 item 3, met in practice: a 40° command scored 24.8 and the same command *back* scored
+25.6 against the origin, both of them the head still travelling):
+
+| comparison — same device, dark scene, high gain | mean abs diff |
+|---|---|
+| two settled shots, nothing commanded — the noise floor | 1.02 |
+| commanded 2° away | 7.93 |
+| commanded 2° away and back | 1.09 |
+| **a whole `uvcvideo` cycle, nothing written to pan or tilt** | **1.04** |
+
+Same verdict on a different scene with a worse floor: the cycle costs the aim nothing measurable,
+where 2° costs it eight times the floor.
+
+**What that second session did *not* reproduce is the arithmetic.** "+3600, deterministically,
+every time" is true of trials 1–3 and false as a rule. Six further cycles, each with a value
+commanded and nothing streamed between the write and the cycle:
+
+| tilt commanded before the cycle | reported after it |
+|---|---|
+| −46800 | −43200 |
+| −46800, then two more cycles with nothing written between them | −43200, then −43200 (stable) |
+| −43200 | −43200 |
+| −36000 | −43200 |
+| −100800 | −50400 |
+| 0 | −46800 |
+
+The offset is not a constant and not a direction. What is stable is the *destination*: whatever was
+commanded, the post-cycle reading lands in a narrow band around 12–14° down, and a second and third
+cycle do not move it again. And in the one cycle where **every** control on all five cameras was
+compared — the R3 hotplug arm's own run, once N86 gave it a snapshot to compare against — nothing
+changed at all: 22 OBSBOT controls, 51 across the other four cameras, tilt 0 before and 0 after.
+Neither half of this entry's title reproduced in that run, the processing unit's `5912`s included.
+
+**The narrowed claim, then.** A `uvcvideo` cycle *is* followed by a control reading that differs
+from the one before it, on this device, on the axis with a motor and (per the body above) on its
+processing unit. It is not established that anything mechanical moves; on the seven cycles measured
+photographically or by full control comparison, nothing did.
+
+**And the hazard inverts, which is why this is worth an entry of its own.** This entry's item 3
+proposed snapshotting pan/tilt across the hotplug arm and worried that it would "restore the number
+and hope about the head". The real exposure is the opposite and is worse: a snapshot taken **after**
+a cycle records −43200 for a camera nobody moved, so restoring *from* it would introduce a 1° error
+rather than fail to correct one. The ordering is the whole fix, and a build with the two steps
+swapped is invisible from outside. \[PF:28\] carries that hazard for the audience that needs it —
+whoever next writes a snapshot/restore path — and note **N86** carries the fix and what can go red.
+
+**It contradicts this entry's own −298800, and that is left standing rather than explained.** Two
+hand-run cycles took tilt to −298800, 92% of the way to its declared minimum, and the entry records
+the head hanging down. Nothing measured on 2026-08-13, in either session, came near it: every
+post-cycle reading landed between −43200 and −50400, or did not move at all. Either those two cycles found a different device state — they followed a full
+`just smoke-hw`, with streaming and motor arms behind them, where today's did not — or −298800 was
+itself a read-back interpreted as a position. **Two regimes may exist and only one of them is
+characterised.** The one that is characterised is the one this desk meets every run; the one that
+is not is the one where somebody reported a head hanging down, and no amount of arithmetic on
+today's numbers settles it. It is named here so that the next person to see −298800 knows they are
+looking at the unexplained half rather than at a new bug.
+
+**One guess at the second regime was tested and did not produce it.** These cameras park face down
+when they sleep, so "the head was asleep" is the obvious candidate for −298800, and idleness is the
+obvious trigger. Measured: head streamed to tilt 0, then **fifteen minutes with nothing streaming
+at all**, then a read (an open is not a stream — 0), then a cycle, then a read (0), then
+photographs against the pre-idle reference — **1.10, against that shot's own floor of 1.03**. So
+fifteen idle minutes park nothing on this device, and that is one more cycle where neither the
+number nor the aim moved. A longer idle, a suspend, or a run with the motor arms behind
+it are all untested, and one of them is where the other regime lives if it lives anywhere.
+
+**Retires this amendment:** a measurement that reaches the −298800 regime deliberately — the
+obvious protocol is a full `just smoke-hw`, then hand-run cycles with the photographic metric
+running — or a firmware or kernel on which the post-cycle reading equals the pre-cycle command.
+Nothing above retires the entry: the readings in its body were real and the control group is
+untouched.
 
 ---
 
@@ -12504,3 +12701,263 @@ when the owner rules again. The sink coupling retires separately and on its own 
 camera that offers an uncompressed format at the same maximum resolution as a compressed one makes
 Decision 2 measurable instead of argued, and it should be re-read against that device rather than
 trusted.
+
+---
+
+## PF:28 — A snapshot taken *after* a `uvcvideo` cycle records a position nobody commanded: the reload swaps the driver's acknowledgement for the device's own answer
+
+**Measured** 2026-08-13 on kernel `7.0.0-29-generic` (x86_64), five cameras attached, against the
+OBSBOT Tiny 3 (`3564:ff02`, interface `3-1:1.0`) — the one device in this house with a motor — by
+two sessions the same day with different instruments: a photographic metric, and the R3 hotplug
+arm comparing every control on every camera. Continues the docs/6 §1.2 registry; cite it as
+`[PF:28]`. \[PF:25\]'s amendment of the same date carries the transcripts and the calibration;
+this entry is the *hazard*, written for whoever next puts a snapshot and a restore around
+something that takes a device away.
+
+\[PF:18\] established that `pan_absolute` reads back the **commanded** position rather than the
+mechanism's, and drew the consequence for a write: `{requested, applied}` means requested versus
+accepted. This is the consequence for a *reload*, and it is sharper than the one PF:18 drew,
+because it turns a control's value into a claim about two different things depending on when it
+was read.
+
+### The measurement, in one line each
+
+- Before a cycle, `tilt_absolute` reads what was last written to it. After the cycle, on the same
+  camera, with nothing written in between, it reads something else — seen repeatedly in both
+  sessions, tabulated in PF:25's amendment.
+- The difference is **not** a constant: from a commanded −46800 it reads −43200 (three trials,
+  identically), from −36000 it also reads −43200, from −100800 it reads −50400, from 0 it reads
+  −46800. What is stable is the destination band — 12–14° down — not the offset.
+- **The aim does not move with it.** Photographed against a metric calibrated so that a commanded
+  2° move scores 26× the noise floor, three cycles scored 0.40–0.74 — the floor. On a second scene
+  with a worse floor (1.02, against 7.93 for 2°) a cycle scored 1.04, and a cycle after fifteen
+  minutes with nothing streaming scored 1.10.
+- It is not every cycle. In the run where all 73 controls on five cameras were compared across one
+  cycle, nothing changed on any of them, tilt included — and the cycles that *did* move the number
+  were the ones where a value had been written with nothing streamed since. Whether streaming is
+  what commits a commanded position on this device is a reading and not a measurement; what is
+  measured is that a written-then-cycled control reads differently and a streamed-then-cycled one
+  did not.
+
+**The reading, marked as a reading.** The pre-cycle number is the driver's acknowledgement of a
+command and the post-cycle number is the device's own answer, which the reload forces it to give
+because the acknowledgement did not survive the unload. Two facts support it and neither proves
+it: the post-cycle value is insensitive to *what* was commanded, and it is stable under further
+cycles once reached. Which of the two numbers describes the head is exactly what V4L2 will not
+say (PF:18), so this stays a reading. What is measured — and all the fix below needs — is that
+**the two numbers differ, and a reader cannot tell from the value which one they are holding.**
+
+### The hazard, which is the inverse of the one that was expected
+
+\[PF:25\] worried that restoring pan and tilt across a driver cycle would "restore the number and
+hope about the head". The exposure runs the other way and it is worse:
+
+> A snapshot taken **after** the cycle records −43200 for a camera nobody moved. Restoring from
+> that snapshot does not fail to correct an error — it *introduces* one, by commanding a position
+> the operator never chose, and reports a complete restore while doing it.
+
+Two properties make it dangerous rather than merely wrong. It is **silent**: `engine::snapshot`'s
+report for the swapped ordering is `AlreadyCorrect` — nothing was written, because nothing needed
+writing, because the snapshot recorded exactly the state it was supposed to undo. And it is
+**invisible in a diff**: snapshot-then-disturb-then-restore and disturb-then-snapshot-then-restore
+are the same three calls, and a build with them the wrong way round looks like a build with them
+the right way round. It is the shape docs/8 Part C keeps naming from other directions — a check
+that passes for a reason unrelated to what it is about. Here the assertion "the camera is where the
+snapshot found it" passes because the snapshot and the camera agree about a state neither of them
+should be in.
+
+### What it costs this tool, and what landed
+
+1. **Any snapshot/restore path around a driver reload, a replug, or a device reset needs an
+   ordering it can assert**, not an ordering it intends. `engine::snapshot::restore_across` is that
+   door: it takes the instant the disturbance began and refuses a snapshot stamped after it, before
+   anything is written. The refusal is `IllegalTransition` in `crate::refusal`'s convention, naming
+   both stamps, and its inverse is a unit test that goes red at every `just ci`.
+2. **The R3 hotplug arm now snapshots before its cycle and restores after it** (note **N86**), which
+   is fix 1 of the two \[PF:25\] named, chosen by the owner. It is the first arm in that file to
+   write a motorized control outside `hw_motion_*`, and the argument for that is this entry's
+   measurement rather than a convenience: what it writes is the aim the operator had, and the aim
+   is what the arm's cycle was leaving wrong.
+3. **What the fix does not claim.** It restores a *command*. V4L2 offers no way to verify a
+   mechanism's position \[PF:18\], so "the head is back" is believed, not measured. What licenses
+   believing it is the calibration above: on this device, on two scenes, commanding an absolute
+   position returns the picture to within the noise floor of a metric that resolves 2°.
+4. **One regime is characterised and one is not.** PF:25 records two cycles that took tilt to
+   −298800 with the head hanging down, and nothing measured on 2026-08-13 came near that. Anyone
+   who meets it is in the half nobody has measured; see PF:25's amendment for what would settle it.
+
+**Not corpus-shaped**, for PF:18's reason: this is a behaviour under an event, not a field in a
+descriptor. The profile records `tilt_absolute`'s range, step and flags and every one of them is
+unchanged across a cycle. The evidence is these transcripts and the arm's own printed line — which
+is the point of it printing what a cycle moved, in the run's own output, instead of leaving the
+next reader to reconstruct it from outside the suite as PF:25 had to.
+
+**Retires when:** a kernel or a firmware is measured on which a control's post-reload reading
+equals the command the driver was holding — at which point the two numbers stop being different
+questions and the ordering stops mattering — or when V4L2 grows a way to read a mechanism's actual
+position, which would let the restore be verified instead of issued \[PF:18\].
+
+**Adjacent:** PF:18 (the read-back is the command; this is its family), PF:25 (the entry this came
+out of, and its amendment), PF:24 (the AWB drift that had to be removed before the metric meant
+anything, on this device as well as on the BRIO), PF:22 (the same event, the half that changes
+nothing), N86 (the fix and what can go red), E9 (the arm that performs the cycle).
+
+---
+
+## N86 — The hotplug arm snapshots before its cycle and restores after it, and the ordering is a value the act produces rather than the order of two lines
+
+**Doc:** AGENTS rule 8 — "Leave the camera as you found it. Snapshot before, restore after… tests
+assert restoration." Design **D4** is the machinery; \[PF:25\] found `just smoke-hw` breaking the
+rule at the one camera with a motor, named two possible fixes and made neither.
+
+**The ruling (owner, 2026-08-13):** fix 1 — "the hardware suite's `hw_hotplug_*` arm must snapshot
+the camera's controls before the cycle and restore them after". The alternative it was chosen over
+was excluding the hotplug arm from runs where a PTZ camera is aimed, which buys the rule by giving
+up the evidence.
+
+**Repo:** `engine::snapshot::restore_across`; three helpers and a restore in
+`crates/backends/v4l2/tests/hardware.rs`'s hotplug arm; four unit tests in `engine::snapshot`; the
+`hardware.rs` module header, whose claim about motorized controls this change made untrue as
+written.
+
+### The load-bearing part is the ordering, and it is the part a diff cannot see
+
+Snapshot, cycle, restore and cycle, snapshot, restore are the same three calls. The second is not a
+weaker version of the first — on this device it is actively wrong, because the post-cycle reading
+is a number nobody commanded \[PF:28\], so a snapshot taken then records the defect and restoring
+from it writes the defect back. Worse, it does so *quietly*: the restore reports `AlreadyCorrect`,
+which is what a camera that needed nothing looks like.
+
+So the ordering is not asserted by reading the source and it is not asserted by a comment. Each of
+the two acts produces its own stamp, and the comparison of the two stamps is the assertion:
+
+- `snapshot_every_camera` reads the clock in the same expression as it reads the device.
+  `snapshot::take_in_effect` takes `now` as an argument precisely because the engine reads no
+  clock, so somebody must; doing it there makes the stamp a fact about when the camera was read.
+- `spawn_the_cycle` reads the clock and spawns the helper, in that order, in one function. The
+  stamp is taken *before* the spawn on purpose: an instant earlier than the true start can only
+  refuse a snapshot the arm should not have trusted, while a later one would admit a snapshot taken
+  *during* the cycle, which is the reading PF:28 says is a lie.
+- `engine::snapshot::restore_across` refuses a snapshot whose `taken_at` is after the disturbance's
+  stamp, before writing anything.
+
+Move the snapshot below the cycle and its stamp moves with it, because the stamp comes from the
+read and not from a bookkeeping line beside it. That is the difference between this and the two
+alternatives considered. A recorded step log (`Snapshotted`, `Cycled`, `Restored`) is only as
+truthful as where its `push` calls sit, and they travel with the code they record. A shell gate
+over the source would be asserting that one call appears above another in a file — which is
+`ignored-suites-have-recipes.sh`'s N72/N73 lesson from the wrong side: a gate reading prose as
+code, one refactor away from being wrong in either direction.
+
+**What can go red, and where.** `restore_across`'s inverse is a unit test in `engine::snapshot`
+that runs at every `just ci` on a machine with no camera: a snapshot stamped after the disturbance
+must be refused **and must write nothing**. Watched failing with the comparison neutered to
+`if false`, where it reports `AlreadyCorrect` — the silent wrong answer this entry is about. The
+boundary has its own test (a snapshot stamped in the disturbance's own millisecond restores, since
+stamps are milliseconds and a `uvcvideo` cycle takes about a second, so a tie is a quick caller
+rather than a swapped one), and so does the belt-and-braces case where the fingerprint also moved.
+
+The hardware half cannot be a unit test — the cycle needs a driver — so what the arm carries is the
+assertion, not a second copy of the law: swapping its two steps makes `restore_across` refuse, and
+the arm's `unwrap_or_else` turns that into a red run with PF:28 named in the message. Watched on
+this desk, 2026-08-13, by moving the snapshot call below the cycle and running the arm against five
+real cameras:
+
+```
+FAIL hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_real_watch
+  cam:integrated-camera-integrated-c: the restore across the cycle was refused: cannot restore
+  3-4:1.0 from state snapshot_after_the_disturbance(taken_at=2026-08-13T11:51:31.585107871Z,
+  disturbance_began=2026-08-13T11:51:30.331954912Z). A snapshot younger than the cycle records
+  the cycle — see PF:28
+```
+
+1.25 seconds apart, which is the cycle. The camera named is the first one walked rather than the
+one with the motor: the ordering is wrong for every camera at once, and the first refusal is the
+one that stops the run.
+
+### Three decisions inside it that are not obvious
+
+**It restores every camera, not the one with the motor.** The cycle is a driver-wide event, the
+control group in PF:25 is four cameras, and an arm that guarded only the device it expected to be
+disturbed would have nothing to say the day a second one is. On a desk where nothing moved, the
+cost is five reads and no writes — `restore_one` does not write a control that is already correct.
+
+**It restores motorized controls, which every other arm in that file refuses to touch.** The module
+header's claim — "every other arm excludes motorized controls by asking `is_motorized`" — was true
+and this makes it false, so the header is amended rather than left to rot. The argument is that
+`is_motorized` guards against a suite *pointing a camera somewhere new*, and this writes back the
+position the operator had; PF:28 measured that the aim does not detectably move across a cycle at
+all, so what the restore issues is a command to the aim the camera already has. It runs under
+`WCH_NO_MOTION=1` with the rest of the arm, and that is the honest side of the trade rather than an
+oversight: **the alternative is a run that leaves the camera reporting an aim it does not have**,
+which is exactly the defect. It is flagged here because it is the owner's to overrule — the rung's
+motor policy is an owner ruling (2026-08-08), and this is the first thing to write a motor outside
+`hw_motion_*` since it.
+
+**The restore happens as early as the driver allows** — immediately after the cycle's output is
+collected, ahead of every assertion about the event stream. A desk should not keep a wrong aim
+because a debounce disagreed with a kernel. The two skips above that point need no restore for the
+same reason they are skips: the interlock refused the unload, or the unload did not take, so
+nothing was re-initialised.
+
+### What the arm asserts, and the one thing it only prints
+
+Three assertions and a transcript. The restore is refused if the snapshot is younger than the
+cycle. The report must be *complete*. Every control the report says it wrote or found correct must
+read back at its recorded value — with the controls the report names `OwnedByAutomation` excluded
+**by the report rather than by a list here**, because their value is the automation's \[PF:24\] and
+demanding a number from an algorithm is asserting the device is not what it says.
+
+What is printed and not asserted is *what the cycle moved*. A cycle that disturbs nothing is a
+legitimate answer — it is what this desk produced on the day this landed — and asserting that the
+device misbehaves would make the arm fail on hardware that behaves. That line is also the repair
+for how PF:25 was found: from outside the suite, by hand, because every green run had printed
+nothing about it.
+
+### What the run said, 2026-08-13
+
+`just smoke-hw`, five cameras, 18 of 18 arms run, 9 claims declined by name. The hotplug arm's new
+lines, in full:
+
+```
+before the cycle: 15 control(s) recorded for cam:integrated-camera-integrated-c
+before the cycle: 2 control(s) recorded for cam:integrated-camera-integrated-i
+before the cycle: 17 control(s) recorded for cam:dell-u3224kb-a-4k-webcam
+before the cycle: 17 control(s) recorded for cam:logitech-brio
+before the cycle: 22 control(s) recorded for cam:obsbot-tiny-3-obsbot-tiny-3-st
+…
+cam:obsbot-tiny-3-obsbot-tiny-3-st: 22 control(s) recorded, none of them changed by the cycle
+  3 control(s) left to their automation [PF:24]: blue_balance, red_balance, white_balance_temperature
+```
+
+**The cycle disturbed nothing that day, on any of the five cameras**, and the arm says so instead
+of implying it — which is the transcript PF:25 had to be rebuilt by hand for want of. It is also
+why the arm prints this rather than asserting it: a green run here is a device that behaved, and a
+suite that failed when the device behaved would be unusable on anyone else's desk.
+
+Independent of the suite's own claim, the OBSBOT's aim was checked photographically either side of
+a cycle in the same session — 1.04 against a noise floor of 1.02, where a commanded 2° scores 7.93
+\[PF:28\]. The suite says it put the camera back; the photographs say the camera never left.
+
+**The suite has one red and this change did not add it.** It is
+`hw_profile_capture_reproduces_the_committed_invariant_section` on the OBSBOT, which is
+\[PF:23\]'s retirement condition arriving: the device advertises 3840×2160 and 120 fps again, whole,
+after an overnight replug. PF:23 carries the evidence and what the next session owes. The two reds
+this run was expected to have — E15's PF:24 pair — were both **green**, in a dark room; PF:24's
+amendment of the same date says why that is the same finding from the other side and not a repair.
+
+**No gate rows, and no change to any count.** `scripts/gates/phase-criteria.tsv` is the population
+of what a *phase* proved, and this proves nothing about a phase boundary: it is a defect fix in a
+closed phase's suite, and a row here would claim P4d had asked for it. Rule 1's "a fix lands with
+its gate" is met by the four unit tests, which `just ci` already selects by package. `just smoke-hw`
+still runs the same eighteen arms — no arm was added, renamed or split — so the suite's counted
+selection and its census are untouched, and `ignored-suites-have-recipes.sh` sees the same
+`hw_hotplug_*` name it saw before.
+
+**Amend this note if** the arm learns to skip the motorized half of the restore under
+`WCH_NO_MOTION=1`, or if a second suite needs `restore_across` — at which point the stamp-taking
+helpers stop being two functions in a test file and become somebody's module.
+
+**Retires when:** V4L2 can report a mechanism's actual position, which would let the arm assert the
+restoration it currently issues \[PF:18, PF:28\]; or when a kernel makes a control's post-reload
+reading equal the command it was holding, at which point the ordering stops carrying anything.
