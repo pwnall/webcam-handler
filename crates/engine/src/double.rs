@@ -100,6 +100,21 @@ pub(crate) struct ScriptedCamera {
     /// a JPEG bitstream. Real cameras offer both \[PF:9\], which is why this is one knob and
     /// not a second double.
     offers: PixelFormat,
+    /// Every request `start_stream` accepted, in order.
+    ///
+    /// `stops`' twin, and richer than a count for one reason: a resume has to ask for the
+    /// stream that was suspended rather than for whatever the preview's default request
+    /// would negotiate today (`crate::preview::while_suspended`), and a counter cannot tell
+    /// those apart. The length is the count for every test that only wants one.
+    pub(crate) started: Vec<StreamRequest>,
+    /// After how many successful starts `start_stream` begins refusing, and with what.
+    ///
+    /// The fault the resume path needs and nothing else can reach: a `STREAMON` that fails
+    /// is real — `ENOMEM` on the buffer allocation, `EBUSY` from a node another process took
+    /// in the window — and it is the one failure whose *answer* is a decision rather than a
+    /// forward, because the caller is holding a photo it is not going to throw away
+    /// (`crate::preview::while_suspended`).
+    stream_start_fault: Option<(u32, Error)>,
     /// What `next_frame` refuses with instead of delivering, when a test asked for that.
     ///
     /// The frame-side fault menu, and it exists because "no frame right now" and "the camera
@@ -124,9 +139,22 @@ impl ScriptedCamera {
             latched: std::collections::BTreeSet::new(),
             formats: true,
             offers: PixelFormat::YUYV,
+            started: Vec::new(),
+            stream_start_fault: None,
             frame_fault: None,
             stops: 0,
         }
+    }
+
+    /// A camera whose `start_stream` refuses with `error` after `allowed` of them have
+    /// succeeded.
+    ///
+    /// `allowed` rather than a plain "refuse everything" because the failure worth reaching
+    /// is the *second* start: the first one is the preview, and the one that has to be able
+    /// to fail is the resume that puts it back.
+    pub(crate) fn starts_refused_after(mut self, allowed: u32, error: Error) -> ScriptedCamera {
+        self.stream_start_fault = Some((allowed, error));
+        self
     }
 
     /// A camera whose one format is a JPEG bitstream — what a preview needs and what every
@@ -351,6 +379,21 @@ impl Camera for ScriptedCamera {
     }
 
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
+        if self.streaming.is_some() {
+            // V4L2 allows one streamer per node and says so with EBUSY (D12), and this
+            // double says it too — not for resemblance, which is the *fake's* obligation
+            // (E5), but because half the tests in this crate are about who holds a stream
+            // and a double that let two of them coexist could not fail any of them.
+            return Err(Error::Busy {
+                path: camino::Utf8PathBuf::from("/dev/video0"),
+                holders: Vec::new(),
+            });
+        }
+        if let Some((allowed, error)) = &self.stream_start_fault
+            && self.started.len() >= usize::try_from(*allowed).unwrap_or(usize::MAX)
+        {
+            return Err(error.clone());
+        }
         let formats = self.formats()?;
         let chosen = request
             .choose(&formats)
@@ -385,7 +428,12 @@ impl Camera for ScriptedCamera {
             ),
         };
         self.streaming = Some(negotiated.clone());
+        self.started.push(request.clone());
         Ok(negotiated)
+    }
+
+    fn streaming(&self) -> Option<NegotiatedStream> {
+        self.streaming.clone()
     }
 
     fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {

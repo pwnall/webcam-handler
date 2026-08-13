@@ -1219,6 +1219,7 @@ fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_
             &engine::settle::MonotonicClock::new(),
             schema::time::Stamp::now(),
         )
+        .outcome
         .unwrap_or_else(|error| panic!("{}: the photo failed: {error}", info.id));
         let report = photo.report;
 

@@ -756,6 +756,37 @@ pub const PREVIEW_READER_QUEUE_DEPTH: usize = 1;
 /// channel rather than a number it keeps of its own.
 pub const PREVIEW_MAX_VIEWERS_PER_CAMERA: usize = 4;
 
+/// How long one photo may hold a live preview's stream down.
+///
+/// V4L2 allows one streamer per node, so a photo taken while somebody is watching a preview
+/// stops that stream, takes its frame and starts it again — inside the camera's own actor
+/// thread, which is the only place the whole sequence is indivisible (owner ruling,
+/// 2026-08-12; note **N83**). This is the bound on the middle step: the window in which the
+/// viewers see no frames at all, because there are none to see.
+///
+/// **It bounds a budget rather than a measurement, and that is the only shape that can
+/// refuse.** Nothing can interrupt a `DQBUF` that has already started — the engine has no
+/// runtime and the actor's thread is inside the capture — so a limit checked *afterwards*
+/// would be a number in a log rather than a bound. What is checked is the settle deadline
+/// the request carries, before the stream is stopped: a photo whose own budget exceeds this
+/// is refused with [`crate::Error::IllegalTransition`] and the preview never stops at all.
+///
+/// Ten seconds, and the pair it sits between is why. Below it, every photo this tool takes
+/// by default must fit — [`DEFAULT_SETTLE_DEADLINE_MS`] plus the one blocking read that may
+/// begin just before that deadline arrives ([`FRAME_DEADLINE_MS`]) — or the mechanism would
+/// refuse the ordinary case it exists to serve. Above it, nothing: a preview frozen for ten
+/// seconds is already a preview a person would call broken, and a client that wants a longer
+/// settle than that can have it on a camera nobody is watching.
+///
+/// Read by `engine::preview::while_suspended`, which is the one place a preview is stopped
+/// for anything other than the end of the preview.
+pub const PREVIEW_SUSPEND_MAX_MS: u64 = 10_000;
+
+// The relation the paragraph above argues, checked where all three numbers are rather than
+// believed — `CAMERA_IDLE_SWEEP_MS`'s tradition. A bound that refused a *default* photo
+// would be a mechanism that only ever fires on the case it was built for.
+const _: () = assert!(PREVIEW_SUSPEND_MAX_MS >= DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS);
+
 /// The device-profile document version (design T3).
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 

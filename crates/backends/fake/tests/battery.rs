@@ -206,6 +206,10 @@ impl Camera for StrictCamera {
         self.0.start_stream(request)
     }
 
+    fn streaming(&self) -> Option<NegotiatedStream> {
+        self.0.streaming()
+    }
+
     fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
         self.0.next_frame(deadline)
     }
@@ -273,6 +277,10 @@ impl Camera for TidyCamera {
 
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
         self.0.start_stream(request)
+    }
+
+    fn streaming(&self) -> Option<NegotiatedStream> {
+        self.0.streaming()
     }
 
     fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {

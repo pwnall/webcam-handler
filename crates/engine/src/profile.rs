@@ -233,6 +233,13 @@ mod tests {
             Err(not_this_double("start_stream"))
         }
 
+        fn streaming(&self) -> Option<schema::capture::NegotiatedStream> {
+            // Not a refusal: a camera that cannot start a stream is never running one,
+            // and this is the one method on the trait whose honest answer is a value
+            // rather than an error.
+            None
+        }
+
         fn next_frame(&mut self, _deadline: Instant) -> Result<schema::capture::Frame> {
             Err(not_this_double("next_frame"))
         }

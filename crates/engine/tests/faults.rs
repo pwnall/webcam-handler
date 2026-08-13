@@ -205,6 +205,7 @@ fn a_device_that_vanishes_is_device_gone() {
         &engine::settle::SteppedClock::new(0),
         Stamp::epoch(),
     )
+    .outcome
     .expect_err("the device vanished");
     assert_eq!(
         error.kind(),

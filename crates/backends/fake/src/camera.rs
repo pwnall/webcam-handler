@@ -572,6 +572,14 @@ impl Camera for FakeCamera {
         Ok(negotiated)
     }
 
+    fn streaming(&self) -> Option<NegotiatedStream> {
+        // The same field `start_stream` refuses a second `STREAMON` from, read rather than
+        // shadowed — and it is the *shared* state, so a second handle onto this camera sees
+        // the stream the first one started, exactly as a second `open(2)` on a node sees a
+        // stream another process holds.
+        lock(&self.state).stream.clone()
+    }
+
     fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
         let timed_out = take_fault(&self.faults, Fault::FrameTimeout);
         let device_gone = take_fault(&self.faults, Fault::DeviceGoneMidStream);

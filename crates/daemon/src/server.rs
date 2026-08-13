@@ -552,6 +552,18 @@ impl Wchd {
         self.0.previews.watch_skipped()
     }
 
+    /// How many times a photo has suspended a live preview, as something to **await**.
+    ///
+    /// The third of the preview's counts and the only observable its *pause* has: a
+    /// suspension publishes no frame and loses none, so neither
+    /// [`Wchd::watch_preview_frames`] nor [`Wchd::watch_preview_drops`] moves for it. A build
+    /// that answered `Busy` to a photo during a preview — which is what this daemon did before
+    /// the owner's ruling of 2026-08-12 — leaves this at zero forever.
+    #[must_use]
+    pub fn watch_preview_interruptions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.previews.watch_interrupted()
+    }
+
     /// How many cameras this daemon is previewing right now.
     ///
     /// The lifecycle observable: one feed per camera being watched, whatever the number of
@@ -1628,28 +1640,42 @@ impl WchRpcServer for Wchd {
         };
         let how = enqueueing(request.wait);
         let now = schema::time::Stamp::now();
-        let (_, taken) = self
+        let (info, taken) = self
             .on_resolved_camera_with_state_queueing(info, how, move |inner, device| {
                 // Two clocks, because they measure different things and conflating them is
                 // how an NTP step becomes a settle failure: `now` is the wall time that
                 // goes in the EXIF, and `inner.clock` is the monotonic one the settle
                 // policy runs on — this daemon's one reading of "what time is it", the
                 // field `Inner::clock` exists to be.
-                engine::photo::take(
+                //
+                // `Ok` of the whole attempt rather than the photo's own `Result`, and that
+                // is what carries the interruption out on the path it matters most: a photo
+                // that *failed* still stopped somebody's preview and still started it
+                // again, and a closure returning `Err` here would drop that fact on the
+                // floor (`engine::photo::Taken`'s doc argues the shape). The refusal is
+                // unwrapped four lines down, unchanged and by the same `?`.
+                Ok(engine::photo::take(
                     device,
                     &request,
                     &mut OpenedAhead(destination),
                     &inner.clock,
                     now,
-                )
+                ))
             })
             .await?;
+        // The gap, counted where the preview's other numbers live — before the photo's own
+        // answer is looked at, so the count does not depend on whether the picture came out.
+        if let Some(gap) = &taken.gap {
+            self.0.previews.interrupted(&info.id, gap);
+        }
         // Nothing here logs. The only facts this verb has that the answer does not already
         // carry are a path and a byte count, and a `tracing` call on the one code path in
         // this process that holds a frame is exactly the line `crate::logging` exists to
         // keep unwritten — "no frame, no photo payload, and nothing derived from one is
-        // ever a field on an event".
-        Ok(photo_response(taken)?)
+        // ever a field on an event". The one line the *interruption* is worth is
+        // `Previews::interrupted`'s, which names a camera and a device refusal and never a
+        // frame.
+        Ok(photo_response(taken.outcome?)?)
     }
 
     // ------------------------------------------------------------ the most dangerous verb
@@ -2239,6 +2265,10 @@ mod tests {
             request: &schema::capture::StreamRequest,
         ) -> schema::Result<schema::capture::NegotiatedStream> {
             self.inner_mut().start_stream(request)
+        }
+
+        fn streaming(&self) -> Option<schema::capture::NegotiatedStream> {
+            self.inner().streaming()
         }
 
         fn next_frame(

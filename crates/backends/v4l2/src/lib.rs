@@ -620,6 +620,15 @@ impl Camera for V4l2Camera {
         }
     }
 
+    fn streaming(&self) -> Option<NegotiatedStream> {
+        // The field is `Some` between `start_stream` and `stop_stream` and holds what the
+        // driver agreed to, so this is a read rather than a second record: there is no
+        // ioctl that asks a node whether it is streaming, and the only reason this backend
+        // can answer at all is that it already has to, one function up, to refuse a second
+        // `STREAMON` the way the driver would.
+        self.stream.as_ref().map(|state| state.negotiated.clone())
+    }
+
     fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
         let started = Instant::now();
         // The loop exists for one reason: a buffer the driver marks `V4L2_BUF_FLAG_ERROR`

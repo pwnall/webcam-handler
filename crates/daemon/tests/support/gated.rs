@@ -137,6 +137,10 @@ impl Camera for Held {
         self.camera.start_stream(request)
     }
 
+    fn streaming(&self) -> Option<schema::capture::NegotiatedStream> {
+        self.camera.streaming()
+    }
+
     fn next_frame(
         &mut self,
         deadline: std::time::Instant,

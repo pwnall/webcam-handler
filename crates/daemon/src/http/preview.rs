@@ -156,6 +156,15 @@ const FRAME_INDEX_HEADER: &str = "X-Wch-Frame-Index";
 /// is frames the *kernel* dropped before this daemon saw them, and a gap there is frames this
 /// daemon published and the reader was too slow for. Conflating the two would leave a client
 /// unable to tell "my machine is busy" from "the camera is not keeping up".
+///
+/// **A value that goes backwards is the third thing it can say, and it is not an error.**
+/// `STREAMON` restarts the driver's numbering at zero, so a client that sees this field drop is
+/// looking at a stream that was stopped and started again — which since the owner's ruling of
+/// 2026-08-12 is what a `wch_photo` taken during a preview does (note **N83**;
+/// `crate::preview`'s header says what a viewer may conclude from the pause). It is passed
+/// through exactly as the device reported it rather than rewritten into a continuation,
+/// because this field's whole contract is that it is the *device's* number (D5) — and a
+/// rewritten one would make a restart indistinguishable from a device that never stopped.
 const FRAME_SEQUENCE_HEADER: &str = "X-Wch-Frame-Sequence";
 
 /// What a request with no `camera=` parameter is told.

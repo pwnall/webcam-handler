@@ -546,6 +546,20 @@ with streaming, but a second capture request queues or is refused with `Busy` pe
 `wait` flag. The daemon never opens a camera until first use and closes on idle (configurable), so
 `wchd` running does not itself block other applications from the webcam.
 
+**Amended (owner ruling, 2026-08-12): a photo suspends a live preview rather than being
+refused by it.** Exclusive streaming is unchanged and is now enforced by a sequence rather
+than by a refusal: `photo` stops the preview's stream, takes its frame and starts the stream
+again, **all inside the one actor command that already owns the device**, so there is never a
+moment with two streamers on the node and no client sequences anything. The pause is bounded
+by `limits::PREVIEW_SUSPEND_MAX_MS` — a request whose own settle deadline exceeds it is
+refused before the stream is stopped — the stream is restarted on every path out of the
+capture including a failure and a panic, and the interruption is counted where the preview's
+other numbers are. What still meets `Busy` is a second *streaming* operation the mechanism
+deliberately does not cover: a calibration sweep, which is minutes of photos and would leave a
+preview off rather than paused. Viewers see a gap and a device sequence number that starts
+over; nothing is dropped, because nothing was captured. Note **N83** records the ruling, the
+behaviour it replaced and the test that pinned it.
+
 **D13 — The error vocabulary.** `webcam-handler-schema` defines the closed typed
 registry — **eighteen variants** (v1's fourteen plus four completions recorded as N4);
 every variant carries what the caller needs to act:

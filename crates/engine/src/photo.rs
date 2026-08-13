@@ -40,7 +40,9 @@ use schema::control::{ControlSlug, ControlValue};
 use schema::error::{Error, Result};
 use schema::time::Stamp;
 
+use crate::actor::OpenCamera;
 use crate::capture;
+use crate::preview::Gap;
 use crate::settle::Clock;
 
 /// A photo, and — when the sink asked for them — its bytes.
@@ -163,6 +165,27 @@ pub fn write_to_open_file(file: &mut std::fs::File, path: &Utf8Path, bytes: &[u8
     Ok(())
 }
 
+/// A photo attempt, and what it cost a preview that was running.
+///
+/// **Two facts, and neither may hide the other.** The photo is the caller's answer; the
+/// [`Gap`] is what the *camera's viewers* saw, and it exists on the path where the caller has
+/// nothing else — a capture that failed still stopped a preview and still started it again,
+/// and a gap nobody counted is exactly the silence rubric rule 3 is about. A
+/// `Result<Photograph>` cannot carry the second on that path, which is why this type exists
+/// rather than a field on [`Photograph`].
+///
+/// `outcome` first, because it is what nearly every caller wants: `take(…).outcome?` is the
+/// whole of the migration for a caller that runs no previews (`wch`, and every test here).
+#[derive(Debug)]
+pub struct Taken {
+    /// The photo, or the refusal that stood in for it.
+    pub outcome: Result<Photograph>,
+    /// What this photo did to a preview, when there was one to interrupt. `None` when the
+    /// camera was not streaming for anybody — which is every `wch` invocation and every
+    /// daemon request that arrived with no tab open.
+    pub gap: Option<Gap>,
+}
+
 /// Take one photo (design D5, D6, D10).
 ///
 /// `now` and `clock` are both arguments because the engine reads no clock: `now` is the
@@ -175,33 +198,66 @@ pub fn write_to_open_file(file: &mut std::fs::File, path: &Utf8Path, bytes: &[u8
 /// [`WhereverTheCallerSaid`] is what `wch` hands in and what this pipeline did before the
 /// seam existed.
 ///
+/// ## A live preview is suspended for the capture and started again after it
+///
+/// V4L2 allows one streamer per node, so a camera somebody is watching used to answer
+/// [`schema::Error::Busy`] here. Since the owner's ruling of 2026-08-12 it does not:
+/// [`crate::preview::while_suspended`] stops that stream, takes the frame and starts it again,
+/// and this is the one place that happens — **inside the photo pipeline rather than beside
+/// it**, so `wch`, `wchd` and anything that reaches this function get the same behaviour
+/// without arranging anything, and a second copy of the sequence cannot drift from this one
+/// (§2.10). Note **N83** carries the ruling.
+///
+/// **Only the capture is inside the suspension.** The sink check, the control read, the
+/// render, the EXIF stamp and the write are all outside it — none of them touches the stream,
+/// and a preview held down for the length of a 4K PNG re-encode and a write to a slow disk
+/// would be a pause bounded by the filesystem. What is inside is `capture::grab`, whose length
+/// is the settle deadline the request carries, which is the number
+/// [`schema::limits::PREVIEW_SUSPEND_MAX_MS`] is checked against.
+///
 /// # Errors
 ///
-/// The device's, from starting the stream or waiting for a frame;
+/// In [`Taken::outcome`]: the device's, from starting the stream or waiting for a frame;
 /// [`schema::Error::SettleTimeout`] when the sensor did not settle in time;
 /// [`schema::Error::StorageIo`] when the sink's path could not be written;
 /// [`schema::Error::IllegalTransition`] from [`Sink::writable_format`] when the sink names
-/// an encoding this build does not write.
+/// an encoding this build does not write, and from [`crate::preview::while_suspended`] when
+/// the request's settle deadline is longer than a photo may hold a preview down.
 pub fn take(
-    camera: &mut dyn Camera,
+    camera: OpenCamera<'_>,
     request: &PhotoRequest,
     destination: &mut dyn Destination,
     clock: &dyn Clock,
     now: Stamp,
-) -> Result<Photograph> {
+) -> Taken {
     // First, before anything is asked of the device. The refusal is about the *request* —
     // a sink naming an encoding this build does not write — so paying a `STREAMON`, the
     // whole settle budget and a `DQBUF` before making it would mean a frame of whoever is
     // in front of the lens was captured for a request that was never going to be honoured
     // (debt D-1, note N46). `from_capture` asks again, because it is also reached directly
     // by the sweep; asking twice is one rule asked twice and not two rules.
-    request.sink.writable_format()?;
+    //
+    // It is also before the *suspension*, which matters for the same reason one layer up: a
+    // request nobody was ever going to honour must not interrupt somebody's preview.
+    if let Err(refused) = request.sink.writable_format() {
+        return Taken {
+            outcome: Err(refused),
+            gap: None,
+        };
+    }
     // Read *before* the stream starts. A control read is an ioctl on the same fd, and the
     // values that describe a photo are the ones in effect when it was taken — asking
-    // after the frame would report values a caller could have changed in between.
+    // after the frame would report values a caller could have changed in between. It is
+    // also legal *during* a preview — `VIDIOC_G_EXT_CTRLS` on a streaming node is ordinary
+    // (D12) — so it stays outside the suspension.
     let controls = controls_in_effect(camera);
-    let captured = capture::grab(camera, &request.stream, request.settle, clock)?;
-    from_capture(camera, &captured, request, destination, controls, now)
+    let (captured, gap) =
+        crate::preview::while_suspended(&mut *camera, request.settle.deadline_ms, |camera| {
+            capture::grab(camera, &request.stream, request.settle, clock)
+        });
+    let outcome = captured
+        .and_then(|captured| from_capture(camera, &captured, request, destination, controls, now));
+    Taken { outcome, gap }
 }
 
 /// The same assembly, over a frame the caller already holds (design D6).
@@ -408,6 +464,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect("takes a photo");
 
         assert!(matches!(taken.report.delivery, PhotoDelivery::Bytes { .. }));
@@ -459,6 +516,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect("takes a photo")
         .report;
 
@@ -507,6 +565,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect("takes a photo")
         .report;
 
@@ -537,6 +596,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect("takes a photo")
         .report;
 
@@ -567,6 +627,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect("a grayscale camera takes photos")
         .report;
 
@@ -628,6 +689,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect_err("there is no such directory");
         assert_eq!(error.kind(), ErrorKind::StorageIo);
         assert!(error.to_string().contains("shot.jpg"), "{error}");
@@ -665,6 +727,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect_err("a camera with no capture node cannot be streamed");
         assert_eq!(error.kind(), ErrorKind::FormatUnsupported);
     }
@@ -688,6 +751,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect("a photo");
         let bytes = taken.returned.clone().expect("a ReturnBytes sink");
         assert!(bytes.len() > 100, "the fixture has to be worth hiding");
@@ -715,6 +779,181 @@ mod tests {
             returned: None,
         };
         assert!(format!("{to_a_file:?}").contains("None"));
+
+        // The wrapper this function now answers with is a fifth subject of the same rule, and
+        // it is the one a `tracing::debug!(?taken)` would reach first — it derives `Debug`,
+        // so the promise holds only because what it derives *through* keeps it.
+        let wrapped = Taken {
+            outcome: Ok(taken),
+            gap: None,
+        };
+        let rendered = format!("{wrapped:?}");
+        assert!(
+            rendered.contains(&format!("<{} bytes>", bytes.len())),
+            "{rendered}"
+        );
+        assert!(!rendered.contains(&leak), "frame bytes leaked: {rendered}");
+    }
+
+    #[test]
+    fn a_photo_taken_while_the_camera_is_previewing_suspends_the_stream_and_stays_verbatim() {
+        // The owner's ruling (2026-08-12) at the layer that owns the sequence. The preview is
+        // a stream this test starts and does not stop, which is exactly the state an actor's
+        // device is in between two `engine::preview::turn` commands — and before the ruling
+        // this photo was `Error::Busy` from the device.
+        //
+        // Three claims, and the third is the one that could quietly be lost: the photo
+        // happens, the preview is streaming again afterwards, and the bytes are still the
+        // camera's own. A suspend/resume that re-negotiated into a format needing a re-encode
+        // would pass the first two and cost the product what AGENTS calls it ("verbatim
+        // camera JPEG when the sink allows — byte fidelity is the product").
+        let (backend, mut camera) = watched_camera_from("chicony-rgb");
+        let previewing = camera
+            .start_stream(&crate::preview::request())
+            .expect("this camera has an MJPEG mode");
+        assert_eq!(backend.streams_started(), 1);
+        // Three frames off it, so the sequence numbers a viewer has seen are not zero. What
+        // this buys is asserted at the end: `STREAMON` resets the driver's own counter, so
+        // the frame after the photo starts over — which is the one thing a client can read
+        // the pause off, and is why `daemon::preview`'s header tells it to.
+        let before = (0..3)
+            .map(|_| {
+                camera
+                    .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+                    .expect("the preview is running")
+                    .sequence
+            })
+            .collect::<Vec<u32>>();
+        assert_eq!(before, vec![0, 1, 2]);
+
+        let taken = take(
+            camera.as_mut(),
+            &request(
+                Sink::ReturnBytes {
+                    format: PhotoFormat::Jpeg,
+                },
+                Transform::None,
+            ),
+            &mut WhereverTheCallerSaid,
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        );
+
+        let gap = taken.gap.expect("a stream was running, so there is a gap");
+        assert_eq!(gap.stream, previewing, "the gap names a stream nobody had");
+        gap.resumed.expect("the preview came back");
+        let report = taken.outcome.expect("a photo during a preview").report;
+        assert!(report.rendering.is_verbatim(), "{:?}", report.rendering);
+
+        // Three streams for one photo during one preview: the preview's, the capture's own,
+        // and the resume. A build that skipped the suspend would have failed above with
+        // `Busy`; one that skipped the resume answers two here.
+        assert_eq!(backend.streams_started(), 3);
+        assert!(
+            camera.streaming().is_some(),
+            "the photo left the preview stopped"
+        );
+
+        // What a viewer sees across the gap, made a fact rather than a paragraph: the resumed
+        // stream numbers its frames from zero again, because `STREAMON` resets the driver's
+        // counter. It is left as the device reports it — that field's whole contract is that
+        // it is the *device's* number (D5) — and it is the only signal on the wire that says
+        // "this stream restarted" rather than "frames were dropped", which move it forward.
+        assert_eq!(
+            camera
+                .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+                .expect("the resumed stream delivers")
+                .sequence,
+            0,
+            "the resumed stream continued the suspended one's numbering"
+        );
+    }
+
+    #[test]
+    fn a_photo_with_no_preview_running_starts_one_stream_and_reports_no_gap() {
+        // The other direction of the test above, and the one that says the mechanism is
+        // conditional rather than always-on: with nothing streaming, this is the photo path
+        // exactly as it was before the ruling — one `STREAMON`, one `STREAMOFF`, no gap.
+        let (backend, mut camera) = watched_camera_from("chicony-rgb");
+        let taken = take(
+            camera.as_mut(),
+            &request(
+                Sink::ReturnBytes {
+                    format: PhotoFormat::Jpeg,
+                },
+                Transform::None,
+            ),
+            &mut WhereverTheCallerSaid,
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        );
+
+        assert!(
+            taken.gap.is_none(),
+            "a photo with nobody watching reported an interruption"
+        );
+        taken.outcome.expect("a photo");
+        assert_eq!(
+            backend.streams_started(),
+            1,
+            "the photo's own, and no other"
+        );
+        assert!(
+            camera.streaming().is_none(),
+            "the photo left the camera streaming"
+        );
+    }
+
+    #[test]
+    fn a_photo_whose_settle_budget_outlasts_the_bound_is_refused_and_the_preview_keeps_running() {
+        // `limits::PREVIEW_SUSPEND_MAX_MS` reaching the verb a client actually calls: the
+        // budget the bound is checked against is the settle deadline the *request* carries,
+        // so this is the one place the two meet. The refusal arrives before the stream is
+        // touched, which is what the counter says.
+        let (backend, mut camera) = watched_camera_from("chicony-rgb");
+        camera
+            .start_stream(&crate::preview::request())
+            .expect("this camera has an MJPEG mode");
+
+        let mut asking = request(
+            Sink::ReturnBytes {
+                format: PhotoFormat::Jpeg,
+            },
+            Transform::None,
+        );
+        asking.settle.deadline_ms = schema::limits::PREVIEW_SUSPEND_MAX_MS + 1;
+        let taken = take(
+            camera.as_mut(),
+            &asking,
+            &mut WhereverTheCallerSaid,
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        );
+
+        assert_eq!(
+            taken
+                .outcome
+                .expect_err("the budget is longer than a photo may hold a preview down")
+                .kind(),
+            ErrorKind::IllegalTransition
+        );
+        assert!(taken.gap.is_none());
+        assert_eq!(backend.streams_started(), 1, "the preview was interrupted");
+        assert!(camera.streaming().is_some());
+
+        // And the same request inside the bound is served, so the refusal is about the number
+        // rather than about a camera that refuses photos while streaming.
+        asking.settle.deadline_ms = schema::limits::PREVIEW_SUSPEND_MAX_MS;
+        take(
+            camera.as_mut(),
+            &asking,
+            &mut WhereverTheCallerSaid,
+            &SteppedClock::new(0),
+            Stamp::epoch(),
+        )
+        .outcome
+        .expect("a budget at the bound is within it");
+        assert_eq!(backend.streams_started(), 3);
     }
 
     #[test]
@@ -742,6 +981,7 @@ mod tests {
             &SteppedClock::new(0),
             Stamp::epoch(),
         )
+        .outcome
         .expect_err("webp is not one of the three this build writes");
 
         assert_eq!(error.kind(), ErrorKind::IllegalTransition);
@@ -771,6 +1011,7 @@ mod tests {
                 &SteppedClock::new(0),
                 Stamp::epoch(),
             )
+            .outcome
             .unwrap_or_else(|err| panic!("{written}: {err}"));
             assert!(written.exists(), "{written}");
         }

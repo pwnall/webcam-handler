@@ -84,18 +84,52 @@
 //!
 //! ## What a preview costs the camera while it runs, stated because it is a real cost
 //!
-//! One streamer per node is the kernel's rule, so while a preview is running, a verb that
-//! needs a stream of its own — `wch_photo`, and a calibration sweep, which is photos — meets
-//! [`schema::Error::Busy`] from the device. That is E3-correct (availability is not
-//! capability, and the refusal names the node) and it is not what docs/7 P5c's photo trigger
-//! will want; `engine::preview`'s header names the mechanism that would fix it and argues why
-//! it is not built yet, and `crates/daemon/tests/preview.rs` pins the current behaviour so
-//! that changing it is a red test rather than a surprise.
+//! One streamer per node is the kernel's rule, so a verb that needs a stream of its own has to
+//! get the preview's out of the way. Since the owner's ruling of 2026-08-12 (note **N83**)
+//! `wch_photo` does exactly that and this module does **nothing** to arrange it:
+//! `engine::photo::take` stops the stream, takes its frame and starts it again, inside the one
+//! actor command that already owns the device, so there is no protocol here, no flag on a
+//! `Feed` and no window in which this registry's opinion could disagree with the device's.
+//! What this module does is the half only it can do — *count* the interruption
+//! ([`Previews::interrupted`]) and say what a reader should make of the frames either side of
+//! it.
+//!
+//! A **calibration sweep** is still refused with [`schema::Error::Busy`], and that is a scope
+//! decision rather than an oversight: a sweep is minutes of photos, so suspending a preview
+//! for one would be a preview that is off rather than paused, and the bound that makes the
+//! photo's pause defensible (`limits::PREVIEW_SUSPEND_MAX_MS`) is precisely what a sweep
+//! cannot fit inside. The refusal stays E3-correct — availability is not capability, and it
+//! names the node.
 //!
 //! Control reads and writes are unaffected — `VIDIOC_S_EXT_CTRLS` on a streaming node is
 //! ordinary — and they wait at most one `limits::PREVIEW_FRAME_WAIT_MS` behind the preview,
 //! because the preview holds the actor for one frame at a time (`engine::preview`'s header
 //! argues that shape).
+//!
+//! ## What a viewer sees across a photo, and what it may conclude from it
+//!
+//! The pause drops nothing, which is the surprising part: a frame that was never captured was
+//! never published, so this daemon's publication count does not move and no reader falls
+//! behind. The three things that *are* visible, in the order a client meets them:
+//!
+//! 1. **Frames stop arriving and then start again.** The gap is the length of one capture,
+//!    bounded by `limits::PREVIEW_SUSPEND_MAX_MS` and in practice a settle.
+//! 2. **The pause puts no hole in [`Shot::index`]** — nothing was published, so there is
+//!    nothing to skip. A reader may still see a jump there for its *own* reason (it was slow,
+//!    and [`Viewer::next`] counted it), which is exactly why the two numbers are kept apart:
+//!    the index measures this reader against this daemon and says nothing about the device.
+//! 3. **[`Shot::sequence`] starts over at zero.** `STREAMON` resets the driver's own counter,
+//!    so the frame after a photo is sequence 0 again. **This is the one thing a client can
+//!    read the pause off**, and it is left as the device reports it rather than rewritten into
+//!    a continuation, because that field's whole contract is that it is the *device's* number
+//!    (D5: the device is the authority on itself). A client that treats a sequence going
+//!    backwards as "the stream restarted" is reading it correctly; one that treats it as a
+//!    kernel drop is not, and the two are distinguishable precisely because a kernel drop
+//!    moves the sequence *forward* past frames that were lost.
+//!
+//! What no client can conclude is *why* the stream restarted, and there is nothing dishonest
+//! in that: from a viewer's side "a photo was taken" and "the device restarted its stream" are
+//! the same event, and the daemon's own count is where the difference is recorded.
 //!
 //! ## No frame reaches a log
 //!
@@ -180,6 +214,18 @@ struct Fanout {
     /// a queue delivers everything it accepted. Rubric rule 3 — a loss is counted, never
     /// silent.
     skipped: watch::Sender<u64>,
+    /// How many times a photo has stopped a live preview's stream and started it again.
+    ///
+    /// **The pause's own number, and it has to be its own** — a suspension is not a
+    /// [`Fanout::skipped`]: nothing was published that a reader missed, so folding it into
+    /// that count would tell an operator their socket was slow when their camera was busy
+    /// being a camera. The two are different facts about the same second (E3's habit, applied
+    /// to a count rather than to an error).
+    ///
+    /// A `watch` for [`Fanout::published`]'s reason, one step further: the interruption is an
+    /// *event*, it is the only observable the pause has, and a test that polled for it would
+    /// be a test with a sleep in it (AGENTS).
+    interrupted: watch::Sender<u64>,
 }
 
 /// One camera's stream, as everything reading it sees it.
@@ -307,7 +353,49 @@ impl Previews {
             feeds: watch::Sender::new(0),
             published: watch::Sender::new(0),
             skipped: watch::Sender::new(0),
+            interrupted: watch::Sender::new(0),
         }))
+    }
+
+    /// Record that a photo stopped `camera`'s preview stream and started it again.
+    ///
+    /// Called by `crate::server`'s `wch_photo` on **both** of its paths — a photo that
+    /// succeeded and a photo that failed — because the interruption happened either way and a
+    /// gap counted only when the picture came out would under-report exactly the case an
+    /// operator would be investigating (`engine::photo::Taken` is shaped to make that
+    /// possible). It is called after the actor's command has returned, from the request's own
+    /// task; nothing here touches a device.
+    ///
+    /// **A resume that failed is a warning and not a second mechanism.** The feed is left
+    /// exactly where it is: its driver's next turn asks a camera that is no longer streaming
+    /// for a frame, gets the device's own refusal, and takes the path this module already has
+    /// for a device that refused — `Ended::Refused`, the feed withdrawn, its readers' streams
+    /// ended, one `tracing::warn!`. That happens within one `limits::PREVIEW_FRAME_WAIT_MS`,
+    /// which is why withdrawing the feed *here* would be a second home for "how a preview
+    /// ends" (§2.10) rather than a faster answer. The line below exists because the driver's
+    /// warning names the symptom and this one names the cause.
+    pub fn interrupted(&self, camera: &CameraId, gap: &engine::preview::Gap) {
+        self.0
+            .interrupted
+            .send_modify(|count| *count = count.saturating_add(1));
+        if let Err(err) = &gap.resumed {
+            tracing::warn!(
+                %camera,
+                error = %err,
+                "a photo stopped the preview stream and the camera refused to start it again"
+            );
+        }
+    }
+
+    /// How many times a photo has interrupted a preview, as something to **await**.
+    ///
+    /// [`Previews::watch_published`]'s reason on the third of this module's counts. It is the
+    /// pause's only observable: no frame is lost to it, so a build that stopped resuming — or
+    /// one that stopped suspending and answered `Busy` again — is invisible to every other
+    /// number here.
+    #[must_use]
+    pub fn watch_interrupted(&self) -> watch::Receiver<u64> {
+        self.0.interrupted.subscribe()
     }
 
     /// How many frames this daemon has published, as something to **await**.

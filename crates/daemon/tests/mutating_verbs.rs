@@ -1107,6 +1107,7 @@ fn engine_photo(
         &FrozenClock,
         now,
     )
+    .outcome
     .expect("the engine takes the same photo")
 }
 
@@ -2078,6 +2079,10 @@ impl Camera for Held {
         request: &StreamRequest,
     ) -> schema::Result<schema::capture::NegotiatedStream> {
         self.camera.start_stream(request)
+    }
+
+    fn streaming(&self) -> Option<schema::capture::NegotiatedStream> {
+        self.camera.streaming()
     }
 
     fn next_frame(

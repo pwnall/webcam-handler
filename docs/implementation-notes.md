@@ -10824,3 +10824,182 @@ gate is unaffected — the token still has one comparison and one reader.
 `route_layer` maps over — the same standing risk N75 recorded about `layer`, moved one method
 along — or if a route this listener serves acquires a genuine reason to be ungated, at which
 point `web-routes-are-gated.sh` is the file where that reason has to be written down.
+
+---
+
+## N83 — A photo suspends a live preview instead of being refused by it, and the sequence is one operation on the thread that owns the device
+
+**The ruling (owner, 2026-08-12):**
+
+> "Build suspend/resume in the engine. The photo command pauses the preview stream, takes the
+> frame, and resumes it, all inside the actor that already owns the device — so exclusivity
+> stays enforced by construction and no client has to sequence anything. The pause window drops
+> preview frames, which the watch channel already models. `wch` and `wchc` get it too, because
+> it lives below the wire."
+
+**Doc:** design **D12**, which now carries a dated amendment beside the sentence it does not
+contradict. Exclusive streaming is still the rule and is still the actor's; what changed is
+that it is enforced by a *sequence* rather than by a refusal.
+
+### What the old behaviour was, and why it was pinned
+
+V4L2 allows one streamer per node. `engine::capture::grab` starts a stream of its own, so a
+`wch_photo` taken while a preview held the stream met `Error::Busy` **from the device** — E3's
+distinction exactly (availability is not capability), and the same refusal a second application
+on the host would have met. P5b's preview half reported that honestly rather than building
+ahead of the plan: `engine::preview`'s header named the fix, declined it on rubric A8 ("a
+mechanism built before the case it serves is a bound with nothing to bound"), and
+`crates/daemon/tests/preview.rs`'s
+`a_photo_while_a_preview_is_running_is_refused_by_the_device_and_the_preview_survives` pinned
+the refusal so that the day it changed, something went red.
+
+**It went red on purpose.** That is the case this file's retirement rule is for: an entry
+retires on empirical disproof *or* an owner ruling, and nothing above was measured wrong — the
+declining clause was "there is no client that trips it yet", and docs/7 P5c's photo trigger is
+that client. The test is replaced rather than deleted, by four in the same file, and the two
+alternatives the owner rejected are recorded here so they are not re-proposed: surfacing `Busy`
+in the UI with a "stop the preview" affordance, and having the client tear its preview down and
+re-open it — which puts device-exclusivity sequencing in JavaScript, the layer least able to
+enforce it, and fails outright with a second tab previewing.
+
+### Where the sequence lives, and the two guesses the old header made about that
+
+`engine::preview::while_suspended`, called by `engine::photo::take` around **its capture and
+nothing else**. Three properties, and each is a decision:
+
+1. **It is one function that cannot be half-used.** There is no public `suspend` and no public
+   `resume`: a suspend any caller can invoke separately is a suspend somebody forgets to
+   resume, and what they would forget is a camera left dark for a tab that is still open. The
+   only way to reach the stop is to supply the work.
+2. **It is indivisible because of where it runs, not because of what it locks.** `photo::take`
+   runs inside one `engine::actor` command on the thread that owns the `Box<dyn Camera>`, and
+   that thread takes one command at a time in arrival order — so a second photo, a preview turn
+   and a control write all queue behind it by construction. Nothing here takes a lock and there
+   is nothing to take one on.
+3. **It is inside the photo pipeline rather than beside it**, so `wch`, `wchd` and any later
+   caller get the same behaviour without arranging anything (§2.10: one home per law).
+
+The old header guessed at two things and was wrong about both, which is worth recording because
+both guesses put the mechanism one layer above the fact:
+
+- "needs a suspend protocol on the daemon's feed" — it needs nothing on the feed.
+  `schema::backend::Camera::streaming` asks the **device** whether it is streaming (AGENTS rule
+  4), which is the only answer that cannot drift from the ioctl; consulting `daemon::preview`'s
+  registry would have been a question one layer above its answer and one race away from it.
+- "a photo path that knows previews exist" — the photo path knows only that *something* was
+  streaming when its command began, and inside one actor there is exactly one thing that can
+  be: a preview, because every other stream in this engine starts and stops inside a single
+  command (`capture::grab`'s `StreamGuard`). The invariant does the knowing; no caller passes a
+  flag.
+
+### Only the capture is inside the window
+
+The sink check, the control read, the render, the EXIF stamp and the file write are all outside
+it. None of them touches the stream, and a preview held down for the length of a 4K PNG
+re-encode and a write to a slow disk would be a pause bounded by the filesystem. What is inside
+is `capture::grab`, whose length is the settle deadline the request carries — which is the
+number the bound is checked against.
+
+### The bound, and why it is a budget rather than a measurement
+
+`limits::PREVIEW_SUSPEND_MAX_MS` (ten seconds), read by `while_suspended` and by nothing else.
+Nothing can interrupt a `DQBUF` the actor's thread is already inside — the engine has no
+runtime and there is no thread left to notice — so a limit consulted *after* the work would be
+a number in a log wearing a bound's name. What is checked is the request's own settle deadline,
+**before** the stream is stopped, so a photo too expensive to serve costs the viewers nothing at
+all; it is refused with `Error::IllegalTransition`, which is D13's existing "the state you are
+in forbids this operation as asked" and leaves the registry closed at eighteen. The constant is
+asserted against `DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS` where it is declared, because
+a bound that refused the *default* photo would be a mechanism that only ever fires on the case
+it was built for.
+
+### What happens when the capture fails, and when the resume does
+
+The stream comes back. A photo that errored and left the preview dead would be AGENTS rule 8
+broken by the code that exists to honour it, so the restart is on every path out of the work —
+the error path, and the unwinding path a panicking backend produces \[PF:1\], which is why the
+resume is owned by a drop guard (`Resuming`) rather than written twice. It is `capture`'s
+`StreamGuard` mirrored: that one stops a stream its scope started, this one starts a stream its
+scope stopped.
+
+**A resume that itself fails has no good answer, and the least bad one is split.** Returning it
+to the photo's caller would throw away a picture that cannot be retaken — the frame is gone —
+and returning `Ok` in silence would leave a `watch` channel nobody will ever publish to again.
+So: the work's answer is the answer (`StreamGuard`'s doctrine — "the caller is already holding
+either a frame or the error that matters"), and the refusal rides beside it in
+`engine::preview::Gap::resumed`, where `daemon::preview::interrupted` counts it and logs one
+`warn` naming the camera and the device's own words. The feed is **not** withdrawn there: its
+driver's next turn asks a camera that is no longer streaming for a frame, gets the device's
+refusal and takes the path this module already has for a device that refused — `Ended::Refused`,
+the feed withdrawn, its readers' streams ended — within one `limits::PREVIEW_FRAME_WAIT_MS`. A
+second withdrawal path would be a second home for "how a preview ends" (§2.10) rather than a
+faster answer.
+
+### What a viewer sees, counted rather than silent
+
+The pause is invisible to every counter this daemon already keeps, and that is the trap it was
+worth building an observable for: **nothing is published during it, so nothing is dropped**.
+`Fanout::published` stops and continues; no reader falls behind; `Fanout::skipped` — which
+counts frames a *reader* missed — must not move, because folding a suspension into it would
+tell an operator their socket was slow when their camera was busy being a camera (E3's habit,
+applied to a count instead of to an error). So the pause has a count of its own,
+`Previews::watch_interrupted`, bumped on **both** photo paths: `engine::photo::Taken` carries
+the gap beside the outcome precisely so that a capture which *failed* still reports the
+interruption it caused.
+
+On the wire a client sees three things: frames stop and start; `X-Wch-Frame-Index` gets no hole
+from the pause (a jump there is still the reader's own slowness, which is what that field has
+always meant); and `X-Wch-Frame-Sequence` **starts over at zero**, because `STREAMON` resets the
+driver's counter. That reset is the only signal a client can read the restart off, and it is
+passed through exactly as the device reported it — that field's contract is that it is the
+device's number (D5), and rewriting it into a continuation would make a restart
+indistinguishable from a device that never stopped. What no client can conclude is *why* the
+stream restarted; from a viewer's side "a photo was taken" and "the device restarted" are the
+same event, and the daemon's own count is where the difference is recorded.
+
+### What this does not cover, deliberately
+
+**A calibration sweep still meets `Busy`.** A sweep is minutes of photos, so suspending a
+preview for one would be a preview that is *off* rather than paused — and the bound that makes
+the photo's pause defensible is exactly what a sweep cannot fit inside. `engine::calibrate`
+reaches `capture::grab` and `photo::from_capture` directly rather than `photo::take`, so it does
+not acquire the mechanism by accident; that is a property of where the sequence was placed, and
+it is the reason this entry records the placement rather than only the behaviour.
+
+**`wch` gets the mechanism and can never exercise it.** It links the engine directly, opens a
+camera per invocation, takes one photo and closes it, so nothing in that process is ever
+previewing and `Camera::streaming` always answers `None` — the ruling's "`wch` … gets it too" is
+true and vacuous. `wchc` genuinely gets it for free: it links no engine and asks the daemon,
+whose answer changed. Neither binary needed a line.
+
+### What can go red
+
+- `crates/engine`'s `preview::tests` — seven, over the scriptable double: the sequence with a
+  real `capture::grab` inside it (the double refuses a second `STREAMON` exactly as V4L2 does,
+  so a build that skipped the suspend fails there with `Busy` rather than passing a test that
+  counted stops); the resume asking for the *suspended* stream field for field rather than for
+  a fresh negotiation; the error path; the panic path; a resume the device refuses; the bound in
+  both directions; and a capture with no preview touching no stream at all.
+- `crates/engine`'s `photo::tests` — the same sequence through the verb, over the fake replaying
+  a committed profile: the photo is still **verbatim**, the resumed stream's first frame is
+  sequence 0 again, and a settle budget past the bound is refused with the preview left running.
+- `crates/daemon/tests/preview.rs` — four over a real socket, replacing the retired one: a photo
+  during a preview with the interruption *count* read rather than inferred; a photo with no
+  preview, unchanged; a capture that fails mid-photo with the preview still streaming; and two
+  tabs with a photo between them, still one streamer.
+
+**One instrument choice worth recording**, because the obvious one is wrong: the daemon-level
+failure is driven by a settle deadline of zero rather than by `Fault::FrameTimeout` or
+`Fault::DeviceGoneMidStream`. Those are consumed by whichever `next_frame` reaches them first,
+and while a preview is running there is a `next_frame` in flight continuously — so a queued
+frame fault there is a race between the preview's turn and the photo's capture. The fault-menu
+injection lives in the engine suite, where the double is exclusive and the injection is exact
+(`ScriptedCamera::starts_refused_after`, which is new and is what makes a failing `STREAMON`
+reachable at all).
+
+**Retires when:** never, as a ruling. The *mechanism* is up for revision if a caller appears
+that needs a stream held across more than one capture — a sweep beside a live preview is the
+obvious one, and it is a different question rather than a longer bound, because the answer there
+is either an unbounded pause or a preview that is told to stop. `PREVIEW_SUSPEND_MAX_MS` moves
+if a real camera is measured needing longer than ten seconds to settle, which would be a PF
+entry rather than a preference.

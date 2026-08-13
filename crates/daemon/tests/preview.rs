@@ -195,6 +195,68 @@ impl Preview {
     async fn watching(&self) -> Stream {
         Stream::open(self.serving.bound(), &self.target(), None).await
     }
+
+    /// Take a photo of this fixture's camera over the daemon's own JSON-RPC surface.
+    ///
+    /// Through `raw_json_request` rather than the typed server trait, because the subject is
+    /// the verb a **client** calls: the request is the document a browser would send and the
+    /// answer is the one it would parse, so a refusal that only exists in the projection is
+    /// visible here and would not be through a direct method call.
+    ///
+    /// `settle` is the request's settle policy, spelled as JSON, and it is a parameter for one
+    /// reason: a deadline that has already passed is how this suite fails a *capture*
+    /// deterministically while a preview is running (see
+    /// `a_capture_that_fails_mid_photo_still_leaves_the_preview_streaming` for why the fake's
+    /// frame faults are the wrong instrument there).
+    async fn photo(&self, settle: &str) -> serde_json::Value {
+        let methods = daemon::server::mount(self.wchd.clone()).expect("a second reader of T5");
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"wch_photo","params":{{"camera":"{camera}","request":{{"settle":{settle},"sink":{{"kind":"return_bytes","format":"jpeg"}}}}}}}}"#,
+            camera = self.camera.as_str()
+        );
+        let (answer, _subscriptions) = methods
+            .raw_json_request(&request, 1)
+            .await
+            .expect("the surface answered");
+        serde_json::from_str(&answer.to_string()).expect("the T5 surface answers JSON")
+    }
+}
+
+/// The settle policy every photo in this file uses unless it is about the deadline.
+///
+/// `skip_frames: 0` because the fake synthesizes a frame per call and this suite is about the
+/// suspension rather than about `PF:11`'s warm-up — ten discarded frames would be ten more
+/// `DQBUF`s inside the window whose *length* is the thing being bounded.
+fn default_settle() -> &'static str {
+    r#"{"spec":{"kind":"skip_frames","frames":0},"deadline_ms":5000}"#
+}
+
+/// The photo out of a JSON-RPC answer.
+///
+/// **Nothing in this function prints a payload.** A photo answer carries the camera's bytes as
+/// base64, so the failure message names the *error member* and never the whole document — a
+/// frame may contain a person (AGENTS), and a panic message is a place bytes reach a terminal
+/// and a CI log. `api::Base64Bytes`' own `Debug` makes the same promise one crate down; this is
+/// the half that keeps a test from going around it.
+fn photograph(answer: &serde_json::Value) -> api::PhotoResponse {
+    let result = answer.get("result").unwrap_or_else(|| {
+        panic!(
+            "the photo was refused: {refused}",
+            refused = refusal(answer)
+        )
+    });
+    serde_json::from_value(result.clone()).expect("a T5 photo answer")
+}
+
+/// The refusal out of a JSON-RPC answer, as a string a message can carry.
+///
+/// The error member only. An answer that carried a photo has none, and saying so is more
+/// useful than rendering a document this function has promised not to print.
+fn refusal(answer: &serde_json::Value) -> String {
+    match answer.get("error") {
+        Some(error) => error.to_string(),
+        None => "the call succeeded".to_owned(),
+    }
 }
 
 /// The token out of the URL the daemon printed, never off the `Token` value.
@@ -978,38 +1040,235 @@ async fn a_preview_of_a_camera_that_is_not_there_is_refused_before_a_stream_exis
 }
 
 #[tokio::test]
-async fn a_photo_while_a_preview_is_running_is_refused_by_the_device_and_the_preview_survives() {
-    // The cost `crate::preview`'s header states, pinned so that changing it is a red test
-    // rather than a surprise. One streamer per node is the kernel's rule (D12), so a `photo`
-    // taken while a preview holds the stream meets `Busy` **from the device** — which is E3's
-    // distinction (availability is not capability) and is the same answer a second application
-    // on this machine would get.
+async fn a_photo_taken_during_a_preview_suspends_the_stream_and_the_preview_resumes() {
+    // **The owner's ruling of 2026-08-12, over a real socket** — and the replacement for the
+    // test that pinned the behaviour it overturned (note **N83**). Until today a `wch_photo`
+    // taken while a preview held the stream met `Busy` from the device, because V4L2 allows
+    // one streamer per node; now the photo command stops that stream, takes its frame and
+    // starts it again inside the camera's own actor thread, so no client sequences anything.
     //
-    // docs/7 P5c wants a photo trigger beside a live preview, so this is a behaviour that will
-    // have to change; `engine::preview`'s header names the mechanism. What must not happen
-    // meanwhile is the *preview* dying because somebody pressed the button, and the last two
-    // assertions are that.
+    // Four claims, none implying the others:
+    //
+    //   1. **the photo happens**, and its bytes are still the camera's own bitstream — the
+    //      thing AGENTS calls the product ("verbatim camera JPEG when the sink allows");
+    //   2. **the interruption is counted**, read off the daemon's own number rather than
+    //      inferred from the frames — a pause publishes nothing and loses nothing, so it is
+    //      invisible to every other counter this daemon keeps;
+    //   3. **the preview resumes**: frames are published *after* the photo's answer that did
+    //      not exist before it, awaited on the daemon's count rather than slept for;
+    //   4. **exclusivity survives**: one descriptor, one feed, and exactly three streams —
+    //      the preview's, the photo's own, and the resume.
     let preview = Preview::start().await;
     let mut stream = preview.watching().await;
     assert!(stream.part().await.is_jpeg());
 
-    let methods = daemon::server::mount(preview.wchd.clone()).expect("a second reader of T5");
-    let request = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"wch_photo","params":{{"camera":"{camera}","request":{{"sink":{{"kind":"return_bytes","format":"jpeg"}}}}}}}}"#,
-        camera = preview.camera.as_str()
-    );
-    let (answer, _subscriptions) = methods
-        .raw_json_request(&request, 1)
-        .await
-        .expect("the surface answered");
-    let answer = answer.to_string();
+    let taken = photograph(&preview.photo(default_settle()).await);
+    // Claim 1. `bytes_match_the_delivery` is note N34's predicate — the daemon refused to
+    // send an answer that fails it, and this is the client half of the same check.
+    assert!(taken.bytes_match_the_delivery());
     assert!(
-        answer.contains("busy"),
-        "a photo during a preview was not refused as busy: {answer}"
+        taken.report.rendering.is_verbatim(),
+        "a photo taken during a preview was re-encoded: {:?}",
+        taken.report.rendering
+    );
+    let bytes = taken
+        .bytes
+        .as_ref()
+        .expect("a return_bytes sink")
+        .as_slice();
+    assert!(
+        bytes.starts_with(&[0xff, 0xd8]) && bytes.ends_with(&[0xff, 0xd9]),
+        "the payload is not a JPEG bitstream"
     );
 
-    // The preview is unharmed: still one stream, still painting.
+    // Claim 2, and it is a number this test *reads*: one photo, one interruption.
+    assert_eq!(
+        *preview.wchd.watch_preview_interruptions().borrow(),
+        1,
+        "the pause was not counted"
+    );
+
+    // Claim 3. The count is sampled **after** the answer arrived, so every frame past it was
+    // published after the stream came back — a build that skipped the resume never moves it.
+    // Bounded rather than left to the runner: the driver takes its next frame within one
+    // `PREVIEW_FRAME_WAIT_MS`, so twice that is a whole turn of slack, and the difference
+    // between "this test failed" and "this run timed out" is a diagnosis.
+    let mut published = preview.wchd.watch_preview_frames();
+    let resumed_at = *published.borrow_and_update();
+    let flowing = tokio::time::timeout(
+        Duration::from_millis(limits::PREVIEW_FRAME_WAIT_MS * 2),
+        published.wait_for(|count| *count > resumed_at),
+    )
+    .await;
+    assert!(
+        flowing.is_ok(),
+        "no frame was published in {ms} ms after the photo: the preview did not resume",
+        ms = limits::PREVIEW_FRAME_WAIT_MS * 2
+    );
+
+    // ... and the tab is still being served, which is the same fact from the client's end.
     assert!(stream.part().await.is_jpeg());
-    assert_eq!(preview.backend.streams_started(), 1);
+
+    // Claim 4.
+    assert_eq!(
+        preview.backend.opens(),
+        1,
+        "the photo opened a second handle"
+    );
+    assert_eq!(
+        preview.backend.streams_started(),
+        3,
+        "one preview, one photo and one resume is three streams — no more and no fewer"
+    );
     assert_eq!(preview.wchd.previewed_cameras(), 1);
+}
+
+#[tokio::test]
+async fn a_photo_with_no_preview_running_answers_exactly_as_it_did_before() {
+    // The other direction of the test above, and the one that says the mechanism is
+    // *conditional*: with nobody watching, `wch_photo` is the verb it has always been — one
+    // stream, no interruption, no feed. A build that took the suspend path anyway would stop
+    // a stream that was not running (harmless) and then **start one nobody stops**, which is
+    // the second number here.
+    let preview = Preview::start().await;
+    let taken = photograph(&preview.photo(default_settle()).await);
+    assert!(taken.bytes_match_the_delivery());
+    assert!(taken.report.rendering.is_verbatim());
+
+    assert_eq!(
+        *preview.wchd.watch_preview_interruptions().borrow(),
+        0,
+        "a photo with nobody watching reported an interruption"
+    );
+    assert_eq!(
+        preview.backend.streams_started(),
+        1,
+        "the photo's own stream, and no other"
+    );
+    assert_eq!(preview.wchd.previewed_cameras(), 0);
+}
+
+#[tokio::test]
+async fn a_capture_that_fails_mid_photo_still_leaves_the_preview_streaming() {
+    // AGENTS rule 8 at the place the code that exists to honour it could break it: a photo
+    // that errors must not leave the camera dark for a tab that is still open.
+    //
+    // **The failure is a settle deadline of zero rather than one of the fake's frame faults,
+    // and that is deliberate.** `Fault::FrameTimeout` and `Fault::DeviceGoneMidStream` are
+    // consumed by whichever `next_frame` reaches them first, and while a preview is running
+    // there is a `next_frame` in flight continuously — so a queued frame fault here would be
+    // a race between the preview's turn and the photo's capture, and this project does not
+    // write races. A deadline that has already passed fails the *capture* and nothing else,
+    // deterministically, after the suspend and before the frame: `crates/engine`'s own suite
+    // drives the same path off the scriptable double's fault menu, where the double is
+    // exclusive and the injection is exact.
+    let preview = Preview::start().await;
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+
+    let refusal = refusal(
+        &preview
+            .photo(r#"{"spec":{"kind":"skip_frames","frames":0},"deadline_ms":0}"#)
+            .await,
+    );
+    assert!(
+        refusal.contains("settle"),
+        "a spent deadline was not reported as a settle failure: {refusal}"
+    );
+
+    // Counted on the failure path too — the interruption happened whatever the picture did,
+    // and a gap counted only when the photo came out would under-report exactly the case an
+    // operator would be investigating.
+    assert_eq!(*preview.wchd.watch_preview_interruptions().borrow(), 1);
+
+    // And the preview is streaming: frames published after the failed photo, then a part on
+    // the wire. A build whose resume ran only on the success path leaves both dead.
+    let mut published = preview.wchd.watch_preview_frames();
+    let resumed_at = *published.borrow_and_update();
+    let flowing = tokio::time::timeout(
+        Duration::from_millis(limits::PREVIEW_FRAME_WAIT_MS * 2),
+        published.wait_for(|count| *count > resumed_at),
+    )
+    .await;
+    assert!(
+        flowing.is_ok(),
+        "a photo that failed left the preview stopped"
+    );
+    assert!(stream.part().await.is_jpeg());
+    assert_eq!(preview.backend.streams_started(), 3);
+    assert_eq!(preview.wchd.previewed_cameras(), 1);
+}
+
+#[tokio::test]
+async fn two_photos_at_once_during_a_preview_never_hold_two_streams() {
+    // **The claim that the suspend, the capture and the resume are one indivisible
+    // operation**, which is the ruling's own word for where it had to live. It is true by
+    // construction rather than by a lock — the whole sequence runs inside one
+    // `engine::actor` command, on the thread that owns the device, and that thread takes one
+    // command at a time in arrival order — so the thing that would break it is a build which
+    // split the sequence across two commands, or ran it anywhere but there.
+    //
+    // Such a build fails here and nowhere else in this suite: with the sequence interruptible,
+    // the second photo's `STREAMON` lands between the first photo's stop and its restart, and
+    // one of the two meets `Busy` from the device (or the first photo's resume does). Two
+    // requests in flight at once is the only shape that can reach that window.
+    let preview = Preview::start().await;
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+
+    let (first, second) = tokio::join!(
+        preview.photo(default_settle()),
+        preview.photo(default_settle())
+    );
+    for (which, answer) in [("the first", &first), ("the second", &second)] {
+        let taken = photograph(answer);
+        assert!(
+            taken.bytes_match_the_delivery(),
+            "{which} photo answered a document that disagrees with itself"
+        );
+    }
+
+    // Two suspensions, and five streams: the preview's, then a capture and a resume each.
+    assert_eq!(*preview.wchd.watch_preview_interruptions().borrow(), 2);
+    assert_eq!(
+        preview.backend.streams_started(),
+        5,
+        "two photos during one preview is one stream per capture plus one resume each"
+    );
+    assert_eq!(preview.wchd.previewed_cameras(), 1);
+    assert!(stream.part().await.is_jpeg(), "the tab stopped painting");
+}
+
+#[tokio::test]
+async fn two_tabs_and_a_photo_between_them_are_still_one_streamer() {
+    // D12's "exclusive streaming by construction" at the case the ruling could have broken:
+    // two readers of one camera, and a photo in the middle of both. The suspension is the
+    // *feed's* stream rather than a tab's, so neither tab is told anything and both keep
+    // painting — and the counts say there was never a moment with two streamers on the node.
+    let preview = Preview::start().await;
+    let mut first = preview.watching().await;
+    let mut second = preview.watching().await;
+    assert!(first.part().await.is_jpeg());
+    assert!(second.part().await.is_jpeg());
+    assert_eq!(preview.backend.streams_started(), 1, "two tabs, one stream");
+
+    let taken = photograph(&preview.photo(default_settle()).await);
+    assert!(taken.bytes_match_the_delivery());
+
+    assert!(
+        first.part().await.is_jpeg(),
+        "the first tab stopped painting"
+    );
+    assert!(
+        second.part().await.is_jpeg(),
+        "the second tab stopped painting"
+    );
+    assert_eq!(preview.backend.opens(), 1);
+    assert_eq!(
+        preview.backend.streams_started(),
+        3,
+        "two tabs and one photo is still one preview stream, suspended once"
+    );
+    assert_eq!(preview.wchd.previewed_cameras(), 1);
+    assert_eq!(*preview.wchd.watch_preview_interruptions().borrow(), 1);
 }

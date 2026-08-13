@@ -159,6 +159,27 @@ pub trait Camera: fmt::Debug + Send {
     /// Negotiate a format and start streaming.
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream>;
 
+    /// The stream this camera is running right now, if it is running one.
+    ///
+    /// **The device is the only authority on itself** (AGENTS rule 4), and "am I streaming"
+    /// is the one question about a node that a caller holding a handle onto it cannot answer
+    /// any other way: V4L2 has no ioctl for it, every backend already tracks it because
+    /// `start_stream` has to refuse a second `STREAMON` with `EBUSY`, and a flag kept beside
+    /// the handle by a layer above would be a second answer that can drift from the first.
+    /// So it is asked here, of the thing that knows.
+    ///
+    /// The one caller is `engine::preview::while_suspended`, which stops a running stream
+    /// for the length of a photo and starts it again afterwards (design **D12**; note
+    /// **N83**). It asks because the *answer* is what it must restore: the negotiated stream
+    /// is what the viewers were watching, so resuming asks for exactly that rather than
+    /// re-deriving a request and hoping the driver answers the same way twice.
+    ///
+    /// Owned rather than borrowed, deliberately. A backend whose state lives behind a lock
+    /// — the fake's does, because two opens are two views of one device — cannot hand out a
+    /// reference into it, and this is asked once per photo rather than once per frame, so a
+    /// clone of a few integers costs nothing that matters.
+    fn streaming(&self) -> Option<NegotiatedStream>;
+
     /// Take the next frame, blocking until `deadline`.
     ///
     /// The deadline is an opaque bound the backend honors literally. Settle *policy* —

@@ -340,6 +340,13 @@ impl Camera for PersistentCamera {
         })
     }
 
+    fn streaming(&self) -> Option<NegotiatedStream> {
+        // A fixture that refuses every `start_stream` is never streaming, and saying so is
+        // not the same as refusing: this is the one question on the trait whose answer is a
+        // fact rather than an operation.
+        None
+    }
+
     fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {
         Err(Error::DeviceIo {
             operation: "next_frame".to_owned(),

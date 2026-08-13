@@ -30,19 +30,33 @@
 //! cost is one command-queue round trip per frame, which is a `try_send`, a thread wake and a
 //! channel send — measured against a `DQBUF` and a JPEG, it is not the expensive part.
 //!
-//! ## What that costs, stated rather than discovered later
+//! ## What that used to cost, and what it costs now (owner ruling, 2026-08-12)
 //!
-//! **A camera with a preview running refuses a photo, and that is the kernel's rule rather
-//! than ours.** V4L2 allows one streamer per node; `crate::capture::grab` starts a stream of
-//! its own, and a device already streaming answers [`Error::Busy`] — which is a fact about the
-//! machine and not a capability statement (E3), and is the same refusal a second application
-//! would meet. It is honest and it is not what docs/7 P5c's photo trigger wants. The mechanism
-//! that would fix it is a preview that *yields* its stream for the duration of a photo and
-//! resumes afterwards, which needs a suspend protocol on the daemon's feed and a photo path
-//! that knows previews exist. It is named here and deliberately not built: there is no client
-//! that trips it yet, and a mechanism built before the case it serves is a bound with nothing
-//! to bound (rubric A8). `crates/daemon/tests/preview.rs` pins the current behaviour instead,
-//! so the day it changes, something goes red.
+//! **A camera with a preview running used to refuse a photo**, because V4L2 allows one
+//! streamer per node: `crate::capture::grab` starts a stream of its own, and a device already
+//! streaming answers [`Error::Busy`]. That was honest — a fact about the machine rather than a
+//! capability statement (E3) — and it was not what docs/7 P5c's photo trigger wants. This
+//! header named the fix, declined to build it on rubric A8 ("a mechanism built before the case
+//! it serves is a bound with nothing to bound") and pinned the refusal with a test.
+//!
+//! The owner has ruled that the fix gets built, and [`while_suspended`] is it: the photo
+//! stops the preview's stream, takes its frame and starts the stream again, **all inside the
+//! one command on the camera's own actor thread**. The old argument is superseded rather than
+//! wrong — its condition was "there is no client that trips it yet", and P5c is that client —
+//! but two of its sentences were wrong on their own terms and are worth correcting rather than
+//! deleting, because both were guesses about where the mechanism would have to live:
+//!
+//! - "needs a suspend protocol on the daemon's feed" — it needs nothing on the feed. The
+//!   daemon's registry is not consulted, because the *device* is the authority on whether it
+//!   is streaming (`schema::backend::Camera::streaming`, AGENTS rule 4), and asking the feed
+//!   would have put the question one layer above the answer and one race away from it.
+//! - "a photo path that knows previews exist" — the photo path knows only that *something* was
+//!   streaming when its command began, and inside one actor there is exactly one thing that
+//!   can be: a preview, because every other stream in this engine starts and stops inside a
+//!   single command (`crate::capture::grab`'s `StreamGuard`). So the invariant does the
+//!   knowing, and no caller passes a flag.
+//!
+//! Note **N83** records the ruling, what the retired test pinned, and what replaced it.
 //!
 //! ## The stream is stopped by whoever ends the preview, and by the descriptor either way
 //!
@@ -229,6 +243,180 @@ pub fn turn(device: OpenCamera<'_>, sink: &dyn FrameSink) -> Result<Delivery> {
     }
 }
 
+/// What one interruption did to a preview that was running.
+///
+/// The *second* fact [`while_suspended`] produces, and it is a value rather than a log line
+/// because the pause is invisible everywhere else: no frame is dropped, no reader falls
+/// behind, and this daemon's publication count simply stops for a moment and then continues.
+/// Rubric rule 3 wants a number rather than a silence, and this is what the number is counted
+/// from.
+#[derive(Debug, Clone)]
+pub struct Gap {
+    /// The stream the viewers were watching, stopped and started again around the capture.
+    ///
+    /// Carried rather than discarded because it is what makes the resume *exact*: the request
+    /// that puts the stream back names the format, the size and the interval the device had
+    /// already agreed to, so a preview does not change shape underneath a page that has
+    /// already sized an `<img>` around it.
+    pub stream: NegotiatedStream,
+    /// Whether the stream came back, and the device's own words when it did not.
+    ///
+    /// Separate from the photo's own answer on purpose — see [`while_suspended`] for which of
+    /// the two wins and why neither is allowed to hide the other.
+    pub resumed: Result<()>,
+}
+
+/// Run `work` with any running preview stream stopped, and start it again afterwards.
+///
+/// **The whole of the owner's 2026-08-12 ruling, as one function that cannot be half-used.**
+/// There is no `suspend` and no `resume` in this module's public surface, because a suspend
+/// any caller can invoke separately is a suspend somebody forgets to resume — and the thing
+/// they would forget is a camera left dark for a tab that is still open. The stop, the work
+/// and the start are one expression, and the only way to reach the first is to supply the
+/// second.
+///
+/// **It is indivisible because of where it runs, not because of what it locks.** The caller
+/// is `crate::photo::take`, which runs inside one `engine::actor` command on the thread that
+/// owns the `Box<dyn Camera>`; that thread takes one command at a time in arrival order, so
+/// no other work — a second photo, a preview turn, a control write — can be interleaved
+/// between the stop and the start. Nothing here takes a lock, and there is nothing to take one
+/// on: the exclusivity D12 asks for is still enforced by the actor's shape rather than by this
+/// function agreeing to behave.
+///
+/// ## What happens when there is no preview
+///
+/// `work` runs, and that is the whole of it: no stop, no start, no bound consulted, no [`Gap`].
+/// The early return below is `work(device)` with nothing before or after it, which is what
+/// makes "a photo with no preview running is unchanged" a property of the *code path* rather
+/// than of a test that happened to check the observable parts.
+///
+/// ## What happens when the capture fails
+///
+/// The stream comes back. A photo that errored and left the preview dead would be AGENTS
+/// rule 8 broken by the code that exists to honour it, so the start is on every path out of
+/// the work — the error path, and the unwinding path a panicking backend produces \[PF:1\],
+/// which is why the resume is owned by a drop guard rather than written twice.
+///
+/// **The work's answer wins, always.** A resume that fails does not replace the photo's own
+/// outcome — that is `crate::capture::StreamGuard`'s doctrine ("the caller is already holding
+/// either a frame or the error that matters") — but unlike that one it is not discarded
+/// either: it comes back in [`Gap::resumed`], where the daemon counts it, logs it and lets the
+/// preview's own driver end the feed on its next turn rather than leaving a channel nobody
+/// will ever publish to again. The one thing it must never be is a panic, on a path that is
+/// holding a photo somebody asked for.
+///
+/// ## The bound
+///
+/// `budget_ms` is how long the caller's own work may take — for a photo, the settle deadline
+/// it carries — and a budget over [`limits::PREVIEW_SUSPEND_MAX_MS`] is refused **before the
+/// stream is stopped**, so a request too expensive to serve costs the viewers nothing at all.
+/// Checking the budget rather than the elapsed time is the only shape that can refuse: nothing
+/// can interrupt a `DQBUF` the actor's thread is already inside, so a limit consulted
+/// afterwards would be a measurement wearing a bound's name.
+///
+/// # Errors
+///
+/// The work's, unchanged. [`Error::IllegalTransition`] when the caller's budget exceeds the
+/// bound above. Whatever `stop_stream` refused with, in which case the work does not run at
+/// all — a device that will not stop is not one this can take a frame from, and running the
+/// capture anyway would be starting a second stream on a node that still holds the first.
+pub fn while_suspended<T>(
+    device: OpenCamera<'_>,
+    budget_ms: u64,
+    work: impl FnOnce(OpenCamera<'_>) -> Result<T>,
+) -> (Result<T>, Option<Gap>) {
+    let Some(stream) = device.streaming() else {
+        return (work(device), None);
+    };
+    if budget_ms > limits::PREVIEW_SUSPEND_MAX_MS {
+        return (
+            Err(Error::IllegalTransition {
+                from: "a camera whose preview stream is running".to_owned(),
+                op: format!(
+                    "hold that preview down for up to {budget_ms} ms, which is more than the \
+                     {bound} ms a photo may",
+                    bound = limits::PREVIEW_SUSPEND_MAX_MS
+                ),
+            }),
+            None,
+        );
+    }
+    if let Err(refused) = device.stop_stream() {
+        return (Err(refused), None);
+    }
+
+    let mut resuming = Resuming {
+        request: Some(resume_request(&stream)),
+        device,
+    };
+    let outcome = work(&mut *resuming.device);
+    let resumed = resuming.resume();
+    (outcome, Some(Gap { stream, resumed }))
+}
+
+/// The request that puts a suspended stream back exactly as it was.
+///
+/// Every field the device already answered with, asked for by name rather than re-derived from
+/// [`request`]. The difference matters on a camera whose preview was *adjusted* — D5 lets a
+/// driver answer 1920×1080 to a 640×480 request, and re-asking the original would make the
+/// second half of a preview a different size from the first, mid-`<img>`. `buffer_count` is
+/// the default because that is what the preview's own request carried; it is not part of the
+/// negotiated answer, so there is nothing to restore it from.
+fn resume_request(stream: &NegotiatedStream) -> StreamRequest {
+    StreamRequest {
+        pixel_format: Some(stream.pixel_format),
+        width: Some(stream.width),
+        height: Some(stream.height),
+        interval: Some(stream.interval),
+        ..StreamRequest::default()
+    }
+}
+
+/// Starts the stream again when it goes out of scope, however it goes out of scope.
+///
+/// `crate::capture::StreamGuard`'s mirror image and its counterpart: that one stops a stream
+/// its scope started, this one starts a stream its scope stopped. The unwinding path is the
+/// reason both are drop guards rather than lines at the end of a function — the most popular
+/// V4L2 crate panics on a control type this kernel emits \[PF:1\], so "the work panicked" is a
+/// measured failure mode, and a preview that ended because somebody pressed a photo button
+/// would be indistinguishable from a camera that failed.
+///
+/// The difference from its counterpart is [`Resuming::resume`]: a stop that fails has nothing
+/// left to tell anyone, and a *start* that fails leaves a feed that will never produce another
+/// frame — so the ordinary path takes the request out of this guard, keeps the answer, and
+/// leaves the guard with nothing to do.
+struct Resuming<'device> {
+    device: OpenCamera<'device>,
+    /// The request to start with, taken by whoever resumes first.
+    ///
+    /// An `Option` is what makes the two mechanisms one: [`Resuming::resume`] empties it, so
+    /// the drop that follows a successful resume starts nothing, and the drop that follows a
+    /// panic finds it still full.
+    request: Option<StreamRequest>,
+}
+
+impl Resuming<'_> {
+    /// Start the stream again, once.
+    fn resume(&mut self) -> Result<()> {
+        match self.request.take() {
+            Some(request) => self.device.start_stream(&request).map(|_negotiated| ()),
+            // Already resumed. Reached only from the drop that follows the ordinary path,
+            // where saying `Ok` is not a claim about the device — it is this guard reporting
+            // that it had nothing left to do.
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Resuming<'_> {
+    fn drop(&mut self) {
+        // The unwinding path, where there is no caller left to hand an error to: a panic is
+        // already travelling and replacing it would lose the diagnosis. The stream is what
+        // this can still put back, so it puts it back and says nothing.
+        let _ = self.resume();
+    }
+}
+
 /// Stop the preview stream.
 ///
 /// A named function over one forwarded call, and it exists so that "the preview stops the
@@ -250,10 +438,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use schema::ErrorKind;
+    use schema::backend::Camera as _;
     use schema::camera::PixelFormat;
+    use schema::capture::{SettlePolicy, SettleSpec};
 
     use super::*;
     use crate::double::{ScriptedCamera, frame, integer};
+    use crate::settle::SteppedClock;
 
     /// A sink that keeps what it was given and answers what the test told it to.
     #[derive(Debug)]
@@ -415,6 +606,219 @@ mod tests {
         let negotiated = start(&mut device, &request()).expect("MJPG is on offer");
         assert!(negotiated.pixel_format.is_compressed());
         assert_eq!(device.stops, 0);
+    }
+
+    /// A camera with a preview stream already running, and what it negotiated.
+    ///
+    /// Every suspension test starts here, because "something was streaming when this command
+    /// began" is the whole precondition [`while_suspended`] branches on.
+    fn previewing(frames: u32) -> (ScriptedCamera, NegotiatedStream) {
+        let mut device = camera(frames);
+        let negotiated = start(&mut device, &request()).expect("the scripted camera streams");
+        (device, negotiated)
+    }
+
+    #[test]
+    fn a_capture_during_a_preview_stops_the_stream_takes_its_frame_and_starts_it_again() {
+        // The owner's ruling, as the sequence it is: STREAMOFF, the work's own stream,
+        // STREAMON. The work here is `crate::capture::grab` rather than a stand-in, because
+        // what a photo actually does is *start a stream of its own* — and this double
+        // refuses a second `STREAMON` exactly as V4L2 does, so a build that skipped the
+        // suspend would fail here with `Busy` rather than passing a test that only counted
+        // stops.
+        let (mut device, negotiated) = previewing(20);
+        let clock = SteppedClock::new(0);
+        let (captured, gap) = while_suspended(&mut device, 1_000, |device| {
+            assert!(
+                device.streaming().is_none(),
+                "the capture ran while the preview still held the stream"
+            );
+            crate::capture::grab(
+                device,
+                &StreamRequest::default(),
+                SettlePolicy {
+                    spec: SettleSpec::SkipFrames { frames: 0 },
+                    deadline_ms: 5_000,
+                },
+                &clock,
+            )
+        });
+
+        captured.expect("the camera has frames");
+        let gap = gap.expect("a preview was running, so there is a gap to report");
+        assert_eq!(gap.stream, negotiated, "the gap names a stream nobody had");
+        gap.resumed.expect("the stream came back");
+        assert!(device.streaming().is_some(), "the preview was left stopped");
+        // Three starts: the preview's, the capture's own, and the resume. Two stops: the
+        // suspend and the capture guard's. A build that resumed twice, or not at all, has a
+        // different pair of numbers here.
+        assert_eq!(device.started.len(), 3);
+        assert_eq!(device.stops, 2);
+    }
+
+    #[test]
+    fn the_resume_asks_for_the_stream_that_was_suspended_rather_than_for_a_fresh_negotiation() {
+        // D5 lets a driver answer with something other than what was asked for, so "start
+        // the preview again" and "ask for a preview again" are different requests — and the
+        // difference is a picture that changes size underneath a page that has already sized
+        // an `<img>` around it. The resume names the negotiated answer, field for field.
+        let (mut device, negotiated) = previewing(4);
+        let (outcome, gap) = while_suspended(&mut device, 1_000, |_device| Ok(()));
+        outcome.expect("the work does nothing and cannot fail");
+        gap.expect("a preview was running")
+            .resumed
+            .expect("the stream came back");
+
+        let resumed = device.started.last().expect("the resume started a stream");
+        assert_eq!(resumed.pixel_format, Some(negotiated.pixel_format));
+        assert_eq!(resumed.width, Some(negotiated.width));
+        assert_eq!(resumed.height, Some(negotiated.height));
+        assert_eq!(resumed.interval, Some(negotiated.interval));
+        // ... and it is not the preview's own request, which asks for the *cap* rather than
+        // for a size (`limits::PREVIEW_MAX_WIDTH`) and would be a different ask on any camera
+        // whose preview was adjusted.
+        assert_ne!(resumed.width, request().width);
+    }
+
+    #[test]
+    fn a_capture_that_failed_still_leaves_the_preview_streaming() {
+        // AGENTS rule 8 at the one place the code that exists to honour it could break it: a
+        // photo that errors must not leave the camera dark for a tab that is still open. The
+        // work's refusal travels unchanged, and the stream is back before the caller sees it.
+        let (mut device, _negotiated) = previewing(4);
+        let refusal = Error::DeviceIo {
+            operation: "VIDIOC_DQBUF".to_owned(),
+            errno: Some(5),
+            message: "the capture failed".to_owned(),
+        };
+        let (outcome, gap) =
+            while_suspended(&mut device, 1_000, |_device| Err::<(), _>(refusal.clone()));
+
+        assert_eq!(
+            outcome.expect_err("the work failed").kind(),
+            ErrorKind::DeviceIo,
+            "the work's own refusal was replaced"
+        );
+        gap.expect("a preview was running")
+            .resumed
+            .expect("the stream came back on the error path too");
+        assert!(device.streaming().is_some());
+        assert_eq!(device.started.len(), 2, "the resume did not happen");
+    }
+
+    #[test]
+    fn a_capture_that_panicked_still_leaves_the_preview_streaming() {
+        // The path a drop guard exists for and a line at the end of a function cannot reach.
+        // It is not hypothetical: the most popular V4L2 crate panics on a control type this
+        // kernel emits \[PF:1\], so "the work panicked" is a measured failure mode, and a
+        // preview that ended because somebody pressed a photo button would be
+        // indistinguishable from a camera that failed.
+        let (mut device, _negotiated) = previewing(4);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = while_suspended(&mut device, 1_000, |_device| -> Result<()> {
+                panic!("a backend that panics on a control type it does not know");
+            });
+        }));
+
+        assert!(panicked.is_err(), "the panic was swallowed");
+        assert!(
+            device.streaming().is_some(),
+            "a panicking capture left the preview stopped"
+        );
+        assert_eq!(device.started.len(), 2);
+    }
+
+    #[test]
+    fn a_resume_the_device_refuses_is_reported_and_never_replaces_the_photo() {
+        // The failure with no good answer, given the least bad one: the photo succeeded and
+        // the stream did not come back. Returning the resume's error would throw away a
+        // picture the caller asked for and cannot retake (the frame is gone); returning `Ok`
+        // and saying nothing would leave a channel nobody will ever publish to again. So the
+        // work's answer is the answer, and the refusal rides beside it in the gap — where
+        // `daemon::preview::interrupted` counts it and logs it, and the feed's own driver
+        // ends the stream on its next turn.
+        let mut device = camera(4).starts_refused_after(
+            1,
+            Error::DeviceIo {
+                operation: "VIDIOC_STREAMON".to_owned(),
+                errno: Some(12),
+                message: "cannot allocate memory".to_owned(),
+            },
+        );
+        start(&mut device, &request()).expect("the first start is allowed");
+
+        let (outcome, gap) = while_suspended(&mut device, 1_000, |_device| Ok(7_u32));
+        assert_eq!(outcome.expect("the work's own answer"), 7);
+        let refused = gap
+            .expect("a preview was running")
+            .resumed
+            .expect_err("the second start is refused");
+        assert_eq!(refused.kind(), ErrorKind::DeviceIo);
+        assert!(
+            device.streaming().is_none(),
+            "the double claimed a stream its own refusal did not start"
+        );
+    }
+
+    #[test]
+    fn a_budget_longer_than_the_bound_is_refused_before_the_stream_is_stopped() {
+        // `limits::PREVIEW_SUSPEND_MAX_MS`, read by the only thing that can enforce it.
+        // Nothing can interrupt a `DQBUF` the actor's thread is already inside, so the bound
+        // is checked against the caller's declared budget — and the refusal costs the viewers
+        // nothing at all, which is what the `stops` assertion says.
+        let (mut device, _negotiated) = previewing(4);
+        let ran = std::cell::Cell::new(false);
+        let (outcome, gap) =
+            while_suspended(&mut device, limits::PREVIEW_SUSPEND_MAX_MS + 1, |_| {
+                ran.set(true);
+                Ok::<(), Error>(())
+            });
+
+        assert_eq!(
+            outcome.expect_err("the budget is over the bound").kind(),
+            ErrorKind::IllegalTransition
+        );
+        assert!(!ran.get(), "the work ran after its budget was refused");
+        assert!(gap.is_none(), "a refusal reported a gap it did not cause");
+        assert_eq!(device.stops, 0, "a refused photo stopped the preview");
+        assert!(device.streaming().is_some());
+
+        // The other direction, so the assertion above is about the *bound* rather than about
+        // a function that refuses everything: a budget exactly at it is served.
+        let (outcome, gap) = while_suspended(&mut device, limits::PREVIEW_SUSPEND_MAX_MS, |_| {
+            ran.set(true);
+            Ok::<(), Error>(())
+        });
+        outcome.expect("a budget at the bound is within it");
+        assert!(ran.get());
+        assert!(gap.is_some());
+    }
+
+    #[test]
+    fn a_capture_with_no_preview_running_touches_no_stream_at_all() {
+        // "A photo with no preview running is unchanged", proven where the claim lives: the
+        // early return is `work(device)` with nothing before or after it, so there is no stop
+        // to skip and no start to add. The numbers are what a build that took the suspend
+        // path anyway would move — `stops` on a node that is not streaming is harmless, and
+        // the *start* that followed it would leave this camera streaming for nobody.
+        let mut device = camera(4);
+        let (outcome, gap) = while_suspended(&mut device, 1_000, |device| {
+            device.start_stream(&StreamRequest::default())?;
+            device.stop_stream()
+        });
+
+        outcome.expect("the work runs exactly as it always did");
+        assert!(gap.is_none(), "a gap was reported with nobody watching");
+        assert_eq!(
+            device.started.len(),
+            1,
+            "the work's own stream, and no other"
+        );
+        assert_eq!(device.stops, 1, "the work's own stop, and no other");
+        assert!(
+            device.streaming().is_none(),
+            "a photo with no preview left the camera streaming"
+        );
     }
 
     #[test]

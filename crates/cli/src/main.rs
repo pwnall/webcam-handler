@@ -245,7 +245,13 @@ impl Executor for InProcess {
             &mut engine::photo::WhereverTheCallerSaid,
             &engine::settle::MonotonicClock::new(),
             Stamp::now(),
-        )?;
+        )
+        // `wch` opens a camera per invocation, takes one photo and closes it, so nothing in
+        // this process can be previewing the device and the gap beside the answer is always
+        // `None`. It is dropped here rather than asserted: what a *different* caller does
+        // with it is `daemon::server`'s business, and the suspend/resume this discards the
+        // report of is the same mechanism either way (note **N83**).
+        .outcome?;
         // Two structurally identical types, and they stay separate on purpose: `wchc`
         // links no engine (T6), so the shared command surface cannot name the engine's.
         Ok(Photograph {
