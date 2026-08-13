@@ -50,6 +50,19 @@ Two consumers reach it, and they are shaped nothing alike:
   **calibrate them at the beginning of a development run**. Occasional, interactive,
   supervisory.
 
+**The development machine is deliberately not that deployment** (owner, 2026-08-12). It
+carries every camera the owner could find — five logical cameras across four USB devices as
+of today — each pointed in a random direction in a room, with **no device under test in
+front of any of them**. The rig is chosen for *variety of hardware*, which is what finds
+PF-entries, and not for fidelity to the deployment above. Two things follow, and both are
+about how to read the evidence rather than about how to write code. Hardware evidence
+(E-entries, the `hw_` suites) establishes what a *driver* does and does not establish
+anything about a real run's framing or aim — so a motor left off-target on this machine
+costs nothing today and would cost a whole run in the deployment, which is why **PF:25 is
+recorded at its deployment severity rather than at the severity it had when it was found**.
+And the privacy rule (item 8) binds *harder* here, not softer: a camera pointed at a random
+part of a room is more likely to hold a person than one aimed at a circuit board.
+
 ## What follows for trade-offs
 
 1. **The primary consumer has no hands.** A verb that needs a sequence of calls, a flag whose
