@@ -11142,3 +11142,719 @@ obvious one, and it is a different question rather than a longer bound, because 
 is either an unbounded pause or a preview that is told to stop. `PREVIEW_SUSPEND_MAX_MS` moves
 if a real camera is measured needing longer than ten seconds to settle, which would be a PF
 entry rather than a preference.
+
+---
+
+## PF:24 — An INACTIVE control's current value is the automation's, and `VOLATILE` is not how a device says so
+
+**Measured** 2026-08-12 on kernel `7.0.0-29-generic` (x86_64), five cameras attached, against
+the **Logitech BRIO** (`046d:085e`, interface `2-3.4.2.4:1.0`) the day it was attached, with the
+other four cameras as the control group. Continues the docs/6 §1.2 registry; cite it as
+`[PF:24]`.
+
+PF:3 measured that INACTIVE tracks auto/manual pairing live and in both directions. It says
+nothing about the *value* underneath the flag, and this workspace inherited an assumption there:
+`engine::snapshot` records `was_volatile` from `V4L2_CTRL_FLAG_VOLATILE` and every "the camera is
+back where we found it" comparison exempts exactly that set and nothing else. On this device the
+exemption misses, because the device does not set the flag on a control whose value it writes
+itself.
+
+### The measurement
+
+Read with `wch get <cam> white_balance_temperature --json`, moved with
+`wch photo <cam> -o <scratch>`, switched with `wch set <cam> white_balance_automatic=0|1 --json`
+— the shipped binary throughout, nothing bespoke.
+
+`white_balance_temperature` on `cam:logitech-brio`: range `2000..=7500` step 10, flag word
+**`0x1010`** — `INACTIVE | HAS_WHICH_MIN_MAX`. `VOLATILE` is `0x0080` and **is not set**.
+
+Idle, with `white_balance_automatic=1` as found, eight consecutive `wch get` reads inside 0.1 s
+all answered `3620`. The value moves when the sensor *streams* — one `wch photo` between reads:
+
+```
+wbt = 3620 → photo → 3680 → photo → 3650 → photo → 3630
+```
+
+The inverse arm is the half that makes it a finding rather than a noisy control. With
+`white_balance_automatic=0`, which clears INACTIVE (flag word `0x1000`), the same three photos:
+
+```
+wbt = 3630 → photo → 3630 → photo → 3630 → photo → 3630
+```
+
+Restoring `white_balance_automatic=1` puts INACTIVE back and the drift with it. The control
+group, three photos each, AWB on: **Chicony RGB held `4600` and the Dell U3224KB/A held `5000`**,
+unmoved by their own captures. So the drift is this device's, not the class's — which is the
+whole reason it is a PF entry: the flag word is identical on all four cameras and the behaviour
+underneath it is not.
+
+**The same class, on the OBSBOT, arriving by a different route \[PF:25\].** After a `uvcvideo`
+cycle that device's `red_balance`, `blue_balance` and `white_balance_temperature` — the three
+controls `white_balance_automatic` owns — all read `0` where they had read `143`, `156` and
+`4500`, and stayed there. Zero is below `white_balance_temperature`'s own declared minimum of
+2000, so it is also PF:4 with a second and much larger instance than `zoom_continuous`'s 245.
+That reading was taken *after* a cycle and is not an AWB-drift measurement; what it shares with
+the BRIO's is the underlying fact, which is that the value of a control under automation is a
+**read-back of an algorithm** rather than a setting, and UVC gives the driver no obligation to
+advertise that with the one flag V4L2 has for it.
+
+### What it costs this tool, stated rather than fixed
+
+**Two R3 arms went red on it, and they were the only two reds in the 2026-08-12 `just smoke-hw`
+run** (16 of 18 passed, the suite complete, census clean):
+
+```
+crates/backends/v4l2/tests/hardware.rs:1972
+  cam:logitech-brio: white_balance_temperature is Some(Int(3680)) and the sweep found it at 3610
+crates/client/tests/hardware.rs:651
+  cam:logitech-brio: white_balance_temperature is Some(Int(3610)) and the session found it at Int(3630)
+```
+
+Both arms sweep `brightness`, both call `engine::lifecycle::recover`, and in both the restore
+**reported itself complete** — `restore.is_complete()` passed. The engine did what it was asked;
+the device then moved a value nobody wrote, between the restore and the re-read, because the
+sweep's own photographs are what drive the AWB. The failure is real and it is not the engine's.
+
+**No code is changed here, and that is a decision.** The obvious repair — exempt INACTIVE
+controls as well as VOLATILE ones — is a change to what AGENTS rule 8 *means*, not a bug fix: it
+would stop asserting restoration for every control an automation currently owns, including ones a
+sweep legitimately moved and put back. The narrower repair — exempt a control the device reports
+INACTIVE **at both ends** of the comparison — is defensible and is still a change to
+`engine::snapshot`'s one home for that rule. Either way it is a design decision with a rung to
+prove it, and this entry is the evidence it would be made on.
+
+**What must not happen is a re-capture or a tolerance.** The corpus is right, the BRIO is right,
+and a comparison that allowed "close enough" on a white-balance readback would allow it on
+everything else in the same loop.
+
+**Retires when:** a device is measured that sets `VOLATILE` on a control whose value its own
+automation writes — at which point the flag becomes usable for the question this workspace asks
+it — or when the restore comparison stops keying on `VOLATILE` alone, at which point this entry
+becomes the reason rather than the defect.
+
+**Adjacent:** PF:3 (the flag, not the value), PF:4 (currents outside the declared range — the
+OBSBOT's `0` is a second instance), PF:25 (the OBSBOT half of the same measurement).
+
+---
+
+## PF:25 — A `uvcvideo` cycle re-parks the OBSBOT Tiny 3's gimbal and re-initialises its processing unit; the three cameras beside it keep everything
+
+**Measured** 2026-08-12 on kernel `7.0.0-29-generic` (x86_64), four USB devices carrying five
+logical cameras, three `uvcvideo` cycles through `wch-priv` \[N8\]. Continues the docs/6 §1.2
+registry; cite it as `[PF:25]`. The control group below is four of the five: the Chicony IR
+sensor has three controls and none of them is comparable, which is the same control poverty it
+declines seven R3 claims for.
+
+PF:22 measured what a `uvcvideo` reload does to *node numbering* and concluded, correctly, that
+it "changed nothing about any of them". That conclusion was drawn over `card`, `bus_info`, node
+kinds and caps words — the invariant section of a profile. It does not extend to the **control
+state**, and on the one camera in this house with a motor it is false there in the way that
+matters most: the cycle moves where the camera is pointing.
+
+### The measurement, three cycles
+
+Positions read with `wch controls <cam> --json` before and after; the cycle performed by
+`.wch-bin/wch-priv uvcvideo cycle`, which is the only path to it \[N8\] and which reported
+`cycled; 14 node(s) before, 14 after` each time; the restore issued with
+`wch set <cam> pan_absolute=… tilt_absolute=…`.
+
+| cycle | how it was performed | OBSBOT `pan_absolute` | OBSBOT `tilt_absolute` |
+|---|---|---|---|
+| 1 | somewhere inside `just smoke-hw`, whose `hw_hotplug_*` arm cycles the driver | 28800 → **36000** | −46800 → **−43200** |
+| 2 | `wch-priv uvcvideo cycle`, nothing else running | 28800 → **43200** | −46800 → **−298800** |
+| 3 | `wch-priv uvcvideo cycle`, with a control group (below) | 28800 → 28800 | −46800 → **−298800** |
+
+**Row 1 is a net change across a whole suite run and rows 2 and 3 are the isolated event**, which
+is the order the finding was made in and is stated that way rather than tidied: the suite's
+before/after is what raised the question, and the two hand-run cycles are what answer it. Nothing
+else in the suite writes pan or tilt except the motion arm, which restores to the value it read
+\[PF:18\] and whose own transcript shows it starting from 36000.
+
+Pan is not deterministic; tilt landed on **−298800** twice, which is 92% of the way to its
+declared minimum of −324000 — the head hanging down. Nothing wrote either control across the two
+isolated cycles: no write was issued to that camera between the read and the cycle, and repeated
+reads either side are stable, so the value is not noise.
+
+**It does not come back on its own.** After cycle 2 the position was re-read twice, then a
+`wch photo` was taken — which opens the node and streams, the event a "sleeping" camera would
+wake on — and re-read again: `−298800` all four times. A write puts it back exactly
+(`pan_absolute=28800 tilt_absolute=-46800`, `requested → applied` equal, stable across three
+subsequent reads), so nothing about the axis is broken; the state is simply gone.
+
+### The processing unit goes with it
+
+After cycles 2 and 3 the OBSBOT answered its five User-Controls-class integers with the **same
+out-of-range number**, and its three white-balance read-backs with zero:
+
+```
+brightness 50 → 5912    contrast 65 → 5912    saturation 60 → 5912
+hue 50 → 5912           sharpness 70 → 5912   (every one of them declares 0..=100)
+red_balance 143 → 0     blue_balance 156 → 0  white_balance_temperature 4500 → 0
+gain 1 → 1              backlight_compensation 9 → 9   (unchanged)
+```
+
+`5912` is `0x1718`, it is identical across five controls with five different meanings, and it
+persists across re-opens and across a streaming photo. The three zeros are PF:24's class — those
+controls are INACTIVE under `white_balance_automatic=1` and their value is the algorithm's. The
+five `5912`s take writes and read back correctly the moment one is issued, so this is a *state*
+the device came up in, reported as measured and never corrected \[AGENTS rule 6\].
+
+### The control group, which is what makes this the device's
+
+Cycle 3 was run with the two digital-PTZ cameras deliberately moved off centre first, so that
+"held its value" could not be confused with "was at its default":
+
+| camera | written before the cycle | read after the cycle |
+|---|---|---|
+| Dell U3224KB/A \[PF:20\] | pan 7200, tilt −3600, zoom 100 | **7200, −3600, 100** |
+| Logitech BRIO \[PF:20, PF:24\] | pan 7200, tilt −3600, zoom 320 | **7200, −3600, 320** |
+| Chicony RGB | brightness 128, contrast 32, saturation 64, sharpness 3 | **unchanged** |
+| OBSBOT Tiny 3 | pan 28800, tilt −46800 | 28800, **−298800** |
+
+One event, one host, one kernel, four cameras: the three without a motor kept every value,
+including the two whose `pan_absolute`/`tilt_absolute` PF:20 established are windows rather than
+actuators. So this is not "a driver reload loses cached control values" — `uvcvideo` demonstrably
+does not — it is this device re-parking a head and re-initialising a control block when its
+driver goes away.
+
+### What it costs this tool
+
+1. **`just smoke-hw` does not leave a PTZ camera where it found it, and nothing in it can
+   notice.** The hotplug arm (E9, docs/7 P4d) performs the cycle as evidence; the motion arm
+   `hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started` runs **after** it and
+   reads `home` from `desc.current` at its own start — which is the post-cycle number. Its
+   transcript from the 2026-08-12 run says so in full:
+
+   ```
+   cam:obsbot-…: moved pan_absolute through [28800, 32400, 36000, 39600, 43200]
+     — 5 sample(s), 14400 units of travel (4 step(s)), and back to 36000
+   ```
+
+   The arm passed, correctly: it *did* return the motor to where it started. Where it started was
+   36000, and the session had begun at 28800. The Dell's line in the same run reads "back to 0"
+   and its home was 0, so on that camera the two coincide and nothing is visible — which is
+   exactly why this went unseen until a session measured the camera from outside the suite.
+
+2. **Expected usage item 7 is the cost, and it is stated there already.** "A sweep that leaves it
+   pointing somewhere else has invalidated every photograph taken afterwards, not only the one
+   being taken." A `uvcvideo` cycle is not a sweep, and the rule does not care.
+
+3. **No fix is made here and two are named.** The suite could snapshot pan/tilt across the
+   hotplug arm and put them back — which asserts a restoration V4L2 gives no way to *verify*,
+   since `pan_absolute` reads back the commanded position \[PF:18\], so it would restore the
+   number and hope about the head. Or the hotplug arm could be excluded from runs where a PTZ
+   camera is aimed, the way `WCH_NO_MOTION=1` already excludes the motor arms — which is an owner
+   decision about what `just smoke-hw` costs, not a convenience fix. Both are larger than this
+   entry.
+
+**Retires when:** a firmware or a kernel is measured on which this device's gimbal survives a
+driver unload with its aim, or on which the tilt park position is not reached; or when V4L2 grows
+a way to read a mechanism's *actual* position, which would let a restore be verified rather than
+issued \[PF:18\].
+
+**Adjacent:** PF:22 (the same event, the half that is harmless), PF:18 (why "restored" is a claim
+about a command), PF:20 (why the control group is the right control group), PF:24 (the three
+zeros), E9 (the arm that performs the cycle), E15 (this run).
+
+---
+
+## PF:26 — The BRIO's first-enumerated format is YUYV at 640×480, so D5's default photograph is a re-encoded VGA from a camera that offers verbatim 4096×2160
+
+**Measured** 2026-08-12, against the Logitech BRIO on the day it was attached; the Dell
+U3224KB/A is the second instance and was already in the corpus. Continues the docs/6 §1.2
+registry; cite it as `[PF:26]`.
+
+`StreamRequest::choose` (design D5, `crates/schema/src/capture.rs`) resolves an unspecified
+request to "the device's first" format at its first size entry's maximum, and its doc comment
+argues the case: "the order `VIDIOC_ENUM_FMT` returns is the driver's own preference, and
+second-guessing it is how a tool ends up defaulting to a mode the camera is worse at." That
+argument is sound and this is the device that costs it something.
+
+### The measurement
+
+`corpus/profiles/logitech-brio.json`, captured by `wch profile capture` before anything wrote to
+the device. The format list, in the driver's order:
+
+```
+YUYV  19 sizes, first entry 640x480          (largest 1920x1080)
+MJPG  20 sizes, first entry 640x480          (largest 4096x2160; 3840x2160 also present)
+NV12   4 sizes, first entry 640x480          (largest 1920x1080)
+```
+
+So both halves of the default land on the smallest useful thing the camera has, and the two R3
+photo arms print the consequence for all five cameras in one place:
+
+```
+cam:obsbot-…:                MJPG 1920x1080 → 191680 bytes, the camera's own bytes [E6]
+cam:integrated-camera-…-c:   MJPG 1280x720  → 248606 bytes, the camera's own bytes [E6]
+cam:integrated-camera-…-i:   GREY 640x360   →  32999 bytes, re-encoded
+cam:dell-u3224kb-a-…:        NV12 640x480   →  36926 bytes, re-encoded
+cam:logitech-brio:           YUYV 640x480   →  46742 bytes, re-encoded
+```
+
+Two of five cameras deliver the camera's own JPEG bytes by default. The other three do not, and
+two of those three — the Dell and the BRIO — **have** an MJPG branch with 4K in it and are not
+being asked for it. The Chicony IR sensor is the honest case: it has no compressed format at all.
+
+### What it costs this tool, stated rather than fixed
+
+Expected usage item 3 names the consumer: "the agent may diff two photographs or feed them to a
+vision model, and a re-encode inserts differences the device under test did not make. A pipeline
+that silently re-encodes is a pipeline that fabricates evidence in a test." On this device the
+default does both things that item warns about — it re-encodes, and it does so at **3.5% of the
+pixels** the camera can produce (307 200 against 8 847 360) — and it does them *silently* in the
+sense that matters: the
+`rendering` field says `converted_and_encoded` and the negotiated size is reported, so the
+document is honest, but nothing in the answer says "this camera also offers 4096×2160 MJPG and
+you did not ask for it".
+
+Nothing is changed. `--size` and `--format` reach the right modes today (`largest_within` picks
+the exact entry when the caller names one), the D5 default is a documented decision with a
+recorded argument, and changing it — "prefer a compressed format when one exists", or "prefer the
+largest size" — is a design change against §7's settled alternatives, not a bug fix. What this
+entry establishes is that the default's cost is now measured on real hardware rather than assumed
+to be zero, and that the two cameras it costs the most are the two **4K** ones.
+
+### The rest of what the BRIO's tree is, because it is the largest real one this project has met
+
+- **43 size entries and 295 frame intervals**, against the previous corpus maximum of 13 sizes
+  (Dell) and 32 intervals (OBSBOT); the whole four-camera corpus before it held **33**. Every one
+  of the 76 is `V4L2_FRMSIZE_TYPE_DISCRETE`, so `FrameSize::largest_within`'s recorded claim that
+  "no camera this project has met is stepwise" still holds, now over 76 entries rather than 34.
+
+  **That count in `crates/schema/src/camera.rs` says 34 and has been stale since PF:23**, which
+  is worth a sentence because of how it got that way: the OBSBOT's re-capture at `1a51c81`
+  removed its 3840×2160 entry, the total went 34 → 33, and nothing anywhere reads that number,
+  so nothing noticed. It is prose in a doc comment and the claim it supports — *discrete, not
+  stepwise* — is still true and now better supported. It is left alone here because that comment
+  is an input to `schemas/webcam-handler-schema.json` (AGENTS "Done means"), so touching it moves
+  a committed artifact, and this session changes no product code.
+- **4096×2160** — DCI 4K, 256:135, the first non-16:9, non-4:3 large mode in the corpus, and the
+  first 4K mode any attached camera has advertised since the OBSBOT stopped \[PF:23\].
+- **Two square modes, 340×340 and 440×440, in YUYV only**, each with exactly **one** frame
+  interval where its nineteen siblings have seven. A size present in one format and absent from
+  another, with a per-size interval list of a different length, is the shape PF:9 records; this
+  is the sharpest instance of it in the corpus. `340×340` is also the *only* size this device's
+  second capture node offers \[PF:27\], which is the most economical reading of why it is here.
+- **120 fps** at MJPG 640×480, 90 at 1280×720, 60 at 1920×1080 — high rates that only exist at
+  particular sizes, again per-size rather than per-format.
+- **The control set is slug-for-slug identical to the Dell U3224KB/A's** — nineteen controls, no
+  new vocabulary, no `RECT` and no `BITMASK` — so the BRIO adds no unknown control type. Its
+  `pan_absolute`/`tilt_absolute` (±36000, step 3600) and `zoom_absolute` (100..500) are PF:20's
+  second instance, and PF:20's finding is unchanged and strengthened: nothing in the control
+  surface distinguishes them from a gimbal's, and PF:25 now shows the difference from outside.
+- **The motion cap is not exercised on it**, and the R3 arm says so as a named partial skip:
+  "pan_absolute's whole range is 21 samples, under the motion cap of 32".
+
+**Retires when:** D5's default is changed, or a device is measured whose enumeration order makes
+the default's argument false in the other direction (a driver listing a mode it is *worse* at
+first), which is the case that argument was written against and which nothing here has seen.
+
+**Corpus:** `corpus/profiles/logitech-brio.json`, captured 2026-08-12 by `wch profile capture`
+against `cam:logitech-brio` before any write, replayed by
+`every_committed_profile_replays_through_the_conformance_battery` on the corpus walk.
+
+---
+
+## PF:27 — The BRIO's second capture node is a *different sensor*, not a second stream off the same one, and this tool cannot name it
+
+**Measured** 2026-08-12 on kernel `7.0.0-29-generic` (x86_64), by a raw `VIDIOC_QUERYCAP` /
+`VIDIOC_ENUM_FMT` / `VIDIOC_ENUM_FRAMESIZES` walk over each node — the same instrument PF:19 used
+on the Dell, and the only one available, since T1 has no vocabulary for "open the other node"
+(PF:19 item 3). The walk was a throwaway `fcntl.ioctl` script in a gitignored scratch directory,
+read-only: no `S_FMT`, no `STREAMON`, no control write. It is not committed, for the reason PF:19
+did not commit its own: the *finding* is the artifact, and a probe that opens a node this tool
+refuses to open is not a thing to keep in the tree. Continues the docs/6 §1.2 registry; cite it
+as `[PF:27]`.
+
+PF:19 established that a group with two capture nodes can be **one** camera, and its title records
+the mechanism it found: "a UVC device with two output terminals **on one sensor**". That
+mechanism is the Dell's. It is not the BRIO's, and the difference is visible without descriptors
+because the two nodes do not offer the same *kind* of picture.
+
+### The measurement
+
+All four BRIO nodes hang off the single VideoControl interface
+`…/2-3.4.2.4/2-3.4.2.4:1.0/video4linux/`, so PF:7's grouping puts them in one camera and
+`capture_node()` takes the first (PF:19's positional tie-break). What each capture node offers:
+
+```
+/dev/video10  device_caps 0x04200001  YUYV 19 sizes, MJPG 20 sizes (to 4096x2160), NV12 4 sizes
+/dev/video12  device_caps 0x04200001  GREY '8-bit Greyscale', ONE size: 340x340
+```
+
+Beside the two cameras this house already had, walked the same day with the same instrument:
+
+| node | card | formats |
+|---|---|---|
+| `/dev/video8` (Dell, second capture node) | Dell U3224KB/A 4K Webcam | `NV12` 640×480, one size — **unchanged from PF:19**, 2026-08-09 |
+| `/dev/video4` (Chicony IR, *its own camera*) | Integrated Camera: Integrated I | `GREY` 640×360, one size |
+| `/dev/video12` (BRIO, second capture node) | Logitech BRIO | `GREY` 340×340, one size |
+
+The BRIO's second node reads like the **Chicony's IR camera**, not like the Dell's secondary
+stream. **What is measured is the pixel format**: `GREY` appears nowhere in the first node's three
+formats, and a second output terminal fed by a colour sensor produces colour — which is exactly
+what the Dell's second node does. **That it is an infrared sensor is an inference** and is marked
+as one: a greyscale-only square stream at a face-authentication-shaped resolution on a consumer
+webcam is a strong hint and it is not a measurement, and the USB descriptors that would settle it
+were **not** read here (PF:19 read the Dell's; nothing equivalent was done for this device).
+
+The square `340×340` is the strand that ties it together: it is the **only** size this node has,
+and it also appears — along with `440×440`, each with one frame interval where every sibling has
+seven \[PF:26\] — in the *first* node's YUYV list. Two sensors' worth of geometry reaching one
+enumeration is the most economical reading of that oddity, and it is why PF:26 records the square
+modes as an anomaly rather than a curiosity. It is a reading, not a measurement, and the
+descriptor walk that would confirm it is the obvious next probe.
+
+### What it costs this tool, stated rather than fixed
+
+**The same hardware capability gets two different answers depending on USB topology.** The
+Chicony's greyscale sensor sits behind its own VideoControl interface (`3-4:1.2`), so PF:7's
+grouping makes it `cam:integrated-camera-integrated-i` — a camera with an id, a profile, a place
+in `wch list` and a row in every hardware arm, declining seven claims by name because its control
+set is poor. The BRIO's sits behind the shared one, so it has no id, no profile, no row, and
+nothing in this tool can photograph it. Neither answer is wrong about the bus; both are answers to
+a question about the bus rather than about the device.
+
+**PF:19's item 4 gets sharper and its wording gets a caveat.** "T3 captures the camera, not each
+node" was recorded as a *limit* on the Dell, where the unreachable stream is a 640×480 version of
+a picture the tool can already take. On this device the unreachable stream is a picture the tool
+**cannot take at all**, so `corpus/profiles/logitech-brio.json` is silent about a whole sensor
+rather than about a redundant resolution. That is a bigger silence than PF:19 anticipated, and it
+is the argument a future "name a node as a capture target" design change would be made on — a
+design change (T1's `open` takes a `CameraId`), not a bug fix, and not made here.
+
+**Nothing about PF:19 is retired.** Its measurement was of the Dell and is confirmed unchanged
+today at the same node with the same walk. What this entry adds is that "two capture nodes in one
+group" has at least two mechanisms behind it; that **the format list is what separates them, and
+`QUERYCAP` is not** — which sharpens PF:19's item 2, where the tie-break had to be positional
+because the two nodes were indistinguishable *before* opening, and that is still true here even
+though what is behind them is not the same thing at all; and that PF:19's choice of the first node
+in node order happens to be right on both devices, still "a convention, not a guarantee", and now
+right for two different reasons.
+
+**Retires when:** T1 grows a way to name a capture node, at which point the BRIO's IR stream stops
+being invisible; or when a device is met whose two capture nodes are distinguishable from their
+`QUERYCAP` output alone, which neither of these two is — both report identical
+`device_caps 0x04200001`, identical card, driver and `bus_info`, and differ only once opened.
+
+**Adjacent:** PF:7 and PF:13 (the grouping key), PF:19 (the first instance and the tie-break),
+PF:26 (the square modes and the format tree this reads back onto), E15 (this walk).
+
+---
+
+## E15 — Hardware validation of P5's surface at five real cameras, and of AGENTS rule 8 from outside the suite, 2026-08-12
+
+E13 and E14 are the shape this follows: a dated run against something this project does not
+control, recorded once and not amended. This one is **not** a phase gate's evidence. It was asked
+for by the owner as measurement over the tree at `522f45f` — everything P5 built had only ever
+run against the fake backend, deliberately (docs/7 P5a–P5c) — and it is recorded here because
+four of its results are device findings that outlive it (PF:24, PF:25, PF:26, PF:27) and one of
+those is a failure of a rule this project claims to honour.
+
+Nothing in the tree was changed to produce it. The only file it adds is
+`corpus/profiles/logitech-brio.json`.
+
+### The fixture
+
+**Host:** the P4/P5 workstation, kernel `7.0.0-29-generic` (x86_64). **Attached: five logical
+cameras on fourteen nodes**, one more camera than any previous entry's fixture —
+
+| camera | `card` | live nodes | committed profile's nodes |
+|---|---|---|---|
+| `cam:obsbot-tiny-3-obsbot-tiny-3-st` | OBSBOT Tiny 3: OBSBOT Tiny 3 St | `/dev/video0,1` | `/dev/video0,1` |
+| `cam:integrated-camera-integrated-c` | Integrated Camera: Integrated C | `/dev/video2,3` | `/dev/video0,1` |
+| `cam:integrated-camera-integrated-i` | Integrated Camera: Integrated I | `/dev/video4,5` | `/dev/video2,3` |
+| `cam:dell-u3224kb-a-4k-webcam` | Dell U3224KB/A 4K Webcam | `/dev/video6,7,8,9` | `/dev/video6,7,8,9` |
+| `cam:logitech-brio` | Logitech BRIO | `/dev/video10,11,12,13` | *first sight* |
+
+The **Logitech BRIO** (`046d:085e`, serial `19908110`, interface `2-3.4.2.4:1.0`, four nodes on
+the dock's PCI root) had never been seen by this repository. It landed as a profile the day it
+was seen (AGENTS rule 4) and its findings are PF:26 and PF:24.
+
+### 1. Identity survived renumbering, and the brief's premise was half right
+
+`./target/debug/wch list --json` matched against `corpus/profiles/*.json` by fingerprint
+(`bus_path`, `usb_id`, `card`, `driver`, `serial`):
+
+- **Four of four committed profiles resolved to exactly one live camera each**, with no
+  ambiguity and no camera matching two profiles. The two Chicony logical cameras, which share a
+  `usb_id`, a `card` prefix and the serial `0001` \[PF:8\], separate on `bus_path` (`3-4:1.0` vs
+  `3-4:1.2`) \[PF:13\].
+- **Two of four sit at different `/dev/videoN` than when their profile was captured** — both
+  Chicony nodes, each moved by two. `card`, `driver`, `bus_info`, `backend`, node count, and
+  every node's `kind`/`device_caps`/`capabilities` are identical on all four, and every
+  `CameraId` is unchanged including after a fifth camera joined the enumeration.
+- `hw_enumeration_matches_the_committed_profile` and
+  `hw_profile_capture_reproduces_the_committed_invariant_section` are both green and the rung
+  prints the moves rather than ignoring them, which is N63's design working:
+
+  ```
+  obsbot-tiny3: enumeration matches the committed profile
+  chicony-rgb:  enumeration matches the committed profile; its node paths were reassigned by
+                the kernel and are not identity [PF:22]: /dev/video0 → /dev/video2,
+                /dev/video1 → /dev/video3
+  chicony-ir:   … /dev/video2 → /dev/video4, /dev/video3 → /dev/video5
+  dell-u3224kb: enumeration matches the committed profile
+  logitech-brio: enumeration matches the committed profile
+  2 of 5 matched camera(s) sit at different /dev/videoN paths than when their profile was
+  captured, and none of them changed
+  ```
+
+**This session's brief said all four cameras had moved since the corpus was captured; two read as
+moved and the difference is a capture date, not a kernel.** The OBSBOT *did* move — that is
+PF:22's own table, `/dev/video4,5` → `/dev/video0,1` — but
+`corpus/profiles/obsbot-tiny3.json` was replaced at `1a51c81` on 2026-08-11 for PF:23's reason,
+*after* that reload, so the committed document records today's numbering and the comparison finds
+nothing to report. The Dell has never moved and PF:22 says why (a different PCI root). That
+re-capture was not a corpus re-captured to make a comparison green — N63 argues against exactly
+that, and this one was for a format-tree shrink — but it is a reader trap worth naming: **a
+profile's node paths are provenance about the boot it was captured on, so "moved" and "did not
+move" are as much facts about capture dates as about kernels.** Two further `uvcvideo` cycles were
+performed during this session (PF:25) and neither renumbered anything, which is the same finding
+from the other side: probe order is *arbitrary*, not *unstable*.
+
+### 2. The Logitech BRIO, captured and compared
+
+`wch profile capture cam:logitech-brio --capturer "victor@costan.us (fourth camera, landed on
+first sight)" -o corpus/profiles/logitech-brio.json`, before any write reached the device;
+`engine::profile::capture` is read-only and says so at its `measured_pairs` field.
+
+What the comparison against the other four found is **PF:26** in full: the largest real format
+tree in the corpus (3 formats, 43 sizes, 295 intervals, against 33 size entries for the previous
+four cameras *together*), 4096×2160, two square single-interval YUYV modes, 120 fps at VGA — and
+a control set that is slug-for-slug the Dell's, so the BRIO introduces no new control vocabulary
+at all. Its `white_balance_temperature` is **PF:24**. Its `pan/tilt/zoom` are PF:20's second
+instance.
+
+The corpus walk picked it up with no test edited and nothing went red: `just ci` is green over
+five profiles (1100 tests run, 1100 passed, 26 skipped), `corpus-floor.sh` counts five, and
+`every_committed_profile_replays_through_the_conformance_battery` replays the new document
+through the conformance battery on the strength of the directory walk alone — which is the
+property that gate's claim 2 prefers over a named list, exercised.
+
+### 3. `just smoke-hw` — 18 of 18 arms ran, 16 passed, 2 failed on the new camera
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 14 capture node(s) present; running test(/(^|::)hw_/)
+…
+FAIL ( 2/18) webcam-handler-client::hardware  hw_a_sweep_over_the_socket_delivers_its_progress_live_and_leaves_the_camera_where_it_found_it
+FAIL ( 4/18) webcam-handler-v4l2::hardware    hw_a_calibration_session_sweeps_a_brightness_control_selects_applies_and_restores
+smoke-hw: 9 claim(s) declined by tests that ran — each named above
+smoke-hw: 18 of 18 selected test(s) ran — the suite is complete
+```
+
+Both failures are one defect on one control on the new camera and both are **PF:24** — the
+device's own AWB moving `white_balance_temperature` between a restore that reported itself
+complete and the re-read that checks it. The census the rung grew for E13's sake did its job:
+`--no-fail-fast` kept the other sixteen arms running and the `18 of 18` line certifies that a
+truncated run did not read as a full one.
+
+Of the nine declined claims, seven are the Chicony IR sensor's usual control poverty and one is
+the Chicony RGB declining the motion arm for having no pan/tilt; the ninth is new and correct:
+`cam:logitech-brio: pan_absolute's whole range is 21 samples, under the motion cap of 32, so the
+cap was not exercised on this device`.
+
+### 4. The OBSBOT did **not** come back to its exact aim, and the suite could not have told us
+
+This is the result that outranks the rest of this entry, and it was found only because the aim
+was read *outside* the suite, before and after, as the brief for this session required.
+
+```
+before `just smoke-hw`:  pan_absolute  28800   tilt_absolute  −46800
+after  `just smoke-hw`:  pan_absolute  36000   tilt_absolute  −43200
+```
+
+Two of twenty-four controls differed and they were the two that decide where the camera points.
+The cause is **PF:25**: the suite's own hotplug arm cycles `uvcvideo`, that cycle re-parks this
+gimbal, and the motion arm runs afterwards and reads `home` from the device it finds. Its
+transcript records the whole thing without knowing it — *"moved pan_absolute through \[28800,
+32400, 36000, 39600, 43200\] … and back to 36000"* — a plan centred on 36000 by an arm that
+believed 36000 was where the session started. It passed. It was right about its own claim and
+the camera was 2° off in pan and 1° off in tilt.
+
+Isolating it took three `uvcvideo` cycles and a control group of three cameras that kept every
+value across the identical event; PF:25 carries the measurement. The camera was put back to
+`28800 / −46800` by hand, verified over three reads, and is there now.
+
+**What this says about a rule this project claims to honour.** AGENTS rule 8 and Expected usage
+item 7 are about the validity of a development run, and both are honoured by every arm that
+writes a control. Neither covers an arm that removes the *driver*. The gap is not in the restore
+machinery — `engine::snapshot` and `engine::lifecycle` did nothing wrong all day — it is that
+"leave the camera as you found it" has a scope, and the scope stops at the process boundary the
+hotplug arm deliberately crosses.
+
+### 5. The vivid rung — 8 of 8, no skips
+
+`just rung-vivid-managed`, run after the real hardware, module loaded and unloaded by the blessed
+helper \[N8\]:
+
+```
+Starting 8 tests across 44 binaries (1118 tests skipped)
+cam:vivid: 77 control(s) enumerated
+cam:vivid: 83 format(s), 747 size entr(ies)
+cam:vivid: 4 node(s), bus_path vivid.0
+10 compound payload(s) read
+Summary [ 8.151s] 8 tests run: 8 passed, 1118 skipped
+rung-vivid: suite run, 0 named skip(s) before it started
+vivid: unloaded; 4 node(s) went away: video14, video15, video16, video17
+```
+
+Green including the write arm, the streaming arm, the `EBUSY`-on-second-stream arm and the
+calibration sweep through the real ioctl path. It found nothing, which is the honest result: this
+session changed no code, and the rung's subject is ioctl plumbing rather than device quirks
+(design §3.3 item 4).
+
+### 6. P5's surface at a real driver — the part that had never met one
+
+A real `wchd --backend v4l2 --http 127.0.0.1:0` on loopback, twice, against the real cameras.
+
+**The assets are ungated and the two camera-bearing routes are not** (N82, N74, D11). All ten
+embedded assets, over eleven URLs, answered `200` **anonymously** — `/` and `/index.html`,
+`/app.css`, and the eight ES modules — with the content types the client expects; and both
+`CAMERA_BEARING_PATHS` entries, `/rpc` and `/preview?camera=…`, answered `401` anonymously and
+`200` with the run's token. That is the first time the 2026-08-12 ruling has been exercised
+against a daemon holding real cameras rather than a fake.
+
+**Real MJPEG frames over `/preview`.** 280 parts from the BRIO and 337 from the Chicony RGB,
+every one a complete JPEG (`FFD8` … `FFD9`) decoding at the negotiated size, 13 749–63 800 bytes,
+read off the multipart stream by an out-of-process reader. No frame byte was written anywhere:
+the parts were measured and discarded (AGENTS "Hardware and privacy").
+
+**N83's suspend/resume meets a real V4L2 driver, and it works.** A `wchc photo` was taken over
+the UDS while the HTTP preview was running, on two cameras:
+
+| camera | photo | pause in the preview | `X-Wch-Frame-Index` across it | `X-Wch-Frame-Sequence` across it |
+|---|---|---|---|---|
+| Chicony RGB | MJPG verbatim | **0.727 s** | 40 → 41 → 42 → 43, no hole | 40, 41, 42, **0**, 2, 3, 4 |
+| Logitech BRIO | YUYV → JPEG \[PF:26\] | **2.632 s** | 100 → 101 → 102 → 103, no hole | 38, 39, 40, **0**, 1, 2 |
+
+Every claim N83 makes about what a viewer sees held against a real `STREAMOFF`/`STREAMON` cycle:
+the photo succeeded, the preview resumed, the frames after it are real frames from the device,
+the daemon's publication index has **no hole** because nothing was published during the pause,
+and the driver's own sequence number **restarts at zero** — the one signal a client can read the
+restart off, passed through rather than rewritten. The difference between the two pauses is the
+re-encode PF:26 describes. Neither number was compared against
+`limits::PREVIEW_SUSPEND_MAX_MS` by anything, and N83 is explicit about why — the bound is a
+budget checked against the request's settle deadline *before* the stream is stopped, and a limit
+consulted afterwards would be "a number in a log wearing a bound's name". What these two
+measurements are is the first evidence that ten seconds is a plausible budget on real hardware:
+the worst observed pause is a quarter of it, on the camera that re-encodes.
+
+**One unplanned confirmation, and it is the better half of that table.** On the Chicony the
+sequence after the restart runs `0, 2, 3` while the index runs `43, 44, 45` — a frame the
+*kernel* dropped, beside an index with no gap in it. That is exactly the distinction the two
+headers exist to carry ("a gap here is frames the kernel dropped … and a gap there is frames this
+daemon published and the reader was too slow for"), and until this run it had only ever been
+asserted over a fake.
+
+**SIGTERM with preview tabs open** (the bound added at `29ecb82`). Two concurrent readers on one
+camera's feed, both mid-stream, then a real `SIGTERM`: the daemon was **already gone at the first
+poll, 9 ms later**, with **exit status 0**; both streams ended after draining what was already
+buffered, and the log's last line is
+`daemon::shutdown: wchd is stopping signal="SIGTERM"`. Run twice, same result. The streams were
+cancelled and not awaited, which is what the 9 ms says — a daemon that waited for two MJPEG
+readers to finish would not have one.
+
+### What this run establishes
+
+- **Identity is not the node path, measured against a five-camera population** — four profiles,
+  four unambiguous resolutions, two of them at nodes that moved. PF:22 and N63 hold.
+- **New hardware landed the day it was seen**, with a profile the tool captured and three PF
+  entries (PF:24, PF:26, PF:27) derived from comparing it field by field against the four that
+  were already there rather than from looking at it — which is why the findings are "this device
+  differs *here*" rather than "this device is big".
+- **"Two capture nodes in one group" has two mechanisms, not one** (PF:27), confirmed by walking
+  the Dell's second node and the Chicony's IR camera with the same instrument on the same day.
+- **The hardware suite is complete and its two failures are the device's, not the code's.** 18 of
+  18 arms ran; the two reds are one control on one camera and are PF:24.
+- **AGENTS rule 8 has a hole and it is now measured** (PF:25), together with the reason no arm in
+  the suite can see it.
+- **P5's whole new surface works against a real driver**: the token posture, the ungated assets,
+  a real MJPEG preview, N83's suspend/resume with the frame-sequence restart it predicted, and a
+  clean shutdown under open readers.
+- **The vivid rung is green over the tree that shipped P5.**
+
+### What it does not establish
+
+- **Nothing about the BRIO under load, over time, or in a browser.** The preview was read by a
+  Python client, not by Chrome; R1-web was not run in this session, and no page rendered any of
+  these frames. "A browser behavior verified only through the JSON the page consumes is not
+  verified" applies to the preview `<img>` exactly as it applies to everything else.
+- **Nothing about what the BRIO's second capture node can *do*.** The raw walk says it offers
+  `GREY` 340×340 and nothing else \[PF:27\]; no frame was taken from it, because this tool has no
+  way to open it, and the inference that it is an infrared sensor is an inference. Whether it
+  streams, what its frame rate is, and whether the colour node's square modes come from it are
+  all unmeasured.
+- **Nothing about 4K.** No photograph in this session was taken above 640×480 except through the
+  two cameras whose first format is MJPG (1920×1080 and 1280×720). PF:26 is a finding about the
+  *default*; nobody drove `--size 4096x2160` at the BRIO, so this run says nothing about whether
+  that mode works, only that it is advertised.
+- **The suspend/resume measurement is two cameras and one shape.** One photo per preview, no
+  second photo inside the pause, no two-tab photo over HTTP, and no failing capture — the engine
+  suite's scripted double owns those arms and this run did not reproduce them on hardware.
+- **The `uvcvideo` finding is one device and one firmware.** Three cycles is a small sample; pan
+  moved differently in each and only tilt repeated. Nothing here says what other gimbals do, and
+  nothing says whether the OBSBOT's companion firmware could be told not to park.
+- **Nothing about motors beyond the bounded arm.** No calibration sweep moved a motor, the motion
+  arm's five positions are its whole travel, and the BRIO's motion cap was never exercised
+  because its range is under it.
+- **One cell of D11's matrix, and one only.** Loopback with a token, and anonymous against the
+  same listener. `--http-insecure-loopback` was not exercised, no non-loopback bind was attempted,
+  and nothing here says anything about N79's reverse-proxy shape.
+- **No mutation floor and no parity run.** `just mutants` was not run and `wch`/`wchc` were not
+  compared; E12 remains the parity evidence and it predates the BRIO.
+
+### Two repository findings, recorded because each cost this session something
+
+**One: the privacy gate and `.gitignore` disagree about `scratch/`.**
+
+`.gitignore` says test captures land in `/scratch/` — "a camera frame never enters the repository
+(design §5)" — and `scripts/gates/no-frame-bytes-in-repo.sh` walks the worktree through
+`gate_find`, which prunes `target`, `.git` and `vendor` and **nothing else**. Eight JPEGs written
+into `scratch/` during this session therefore made `just ci` red with eight lines of the form
+
+```
+FAIL no-frame-bytes-in-repo: scratch/…/brio-1.jpg is a committed jpeg image;
+     images live only in corpus/images/ (design §5: a frame may contain a person)
+```
+
+The gate is not wrong to be strict about a frame in the worktree, and its message is wrong about
+one word: an ignored path is not "committed" and cannot become so. The two instructions collide
+for anyone who follows `.gitignore`'s own sentence, and the collision is invisible until a
+hardware session takes a photograph by hand — the `hw_` suites never trip it because
+`engine::store::TempStore` puts everything under `$TMPDIR`. Resolved for this run by moving the
+frames out of the tree; the choice between teaching `gate_find` about `.gitignore` and deleting
+that sentence from `.gitignore` is somebody's to make deliberately.
+
+**Two: `gate_scratch_tree`'s fallback has no owner, and 76 copies of this repository were in
+`/tmp` before this session started.**
+
+```
+scripts/gates/lib.sh:366
+  dest="$(mktemp -d "${WCH_GATE_SCRATCH:-${TMPDIR:-/tmp}}/wch-tree.XXXXXXXX")"
+```
+
+`selftest.sh` exports `WCH_GATE_SCRATCH` into a directory its own `EXIT` trap removes, so the
+whole-suite path cleans up after itself. **Every other caller falls through to `/tmp` and nothing
+ever deletes the result** — which is what running a single `cases/*.sh` arm by hand does, the
+ordinary move when a gate is being developed. Measured on this host at the start of this session:
+**76 `/tmp/wch-tree.*` directories, 1 968 MB, all timestamped 11:37 — eight hours before this
+session began**, so they are somebody else's runs and not this one's. Each is a `tar` copy of the
+checkout minus `.git` and `target`.
+
+This is not a correctness defect and the fallback is the right default (a gate must run without
+the selftest around it); what it lacks is a trap. It is worth writing down because the cost lands
+somewhere unrelated: `/tmp` here is a 16 GB tmpfs, the leak plus a live selftest took it to 80%
+full, and the symptom is not "the gate failed" but *the shell intermittently refusing to run
+anything*, which is a very long way from the line that caused it.
+
+### The camera was put back
+
+Every device this session wrote to was read afterwards and compared against the values it held at
+the start: the OBSBOT at `pan 28800 / tilt −46800 / zoom 0 / focus 66` and its five
+processing-unit integers at `50 / 65 / 60 / 50 / 70`; the Dell at `pan 0 / tilt 0 / zoom 100`; the
+BRIO at `pan 0 / tilt 0 / zoom 320` and `white_balance_automatic=1`. The three values that do not
+compare are the OBSBOT's `red_balance`, `blue_balance` and `white_balance_temperature`, which
+PF:24 explains and which no write can restore while the automation that owns them is on.
