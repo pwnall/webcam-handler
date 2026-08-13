@@ -7974,6 +7974,13 @@ is a property of the race, not a house constant, so it gets measured per defect 
 down beside the rate. A measurement with no load stated is not evidence about a race, and
 "zero events on five runs" is the shape that sentence takes when it goes wrong.
 
+**The same race has a second loser, found at P5e and recorded as note N87.** This entry repaired
+the client that breaks its loop on the *answer* and loses the event; `crates/daemon/tests/support/
+ws.rs` was breaking its loop on the *event* and losing the answer, in four suites and over two
+transports, and it cost a 180-second `TIMEOUT` in `just ci`. The measurement above is the one N87
+cites rather than re-taking — what it adds is that a duplex connection has two readers and this
+entry only ever looked at one of them.
+
 **Retires when:** the daemon can no longer answer a sweep before its own terminal event has
 left the process — at which point the tail has nothing to collect and both the drain and
 `CLIENT_SWEEP_DRAIN_MS` retire together. Until then, re-read this entry before deleting the
@@ -12961,3 +12968,138 @@ helpers stop being two functions in a test file and become somebody's module.
 **Retires when:** V4L2 can report a mechanism's actual position, which would let the arm assert the
 restoration it currently issues \[PF:18, PF:28\]; or when a kernel makes a control's post-reload
 reading equal the command it was holding, at which point the ordering stops carrying anything.
+
+## N87 — The helper's own comment said it kept both halves of a duplex connection, and one of the two readers threw its half away
+
+**Believed:** that `crates/daemon/tests/support/ws.rs` already held whatever a reader was not
+asked for. The `queued` field says so in as many words, and has since P4e-i built it — "**Queued,
+not discarded**, and that is the difference between a suite that tests the daemon and one that
+tests the scheduler: on a duplex connection an answer and a notification are in flight together,
+so a helper that dropped whichever lost the race would make a delivered event look like an
+undelivered one — the test would hang, and it would hang for a reason on this side of the socket."
+The paragraph is right about the stakes and it names the failure exactly. It was a description of
+the intent.
+
+**True:** only one of the two readers implemented it. `Ws::answer` searched `queued` for an answer,
+read a frame if there was none, and pushed a notification back — correct, and the shape the
+paragraph describes. `Ws::notification` read a frame, returned it if it carried `params`, and
+otherwise **went round the loop again**, so every answer it stepped over was consumed and dropped.
+Its own doc comment said "Answers to calls are skipped rather than treated as the end of anything
+… which is the whole reason `Ws::queued` exists", and *skipped* is the defect written down as
+though it were the design: the frame was skipped permanently rather than set aside.
+
+**Repo:** `Ws::notification` in `crates/daemon/tests/support/ws.rs`, now written as `Ws::answer`'s
+mirror; the `queued` field's doc, which had to be corrected rather than kept; and
+`an_answer_queued_before_a_notification_survives_the_read_that_passes_over_it` in
+`crates/daemon/tests/web_rpc.rs`.
+
+### How it surfaced, and why nothing before this session had a chance to
+
+`just ci` on the committed tree at `84ce8f3` — the first one this session ran, and the entry point
+for everything below:
+
+```
+TIMEOUT [ 180.011s] (1123/1123) webcam-handler-daemon::web_rpc a_subscription_delivers_over_the_tcp_websocket
+     Summary [ 196.529s] 1123 tests run: 1122 passed, 1 timed out, 26 skipped
+```
+
+Two numbers in that line are the whole diagnosis and both are easy to read past. **`(1123/1123)`
+says it finished last**, so it was still waiting after everything else had stopped — a hang on a
+machine that had gone idle, not a slow test on a busy one. And the same test alone takes
+**3.061 s**, which is a factor of sixty and not a factor a loaded machine produces.
+
+The process was still alive when it was found, and the three readings that mattered were taken from
+`/proc` before it was reaped: every thread parked (`futex_do_wait`, one reactor in `ep_poll`), the
+camera actor thread parked, and **both queues empty on the established TCP connection**. Nothing
+was in flight, nothing was running, and the two ends were still connected. A daemon that had wedged
+would not look like that; a client waiting for something already delivered would.
+
+**Only one caller in the workspace could see it.** `Ws::notification` loses an answer only when a
+call is outstanding *while* a notification is read, and
+`a_subscription_delivers_over_the_tcp_websocket` is the one test that arranges exactly that — it
+puts the sweep on the wire with `Ws::write` and collects the answer with `Ws::answer` after the
+events, "which is the only shape in which the notifications and the answer are in flight
+together". That sentence is the test's own, and it is why the suite that found this is the suite
+that had to.
+
+### The ordering is a race this repository has already measured, from the other side
+
+**The race is N69's and it is not re-derived here.** That entry establishes it in as many words —
+"`wch_calibrate_sweep`'s answer and its `SweepFinished` leave the daemon on two different tasks:
+the method call, and the forward task `daemon::events` runs per subscription … They reach one
+connection's writer in whichever order that daemon's runtime put them" — and measured the gap at
+**+34 µs on the run that lost it**. `engine::calibrate::run` emitting `SweepFinished` before it
+returns is a fact about the engine that does not survive the next hop, and N69 is where that is
+written down.
+
+**What is new is the direction.** N69's loser was `wchc`: the client broke its loop on the
+*answer* and the terminal event landed microseconds later on a socket nobody was reading any more,
+costing a progress bar its last line. Its repair is client-side — `sweep_and_watch`'s fourth step,
+a bounded tail entered only when the terminal event is actually outstanding. This entry's loser is
+the **test helper**, and it is the mirror image: the loop breaks on the *event* and the answer is
+the frame nobody reads again. Nothing in N69's fix could have covered it, because N69 repaired a
+client that reads events and this is a helper that reads both.
+
+So the two entries are siblings over one race, and the pair is the lesson: a duplex connection has
+two readers and either of them can be the one that discards. N69 asked what a client owes a
+terminal event; this asks what a reader owes the frame it was not looking for.
+
+**The load that shows it is not N69's load.** That entry records that spinners do not reproduce its
+defect at eight or at sixty-four and that four concurrent suites do. This one reproduces under six
+busy-loop hogs on eight cores — **three hangs in twenty-five runs of the suite, roughly one in
+eight** — because the arrangement is not spinners alone: nextest is running the binary's eight
+tests concurrently underneath them, which is scheduling pressure on the daemon's own runtime rather
+than on the CPU. Stated rather than compared, because a rate measured under one load is not
+evidence about another (rubric Part E).
+
+The instrumented run is what closed it. With a heartbeat task and a line per frame, a hung run
+printed the sweep's events **including `sweep_finished`**, and then forty-three heartbeats — 86
+seconds — while the test sat in the `Ws::answer` that follows the loop. The events arrived, the
+terminal arrived, the runtime was healthy, and the frame the test was waiting for had been read and
+discarded by the loop that preceded it.
+
+### The test does not reproduce the race, and that is the point
+
+A test that needed the scheduler to lose would be a test that passes for the wrong reason. This one
+puts an answer in `queued` **before any notification can exist**: `wch_list` is written raw with an
+id of its own, a following `Ws::call` steps over that answer and queues it — which is `Ws::call`'s
+documented behaviour and not a trick — and only then is the sweep requested. Against the repaired
+helper it passes in 3.0 s; against the old one it is a `TIMEOUT` on an idle machine, which is where
+it was watched failing before the repair was written (AGENTS "Writing tests", rule 2).
+
+The rate was re-taken afterwards at the same load that produced it — **0 red in 40 runs of the
+repaired binary under six busy-loop hogs on eight cores**, against three in twenty-five before. That
+number is corroboration and not the proof: forty green runs of a one-in-eight race is a result the
+old code would have reached with probability under one in two hundred thousand, but it is still a
+statement about a distribution, and the deterministic test above is the thing that can go red on
+the next person's change.
+
+**No gate row was added and none is owed.** `binary(web_rpc)` is already a `g5` row and its
+population is the whole target, so the new claim arrives counted; a row naming this test would be
+transcribing a population the table already derives.
+
+### What this cost, stated as the lesson rather than as an apology
+
+**A comment asserting a property of the code beside it is not the property.** This one was better
+than most — specific, motivated, and correct about the consequence — and it had been read by
+whoever wrote each of the four suites that include this module. What none of them could see is that
+the sentence was true of `Ws::answer`, which they were looking at, and false of `Ws::notification`,
+which was thirty lines away and looked the same. The two readers agreed **by resemblance**, and
+that is the failure mode a pair of mirror functions has: they are written together, they are read
+together, and only one of them has to drift.
+
+**And the deadline that named it could not name why.** `.config/nextest.toml`'s header argues that
+"a deadline that turns a hang into a named failure is not synchronisation" and that it exists "so
+that when a test stops finishing, the run says which one". It did exactly that and the claim
+stands. What is worth recording beside it is the size of the gap between *which one* and *why*:
+the name pointed at a subscription over a WebSocket, and the defect was in a queue discipline in a
+test helper shared by four suites and reached over two transports. Three of the four instruments
+that closed it — the `/proc` reading of a live hang, the heartbeat, the per-frame trace — were
+built during the session and thrown away.
+
+**Amend this note if** a third reader is added to `Ws` — the argument above says a pair drifts, and
+a triple drifts faster; the answer then is one search parameterised by a predicate rather than
+three loops that resemble each other.
+
+**Retires when:** nothing retires it. The race it is about is a property of a duplex transport with
+two writers, and the repair is the discipline rather than a bound on the race.

@@ -69,14 +69,21 @@ pub(crate) struct Ws<S> {
     /// notification can arrive between a request and its answer — which is the whole point
     /// of a duplex transport and the thing an HTTP client never has to think about.
     next_id: u32,
-    /// Notifications that arrived while a call was waiting for its answer.
+    /// Frames that arrived while a reader was waiting for a different one — notifications a
+    /// call read past, and answers a [`Ws::notification`] read past.
     ///
     /// **Queued, not discarded**, and that is the difference between a suite that tests the
     /// daemon and one that tests the scheduler: on a duplex connection an answer and a
     /// notification are in flight together, so a helper that dropped whichever lost the race
     /// would make a delivered event look like an undelivered one — the test would hang, and
-    /// it would hang for a reason on this side of the socket. [`Ws::notification`] drains
-    /// this before it reads another frame.
+    /// it would hang for a reason on this side of the socket.
+    ///
+    /// **That sentence was a description of the intent and not of the code until note N87.**
+    /// [`Ws::answer`] held notifications here from the start; [`Ws::notification`] threw
+    /// answers away, and the flake it produced took a 180-second `TIMEOUT` in `just ci` to
+    /// surface. Both readers now search this queue before reading a frame and push back the
+    /// frame they were not asked for, which is what makes the paragraph above true in both
+    /// directions rather than in one.
     ///
     /// Bounded by what one test asks for and nothing else, which is why it is a test-side
     /// `VecDeque` rather than one of `schema::limits`' numbers: the *daemon's* bound on
@@ -222,9 +229,23 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Ws<S> {
 
     /// The next notification on this connection, whichever subscription it belongs to.
     ///
-    /// Answers to calls are skipped rather than treated as the end of anything: on a duplex
+    /// Answers to calls are **held** rather than treated as the end of anything: on a duplex
     /// connection the two are interleaved by construction, which is the whole reason
-    /// [`Ws::queued`] exists.
+    /// [`Ws::queued`] exists. This is [`Ws::answer`]'s mirror and it is written as one on
+    /// purpose — the same search of [`Ws::queued`] first, the same read second, the same
+    /// push-back for the frame this caller did not ask for — because the two halves of a
+    /// duplex connection have to agree about who keeps what, and a pair that agrees by
+    /// resemblance is a pair one edit from disagreeing.
+    ///
+    /// **It used to drop them, and that cost a hang.** The loop read a frame, returned it if it
+    /// carried `params`, and otherwise went round again — so an answer that arrived *before*
+    /// the notification a caller was waiting for was consumed and discarded, and the
+    /// `Ws::answer` that came later waited for a frame this helper had already thrown away.
+    /// The ordering is a race rather than a rule: `engine::calibrate::run` emits its terminal
+    /// event before it returns, but the subscription task and the task answering the call are
+    /// two tasks writing into one connection's sink, so on a loaded machine the answer wins.
+    /// That is note **N87**, and it is why this reads `queued` rather than only appending to
+    /// it.
     ///
     /// It hands back the notification's `params` — the subscription id *and* the payload —
     /// because the one thing [`crate::subscribe::Watching`] cannot express is a connection
@@ -233,13 +254,19 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Ws<S> {
     /// is a nextest `TIMEOUT` with a test's name on it rather than a hang.
     pub(crate) async fn notification(&mut self) -> Value {
         loop {
-            let frame = match self.queued.pop_front() {
-                Some(queued) => queued,
-                None => self.frame().await,
-            };
+            let queued = self
+                .queued
+                .iter()
+                .position(|frame| frame.get("params").is_some())
+                .and_then(|position| self.queued.remove(position));
+            if let Some(notification) = queued {
+                return notification["params"].clone();
+            }
+            let frame = self.frame().await;
             if let Some(params) = frame.get("params") {
                 return params.clone();
             }
+            self.queued.push_back(frame);
         }
     }
 

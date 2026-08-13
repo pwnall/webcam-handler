@@ -571,12 +571,153 @@ async fn a_subscription_delivers_over_the_tcp_websocket() {
     stop(fixture, web).await;
 }
 
+/// **The answer that was on the wire before the notification beside it is still there after
+/// it** — note **N87**, and the defect it is about was in this suite's own helper.
+///
+/// `a_subscription_delivers_over_the_tcp_websocket` collects the sweep's answer *after* the
+/// events, which is the only shape in which the two are in flight together. That made it the
+/// suite's one caller of `Ws::notification` with an answer outstanding, and `Ws::notification`
+/// **discarded** every frame that was not a notification instead of holding it the way
+/// [`Ws::answer`] holds notifications. So the sweep's own answer was thrown away whenever it
+/// reached the client before the terminal event did, and the `Ws::answer` at the end of that
+/// test waited for a frame nobody would send again — a 180-second nextest `TIMEOUT` on a
+/// machine that had gone idle, seen once in `just ci` and reproduced at roughly one run in
+/// eight under load.
+///
+/// **The ordering it turns on is a race and not a rule.** `engine::calibrate::run` emits
+/// `SweepFinished` before it returns, so the terminal event is *handed to the fan-out* first —
+/// but the subscription task and the task answering `wch_calibrate_sweep` are two tasks
+/// writing into one connection's sink, and which of them gets there first is the scheduler's
+/// answer rather than the engine's. That is why the flake needed load to show and why no
+/// amount of re-running proves it gone.
+///
+/// **This test does not race.** It puts an answer in `Ws::queued` *before any notification can
+/// exist* — `wch_list` is written raw with an id of its own and then stepped over by a
+/// `Ws::call`, which queues the frames it does not match — and only then starts the sweep. With
+/// the helper repaired both answers are collectable at the end; with the old helper the queued
+/// one is dropped on the first `Ws::notification` and the second `Ws::answer` never returns,
+/// which is a `TIMEOUT` carrying this test's name.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_queued_before_a_notification_survives_the_read_that_passes_over_it() {
+    let fixture = Fixture::start();
+    let ask = fixture.ask();
+    let web = serving(&fixture).await;
+    let token = secret(&web);
+    let mut connection = connected(&web, &token).await;
+
+    result(
+        &connection
+            .call("wch_subscribe_calibration", json!({}))
+            .await,
+        "wch_subscribe_calibration",
+    );
+
+    let opened: Session = serde_json::from_value(result(
+        &connection
+            .call(
+                "wch_calibrate_start",
+                json!({
+                    "camera": &ask.camera,
+                    "task": QUEUED_ANSWER_TASK,
+                    "goal": "an answer that outlives the read beside it",
+                    "criteria": [],
+                }),
+            )
+            .await,
+        "wch_calibrate_start",
+    ))
+    .expect("a session");
+    let which = SessionRef::Id { id: opened.id };
+    result(
+        &connection
+            .call(
+                "wch_calibrate_plan",
+                json!({
+                    "camera": &ask.camera,
+                    "session": &which,
+                    "controls": [&ask.control],
+                    "order": false,
+                }),
+            )
+            .await,
+        "wch_calibrate_plan",
+    );
+
+    // **The setup, and it is the whole reason this test is deterministic.** No sweep has been
+    // requested, so no notification can be on this connection yet — which makes the next frame
+    // the daemon writes necessarily this call's answer.
+    connection
+        .write(
+            &json!({"jsonrpc": "2.0", "id": EARLY_REQUEST_ID, "method": "wch_list", "params": {}})
+                .to_string(),
+        )
+        .await;
+    // `Ws::call` reads until it finds *its own* id and queues everything it passes, so this
+    // steps over the answer above and leaves it in `Ws::queued` — an answer parked before the
+    // first notification exists, which is the state the race produced by accident.
+    result(&connection.call("wch_list", json!({})).await, "wch_list");
+
+    connection
+        .write(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": SWEEP_REQUEST_ID,
+                "method": "wch_calibrate_sweep",
+                "params": {
+                    "camera": &ask.camera,
+                    "session": &which,
+                    "request": a_short_sweep(&fixture, &ask),
+                },
+            })
+            .to_string(),
+        )
+        .await;
+
+    // Every read here steps over the queued answer. The old helper dropped it on the first one.
+    loop {
+        let params = connection.notification().await;
+        let event: ProgressEvent =
+            serde_json::from_value(params["result"].clone()).expect("a progress event");
+        if event.progress.is_terminal() {
+            break;
+        }
+    }
+
+    // Both answers, in whichever order the connection gives them up: the queued one is the
+    // claim, and the sweep's is what says this test drove the same path the flake did.
+    let mut answered = BTreeSet::new();
+    for _ in 0..2 {
+        let frame = connection.answer().await;
+        answered.insert(
+            frame["id"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("an answer with no id of ours: {frame}")),
+        );
+    }
+    assert_eq!(
+        answered,
+        BTreeSet::from([u64::from(EARLY_REQUEST_ID), u64::from(SWEEP_REQUEST_ID)]),
+        "an answer this connection had already delivered was thrown away by the read beside it"
+    );
+
+    stop(fixture, web).await;
+}
+
 /// The task this suite's one session is opened under.
 ///
 /// Named rather than borrowed from the fixture's, because D9 keys a session slot on (camera
 /// fingerprint, task) and the fixture already owns a session under its own name — opening a
 /// second under the same one is `SessionConflict` (note N14).
 const SWEEP_TASK: &str = "p5b sweep over the web listener";
+
+/// The task note **N87**'s test opens its session under, for `SWEEP_TASK`'s reason.
+const QUEUED_ANSWER_TASK: &str = "p5e an answer queued behind a notification";
+
+/// The id the raw `wch_list` carries in note **N87**'s test.
+///
+/// Distinct from [`SWEEP_REQUEST_ID`] and out of the way of `Ws::call`'s own counter, because
+/// the assertion is about *which* answers came back rather than how many.
+const EARLY_REQUEST_ID: u32 = 9_002;
 
 /// The id the sweep request carries, out of the way of `Ws::call`'s own counter.
 ///
