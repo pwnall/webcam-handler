@@ -13459,13 +13459,27 @@ is exactly what request 1 removes. Recorded so the next person to read
 `"comm": "webcam-handler-"` in the shipped schema knows it is the kernel's answer and not a
 truncation bug in this project.
 
-### Two things left undone, both the owner's
+### The fifth binary, asked for and done the same day
 
-- **`xtask` is a fifth binary and does not comply.** `webcam-handler-xtask` declares
-  `[[bin]] name = "xtask"`. The ruling's own mapping names four, so inventing a fifth row was
-  declined rather than assumed. It is one line if wanted: no `.cargo/config.toml` alias exists
-  (`just generate` runs `cargo run -p webcam-handler-xtask --`) and the gate rows select it by
-  `package(…)` rather than by `binary(xtask)`.
+**`xtask` was the one program the mapping did not cover.** `webcam-handler-xtask` declared
+`[[bin]] name = "xtask"`, so a literal reading of "all binaries" left one non-compliant; the
+ruling's own table named four, so a fifth row was declined rather than assumed. The owner
+asked for it directly — *"Please convert `xtask` as well for consistency"* — and it cost one
+line, which is the fact worth recording: **nothing invokes this program by its binary name.**
+`just generate` and `scripts/gates/schema-artifacts-current.sh` both reach it with
+`cargo run -p webcam-handler-xtask --`, and the gate rows select it with `package(…)`. The
+`xtask/` directory keeps its short name, under the same clarification as `crates/`.
+
+### One thing left undone, and it is the owner's
+
+- **The stale root-capable helper.** `just bless` has been re-run and
+  `.wch-bin/webcam-handler-priv` now carries `cap_sys_module,cap_net_admin+ep` with the
+  ambient raise verified, so the R2 vivid rung is available again. `.wch-bin/wch-priv` — the
+  2026-08-08 blessing, mode 0700, still capped — is **still on disk and read by nothing**.
+  `privileged-helper.sh`'s first claim (nothing under `.wch-bin/` is tracked) covers it, so it
+  is not invisible, but a capped binary nobody runs is a capability sitting in a directory for
+  no reason. Deleting it is a one-line `rm` and it is the owner's, for the same reason `bless`
+  is: this project does not remove root-capable files on somebody's behalf.
 - **`wch-priv`'s blessing is stale and needs a `sudo`.** `.wch-bin/wch-priv` (mode 0700,
   capped, blessed 2026-08-08) is still on disk and nothing reads it: `just bless`,
   `just priv-doctor`, `just rung-vivid-managed` and `privileged-helper.sh` all name
@@ -13492,3 +13506,113 @@ and the two are allowed to overlap on the calibration walkthrough.
 
 **Amend this note if** the binaries acquire short aliases after all, which would mean the
 ergonomic cost was underestimated here.
+
+## N91 — The project needs a shorter name and prefix than `webcam-handler`, and the decision waits for the design revision
+
+**The owner's, 2026-08-13, in his words:** *"we'll need a shorter project name (and prefix)
+than `webcam-handler`. We'll tackle this after the entire system is implemented, when we revise
+the design based on the implementation experience."*
+
+**Recorded as an entry rather than as a post-plan trigger row** (docs/7's table) because it is
+not waiting on an *event* the way that table's rows are — no bump, no new hardware, no observed
+friction fires it. It is waiting on a *phase*: the design revision that follows implementation.
+A row in a table of triggers would be a row nothing can trip.
+
+### It already has evidence, and it arrived the same day
+
+This entry is not a preference recorded for later. Note **N90** — the ruling that gave every
+binary its crate's full name — produced two measurements within hours, and both are costs of
+the *length* rather than of the rule:
+
+- **`comm` is fifteen bytes.** `TASK_COMM_LEN` is 16 including the NUL, so
+  `webcam-handler-cli`, `webcam-handler-daemon`, `webcam-handler-client` and
+  `webcam-handler-priv` all report **`webcam-handler-`** — measured against a live process.
+  D9's lock record carries `/proc/self/comm` verbatim, so the field that used to say which
+  program held the state directory now says the same fifteen characters for all four, and the
+  shipped OpenRPC example says it too. **Any prefix of eleven characters or fewer keeps the
+  four names distinguishable in `comm`**; `webcam-handler-` is fifteen before the first
+  distinguishing byte.
+- **`sun_path` is 108 bytes.** `scripts/gates/lib.sh` records a socket path already reaching
+  146 under the wrong scratch root, which is why `wchd.sock` was left alone by N90's rename
+  rather than grown by seventeen bytes. A shorter prefix is headroom on a limit this project
+  has already been over.
+
+Beside those, the ergonomic cost N90 records as the owner's to accept — `wchc` was four
+keystrokes and `webcam-handler-client` is twenty-one — and which he has now said he does not
+intend to accept permanently.
+
+### What the revision will have to decide, so it is not rediscovered
+
+The prefix is not one string with one reader. Whoever takes this should know it appears as at
+least five different kinds of name, and they do not have to move together:
+
+1. **Package names** — fourteen of them, `webcam-handler-*`. Renaming these is a lockfile
+   change and nothing more, since none is published (`publish = false` where it matters).
+2. **Binary names** — five, and N90 has just made them equal to the package names, which is a
+   property worth preserving through any rename rather than re-deciding.
+3. **The JSON-RPC method namespace** — `wch_*`, from `#[rpc(namespace = "wch")]` (D10).
+   **This one is a wire break**, and it is already short; a rename that changed it would
+   invalidate every committed artifact under `schemas/` and every client written against them.
+4. **Environment variables** — `WCH_GATE_*`, `WCH_NO_MOTION`, `WCH_E2E_*`, several documented
+   as seams in docs/9. Also already short.
+5. **On-disk paths** — `wchd.sock` (D11), `.wch-bin/`, `target/wch-scratch/`, the systemd unit
+   names, and the state directory layout D9 fixes.
+
+**The uncomfortable observation is that categories 3–5 already use a short prefix, `wch`, and
+the long one exists only where Rust and Cargo read it.** So this is less "the project is named
+too long" and more "the project has two names and the long one won the places a human reads".
+Whether the answer is to shorten the long one, adopt the short one everywhere, or pick a third
+is exactly the kind of question that wants implementation experience behind it, which is why
+the owner deferred it.
+
+**Do not act on this entry before the design revision.** It is recorded so the revision starts
+with the measurements rather than with the impression, and so that anybody tempted to shorten a
+name in passing knows there is a decision pending that their edit would pre-empt.
+
+## N92 — Writing the README against the real binaries found a screen that told a user their plan had not happened
+
+**Doc:** D8 (a session's queue and its per-control status are different facts); the owner's
+request 2 of 2026-08-13 (note **N90**), which is what caused this to be looked at.
+
+**Believed:** that `calibrate plan` had no output worth checking, because every test that
+drives it asserts on the *session document* and the document was always right.
+
+**True:** the document was right and the screen was wrong. `render::session` branched on
+`session.controls.is_empty()` alone and printed **"no controls queued yet — `calibrate plan`
+drafts them"**. Those are two different empties:
+
+- `controls` is the per-control **status** map. A control enters it when a sweep touches it.
+- `queue` is what `calibrate plan` **drafts**.
+
+So a freshly planned session — the state a user is in for exactly one command — has a
+populated `queue`, an empty `controls`, and was told to run the verb it had just run, on the
+one screen whose job was to confirm it. `--json` carried `"queue": ["brightness"]` the whole
+time, which is why nothing caught it: **every existing assertion reads the document, and the
+defect was only ever in the prose.**
+
+**Repo:** the second arm in `render::session`, and two tests — one for each empty, because the
+original sentence is still correct for a session straight out of `calibrate start` and an
+arm that can no longer be reached is a different defect from the one being fixed.
+
+### How it was found, which is the part worth generalising
+
+Not by a test and not by a review. By **writing the README's calibration walkthrough against
+the running binaries instead of from the source**, and reading the output in the order a new
+user meets it. Step 2 of the tutorial printed a sentence that contradicted step 2.
+
+That is a method this project has not been using and should: the walkthrough was executed
+end to end against a real camera — `start`, `plan`, `sweep --points 9`, `status`, `select
+--metric sharpness`, `apply`, `restore` — and every command's output was read rather than its
+exit code checked. Six of the seven said what they should. Documentation written that way is a
+test with a human oracle, and it reaches the one surface this repository's rigour does not:
+`cli_core::render` is deliberately outside the mutation floor ("rendering… survivors by the
+hundred", `.cargo/mutants.toml`), and no golden-output assertion covers this line either. The
+floor could not have found this. A reader could, and did.
+
+**Not a new gate row.** The two tests live in `package(webcam-handler-cli-core)`, which the
+`g0` and `g2` rows already select, and they go red both ways — watched failing against the
+old renderer before the fix was kept.
+
+**Amend this note if** a second screen is found to be arguing with the document behind it, at
+which point the lesson stops being about one branch and starts being about how `render`'s
+sentences are chosen.

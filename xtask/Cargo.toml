@@ -10,7 +10,14 @@ authors.workspace = true
 publish = false
 
 [[bin]]
-name = "xtask"
+# The full name, like every other binary in this workspace (note **N90**, owner's ruling
+# 2026-08-13, extended to this crate on request the same day). It costs nothing here and it
+# is the reason it was worth doing: nothing invokes this program by its binary name.
+# `just generate` and `schema-artifacts-current.sh` both reach it with
+# `cargo run -p webcam-handler-xtask --`, and the gate rows select it with `package(…)`, so
+# the rename touches this line and no call site. The `xtask/` directory keeps its short name,
+# which is the same clarification N90 records for `crates/`.
+name = "webcam-handler-xtask"
 path = "src/main.rs"
 
 [lints]

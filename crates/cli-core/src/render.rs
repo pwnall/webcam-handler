@@ -965,10 +965,45 @@ pub(crate) fn session(session: &Session, as_json: bool, out: &mut Output) -> Res
     }
     out.line(Stream::Stdout, &header.to_string())?;
 
+    // **Two different empties, and printing one sentence for both told a user their plan had
+    // done nothing.** `controls` is the per-control *status* map — a control appears in it once
+    // a sweep has touched it — while `queue` is what `calibrate plan` drafts. A freshly planned
+    // session therefore has a populated `queue` and an empty `controls`, which this arm used to
+    // render as "no controls queued yet — `calibrate plan` drafts them": advice to run the verb
+    // that had just been run, on the one screen that was supposed to confirm it.
+    //
+    // Found by writing the README's calibration walkthrough against the real binaries rather
+    // than from the source (owner's request 2, note **N90**), which is the first time anybody
+    // had read this screen in the order a new user meets it.
+    // **Two different empties, and printing one sentence for both told a user their plan had
+    // done nothing.** `controls` is the per-control *status* map — a control appears in it once
+    // a sweep has touched it — while `queue` is what `calibrate plan` drafts. A freshly planned
+    // session therefore has a populated `queue` and an empty `controls`, which this arm used to
+    // render as "no controls queued yet — `calibrate plan` drafts them": advice to run the verb
+    // that had just been run, on the one screen that was supposed to confirm it.
+    //
+    // Found by writing the README's calibration walkthrough against the real binaries rather
+    // than from the source (owner's request 2, note **N90**), which is the first time anybody
+    // had read this screen in the order a new user meets it.
     if session.controls.is_empty() {
+        if session.queue.is_empty() {
+            return out.line(
+                Stream::Stdout,
+                "\nno controls queued yet — `calibrate plan` drafts them",
+            );
+        }
+        let queued = session
+            .queue
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         return out.line(
             Stream::Stdout,
-            "\nno controls queued yet — `calibrate plan` drafts them",
+            &format!(
+                "\n{} control(s) queued and none swept yet — `calibrate sweep` takes the samples: {queued}",
+                session.queue.len()
+            ),
         );
     }
 
@@ -2077,6 +2112,48 @@ mod tests {
         assert!(text.contains("untouched"), "{text}");
         // And the one sentence a caller needs before `apply`.
         assert!(stderr.text().contains("--partial"), "{}", stderr.text());
+    }
+
+    #[test]
+    fn a_freshly_planned_session_says_a_sweep_is_next_and_not_that_nothing_is_queued() {
+        // The state a user is in for exactly one command: `calibrate plan` has queued
+        // something and `calibrate sweep` has not run, so the per-control *status* map is
+        // empty while the *queue* is not. Rendering both empties with one sentence told them
+        // to run the verb they had just run — found while writing the README's walkthrough
+        // against the real binaries (note **N90**, owner's request 2).
+        let mut planned = session_fixture();
+        planned.controls.clear();
+
+        let (mut out, stdout, _stderr) = captured();
+        session(&planned, false, &mut out).expect("rendering into a buffer cannot fail");
+
+        let text = stdout.text();
+        assert!(
+            !text.contains("no controls queued yet"),
+            "a planned session was told its plan had not happened: {text}"
+        );
+        assert!(text.contains("calibrate sweep"), "{text}");
+        // The queue itself, so the sentence is an answer and not just a different noise.
+        for control in &planned.queue {
+            assert!(text.contains(control.as_str()), "{control}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_session_with_nothing_queued_at_all_still_points_at_plan() {
+        // The other half, and the arm that keeps the original sentence reachable: a session
+        // straight out of `calibrate start` has an empty queue *and* an empty status map, and
+        // for that one `calibrate plan` really is the next verb.
+        let mut fresh = session_fixture();
+        fresh.controls.clear();
+        fresh.queue.clear();
+
+        let (mut out, stdout, _stderr) = captured();
+        session(&fresh, false, &mut out).expect("rendering into a buffer cannot fail");
+
+        let text = stdout.text();
+        assert!(text.contains("no controls queued yet"), "{text}");
+        assert!(text.contains("calibrate plan"), "{text}");
     }
 
     #[test]
