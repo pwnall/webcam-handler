@@ -1,9 +1,10 @@
 # Both-direction cases for `agents-md-current.sh`.
 #
-# The predicate makes three claims and each one is proved here by breaking it in a copy of
+# The predicate makes four claims and each one is proved here by breaking it in a copy of
 # the tree: that it *finds* the source document without being told its name, that it
-# compares the two copies byte for byte, and that it refuses to answer at all when the
-# comparison would be vacuous.
+# compares the two copies byte for byte, that the redirect beside the deployed copy is a
+# pointer and nothing else (owner ruling, 2026-08-14; note N102), and that it refuses to
+# answer at all when either comparison would be vacuous.
 #
 # Every failing arm seeds exactly one divergence. Where the seeded change would otherwise
 # create a *second* difference as a side effect — rewording the deploy sentence changes the
@@ -130,4 +131,131 @@ fail_case_the_deployed_copy_is_a_link_rather_than_a_copy() {
     rm -f "$tree/AGENTS.md"
     ln -s docs/10-claude-fable-agents-v2.md "$tree/AGENTS.md"
     WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# --------------------------------------------------------------------- the redirect
+#
+# The 2026-08-14 ruling put a second file at the root — `CLAUDE.md`, holding `@AGENTS.md` and
+# nothing else — and the arms below are the same discipline one file along. Two things shape
+# them. Every seeded declaration change is applied to **both** copies of the source document,
+# for the reason the reworded-sentence arm above gives: the doc is one of the two files the
+# predicate compares, so an edit to the doc alone drags a drift in behind it and the arm goes
+# red for the wrong sentence. And every arm here but the missing-file one names the sentence it
+# claims, through `gate_red_because`, because these branches crowd each other: delete the link
+# check and its arm falls through to the wrong-reference message, delete that one and its arm
+# falls through to the byte comparison, and each of them stays comfortably non-zero while the
+# branch it was written for has stopped existing. Only the last in the chain announces itself
+# by going green. That is the rot an arm reading an exit status alone cannot see.
+
+# The redirect's name is the doc's to choose. A rename there must move the gate, not break
+# it, exactly as a renumbering of the series does above — so the file moves and the sentence
+# moves with it, and the predicate must stay green having been told nothing.
+pass_case_the_redirect_follows_a_rename_in_the_document() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    mv "$tree/CLAUDE.md" "$tree/CLAUDE-CODE.md"
+    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+        # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
+        sed 's|root from `CLAUDE\.md`|root from `CLAUDE-CODE.md`|' "$file" >"$file.seeded"
+        mv "$file.seeded" "$file"
+    done
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# A `.gitignore` that swallowed it, a checkout that never had it, a tidy-up that read one
+# line and eleven bytes as clutter. The reader who opens the Claude-specific name gets
+# nothing, and never learns the rules exist under another one.
+fail_case_the_redirect_is_missing() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    rm -f "$tree/CLAUDE.md"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The defect class the ruling creates, in the shape it will actually arrive in: somebody has
+# a thing to say to a Claude reader in particular and the redirect looks like the place. Now
+# two sets of non-negotiable rules are in force and neither reader can tell which it holds.
+fail_case_the_redirect_carries_more_than_the_reference() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    printf 'Also: always run the tests twice, and never on a Friday.\n' >>"$tree/CLAUDE.md"
+    gate_red_because 'is not exactly' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# One reference, pointing somewhere that is not the rules. Eleven bytes, still one line, and
+# the tree looks exactly as right as it did before.
+fail_case_the_redirect_points_at_another_file() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    printf '@README.md\n' >"$tree/CLAUDE.md"
+    gate_red_because 'opens with' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The redirect replaced by a link to what it points at. A reader following it lands on the
+# rules, which is why this is tempting and why it must be named: "the redirect resolves to
+# the rules" becomes true by construction, the content claim stops being a claim, and the
+# ruling's pointer has quietly become the second copy it refuses.
+fail_case_the_redirect_is_a_link_to_the_deployed_copy() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    rm -f "$tree/CLAUDE.md"
+    ln -s AGENTS.md "$tree/CLAUDE.md"
+    gate_red_because 'a link, not a reference' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The declaration the whole section is derived from, reworded away. What must go red here is
+# "no document declares a redirect" — a claim whose population is gone is a claim that
+# quantifies over nothing, which is the vacuous pass this suite exists to refuse.
+fail_case_the_source_no_longer_declares_a_redirect() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+        sed 's|^Redirect at the repository root from|A file at the repository root points from|' \
+            "$file" >"$file.seeded"
+        mv "$file.seeded" "$file"
+    done
+    gate_red_because 'no document under docs/ declares a redirect' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# Two documents declaring the redirect is two answers to which file the pointer is, and the
+# second one is the copy nobody remembers making — the deploy side's own failure mode,
+# inherited by the sentence beside it.
+fail_case_a_second_document_declares_the_redirect() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # shellcheck disable=SC2016  # markdown backticks quoting filenames, not commands
+    printf 'Redirect at the repository root from `CLAUDE.md`, which holds `@AGENTS.md` and nothing else.\n' \
+        >"$tree/docs/12-a-second-declaration.md"
+    gate_red_because 'each declare a redirect' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The redirect declared as a path rather than a name at the root, for the reason the deploy
+# side's twin gives: a predicate that followed `../CLAUDE.md` out of a scratch copy would
+# resolve it against the directory above the tree it was handed and report on a file no arm
+# seeded.
+fail_case_the_declared_redirect_is_not_a_name_at_the_root() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+        # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
+        sed 's|root from `CLAUDE\.md`|root from `../CLAUDE.md`|' "$file" >"$file.seeded"
+        mv "$file.seeded" "$file"
+    done
+    gate_red_because 'not a plain file name' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The two sentences in the same preamble disagreeing: this one deploys as `AGENTS.md` and
+# that one says the redirect holds a reference to something else. Both files on disk are
+# untouched and correct — what is wrong is the instruction, and a predicate that derived the
+# expected reference from the redirect sentence alone would follow it off the rules and call
+# the result a pass.
+fail_case_the_declared_reference_is_not_the_deployed_copy() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+        # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
+        sed 's|which holds `@AGENTS\.md`|which holds `@README.md`|' "$file" >"$file.seeded"
+        mv "$file.seeded" "$file"
+    done
+    gate_red_because 'while the same preamble deploys as' env "WCH_GATE_ROOT=$tree" "$GATE"
 }

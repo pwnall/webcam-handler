@@ -74,6 +74,75 @@
 # how a drift becomes the new truth. Every message below names which side is which and
 # quotes the doc's own instruction to reconcile deliberately and record which side was
 # wrong.
+#
+# ## The same defect class, one file along: the redirect (owner ruling, 2026-08-14)
+#
+# The house practice is the standardized, tool-neutral `AGENTS.md` plus a `CLAUDE.md` at the
+# repository root holding `@AGENTS.md` and nothing else, so that a Claude-specific reader
+# looking for the name it knows is pointed at the one home the rules have. It arrived here as
+# an owner ruling and it is recorded as note **N102**; the doc's preamble is where it is
+# declared, in the sentence this file reads it out of.
+#
+# A ruling that puts a second file at the root creates a second defect class with the same
+# shape as the first. `AGENTS.md` can drift from doc 10; `CLAUDE.md` can stop being a pointer
+# and grow content — a paragraph somebody thought was worth saying to a Claude reader in
+# particular, a "quick summary" above the reference, a stale rule nobody deleted. The harm is
+# the one this file's opening already describes, arriving through a different door: two sets
+# of non-negotiable rules in force at once, and neither reader able to tell which one it is
+# holding. AGENTS rule 1 has no exemption for a defect class that is anticipated by a ruling
+# rather than by a parenthesis, so the claim lands here, beside the claim it rhymes with.
+#
+# ### "Nothing else" is exactly the reference and one trailing newline
+#
+# The file the ruling produced is 11 bytes: `@AGENTS.md` and a newline. That is what is
+# asserted — byte for byte, no tolerance for a leading blank line, a trailing comment, a
+# second line of any kind, or the *absence* of the newline.
+#
+# The strictness is the byte-identity argument above, made about a smaller file: this is not
+# a bar the repository has to climb to, it is where the ruling already put it, and a gate
+# asserts the strongest true thing. The tempting allowance is "let it carry a comment
+# explaining the redirect", and it is the same hole with a nicer name — a file that may carry
+# one explanatory line may carry a paragraph that contradicts `AGENTS.md`, and the reader who
+# needs to be told which of the two is authoritative is exactly the reader who cannot be.
+#
+# A missing trailing newline is red as well, and that one is worth arguing rather than
+# asserting: nothing is *harmed* by a file whose last byte is `d`. What is harmed is the
+# claim's shape. "The redirect is these bytes" has no seam in it; "the redirect is these
+# bytes, or those bytes, and here is the rule for which" is a predicate that admits a set,
+# and a set with two members is a set somebody extends. Every tool that writes this file
+# writes the newline, so the cost of the strict form is nothing and the cost of the tolerant
+# one is the argument about where it stops.
+#
+# ### A link is refused, and refused before the bytes are read
+#
+# `CLAUDE.md` as a link to `AGENTS.md` is the same-file trap one file along: what a reader
+# following it sees is the rules themselves, so "the redirect resolves to the rules" becomes
+# true by construction and stops being a claim about content at all — the unfalsifiability
+# the check above this one exists for. It is also, in the ruling's own terms, a second copy
+# rather than a pointer: a tool that reads `CLAUDE.md` without following links gets a path
+# instead of a reference, and one that follows links gets 18 kilobytes where a reference
+# belongs.
+#
+# It is reported *before* the byte comparison because the comparison would otherwise answer
+# it — with the wrong sentence. A link fails "is not exactly `@AGENTS.md` and a newline" by
+# eighteen kilobytes, which names the size of the mistake and not its mechanism. The narrower
+# case of a link to the *source document* is deliberately left to that comparison: it is the
+# same verdict with the worse message, and buying the better message costs a branch nothing
+# distinguishes from this one.
+#
+# ### Derived here too
+#
+# Neither the redirect's name nor the name it points at reaches the logic below as a literal.
+# Both are read out of the doc's own sentence — "Redirect at the repository root from `X`,
+# which holds `@Y`" — and `Y` is then required to be the name the deploy sentence carries,
+# because a pointer at anything other than the deployed copy is a reader sent where the rules
+# are not. So a rename in the document moves this gate rather than breaking it, and
+# `cases/agents-md-current.cases.sh` proves that with a green arm that renames the redirect.
+#
+# The two names do appear once, in the message for a tree where *no* document declares a
+# redirect — there is nothing left to derive from at that point, and quoting the sentence that
+# went missing is the only help a reader gets. The deploy side's own zero-source message does
+# the same thing for the same reason.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -120,9 +189,21 @@ deploy_instruction() {
         grep -oE 'Deploy at the repository root as `[^`]+`' || true
 }
 
+# The redirect's declaration, read the same way and out of the same region: the sentence
+# names the file that redirects and the name it holds a reference to, both in code style, and
+# neither appears anywhere else in this predicate. The sentence wraps in the shipped file, so
+# the newline squeeze above is load-bearing here for the same reason.
+redirect_instruction() {
+    # shellcheck disable=SC2016  # markdown backticks, as above
+    document_preamble "$1" | tr '\n' ' ' | tr -s ' ' |
+        grep -oE 'Redirect at the repository root from `[^`]+`, which holds `@[^`]+`' || true
+}
+
 docs_scanned=0
 declare -a sources=()
 declare -a instructions=()
+declare -a redirect_sources=()
+declare -a redirect_instructions=()
 shopt -s nullglob
 for doc in "$root"/docs/*.md; do
     docs_scanned=$((docs_scanned + 1))
@@ -131,10 +212,15 @@ for doc in "$root"/docs/*.md; do
         sources+=("$doc")
         instructions+=("$instruction")
     done < <(deploy_instruction "$doc")
+    while IFS= read -r instruction; do
+        [[ -n "$instruction" ]] || continue
+        redirect_sources+=("$doc")
+        redirect_instructions+=("$instruction")
+    done < <(redirect_instruction "$doc")
 done
 shopt -u nullglob
 
-gate_checked "$docs_scanned" "docs/*.md preambles asked whether they declare a deployed copy"
+gate_checked "$docs_scanned" "docs/*.md preambles asked whether they declare a deployed copy and a redirect to it"
 gate_require_nonzero "$docs_scanned" "documents under docs/"
 
 if ((${#sources[@]} == 0)); then
@@ -209,5 +295,65 @@ fi
 
 gate_checked "$lines_compared" "lines compared byte for byte between the source document and its deployed copy"
 gate_require_nonzero "$lines_compared" "lines in the source document"
+
+# ------------------------------------------------------------------ the redirect
+#
+# The header's third section argues every decision below. Everything here is derived from the
+# sentence the source document carries, and the direction is the same one the messages above
+# keep: the document declares, the root files track.
+if ((${#redirect_sources[@]} == 0)); then
+    gate_fail "no document under docs/ declares a redirect at the repository root; the 2026-08-14 ruling (note N102) puts one there — '\`CLAUDE.md\`, which holds \`@AGENTS.md\` and nothing else' — and a claim whose declaration is gone quantifies over nothing, so either the sentence was reworded and this predicate must follow it or the ruling was reversed and this section goes with it"
+    gate_finish
+fi
+if ((${#redirect_sources[@]} > 1)); then
+    gate_fail "${#redirect_sources[@]} documents under docs/ each declare a redirect at the repository root (${redirect_sources[*]#"$root"/}); the rules have one home and so does the sentence that points at it, and two declarations is two answers to which file the pointer is"
+    gate_finish
+fi
+
+redirect_source_rel="${redirect_sources[0]#"$root"/}"
+# shellcheck disable=SC2016  # markdown backticks, as above
+redirect_name="$(printf '%s\n' "${redirect_instructions[0]}" | sed 's/.*from `\([^`]*\)`.*/\1/')"
+# shellcheck disable=SC2016  # markdown backticks, as above
+redirect_target="$(printf '%s\n' "${redirect_instructions[0]}" | sed 's/.*holds `@\([^`]*\)`.*/\1/')"
+gate_checked 1 "redirect instruction(s) read out of the source document rather than transcribed here"
+
+# A path here would send the rest of this section outside the tree under test, exactly as it
+# would above: the selftest runs this predicate against mutated *copies*, and a target the
+# predicate followed out of the copy would be answered by the checkout's own root file.
+if [[ -z "$redirect_name" || "$redirect_name" == */* || "$redirect_name" == .* ]]; then
+    gate_fail "$redirect_source_rel says the redirect at the repository root is '$redirect_name', which is not a plain file name there; this predicate resolves the redirect under the tree it was given and cannot follow a path out of it"
+    gate_finish
+fi
+if [[ "$redirect_target" != "$target_name" ]]; then
+    gate_fail "$redirect_source_rel says $redirect_name holds a reference to '$redirect_target' while the same preamble deploys as $target_name; the redirect exists to land a Claude-specific reader on the deployed copy, so a pointer at any other name is a reader sent where the rules are not"
+    gate_finish
+fi
+gate_note "$redirect_source_rel is the source; $redirect_name at the repository root points at $target_name"
+
+redirect="$root/$redirect_name"
+if [[ ! -f "$redirect" ]]; then
+    gate_fail "$redirect_source_rel says $redirect_name at the repository root holds '@$target_name', and there is no such file; a reader that opens the Claude-specific name finds nothing, and the rules it was pointed at are never reached"
+    gate_finish
+fi
+
+if [[ "$redirect" -ef "$deployed" ]]; then
+    gate_fail "$redirect_name and $target_name are the same file (a link, not a reference); a link makes 'the redirect resolves to the rules' true by construction rather than by content, and it is the second copy the ruling refuses — $redirect_source_rel describes a file holding '@$target_name'"
+    gate_finish
+fi
+
+reference="@$target_name"
+reference_bytes=$((${#reference} + 1))
+redirect_bytes="$(wc -c <"$redirect" | tr -d ' ')"
+redirect_opening="$(head -n 1 "$redirect")"
+
+if [[ "$redirect_opening" != "$reference" ]]; then
+    gate_fail "$redirect_name at the repository root opens with '$redirect_opening' where $redirect_source_rel declares '$reference'; the redirect is the reference and the reference is the deployed copy's name, so this points a Claude-specific reader somewhere else or nowhere"
+elif ! printf '%s\n' "$reference" | cmp -s - "$redirect"; then
+    gate_fail "$redirect_name at the repository root is not exactly '$reference' and a trailing newline ($reference_bytes bytes; it is $redirect_bytes); the redirect carries nothing else — a second line here is a second set of non-negotiable rules in force, and the rules live in $target_name"
+    head -n 5 "$redirect" | sed 's/^/  | /'
+fi
+
+gate_checked "$redirect_bytes" "bytes in the redirect at the repository root, compared against the reference the source document declares"
+gate_require_nonzero "$redirect_bytes" "bytes in the redirect at the repository root"
 
 gate_finish

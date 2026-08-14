@@ -14229,3 +14229,93 @@ both of its off-by-one directions, the "plus a pad byte" clause, both branches o
 named/unnamed chunk rule (N100), a one-digit stream id, a `LIST odml` inside `hdrl` read as
 a stream list, and `find_movi` walking a RIFF file that is not an AVI. Every one was watched
 failing against a hand-applied copy of its mutant. The two above are what was left.
+
+## N102 — The tree had no `CLAUDE.md` because the practice lived in another project, and the redirect that closes that carries the pointer and nothing else
+
+**The ruling (owner, 2026-08-14):** *"I created the `CLAUDE.md` file when I saw an earlier
+thought here stating that the repository doesn't have one. I think this was an oversight -- the
+house practice is to use the standardized `AGENTS.md` file and add a `CLAUDE.md` with an
+`@AGENTS.md` redirect. Your predecessor recommended this approach in a different project, and we
+forgot to document it in the design. Please make that change when it's safe to do so, and
+document my input in the implementation notes."*
+
+**Repo:** `CLAUDE.md` at the repository root — 11 bytes, `@AGENTS.md` and a newline, exactly as
+the owner wrote it; the declaration in `docs/10-claude-fable-agents-v2.md`'s preamble and its
+byte-identical deployed copy; the claim in `scripts/gates/agents-md-current.sh`.
+
+### The session that reported the file missing was reading the tree correctly
+
+The practice came from a different project — recommended there, agreed there, and never written
+down here. So the thought the owner saw was not a mistake about this repository: six documents
+and a hundred and one notes said nothing about a `CLAUDE.md`, the tree did not have one, and a
+session that looked and said so had looked properly. **An undocumented practice is not a
+practice this repository has; it is one somebody remembers**, and the reader who has to know it
+is the one who has never met it. That is why the ruling's remedy is the general one — write it
+where a fresh session meets it and a gate can check the tree against it — rather than the local
+one of adding the file and moving on.
+
+### One home for the rules, and a pointer is not a second copy
+
+`AGENTS.md` is the standardized, tool-neutral name and it holds the rules. `CLAUDE.md` holds
+`@AGENTS.md` and nothing else, so a Claude-specific reader looking for the name it knows is
+*pointed at* that home rather than handed a second copy of it. The cost of the alternative is
+the one the deploy sentence beside it already pays for at this same root: two files that can
+disagree, each reader believing the one it opened, and no way to tell from either. A pointer
+cannot disagree with what it points at — for exactly as long as it stays a pointer, which is
+what the gate below is for.
+
+### Where the fact lives, and why it is not in the design as well
+
+docs/10's preamble, in one sentence beside the deploy instruction, and nowhere else. A statement
+about where a document goes and what points at it is a statement the document makes *about
+itself*, and this series makes those in its opening block — which is also the only region the
+predicate reads, for the reason docs/9's row records.
+
+The ruling's "we forgot to document it in the design" is discharged there rather than in docs/6,
+and the choice is the note's own subject one level up: docs/6 is the product's architecture, it
+already carries the pointer it needs (*"AGENTS.md (docs/10, deployed at the repository root)"*),
+and a second statement of the redirect there would be the second copy this entry is about.
+AGENTS' "docs state each fact once" decides it; so would the gate, which reports two preambles
+declaring one redirect as two answers to which file the pointer is.
+
+### What can now go red
+
+`agents-md-current.sh` gains the redirect beside the deployment it already compared, and nothing
+about it is transcribed: the redirect's name and the name it references are both read out of the
+doc's sentence (*"Redirect at the repository root from `X`, which holds `@Y`"*), and `Y` must be
+the name the deploy sentence carries — a pointer at any other file is a reader sent where the
+rules are not. The file must exist, must not be a link to the deployed copy, and must be **byte
+for byte `@AGENTS.md` and a trailing newline**. The predicate is now sixteen failing arms and
+four green ones; the eight new red arms are the file missing, the file carrying extra content,
+the file referencing something else, the file replaced by a link, the declaration reworded away,
+a second document declaring one, a declared name that is a path rather than a name at the root,
+and a declaration that references a file other than the deployed copy. A ninth arm is green: it
+renames the redirect in the document and the gate follows.
+
+**"Nothing else" is byte equality, and the missing newline is red too.** Nothing is harmed by a
+file whose last byte is `d`; what is harmed is the shape of the claim. "The redirect is these
+bytes" has no seam in it, while "these bytes or those" is a predicate that admits a set, and a
+set with two members is a set somebody extends — which is how the tolerated blank line becomes
+the tolerated sentence becomes the second rulebook.
+
+Two things it does not close, said plainly. **It does not check that any tool honours the
+reference**: whether a reader resolves `@AGENTS.md` is a fact about that reader, not about this
+tree, and what the gate holds is the shape the ruling names. **It does not check that the file
+is committed**: the arms run against scratch copies made without `.git`, so trackedness is not a
+question this harness can ask of the tree under test.
+
+### It arrived mid-session, and the selftest was right to notice
+
+The file appeared in the checkout while the gate suite was running, and `selftest.sh`'s closing
+check — *"an arm changed the checkout"* — fired. That check records `git status --porcelain`
+before the arms and compares it after, and **an untracked file appearing mid-run is
+indistinguishable from an arm mutating the tree**, which is the defect it exists for (the
+zero-byte `.seeded` an arm wrote into the checkout, note **N68**). It is not a false
+alarm and it does not want a tolerance: an owner editing the tree during a run and a case file
+leaking into it produce the same porcelain line, and the check is honest to say so. Committing
+the file is what settles it, because a tracked, unmodified file is absent from both recordings.
+
+**Amend this note if** a Claude-specific reader is observed needing anything in `CLAUDE.md`
+besides the reference — a tool that does not resolve `@AGENTS.md`, or one that wants its own
+content there — because that is the day the redirect stops being a pointer and both this entry
+and the gate's byte claim are wrong about the same thing.

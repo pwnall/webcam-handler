@@ -7,6 +7,11 @@ drift, reconcile deliberately and record which side was wrong). Terse by design;
 reasoning lives in `docs/8-claude-fable-code-review-rubric-v2.md` (rubric) and
 `docs/6-claude-fable-design-v2.md` (design).
 
+Redirect at the repository root from `CLAUDE.md`, which holds `@AGENTS.md` and nothing
+else: `AGENTS.md` is the standardized, tool-neutral name, so the rules keep one home and
+a Claude-specific reader is pointed at it rather than given a second copy (owner ruling,
+2026-08-14; note **N102**).
+
 ## Who runs this, and why (owner, 2026-08-12)
 
 `webcam-handler-daemon` runs on a computer whose cameras are **pointed at a device under
