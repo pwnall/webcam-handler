@@ -40,6 +40,16 @@
       "what": "PF:6/D3 — a clamped write moves the slider back and shows both numbers"
     },
     {
+      "title": "a menu whose value the device did not report selects nothing",
+      "assertions": 8,
+      "what": "a control with no current renders a selected, disabled placeholder rather than the browser's first option"
+    },
+    {
+      "title": "the bitmask field refuses what it cannot write, and says when a write is in flight",
+      "assertions": 10,
+      "what": "an emptied or unparsable bitmask writes nothing and says so, and an in-flight write is painted rather than only recorded"
+    },
+    {
       "title": "the preview paints successive frames and keeps painting across a photo",
       "assertions": 16,
       "what": "the MJPEG <img> paints successive parts, and keeps painting across a photo (N83)"
@@ -52,7 +62,7 @@
     {
       "title": "the client loads with no credential and the camera is still refused",
       "assertions": 8,
-      "what": "N82 — the module graph loads and runs anonymously; the two camera routes do not"
+      "what": "N82 — the module graph loads and runs anonymously, the two camera routes do not, and the page names the two candidates a page with no token actually has"
     },
     {
       "title": "a page in another origin cannot reach the camera, token and all",
@@ -63,6 +73,16 @@
       "title": "the page reports a lost socket and works again on the next one",
       "assertions": 10,
       "what": "the socket's loss is reported, the preview is ended, and the next socket works"
+    },
+    {
+      "title": "a socket that closed refuses the next call instead of parking it",
+      "assertions": 10,
+      "what": "a call made after the close is refused at once — WHATWG's silent `send()` on a CLOSED socket would otherwise park it for ever — and the click that used to undo the close is answered"
+    },
+    {
+      "title": "a subscription that died with the socket stops saying it is watching",
+      "assertions": 5,
+      "what": "E16 §1's class again: every stream is told the socket ended, and no writer of #connection contradicts the one sentence that covers it"
     },
     {
       "title": "the browser this rung drove is the pinned one",

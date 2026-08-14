@@ -14,6 +14,20 @@
 # non-vacuity arm in the predicate, an empty directory and a missing one are failures, and
 # they are the shapes that would otherwise make every rule above quantify over nothing.
 #
+# ## Every arm names its rule, and the P5 review is why
+#
+# docs/9 Part 2 says "one seeded violation per pattern", and three patterns had none —
+# `media-src`, `worker-import` and `xhr-open` were carried by a `selftest.sh` that requires arms
+# per *predicate* rather than per claim, so their absence was invisible to the harness that
+# exists to notice exactly that. They have arms now, and so do the two rules the review added.
+#
+# The other half is `css-url`, which had an arm it could not be told apart by: the seeded
+# `@import url(https://…)` is red under `css-import` **and** under `css-url`, and an arm reading
+# only the exit status cannot say which — so either rule could have rotted to unreachable with
+# its arm still comfortably non-zero. Every arm below therefore asserts the rule name in the
+# failure message through `gate_red_because` (`lib.sh`), and `css-url` gets a seed no `@import`
+# appears in.
+#
 # shellcheck shell=bash
 
 _web_tree() {
@@ -21,6 +35,18 @@ _web_tree() {
     tree="$(gate_scratch_tree)"
     mkdir -p "$tree/crates/web/assets"
     printf '%s\n' "$tree"
+}
+
+# Seed one line into one asset file and require the predicate to go red naming `$rule`.
+#
+#   $1  the rule name the predicate must print
+#   $2  the asset file, relative to the asset directory
+#   $3  the line to seed
+_seeded_asset_is_red_as() {
+    local rule="$1" file="$2" line="$3" tree
+    tree="$(_web_tree)"
+    printf '%s\n' "$line" >"$tree/crates/web/assets/$file"
+    gate_red_because "($rule)" env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 pass_case() {
@@ -40,67 +66,114 @@ HTML
 import { render } from "./render.js";
 const cameras = await fetch("/rpc", { method: "POST" });
 const live = new WebSocket(`ws://${location.host}/ws`);
-render(cameras, live);
+const frame = el("img", { src: `/preview?camera=${name}` });
+frame.src = previewUrl(name, token);
+frame.setAttribute("src", "/preview?camera=" + name);
+render(cameras, live, frame);
 JS
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+# ------------------------------------------------- the markup rules
+
 fail_case_script_from_a_cdn() {
-    local tree
-    tree="$(_web_tree)"
-    printf '%s\n' '<script src="https://cdn.example.com/chart.js"></script>' \
-        >"$tree/crates/web/assets/index.html"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    _seeded_asset_is_red_as script-src index.html \
+        '<script src="https://cdn.example.com/chart.js"></script>'
 }
 
 fail_case_stylesheet_from_a_cdn() {
-    local tree
-    tree="$(_web_tree)"
-    printf '%s\n' '<link rel="stylesheet" href="//fonts.example.com/x.css">' \
-        >"$tree/crates/web/assets/index.html"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    _seeded_asset_is_red_as link-href index.html \
+        '<link rel="stylesheet" href="//fonts.example.com/x.css">'
 }
 
+# One of the three docs/9's "one seeded violation per pattern" asked for and nothing had.
+# `<img>` is the tag that matters here: this client's one real subresource is a preview image,
+# and an `<img>` pointed at somebody else's origin hands that origin the page's referrer, its
+# cookies and the fact that a camera is being watched.
+fail_case_an_image_from_another_origin() {
+    _seeded_asset_is_red_as media-src index.html \
+        '<img alt="chart" src="https://cdn.example.com/x.jpg">'
+}
+
+# ------------------------------------------------- the JavaScript verbs
+
 fail_case_fetch_to_another_origin() {
-    local tree
-    tree="$(_web_tree)"
-    printf '%s\n' 'fetch("https://telemetry.example.com/collect", { method: "POST" });' \
-        >"$tree/crates/web/assets/app.js"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    _seeded_asset_is_red_as fetch app.js \
+        'fetch("https://telemetry.example.com/collect", { method: "POST" });'
 }
 
 fail_case_module_import_from_a_cdn() {
-    local tree
-    tree="$(_web_tree)"
-    printf '%s\n' 'import { h } from "https://esm.example.com/preact";' \
-        >"$tree/crates/web/assets/app.js"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    _seeded_asset_is_red_as module-import app.js \
+        'import { h } from "https://esm.example.com/preact";'
+}
+
+# The second of the three that had no arm. A worker is the one place in a page where an import
+# is spelled as a function call, so `module-import` does not see it.
+fail_case_a_worker_imports_from_a_cdn() {
+    _seeded_asset_is_red_as worker-import worker.js \
+        'importScripts("https://cdn.example.com/worker-helper.js");'
 }
 
 fail_case_websocket_to_another_origin() {
-    local tree
-    tree="$(_web_tree)"
-    printf '%s\n' 'const s = new WebSocket("wss://relay.example.com/ws");' \
-        >"$tree/crates/web/assets/app.js"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    _seeded_asset_is_red_as socket app.js \
+        'const s = new WebSocket("wss://relay.example.com/ws");'
 }
+
+# The third. `XMLHttpRequest` is what a vendored third-party snippet uses, which is exactly the
+# code nobody in this repository would have written and everybody would have pasted.
+fail_case_an_xhr_to_another_origin() {
+    _seeded_asset_is_red_as xhr-open app.js \
+        'const x = new XMLHttpRequest(); x.open("GET", "https://telemetry.example.com/beacon");'
+}
+
+# ------------------------------------------------- the stylesheet rules
 
 fail_case_css_pulls_a_webfont() {
-    local tree
-    tree="$(_web_tree)"
-    printf '%s\n' '@import url(https://fonts.example.com/inter.css);' \
-        >"$tree/crates/web/assets/app.css"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    _seeded_asset_is_red_as css-import app.css \
+        '@import url(https://fonts.example.com/inter.css);'
 }
 
+# `css-url` with no `@import` anywhere near it. The arm above is red under both rules — an
+# `@import url(…)` satisfies each of them — so until this seed existed either rule could have
+# stopped matching with the harness none the wiser, which is note **N10**'s family measured in a
+# gate's own case file.
+fail_case_css_pulls_a_background_image() {
+    _seeded_asset_is_red_as css-url app.css \
+        '.badge { background: url(https://cdn.example.com/dot.png) no-repeat; }'
+}
+
+# ------------------------------------------------- the two rules the P5 review added
+
+# **The idiom this client actually uses.** `crates/web/assets/preview.js` writes `frame.src =
+# previewUrl(camera, token)`, and an off-origin literal in that position was measured green on
+# all ten of the rules that preceded this arm.
+fail_case_an_element_property_is_pointed_off_origin() {
+    _seeded_asset_is_red_as element-src preview.js \
+        'frame.src = "https://cdn.example.com/x.jpg";'
+}
+
+# The same assignment written as markup this client builds through `dom.js`'s `el(tag, attrs)`,
+# which is where an attribute is a key in an object rather than a property on a node.
+fail_case_an_attribute_object_carries_an_off_origin_url() {
+    _seeded_asset_is_red_as element-src dom.js \
+        'const node = el("img", { src: "https://cdn.example.com/x.jpg" });'
+}
+
+fail_case_set_attribute_points_off_origin() {
+    _seeded_asset_is_red_as set-attribute dom.js \
+        'node.setAttribute("src", "https://cdn.example.com/x.jpg");'
+}
+
+# ------------------------------------------------- the population itself
+
 # docs/9 Part 2's non-vacuity row, in the shape it was commissioned for: the client's files
-# are deleted and the ten rules above have nothing left to be true about. A gate that answered
+# are deleted and the twelve rules above have nothing left to be true about. A gate that answered
 # PASS here would be reporting on a page nobody wrote.
 fail_case_the_asset_directory_is_empty() {
     local tree
     tree="$(_web_tree)"
     find "$tree/crates/web/assets" -mindepth 1 -delete
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'examined zero web asset files' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 # The same emptiness wearing the other hat. `gate_find` returns nothing for a directory that
@@ -110,12 +183,13 @@ fail_case_the_asset_directory_is_gone() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -rf "$tree/crates/web/assets"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'examined zero web asset files' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 fail_case_web_crate_left_the_workspace() {
     local md
     md="$(gate_metadata_snapshot)"
     jq 'del(.packages[] | select(.name == "webcam-handler-web"))' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'webcam-handler-web is not a workspace member' \
+        env "WCH_GATE_METADATA=$md.seeded" "$GATE"
 }

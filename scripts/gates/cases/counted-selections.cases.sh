@@ -37,8 +37,79 @@ SH
     chmod +x "$path"
 }
 
+# A table whose only `tests` row is this one, so an arm about one row is not also an arm about
+# the hundred the stub lister would answer `mismatch` for.
+#
+#   $1  the scratch tree
+#   $2  the selection
+#   $3  the `what` column
+_only_tests_row() {
+    local tree="$1" selection="$2" what="$3" table
+    table="$tree/scripts/gates/phase-criteria.tsv"
+    grep -v '	tests	' "$table" >"$table.seeded"
+    printf 'g0\ttests\t%s\t%s\n' "$selection" "$what" >>"$table.seeded"
+    mv "$table.seeded" "$table"
+}
+
 pass_case() {
     "$GATE"
+}
+
+# The green direction for the branch check, and the reason it is here rather than left to
+# `pass_case`: a splitter that silently produced *no* branches would satisfy every failing arm
+# below by never disagreeing with anything. Both branches of this row select, and the row is the
+# only `tests` row in the table it is checked in.
+pass_case_every_branch_of_an_alternation_selects() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema) and test(/^(slug::round|slug::)/)' \
+        'two branches, both of which the lister answers for'
+    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+}
+
+# **The P5 review's finding.** The row still selects a test, so the zero-selection check above is
+# green and always would have been; what has rotted is one of the two claims its `what` column
+# describes. Eleven `g5` rows are alternations of two to five named claims each, so this is the
+# shape a criterion decays into rather than a hypothetical one.
+fail_case_a_branch_of_an_alternation_selects_nothing() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" \
+        'package(webcam-handler-schema) and test(/^(slug|zzz_no_such_module)::/)' \
+        'two claims, one of which nothing selects any more'
+    gate_red_because "none of them is one its branch 'test(/^zzz_no_such_module::/)' names" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# A regex this gate cannot split is a **failure and not a pass**, which is the price
+# `gate_test_region_start` charges for a file boundary it cannot read, charged here for an
+# alphabet. Green would mean "some of these claims are unchecked and nothing says which".
+fail_case_an_alternation_this_gate_cannot_split() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema) and test(/^(slug|zzz[0-9]+)::/)' \
+        'an alternation whose branches this gate has no rule for'
+    gate_red_because 'outside the alphabet' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The other way a splitter can be handed something it cannot answer about. Inside the alphabet,
+# so the arm above does not fire and this branch is the one under test.
+fail_case_an_alternation_with_unbalanced_parentheses() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema) and test(/^(slug|zzz::/)' \
+        'an alternation with a parenthesis nobody closed'
+    gate_red_because 'unbalanced parentheses' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
 }
 
 fail_case_selection_matches_no_tests() {

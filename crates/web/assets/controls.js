@@ -110,7 +110,34 @@ function control(desc, pair, io) {
     badges(desc),
   ]);
 
-  const widget = el("div", { class: "widget" }, widgetFor(desc, io, notes));
+  /**
+   * One line per card for the things that happen *between* repaints, replaced in place.
+   *
+   * Everything else this card says is a fact about a document, painted once from it; this line
+   * is a fact about right now — a write that has gone out and not come back, and a field
+   * refusing what was typed into it — and those have no document to be read out of. `outcomes`
+   * cannot carry them, because it is read by the *next* paint: a write's own "writing…" went
+   * into that map and was rendered for the first time after the write had already finished,
+   * which is a status no operator could ever see. Painting it here also means the answer is on
+   * screen even if the repaint that would replace it never arrives, which is exactly the case
+   * a socket dying mid-write produces.
+   *
+   * It is replaced rather than appended so that three typos are one line rather than three, and
+   * it is class `live` because that is what it is: a line the next repaint takes away.
+   */
+  let live = null;
+  const annotate = (text, tone = null) => {
+    const line = note(text, tone);
+    line.classList.add("live");
+    if (live === null) {
+      node.append(line);
+    } else {
+      live.replaceWith(line);
+    }
+    live = line;
+  };
+
+  const widget = el("div", { class: "widget" }, widgetFor(desc, { ...io, annotate }, notes));
   node.append(widget);
 
   const refuses = readOnlyReason(desc);
@@ -275,6 +302,16 @@ function toggle(desc, io) {
  * \[PF:5\], and a device holding an index it did not enumerate is the same class of fact. A
  * `<select>` with no matching option silently shows its first item, which would make this
  * page report a value the camera does not hold.
+ *
+ * **And a control with no current value at all is the same sentence one step further.** It was
+ * the case the guard above did not reach — `current !== null && …` is false when there is no
+ * current, so the browser picked the lowest index and this panel reported it as the device's,
+ * which is the one thing the paragraph above forbids. `ControlDesc::current` is an `Option`
+ * and its absence is measured rather than hypothetical: every profile in `corpus/` carries
+ * controls that arrive without one. So the absence gets an option of its own, selected — a
+ * `<select>` that has *something* selected never runs the browser's own rule — and disabled,
+ * because "not read" is not a value anybody may write back. `toggle` just above makes the same
+ * check for the same reason, in one line, and says so.
  */
 function menu(desc, io) {
   // `?? {}` because a menu with no items at all is a *missing key* on this wire (see
@@ -286,7 +323,9 @@ function menu(desc, io) {
   const options = items.map(([index, item]) =>
     el("option", { value: String(index), selected: index === current }, `${index} · ${itemLabel(item)}`),
   );
-  if (current !== null && !items.some(([index]) => index === current)) {
+  if (current === null) {
+    options.unshift(el("option", { value: "", selected: true, disabled: true }, "— not read —"));
+  } else if (!items.some(([index]) => index === current)) {
     options.unshift(
       el(
         "option",
@@ -303,18 +342,44 @@ function menu(desc, io) {
   return [select];
 }
 
-/** A bitmask: the raw word, in the base the kernel documents it in. */
+/**
+ * A bitmask: the raw word, in the base the kernel documents it in.
+ *
+ * **A free-text field is the only widget in this panel that can be handed something that is not
+ * a value**, and both answers to that were wrong until P5e. `Number("")` is `0`, so an operator
+ * who cleared the field and tabbed away wrote *every bit off* to the device — from the gesture
+ * that means "I have typed nothing yet", silently, on a control whose bits nothing here can
+ * name. And anything unparsable was dropped on the floor: the handler returned, and the card
+ * looked exactly as it looks after a write that worked, which is E3's collapse in miniature —
+ * "nothing happened" rendered as "it happened".
+ *
+ * So an entry that is not a whole number is *refused, out loud*, and the text is left alone so
+ * the operator can fix it rather than having their typing taken away. `Number.isInteger` is the
+ * whole test: it is false for `NaN`, for `Infinity` and for `1.5`, and a fractional bitmask is
+ * not a thing a device has bits for.
+ */
 function bitmask(desc, io) {
-  const current = currentInt(desc) ?? 0;
+  const current = currentInt(desc);
   const field = el("input", {
     type: "text",
     class: "mono",
-    value: `0x${(current >>> 0).toString(16)}`,
+    // Empty when there is no current, rather than `0x0`: a control whose value was not read
+    // does not hold zero, and the note [`control`] puts beside it says so in words (this
+    // module's `menu` argues the same case with indices in it).
+    value: current === null ? "" : `0x${(current >>> 0).toString(16)}`,
     onchange: () => {
-      const parsed = Number(field.value);
-      if (Number.isFinite(parsed)) {
-        apply(desc, { kind: "int", value: parsed }, io);
+      const typed = field.value.trim();
+      const parsed = typed === "" ? Number.NaN : Number(typed);
+      if (!Number.isInteger(parsed)) {
+        io.annotate(
+          typed === ""
+            ? "an empty field is not a zero, so nothing was written"
+            : `"${field.value}" is not a whole number this field can write, so nothing was written`,
+          "surprising",
+        );
+        return;
       }
+      apply(desc, { kind: "int", value: parsed }, io);
     },
   });
   // No per-bit checkboxes: V4L2 gives a bitmask no names for its bits, so a row of boxes
@@ -364,6 +429,12 @@ function payload(desc, why) {
  * `auto_exposure` had turned itself off.
  */
 async function apply(desc, value, io) {
+  // Painted as well as recorded, and the pair is not redundant. The map is read by the *next*
+  // paint, which is what carries the outcome across the repaint below; the painted line is what
+  // an operator sees in the meantime — and in the meantime is the whole of a write's life. Until
+  // P5e "writing…" was only ever put in the map, so the first time it could have been rendered
+  // was after the write it describes had already finished: a status nobody could see.
+  io.annotate("writing…");
   outcomes.set(desc.slug, { text: "writing…", tone: null });
   try {
     const report = await io.write(desc.slug, value);
@@ -376,6 +447,11 @@ async function apply(desc, value, io) {
       tone: "surprising",
     });
   }
+  // The answer, before the repaint that will replace this whole card with it. It matters on the
+  // path where the repaint never comes back — a socket that died while this write was out
+  // leaves this line as the only thing on screen that knows what happened to it.
+  const outcome = outcomes.get(desc.slug);
+  io.annotate(outcome.text, outcome.tone);
   // Repaint from the device rather than from the answer: another control's INACTIVE flag
   // may have moved with this write \[PF:3\], and `V4L2_CTRL_FLAG_UPDATE` says a write can
   // change other controls' *properties* outright. Re-reading is how this panel finds out.

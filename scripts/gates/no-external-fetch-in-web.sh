@@ -12,9 +12,31 @@
 # click is not a subresource the page loads. Everything that fetches without being asked
 # is below.
 #
+# ## The two rules the P5 review added, and the idiom that got past the first ten
+#
+# The original ten match HTML **attributes** and JavaScript **verbs** — a `<script src>`, a
+# `fetch(`, an `import`, a `new WebSocket(`. What this client actually does with its one real
+# subresource is neither: `crates/web/assets/preview.js` writes `frame.src = previewUrl(camera,
+# token)`, an **off-origin URL assigned to an element's property**, and that shape was measured
+# to fire no rule at all. `frame.src = "https://cdn.example.com/x.jpg"` and `el("img", { src:
+# "https://…" })` were both green on the ten, which is the gate being silent about the exact
+# line the client's only subresource is loaded by.
+#
+# So `element-src` covers a subresource attribute written as a property assignment (`.src =`) or
+# as an entry in an attribute object (`src:` — `dom.js`'s `el(tag, attrs)` is how this client
+# builds markup), and `set-attribute` covers the same names reached through `setAttribute`.
+#
+# **`href` is deliberately not among those names**, and the reason is the anchor paragraph above
+# rather than an oversight: `el("a", { href: "https://…" })` is how a page builds the link the
+# header already permits, and a `grep` cannot see which element a property is being set on. What
+# that costs is a `<link rel=stylesheet>` whose `href` is assigned in JavaScript — the markup
+# form is `link-href`'s and stays covered, the scripted form is not, and it is written here
+# rather than left for somebody to discover. The alternative was a rule that contradicts this
+# file's own stated allowance, which is how a gate stops being believed.
+#
 # **An asset directory with nothing in it is a failure** (docs/9 Part 2's non-vacuity row,
 # commissioned at P5a). Every rule below quantifies over the files this walk finds, so a walk
-# that finds none makes all ten of them vacuously true — the greenest this gate can be is the
+# that finds none makes all twelve of them vacuously true — the greenest this gate can be is the
 # state where it is checking nothing at all. That arm could not land before the assets did:
 # until P5a the emptiness was the honest answer and it was printed as a named, counted skip.
 # `crates/web/assets/index.html` is what makes the stronger claim assertable, and the skip is
@@ -45,6 +67,11 @@ scan_dir="$root/$web_suffix"
 # own origin computed at runtime and is exactly how the real client will open its socket.
 external='([a-zA-Z][a-zA-Z0-9+.-]*:)?//[A-Za-z0-9._-]'
 
+# The subresource-bearing attribute names the two JavaScript rules below are about. `href` is
+# not on the list and the header says why; every name here names bytes a browser fetches without
+# being asked.
+subresource_attributes='src|srcset|poster|data|action|formaction'
+
 # Each rule is a name and the pattern that catches it. Named so a failure says which
 # door was left open, not just that one was.
 rules=(
@@ -58,6 +85,8 @@ rules=(
     "css-import	@import[[:space:]]+(url\\()?[[:space:]]*[\"']?$external"
     "css-url	url\\([[:space:]]*[\"']?$external"
     "xhr-open	\\.open\\([[:space:]]*[\"'][A-Z]+[\"'][[:space:]]*,[[:space:]]*[\"'\`]$external"
+    "element-src	(\\.($subresource_attributes)[[:space:]]*=|(^|[^A-Za-z0-9_.-])($subresource_attributes)[[:space:]]*:)[[:space:]]*[\"'\`]$external"
+    "set-attribute	\\.setAttribute\\([[:space:]]*[\"'\`]($subresource_attributes)[\"'\`][[:space:]]*,[[:space:]]*[\"'\`]$external"
 )
 
 assets=0

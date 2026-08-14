@@ -16,6 +16,25 @@
 // open is a wrong token or a stopped daemon, and an empty camera list is a diagnosis the
 // daemon itself supplies (D1: "an empty enumeration is diagnosed, not shrugged at").
 //
+// ## `#connection` has four writers and one rule
+//
+// The line under the title is this page's single sentence about the daemon, and four places
+// write it: the **credential check**, before anything has been attempted; the **connect
+// attempt**, which either says `connected` or says how the handshake failed; **`watchDevices`**,
+// which describes a *connected* page whose device-change stream or re-enumeration failed; and
+// **`socketClosed`**, which says the connection this page was given has ended. Their lifetimes
+// are all different — the first is true for the whole run, the last is final — so "whoever
+// wrote last" is not a rule, it is an accident, and it has produced a wrong sentence twice.
+//
+// The rule is that **no writer may make a statement it cannot know, and the last writer that
+// still can wins.** The credential check knows only what the URL carried, so the handshake
+// failure *extends* its sentence rather than replacing it: a page that presented no token
+// cannot be carrying the wrong one, and telling an operator otherwise sends them looking for a
+// token they never had (E16 §2 found that overwrite the first time; P5e found the second, in
+// the `catch` below). `watchDevices` opens its sentence with the word "connected" and therefore
+// declines to write at all once the socket is what ended. And `socketClosed` is final, because
+// from that point on the page's own advice is to reload.
+//
 // ## What this page will not do
 //
 // It has **no configuration surface**. There is no field for a daemon address, no stored
@@ -28,7 +47,7 @@
 
 import { tokenFromLocation, wireUrl } from "./credential.js";
 import { byId, el, fill } from "./dom.js";
-import { connect } from "./rpc.js";
+import { SOCKET_CLOSED, connect } from "./rpc.js";
 import * as controls from "./controls.js";
 import * as calibration from "./calibration.js";
 import * as photo from "./photo.js";
@@ -41,7 +60,32 @@ const state = {
   camera: null,
   /** The live `<img>`, which `preview.watch` replaces on every camera switch. */
   frame: null,
+  /**
+   * Whether the socket this page was given is still usable.
+   *
+   * Not `state.rpc !== null`: the handle outlives its socket by design — it is what refuses
+   * every later call — so "there is a handle" and "there is a connection" are two questions,
+   * and every decision below that would otherwise have guessed asks this one.
+   */
+  socketOpen: false,
+  /** Whether a photo is in flight, which is one of the three reasons the button is unusable. */
+  taking: false,
 };
+
+/**
+ * What a page with no `?token=` knows about itself before it has tried anything.
+ *
+ * Two candidates and this page cannot tell them apart — nothing served to it says which cell
+ * of D11's matrix the daemon is in (note **N75**: in the token-less cell the gate is *absent*,
+ * not permissive). Both are named rather than one guessed at. It is a constant because the
+ * failed handshake below has to be able to *extend* it rather than overwrite it, and a second
+ * copy of a sentence is a second copy that drifts.
+ */
+const NO_CREDENTIAL =
+  "this page was opened without the ?token= the daemon prints. If webcam-handler-daemon was started " +
+  "with --http-insecure-loopback there is no token and the camera routes are open; " +
+  "otherwise the socket and the preview will be refused, and the URL webcam-handler-daemon printed is " +
+  "the one to open.";
 
 /** The elements index.html promises. Resolved once, so a rename fails loudly and early. */
 const nodes = {
@@ -74,33 +118,36 @@ async function main() {
   state.frame = nodes.previewFrame;
   state.token = tokenFromLocation();
   if (state.token === null) {
-    // Two candidates and this page cannot tell them apart — nothing served to it says which
-    // cell of D11's matrix the daemon is in (note **N75**: in the token-less cell the gate
-    // is *absent*, not permissive). Both are named rather than one guessed at.
-    say(
-      nodes.connection,
-      "this page was opened without the ?token= the daemon prints. If webcam-handler-daemon was started " +
-        "with --http-insecure-loopback there is no token and the camera routes are open; " +
-        "otherwise the socket and the preview will be refused, and the URL webcam-handler-daemon printed is " +
-        "the one to open.",
-      true,
-    );
+    say(nodes.connection, NO_CREDENTIAL, true);
   }
 
   try {
     state.rpc = await connect(wireUrl(state.token), { onClose: socketClosed });
   } catch (err) {
-    // A browser does not hand a page the status of a failed WebSocket handshake, so this
-    // is honestly two possibilities rather than one (rpc.js's header). Naming the wrong
-    // one would be worse than naming both.
+    // A browser does not hand a page the status of a failed WebSocket handshake, so this is
+    // honestly two possibilities rather than one (rpc.js's header). Naming the wrong one would
+    // be worse than naming both — and *which* two they are depends on what this page
+    // presented, which is the branch.
+    //
+    // On a page opened with no `?token=` the first candidate is false by construction: there
+    // is no token here to be the wrong one. Until P5e this line said it anyway, two statements
+    // after the accurate sentence above and over the top of it — on the failure this module's
+    // own header calls the most likely one, an operator who read the port off a log and opened
+    // `/` by hand. So the token-less page keeps its diagnosis and has the handshake appended to
+    // it, and the pair of them is what an operator with no token can act on.
     say(
       nodes.connection,
-      `${err.message}: either the token this page was opened with is not this run's, or ` +
-        "nothing is listening on this port any more.",
+      state.token === null
+        ? `${NO_CREDENTIAL} The socket was then refused (${err.message}) — a page that presented ` +
+            "no token cannot be carrying the wrong one, so what is left is the gate above or " +
+            "nothing listening on this port any more."
+        : `${err.message}: either the token this page was opened with is not this run's, or ` +
+            "nothing is listening on this port any more.",
       true,
     );
     return;
   }
+  state.socketOpen = true;
   say(nodes.connection, "connected");
 
   await calibration.watchSweeps(state.rpc, {
@@ -190,8 +237,17 @@ async function select(camera) {
   // The preview is repointed *before* anything slow, because leaving the old element
   // streaming would hold a second camera open for as long as the panel took to paint
   // (preview.js: the daemon retires a feed when its last reader goes).
-  state.frame = preview.watch(state.frame, nodes.previewStatus, camera, state.token);
-  nodes.takePhoto.disabled = false;
+  //
+  // …and it is not repointed at all once the socket has gone. The preview is a *separate* HTTP
+  // request whose token is as good as it ever was, so it would paint — which is exactly the
+  // trap: `socketClosed` ended this feed deliberately, and a page that answered a click with
+  // live video under a banner saying the connection is gone would be contradicting itself in
+  // two elements at once. The two routes are independent (D11 gates both separately); this
+  // page's story about them is not.
+  if (state.socketOpen) {
+    state.frame = preview.watch(state.frame, nodes.previewStatus, camera, state.token);
+  }
+  refreshTakePhoto();
   nodes.photoFrame.removeAttribute("src");
   fill(nodes.photoReport, []);
   nodes.photoStatus.textContent = "";
@@ -241,7 +297,8 @@ function write(control, value) {
 
 /** Take one photo of the selected camera. The preview is not touched — note **N83**. */
 async function takePhoto() {
-  nodes.takePhoto.disabled = true;
+  state.taking = true;
+  refreshTakePhoto();
   try {
     await photo.take(state.rpc, state.camera, {
       status: nodes.photoStatus,
@@ -249,8 +306,26 @@ async function takePhoto() {
       report: nodes.photoReport,
     });
   } finally {
-    nodes.takePhoto.disabled = false;
+    state.taking = false;
+    refreshTakePhoto();
   }
+}
+
+/**
+ * The one owner of `#take-photo`'s `disabled`, and the reason there is exactly one.
+ *
+ * Three independent things make that button unusable — no camera has been chosen yet, a photo
+ * is already in flight, and the socket this page was given has closed — and they arrive from
+ * three directions, so with a flag set from four places the last write decided. `select` was
+ * the one that got it wrong: it enabled the button unconditionally, so a click on a camera
+ * after the socket died handed an operator a button whose call could never be answered, and
+ * `#photo-status` would then have read "taking a photo …" for as long as the tab lived. One
+ * function that computes the flag from all three cannot disagree with itself. index.html ships
+ * the attribute *set*, so the button is unusable until this says otherwise rather than the
+ * other way round.
+ */
+function refreshTakePhoto() {
+  nodes.takePhoto.disabled = !state.socketOpen || state.camera === null || state.taking;
 }
 
 /**
@@ -278,7 +353,17 @@ async function watchDevices(retry = true) {
         // the answer to any of them is to enumerate again rather than to patch the list.
         enumerate().catch((err) => say(nodes.connection, refusalSentence(err), true));
       },
-      () => {
+      (reason) => {
+        if (reason === SOCKET_CLOSED) {
+          // Nothing about the *stream* ended: the connection under it did, and `socketClosed`
+          // owns the one sentence that covers every subscription on it. Re-subscribing would
+          // be a call on a dead handle — refused at once since P5e, which is the change that
+          // made this branch reachable at all — and that refusal would land in `#connection` as
+          // "connected; this daemon cannot watch for device changes …", a sentence that opens
+          // by contradicting the one already there. This is the header's ownership rule doing
+          // its one job: a writer that cannot know what it is about to claim does not write.
+          return;
+        }
         if (retry) {
           watchDevices(false);
         } else {
@@ -297,8 +382,11 @@ async function watchDevices(retry = true) {
 
 /** What a closed socket means for a page that is still on screen. */
 function socketClosed() {
+  // First, because every decision after it reads this: the handle is still here and still
+  // answers, and what it answers is a refusal (rpc.js).
+  state.socketOpen = false;
   say(nodes.connection, "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed", true);
-  nodes.takePhoto.disabled = true;
+  refreshTakePhoto();
   // The preview is a *separate* HTTP request and does not end with the socket, so it is
   // ended here rather than left painting frames from a daemon this page can no longer ask
   // anything about.

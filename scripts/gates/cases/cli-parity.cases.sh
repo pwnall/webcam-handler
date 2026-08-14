@@ -39,24 +39,6 @@ pass_case() {
     "$GATE"
 }
 
-# Run the predicate and answer "red, and red for this reason".
-_red_because() {
-    local pattern="$1"
-    shift
-    local output status=0
-    output="$("$@" 2>&1)" || status=$?
-    if ((status == 0)); then
-        printf 'the predicate stayed green; it was expected to fail with: %s\n%s\n' \
-            "$pattern" "$output" >&2
-        return 0
-    fi
-    if ! grep -Fq -- "$pattern" <<<"$output"; then
-        printf 'the predicate went red, but not because of: %s\n%s\n' "$pattern" "$output" >&2
-        return 0
-    fi
-    return "$status"
-}
-
 # A copy of the predicate with one `sed` applied to its row table, run against the real tree.
 #
 #   $1  a `sed` script over the table
@@ -120,7 +102,7 @@ fail_case_the_two_roots_render_one_document_two_ways() {
         return 0
     fi
 
-    _red_because 'these two renderings have forked' \
+    gate_red_because 'these two renderings have forked' \
         env "WCH_GATE_WCH=$target/debug/webcam-handler-cli" "WCH_GATE_WCHC=$target/debug/webcam-handler-client" "$GATE"
 }
 
@@ -133,7 +115,7 @@ fail_case_the_two_roots_render_one_document_two_ways() {
 fail_case_a_leaf_verb_that_no_row_puts_in_a_bucket() {
     local mutant
     mutant="$(_mutated_predicate '/^    "snapshot|/d' '' '"snapshot|')"
-    _red_because "the surface offers 'snapshot' and no row above puts it in a bucket" \
+    gate_red_because "the surface offers 'snapshot' and no row above puts it in a bucket" \
         bash "$mutant"
 }
 
@@ -145,7 +127,7 @@ fail_case_a_leaf_verb_that_no_row_puts_in_a_bucket() {
 fail_case_a_read_verb_moved_quietly_into_the_session_exemption() {
     local mutant
     mutant="$(_mutated_predicate 's/^    "get|compared|/    "get|session|/' '"get|session|' '"get|compared|')"
-    _red_because "webcam-handler-cli ran 'get' while a daemon held" bash "$mutant"
+    gate_red_because "webcam-handler-cli ran 'get' while a daemon held" bash "$mutant"
 }
 
 # The same move into the other exemption, which fails for the opposite reason: `info` has no
@@ -154,7 +136,7 @@ fail_case_a_read_verb_moved_quietly_into_the_session_exemption() {
 fail_case_a_read_verb_moved_quietly_into_the_stamped_exemption() {
     local mutant
     mutant="$(_mutated_predicate 's/^    "info|compared|/    "info|stamped|/' '"info|stamped|' '"info|compared|')"
-    _red_because "'info' is byte-identical from both roots, so nothing about it needs exempting" \
+    gate_red_because "'info' is byte-identical from both roots, so nothing about it needs exempting" \
         bash "$mutant"
 }
 
@@ -164,7 +146,7 @@ fail_case_a_read_verb_moved_quietly_into_the_stamped_exemption() {
 fail_case_a_bucket_name_outside_the_closed_vocabulary() {
     local mutant
     mutant="$(_mutated_predicate 's/^    "get|compared|/    "get|read-only|/' '"get|read-only|' '"get|compared|')"
-    _red_because "'get' is in bucket 'read-only'" bash "$mutant"
+    gate_red_because "'get' is in bucket 'read-only'" bash "$mutant"
 }
 
 # The other direction of the population check: a row naming a verb the surface does not
@@ -173,7 +155,7 @@ fail_case_a_bucket_name_outside_the_closed_vocabulary() {
 fail_case_a_row_naming_a_verb_the_surface_does_not_offer() {
     local mutant
     mutant="$(_mutated_predicate 's/^    "list|compared|list"/    "list|compared|list"\n    "frobnicate|compared|frobnicate"/' '"frobnicate|compared|' '')"
-    _red_because "a row above names 'frobnicate', which webcam-handler-cli --help does not offer" \
+    gate_red_because "a row above names 'frobnicate', which webcam-handler-cli --help does not offer" \
         bash "$mutant"
 }
 
@@ -200,7 +182,7 @@ done
 exec "$wchc" "\$@"
 STUB
     chmod +x "$stub"
-    _red_because "webcam-handler-client cannot answer 'profile capture', which webcam-handler-cli offers" \
+    gate_red_because "webcam-handler-client cannot answer 'profile capture', which webcam-handler-cli offers" \
         env "WCH_GATE_WCHC=$stub" "$GATE"
 }
 
@@ -216,7 +198,7 @@ printf 'webcam-handler-daemon cannot serve\n' >&2
 exit 1
 STUB
     chmod +x "$stub"
-    _red_because 'no daemon is serving' env "WCH_GATE_WCHD=$stub" "$GATE"
+    gate_red_because 'no daemon is serving' env "WCH_GATE_WCHD=$stub" "$GATE"
 }
 
 # The subtler half, and the one a readiness line alone would miss: a daemon that *announces*
@@ -240,5 +222,5 @@ chmod 0700 "\$dir"
 printf 'webcam-handler-daemon is serving socket=%s\n' "\$dir/$socket_file" >&2
 STUB
     chmod +x "$stub"
-    _red_because 'webcam-handler-client --json list exited' env "WCH_GATE_WCHD=$stub" "$GATE"
+    gate_red_because 'webcam-handler-client --json list exited' env "WCH_GATE_WCHD=$stub" "$GATE"
 }

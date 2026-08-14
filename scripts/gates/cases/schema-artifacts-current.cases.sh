@@ -26,7 +26,9 @@
 # hand-edited file is stale whichever artifact it is. An arm reading only the status
 # cannot tell which branch fired, so a branch could rot to unreachable while its arm
 # stayed comfortably non-zero — a gate green while checking less than it claims, which is
-# the family note N10 was paid for. `_red_because` therefore takes the message the arm is
+# the family note N10 was paid for. `gate_red_because` — `lib.sh`'s, since the P5 review gave it
+# a third caller and two copies of a law is the pair that stops agreeing — therefore takes the
+# message the arm is
 # claiming, and reports *green* when the predicate went red for some other reason, because
 # green is how this harness says "look at me".
 #
@@ -59,34 +61,11 @@ _isolated_target_dir() {
     printf '%s\n' "$dir"
 }
 
-# Run the predicate and answer "red, and red for this reason".
-#
-# Non-zero — the verdict a `fail_case_*` owes — only when the predicate failed *and* said
-# `$pattern` while failing. A predicate that stayed green, or that went red about
-# something else, returns 0 and prints what happened, which the harness turns into a
-# reported problem rather than a silently mis-aimed arm.
-_red_because() {
-    local pattern="$1"
-    shift
-    local output status=0
-    output="$("$@" 2>&1)" || status=$?
-    if ((status == 0)); then
-        printf 'the predicate stayed green; it was expected to fail with: %s\n%s\n' \
-            "$pattern" "$output" >&2
-        return 0
-    fi
-    if ! grep -Fq -- "$pattern" <<<"$output"; then
-        printf 'the predicate went red, but not because of: %s\n%s\n' "$pattern" "$output" >&2
-        return 0
-    fi
-    return "$status"
-}
-
 fail_case_committed_artifact_is_stale() {
     local tree
     tree="$(gate_scratch_tree)"
     printf '{ "hand": "edited" }\n' >"$tree/schemas/webcam-handler-schema.json"
-    _red_because 'schemas/webcam-handler-schema.json is stale' \
+    gate_red_because 'schemas/webcam-handler-schema.json is stale' \
         env "CARGO_TARGET_DIR=$(_shared_target_dir)" "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -94,7 +73,7 @@ fail_case_committed_artifact_nothing_emits() {
     local tree
     tree="$(gate_scratch_tree)"
     printf '{ "openrpc": "1.3.2" }\n' >"$tree/schemas/openrpc.json"
-    _red_because 'schemas/openrpc.json is committed but nothing emits it' \
+    gate_red_because 'schemas/openrpc.json is committed but nothing emits it' \
         env "CARGO_TARGET_DIR=$(_shared_target_dir)" "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -117,7 +96,7 @@ fail_case_nothing_is_committed_at_all() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -rf "$tree/schemas"
-    _red_because 'examined zero committed artifacts' \
+    gate_red_because 'examined zero committed artifacts' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -139,7 +118,7 @@ fail_case_the_committed_openrpc_document_is_stale() {
     tree="$(gate_scratch_tree)"
     printf '{ "openrpc": "1.3.2", "methods": [] }\n' \
         >"$tree/schemas/webcam-handler-openrpc.json"
-    _red_because 'schemas/webcam-handler-openrpc.json is stale' \
+    gate_red_because 'schemas/webcam-handler-openrpc.json is stale' \
         env "CARGO_TARGET_DIR=$(_shared_target_dir)" "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -150,7 +129,7 @@ fail_case_the_openrpc_document_is_emitted_but_not_committed() {
     local tree
     tree="$(gate_scratch_tree)"
     rm "$tree/schemas/webcam-handler-openrpc.json"
-    _red_because 'schemas/webcam-handler-openrpc.json is emitted but not committed' \
+    gate_red_because 'schemas/webcam-handler-openrpc.json is emitted but not committed' \
         env "CARGO_TARGET_DIR=$(_shared_target_dir)" "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -163,7 +142,7 @@ fail_case_the_openrpc_document_is_emitted_but_not_committed() {
 # comparison. What runs is still the shipped emitter (rubric rule 6), so the bundle it
 # writes has to match the committed bundle for this arm to be about the OpenRPC document
 # at all — a real drift anywhere else would surface as a different message and
-# `_red_because` would refuse the arm.
+# `gate_red_because` would refuse the arm.
 _emitter_without_the_openrpc_document() {
     local root script
     root="$(gate_root)"
@@ -187,7 +166,7 @@ SH
 fail_case_the_openrpc_document_is_committed_but_nothing_emits_it() {
     local emitter
     emitter="$(_emitter_without_the_openrpc_document)"
-    _red_because 'schemas/webcam-handler-openrpc.json is committed but nothing emits it' \
+    gate_red_because 'schemas/webcam-handler-openrpc.json is committed but nothing emits it' \
         env "WCH_GATE_EMITTER=$emitter" "$GATE"
 }
 
@@ -201,14 +180,14 @@ fail_case_the_openrpc_document_is_committed_but_nothing_emits_it() {
 # tracks the trait, and that belief is the thing under test. The mutation is chosen so the
 # crate still *compiles* — it edits the `#[method(name = ..)]` literal and leaves the Rust
 # function name alone — because an emitter that failed to build would take the
-# `emitter exited` branch and prove the wrong thing. `_red_because` is what notices if it
+# `emitter exited` branch and prove the wrong thing. `gate_red_because` is what notices if it
 # ever does.
 fail_case_the_wire_trait_moved_and_the_openrpc_document_did_not() {
     local tree
     tree="$(gate_scratch_tree)"
     sed -i 's/#\[method(name = "profile_capture")\]/#[method(name = "capture_profile")]/' \
         "$tree/crates/api/src/lib.rs"
-    _red_because 'schemas/webcam-handler-openrpc.json is stale' \
+    gate_red_because 'schemas/webcam-handler-openrpc.json is stale' \
         env "CARGO_TARGET_DIR=$(_isolated_target_dir wire-drift)" \
         "WCH_GATE_ROOT=$tree" "$GATE"
 }

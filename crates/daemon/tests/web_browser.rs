@@ -28,9 +28,10 @@
 //! assertions inside them (`tests/browser/claims.json`).
 //!
 //! The skip path is not taken on trust either: [`a_declined_rung_names_what_was_missing_and_
-//! counts_what_it_did_not_run`] drives all three arms with the preconditions pointed at things
-//! that are not there, which is the "prove it can go red" rule applied to the *reporting*
-//! rather than to the assertions.
+//! counts_what_it_did_not_run`] drives every arm against a **host it fabricates**, which is the
+//! "prove it can go red" rule applied to the *reporting* rather than to the assertions. That
+//! test's own header says why the host is a value rather than the machine the suite is running
+//! on, and what it cost to learn.
 //!
 //! `.config/nextest.toml` gives this binary `success-output = "final"`, and that line is part
 //! of the mechanism rather than a convenience: nextest hides a passing test's output, so
@@ -108,6 +109,108 @@ fn claims() -> Vec<Claim> {
                 .expect("every claim counts its assertions"),
         })
         .collect()
+}
+
+// ------------------------------------------------------------------------- the claims floor
+
+/// A floor's two numbers: how many claims this rung makes, and how much they assert.
+#[derive(Debug, Clone, Copy)]
+struct Floor {
+    claims: usize,
+    assertions: u64,
+}
+
+/// What the manifest must carry, as counts a reviewer has to lower on purpose.
+///
+/// [`verify_report`] compares the manifest against a run for **consistency**, and consistency
+/// is not a floor. A claim deleted from `browser/client.spec.mjs` *and* from
+/// `browser/claims.json` agrees with itself perfectly: the title sets still match, every count
+/// still matches, the exit status is zero, and this rung goes on reporting that everything it
+/// claims to check was checked — while the decline line on the next host quietly names one
+/// fewer thing it did not do. The number that would have noticed is the one nobody wrote down.
+///
+/// So it is written down here, in the shape `scripts/mutants-accepted.txt` uses and for its
+/// reason: a register nobody can shrink by accident. Deleting a claim is then two edits and a
+/// diff a reviewer reads, which is what "deliberately" means in a repository.
+///
+/// **It is a floor and not an equality, and that is the one place this differs from that
+/// register.** An acceptance list must match its survivors in both directions because a stale
+/// acceptance is a lie; a claim *added* to a spec is the rung growing, and a constant that
+/// turned growth red is a constant people route around. So a surplus is reported as a counted
+/// line naming how far ahead the manifest has got — never silence, AGENTS rule 3 — and raising
+/// this pair is what closes a boundary.
+///
+/// Measured, never estimated: **15 claims and 117 assertions** are what `claims.json` carries on
+/// the run that landed this (the same two numbers the decline line above prints).
+///
+/// It was written as 11 and 84 hours earlier, and moved in the same session — which is worth a
+/// sentence, because *how* it moved is the mechanism working rather than a number being patched.
+/// Two repairs from the P5 review ran concurrently in isolated worktrees: one raised the manifest
+/// to 15/117 by adding four claims (note **N96**), the other introduced this floor against the
+/// 11/84 it could see. Neither touched the other's files, so nothing collided textually — and the
+/// tree was still wrong, because a floor four claims below its manifest lets four claims be
+/// deleted in silence, which is the exact hole this constant exists to close. The arm that caught
+/// it is the one that drives a manifest one claim short: one short of 15 is 14, which clears a
+/// floor of 11 and complains about nothing. **File isolation prevents collisions between edits and
+/// not between meanings** (note **N98**).
+const FLOOR: Floor = Floor {
+    claims: 15,
+    assertions: 117,
+};
+
+/// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.
+///
+/// A pure function over values, so the arms in
+/// [`a_declined_rung_names_what_was_missing_and_counts_what_it_did_not_run`] can drive it in
+/// both directions without a filesystem: AGENTS rule 2 asks the red-on-inverse to be written,
+/// and a floor whose failing direction has never been seen is a floor nobody has checked.
+fn below_the_floor(claims: &[Claim], floor: &Floor) -> Vec<String> {
+    let mut short = Vec::new();
+    for claim in claims {
+        if claim.assertions == 0 {
+            short.push(format!(
+                "`{title}` counts zero assertions; a claim that asserts nothing is a title in a \
+                 report, and the skip line would go on offering it as something this host did \
+                 not run",
+                title = claim.title,
+            ));
+        }
+    }
+    if claims.len() < floor.claims {
+        short.push(format!(
+            "the manifest carries {count} claim(s) and the floor is {floor}; a claim deleted \
+             from the spec and from claims.json together is green everywhere else in this file, \
+             which is what the floor is for — lower it deliberately, in the same diff",
+            count = claims.len(),
+            floor = floor.claims,
+        ));
+    }
+    let total: u64 = claims.iter().map(|claim| claim.assertions).sum();
+    if total < floor.assertions {
+        short.push(format!(
+            "the manifest counts {total} assertion(s) and the floor is {floor}; a claim that \
+             quietly halved what it asserts keeps its title and its place in the skip line",
+            floor = floor.assertions,
+        ));
+    }
+    short
+}
+
+/// How far the manifest has got ahead of the floor, when it has. Named and counted, never
+/// silence: a floor that is behind is not a finding, and it is not nothing either.
+fn above_the_floor(claims: &[Claim], floor: &Floor) -> Option<String> {
+    let total: u64 = claims.iter().map(|claim| claim.assertions).sum();
+    let extra_claims = claims.len().saturating_sub(floor.claims);
+    let extra_assertions = total.saturating_sub(floor.assertions);
+    if extra_claims == 0 && extra_assertions == 0 {
+        return None;
+    }
+    Some(format!(
+        "r1-web: the claims floor is {extra_claims} claim(s) and {extra_assertions} \
+         assertion(s) behind the manifest ({} and {total} today); raise it when this boundary \
+         closes",
+        claims.len(),
+    ))
 }
 
 // ----------------------------------------------------------------------- the preconditions
@@ -369,6 +472,14 @@ fn small_mjpeg_camera() -> schema::profile::DeviceProfile {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
     let claims = claims();
+    // Before anything is decided about this host: the manifest is what both outcomes below are
+    // counted in, so a manifest that has fallen through its own floor makes the decline *and*
+    // the green line report a smaller rung as if it were the whole one.
+    let shortfall = below_the_floor(&claims, &FLOOR);
+    assert!(
+        shortfall.is_empty(),
+        "tests/browser/claims.json is below the floor this rung carries: {shortfall:?}"
+    );
     let suite = suite_dir();
     let build = pinned_chromium_build(&suite);
     let node =
@@ -442,9 +553,15 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
 /// The count in the decline above is only worth printing if something proves it, and this is
 /// the something: `tests/browser/claims-reporter.mjs` counts one entry per test and one
 /// assertion per top-level `expect`, from inside the runner, so the manifest is checked against
-/// what happened rather than against a promise. Both directions go red — a claim added to a
-/// spec and not to `claims.json` is an unexpected title, and a claim that quietly stopped
-/// asserting half of what it did is a count that no longer matches.
+/// what happened rather than against a promise. Both directions of *drift* go red — a claim
+/// added to a spec and not to `claims.json` is an unexpected title, and a claim that quietly
+/// stopped asserting half of what it did is a count that no longer matches.
+///
+/// **What it cannot see is the two of them agreeing.** This is a consistency check, and a claim
+/// deleted from the spec and from the manifest together is perfectly consistent — the title sets
+/// match, every count matches, and the rung shrinks with nothing to notice. That is [`FLOOR`]'s
+/// half, checked before either outcome is reported rather than here, because it is a claim about
+/// the repository and this function is a claim about a run.
 fn verify_report(path: &Utf8Path, claims: &[Claim]) {
     let report = std::fs::read_to_string(path)
         .unwrap_or_else(|err| panic!("the browser rung wrote no report at {path}: {err}"));
@@ -491,13 +608,116 @@ fn verify_report(path: &Utf8Path, claims: &[Claim]) {
 
 // ------------------------------------------------------------- the skip path, driven for real
 
+/// What a host's node is, in the three answers this rung tells apart.
+#[derive(Debug, Clone, Copy)]
+enum NodeState {
+    /// Nothing at that path at all.
+    Absent,
+    /// Something that runs and refuses — a broken installation, which is a different sentence
+    /// from an absent one and gets a different remedy.
+    Refusing,
+    /// Something that answers `--version` with a zero exit.
+    Working,
+}
+
+/// The three things [`preconditions`] asks about, as values a test can set.
+#[derive(Debug, Clone, Copy)]
+struct Host {
+    node: NodeState,
+    /// Whether `node_modules/@playwright/test/cli.js` is under the suite directory.
+    playwright: bool,
+    /// Which of Playwright's two browser-directory spellings is present, if either.
+    browser: Option<&'static str>,
+}
+
+/// Where a fabricated host is built. One directory per arm, wiped before it is used.
+///
+/// Under the one scratch root (note **N84**): `target/` is gitignored, declared regenerable by
+/// `CACHEDIR.TAG`, and pruned by every gate that walks the tree — the same three reasons the
+/// rung's traces go there. Named per arm rather than `mktemp`'d so a failing run leaves
+/// something a person can look at, and wiped on the way in so a leftover from an earlier run
+/// cannot answer a question this run meant to ask.
+fn fabricate(host: Host, arm: &str, build: &str) -> (Utf8PathBuf, Utf8PathBuf, Utf8PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = schema::paths::scratch_root()
+        .expect("a scratch root")
+        .join("r1-web/preconditions")
+        .join(arm);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a scratch directory for this arm's fabricated host");
+
+    let node = root.join("node");
+    match host.node {
+        NodeState::Absent => {}
+        NodeState::Refusing | NodeState::Working => {
+            // A shell script, because what the precondition asks is not "is this node" but "does
+            // it run and does it answer" — it spawns the path and reads the status, so a two-line
+            // program answers the question exactly as a 100 MB one would.
+            let exit = match host.node {
+                NodeState::Refusing => 1,
+                _ => 0,
+            };
+            std::fs::write(&node, format!("#!/bin/sh\nexit {exit}\n")).expect("a stub node");
+            std::fs::set_permissions(node.as_std_path(), std::fs::Permissions::from_mode(0o755))
+                .expect("a stub node that can be run");
+        }
+    }
+
+    let suite = root.join("suite");
+    if host.playwright {
+        let cli = suite.join("node_modules/@playwright/test/cli.js");
+        std::fs::create_dir_all(cli.parent().expect("a file has a directory"))
+            .expect("a stub Playwright tree");
+        std::fs::write(&cli, "// fabricated by the r1-web precondition arms\n")
+            .expect("a stub Playwright CLI");
+    } else {
+        std::fs::create_dir_all(&suite).expect("a suite directory with no Playwright in it");
+    }
+
+    let browsers = root.join("ms-playwright");
+    std::fs::create_dir_all(&browsers).expect("a browsers root");
+    if let Some(spelling) = host.browser {
+        std::fs::create_dir_all(browsers.join(format!("{spelling}-{build}")))
+            .expect("a stub browser directory");
+    }
+
+    (node, suite, browsers)
+}
+
 #[test]
 fn a_declined_rung_names_what_was_missing_and_counts_what_it_did_not_run() {
     // Rubric rule 2, applied to the *reporting*: a skip is only worth anything if it can be
-    // shown to happen and to say something. Each arm below removes exactly one precondition and
-    // asserts the decline names that one — because a rung that answered "install node" to a host
-    // whose node is fine is a rung whose skips stop being read, which is how a skip becomes a
-    // pass in a costume.
+    // shown to happen and to say something. Each arm below arranges exactly one missing
+    // precondition and asserts the decline names that one — because a rung that answered
+    // "install node" to a host whose node is fine is a rung whose skips stop being read, which
+    // is how a skip becomes a pass in a costume.
+    //
+    // ## The host is a value, and it cost a red `just ci` to learn that
+    //
+    // These arms used to take the host they were running on: this machine's `node`, the suite
+    // directory beside this file, and a browsers root that does not exist. Two of the three sat
+    // inside `if node --version succeeds`, and the arrangement could drive none of its questions
+    // reliably, because what it was really asking was what this machine happens to have
+    // installed.
+    //
+    //   - On a host with node and **no `crates/daemon/tests/browser/node_modules/`** — the
+    //     ordinary state of a fresh clone, since that directory is gitignored and `just
+    //     rung-web-install` is what puts it back — the browser arm's precondition returned at the
+    //     *Playwright* question, and the assertion demanding the words "Chromium build 1234"
+    //     panicked. So `just ci` and `just gate-g5` were red on precisely the host state the
+    //     decline exists for, and `scripts/rung-web.sh` read the non-zero exit as FAIL rather
+    //     than as the SKIPPED it was.
+    //   - On a host with no node at all, two of the three arms did not run and nothing counted or
+    //     named them — a silent skip inside the test whose subject is skips not being silent.
+    //
+    // So the host became a value: each arm builds a directory holding exactly what its question
+    // is about, every question is drivable on every machine, and the `if` is gone. **What a
+    // fabricated host cannot say** is stated rather than left implied — that a real `npm ci`
+    // tree really puts the CLI at that path, and that Playwright really names its browser
+    // directories `chromium-<build>` and `chromium_headless_shell-<build>`. Those are facts
+    // about somebody else's tool, and what establishes them is the rung above on a host that has
+    // them, where these same preconditions answer `Ok` and a browser starts.
     let claims = claims();
     assert!(
         !claims.is_empty(),
@@ -506,46 +726,133 @@ fn a_declined_rung_names_what_was_missing_and_counts_what_it_did_not_run() {
 
     let suite = suite_dir();
     let build = pinned_chromium_build(&suite);
-    let nowhere = Utf8PathBuf::from("/nonexistent/webcam-handler/r1-web");
 
-    let no_node = preconditions(&nowhere.join("node"), &suite, &nowhere, &build)
-        .expect_err("there is no node at a path that does not exist");
-    assert!(no_node.missing.contains("no usable node"), "{no_node:?}");
+    // The four declines, each one thing short of the arm below it, and the two accepts that stop
+    // the four from being satisfiable by a `preconditions` that has quietly stopped ever saying
+    // yes — which would skip this rung on every host in the world with every test still green.
+    let declines = [
+        (
+            "no-node",
+            Host {
+                node: NodeState::Absent,
+                playwright: false,
+                browser: None,
+            },
+            "no usable node".to_owned(),
+        ),
+        (
+            "node-refuses",
+            Host {
+                node: NodeState::Refusing,
+                playwright: false,
+                browser: None,
+            },
+            "--version` failed".to_owned(),
+        ),
+        (
+            "no-playwright",
+            Host {
+                node: NodeState::Working,
+                playwright: false,
+                browser: None,
+            },
+            "pinned Playwright is not installed".to_owned(),
+        ),
+        (
+            "no-browser",
+            Host {
+                node: NodeState::Working,
+                playwright: true,
+                browser: None,
+            },
+            format!("Chromium build {build}"),
+        ),
+    ];
 
-    // A real node, and nothing else. `WCH_E2E_NODE` is the same seam the rung itself uses, so
-    // this arm is exercised with whatever node this host has — or, on a host with none, it is
-    // the arm above that fires and this one that is unreachable, which is the honest shape.
-    let node =
-        Utf8PathBuf::from(std::env::var("WCH_E2E_NODE").unwrap_or_else(|_| "node".to_owned()));
-    if Command::new(node.as_std_path())
-        .arg("--version")
-        .output()
-        .is_ok_and(|version| version.status.success())
-    {
-        let no_playwright = preconditions(&node, &nowhere, &nowhere, &build)
-            .expect_err("no Playwright is installed under a path that does not exist");
+    let mut arms = 0;
+    for (arm, host, must_name) in &declines {
+        let (node, suite, browsers) = fabricate(*host, arm, &build);
+        let declined = preconditions(&node, &suite, &browsers, &build)
+            .expect_err("this host is one precondition short");
         assert!(
-            no_playwright
-                .missing
-                .contains("pinned Playwright is not installed"),
-            "{no_playwright:?}"
+            declined.missing.contains(must_name.as_str()),
+            "the `{arm}` arm declined without naming what it took away ({must_name}): \
+             {declined:?}"
         );
-        assert!(no_playwright.remedy.contains("just rung-web-install"));
+        assert!(
+            !declined.remedy.is_empty(),
+            "the `{arm}` arm's decline names no remedy, and a skip an operator cannot act on is \
+             a skip that gets read as a pass: {declined:?}"
+        );
+        arms += 1;
+    }
 
-        let no_browser = preconditions(&node, &suite, &nowhere, &build);
-        match no_browser {
-            // The ordinary answer on a host that got this far: Playwright is installed and the
-            // browser directory is the thing this arm took away.
-            Err(declined) => assert!(
-                declined
-                    .missing
-                    .contains(&format!("Chromium build {build}")),
-                "{declined:?}"
-            ),
-            // A host with node but no `node_modules` never reaches the browser question, and
-            // saying so is better than asserting a decline this arm cannot cause.
-            Ok(_) => panic!("a browser was found under a path that does not exist"),
-        }
+    // Both of Playwright's spellings, because either one is enough to launch and the rung says
+    // so in `preconditions`. A build that lost the headless-shell spelling would decline on
+    // every host that fetched only that one, which is the ordinary result of `install chromium`
+    // with `headless` set — an absent rung, dressed as a named skip.
+    for spelling in ["chromium", "chromium_headless_shell"] {
+        let host = Host {
+            node: NodeState::Working,
+            playwright: true,
+            browser: Some(spelling),
+        };
+        let (node, suite, browsers) = fabricate(host, spelling, &build);
+        let ready = preconditions(&node, &suite, &browsers, &build).unwrap_or_else(|declined| {
+            panic!("a host with all three preconditions was declined ({spelling}): {declined:?}")
+        });
+        assert_eq!(ready.node, node, "the rung would run some other node");
+        assert_eq!(
+            ready.cli,
+            suite.join("node_modules/@playwright/test/cli.js"),
+            "the rung would hand some other file to node"
+        );
+        arms += 1;
+    }
+
+    // The counted half of AGENTS rule 3, about this test rather than about the rung: every arm
+    // ran on every host, and the line says how many and which.
+    println!(
+        "r1-web: {arms} precondition arm(s) driven against a fabricated host — {declines} \
+         decline(s) named ({named}) and 2 accept(s), one per browser-directory spelling",
+        declines = declines.len(),
+        named = declines
+            .iter()
+            .map(|(arm, _, _)| *arm)
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
+    // ---------------------------------------------------------------- the floor, in both
+    // directions
+    //
+    // `verify_report` is a consistency check and says so; this is the half that is a floor. Both
+    // directions are driven here rather than asserted about, because a floor whose failing
+    // direction has never been seen is a number nobody has checked (AGENTS rule 2).
+    assert!(
+        below_the_floor(&claims, &FLOOR).is_empty(),
+        "the committed manifest is below its own floor: {:?}",
+        below_the_floor(&claims, &FLOOR)
+    );
+    let one_short = &claims[..claims.len() - 1];
+    assert!(
+        !below_the_floor(one_short, &FLOOR).is_empty(),
+        "a manifest one claim short of the floor was accepted; deleting a claim from the spec \
+         and from claims.json together is green in every other check in this file"
+    );
+    let silent = vec![Claim {
+        title: "seeded by this test".to_owned(),
+        what: "a claim that asserts nothing".to_owned(),
+        assertions: 0,
+    }];
+    assert!(
+        below_the_floor(&silent, &FLOOR)
+            .iter()
+            .any(|line| line.contains("zero assertions")),
+        "a claim asserting nothing was accepted"
+    );
+    if let Some(surplus) = above_the_floor(&claims, &FLOOR) {
+        println!("{surplus}");
     }
 
     // And the counted half: the decline says how much was not done, and names each piece of it.
@@ -557,10 +864,6 @@ fn a_declined_rung_names_what_was_missing_and_counts_what_it_did_not_run() {
         &claims,
     );
     let assertions: u64 = claims.iter().map(|claim| claim.assertions).sum();
-    assert!(
-        assertions > 0,
-        "a claim that asserts nothing is not a claim"
-    );
     assert!(
         report.contains(&format!(
             "{count} browser claim(s) and {assertions} assertion(s) were not run",

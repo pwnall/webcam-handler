@@ -31,6 +31,15 @@
 // (note **N83**), and a page that loads with no credential while the camera behind it does not
 // (note **N82**, D11's amendment).
 //
+// P5e added two families, both of them about what this client says when it does *not* know
+// something. **Two absences the panel used to fill in for the device** — a control whose
+// `current` never arrived, and a bitmask field handed something that is not a number — which
+// are asserted by handing `controls.js` a document rather than a daemon, for the reasons the
+// block above them gives. And **three claims about a socket that has closed**, because every
+// affordance on this page outlives its connection by design: the buttons are markup, the
+// preview is a separate HTTP request, and the subscriptions are registrations in a map. Each of
+// those had to be told, and the ones that were not told went on looking healthy.
+//
 // ## Nothing here sleeps, and nothing asserts a pixel
 //
 // Every wait is Playwright auto-waiting on a condition the daemon or the browser causes — an
@@ -158,6 +167,193 @@ test("a clamp snaps the slider back and says both numbers", async ({ page }) => 
   // another control's properties outright), so these two are what the camera now holds.
   await expect(card.locator("input[type=range]")).toHaveValue("255");
   await expect(number).toHaveValue("255");
+});
+
+// ----------------------------------------------------------- two shapes the fixture has not
+//
+// **Where these documents come from, and why they are the test's rather than the daemon's.**
+// Everything above drives the shipped composition end to end, and everything above is about a
+// document `synthetic_basic` can produce. Two rendering rules are not: a control whose
+// `current` the device never reported, and a `bitmask` control. The fixture has neither, no
+// backend can be asked to invent one from here — `web_browser.rs` owns the daemon — and both
+// are ordinary rather than exotic. `ControlDesc::current` is an `Option` because a `WRITE_ONLY`
+// control's value is the device's to keep and an enumeration that did not fetch values has
+// none, and **every profile in `corpus/` carries controls that arrive with no current**
+// (`user_controls`, `camera_controls`); `region_of_interest_auto_ctrls` below is the Chicony's
+// own `BITMASK` control, `corpus/profiles/chicony-rgb.json`, id and range and flags as
+// captured.
+//
+// So these two claims hand the *shipped module* a document this project has measured the parts
+// of, in a real Chromium, and assert what it renders. That is the "malformed fixture that must
+// trip the validator" AGENTS asks tests to write, one language over: the module is the subject,
+// the document is the input, and nothing about the daemon is being claimed by either.
+
+/** The Chicony's `Auto Exposure` \[PF:2\], with the one field an enumeration may not fill. */
+const MENU_WITH_NO_CURRENT = {
+  id: 0x009a_0901,
+  name: "Auto Exposure",
+  slug: "auto_exposure",
+  type: { kind: "menu" },
+  range: { min: 0, max: 3, step: 1 },
+  default: 3,
+  flags: { raw: 4096, known: ["has_which_min_max"], unknown_bits: 0 },
+  menu: { 1: { kind: "name", name: "Manual Mode" }, 3: { kind: "name", name: "Aperture Priority Mode" } },
+  elems: 1,
+  elem_size: 4,
+};
+
+/** `Power Line Frequency` as the fixture carries it \[PF:5\] — the same menu, read. */
+const MENU_WITH_A_CURRENT = {
+  id: 0x0098_0918,
+  name: "Power Line Frequency",
+  slug: "power_line_frequency",
+  type: { kind: "menu" },
+  range: { min: 0, max: 2, step: 1 },
+  default: 3,
+  flags: { raw: 0, known: [], unknown_bits: 0 },
+  menu: { 0: { kind: "name", name: "Disabled" }, 1: { kind: "name", name: "50 Hz" }, 2: { kind: "name", name: "60 Hz" } },
+  elems: 1,
+  elem_size: 4,
+  current: { kind: "int", value: 2 },
+};
+
+/** The Chicony's `Region of Interest Auto Ctrls`, a real `BITMASK`, with no current. */
+const BITMASK_WITH_NO_CURRENT = {
+  id: 0x0098_1ae2,
+  name: "Region of Interest Auto Ctrls",
+  slug: "region_of_interest_auto_ctrls",
+  type: { kind: "bitmask" },
+  range: { min: 0, max: 1, step: 0 },
+  default: 1,
+  flags: { raw: 4096, known: ["has_which_min_max"], unknown_bits: 0 },
+  menu: {},
+  elems: 1,
+  elem_size: 4,
+};
+
+/**
+ * Paint one report with `controls.js` itself, beside the panel the daemon filled.
+ *
+ * The page is opened first and the module is `import`ed out of the same origin it already
+ * loaded, so what runs is the file this daemon serves rather than a copy. `write` records what
+ * it was asked for and answers **nothing until released**, which is what makes an in-flight
+ * write observable at all; `refresh` does nothing, because the repaint-from-the-device it
+ * stands for is asserted over the real socket by the clamp claim above and doing it twice here
+ * would be this suite asserting its own stub.
+ */
+async function probePanel(page, controls) {
+  await openClient(page);
+  await page.evaluate(
+    async (report) => {
+      const module = await import("./controls.js");
+      const panel = document.createElement("div");
+      panel.id = "probe";
+      panel.className = "panel";
+      document.body.append(panel);
+      window.wchWrites = [];
+      module.paint(panel, report, {
+        write: (control, value) => {
+          window.wchWrites.push({ control, value });
+          return new Promise((resolve) => {
+            window.wchAnswer = () =>
+              resolve({ writes: [{ slug: control, requested: value, applied: value }] });
+          });
+        },
+        refresh: async () => {},
+      });
+    },
+    { controls },
+  );
+}
+
+/** One card in the probe panel, matched on its slug exactly as `harness.mjs` matches. */
+function probed(page, slug) {
+  return page
+    .locator("#probe .control")
+    .filter({ has: page.locator(".slug", { hasText: new RegExp(`^${slug} · `) }) });
+}
+
+test("a menu whose value the device did not report selects nothing", async ({ page }) => {
+  // `controls.js`'s own header forbids this in as many words — "a `<select>` with no matching
+  // option silently shows its first item, which would make this page report a value the camera
+  // does not hold" — and the guard it wrote for it was `current !== null && !items.some(…)`, so
+  // the case where there is no current at all fell straight through it and the browser selected
+  // the lowest index on the device's behalf. `toggle`, five lines away, checks `=== null`
+  // explicitly and says why: "a box drawn from a value nobody has is a UI asserting a device
+  // state it was never told". A menu is the same claim with more numbers in it.
+  await probePanel(page, [MENU_WITH_NO_CURRENT, MENU_WITH_A_CURRENT]);
+
+  const unread = probed(page, "auto_exposure");
+  const options = unread.locator("option");
+  await expect(options).toHaveText(["— not read —", "1 · Manual Mode", "3 · Aperture Priority Mode"]);
+  // Selected, so the browser's own "first item wins" never runs, and disabled, so the absence
+  // cannot be written back to the device as though it were a value.
+  await expect(unread.locator("select")).toHaveValue("");
+  expect(await options.first().evaluate((node) => node.disabled)).toBe(true);
+  // …and the absence is in words as well as in the widget, which is the note that was already
+  // right: the two together are what stop "not read" from looking like "off".
+  await expect(unread.locator(".note.surprising")).toHaveText(
+    "the device reported no current value for this control",
+  );
+
+  // The positive control, and it is the load-bearing half: a panel that had simply stopped
+  // selecting anything would satisfy every assertion above.
+  const read = probed(page, "power_line_frequency");
+  await expect(read.locator("option")).toHaveText(["0 · Disabled", "1 · 50 Hz", "2 · 60 Hz"]);
+  await expect(read.locator("select")).toHaveValue("2");
+});
+
+test("the bitmask field refuses what it cannot write, and says when a write is in flight", async ({
+  page,
+}) => {
+  // Three findings in one card, because they are three ways the same field lied.
+  //
+  // **`Number("") === 0`.** An operator who cleared the field and tabbed out wrote a zero to
+  // the device — every bit off, silently, from a gesture that means "I have typed nothing yet".
+  // **A non-numeric entry produced no feedback at all**: `Number.isFinite` was false, the
+  // handler returned, and the panel sat there looking exactly as it does after a write that
+  // worked. **And `writing…` was a status nobody could see** — it was recorded in `outcomes`,
+  // which is read by the *next* paint, and the next paint happens after the write resolves.
+  //
+  // The last one is why the stub write above never answers on its own: an in-flight state is
+  // only observable if something can hold the write open, and it is worth observing precisely
+  // because the write it describes may never come back (a socket that dies mid-write leaves
+  // this card as the only thing on screen that knows).
+  await probePanel(page, [BITMASK_WITH_NO_CURRENT]);
+
+  const card = probed(page, "region_of_interest_auto_ctrls");
+  const field = card.locator("input[type=text]");
+  // No current, so no number: the field showed `0x0` for a value the device never gave it,
+  // which is the same fault as the menu above wearing hexadecimal.
+  await expect(field).toHaveValue("");
+
+  await field.fill("zz");
+  await field.blur();
+  await expect(card.locator(".note.live")).toHaveText(
+    '"zz" is not a whole number this field can write, so nothing was written',
+  );
+  expect(await page.evaluate(() => window.wchWrites.length)).toBe(0);
+
+  // What a real entry does, so that "refused" above is a fact about the entry rather than about
+  // a field that cannot write at all.
+  await field.fill("0x3");
+  await field.blur();
+  await expect(card.locator(".note.live")).toHaveText("writing…");
+  expect(await page.evaluate(() => window.wchWrites)).toEqual([
+    { control: "region_of_interest_auto_ctrls", value: { kind: "int", value: 3 } },
+  ]);
+
+  await page.evaluate(() => window.wchAnswer());
+  await expect(card.locator(".note.live")).toHaveText("wrote 3");
+
+  // And the emptied field, which is the destructive one: `0` is a legal bitmask and the device
+  // would have taken it.
+  await field.fill("");
+  await field.blur();
+  await expect(card.locator(".note.live")).toHaveText(
+    "an empty field is not a zero, so nothing was written",
+  );
+  expect(await page.evaluate(() => window.wchWrites.length)).toBe(1);
 });
 
 test("the preview paints successive frames and keeps painting across a photo", async ({ page }) => {
@@ -376,12 +572,27 @@ test("the client loads with no credential and the camera is still refused", asyn
   // The modules did not merely arrive — they **ran**, and they got as far as being refused a
   // socket. `index.html` ships `connecting…` in that element and only a module ever replaces
   // it, so this is the client executing without a credential rather than ten `200`s that did
-  // nothing. The sentence is the honest one: a browser does not hand a page the status of a
-  // failed WebSocket handshake, so the page names both candidates instead of guessing.
+  // nothing.
+  //
+  // **The sentence is the one this page can know, and the assertion is pinned to that rather
+  // than to whatever it happens to say.** A browser does not hand a page the status of a
+  // failed WebSocket handshake, so two candidates are named instead of one guessed at — but
+  // *which* two depends on what this page presented, and on this page it presented nothing.
+  // Until P5e the `catch` wrote "either the token this page was opened with is not this run's,
+  // or nothing is listening on this port any more" unconditionally, and this claim pinned that
+  // sentence and called it honest: a first disjunct that is false by construction, on the one
+  // failure `app.js`'s own header calls the most likely — an operator who read the port off a
+  // log and opened `/` by hand — being read by the operator least able to argue with it. A
+  // claim that pins a wrong sentence is a claim that cannot go red on it, which is why the
+  // repair is here as well as in the client.
   await expect(page.locator("#connection")).toHaveClass(/failed/);
   await expect(page.locator("#connection")).toHaveText(
-    "webcam-handler-daemon did not accept a WebSocket: either the token this page was opened with is not this " +
-      "run's, or nothing is listening on this port any more.",
+    "this page was opened without the ?token= the daemon prints. If webcam-handler-daemon was started " +
+      "with --http-insecure-loopback there is no token and the camera routes are open; " +
+      "otherwise the socket and the preview will be refused, and the URL webcam-handler-daemon printed is " +
+      "the one to open. The socket was then refused (webcam-handler-daemon did not accept a WebSocket) " +
+      "— a page that presented no token cannot be carrying the wrong one, so what is left is the " +
+      "gate above or nothing listening on this port any more.",
   );
 
   expect(served.get("/")).toBe(200);
@@ -534,24 +745,33 @@ test("a page in another origin cannot reach the camera, token and all", async ({
   expect(seen[1].headers["sec-fetch-site"]).toBe("cross-site");
 });
 
-test("the page reports a lost socket and works again on the next one", async ({ page }) => {
-  // **How the socket is cut, and why it is cut this way.** What is being asserted is `rpc.js`'s
-  // `close` handler and `app.js`'s answer to it — the path a stopped daemon or a dropped link
-  // takes — and a test that closed the socket politely from inside the page would reach neither.
-  // `context.setOffline(true)` was tried first and does not close an established WebSocket in
-  // this Chromium, which is worth recording because it looks like it should. So the connection
-  // is proxied and then dropped from the middle: the page's socket really ends while the daemon
-  // is still up and still holding its side, which is the arrangement a lost link produces.
+/**
+ * Proxy this page's socket, open the client through it, and hand back the cut.
+ *
+ * **How the socket is cut, and why it is cut this way.** What the three claims below assert is
+ * `rpc.js`'s `close` handler and `app.js`'s answer to it — the path a stopped daemon or a
+ * dropped link takes — and a test that closed the socket politely from inside the page would
+ * reach neither. `context.setOffline(true)` was tried first and does not close an established
+ * WebSocket in this Chromium, which is worth recording because it looks like it should. So the
+ * connection is proxied and then dropped from the middle: the page's socket really ends while
+ * the daemon is still up and still holding its side, which is the arrangement a lost link
+ * produces.
+ */
+async function proxiedSocket(page) {
   let dropped = null;
   await page.routeWebSocket((url) => url.pathname === "/rpc", (socket) => {
     socket.connectToServer();
     dropped = socket;
   });
-
   await openClient(page);
+  return () => dropped.close();
+}
+
+test("the page reports a lost socket and works again on the next one", async ({ page }) => {
+  const drop = await proxiedSocket(page);
   await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);
 
-  dropped.close();
+  drop();
   await expect(page.locator("#connection")).toHaveText(
     "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
   );
@@ -570,4 +790,86 @@ test("the page reports a lost socket and works again on the next one", async ({ 
   await openClient(page);
   await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);
   await expect(control(page, "auto_exposure").locator("select")).toHaveValue("3");
+});
+
+test("a socket that closed refuses the next call instead of parking it", async ({ page }) => {
+  // **The defect is one instant wide, and `rpc.js`'s own `close` handler is the thing that
+  // argues against it.** That handler rejects every call pending *at* the close because "a
+  // promise nobody will ever settle is a spinner that spins forever" — and then nothing marked
+  // the handle dead, so the very next call parked exactly such a promise. WHATWG is why it is
+  // silent rather than loud: `WebSocket.send()` throws only while the socket is CONNECTING, and
+  // on a CLOSING or CLOSED one it **discards the frame and returns**. No exception, no answer,
+  // no id ever seen again.
+  //
+  // What that looks like from a chair is what this claim drives, and it is why the claim is
+  // here rather than in a protocol test: the page keeps every affordance it had. A click on the
+  // camera it is already showing re-enabled the photo button and reopened the MJPEG preview — a
+  // separate HTTP request whose token is as good as it ever was, so it paints — while
+  // `refreshControls()` hung at its `await` and left the previous panel on screen. Live video
+  // and a full control panel under a banner saying the connection is gone.
+  const drop = await proxiedSocket(page);
+  await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);
+  // The positive control, without which every assertion below is satisfied by a page that
+  // never worked: the button an operator uses is usable while the socket is up.
+  await expect(page.locator("#take-photo")).toBeEnabled();
+
+  drop();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+
+  // The click, on the one camera this fixture has. Nothing about the button changed when the
+  // socket died — it is markup this page painted from a listing it already had — so this is the
+  // ordinary thing an operator does next, and it is the path that used to undo every decision
+  // `socketClosed` had just made.
+  await page.locator("button[data-camera]").first().click();
+
+  // Three consumers, three refusals, and none of them a spinner. `wch_controls` and
+  // `wch_calibrate_list` are answered at once by the handle rather than by the daemon, and each
+  // renders the refusal it already knew how to render.
+  await expect(page.locator("#controls-status")).toHaveText(
+    "the connection to webcam-handler-daemon closed",
+  );
+  await expect(page.locator("#control-panel .control")).toHaveCount(0);
+  await expect(page.locator("#calibration-status")).toHaveText(
+    "the session list was refused: the connection to webcam-handler-daemon closed",
+  );
+  // …and the two things the click used to switch back on. `#take-photo` has one owner since
+  // P5e — a click that re-enabled it was handing an operator a button whose call could never be
+  // answered, and `#photo-status` would have read "taking a photo …" for as long as the tab
+  // lived — and the preview is left as `socketClosed` left it.
+  await expect(page.locator("#take-photo")).toBeDisabled();
+  expect(
+    await page.evaluate(() => document.getElementById("preview-frame").hasAttribute("src")),
+  ).toBe(false);
+});
+
+test("a subscription that died with the socket stops saying it is watching", async ({ page }) => {
+  // **E16 §1's defect class through a different door.** `#sweep-status` exists because the
+  // calibration view's own line was being overwritten by the session list's, and index.html
+  // says what that cost: "a calibration view that had silently stopped being live looked
+  // exactly like a healthy one". `rpc.js`'s `close` handler then dropped every registration
+  // with `streams.clear()` **without calling one `ended`** — so the element got its own home
+  // and went on reading `watching every sweep this daemon runs` about a subscription that no
+  // longer existed, which is the same lie with the same shape.
+  //
+  // The hotplug watch died the same way and more quietly: neither its one retry nor its "the
+  // device-change stream ended twice" sentence could fire, because nothing told it anything.
+  const drop = await proxiedSocket(page);
+  await expect(page.locator("#sweep-status")).toHaveText("watching every sweep this daemon runs");
+
+  drop();
+  await expect(page.locator("#sweep-status")).toHaveText(
+    "the sweep stream ended because the connection to webcam-handler-daemon closed",
+  );
+
+  // **And the sentence the fix must not produce.** Telling the hotplug watch its stream ended
+  // makes it re-subscribe, that call is refused by a dead handle, and its refusal is written
+  // into this element as "connected; this daemon cannot watch for device changes …" — a
+  // sentence that opens by contradicting the one above it. `watchDevices` therefore declines to
+  // write at all once the socket is what ended, which is the ownership rule app.js's header
+  // states: no writer of this element may make a statement it cannot know.
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
 });

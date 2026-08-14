@@ -45,6 +45,11 @@
 // worse than a path an operator can copy.
 
 import { el, fill } from "./dom.js";
+// The *value*, not the transport: this module still opens no socket and is still handed its
+// `rpc` by app.js (app.js's header). `SOCKET_CLOSED` is the vocabulary a subscription's ending
+// is spelled in, and importing the sentinel is what lets this view branch on identity rather
+// than pattern-match a shape off the wire.
+import { SOCKET_CLOSED } from "./rpc.js";
 
 /** How many sweep events the live log keeps. A sweep is minutes; a page is not a journal. */
 const LOG_DEPTH = 200;
@@ -67,7 +72,17 @@ export async function watchSweeps(rpc, { status, log }) {
         // The stream ended and said why. `shutting_down` and a failed source are different
         // advice — re-subscribe, or stop waiting — which is the whole reason the daemon
         // spends a notification on it rather than closing the socket.
-        status.textContent = `the sweep stream ended: ${JSON.stringify(reason)}`;
+        //
+        // A socket that closed is the other ending, and it is not a frame: stringifying a
+        // sentinel at an operator would be this view quoting a notification the daemon never
+        // sent. What it says instead is the true thing, and it says it *at all* — until P5e
+        // this callback was never reached on that path, so a subscription that had stopped
+        // existing left this line reading "watching every sweep this daemon runs", which is the
+        // silently-dead view index.html's two status lines were separated to prevent.
+        status.textContent =
+          reason === SOCKET_CLOSED
+            ? "the sweep stream ended because the connection to webcam-handler-daemon closed"
+            : `the sweep stream ended: ${JSON.stringify(reason)}`;
       },
     );
     status.classList.remove("failed");

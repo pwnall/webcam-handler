@@ -258,6 +258,14 @@ button[disabled] {
   color: var(--owned);
 }
 
+/* A line about what is happening *now* rather than about the document the card was painted
+ * from — a write that has gone out and not come back, and a field refusing what was typed into
+ * it. It is replaced in place and the next repaint takes it away, so it says that by not
+ * looking like the notes that outlive it. */
+.note.live {
+  font-style: italic;
+}
+
 /* ------------------------------------------------------------- calibration */
 
 .session,

@@ -13846,3 +13846,215 @@ absent fails everywhere.
 
 **Retires when:** nothing retires it, though the header table it depends on is N93's and retires
 with the browser that produced it.
+
+## N96 — The page kept its own diagnosis, learned that a closed socket is not a slow one, and told its subscriptions they had died
+
+**Doc:** rubric **B7** (a browser behavior verified only through the JSON the page consumes is not
+verified); **N75** (in D11's token-less cell the gate is *absent*, not permissive); **N82**;
+**E16 §1**, whose defect class two of these three repeat through different doors; docs/11 §3.1,
+findings H4, H5 and H6.
+
+Three HIGH findings from the P5 review's lens 3, repaired together because they are one story: the
+page had three ways of telling an operator something untrue about its own connection.
+
+### H4 — it wrote the right sentence and then destroyed it
+
+`main()` writes an accurate diagnosis for a page opened with no token — it names
+`--http-insecure-loopback`, it names N75's token-less cell, it names the URL to open. Two statements
+later the `catch` overwrote it unconditionally with *"either the token this page was opened with is
+not this run's, or nothing is listening on this port any more"*, **whose first disjunct is false by
+construction** on a page that presented no token, with `state.token === null` in scope at the
+overwrite.
+
+That is the operator error `app.js`'s own header names as the likeliest — someone reading the port
+off a log and opening `/` by hand — and they were told their token was wrong when they had none.
+
+**The browser claim pinned the wrong sentence verbatim and called it "the honest one".** A test
+cannot go red on text it asserts, so the claim was part of the defect rather than a witness to it.
+
+`#connection` now has a stated rule rather than three owners racing: **no writer may make a statement
+it cannot know, and the last writer that still can wins.** The token-less sentence is a constant, so
+its two writers cannot drift.
+
+### H5 — a closed socket parked every call for ever
+
+`rpc.js`'s close handler rejects the calls pending *at* close, and its comment says why: *"a promise
+nobody will ever settle is a spinner that spins forever."* Nothing marked the handle dead. Per
+WHATWG, `WebSocket.send()` throws only for `CONNECTING`; on `CLOSING`/`CLOSED` it **discards the
+frame and returns**. So the next call parked a promise nobody would settle — the defect that handler
+exists to prevent, one instant later.
+
+And the page stayed live around it: clicking a camera re-enabled the photo button and reopened the
+MJPEG preview, which is plain HTTP and still works, so the page showed **live video under a
+"connection closed" banner with the previous camera's control panel still on screen**, because the
+refresh hung at its await.
+
+`#take-photo.disabled` now has **one owner** computing it from `socketOpen && camera && !taking`,
+where it previously had three writers with no arbiter.
+
+### H6 — the subscriptions were never told they had died
+
+`streams.clear()` discarded every registered stream **without calling its `ended` callback**, so
+`#sweep-status` went on reading *"watching every sweep this daemon runs"* about a subscription that
+no longer existed. `index.html` says in as many words that the element exists because *"a
+calibration view that had silently stopped being live looked exactly like a healthy one."* It did
+again, this time because the notification never arrived rather than because another view overwrote
+it.
+
+Every stream now gets `ended(SOCKET_CLOSED)` before the map is cleared, and `SOCKET_CLOSED` is a
+frozen sentinel **compared by identity** — so a daemon that sent `kind: "socket_closed"` cannot
+forge the local condition.
+
+### The platform finding, which is why one half rests on a citation
+
+**Playwright's `routeWebSocket` replaces `window.WebSocket` with a mock whose `send()` *throws* on a
+non-OPEN socket**, where WHATWG and real Chromium discard the frame silently (measured 2026-08-14
+against `playwright-core`'s `WebSocketMock.send`). So the rung's only available cut **cannot show
+the parked promise**: against the mock, the unrepaired client rejected with a `DOMException` instead
+of hanging.
+
+The claim therefore pins the page's *own* refusal, which is identical on both hosts, and the
+parked-promise half rests on the specification. That is E16 §5's category — a thing the rung cannot
+see — and it is recorded in `rpc.js`'s own comment as well as here, because the next person to read
+that claim will otherwise believe it proves more than it does.
+
+### Also repaired, same class, from the same lens
+
+- A menu whose device reported **no current value** showed its lowest index as selected — the exact
+  behaviour `controls.js`'s header forbids ("a `<select>` with no matching option silently shows its
+  first item, which would make this page report a value the camera does not hold"). The guard tested
+  `current !== null` and let the null case fall through, while `toggle()` five lines away handled the
+  same absence explicitly.
+- An emptied **bitmask** field wrote `0`, because `Number("") === 0`, and a non-numeric entry
+  produced no feedback at all.
+- `"writing…"` was a status **no operator could ever see**: it was set and then only repainted after
+  the write resolved. It is painted when set now, which also means a write that never returns says
+  so.
+
+**The rung moved from 11 claims / 84 assertions to 15 / 117.** Five single-line mutations were driven
+to prove the assertions *after* the first one in each claim can go red on their own, because a
+Playwright claim aborts at its first failure and a claim's tail is otherwise unproven.
+
+**Amend this note if** the fixture gains a bitmask control or a control with no current value — two
+of the new claims drive `controls.js` directly with a test-authored report, because
+`synthetic_basic` has neither, and they would be better as end-to-end claims.
+
+## N97 — The gates walk the filesystem, not the repository, so a second checkout inside the tree turns eight of them red at once
+
+**Doc:** AGENTS rule 2 (a gate must be able to fail — and, by implication, must fail for its own
+reason); note **N60**, whose lesson is that a gate which cries wolf gets re-run until it agrees;
+`scripts/gates/lib.sh`'s `gate_find`.
+
+**Believed:** that `gate_find`'s prune list describes the population. Its comment says so —
+"`target/`, `.git/`, `vendor/` and `node_modules/` are excluded everywhere: the first two are not
+source, `vendor/v4l2-webcam-skill/` is a read-only upstream reference this project does not own, and
+`node_modules/` is the R1-web rung's". Each exclusion is argued and each is right.
+
+**True:** the list is a denylist over a filesystem walk, so it describes the population only for as
+long as nobody puts source-shaped files anywhere else. On 2026-08-14 two subagents were given
+isolated git worktrees to repair review findings in, the harness created them under
+**`.claude/worktrees/`** — inside the repository, gitignored — and **eight of twenty-five predicates
+went red simultaneously**: `atomic-write-home`, `dependency-walls`, `ignored-suites-have-recipes`,
+`kill-is-never-a-fallback`, `scratch-has-one-home`, `token-comparison-has-one-home`, `unsafe-scope`
+and `web-routes-are-gated`.
+
+Every violation was a second copy of a file that is *correct where it actually lives*. The clearest
+is `unsafe-scope`:
+
+```
+FAIL  unsafe-scope: .claude/worktrees/agent-…/crates/backends/v4l2/src/sys/wait.rs
+      uses the token `unsafe` outside crates/backends/v4l2/src/sys/
+```
+
+`sys/wait.rs` is exactly where `unsafe` is permitted. What failed is the **path prefix**, because
+the copy's path has a worktree in front of it. The gate's rule was right, its subject was not.
+
+**Measured, and this is what makes it a defect rather than an inconvenience:** with two worktrees
+present, `run-all.sh` reported violations of which **zero** were outside `.claude/worktrees/` — the
+tree the gates exist to describe was clean throughout, and no reader of the output could tell that
+without checking every line.
+
+### Why this is worth an entry rather than a `.gitignore` edit
+
+Adding `.claude` to the prune list fixes this instance and leaves the class. The class is that
+**a gate's population is defined by a walk rather than by the repository**, so any directory a tool
+creates inside the tree — a worktree, an editor's backup, a second `node_modules` somewhere new, an
+unpacked archive — silently joins the subject of every tree-walking claim. The failure is loud here
+only because eight predicates fired at once; a single one firing would read like a finding.
+
+The direction, when somebody takes it: for the predicates whose claim is about *this repository's
+source*, derive the population from `git ls-files` rather than from `find`. That is the same move
+`run-all.sh` already makes for the predicate list ("the population is derived from the directory
+listing, so a predicate that exists is a predicate that runs") applied one level down, and it has
+the property the prune list cannot have — an untracked copy is not a source file, by definition,
+without anybody having to enumerate where copies might appear.
+
+**The counter-argument, and it is why this is not a one-line change.** Some predicates must walk
+the filesystem, because their subject is precisely what is *not* tracked:
+`no-frame-bytes-in-repo.sh` is looking for a frame somebody has not committed yet, and
+`scratch-has-one-home.sh` is about where untracked scratch lands. So the fix is per-predicate rather
+than in `gate_find`, and each one has to say which population it means.
+
+**Immediate mitigation, recorded so the next session is not surprised:** run `just ci` and
+`just gate-gN` with **no worktrees present**. Removing them restores every predicate.
+
+**Amend this note if** a predicate is found whose claim is *weakened* rather than made noisy by the
+extra copies — everything observed here added violations, and a duplicate that could hide one would
+be a worse defect than the one this entry describes.
+
+## N98 — Two repairs in isolated worktrees touched no common file and still left the tree wrong, because isolation separates edits and not meanings
+
+**Doc:** AGENTS rule 3 ("no skip that reads as pass"); note **N96** (the client repairs that raised
+the manifest); docs/11 §3.2 finding M11 (the claims floor).
+
+**Believed:** that giving two concurrent repair agents their own git worktrees made them
+independent. The reasoning was sound as far as it went — two writers in one checkout each see the
+other's half-finished edits as spurious compile failures, and file isolation removes that. The two
+agents were also given disjoint file lists, and both honoured them exactly: `git status` showed
+seven files from one and ten from the other, with **no overlap**.
+
+**True:** the tree was still wrong when both landed, and no diff showed it.
+
+- One agent repaired the browser client and **raised `claims.json` from 11 claims / 84 assertions
+  to 15 / 117**, adding four claims.
+- The other repaired the rung's accounting and introduced the **floor** that finding M11 asked for
+  — `FLOOR { claims: 11, assertions: 84 }` — measured, correctly, against the manifest *it* could
+  see.
+
+Neither touched the other's files. Both were green in their own worktree. Merged, the floor sat
+**four claims below its own manifest**, which means four claims could be deleted from the spec and
+the manifest together in complete silence — *the exact hole the floor was added to close*.
+
+### What caught it, and why that is the interesting part
+
+Not review, not `git status`, not the compiler: **the arm the second agent wrote to prove its own
+floor could bite.** That arm drives a manifest one claim short and requires a complaint. One short
+of 15 is 14; 14 clears a floor of 11; no complaint; red.
+
+So the mechanism worked exactly as designed — a floor whose failing direction is *driven* rather
+than argued caught a hole that had been introduced, in the same session, by an agent that never saw
+it. It is AGENTS rule 2's "write the red-on-inverse first" paying out in a way nobody planned: the
+inverse arm was written to prove the floor could fail, and what it actually did was notice that the
+floor had stopped meaning anything.
+
+### The lesson, stated so the next parallel repair does not relearn it
+
+**Isolation prevents collisions between edits. It does not prevent collisions between meanings.**
+Two agents can hold disjoint files and still disagree about a number, an invariant, or a count that
+spans them — here, "how many claims does this rung carry", which lives in `claims.json` (one
+agent's) and in `web_browser.rs` (the other's).
+
+Concretely, when parallel repairs are dispatched again:
+
+- **Name the shared quantities in both briefs.** Had the floor agent been told "a sibling is adding
+  claims; the floor must be read from the manifest at merge time, not from the manifest you see",
+  the collision would have been a sentence rather than a red test.
+- **Verify at the merge, never only in the worktrees.** Each agent reported green truthfully. Green
+  in a worktree is a statement about that worktree.
+- **Prefer a derived quantity to a transcribed one where the derivation is honest.** A floor cannot
+  be derived from the manifest it guards — that is what makes it a floor — so this one had to be a
+  number somebody raises on purpose, and raising it is what closed the boundary. Where a number
+  *can* be derived, this class does not arise.
+
+**Amend this note if** a parallel repair produces a collision that a shared-quantity brief would not
+have caught, which would mean the mitigation above is weaker than it reads.

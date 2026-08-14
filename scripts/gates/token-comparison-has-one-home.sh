@@ -24,18 +24,33 @@
 # the secret is readable in one named place, the type refuses every operator that would
 # short-circuit on it, and the one comparison that exists is still the one being called.
 #
-# ## The four claims
+# ## The five claims
 #
 #   1. **The secret has one reader.** `Token::expose_secret` is the one rendering that yields
 #      the token, and outside the module that defines it the accessor appears only inside
 #      `#[cfg(test)]`. The token gate is the module this is chiefly about: a comparison written
 #      in `gate.rs` needs the secret in hand, so `expose_secret` in that file's product code is
 #      the defect arriving, spelled out, one line before the `==`.
-#   2. **The type refuses `==`.** No `PartialEq`, `Eq` or `Hash` on `Token`, derived or
-#      hand-written, and no `Display`. `token == candidate` is the same defect wearing a
-#      different hat — `str`'s `PartialEq` compares lengths and then bytes and returns at the
-#      first difference — and `Display` is the other way a secret reaches a comparison or a log
-#      line without anybody typing the word `expose`.
+#   2. **The type refuses `==`, and every operator that would perform one for it.** No
+#      `PartialEq`, `Eq` or `Hash` on `Token`, derived or hand-written, and no `Display`.
+#      `token == candidate` is the same defect wearing a different hat — `str`'s `PartialEq`
+#      compares lengths and then bytes and returns at the first difference — and `Display` is
+#      the other way a secret reaches a comparison or a log line without anybody typing the word
+#      `expose`. **The P5 review widened this to the conversion family**, because four names
+#      closed four doors and left the corridor open: `impl AsRef<str> for Token` and one
+#      `token.as_ref() == candidate` in `gate.rs` was measured to leave every claim here green,
+#      every one of this gate's arms green, and the timing leak live on the credential form that
+#      rides the URL. So `AsRef`, `Borrow`, `Deref`, `ToString`, `Into` and `Serialize` join the
+#      list — each one a way to obtain a `&str`, a `String` or a wire rendering from a `Token`
+#      without the word this project greps for — and `From<Token>` joins it from the other
+#      direction, since a conversion *out of* the type is written `for` something else and no
+#      `for Token` rule would ever see it.
+#
+#      `PartialOrd` and `Ord` are deliberately **not** on either list, and the reason is that
+#      they cannot be reached: both have `PartialEq` as a supertrait, so an ordering on `Token`
+#      does not compile without the equality this already refuses. A name added here for
+#      tidiness would be an arm that can only be seeded with code no compiler accepts, which is
+#      a weaker arm than none.
 #   3. **`Debug` is hand-written and does not print the field.** A derived `Debug` on `Token`
 #      prints the key to a camera into whatever formatted it, which is `crate::logging`'s
 #      doctrine about a photograph applied to a secret. Only half of this is the gate's: the
@@ -48,6 +63,30 @@
 #      behind it, and every claim above would be true of it — this is
 #      `kill-is-never-a-fallback.sh`'s "the only caller went away" arm, about a different
 #      absence.
+#   5. **Inside the home, the field has exactly the readers this gate names.** Claims 1 and 2
+#      are about the rest of the workspace and about the type's public operators; neither of
+#      them can see a *second inherent accessor* written in `token.rs` itself. `pub fn
+#      as_str(&self) -> &str { &self.hex }` is not a banned trait, is not `expose_secret`, and
+#      hands the secret to `gate.rs` with claim 1 counting zero readers — the accessor
+#      confinement's whole subject renamed out from under it. So the readers of `self.<field>`
+#      in the home's product code are reconciled against the register this gate already keeps:
+#      the accessor and the comparison, the same two names claims 1 and 4 are about.
+#
+#      Reconciled in **both** directions, `unsafe-scope.sh`'s residual-register shape: a reader
+#      with no register entry is a new way out of the type, and a register entry that has
+#      stopped reading the field is a `verify` comparing something other than the secret or an
+#      `expose_secret` yielding something other than it. Either alone would leave the other half
+#      of the pair a decoration. The field names come out of the declaration (`struct_fields`
+#      below), never typed here, so a renamed field is still the field this refuses to see read
+#      twice.
+#
+#      It quantifies over **every** field of the type and over a field access on **anything**,
+#      both deliberately. A `Token` that grew a second, innocent field would be a type doing two
+#      jobs — the one thing this whole file is about is that there is exactly one secret with
+#      exactly one way out — and the claim would rather be told about that than assume it. And a
+#      free `fn secret_of(token: &Token) -> &str { &token.hex }` beside the type is the same
+#      second way out with `self` spelled differently, so the match is on the access and not on
+#      the receiver.
 #
 # ## What this does **not** claim
 #
@@ -104,7 +143,16 @@ root="$(gate_root)"
 type_name="Token"
 accessor="expose_secret"
 comparison="verify"
-banned_traits=(PartialEq Eq Hash Display)
+# Traits nothing may implement **for** `Token`: four that compare or print it, and six that
+# convert it into something a `==` accepts. The header argues each family and says why the
+# ordering traits are not here.
+banned_traits=(PartialEq Eq Hash Display AsRef Borrow Deref ToString Into Serialize)
+# Traits nothing may implement **taking** `Token`, whatever they are implemented for. A
+# conversion out of the type is written `for String`, so no rule spelled `for Token` can see it.
+banned_conversions=(From TryFrom PartialEq)
+# The two functions that may read the field inside the home, which are the two names claims 1
+# and 4 are already about. Derived from the policy above rather than written a second time.
+field_readers_allowed=("$accessor" "$comparison")
 
 daemon_dir="$(gate_metadata |
     jq -r '.packages[] | select(.name == "webcam-handler-daemon") | .manifest_path' |
@@ -198,10 +246,19 @@ while IFS= read -r -d '' file; do
     if grep -Eq -- "impl[^;{]*\b($banned_alternation)\b[^;{]*for[[:space:]]+$type_name\b" <<<"$stripped"; then
         for trait_name in "${banned_traits[@]}"; do
             if grep -Eq -- "impl[^;{]*\b$trait_name\b[^;{]*for[[:space:]]+$type_name\b" <<<"$stripped"; then
-                gate_fail "$rel implements \`$trait_name\` for \`$type_name\`; a token compared with \`==\` — or rendered by a \`Display\` and compared after — short-circuits at the first differing byte, which is the timing leak \`$comparison\` exists to not have"
+                gate_fail "$rel implements \`$trait_name\` for \`$type_name\`; a token compared with \`==\` — or rendered, borrowed or converted into a \`&str\` and compared after — short-circuits at the first differing byte, which is the timing leak \`$comparison\` exists to not have"
             fi
         done
     fi
+
+    # The same claim from the other direction: a conversion *out of* the type is implemented for
+    # whatever it produces, so `impl From<Token> for String` names `$type_name` nowhere the rule
+    # above looks. What it yields is the secret, and what the caller does with it is one `==`.
+    for trait_name in "${banned_conversions[@]}"; do
+        if grep -Eq -- "impl[^;{]*\b$trait_name<[[:space:]]*&?[[:space:]]*$type_name\b" <<<"$stripped"; then
+            gate_fail "$rel implements \`$trait_name<$type_name>\`; a conversion taking the token hands its secret to whatever asked for one, and the caller that receives a \`String\` is a caller holding the key with no accessor named in the diff"
+        fi
+    done
 
     grep -Fq -- "$accessor" <<<"$stripped" || continue
     readers=$((readers + 1))
@@ -332,6 +389,78 @@ else
     fi
     gate_checked "$debug_claims" "claim(s) about what the hand-written \`Debug\` may name"
 fi
+
+# ------------------------------------------------------------------ claim 5: the field's readers
+#
+# The register is `field_readers_allowed` — the accessor and the comparison, which is the policy
+# already named at the top of this file rather than a second list — and the tree side is every
+# product-code line of the home that reads a field of the type, attributed to the function it
+# sits in.
+# Both sides are walked; a reader with no entry and an entry with no reader both fail, which is
+# `unsafe-scope.sh`'s residual register applied to a field instead of to a token.
+#
+# **Attribution is by the last `fn` seen above the line**, which is the same order of rule the
+# rest of this file uses: it fits in a sentence, a reader can check it by eye, and it does not
+# need a Rust parser. What it costs is stated: a field read inside a nested item — a closure
+# assigned nowhere, an `impl` inside a function — is attributed to the enclosing `fn`, and a read
+# that sits under no `fn` at all is a **failure and not a pass**, because a line this cannot
+# attribute is a reader nobody can reconcile.
+
+field_alternation="$(
+    IFS='|'
+    printf '%s' "${token_fields[*]}"
+)"
+
+# Which function each product-code read of a field sits in, one name per read.
+#
+# A field access on **anything** and not only on `self`, because `fn secret_of(token: &Token) ->
+# &str { &token.hex }` beside the type is the same second way out written as a free function. The
+# struct literal in the constructor is `hex:` with no dot in front of it and is deliberately not
+# a read — a value going *into* the type is how the token is minted.
+readers_by_function() {
+    local file="$1" start="$2" fields="$3"
+    gate_product_lines "$file" "$start" |
+        awk -v field_re="\\.($fields)([^A-Za-z0-9_]|\$)" '
+            {
+                if (match($0, /(^|[^A-Za-z0-9_])fn[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+                    current = substr($0, RSTART, RLENGTH)
+                    sub(/^.*fn[ \t]+/, "", current)
+                }
+                if ($0 ~ field_re) { print (current == "" ? "<no enclosing fn>" : current) }
+            }
+        '
+}
+
+mapfile -t field_reads < <(readers_by_function "$home" "$home_product_start" "$field_alternation")
+mapfile -t reading_functions < <(printf '%s\n' "${field_reads[@]}" | grep -v '^$' | sort -u)
+
+for reader in "${reading_functions[@]}"; do
+    allowed=0
+    for permitted in "${field_readers_allowed[@]}"; do
+        if [[ "$reader" == "$permitted" ]]; then
+            allowed=1
+        fi
+    done
+    if ((allowed == 0)); then
+        gate_fail "$home_rel reads a field of \`$type_name\` inside \`$reader\`, which is neither \`$accessor\` nor \`$comparison\`; a second way out of this type needs no banned trait and no \`$accessor\` in the diff — \`token.$reader() == candidate\` in $gate_rel is then the short-circuiting comparison with every other claim here still green"
+    fi
+done
+
+for permitted in "${field_readers_allowed[@]}"; do
+    seen=0
+    for reader in "${reading_functions[@]}"; do
+        if [[ "$reader" == "$permitted" ]]; then
+            seen=1
+        fi
+    done
+    if ((seen == 0)); then
+        gate_fail "\`$permitted\` in $home_rel no longer reads a field of \`$type_name\`; the register this gate reconciles has an entry with nothing behind it, which is a comparison comparing something other than the secret or an accessor yielding something other than it"
+    fi
+done
+
+gate_checked "${#field_reads[@]}" "read(s) of \`$type_name\`'s own field(s) in $home_rel's product code, reconciled against ${#field_readers_allowed[@]} registered reader(s)"
+gate_require_nonzero "${#field_reads[@]}" "reads of the token's field inside its home"
+gate_note "the field(s) ${token_fields[*]} are read in: ${reading_functions[*]}"
 
 # ------------------------------------------------------------------ claim 4: something compares
 #

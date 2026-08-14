@@ -512,6 +512,45 @@ gate_tree_changes() {
     diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") | grep -E '^[<>]' || true
 }
 
+# --------------------------------------------------------------- what a failing arm asserts
+#
+# `selftest.sh`'s verdict for a `fail_case_` is one number: the predicate's exit status. That is
+# the right verdict and it is not enough on its own, because a seeded violation is often red
+# under more than one branch — dropping an emission makes the old name an orphan *and* makes the
+# committed copy stale; deleting a module makes the confinement vacuous *and* removes the
+# anchor. An arm reading only the status cannot tell which branch fired, so a branch can rot to
+# unreachable while its arm stays comfortably non-zero, which is note **N10**'s family: a gate
+# green while checking less than it claims.
+#
+# So an arm names the sentence it is claiming. **Green is how this harness says "look at me"** —
+# a predicate that stayed green, or that went red about something else, makes the arm exit 0,
+# which `selftest.sh` reports as a problem rather than passing over.
+#
+# One home rather than three: this was written for `cases/schema-artifacts-current.cases.sh`
+# (note **N31**), copied verbatim into `cases/cli-parity.cases.sh`, and the P5 review's third
+# caller is what made the copies a decision rather than an accident. The two that existed were
+# still byte-identical only because nobody had yet edited either, which is the state every
+# second copy is in right up until it is not.
+#
+#   $1  a fixed string the predicate's output must contain while failing
+#   $2… the command to run
+gate_red_because() {
+    local pattern="$1"
+    shift
+    local output status=0
+    output="$("$@" 2>&1)" || status=$?
+    if ((status == 0)); then
+        printf 'the predicate stayed green; it was expected to fail with: %s\n%s\n' \
+            "$pattern" "$output" >&2
+        return 0
+    fi
+    if ! grep -Fq -- "$pattern" <<<"$output"; then
+        printf 'the predicate went red, but not because of: %s\n%s\n' "$pattern" "$output" >&2
+        return 0
+    fi
+    return "$status"
+}
+
 # --------------------------------------------------------------- scratch copies
 
 # Copy the tree under test somewhere writable and echo the path. Used by the selftest's
