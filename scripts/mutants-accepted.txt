@@ -42,3 +42,7 @@ crates/engine/src/store.rs: replace match guard err.kind() == io::ErrorKind::Wou
 
 # --- equivalent: a delegation whose target is always None today [N37] ---
 crates/api/src/codes.rs: replace <impl std::error::Error for WireError>::source -> Option<&(dyn std::error::Error +'static)> with None  # [N37] no schema::Error variant carries a source, so the delegation and `None` are the same program
+
+# --- equivalent: an early guard the filter below it already applies [N101] ---
+crates/imaging/src/avi.rs: replace || with && in interval_micros       # [N101] a zero numerator divides to zero and is dropped by the `> 0` filter; a zero denominator makes `checked_div` return None
+crates/imaging/src/avi/write.rs: replace > with >= in AviWriter<W>::declared_interval  # [N101] the span filter; a span of 0 divides to a mean of 0, which the mean's own `> 0` filter drops. NOT the `frames_written >= 2` guard four lines above, which is caught

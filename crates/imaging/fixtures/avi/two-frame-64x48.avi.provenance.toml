@@ -1,0 +1,20 @@
+# Provenance for the frozen AVI beside this file.
+#
+# A sidecar rather than a marker in the bytes, and that is a decision: `imaging::avi::write`
+# writes no comment chunk, and giving it one so that this file could carry its own marker
+# would move the very bytes the fixture exists to freeze. `scripts/gates/no-frame-bytes-in-
+# repo.sh` accepts either form for exactly this reason — "a format with nowhere convenient
+# to put it".
+#
+# The long version of this table, with the generator arguments and what the file pins, is
+# `crates/imaging/fixtures/README.md`. Two homes for one fact is normally a defect; here the
+# README is prose for a person and this file is what a gate can read, so the gate reads this
+# one and the README states why.
+
+generated-by = "imaging::avi::write::AviWriter over two JPEGs from imaging::fixtures"
+generated-on = "2026-08-14"
+nature = "synthetic"
+camera = "none — no capture, no device, no frame off a sensor (design §5, AGENTS 'Hardware and privacy')"
+frames = "encode::jpeg(checkerboard(64, 48, 8), 15) — 409 bytes, odd; encode::jpeg(text_like(64, 48), 30) — 1162 bytes, even"
+stream = "64x48 MJPG, two frames, measured interval 50000 us"
+asserted-by = "imaging::avi::write::tests::the_frozen_fixture_is_still_the_file_the_muxer_emits, which re-generates both JPEGs and compares them against the frames it reads back out of these bytes"

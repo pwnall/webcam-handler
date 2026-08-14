@@ -121,6 +121,55 @@
 # The exclusions are stated as *absence from `examine_globs`* rather than as
 # `exclude_globs`, so widening the floor is adding a line rather than deleting one.
 #
+# ## What P6a widened, and the state it was found in (2026-08-14)
+#
+# `crates/imaging/src/avi/` — the AVI muxer and the reader beside it. It landed appearing
+# **in neither list**, which is the one state the `crates/daemon` paragraph above records as
+# forbidden: an exclusion that is not a decision with a date is an oversight wearing one.
+# The P6a review found it there and the answer is "in", for the reason `metrics.rs` two
+# directories along is already in:
+#
+#   avi.rs        the shared value types and `interval_micros`, a total fold over a
+#                 `FrameInterval` that refuses to guess (AGENTS rule 6)
+#   avi/read.rs   `read_stream` and `recover_frames`: `&[u8]` in, values out. It opens
+#                 nothing, reads no clock and makes no syscall, and every refusal in it is
+#                 seeded by a fixture built byte by byte in the same file
+#   avi/write.rs  the muxer. It takes a `W: Write + Seek` rather than values, which would
+#                 normally put it with `engine`'s shell; what makes it decidable is the same
+#                 thing that carried `engine::preview` in at P5e — its whole suite drives it
+#                 over a `Cursor<Vec<u8>>` and a scripted `ShortSink` with a budget, so "the
+#                 close-time rewrite reached both homes of the rate" and "the size cap counts
+#                 the index" are claims a mutant can break and a test can catch with no rig
+#
+# The cost is measured rather than guessed: 318 mutants, taking the floor's population from
+# 624 to 942. That is the largest single widening this file has taken and it is worth
+# stating, because it is also roughly a 50% increase in a job whose header already says
+# hours not minutes.
+#
+# **It earned its keep on the first run over it**, which is the P4d precedent repeating.
+# 318 mutants: 274 caught, 33 unviable, no timeouts, and **eleven survivors**. Nine were
+# real gaps and became tests in the same session; the two that are left are equivalent
+# mutants, argued in note **N101** and registered in `scripts/mutants-accepted.txt`. What
+# the nine were is the argument for the widening in one list — a twelve-byte file (a whole
+# RIFF envelope and nothing else) refused as a foreign format instead of as a truncated
+# recording; `recover_frames` silently dropping `00db` frames *and* handing back another
+# stream's chunks as ours; the chunk-header room comparison wrong in both off-by-one
+# directions, one of which reads a 3-byte tail as a chunk header; a one-digit stream id
+# accepted as a stream chunk; a `LIST odml` inside `hdrl` — legal, and emitted by many
+# writers — parsed as a stream list; and `find_movi` walking a RIFF file that is not an AVI.
+# Not one of them is a message-only nicety, and none of them was reachable by the suite that
+# shipped with the module.
+#
+# One honest qualification about that run: it was executed at **crate** scope
+# (`--package webcam-handler-imaging`) rather than at the workspace scope this file pins,
+# because the workspace build per mutant made the full run impractical in one session. The
+# result is sound for these files and no stronger claim is being made: workspace scope runs
+# a superset of crate scope's tests, so it can only kill more, and at P6a nothing outside
+# `webcam-handler-imaging` references `imaging::avi` at all — P6b is where the engine picks
+# it up. The first workspace-scope run to include these files is therefore expected to
+# reproduce exactly the two accepted survivors, and the register is checked both ways, so it
+# will say so if it does not.
+#
 # ## What P5e widened, and why each of the four earns it
 #
 # The owner asked for the floor over P5's code on 2026-08-13, on the ground that it has
@@ -171,6 +220,9 @@ examine_globs = [
     "crates/engine/src/settle.rs",
     "crates/engine/src/store.rs",
     "crates/engine/src/sweep.rs",
+    "crates/imaging/src/avi.rs",
+    "crates/imaging/src/avi/read.rs",
+    "crates/imaging/src/avi/write.rs",
     "crates/imaging/src/metrics.rs",
 ]
 

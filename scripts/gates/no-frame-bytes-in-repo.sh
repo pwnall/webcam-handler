@@ -5,21 +5,39 @@
 # extensions are advisory and `.gitignore` is not a privacy control, so every file in the
 # tree is sniffed for an image magic number.
 #
-# `corpus/images/` is the one place an image may live, and only under three conditions
-# (design §3.2: synthetic fixtures only):
+# Each format has exactly one directory it may live in, and it may live there only under
+# three conditions (design §3.2: synthetic fixtures only):
 #
 #   1. It carries a `generated-by` provenance marker — in the bytes (a PNG `tEXt` chunk
 #      or a JPEG comment segment both satisfy this) or in a `<file>.provenance.toml`
 #      sidecar. A fixture that cannot say what produced it is indistinguishable from a
 #      frame that came off a camera.
-#   2. It is a PNG or a JPEG — the two formats this tool emits. Anything else in the
-#      fixture directory arrived from somewhere unexamined.
+#   2. It is a PNG, a JPEG or an AVI — the three formats this tool emits. Anything else in
+#      a fixture directory arrived from somewhere unexamined.
 #   3. It is small. The cap below is deliberately under VGA: 640x480 is the smallest mode
 #      a webcam commonly offers, so a fixture that exceeds the cap is either a frame or a
 #      fixture that should have been generated smaller.
 #
+# ## Why a container is sniffed at all, which P6a is the answer to
+#
+# The still-image half of this gate is old. The video half is not, and it landed because
+# the P6a review found the hole it fills: `crates/imaging/fixtures/avi/two-frame-64x48.avi`
+# put **two JPEG bitstreams into the tree** where nothing could see them. A `RIFF`/`AVI `
+# container matches no image magic number — the WEBP arm below needs `WEBP` at offset 8 —
+# so the file reported as "not an image", the run stayed green, and the only thing standing
+# behind it was one in-crate assertion covering one file by name. A second AVI committed
+# anywhere tomorrow would have been invisible to every predicate in this suite, and rule 1
+# asks for a gate that can go red on the *class* rather than prose about it.
+#
+# So an AVI is walked to its `avih` and held to the same three conditions, with the frame
+# extent read out of the header rather than out of a still image's. Provenance for a
+# container is a sidecar: our muxer writes no comment chunk, and adding one to carry a
+# marker would move the frozen bytes the fixture exists to freeze.
+#
 # Honest limit, recorded in docs/9 and design §3.3 item 6: this sniffs *known* formats. A
-# frame inside an unrecognised container passes, and review carries that half.
+# frame inside a container this file does not walk still passes, and review carries that
+# half — the list is now four still formats and one container rather than four and none,
+# which narrows the gap without closing it.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -34,7 +52,19 @@ max_fixture_dim=512
 # and the cap also bounds the cost of the dimension parse below.
 max_fixture_bytes=1048576
 
-fixture_dir="corpus/images"
+# One home per format, because they are different fixture families with different owners.
+# `corpus/images/` is design §3.2's synthetic still-image directory; the AVI belongs to one
+# crate's muxer and lives with it, the same split `crates/backends/v4l2/fixtures/` makes.
+image_dir="corpus/images"
+video_dir="crates/imaging/fixtures/avi"
+
+# Where a file of this format is allowed to be.
+home_for() {
+    case "$1" in
+    avi) printf '%s\n' "$video_dir" ;;
+    *) printf '%s\n' "$image_dir" ;;
+    esac
+}
 
 # ------------------------------------------------------------------ sniffing
 
@@ -54,6 +84,12 @@ sniff() {
     esac
     if [[ "$head4" == "52494646" && "${head12:16:8}" == "57454250" ]]; then
         printf 'webp\n'
+    fi
+    # The same envelope with our own form type. `52494646` is `RIFF` and `41564920` is
+    # `AVI ` — the trailing space is part of the FourCC, and a form type this specific
+    # cannot be two plausible bytes of anything else.
+    if [[ "$head4" == "52494646" && "${head12:16:8}" == "41564920" ]]; then
+        printf 'avi\n'
     fi
     # "BM" alone is two plausible bytes of text, so a BMP must also agree with itself
     # about its own size before we call it one.
@@ -97,6 +133,28 @@ jpeg_dimensions() {
         }'
 }
 
+# The frame extent an AVI declares, out of `avih` — nothing, if this is not an AVI whose
+# header can be walked to.
+#
+# A walk of two chunks rather than a search for a byte pattern: the specification puts
+# `LIST hdrl` first inside the `AVI ` form and `avih` first inside `hdrl`, so the three
+# FourCCs below sit at fixed offsets in any conforming file, and `avih.dwWidth`/`dwHeight`
+# are at +32 and +36 of its payload. A file that does not match prints nothing, which the
+# caller turns into a failure — an AVI whose geometry cannot be read is an AVI nobody
+# checked, and this gate does not have a second way to find out how big its frames are.
+avi_dimensions() {
+    local file="$1" width height
+    # 12 the first chunk's id, 20 its list type, 24 the first chunk inside it: `LIST`,
+    # `hdrl`, `avih` as hex.
+    [[ "$(od -An -j12 -N4 -tx1 -v "$file" | tr -d ' \n')" == "4c495354" ]] || return 0
+    [[ "$(od -An -j20 -N4 -tx1 -v "$file" | tr -d ' \n')" == "6864726c" ]] || return 0
+    [[ "$(od -An -j24 -N4 -tx1 -v "$file" | tr -d ' \n')" == "61766968" ]] || return 0
+    width="$(od -An -j64 -N4 -tu4 --endian=little -v "$file" | tr -d ' ')"
+    height="$(od -An -j68 -N4 -tu4 --endian=little -v "$file" | tr -d ' ')"
+    [[ -n "$width" && -n "$height" ]] || return 0
+    printf '%s %s\n' "$width" "$height"
+}
+
 has_provenance() {
     local file="$1" sidecar
     if LC_ALL=C grep -qaiE 'generated[-_]by' "$file"; then
@@ -123,9 +181,10 @@ while IFS= read -r -d '' file; do
     fi
     images=$((images + 1))
     rel="${file#"$root"/}"
+    home="$(home_for "$format")"
 
-    if [[ "$rel" != "$fixture_dir/"* ]]; then
-        gate_fail "$rel is a committed $format image; images live only in $fixture_dir/ (design §5: a frame may contain a person)"
+    if [[ "$rel" != "$home/"* ]]; then
+        gate_fail "$rel is a committed $format carrying frame data; a $format lives only in $home/ (design §5: a frame may contain a person)"
         continue
     fi
 
@@ -145,15 +204,16 @@ while IFS= read -r -d '' file; do
     case "$format" in
     png) dims="$(png_dimensions "$file")" ;;
     jpeg) dims="$(jpeg_dimensions "$file")" ;;
+    avi) dims="$(avi_dimensions "$file")" ;;
     *)
-        gate_fail "$rel is a $format image; $fixture_dir/ holds PNG and JPEG fixtures only"
+        gate_fail "$rel is a $format; the fixture directories hold PNG, JPEG and AVI fixtures only"
         continue
         ;;
     esac
 
     read -r width height <<<"$dims"
     if [[ -z "${width:-}" || -z "${height:-}" ]]; then
-        gate_fail "$rel is a $format image whose dimensions could not be read; an unreadable fixture is not a checked fixture"
+        gate_fail "$rel is a $format whose frame extent could not be read; an unreadable fixture is not a checked fixture"
         continue
     fi
     if ((width > max_fixture_dim || height > max_fixture_dim)); then
@@ -163,12 +223,12 @@ done < <(gate_find "$root")
 
 gate_checked "$sniffed" "files content-sniffed for image magic numbers"
 gate_require_nonzero "$sniffed" "files"
-gate_checked "$images" "images found in the tree"
+gate_checked "$images" "files carrying frame data found in the tree"
 
 if ((fixtures == 0)); then
-    gate_skip 0 "provenanced fixtures validated — $fixture_dir/ is empty until the synthetic imaging fixtures land; the no-images-anywhere-else claim above is what carries this run"
+    gate_skip 0 "provenanced fixtures validated — neither $image_dir/ nor $video_dir/ holds one; the nothing-anywhere-else claim above is what carries this run"
 else
-    gate_checked "$fixtures" "fixtures in $fixture_dir/ checked for provenance, format and size"
+    gate_checked "$fixtures" "fixtures in $image_dir/ and $video_dir/ checked for provenance, format, size and frame extent"
 fi
 
 gate_finish

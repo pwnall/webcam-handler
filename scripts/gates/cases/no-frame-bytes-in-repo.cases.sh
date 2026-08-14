@@ -29,6 +29,40 @@ _write_jpeg() {
     } >"$out"
 }
 
+_le32() {
+    local v="$1"
+    printf '%b' "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+        "$((v & 255))" "$(((v >> 8) & 255))" "$(((v >> 16) & 255))" "$(((v >> 24) & 255))")"
+}
+
+_zeros() {
+    local n="$1" i
+    for ((i = 0; i < n; i++)); do printf '\x00'; done
+}
+
+# An AVI whose `avih` declares $2 x $3. Header list only: there is no frame in it, which is
+# the point — the predicate reads the declared extent, not pixels.
+_write_avi() {
+    local out="$1" width="$2" height="$3"
+    {
+        printf 'RIFF'
+        _le32 92
+        printf 'AVI '
+        printf 'LIST'
+        _le32 68
+        printf 'hdrl'
+        printf 'avih'
+        _le32 56
+        _zeros 32
+        _le32 "$width"
+        _le32 "$height"
+        _zeros 16
+        printf 'LIST'
+        _le32 4
+        printf 'movi'
+    } >"$out"
+}
+
 pass_case() {
     "$GATE"
 }
@@ -87,6 +121,65 @@ fail_case_fixture_in_an_unexpected_format() {
     mkdir -p "$tree/corpus/images"
     printf 'GIF89a\x01\x00\x01\x00\x00\x00\x00generated-by: the gate selftest' \
         >"$tree/corpus/images/pattern.gif"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The shape the P6a review found: a container carrying frames, in the one directory that
+# owns it, with the marker in a sidecar because the muxer writes no comment chunk.
+pass_case_provenanced_avi_fixture() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/avi"
+    _write_avi "$tree/crates/imaging/fixtures/avi/generated.avi" 64 48
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/avi/generated.avi.provenance.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The finding itself: before P6a's repair, an AVI anywhere in the tree matched no magic
+# number and the run stayed green.
+fail_case_avi_outside_its_fixture_directory() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    _write_avi "$tree/docs/recording.avi" 64 48
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_avi_without_provenance() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/avi"
+    _write_avi "$tree/crates/imaging/fixtures/avi/unmarked.avi" 64 48
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The same cap the still fixtures get, read out of `avih` rather than out of a SOF0.
+fail_case_avi_over_the_dimension_cap() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/avi"
+    _write_avi "$tree/crates/imaging/fixtures/avi/vga.avi" 640 480
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/avi/vga.avi.provenance.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# A provenanced AVI whose header this predicate cannot walk to. An extent it cannot read is
+# an extent it cannot bound, and a fixture nobody checked must not read as a checked one.
+fail_case_avi_whose_frame_extent_cannot_be_read() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/avi"
+    {
+        printf 'RIFF'
+        _le32 92
+        printf 'AVI '
+        printf 'JUNK'
+        _le32 80
+        _zeros 80
+    } >"$tree/crates/imaging/fixtures/avi/headerless.avi"
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/avi/headerless.avi.provenance.toml"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 

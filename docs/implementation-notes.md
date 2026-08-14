@@ -14058,3 +14058,174 @@ Concretely, when parallel repairs are dispatched again:
 
 **Amend this note if** a parallel repair produces a collision that a shared-quantity brief would not
 have caught, which would mean the mitigation above is weaker than it reads.
+
+## N99 — The AVI muxer is eight times D7's line estimate, and most of the excess is the thing the estimate assumed CI would provide
+
+**Doc:** design **D7 L0** ("the format is frozen, so we own ~300 lines with an ffprobe
+round-trip oracle in CI"); docs/7 **P6a** ("`imaging::avi` (~300 lines, frozen format)").
+Recorded 2026-08-14, the day P6a's review measured it.
+
+**Believed:** that owning an AVI muxer costs about three hundred lines, because the format is
+frozen and there is nothing to invent.
+
+**True:** 2 442 non-test lines across the three files, 4 762 with their tests. Broken down the
+way the estimate should have been:
+
+| | code | doc/comment | blank | total |
+|---|---|---|---|---|
+| `avi.rs` — the shared value types | 67 | 147 | 12 | 226 |
+| `avi/read.rs` — the independent re-parse path | 795 | 394 | 67 | 1 256 |
+| `avi/write.rs` — the muxer | 568 | 331 | 61 | 960 |
+
+So the *muxer* is 568 lines of code against an estimate of ~300 — under two times, which is
+an estimate being an estimate. The 8× headline is three things being counted as one.
+
+### Where the rest of it went, and why none of it is fat
+
+- **795 code lines are not the muxer.** They are `read.rs`, which docs/7 P6a asks for by name
+  as "an independent re-parse path that is **not** the writer's code". D7's sentence budgeted
+  ~300 lines *and an ffprobe round-trip oracle in CI* — and the oracle is the half that did
+  not survive contact with AGENTS' "runtime external binaries are not dependencies": docs/7
+  P6d makes ffprobe/mpv a present-or-counted-skip rung, which means it cannot be the thing
+  that holds the format correct on a machine that does not have it. The correctness burden
+  the oracle was estimated to carry therefore moved *inside the repository*, as a second
+  implementation written from the specification before the muxer existed. That is a
+  deliverable D7 named and did not count.
+- **872 lines are doc and comment**, which is this project's register (AGENTS "Writing code")
+  and not a cost the estimate was ever about.
+- **A driver is untrusted input** (rubric B10, AGENTS rule 6). A muxer that writes
+  `size as u32` is three hundred lines. A muxer where every integer reaching a size field
+  goes through `try_from` to a typed refusal, every sum through `checked_add`, and the crate
+  root bans `as` outright is not — and the refusals are where the lines go, because each one
+  carries the two numbers that disagree.
+
+### The estimate's *argument* survives, and that is the part worth keeping
+
+D7 used "~300 lines" to argue that owning a muxer beats linking a codec stack whose licence
+this project could not ship. At 1 430 lines of code that argument is unchanged, because it
+was never a comparison of line counts — LGPL linkage is not cheaper at any size. The number
+was rhetorical support for a licence decision, and the licence decision is untouched.
+
+**What this changes:** nothing in the code, and one thing in the next estimate. **D7 L1's
+"h264-reader + a pure-Rust MP4 muxer" is estimated the same way this was**, and MP4 is not a
+frozen format with one layout — it is a box tree with a parsing model of its own. Whoever
+prices L1 should price it against these numbers rather than against D7's sentence, and
+should count the independent re-parse path as a separate deliverable rather than as rounding.
+
+**Amend this entry if** the muxer is ever measured against an oracle that runs everywhere, in
+which case `read.rs`'s 795 lines become a redundancy with a cost rather than the thing
+holding the claim, and the trade should be re-argued rather than inherited.
+
+## N100 — A chunk id is header data only while the walk that found it is synchronised, so a parser quotes its own vocabulary or it quotes nothing
+
+**Doc:** rubric **A12** / AGENTS "Hardware and privacy" ("a frame may contain a person";
+error messages carry counts, offsets, dimensions and format names — never frame bytes).
+Recorded 2026-08-14, from P6a's review.
+
+**Believed:** that quoting a FourCC in a refusal is free under A12. `imaging::avi::read`'s own
+module doc said so in as many words — "no refusal in this module quotes a payload byte; they
+carry offsets, counts, lengths, dimensions and FourCCs" — and `fourcc_name` carried the
+justification: *a chunk id is header data, not payload.*
+
+**True:** it is header data only while the walk that found it is synchronised, and a size
+field is exactly what desynchronises one. Measured on the committed fixture: set the first
+frame chunk's size field from 409 to 206 and the `movi` walk resumes at offset 438, which is
+206 bytes into that frame's entropy-coded scan data. The bytes there are `4567` — two ASCII
+digits, so the stream-chunk test accepts them — and the refusal that followed read
+
+```
+chunk `4567` at offset 438 declares 1127889208 bytes, which runs past the end of the file
+```
+
+Four bytes of a frame, in a message that travels to logs and to the wire. The same class had
+a second member one line down: the pad-byte refusal printed `offset 1033 holds 0x75`, and
+1033 is 383 bytes into the second frame's scan data whenever the size field is the thing that
+is wrong — which is the only case that refusal exists for.
+
+### Why checking harder cannot fix it
+
+The tempting repair is to quote the id only at a *trusted* boundary. There is no such thing
+inside `movi`: the first chunk's position is derived from the `movi` FourCC, and every
+position after it is derived from a size field the file supplied. A chunk that is
+well-formed in every checkable way — plausible id, size that fits, pad byte present and zero
+— and simply *lies about its length* is precisely what breaks the chain, and no amount of
+validation distinguishes it from a correct one until the index is reached, which is after the
+walk has already refused.
+
+### The rule that replaced it
+
+**A refusal echoes the parser's own vocabulary or it echoes nothing.** `NAMED_CHUNKS` is the
+eight ids `read.rs` dispatches on; `located(id, at)` prints "chunk `strh` at offset 100" when
+the id is one of them and "the chunk at offset 438" when it is not. A name in that list is a
+*format name*, which A12 permits by name, and echoing it echoes a constant declared at the
+top of the file rather than four bytes read out of one. The diagnosis survives intact,
+because what a reader needs in order to go and look is the offset.
+
+Two things were given up and both were worth it: a genuine audio file's `01wb` is now
+reported as "the chunk at offset N belongs to a stream this reader does not carry", and the
+pad refusal says the byte is not zero rather than what it is. Neither costs a diagnosis the
+offset does not already carry, and the second was never a diagnosis at all.
+
+**Generalises to:** every parser in this workspace that quotes something it read out of an
+input it is in the middle of failing to parse. The test that holds it here is
+`no_refusal_quotes_a_byte_of_the_frame_the_walk_landed_in`, which seeds a *lying size field*
+rather than a corrupt id, because the lying size field is what puts the cursor inside a frame.
+
+**Amend this entry if** a parser here needs to report an unrecognised identifier verbatim to
+be useful — in which case the question to answer first is whether the region it was read from
+can hold a frame, and the answer for a `movi` list is yes.
+
+## N101 — Two degenerate-value guards in the AVI muxer are shadowed by the filter below them, and the mutants that prove it are equivalent
+
+**Doc:** `scripts/mutants-accepted.txt`'s admissibility rule — an acceptance is either "no
+hermetic test can turn the line red" or "the mutant is **equivalent**: no input at all
+distinguishes the two programs". These two are the second kind. Recorded 2026-08-14, from
+the first mutation-floor run over `imaging::avi` (P6a review, finding 10).
+
+**The two mutants, and why no input separates them from the originals.**
+
+**`imaging::avi::interval_micros`, `replace || with &&`.** The guard reads
+`if numerator == 0 || denominator == 0 { return None; }`, and mutating it to `&&` makes it
+fire only when both are zero. Every input that then reaches the arithmetic still answers
+`None`:
+
+- `numerator == 0`, any non-zero denominator: `0 * 1_000_000` is `0`, `0 / d` is `0`, and
+  the closing `.filter(|value| *value > 0)` drops a zero interval — which is the filter's
+  own job, since half a microsecond truncating to nothing is refused on the same ground.
+- `denominator == 0`, any numerator: `checked_div(0)` is `None`, and the `?` returns it.
+- Both zero: the mutated guard fires, exactly as the original does.
+
+**`imaging::avi::write::AviWriter::declared_interval`, `replace > with >=`.** The line is
+`.filter(|span| *span > 0)` over a `u64`, so `>= 0` makes the filter the identity. The only
+span it stops admitting is `0`, and a span of `0` divides to a mean of `0`, which the next
+line's `.filter(|mean| *mean > 0)` drops for the reason its own comment gives: a zero frame
+interval is meaningless to every player, and `strh.dwRate` of zero is a file `read_stream`
+refuses outright. The division cannot itself be the difference, because `span_us` is `Some`
+only when `frames_written >= 2`, so the divisor is at least one — and *that* comparison is a
+separate mutant which the suite catches.
+
+### Why they are kept rather than deleted
+
+Both guards are removable without changing behaviour, and both are kept because they say
+what the function refuses at the point a reader asks. `interval_micros`' doc paragraph
+argues the degenerate cases by name ("a zero numerator or denominator, or one that works out
+to zero microseconds"); deleting the guard would leave that paragraph describing an effect
+produced two statements later by a `checked_div` and a filter, which is the same behaviour
+told worse. The cost of keeping them is these two lines in the acceptance register, and the
+register is checked in both directions — so if either guard ever *becomes* load-bearing,
+the mutant stops surviving and the job goes red on the acceptance rather than staying quiet.
+
+**Retire this entry if** either function grows a caller or a branch that reaches the guard
+with an input the filters below no longer cover, at which point the acceptance will announce
+itself by failing.
+
+### The rest of that run, for the record
+
+The floor's first pass over `imaging::avi` was 318 mutants: **274 caught, 33 unviable, 0
+timeouts, 11 survivors.** Nine of the eleven were real gaps and became tests in the same
+session — the twelve-byte envelope refused as a foreign file rather than as a truncated one,
+`recover_frames` dropping `00db` and admitting `01wb`, the chunk-header room comparison in
+both of its off-by-one directions, the "plus a pad byte" clause, both branches of the
+named/unnamed chunk rule (N100), a one-digit stream id, a `LIST odml` inside `hdrl` read as
+a stream list, and `find_movi` walking a RIFF file that is not an AVI. Every one was watched
+failing against a hand-applied copy of its mutant. The two above are what was left.

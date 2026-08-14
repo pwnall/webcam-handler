@@ -13,6 +13,7 @@
 //! | [`encode`] | the D6 sink encodings: PNG, JPEG re-encode, binary PPM/PGM |
 //! | [`photo`] | the pass-through-vs-re-encode decision (E6) |
 //! | [`exif`] | capture metadata stamped onto JPEG bytes (D6) |
+//! | [`avi`] | the D7 L0 video container, and an independent reader that distrusts it |
 //! | [`metrics`] | the D8 metric set as pure functions over a luma image |
 //! | [`fixtures`] | deterministic synthetic images for tests, the fake, and the corpus |
 //!
@@ -49,6 +50,7 @@
 mod fault;
 mod vocabulary;
 
+pub mod avi;
 pub mod decode;
 pub mod encode;
 pub mod exif;
