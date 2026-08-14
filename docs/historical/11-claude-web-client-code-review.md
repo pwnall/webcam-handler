@@ -88,10 +88,10 @@ failing first and the repair landed with it.
 | H1 | 1 | **The header credential is written to the daemon's own log.** `rpc.rs`'s residual 4 declared the class closed because `without_the_query` strips `?token=` before jsonrpsee logs the request; jsonrpsee logs the request line **and the headers**, and the gate accepts `Authorization: Bearer` — the form the daemon's own 401 body recommends. Under systemd that is a persistent journal readable by `systemd-journal`/`adm`, for a run-long token, on the route that drives a camera | **Fixed** — note **N94**, commit `4f983b2` |
 | H2 | 2 | **The web listener had no accept-time connection bound.** `rpc.rs` claimed one on the strength of jsonrpsee's `ConnectionGuard`, which is taken per in-flight *request*. `uds.rs` had already measured that ("with the cap at 32, 128 idle connections were all accepted and held") and grown a semaphore; the TCP listener never did. Unauthenticated, because the flood sends no byte and so never reaches the gate | **Fixed** — `4f983b2` |
 | H3 | 2 | **The `try_send` hop drops the newest event and never consults `on_lag`.** The broadcast hop does consult it and drops the *oldest*; the compiler-asserted sizing relation (256 > 64) guarantees the private hop fails first. Together: `OnLag::EndTheStream` — the mechanism that makes the hotplug delta vocabulary honest — sits on the hop a slow client can never reach, and the hop it always reaches is silent. `SweepFinished`/`SweepInterrupted` carry no `index`/`total`, so the module's "a gap is self-healing and the next event repaints the bar" is false for exactly the event most likely to be lost | **Open — needs an owner ruling.** N57 records the drop policy and the sizing relation separately; they are jointly contradictory, and reconciling them is a doctrine change |
-| H4 | 3 | **The page writes the right credential diagnosis and then destroys it**, and a browser claim pins the destroyed-by sentence verbatim while calling it "the honest one". For a page opened with no token the surviving sentence's first disjunct is false by construction | **Repair in flight** |
-| H5 | 3 | **After the socket closes the page stays fully interactive and every call hangs for ever.** `WebSocket.send()` throws only for `CONNECTING`; on `CLOSED` it discards the frame. Clicking a camera re-enables the photo button and reopens the MJPEG preview, so the page shows live video under a "connection closed" banner with the previous camera's panel on screen | **Repair in flight** |
-| H6 | 3 | **`streams.clear()` never calls each stream's `ended`**, so `#sweep-status` keeps asserting liveness about a subscription that no longer exists — the defect class `index.html` says that element exists to prevent | **Repair in flight** |
-| H7 | 4 | **The rung's decline proof goes red, not skipped, on the host state the decline exists for.** On a fresh clone with node and no `node_modules` — the ordinary state — the test panics demanding a Chromium build when what is missing is Playwright, taking `just ci` and `just gate-g5` red with it. Reproduced by parking `node_modules` | **Repair in flight** |
+| H4 | 3 | **The page writes the right credential diagnosis and then destroys it**, and a browser claim pins the destroyed-by sentence verbatim while calling it "the honest one". For a page opened with no token the surviving sentence's first disjunct is false by construction | **Fixed** — note **N96**, commit `f95bee5` |
+| H5 | 3 | **After the socket closes the page stays fully interactive and every call hangs for ever.** `WebSocket.send()` throws only for `CONNECTING`; on `CLOSED` it discards the frame. Clicking a camera re-enables the photo button and reopens the MJPEG preview, so the page shows live video under a "connection closed" banner with the previous camera's panel on screen | **Fixed** — N96. One half rests on the specification: Playwright's `routeWebSocket` mock *throws* where Chromium discards, so the rung cannot show the parked promise |
+| H6 | 3 | **`streams.clear()` never calls each stream's `ended`**, so `#sweep-status` keeps asserting liveness about a subscription that no longer exists — the defect class `index.html` says that element exists to prevent | **Fixed** — N96 |
+| H7 | 4 | **The rung's decline proof goes red, not skipped, on the host state the decline exists for.** On a fresh clone with node and no `node_modules` — the ordinary state — the test panics demanding a Chromium build when what is missing is Playwright, taking `just ci` and `just gate-g5` red with it. Reproduced by parking `node_modules` | **Fixed** — `f95bee5`. Six arms against a fabricated host, four declines and **two accepts** — the accepts closing the larger hole, a `preconditions` that had stopped returning `Ok` |
 
 ### 3.2 The MEDIUM and LOW findings
 
@@ -323,6 +323,27 @@ Three things are worth carrying forward to the next phase review:
    the most transferable lesson here and it is recorded as **N94**.
 
 ---
+
+## 6a. What the repairs themselves produced
+
+Two findings that are *not* among the 82, because they were produced by the act of repairing rather
+than by the act of reviewing. Both are recorded because docs/8's G4 reconciliation already names the
+pattern — "the session that repairs a review's findings is itself a review" — and this session
+produced three instances of it, counting the rebinding finding in §5.
+
+- **N97 — the gates walk the filesystem, not the repository.** Giving the two repair agents isolated
+  git worktrees put two complete checkouts under `.claude/`, which is gitignored and *inside* the
+  tree, and **eight of twenty-five predicates went red at once**. Every violation was a correct file
+  at a wrong path. The tree was clean throughout and no reader of the output could have told.
+  `gate_find`'s prune list is a denylist over a walk; the class is that the population is defined by
+  the filesystem rather than by `git ls-files`.
+- **N98 — isolation separates edits, not meanings.** The two agents held **disjoint file lists** and
+  both were green in their own worktree. One raised the rung's manifest to 15 claims / 117
+  assertions; the other introduced the claims *floor* this review asked for (finding M11), measured
+  against the 11/84 it could see. Merged, the floor sat four claims below its own manifest — the
+  exact hole it existed to close. What caught it was the arm the second agent wrote to prove its
+  floor could bite: one claim short of 15 is 14, which clears a floor of 11 and complains about
+  nothing. AGENTS rule 2's red-on-inverse paid out in a way nobody planned.
 
 ## 7. What remains open at the close of the session
 
