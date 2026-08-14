@@ -34,6 +34,10 @@ cargo build --locked --workspace
 Nothing external is needed at *runtime*. `ffprobe` and `mpv` appear only as test oracles,
 and `node` only for the browser test rung — neither is ever a build dependency.
 
+Those two lines are everything a *build* needs. Working on the project needs more, and what
+that is — required, optional, and what each optional one buys — is
+[Development dependencies](#development-dependencies) below.
+
 ## Installing
 
 Each binary installs from its own crate. Install the two you need, or all four.
@@ -149,16 +153,226 @@ webcam-handler-daemon --http
 It prints a URL with a single-use token in it. Open that URL. The listener is loopback-only by
 default and the token is what stands between a stranger on your machine and your camera.
 
+## Development dependencies
+
+**None of this is a runtime dependency, and the distinction is a rule rather than a
+nicety.** The product shells out to nothing; everything below is either a *build*
+dependency or a *test-time* one. `libclang` is consumed by a dependency's build script;
+`ffprobe`, `mpv`, `node` and a pinned Chromium are oracles and harnesses that examine our
+output from outside; `modprobe` is reached only through the dev-only `webcam-handler-priv`,
+which note **N8** justifies on exactly that ground — a process boundary in a test rig is
+not a link edge in a product. Design §2.8 keeps this category named and outside the shipped
+licence inventory so it is chosen once. If a line inside `crates/` ever reaches for one of
+these, that is the rule being broken and not a shortcut being taken.
+
+Three levels follow and you can stop at the one you need. The first two are required; the
+third is optional, and each entry there buys a rung. **No absence in the third level is
+silent** — every auto-skipping rung reports a named, counted skip saying which precondition
+was missing and what it therefore did not claim (AGENTS rule 3), so going without a tool
+costs you a stated claim rather than a quiet green.
+
+### Required to build
+
+Already in [Building](#building) and not repeated here: `clang`, `libclang-dev`,
+`linux-libc-dev`. The reason is one level down the graph — `v4l` pulls `v4l2-sys-mit`,
+whose build script runs `bindgen` over the kernel UAPI headers (**PF:10**, accepted under
+the owner's build-deps-are-fine ruling). No *workspace member* has a build script of its
+own, and `node_is_never_a_build_dependency` in `crates/daemon/tests/web_browser.rs` asserts
+that over every member manifest, which is what keeps a bundler from ever becoming part of
+`cargo build`.
+
+### Required for `just ci`
+
+`just ci` is the floor — fmt, clippy with `-D warnings`, nextest, the doc build,
+`cargo-deny`, the hygiene step, then every gate predicate and the self-test that proves
+each one can go red. It runs **offline** by construction, and `.github/workflows/ci.yml`
+runs that same recipe verbatim so a green laptop and a green runner mean the same thing.
+That workflow's install step is the authoritative list; this is it, plus `git`:
+
+```sh
+sudo apt install jq shellcheck git                                    # Debian/Ubuntu
+cargo install --locked just cargo-nextest cargo-deny cargo-machete typos-cli
+```
+
+| tool | what runs it | without it |
+|---|---|---|
+| `just` | every recipe in this README, and CI's only command | nothing below is runnable |
+| `cargo-nextest` | `just test`, and every rung — `just ci` passes `--no-tests=fail` | no test step at all |
+| `cargo-deny` | `just deny`, offline, over `deny.toml` | the licence and ban walls stop being checked |
+| `cargo-machete` | `just hygiene`, `--with-metadata` | unused dependencies accumulate unseen |
+| `typos-cli` (binary `typos`) | `just hygiene` | — |
+| `shellcheck` | `just hygiene`, over `scripts/*.sh scripts/gates/*.sh scripts/gates/cases/*.sh` | the gate suite is unlinted shell |
+| `jq` | the gates themselves | the gate suite cannot run |
+| `git` | `gate_root` in `scripts/gates/lib.sh` | gates cannot find the tree they are checking |
+
+`jq` and `shellcheck` are load-bearing rather than cosmetic, because **the gates are shell
+programs over `cargo metadata`**: `msrv-sync.sh` reads every workspace member's resolved
+`rust-version` through `jq` to prove the MSRV is one fact, and `dependency-walls.sh`
+computes the crate graph the same way. A host without `jq` does not get a degraded gate
+suite, it gets none. `git` is the softer of the two — `WCH_GATE_ROOT` overrides the `git
+rev-parse --show-toplevel` lookup, and `mutation-verdict.sh` degrades to a counted skip in a
+checkout git cannot describe — but a normal working tree wants it.
+
+Two more are on any Linux host already and are noted so their absence is diagnosable rather
+than mysterious: `coreutils` supplies the `mkfifo` that `crates/daemon/tests/signals.rs` and
+`crates/daemon/tests/mutating_verbs.rs` use to watch a daemon's stderr without a sleep, and
+`systemd` supplies `systemd-socket-activate`, `systemd-run` and `journalctl`, which
+`scripts/gates/socket-activation.sh` needs to hand the daemon a socket it did not open and
+to read back a unit whose stderr is the journal. On a host without them that gate declines
+four named claims and says which unit tests carry the argument instead. The same file's
+neighbour, `uds-permissions.sh`, wants a second account and a non-interactive `sudo -n` to
+try walking into the socket directory as somebody else; without either it declines by name,
+having still checked the directory mode.
+
+### Optional — each one buys a rung
+
+| tool | apt / cargo | what it buys | what the decline costs |
+|---|---|---|---|
+| `nodejs`, `npm` | `sudo apt install nodejs npm` | **R1-web**, the browser rung | ten browser claims, 79 assertions |
+| pinned Playwright + Chromium | `just rung-web-install` | the same rung's actual browser | as above; node alone is not enough |
+| `ffmpeg` (for `ffprobe`), `mpv` | `sudo apt install ffmpeg mpv` | the container oracles the recording rung uses | the AVI muxer is believed only by readers we wrote |
+| `kmod`, the `vivid` module | `sudo apt install kmod`; see below | **R2**, the virtual-driver rung | 77 controls and compound payloads nothing else reaches |
+| `libcap2-bin` + one `sudo` | `sudo apt install libcap2-bin`, then `just bless` | R2 without a manual `modprobe`, and the hotplug arms | R2 runs only where somebody already loaded the module |
+| Miri on a nightly toolchain | `rustup toolchain install nightly && rustup +nightly component add miri` | `just miri` over the pure decode units | the unsafe-adjacent decoders go uninterpreted |
+| `cargo-mutants` | `cargo install --locked cargo-mutants` | `just mutants`, the mutation floor | a G4 criterion cannot close |
+| a camera | — | **R3**, `just smoke-hw` | every device claim rests on the fake's model of a device |
+
+#### The browser rung (R1-web)
+
+`just rung-web-install` is the whole install — `npm ci` under
+`crates/daemon/tests/browser/`, then the Playwright CLI *it just installed* fetching the
+browser build that CLI names. It is a recipe a human runs rather than something a test does
+on your behalf, because it is the one step here that reaches the network, and neither half
+may drift: `npx playwright` would happily resolve some other version and fetch some other
+browser, which is the failure the pin exists to prevent. The pin is threefold —
+`@playwright/test` at exactly `1.62.1` with no range operator, Chromium build `1234`, and
+Chrome version `151.0.7922.34` — declared in `crates/daemon/tests/browser/package.json`
+beside a committed `package-lock.json`, and *asserted* in `pins.spec.mjs`, because a version
+being arranged and a version being checked are two different claims (evidence **E16**). The
+lockfile's engines floor is Node 20 or newer; Ubuntu's `nodejs` clears it. `WCH_E2E_NODE`
+points the rung at a node that is not on `PATH`, and `PLAYWRIGHT_BROWSERS_PATH` at a browser
+cache that is not `~/.cache/ms-playwright`.
+
+This rung is deliberately **not** `#[ignore]`d: design §3.1 puts it on every push where the
+host has node, so `just ci`'s test step already runs it and `.config/nextest.toml` gives its
+binary `success-output = "final"` so a decline can never be printed into a void. `just
+rung-web` is the accounting on top — it ends on `RAN` or `SKIPPED`, which is what `just
+gate-g5` records. Worth stating honestly: **the GitHub workflow installs no node**, so
+upstream CI takes the decline every time and a developer's laptop is where this rung
+actually runs. Going without it forfeits the half of the web client that only a browser can
+establish — a sparse menu becoming a `<select>` carrying the device's own indices rather
+than an option's position (**PF:2**), an INACTIVE control rendered enabled and badged
+(**PF:3**) beside a READ_ONLY one rendered disabled (**PF:12**), a clamp moving the slider
+back with both numbers (**PF:6**), and the credential split note **N82** created, where the
+static assets load anonymously while `/preview` and the WebSocket upgrade do not. AGENTS
+puts it plainly: a browser behavior verified only through the JSON the page consumes is not
+verified.
+
+#### The container oracles (`ffprobe`, `mpv`)
+
+```sh
+sudo apt install ffmpeg mpv   # ffprobe ships inside the ffmpeg package
+```
+
+These are the oracles the recording work is measured against. D7 L0 accepts a hand-written
+AVI muxer at a stated price — "~300 lines *and* an ffprobe round-trip oracle" — and docs/7
+**P6d** commissions that harness over generated AVI as present-or-counted-skip, with docs/9's
+oracle-accounting row making a silently-absent oracle a defect in its own right. P6 is the
+phase in flight, so install these before touching `crates/imaging/src/avi/`.
+
+What their absence costs is specific and not small: the muxer's player-compatibility claim
+falls back on readers this repository also wrote. `avi-reparse-is-independent.sh` and the
+byte-exact fixture in `crates/imaging/fixtures/avi/` are real and they hold the format still
+— but a fixture produced by the code under test proves only that the output has not drifted,
+never that it is right. Only a program nobody here wrote can say whether a real player opens
+the file. Both tools stay strictly test-time: the product's promise in this README's opening
+paragraph is that it links libraries and talks to the kernel, and a `record` verb that
+learned to spawn `ffmpeg` would end that.
+
+#### The vivid rung (R2)
+
+`vivid` is a kernel module presenting a V4L2 capture device with no hardware behind it —
+the only way to exercise the real ioctl layer on a machine with no camera, and the only rung
+that reaches 77 controls and compound payloads where the attached cameras offer 18 and 24.
+
+```sh
+sudo apt install kmod libcap2-bin   # modinfo/modprobe, and setcap/getcap for the helper
+modinfo vivid                       # the check: on Ubuntu it ships in the running kernel's
+                                    # own linux-modules package, already installed
+just bless                          # once, needs sudo once; grants webcam-handler-priv its
+                                    # capabilities, mode 0700, owner only
+just priv-doctor                    # what the helper can do right now, and why not if it cannot
+just rung-vivid-managed             # load, run, unload
+```
+
+`just bless` is idempotent and re-verifies rather than trusting its own stamp: an rsync or a
+backup-restore strips a file's capabilities, and reporting "already blessed" over a copy that
+is effectively un-capped would be skip-reads-as-pass wearing a filesystem. **Never `modprobe`
+by hand** — `scripts/rung-vivid.sh` refuses to load a kernel module on your behalf, and
+`just rung-vivid-managed` is the supported path, loading through the helper and unloading in
+a trap. The helper itself is root-equivalent and dev-only; note **N8** is the argument for
+its existing at all, and docs/7 P6e is where it gets narrowed or deleted.
+
+Without the module, `just rung-vivid` prints a named, counted skip that distinguishes the two
+cases it can tell apart — installed but not loaded, versus not available on this host — and
+exits zero having claimed nothing. A green R2 is also not evidence about real cameras:
+`vivid` does not model INACTIVE-coupled menus with holes, which is why R3 exists.
+
+#### Miri, and the mutation floor
+
+```sh
+rustup toolchain install nightly && rustup +nightly component add miri
+cargo install --locked cargo-mutants
+```
+
+`just miri` runs `cargo +nightly miri nextest run` over `sys::decode` and `sys::payload` —
+the half of the unsafe module that makes no syscall. **Miri cannot cross an ioctl**, so a
+green run is never "the unsafe module is verified"; the rest of that module is R2's and R3's
+to exercise. Without the component the script names the missing precondition and prints the
+one-line remedy.
+
+`just mutants` is the floor that turns "the tests constrain the pure cores" from a claim into
+a measurement, scoped in `.cargo/mutants.toml`. Budget tens of minutes at least: the last
+full run this project recorded was **526 mutants in 42 m 07 s** (evidence E14), and
+`imaging::avi` has joined the scope since, which N101's scoped pass measured at a further 318
+— so the figure to plan against is the one your own run prints, not this sentence. That cost
+is why it is a rung and a G4 criterion and never a `just ci` step. Run `just mutants-iterate` after each
+development stage instead: it skips what a previous run already caught, so it costs the
+handful still open, and it answers **PARTIAL** and never PASS, because the mutants it skips
+are exactly the ones a deleted test would have stopped catching. Every survivor becomes a new
+test or a reasoned acceptance in `scripts/mutants-accepted.txt` citing its N-entry, and the
+register is checked both ways — an acceptance that stopped surviving fails the job. Without
+`cargo-mutants` the recipe reports a named, counted skip; installing it is never an
+escalation, but `just gate-g4` cannot close without a full run.
+
+#### The hardware rung (R3)
+
+R3 needs a camera rather than a package, plus your user in the `video` group — see
+[Your user needs access to the camera](#your-user-needs-access-to-the-camera) above. `just
+smoke-hw` runs the `#[ignore]`d `hw_*` suites against whatever is attached, restoring
+everything it touches and asserting the restoration, motor positions included. **Motors move
+by default** (owner ruling, 2026-08-08), because an untested motor is untested code;
+`WCH_NO_MOTION=1` excludes the `hw_motion_*` suites as a named, counted skip for runs where
+the camera is pointed at a person. Never run two hardware rungs at once — one streamer per
+node is the kernel's rule, and `.config/nextest.toml` serialises `hw_` and `vivid_` in a
+one-thread group because the alternative is a perfectly correct `EBUSY` from a perfectly
+correct backend.
+
 ## Development
 
 ```sh
 just ci          # everything CI runs, offline: fmt, clippy, tests, docs, licenses, gates
 just gate-g0     # a phase gate — named, counted, re-runnable
 just selftest    # proves every gate predicate can go red, in both directions
-just smoke-hw    # the real-hardware rung; needs a camera, moves no motors by default
+just smoke-hw    # the real-hardware rung; needs a camera, and moves motors by default —
+                 # WCH_NO_MOTION=1 opts out (owner ruling, 2026-08-08)
 just rung-web    # the browser rung, in a pinned headless Chromium; declines by name without
                  # node — `just rung-web-install` is what supplies it
 ```
+
+`just --list` has the rest — `rung-vivid-managed`, `miri`, `mutants`, `generate`, `bless`.
+What each of them needs installed, and what its decline costs you, is
+[Development dependencies](#development-dependencies) above.
 
 Read `AGENTS.md` before changing anything. The reasoning behind every rule it states lives
 in `docs/`.
