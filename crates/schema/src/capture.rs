@@ -51,10 +51,10 @@ pub struct StreamRequest {
     /// this is the only seat from which the chooser can be told, and the alternative is a
     /// second parameter on the backend trait for a bit only one of its callers has.
     ///
-    /// Because it is derived at the point of use rather than sent, `wch` and `wchc` get the
-    /// same answer for the same command without the wire carrying anything: both roots
-    /// reach [`PhotoRequest::stream_for_sink`], one in process and one after the daemon has
-    /// parsed the document.
+    /// Because it is derived at the point of use rather than sent, `webcam-handler-cli` and
+    /// `webcam-handler-client` get the same answer for the same command without the wire
+    /// carrying anything: both roots reach [`PhotoRequest::stream_for_sink`], one in process
+    /// and one after the daemon has parsed the document.
     #[serde(default, skip)]
     pub sink_fidelity: SinkFidelity,
 }
@@ -784,13 +784,13 @@ impl Sink {
     /// Whether this sink names somewhere the engine can actually address.
     ///
     /// D10 says a [`Sink::ServerPath`] is absolute and that clients resolve `-o out.jpg`
-    /// against their **own** cwd before sending. `cli_core::Command::photo_request` is the
-    /// one place that resolution happens, so a sink `wch` built always satisfies this —
-    /// which is exactly why the rule needs a predicate rather than a paragraph. The moment
-    /// a `Sink` can arrive off a socket (P4c routes `wch_photo`) it can arrive relative,
-    /// and the daemon's cwd under systemd is `/`: `{"kind":"server_path","path":"out.jpg"}`
-    /// would silently write `/out.jpg` as the daemon's uid, or refuse naming a path the
-    /// caller never asked for.
+    /// against their **own** cwd before sending. `cli_core::Command::photo_request` is the one
+    /// place that resolution happens, so a sink `webcam-handler-cli` built always satisfies
+    /// this — which is exactly why the rule needs a predicate rather than a paragraph. The
+    /// moment a `Sink` can arrive off a socket (P4c routes `wch_photo`) it can arrive
+    /// relative, and the daemon's cwd under systemd is `/`:
+    /// `{"kind":"server_path","path":"out.jpg"}` would silently write `/out.jpg` as the
+    /// daemon's uid, or refuse naming a path the caller never asked for.
     ///
     /// A predicate beside the variants, and not a validating constructor, for the reason
     /// `api::PhotoResponse::bytes_match_the_delivery` is one: the document is built by
@@ -800,9 +800,9 @@ impl Sink {
     ///
     /// **Its consumer landed at P4c**: `daemon::server::addressable` asks this before the
     /// `photo` handler resolves a camera, so a request no build was going to honour costs
-    /// nobody a descriptor, and the refusal it raises is `Error::IllegalTransition` naming
-    /// the path (notes N34 and N46). `wch` still cannot produce a sink that fails it, which
-    /// is why the both-directions test for the rule lives here rather than there.
+    /// nobody a descriptor, and the refusal it raises is `Error::IllegalTransition` naming the
+    /// path (notes N34 and N46). `webcam-handler-cli` still cannot produce a sink that fails
+    /// it, which is why the both-directions test for the rule lives here rather than there.
     #[must_use]
     pub fn is_addressable(&self) -> bool {
         match self {
@@ -816,14 +816,13 @@ impl Sink {
     /// One home for a rule that used to have its two halves in two crates. The *decision* —
     /// `.png` means PNG, and a path with no extension at all is a JPEG — lived in
     /// `engine::photo::sink_format`, and the *refusal* for an extension this build cannot
-    /// write lived in `cli_core::Command::photo_request`, where it ran while parsing a
-    /// command line. The engine's comment said as much out loud: "an unknown one never
-    /// reaches here — the CLI refuses it while building the sink". That sentence stopped
-    /// being true the moment a `Sink` could arrive off a socket, because `wchd` links no
-    /// `cli-core`: `{"kind":"server_path","path":"/tmp/x.webp"}` produced JPEG bytes in a
-    /// file named `.webp`, and a delivery reporting a path whose extension lies about its
-    /// contents. Both surfaces call this now, so the refusal holds wherever a request comes
-    /// from.
+    /// write lived in `cli_core::Command::photo_request`, where it ran while parsing a command
+    /// line. The engine's comment said as much out loud: "an unknown one never reaches here —
+    /// the CLI refuses it while building the sink". That sentence stopped being true the
+    /// moment a `Sink` could arrive off a socket, because `webcam-handler-daemon` links no
+    /// `cli-core`: `{"kind":"server_path","path":"/tmp/x.webp"}` produced JPEG bytes in a file
+    /// named `.webp`, and a delivery reporting a path whose extension lies about its contents.
+    /// Both surfaces call this now, so the refusal holds wherever a request comes from.
     ///
     /// A path with **no** extension is a JPEG rather than a refusal, and that arm is kept
     /// exactly as it was: it is a filename the caller chose and we do not get to rename it.
@@ -866,9 +865,9 @@ impl Sink {
 
 /// Everything one photo needs (design D5, D6, D10).
 ///
-/// Assembled by the caller so `wch photo`, the daemon's `photo` method and a calibration
-/// sample all ask for a photo the same way — the sweep at P3 varies the control values
-/// between shots and nothing else.
+/// Assembled by the caller so `webcam-handler-cli photo`, the daemon's `photo` method and a
+/// calibration sample all ask for a photo the same way — the sweep at P3 varies the control
+/// values between shots and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PhotoRequest {
     /// What to ask the device's format negotiation for.
@@ -911,11 +910,12 @@ pub struct PhotoRequest {
 impl PhotoRequest {
     /// This request's stream, told what its sink can carry (design D5, amended 2026-08-13).
     ///
-    /// **The one place [`StreamRequest::sink_fidelity`] is written.** A photo request is
-    /// the only value in this vocabulary that holds a stream and a destination at once, so
-    /// it is the only value that can answer the tiebreak's question — and answering it here
-    /// rather than in each caller is what keeps `wch`, `wchd` and a calibration sweep from
-    /// asking one device three subtly different questions (design §2.10).
+    /// **The one place [`StreamRequest::sink_fidelity`] is written.** A photo request is the
+    /// only value in this vocabulary that holds a stream and a destination at once, so it is
+    /// the only value that can answer the tiebreak's question — and answering it here rather
+    /// than in each caller is what keeps `webcam-handler-cli`, `webcam-handler-daemon` and a
+    /// calibration sweep from asking one device three subtly different questions (design
+    /// §2.10).
     ///
     /// A sink naming an encoding this build cannot write has no destination to reason
     /// about. It gets the default, and it gets refused a moment later by
@@ -935,11 +935,11 @@ impl PhotoRequest {
 /// Where a photo's bytes ended up — [`Sink`], answered.
 ///
 /// The two variants pair with the two sinks, and each says the thing its caller cannot
-/// otherwise learn: a path answer reports how much was written, and a bytes answer reports
-/// how much is on its way. **The bytes themselves are not in this document**: `wch` streams
-/// them to standard output, and D10's base64-in-JSON encoding lives with the wire surface
-/// that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report rather
-/// than inside this enum. Carrying an unused encoding here would be a dependency nobody
+/// otherwise learn: a path answer reports how much was written, and a bytes answer reports how
+/// much is on its way. **The bytes themselves are not in this document**: `webcam-handler-cli`
+/// streams them to standard output, and D10's base64-in-JSON encoding lives with the wire
+/// surface that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report
+/// rather than inside this enum. Carrying an unused encoding here would be a dependency nobody
 /// reads, and it would put base64 in every session file and `--json` document too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1226,9 +1226,9 @@ mod tests {
     #[test]
     fn a_request_that_asks_for_nothing_gets_the_best_ranked_format_at_its_largest_size() {
         // Deterministic on purpose, and this is the one that bit: a V4L2 node's format is
-        // *persistent device state*, so resolving "anything" against the node's current
-        // format made `wch photo` depend on what ran before it. Against the enumeration,
-        // the same request is the same answer every time.
+        // *persistent device state*, so resolving "anything" against the node's current format
+        // made `webcam-handler-cli photo` depend on what ran before it. Against the
+        // enumeration, the same request is the same answer every time.
         //
         // *Which* answer changed on 2026-08-13. It was "the device's first format at its
         // first size entry"; it is now the ranking's — most pixels, ties broken by
@@ -1972,10 +1972,10 @@ mod tests {
 
     #[test]
     fn a_server_path_sink_has_to_be_absolute_and_a_bytes_sink_cannot_be_wrong() {
-        // D10's rule, as a predicate rather than a paragraph. Both directions, because a
-        // check that only ever sees absolute paths is a check that cannot discriminate —
-        // and `wch` only ever produces absolute ones, so this arm is the only place the
-        // relative case exists before P4c routes a socket into it.
+        // D10's rule, as a predicate rather than a paragraph. Both directions, because a check
+        // that only ever sees absolute paths is a check that cannot discriminate — and
+        // `webcam-handler-cli` only ever produces absolute ones, so this arm is the only place
+        // the relative case exists before P4c routes a socket into it.
         assert!(
             Sink::ServerPath {
                 path: "/tmp/out.jpg".into()
@@ -1993,7 +1993,7 @@ mod tests {
         }
         // `ReturnBytes` carries no destination, so there is nothing for it to get wrong.
         // Asserted rather than assumed: a predicate that answered `false` here would
-        // refuse every `wchc photo` that asked for its bytes back.
+        // refuse every `webcam-handler-client photo` that asked for its bytes back.
         assert!(
             Sink::ReturnBytes {
                 format: PhotoFormat::Jpeg

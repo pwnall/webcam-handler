@@ -13,21 +13,22 @@
 //! ## Written once, run twice
 //!
 //! [`read_verbs`] and [`refusals`] take an `impl WchRpcClient`, which is the **generated
-//! client** from `webcam-handler-api` — the same code `wchc` will use at P4f, so the
-//! request the server parses is the one a real client sends rather than a JSON literal a
-//! test author guessed at. Both are called once per transport and their answers compared,
-//! so a divergence is one failed `assert_eq!` naming the field rather than two suites that
+//! client** from `webcam-handler-api` — the same code `webcam-handler-client` will use at P4f,
+//! so the request the server parses is the one a real client sends rather than a JSON literal
+//! a test author guessed at. Both are called once per transport and their answers compared, so
+//! a divergence is one failed `assert_eq!` naming the field rather than two suites that
 //! drifted.
 //!
 //! ## What "equal to the engine" means here, and what it does not
 //!
-//! Deliverable D of this sub-milestone is that a daemon's answer is the engine's answer.
-//! P4f's parity gate makes that byte-exact between `wch` and `wchc`; what is assertable
-//! today is the half beneath it — that `wch_get` *is* `engine::pairing::describe`, that
-//! `wch_calibrate_status` *is* `engine::lifecycle::status`, and so on for each verb, over
-//! the same backend and the same state directory. `crates/cli`'s executor calls those same
-//! functions, so the two surfaces agree by construction rather than by comparison; a test
-//! that re-assembled the answers a third time would be checking its own arithmetic.
+//! Deliverable D of this sub-milestone is that a daemon's answer is the engine's answer. P4f's
+//! parity gate makes that byte-exact between `webcam-handler-cli` and `webcam-handler-client`;
+//! what is assertable today is the half beneath it — that `wch_get` *is*
+//! `engine::pairing::describe`, that `wch_calibrate_status` *is* `engine::lifecycle::status`,
+//! and so on for each verb, over the same backend and the same state directory. `crates/cli`'s
+//! executor calls those same functions, so the two surfaces agree by construction rather than
+//! by comparison; a test that re-assembled the answers a third time would be checking its own
+//! arithmetic.
 //!
 //! The comparisons below therefore call **one engine function each** and never rebuild a
 //! DTO by hand. Where a verb is pure backend (`list`, `info`) the comparison is against the
@@ -35,9 +36,9 @@
 //!
 //! ## The refusals
 //!
-//! Four ways of asking for something that is not there. Each arrives as a D13 error
-//! carrying P4a's code, and each is recovered client-side through `api::codes::typed` —
-//! which is the half of the seam `wchc` depends on and the half a server-side test cannot
+//! Four ways of asking for something that is not there. Each arrives as a D13 error carrying
+//! P4a's code, and each is recovered client-side through `api::codes::typed` — which is the
+//! half of the seam `webcam-handler-client` depends on and the half a server-side test cannot
 //! see.
 //!
 //! There used to be a fifth: a method this build did not route yet, answering
@@ -219,10 +220,10 @@ async fn every_read_verb_answers_what_the_engine_answers() {
     let answers = read_verbs(&wire, &ask, &which).await;
 
     // `list` is `engine::resolve::list` and nothing else — compared against the engine
-    // function rather than against the two backend calls behind it, because `wch list`
-    // reaches the same function and a comparison against the ingredients would pass while
-    // the two surfaces assembled them differently (design §2.10, and P4f's parity gate a
-    // sub-milestone later).
+    // function rather than against the two backend calls behind it, because
+    // `webcam-handler-cli list` reaches the same function and a comparison against the
+    // ingredients would pass while the two surfaces assembled them differently (design §2.10,
+    // and P4f's parity gate a sub-milestone later).
     assert_eq!(
         answers.list,
         engine::resolve::list(fixture.backend.as_ref()).expect("the fake enumerates")
@@ -286,8 +287,8 @@ async fn every_read_verb_answers_what_the_engine_answers() {
 #[tokio::test]
 async fn the_failure_directions_cross_both_transports_as_the_same_typed_error() {
     // Deliverable E. Each refusal arrives as a D13 error with P4a's code and is recovered
-    // client-side through `api::codes` — which is the half `wchc` depends on and the half a
-    // server-side assertion cannot see.
+    // client-side through `api::codes` — which is the half `webcam-handler-client` depends on
+    // and the half a server-side assertion cannot see.
     let fixture = Fixture::start();
     let ask = fixture.ask();
     let which = sessions();
@@ -375,7 +376,7 @@ async fn the_two_wires_are_genuinely_two() {
     fixture.handle.stop();
     // Resolves once the accept loop and every connection it spawned are gone, and answers
     // *why* it stopped — `Ok` because this test asked, rather than because the daemon gave
-    // up on `accept`, which is the distinction `wchd`'s exit code rests on.
+    // up on `accept`, which is the distinction `webcam-handler-daemon`'s exit code rests on.
     fixture
         .handle
         .stopped()

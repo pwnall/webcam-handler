@@ -77,10 +77,15 @@ gate-g6:
 # ------------------------------------------------------- the privileged helper
 
 # Where the blessed copy lives. Outside `target/` on purpose: writing a binary file
-# strips its capabilities, and cargo rewrites `target/<profile>/wch-priv` for reasons
-# unrelated to its source (a RUSTFLAGS re-fingerprint, a profile change). The copy under
-# `.wch-bin/` keeps its caps across all that churn, so a re-bless is rare.
-priv_bin := ".wch-bin/wch-priv"
+# strips its capabilities, and cargo rewrites `target/<profile>/webcam-handler-priv` for
+# reasons unrelated to its source (a RUSTFLAGS re-fingerprint, a profile change). The copy
+# under `.wch-bin/` keeps its caps across all that churn, so a re-bless is rare.
+#
+# The directory keeps its short name: `.wch-bin` is a scratch location, and note N90's
+# ruling is about the names of binaries and crates. What lives inside it is the renamed
+# helper, which is why a tree blessed before that rename has a stale `.wch-bin/wch-priv`
+# that `just bless` will not overwrite and `privileged-helper.sh` will no longer look at.
+priv_bin := ".wch-bin/webcam-handler-priv"
 
 # Idempotent: the stamp records the freshly-built binary's sha256, and the bless is
 # skipped — no password prompt — until that changes. But the stamp alone would be a FALSE
@@ -89,12 +94,12 @@ priv_bin := ".wch-bin/wch-priv"
 # Reporting "already blessed" over a copy that is effectively un-capped is skip-reads-as-
 # pass wearing a filesystem.
 #
-# Grant `wch-priv` the capabilities the dev loop needs. Needs sudo once.
+# Grant `webcam-handler-priv` the capabilities the dev loop needs. Needs sudo once.
 bless:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --locked --offline -p webcam-handler-priv
-    built="target/debug/wch-priv"
+    built="target/debug/webcam-handler-priv"
     stable="{{priv_bin}}"
     stamp="$(dirname "$stable")/.blessed"
     mkdir -p "$(dirname "$stable")"
@@ -210,13 +215,42 @@ smoke-hw:
 miri:
     ./scripts/miri.sh
 
-# The mutation floor over the pure cores (docs/7 P3f). Hours, not minutes — it rebuilds
-# the workspace once per mutant — so it is a rung and a G4 criterion, never a `just ci`
-# step. cargo-mutants is a dev tool: without it the recipe reports a named, counted skip.
-# Extra arguments reach cargo-mutants, which is how a triage session narrows a re-run
+# The mutation floor over the pure cores (docs/7 P3f), **in full**. Hours, not minutes — it
+# rebuilds the workspace once per mutant — so it is a rung and a G4 criterion, never a
+# `just ci` step. Two hours and thirteen minutes over 624 mutants on the P5e machine, and
+# that number is here rather than only in the notes because `just gate-g4` runs this recipe
+# as a criterion: a session that budgets for a gate needs to know which of its rows is the
+# expensive one, and nothing in `phase-criteria.tsv` says so.
+#
+# This is the only mode that may answer PASS. It tests every mutant in scope, so a green run
+# supports the negative claim — there is no unaccepted survivor here — which is the claim the
+# G4 criterion buys.
+#
+# cargo-mutants is a dev tool: without it the recipe reports a named, counted skip. Extra
+# arguments reach cargo-mutants, which is how a triage session narrows a re-run
 # (`just mutants -F store.rs`); the scope itself lives in `.cargo/mutants.toml`.
+#
+# The mutation floor in full — hours, the only mode that may answer PASS, and a G4 criterion.
 mutants *args:
     ./scripts/mutants.sh {{args}}
+
+# The same floor in **iterate** mode (owner's request, 2026-08-13): cargo-mutants skips the
+# mutants a previous run already caught, so a re-run costs the handful still open rather than
+# the whole scope. Run it after each development stage; keep the full run for CI and for a
+# review pass.
+#
+# It ends on **PARTIAL** and never on PASS, and the reason is not bookkeeping: the mutants it
+# skips are exactly the ones a deleted test would have stopped catching. Remove a test between
+# two iterate runs and the second one never re-tests its mutant, because that mutant is on the
+# previous run's caught list. So this mode can still *find* a survivor — a real finding when it
+# fires — and can never certify their absence. `just mutants` is the run that does.
+#
+# It needs a previous run's `target/mutants.out/` to skip anything; with none it is simply the
+# full run under a different verdict word.
+#
+# The mutation floor over what a previous run left open — minutes, and it answers PARTIAL.
+mutants-iterate *args:
+    ./scripts/mutants.sh --iterate {{args}}
 
 # Regenerate committed generated artifacts (JSON Schema bundle, OpenRPC, completions,
 # man pages). `schema-artifacts-current.sh` proves the committed copies match.

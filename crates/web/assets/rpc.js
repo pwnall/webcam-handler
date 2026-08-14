@@ -44,7 +44,7 @@
 /** A D13 refusal, as something a caller can branch on. */
 export class RpcError extends Error {
   constructor(object) {
-    super(object.message ?? "wchd refused the call");
+    super(object.message ?? "webcam-handler-daemon refused the call");
     this.name = "RpcError";
     this.code = object.code;
     this.data = object.data;
@@ -64,13 +64,13 @@ export async function connect(url, { onClose } = {}) {
   // Whether this socket ever opened, which decides whether `onClose` is a true statement.
   //
   // A refused handshake fires `error` **and then** `close`, so without this the caller was
-  // told "the connection closed" about a connection it never had — and since `connect`
-  // rejects on the same event, the caller's own, more accurate sentence was written first
-  // and then overwritten by that one. P5d's browser rung found it: a page opened without a
-  // token said "the connection to wchd closed; reload the URL wchd printed" instead of
-  // naming the two things that are actually wrong, which is the sentence an operator needs
-  // in the most common failure this page has. `onClose` means "the connection I gave you
-  // has ended"; a connection that never started has not ended.
+  // told "the connection closed" about a connection it never had — and since `connect` rejects
+  // on the same event, the caller's own, more accurate sentence was written first and then
+  // overwritten by that one. P5d's browser rung found it: a page opened without a token said
+  // "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon
+  // printed" instead of naming the two things that are actually wrong, which is the sentence
+  // an operator needs in the most common failure this page has. `onClose` means "the
+  // connection I gave you has ended"; a connection that never started has not ended.
   let opened = false;
 
   socket.addEventListener("message", (event) => {
@@ -99,7 +99,7 @@ export async function connect(url, { onClose } = {}) {
     // ever settle is a spinner that spins forever, which is the shape a stopped daemon
     // would otherwise take in this page.
     for (const waiting of pending.values()) {
-      waiting.reject(new Error("the connection to wchd closed"));
+      waiting.reject(new Error("the connection to webcam-handler-daemon closed"));
     }
     pending.clear();
     streams.clear();
@@ -108,7 +108,7 @@ export async function connect(url, { onClose } = {}) {
     }
   });
 
-  const refused = () => new Error("wchd did not accept a WebSocket");
+  const refused = () => new Error("webcam-handler-daemon did not accept a WebSocket");
   await new Promise((resolve, failed) => {
     socket.addEventListener(
       "open",

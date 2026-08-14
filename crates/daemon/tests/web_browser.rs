@@ -49,12 +49,12 @@
 //!
 //! ## Playwright's place in the dependency inventory
 //!
-//! Design §2.8 puts it where ffprobe and mpv already are: **test-time external tooling, outside
-//! the shipped licence inventory** — "node is a test-host convenience, never a build
+//! Design §2.8 puts it where ffprobe and mpv already are: **test-time external tooling,
+//! outside the shipped licence inventory** — "node is a test-host convenience, never a build
 //! dependency". The distinction that matters is the product's: `crates/web/assets/` vendors or
 //! hand-writes everything it loads, and `scripts/gates/no-external-fetch-in-web.sh` is what
-//! keeps that true. Nothing in `tests/browser/` is served to a browser by `wchd`; it is the
-//! thing that drives one.
+//! keeps that true. Nothing in `tests/browser/` is served to a browser by
+//! `webcam-handler-daemon`; it is the thing that drives one.
 
 use std::collections::BTreeSet;
 use std::process::Command;

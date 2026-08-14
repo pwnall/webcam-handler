@@ -57,9 +57,9 @@ pub fn profile_paths() -> Result<Vec<Utf8PathBuf>> {
 
 /// How many profiles the corpus holds.
 ///
-/// The number the P1 corpus-floor gate counts against. At P0 it is legitimately zero:
-/// real profiles arrive with `wch profile capture` (§3.2), and the hermetic fixture in
-/// [`crate::fixtures`] is deliberately not corpus.
+/// The number the P1 corpus-floor gate counts against. At P0 it is legitimately zero: real
+/// profiles arrive with `webcam-handler-cli profile capture` (§3.2), and the hermetic fixture
+/// in [`crate::fixtures`] is deliberately not corpus.
 pub fn count() -> Result<usize> {
     Ok(profile_paths()?.len())
 }

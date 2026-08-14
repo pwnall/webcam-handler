@@ -1,6 +1,6 @@
 [package]
 name = "webcam-handler-daemon"
-description = "wchd — the webcam-handler daemon: JSON-RPC over a Unix socket always, opt-in loopback TCP with a bearer token for the web client."
+description = "The webcam-handler daemon: JSON-RPC over a Unix socket always, opt-in loopback TCP with a bearer token for the web client."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ authors.workspace = true
 name = "daemon"
 
 [[bin]]
-name = "wchd"
+name = "webcam-handler-daemon"
 path = "src/main.rs"
 
 [lints]
@@ -71,10 +71,10 @@ workspace = true
 # `serve_connection_with_upgrades`, which is not feature-gated. See `daemon::http::rpc`.
 axum = { workspace = true, features = ["http1", "tokio"] }
 camino.workspace = true
-# The composition root's two flags, in the workspace's one argument parser. `wchd` links
-# no `cli-core`: T4 is the *command* surface `wch` and `wchc` share, and the daemon has no
-# verbs — what it has is a backend to choose (design §2.11's second factory match) and,
-# from P5, a listener to open.
+# The composition root's two flags, in the workspace's one argument parser.
+# `webcam-handler-daemon` links no `cli-core`: T4 is the *command* surface `webcam-handler-cli`
+# and `webcam-handler-client` share, and the daemon has no verbs — what it has is a backend to
+# choose (design §2.11's second factory match) and, from P5, a listener to open.
 clap = { workspace = true, features = ["derive"] }
 # The facade, for `jsonrpsee::core::async_trait` — the attribute the generated
 # `WchRpcServer` trait is declared with, so the daemon's impl has to use the same one.
@@ -193,9 +193,9 @@ webcam-handler-v4l2.workspace = true
 webcam-handler-web.workspace = true
 
 [dev-dependencies]
-# `client-core` is the generated T5 client's supertrait (`ClientT`): the read-verb suite
-# drives the daemon through `api::WchRpcClient` rather than through hand-built JSON, so
-# the request the server parses is the one a real client sends. It is not `wchc`'s
+# `client-core` is the generated T5 client's supertrait (`ClientT`): the read-verb suite drives
+# the daemon through `api::WchRpcClient` rather than through hand-built JSON, so the request
+# the server parses is the one a real client sends. It is not `webcam-handler-client`'s
 # transport — that is P4f's ~200 lines — and it adds no feature the workspace's shared
 # `jsonrpsee` node did not already carry.
 jsonrpsee = { workspace = true, features = ["client-core"] }

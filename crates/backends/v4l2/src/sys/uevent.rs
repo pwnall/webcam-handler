@@ -27,11 +27,11 @@
 //!   `bind` with `nl_groups = 1` both succeed with an empty effective capability set.
 //!   Note N8 predicted `CAP_NET_ADMIN`; the prediction is disproved, and PF:21 carries
 //!   the transcript. Nothing here asks for a capability, and nothing here should.
-//! - **`nl_pid = 0`, not `getpid()`.** The kernel assigns a unique port id per socket
-//!   when the field is zero. Binding `getpid()` works exactly once per process: the
-//!   probe measured `EADDRINUSE` on the second socket, and `wchd` will hold one watch
-//!   while a subscription opens another. `kobject-uevent`'s own example binds
-//!   `process::id()`; this deliberately does not copy it.
+//! - **`nl_pid = 0`, not `getpid()`.** The kernel assigns a unique port id per socket when the
+//!   field is zero. Binding `getpid()` works exactly once per process: the probe measured
+//!   `EADDRINUSE` on the second socket, and `webcam-handler-daemon` will hold one watch while
+//!   a subscription opens another. `kobject-uevent`'s own example binds `process::id()`; this
+//!   deliberately does not copy it.
 //! - **`nl_groups = 1`, and only group 1.** Group 1 is the kernel's own broadcast in the
 //!   `action@devpath\0KEY=VALUE\0…` form. Group 2 is `systemd-udevd`'s rebroadcast of
 //!   the same events behind a binary `libudev` header — subscribing to both would double

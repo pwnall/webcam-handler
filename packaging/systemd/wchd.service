@@ -4,8 +4,9 @@
 # preference. D11 puts the socket in `$XDG_RUNTIME_DIR` and makes the 0700 directory the only
 # thing authenticating it; D9 puts the state directory under `$XDG_STATE_HOME`; and AGENTS is
 # unambiguous that a frame may contain a person. All three say the same thing: this daemon
-# belongs to one human, runs as them, and is reachable by them. A system-wide `wchd` running as
-# root would serve every account on the machine a camera pointed at somebody's face.
+# belongs to one human, runs as them, and is reachable by them. A system-wide
+# `webcam-handler-daemon` running as root would serve every account on the machine a camera
+# pointed at somebody's face.
 #
 # Install it as `~/.config/systemd/user/wchd.service` beside `wchd.socket`, then
 # `systemctl --user daemon-reload && systemctl --user enable --now wchd.socket`.
@@ -18,10 +19,10 @@
 [Unit]
 Description=webcam-handler daemon (V4L2 webcams over a Unix socket)
 Documentation=https://github.com/pwnall/webcam-handler
-# The socket is what gets enabled; this is the other half of that pair. `wchd` also serves
-# perfectly well when started directly (`systemctl --user start wchd.service`), because
-# `daemon::systemd::Activation` treats an empty `LISTEN_FDS` as "bind your own" — which is the
-# same daemon a person runs from a shell.
+# The socket is what gets enabled; this is the other half of that pair. `webcam-handler-daemon`
+# also serves perfectly well when started directly (`systemctl --user start wchd.service`),
+# because `daemon::systemd::Activation` treats an empty `LISTEN_FDS` as "bind your own" — which
+# is the same daemon a person runs from a shell.
 Requires=wchd.socket
 After=wchd.socket
 
@@ -38,7 +39,7 @@ Type=notify
 # Only the main process may notify, because only the main process exists. Widening this to
 # `all` would let anything in the cgroup declare the camera daemon ready.
 NotifyAccess=main
-ExecStart=%h/.cargo/bin/wchd
+ExecStart=%h/.cargo/bin/webcam-handler-daemon
 
 # The daemon stops in the order `daemon::shutdown` states — tell the supervisor, cancel every
 # subscription **with a reason**, stop accepting, drain, join housekeeping, release the state
@@ -96,7 +97,7 @@ RestrictRealtime=yes
 
 # There is deliberately **no `[Install]` section**. The unit that gets enabled is
 # `wchd.socket`, so the daemon starts on the first connection rather than at login — D12's
-# posture, one level up: `wchd` running must not itself be the reason a camera is unavailable,
-# and a daemon that is not running is the strongest form of that. A person who wants it always
-# up runs `systemctl --user start wchd.service`, or adds an `[Install]` section of their own;
-# shipping one here would make "enabled" ambiguous between the two units.
+# posture, one level up: `webcam-handler-daemon` running must not itself be the reason a camera
+# is unavailable, and a daemon that is not running is the strongest form of that. A person who
+# wants it always up runs `systemctl --user start wchd.service`, or adds an `[Install]` section
+# of their own; shipping one here would make "enabled" ambiguous between the two units.

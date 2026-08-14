@@ -1,7 +1,7 @@
 //! The session lifecycle from outside the engine (design D8, D9, docs/7 P3b).
 //!
-//! Everything here is reached the way `wch` will reach it — through the crate's public
-//! surface, with the store's lock taken per operation — because two of the three
+//! Everything here is reached the way `webcam-handler-cli` will reach it — through the crate's
+//! public surface, with the store's lock taken per operation — because two of the three
 //! properties under test are only visible from there:
 //!
 //! - **The lock is a lock in both orderings.** A lifecycle operation that meets a held
@@ -83,9 +83,9 @@ fn sample(applied: i64, score: f64) -> Sample {
 
 #[test]
 fn a_lifecycle_operation_refuses_a_lock_somebody_else_holds_and_names_who() {
-    // Holder first, taker second. D9 is explicit that a `wch` meeting a held lock reports
-    // it rather than corrupting or blocking, and the report has to be actionable: an
-    // unnamed holder tells an operator to go looking through `ps`.
+    // Holder first, taker second. D9 is explicit that a `webcam-handler-cli` meeting a held
+    // lock reports it rather than corrupting or blocking, and the report has to be actionable:
+    // an unnamed holder tells an operator to go looking through `ps`.
     let temp = TempStore::new().expect("a temp dir");
     let daemon = temp
         .peer()
@@ -105,13 +105,14 @@ fn a_lifecycle_operation_refuses_a_lock_somebody_else_holds_and_names_who() {
         i32::try_from(std::process::id()).expect("a pid fits"),
         "the refusal named somebody else's pid"
     );
-    // The holder took it the way a daemon does, so the refusal carries the answer D9 gives
-    // a `wch` that meets one: this lock will not be free in a moment, and `wchc` is the
-    // program that can reach the state through the process holding it.
+    // The holder took it the way a daemon does, so the refusal carries the answer D9 gives a
+    // `webcam-handler-cli` that meets one: this lock will not be free in a moment, and
+    // `webcam-handler-client` is the program that can reach the state through the process
+    // holding it.
     assert_eq!(*protocol, Some(LockProtocol::HeldForLifetime));
     assert!(
         err.to_string()
-            .contains("daemon owns the state (and likely the camera) — use wchc"),
+            .contains("daemon owns the state (and likely the camera) — use webcam-handler-client"),
         "{err}"
     );
 

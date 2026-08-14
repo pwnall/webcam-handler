@@ -104,14 +104,69 @@
 #   nineteen doc comments; there is no expression in it to mutate, and the macro's own
 #   expansion is jsonrpsee's. The three modules beside it are where this crate computes.
 #
+# - `crates/daemon`, everything but the three `http` folds below. **This crate appeared
+#   nowhere in this file until P5e, in neither list, which is the one state the paragraph
+#   above forbids: an exclusion that is not a decision with a date is an oversight wearing
+#   one.** Named now, and the shape is the same argument the engine's shell gets.
+#   `daemon::http::listener` is composition — it binds a socket, and its survivors are
+#   answered by `tests/http.rs` driving a real one. `daemon::http::rpc` is four lines of
+#   route plus `without_the_query`, and the fold half already has three unit tests over
+#   values; mutating the rest needs an upgrade. `daemon::http::preview` writes multipart
+#   frames onto a socket and `daemon::preview` bridges an actor's watch channel to it —
+#   both are decidable only against a reader, which is `tests/preview.rs`'s job and not a
+#   mutant's. `daemon::events`, `server`, `shutdown`, `state`, `systemd`, `uds` and
+#   `logging` are the same class as `engine`'s shell: a thread, a registry, a bounded
+#   queue or a signal, each of whose survivors needs a rig before it needs a test.
+#
 # The exclusions are stated as *absence from `examine_globs`* rather than as
 # `exclude_globs`, so widening the floor is adding a line rather than deleting one.
+#
+# ## What P5e widened, and why each of the four earns it
+#
+# The owner asked for the floor over P5's code on 2026-08-13, on the ground that it has
+# caught bugs before. It has, and the record is specific: E7 surfaced **forty-eight
+# distinct survivors**, thirty-eight of which became tests, and the defects among them were
+# real — an availability failure reported as "nothing here" twice in the store (AGENTS rule
+# 7, in the one place a `SessionConflict` would follow), a fault fixture that had stopped
+# producing its own fault, a lock record that could name nobody, and the sweep planner's
+# entire capping arithmetic unpinned by a suite that asserted the cap's *shape* and never
+# its answer.
+#
+# - `daemon::http::posture` — D11's bind × token matrix, which docs/7 P5a describes as "a
+#   pure function over a `SocketAddr` and the one flag the paragraph names". It is the
+#   shape this floor exists for, and it decides who may reach a camera.
+# - `daemon::http::token` — mint, verify, the redacting `Debug`, the ready-to-open URL.
+#   **It was added expecting a survivor, and the expectation was wrong in a way worth
+#   writing down.** The reasoning was: note **N78** records that `==` for `Token::verify`
+#   is behaviourally identical on every input and killable by no test here, so putting the
+#   file in scope would make the floor *see* that mutant and turn the claim into a line in
+#   `scripts/mutants-accepted.txt` rather than a sentence in a gate's header. The first run
+#   over this file generated **31 mutants and caught all 31**, including
+#   `replace != with ==` and both `Token::verify -> bool` constants. N78's mutant is not
+#   among them and cannot be: it is a *rewrite of the comparison's shape* — a constant-time
+#   loop replaced by a short-circuiting `==` — and cargo-mutants substitutes operators and
+#   return values rather than restructuring an algorithm. So `token-comparison-has-one-
+#   home.sh` remains the only thing holding that claim, exactly as N78 says, and this file
+#   is in scope on the ordinary merit instead: thirty-one mutations of a secret's handling,
+#   all constrained.
+# - `daemon::http::gate` — note **N74**'s policy over values: `admits`, `bearer` and
+#   `query_tokens` decide what a request presenting two credentials means, and every one of
+#   them is a fold the sixteen unit tests beside them already drive.
+# - `engine::preview` — note **N83**'s suspend/resume sequence. It takes an `OpenCamera`
+#   rather than values, which would normally put it with the shell; what makes it decidable
+#   is that its whole suite drives a `ScriptedCamera` with an exhaustive fault menu, so
+#   "the resume asks for the stream that was suspended" is a claim a mutant can break and a
+#   test can catch without a device.
 examine_globs = [
     "crates/api/src/codes.rs",
     "crates/api/src/photo.rs",
     "crates/api/src/wire.rs",
     "crates/backends/v4l2/src/hotplug.rs",
+    "crates/daemon/src/http/gate.rs",
+    "crates/daemon/src/http/posture.rs",
+    "crates/daemon/src/http/token.rs",
     "crates/engine/src/pairing.rs",
+    "crates/engine/src/preview.rs",
     "crates/engine/src/session.rs",
     "crates/engine/src/settle.rs",
     "crates/engine/src/store.rs",

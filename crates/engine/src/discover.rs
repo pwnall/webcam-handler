@@ -62,8 +62,8 @@ impl Discovery {
     }
 }
 
-/// Probe this camera and answer the whole [`DiscoveryReport`] the T5 wire and `wch
-/// controls --discover-pairs` both show.
+/// Probe this camera and answer the whole [`DiscoveryReport`] the T5 wire and
+/// `webcam-handler-cli controls --discover-pairs` both show.
 ///
 /// **The assembly, not just the probe.** Two of the report's three fields are
 /// [`Discovery`]'s own and move verbatim; `controls` is built here, and building it has
@@ -78,10 +78,10 @@ impl Discovery {
 ///    observation without asking how the report was made.
 ///
 /// It lives here rather than at each composition root because P4c gave it a second caller.
-/// `crates/cli`'s `InProcess::controls` had it alone; routing `wch_discover_pairs` would
-/// have made the daemon a second author of the same document, and "the two surfaces
-/// disagree about the provenance on their pairs" is what note N34 booked this move
-/// against. `wch` still prints [`Discovery`]'s other two facts on standard error — they
+/// `crates/cli`'s `InProcess::controls` had it alone; routing `wch_discover_pairs` would have
+/// made the daemon a second author of the same document, and "the two surfaces disagree about
+/// the provenance on their pairs" is what note N34 booked this move against.
+/// `webcam-handler-cli` still prints [`Discovery`]'s other two facts on standard error — they
 /// are on the report, so a socket client sees what a terminal user sees.
 ///
 /// `now` is an argument because the engine reads no clock.

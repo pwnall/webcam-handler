@@ -1,4 +1,4 @@
-//! `wch calibrate` end to end, against the fake backend (docs/7 P3d, gate G3).
+//! `webcam-handler-cli calibrate` end to end, against the fake backend (docs/7 P3d, gate G3).
 //!
 //! Everything here runs as a *subprocess*, over a session tree the test builds and throws
 //! away. The engine's own suites drive `lifecycle` and `calibrate` directly and are the
@@ -15,12 +15,12 @@
 //!
 //! ## The state directory's lock lives here too
 //!
-//! D9's daemonless protocol is `wch`'s half of a two-party rule, and the party it is a
-//! rule about is `wchd`. The daemon's end — that a running `wchd` really holds the state
-//! directory for its whole life, and what it is told when a `wch` got there first — is
-//! asserted against a real daemon process in `crates/daemon/tests/lock.rs`. What is
-//! asserted here is the other end: that the refusal reaches a *person*, in the words design
-//! D9 writes, through the binary they typed.
+//! D9's daemonless protocol is `webcam-handler-cli`'s half of a two-party rule, and the party
+//! it is a rule about is `webcam-handler-daemon`. The daemon's end — that a running
+//! `webcam-handler-daemon` really holds the state directory for its whole life, and what it is
+//! told when a `webcam-handler-cli` got there first — is asserted against a real daemon
+//! process in `crates/daemon/tests/lock.rs`. What is asserted here is the other end: that the
+//! refusal reaches a *person*, in the words design D9 writes, through the binary they typed.
 //!
 //! ## The schema half
 //!
@@ -40,9 +40,9 @@ use engine::store::{LockProtocol, SessionStore, StoreLock};
 use schema::paths::MapEnv;
 use serde_json::{Map, Value};
 
-/// The `wch` binary this test drives, built by cargo alongside it.
+/// The `webcam-handler-cli` binary this test drives, built by cargo alongside it.
 fn wch() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_wch"))
+    Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"))
 }
 
 fn repo_root() -> Utf8PathBuf {
@@ -67,9 +67,9 @@ impl Scratch {
 
     /// Somebody else holds this state directory's lock, following `protocol`.
     ///
-    /// A real `flock` over a real second open file description, which is all a `wch`
-    /// subprocess can tell about whoever holds it — so the daemon this stands in for needs
-    /// no process, and nothing here has to synchronize with one.
+    /// A real `flock` over a real second open file description, which is all a
+    /// `webcam-handler-cli` subprocess can tell about whoever holds it — so the daemon this
+    /// stands in for needs no process, and nothing here has to synchronize with one.
     ///
     /// Resolved through [`SessionStore::from_env`] rather than by joining a path, because
     /// `engine::paths::state_dir` appends `webcam-handler` to `$XDG_STATE_HOME`: a
@@ -84,7 +84,7 @@ impl Scratch {
     }
 }
 
-/// A `wch` bound to one state directory and a set of replayed cameras.
+/// A `webcam-handler-cli` bound to one state directory and a set of replayed cameras.
 struct Wch {
     state: Utf8PathBuf,
     profiles: Vec<Utf8PathBuf>,
@@ -98,7 +98,8 @@ struct Ran {
 }
 
 impl Wch {
-    /// `wch` over the named committed profiles, writing sessions under `scratch`.
+    /// `webcam-handler-cli` over the named committed profiles, writing sessions under
+    /// `scratch`.
     fn new(scratch: &Scratch, profiles: &[&str]) -> Wch {
         let profiles = profiles
             .iter()
@@ -126,7 +127,10 @@ impl Wch {
         for profile in &self.profiles {
             command.args(["--profile", profile.as_str()]);
         }
-        let output = command.args(args).output().expect("wch runs");
+        let output = command
+            .args(args)
+            .output()
+            .expect("webcam-handler-cli runs");
         Ran {
             code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -139,7 +143,7 @@ impl Wch {
         let ran = self.run(args);
         assert_eq!(
             ran.code, 0,
-            "wch {args:?} exited {}: {}",
+            "webcam-handler-cli {args:?} exited {}: {}",
             ran.code, ran.stderr
         );
         ran
@@ -151,7 +155,10 @@ impl Wch {
         with_json.push("--json");
         let ran = self.ok(&with_json);
         serde_json::from_str(&ran.stdout).unwrap_or_else(|error| {
-            panic!("wch {args:?} did not emit JSON: {error}\n{}", ran.stdout)
+            panic!(
+                "webcam-handler-cli {args:?} did not emit JSON: {error}\n{}",
+                ran.stdout
+            )
         })
     }
 
@@ -160,7 +167,7 @@ impl Wch {
         let ran = self.run(args);
         assert_ne!(
             ran.code, 0,
-            "wch {args:?} was expected to refuse: {}",
+            "webcam-handler-cli {args:?} was expected to refuse: {}",
             ran.stdout
         );
         ran
@@ -859,15 +866,15 @@ fn a_sweep_borrows_the_camera_and_calibrate_restore_spends_the_record_that_gives
     // `lifecycle::sweep_write` persists the pre-sweep snapshot before the first write for
     // exactly that reason. Until P3's review nothing a user could type ever spent it:
     // `lifecycle::recover`'s only callers in the workspace were tests, so a real
-    // `wch calibrate sweep` exited 0 with the camera holding its last swept value and the
-    // record sitting in `session.json` forever — and the *next* session on that camera
-    // recorded the previous sweep's endpoint as "the camera as the operator found it".
+    // `webcam-handler-cli calibrate sweep` exited 0 with the camera holding its last swept
+    // value and the record sitting in `session.json` forever — and the *next* session on that
+    // camera recorded the previous sweep's endpoint as "the camera as the operator found it".
     //
-    // What this arm can and cannot claim: the fake replays a profile into a fresh device
-    // per process, so a subprocess suite cannot watch a value survive between two `wch`
-    // runs. The claim here is the half that is durable and is the half that was missing —
-    // the verb exists, it reports on every control the snapshot held, and it *consumes* the
-    // record. That the camera physically goes back is the engine suite's
+    // What this arm can and cannot claim: the fake replays a profile into a fresh device per
+    // process, so a subprocess suite cannot watch a value survive between two
+    // `webcam-handler-cli` runs. The claim here is the half that is durable and is the half
+    // that was missing — the verb exists, it reports on every control the snapshot held, and
+    // it *consumes* the record. That the camera physically goes back is the engine suite's
     // (`lifecycle::recover`'s own tests, and `sweep.rs`'s interrupted-sweep arm) and the R3
     // hardware rung's.
     let scratch = Scratch::new();
@@ -1504,11 +1511,12 @@ fn this_process() -> String {
 
 #[test]
 fn a_wch_meeting_a_daemons_lock_is_sent_to_wchc_and_its_read_verbs_still_answer() {
-    // Design D9, verbatim: "`wch` finding it held reports *daemon owns the state (and
-    // likely the camera) — use wchc* rather than corrupting or blocking (D13)". The
-    // sentence is asserted here because this is where a person reads it — `wch` renders the
-    // typed error onto stderr and exits — and the value it is rendered from is asserted in
-    // `webcam-handler-schema` and in `crates/daemon/tests/lock.rs`.
+    // Design D9, verbatim: "`webcam-handler-cli` finding it held reports *daemon owns the
+    // state (and likely the camera) — use webcam-handler-client* rather than corrupting or
+    // blocking (D13)". The sentence is asserted here because this is where a person reads it —
+    // `webcam-handler-cli` renders the typed error onto stderr and exits — and the value it is
+    // rendered from is asserted in `webcam-handler-schema` and in
+    // `crates/daemon/tests/lock.rs`.
     let scratch = Scratch::new();
     let wch = Wch::new(&scratch, &["chicony-rgb"]);
     let task = "read text from the DUT display";
@@ -1518,7 +1526,7 @@ fn a_wch_meeting_a_daemons_lock_is_sent_to_wchc_and_its_read_verbs_still_answer(
     assert!(
         refused
             .stderr
-            .contains("daemon owns the state (and likely the camera) — use wchc"),
+            .contains("daemon owns the state (and likely the camera) — use webcam-handler-client"),
         "{}",
         refused.stderr
     );
@@ -1562,10 +1570,10 @@ fn a_wch_meeting_a_daemons_lock_is_sent_to_wchc_and_its_read_verbs_still_answer(
 
 #[test]
 fn another_wchs_momentary_lock_is_refused_without_sending_anybody_to_a_daemon() {
-    // The other direction of D9's advice, and what makes the first test an assertion about
-    // a *decision* rather than about a constant: another `wch` a few milliseconds into a
-    // mutating verb will be gone shortly, and telling its user to go and start `wchc` would
-    // send them after a daemon that does not exist.
+    // The other direction of D9's advice, and what makes the first test an assertion about a
+    // *decision* rather than about a constant: another `webcam-handler-cli` a few milliseconds
+    // into a mutating verb will be gone shortly, and telling its user to go and start
+    // `webcam-handler-client` would send them after a daemon that does not exist.
     let scratch = Scratch::new();
     let wch = Wch::new(&scratch, &["chicony-rgb"]);
     let task = "read text from the DUT display";
@@ -1582,7 +1590,11 @@ fn another_wchs_momentary_lock_is_refused_without_sending_anybody_to_a_daemon() 
         "{}",
         refused.stderr
     );
-    assert!(!refused.stderr.contains("wchc"), "{}", refused.stderr);
+    assert!(
+        !refused.stderr.contains("webcam-handler-client"),
+        "{}",
+        refused.stderr
+    );
 
     drop(peer);
     wch.ok(&["calibrate", "start", "cam:integrated", "--task", task]);

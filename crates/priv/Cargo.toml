@@ -1,6 +1,6 @@
 [package]
 name = "webcam-handler-priv"
-description = "wch-priv — the dev-only privileged helper: loads vivid, cycles uvcvideo, and runs a test process with the capabilities it needs. Never shipped; never a dependency of any product crate."
+description = "The dev-only privileged helper: loads vivid, cycles uvcvideo, and runs a test process with the capabilities it needs. Never shipped; never a dependency of any product crate."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [[bin]]
-name = "wch-priv"
+name = "webcam-handler-priv"
 path = "src/main.rs"
 
 [lints]

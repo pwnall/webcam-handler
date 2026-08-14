@@ -43,7 +43,7 @@ if (output === undefined || output === "") {
   );
 }
 
-/** The daemon this run is about, as the URL `wchd` printed, token and all. */
+/** The daemon this run is about, as the URL `webcam-handler-daemon` printed, token and all. */
 const url = process.env.WCH_E2E_URL;
 if (url === undefined || url === "") {
   throw new Error("WCH_E2E_URL is unset: there is no daemon for this suite to be about.");

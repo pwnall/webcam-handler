@@ -51,7 +51,7 @@ pass_case_a_stop_timeout_written_in_systemds_other_spellings() {
 
 # The shape a person reaches for when they think "daemon". systemd would then wait for a
 # parent that never exits, give up, and afterwards signal whatever pid it guessed at — while
-# `wchd` sends a `READY=1` nobody is listening for.
+# `webcam-handler-daemon` sends a `READY=1` nobody is listening for.
 fail_case_a_service_that_claims_to_fork() {
     local tree
     tree="$(gate_scratch_tree)"

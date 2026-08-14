@@ -17,8 +17,8 @@ pass_case_a_correctly_blessed_copy_is_allowed() {
     local tree
     tree="$(gate_scratch_tree)"
     mkdir -p "$tree/.wch-bin"
-    printf '#!/bin/false\n' >"$tree/.wch-bin/wch-priv"
-    chmod 0700 "$tree/.wch-bin/wch-priv"
+    printf '#!/bin/false\n' >"$tree/.wch-bin/webcam-handler-priv"
+    chmod 0700 "$tree/.wch-bin/webcam-handler-priv"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -26,10 +26,10 @@ fail_case_the_blessed_copy_is_group_or_world_executable() {
     local tree
     tree="$(gate_scratch_tree)"
     mkdir -p "$tree/.wch-bin"
-    printf '#!/bin/false\n' >"$tree/.wch-bin/wch-priv"
+    printf '#!/bin/false\n' >"$tree/.wch-bin/webcam-handler-priv"
     # 0755: exactly what a careless `chmod -R a+rX` or a restore-from-backup produces, and
     # on a real blessed copy it is a local root escalation for every user on the box.
-    chmod 0755 "$tree/.wch-bin/wch-priv"
+    chmod 0755 "$tree/.wch-bin/webcam-handler-priv"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 

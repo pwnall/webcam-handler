@@ -194,13 +194,13 @@ pub(super) struct Mounted {
 /// registration path D10 exists to prevent, and it would compile.
 ///
 /// The bounds come from [`crate::server::wire_bounds`], the same function [`crate::uds`]
-/// reads, so a browser's WebSocket runs under this project's numbers rather than jsonrpsee's
-/// — [`schema::limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`] and
+/// reads, so a browser's WebSocket runs under this project's numbers rather than jsonrpsee's —
+/// [`schema::limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`] and
 /// [`schema::limits::WS_MESSAGE_BUFFER_CAPACITY`] included. The `ConnectionGuard` behind
 /// [`schema::limits::DAEMON_MAX_CONNECTIONS`] is *per builder*, so this transport gets a bound
 /// of its own rather than sharing the Unix socket's: a browser that leaks sockets cannot
-/// exhaust the transport `wchc` uses, which is the direction D11's "opt-in" argues for
-/// everywhere else.
+/// exhaust the transport `webcam-handler-client` uses, which is the direction D11's "opt-in"
+/// argues for everywhere else.
 pub(super) fn mount(methods: Methods) -> Mounted {
     let (stop, ending) = stop_channel();
     let builder = Server::builder()

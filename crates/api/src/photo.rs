@@ -1,17 +1,18 @@
 //! The photo answer, with its bytes (design D6, D10).
 //!
-//! This module is the one home of D10's base64-in-JSON encoding.
-//! `webcam-handler-schema`'s [`PhotoDelivery`] doc comment legislates the split from the
-//! other side — "**The bytes themselves are not in this document**: `wch` streams them to
-//! standard output, and D10's base64-in-JSON encoding lives with the wire surface that
-//! needs it" — because a `--json` document and an on-disk session file never carry a
-//! frame, and an encoding nobody reads would be a dependency nobody reads.
+//! This module is the one home of D10's base64-in-JSON encoding. `webcam-handler-schema`'s
+//! [`PhotoDelivery`] doc comment legislates the split from the other side — "**The bytes
+//! themselves are not in this document**: `webcam-handler-cli` streams them to standard
+//! output, and D10's base64-in-JSON encoding lives with the wire surface that needs it" —
+//! because a `--json` document and an on-disk session file never carry a frame, and an
+//! encoding nobody reads would be a dependency nobody reads.
 //!
 //! `webcam-handler-cli-core`'s `Photograph` is the same pair of facts for the in-process
-//! caller and stays where it is: `wch` already has the bytes in memory and needs no
-//! encoding at all. `wchc` decodes a [`PhotoResponse`] into a `Photograph` and hands that
-//! to the renderer both binaries share, which is what makes `wch photo` and `wchc photo`
-//! write the same file (P4f's parity gate).
+//! caller and stays where it is: `webcam-handler-cli` already has the bytes in memory and
+//! needs no encoding at all. `webcam-handler-client` decodes a [`PhotoResponse`] into a
+//! `Photograph` and hands that to the renderer both binaries share, which is what makes
+//! `webcam-handler-cli photo` and `webcam-handler-client photo` write the same file (P4f's
+//! parity gate).
 
 use std::fmt;
 
@@ -255,11 +256,11 @@ mod tests {
 
     #[test]
     fn the_payload_reports_its_own_size_and_hands_the_same_bytes_back() {
-        // The accessors a consumer decodes through: `wchc` turns a `PhotoResponse` into a
-        // `cli_core::Photograph` by taking the bytes out (P4f), and
+        // The accessors a consumer decodes through: `webcam-handler-client` turns a
+        // `PhotoResponse` into a `cli_core::Photograph` by taking the bytes out (P4f), and
         // `bytes_match_the_delivery` compares the count. Both directions of `is_empty`,
-        // because a payload that always reported "empty" would let a `ReturnBytes` answer
-        // read as a photo the device never produced.
+        // because a payload that always reported "empty" would let a `ReturnBytes` answer read
+        // as a photo the device never produced.
         let payload = Base64Bytes::new(vec![0x01, 0x02, 0x03]);
         assert_eq!(payload.len(), 3);
         assert!(!payload.is_empty());

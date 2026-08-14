@@ -14,16 +14,16 @@
 //
 // ## The stream carries every session, and the consumer filters
 //
-// `wch_subscribe_calibration` takes no parameters. That is not an omission —
-// `crates/api`'s `WchEvents` argues it twice over: the subscription is per *client*, a
-// client may watch a daemon running more than one session, and a session parameter would
-// resolve a `SessionRef` at subscribe time against a store lock the subscribe path has no
-// business taking. So every event carries its `session` id and this view shows the id on
-// every line, rather than silently dropping the events belonging to sessions it is not
-// looking at: **a sweep somebody else started is the case this stream exists for.** An
-// agent driving `wchc` and an operator watching this page are the shape it was built for,
-// and the daemon suite that landed with this client asserts exactly that — the page's
-// socket receives a sweep started on the Unix socket.
+// `wch_subscribe_calibration` takes no parameters. That is not an omission — `crates/api`'s
+// `WchEvents` argues it twice over: the subscription is per *client*, a client may watch a
+// daemon running more than one session, and a session parameter would resolve a `SessionRef`
+// at subscribe time against a store lock the subscribe path has no business taking. So every
+// event carries its `session` id and this view shows the id on every line, rather than
+// silently dropping the events belonging to sessions it is not looking at: **a sweep somebody
+// else started is the case this stream exists for.** An agent driving `webcam-handler-client`
+// and an operator watching this page are the shape it was built for, and the daemon suite that
+// landed with this client asserts exactly that — the page's socket receives a sweep started on
+// the Unix socket.
 //
 // ## A gap in this stream is self-healing, and that is why the bar can be trusted
 //

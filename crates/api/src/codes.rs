@@ -1,11 +1,12 @@
 //! The D13 error registry, as JSON-RPC (design D10, D13).
 //!
 //! One home for the mapping, in both directions: a [`schema::Error`] becomes an
-//! [`ErrorObjectOwned`] the daemon returns, and an [`ErrorObject`] a client receives
-//! becomes a [`schema::Error`] again. `wchc` therefore renders exactly what `wch` renders,
-//! because it renders the *same value* through the same `Display` — which is what P4f's
-//! parity gate compares byte for byte, as `scripts/gates/cli-parity.sh` over every read
-//! verb, and what evidence **E12** measured once against the real cameras.
+//! [`ErrorObjectOwned`] the daemon returns, and an [`ErrorObject`] a client receives becomes a
+//! [`schema::Error`] again. `webcam-handler-client` therefore renders exactly what
+//! `webcam-handler-cli` renders, because it renders the *same value* through the same
+//! `Display` — which is what P4f's parity gate compares byte for byte, as
+//! `scripts/gates/cli-parity.sh` over every read verb, and what evidence **E12** measured once
+//! against the real cameras.
 //!
 //! ## Why the match is over [`ErrorKind`] and not over [`schema::Error`]
 //!
@@ -31,10 +32,10 @@ use schema::error::{Error, ErrorKind};
 ///
 /// [`typed`] takes an `&ErrorObject` and [`From<WireError>`](WireError) produces an
 /// `ErrorObjectOwned`, so a consumer that cannot name them cannot call either — and the
-/// consumers are the daemon, `wchc`, and every test that recovers a D13 error from a
-/// client. Re-exported here rather than left to each of them to depend on the right
-/// jsonrpsee feature for: this crate is where the surface is declared, and the type a
-/// caller has to name is part of the surface.
+/// consumers are the daemon, `webcam-handler-client`, and every test that recovers a D13 error
+/// from a client. Re-exported here rather than left to each of them to depend on the right
+/// jsonrpsee feature for: this crate is where the surface is declared, and the type a caller
+/// has to name is part of the surface.
 pub use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
 
 /// JSON-RPC 2.0's band for implementation-defined server errors.
@@ -165,9 +166,10 @@ impl std::error::Error for WireError {
 impl From<WireError> for ErrorObjectOwned {
     fn from(error: WireError) -> ErrorObjectOwned {
         // `code` from a closed numeric range, `message` human, `data` typed — D10's three
-        // clauses, in order. `data` is the serialized `Error` itself rather than a summary
-        // of it: that is what lets a client reconstruct the variant and render it the way
-        // `wch` does, and it is why no `anyhow` string ever crosses this seam (rubric B6).
+        // clauses, in order. `data` is the serialized `Error` itself rather than a summary of
+        // it: that is what lets a client reconstruct the variant and render it the way
+        // `webcam-handler-cli` does, and it is why no `anyhow` string ever crosses this seam
+        // (rubric B6).
         ErrorObjectOwned::owned(
             rpc_code(error.0.kind()),
             error.0.to_string(),
@@ -179,8 +181,8 @@ impl From<WireError> for ErrorObjectOwned {
 /// The D13 error inside a received error object, when there is one.
 ///
 /// The inverse of [`From<WireError> for ErrorObjectOwned`](ErrorObjectOwned), and the half
-/// `wchc` needs: a typed error that arrived as JSON becomes a [`schema::Error`] again, so
-/// the client renders the value rather than a transport string.
+/// `webcam-handler-client` needs: a typed error that arrived as JSON becomes a
+/// [`schema::Error`] again, so the client renders the value rather than a transport string.
 ///
 /// `None` is the honest answer for everything else, and "everything else" is not a corner
 /// case — a JSON-RPC connection carries the transport's own failures too (method not
@@ -497,8 +499,8 @@ mod tests {
 
             let back = typed(&object).unwrap_or_else(|| panic!("{kind:?} did not decode back"));
             assert_eq!(back, error, "{kind:?} changed on the way through");
-            // The property P4f's parity gate rests on: `wchc` renders the same string
-            // `wch` does, because it renders the same value.
+            // The property P4f's parity gate rests on: `webcam-handler-client` renders the
+            // same string `webcam-handler-cli` does, because it renders the same value.
             assert_eq!(back.to_string(), error.to_string(), "{kind:?}");
         }
     }
@@ -569,10 +571,11 @@ mod tests {
 
     #[test]
     fn the_wire_error_adds_no_second_rendering_of_anything() {
-        // D13: "the CLI renders the same variants; nobody stringly-matches". The newtype is
-        // a transport adapter, so its `Display` has to be the error's own — a reworded one
-        // here would be a second home for a sentence a human reads (design §2.10), and the
-        // `wch`/`wchc` parity gate compares exactly these strings.
+        // D13: "the CLI renders the same variants; nobody stringly-matches". The newtype is a
+        // transport adapter, so its `Display` has to be the error's own — a reworded one here
+        // would be a second home for a sentence a human reads (design §2.10), and the
+        // `webcam-handler-cli`/`webcam-handler-client` parity gate compares exactly these
+        // strings.
         for &kind in ErrorKind::ALL {
             let error = Error::sample(kind);
             assert_eq!(WireError(error.clone()).to_string(), error.to_string());

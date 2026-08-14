@@ -1,4 +1,4 @@
-//! One real `wchd`, in a real process.
+//! One real `webcam-handler-daemon`, in a real process.
 //!
 //! Included by `lock.rs`, `systemd.rs` and `signals.rs` — the three suites whose subject is a
 //! **process** rather than a surface: that the shipped binary holds the state directory for
@@ -24,11 +24,11 @@
 //! Starting: the test **reads a line from the daemon's stderr pipe**, and a read on a pipe
 //! blocks until the writer writes — so "the daemon is up" arrives from the daemon rather than
 //! from a guess about how long starting takes. The bound on that read is end-of-file: a
-//! `wchd` that cannot serve says why and exits, which closes the pipe, and the wait fails
-//! with everything the daemon printed. This is the same bound `crates/engine/tests/
-//! crash_recovery.rs` accepts for the same reason, and it is why a line is matched on a
-//! **path or a fragment** rather than on a sentence — a reworded log message must not be able
-//! to turn a failing test into a hanging one.
+//! `webcam-handler-daemon` that cannot serve says why and exits, which closes the pipe, and
+//! the wait fails with everything the daemon printed. This is the same bound
+//! `crates/engine/tests/ crash_recovery.rs` accepts for the same reason, and it is why a line
+//! is matched on a **path or a fragment** rather than on a sentence — a reworded log message
+//! must not be able to turn a failing test into a hanging one.
 //!
 //! Stopping: `wait` returns when the kernel has reaped the process, which is after its
 //! descriptors are closed, which is when the `flock` is gone.
@@ -43,10 +43,10 @@ use schema::paths::MapEnv;
 
 /// A private pair of XDG directories, thrown away with the value.
 ///
-/// Both are needed even by a suite that is about neither: `wchd` refuses to serve without a
-/// runtime directory to put its socket in (D11) and without a state directory to lock (D9),
-/// so a fixture that supplied one would be testing the startup order's *first* refusal
-/// instead of whatever it came for.
+/// Both are needed even by a suite that is about neither: `webcam-handler-daemon` refuses to
+/// serve without a runtime directory to put its socket in (D11) and without a state directory
+/// to lock (D9), so a fixture that supplied one would be testing the startup order's *first*
+/// refusal instead of whatever it came for.
 pub(crate) struct Scratch {
     state: TempStore,
     /// The `$XDG_RUNTIME_DIR` the daemon puts its socket directory inside.
@@ -73,7 +73,7 @@ impl Scratch {
             .with("XDG_STATE_HOME", self.state.root().as_str())
     }
 
-    /// The socket a `wchd` started here would bind.
+    /// The socket a `webcam-handler-daemon` started here would bind.
     ///
     /// Composed from the same two homes the daemon composes it from —
     /// `schema::paths::runtime_dir` and `schema::limits::DAEMON_SOCKET_FILE` — rather than
@@ -86,14 +86,15 @@ impl Scratch {
             .join(schema::limits::DAEMON_SOCKET_FILE)
     }
 
-    /// A `wchd` bound to these directories, not yet started, with nobody supervising it.
+    /// A `webcam-handler-daemon` bound to these directories, not yet started, with nobody
+    /// supervising it.
     ///
-    /// The backend is whatever `wchd` defaults to, because that is the only choice all three
-    /// includers agree on: `lock.rs` contends for a state directory and does not care what is
-    /// plugged in, while `systemd.rs` and `signals.rs` need a camera count they know and add
-    /// `--backend fake --profile …` through `support/supervised.rs`.
+    /// The backend is whatever `webcam-handler-daemon` defaults to, because that is the only
+    /// choice all three includers agree on: `lock.rs` contends for a state directory and does
+    /// not care what is plugged in, while `systemd.rs` and `signals.rs` need a camera count
+    /// they know and add `--backend fake --profile …` through `support/supervised.rs`.
     pub(crate) fn wchd(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_wchd"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_webcam-handler-daemon"));
         command
             // As environment variables rather than flags, because that is how the shipped
             // daemon finds both directories (note N2) — a test that passed paths in would not
@@ -121,7 +122,7 @@ impl Scratch {
     }
 }
 
-/// A running `wchd`, stopped with the value.
+/// A running `webcam-handler-daemon`, stopped with the value.
 ///
 /// [`Daemon::stop`] is idempotent and [`Drop`] calls it, so an assertion that fails part way
 /// through does not leave a daemon holding a lock — and, more to the point, holding it over a
@@ -136,7 +137,9 @@ pub(crate) struct Daemon {
 impl Daemon {
     /// Start one from a prepared command. It has not necessarily got anywhere yet.
     pub(crate) fn spawn(mut command: Command) -> Daemon {
-        let mut child = command.spawn().expect("wchd is built beside this test");
+        let mut child = command
+            .spawn()
+            .expect("webcam-handler-daemon is built beside this test");
         let stderr = child.stderr.take().expect("stderr was piped");
         Daemon {
             child,
@@ -179,7 +182,7 @@ impl Daemon {
             }
         }
         panic!(
-            "wchd exited without saying {wanted:?}; it said:\n{}",
+            "webcam-handler-daemon exited without saying {wanted:?}; it said:\n{}",
             self.transcript()
         );
     }

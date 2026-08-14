@@ -2590,7 +2590,7 @@ fn hw_motion_a_bounded_ptz_sweep_returns_the_motor_to_where_it_started() {
 /// those places.
 fn cycling_helper() -> Option<Utf8PathBuf> {
     let helper = match corpus::repo_root() {
-        Ok(root) => root.join(".wch-bin/wch-priv"),
+        Ok(root) => root.join(".wch-bin/webcam-handler-priv"),
         Err(error) => {
             println!(
                 "SKIP: the repository root could not be located ({error}), so the blessed helper cannot be either"
@@ -2600,8 +2600,8 @@ fn cycling_helper() -> Option<Utf8PathBuf> {
     };
     if !helper.is_file() {
         println!(
-            "SKIP: no blessed helper at .wch-bin/wch-priv; run `just bless` (sudo once) — \
-             this arm cannot cycle a driver without it"
+            "SKIP: no blessed helper at .wch-bin/webcam-handler-priv; run `just bless` \
+             (sudo once) — this arm cannot cycle a driver without it"
         );
         return None;
     }

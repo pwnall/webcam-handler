@@ -7,11 +7,11 @@
 //!
 //! **Which document names which.** An answer a `--json` verb prints is a root in
 //! `schemas/webcam-handler-schema.json`. An answer only the wire carries —
-//! [`DiscoveryReport`], which `wch` splits between its `ControlReport` and two lines on
-//! standard error, and [`TerminationReport`], whose verb has no command-line spelling yet
-//! — is named in `schemas/webcam-handler-openrpc.json` under `components/schemas`
-//! instead, because that is the document its consumer is reading. Neither type is in the
-//! bundle, deliberately.
+//! [`DiscoveryReport`], which `webcam-handler-cli` splits between its `ControlReport` and two
+//! lines on standard error, and [`TerminationReport`], whose verb has no command-line spelling
+//! yet — is named in `schemas/webcam-handler-openrpc.json` under `components/schemas` instead,
+//! because that is the document its consumer is reading. Neither type is in the bundle,
+//! deliberately.
 //!
 //! Most of these answer a read. Three answer something that changed the world —
 //! [`WriteReport`], [`DiscoveryReport`] and [`TerminationReport`] — and each of them says
@@ -176,23 +176,22 @@ impl WriteReport {
 
 /// What `discover_pairs` answers (design D3, D4, note N9).
 ///
-/// More than a [`ControlReport`], because D3's second layer *writes to the camera*: it
-/// toggles automation-shaped controls and puts them back. `wch` prints what the probe
-/// declined and what it could not restore on standard error, and a caller on the other end
-/// of a socket that could not see those two facts would be running a write with its
-/// restoration report withheld — which is AGENTS rule 8 ("tests assert restoration")
-/// turned into a wire property.
+/// More than a [`ControlReport`], because D3's second layer *writes to the camera*: it toggles
+/// automation-shaped controls and puts them back. `webcam-handler-cli` prints what the probe
+/// declined and what it could not restore on standard error, and a caller on the other end of
+/// a socket that could not see those two facts would be running a write with its restoration
+/// report withheld — which is AGENTS rule 8 ("tests assert restoration") turned into a wire
+/// property.
 ///
-/// **Two of the three fields come straight from `engine::discover::Discovery`; the third
-/// is assembled.** `skipped` and `restored` are that type's own. `controls` is not:
-/// `Discovery` carries `pairs`, the measured relationships, and turning those into a
-/// [`ControlReport`] means re-reading the control set *after* the probe put the camera
-/// back and merging declared with measured so measured wins (E1) — which is
-/// `engine::pairing::applicable(&controls, &merge(declared_pairs(), measured))`, exactly
-/// what `wch controls --discover-pairs` does today in `crates/cli`'s `InProcess::controls`.
-/// Whoever routes this method next assembles it the same way or the two surfaces disagree
-/// about the provenance on their pairs; note N34 records that the assembly wants one home
-/// before it has two callers.
+/// **Two of the three fields come straight from `engine::discover::Discovery`; the third is
+/// assembled.** `skipped` and `restored` are that type's own. `controls` is not: `Discovery`
+/// carries `pairs`, the measured relationships, and turning those into a [`ControlReport`]
+/// means re-reading the control set *after* the probe put the camera back and merging declared
+/// with measured so measured wins (E1) — which is `engine::pairing::applicable(&controls,
+/// &merge(declared_pairs(), measured))`, exactly what `webcam-handler-cli controls
+/// --discover-pairs` does today in `crates/cli`'s `InProcess::controls`. Whoever routes this
+/// method next assembles it the same way or the two surfaces disagree about the provenance on
+/// their pairs; note N34 records that the assembly wants one home before it has two callers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiscoveryReport {
     /// The control set as it stands after the probe put the camera back, carrying the

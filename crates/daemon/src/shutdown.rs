@@ -1,12 +1,12 @@
-//! How `wchd` stops, in an order (docs/7 P4e-ii).
+//! How `webcam-handler-daemon` stops, in an order (docs/7 P4e-ii).
 //!
 //! Everything before this sub-milestone was true of a daemon that *had* stopped: Linux
 //! releases an `flock` when the last descriptor on its open file description closes, so a
-//! killed `wchd` released the state directory and every camera node its actors held
-//! (`crate::state`'s header, `engine::store::StoreLock`'s paragraph). None of that needed
-//! code, and none of it is what this module adds. What it adds is the **order**, and one
-//! thing the kernel cannot do at all: a subscriber whose stream ends with a reason instead of
-//! a socket that goes away underneath it.
+//! killed `webcam-handler-daemon` released the state directory and every camera node its
+//! actors held (`crate::state`'s header, `engine::store::StoreLock`'s paragraph). None of that
+//! needed code, and none of it is what this module adds. What it adds is the **order**, and
+//! one thing the kernel cannot do at all: a subscriber whose stream ends with a reason instead
+//! of a socket that goes away underneath it.
 //!
 //! ## The order, which is the whole point
 //!
@@ -298,11 +298,11 @@ pub trait Notifying: Send + Sync {
 ///
 /// **Not what `main` passes** — that is [`crate::systemd::Supervisor`], which is safe to use
 /// unconditionally because `sd_notify` answers `Ok(())` with `$NOTIFY_SOCKET` unset, so a
-/// `wchd` started from a shell already sends nothing. What this is for is a caller that wants
-/// to be *sure* nothing leaves the process, and the value the shutdown suite's recording
-/// double is compared against. It is a no-op rather than a log line: what these calls carry
-/// is already logged as the events they describe, and a second copy on stderr would be the
-/// daemon narrating its own bookkeeping.
+/// `webcam-handler-daemon` started from a shell already sends nothing. What this is for is a
+/// caller that wants to be *sure* nothing leaves the process, and the value the shutdown
+/// suite's recording double is compared against. It is a no-op rather than a log line: what
+/// these calls carry is already logged as the events they describe, and a second copy on
+/// stderr would be the daemon narrating its own bookkeeping.
 #[derive(Debug, Clone, Copy)]
 pub struct Unsupervised;
 
@@ -446,7 +446,7 @@ async fn stop_in_order<T: Stopping>(
             // The one line an operator looks for when a daemon goes away, and it names which
             // request arrived because "systemd stopped it" and "somebody pressed Ctrl-C" are
             // different things to be told at 3am. What happens next is identical.
-            tracing::info!(signal = stop.as_str(), "wchd is stopping");
+            tracing::info!(signal = stop.as_str(), "webcam-handler-daemon is stopping");
         }
         Ending::AcceptLoopEnded(Err(error)) => {
             // The accept loop already logged the errno and the run of failures; what this

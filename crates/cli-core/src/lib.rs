@@ -1,17 +1,18 @@
 //! The one command surface (T4).
 //!
-//! The clap tree, the argument types, the rendering and the `--json` contract live here
-//! once; `wch` and `wchc` differ only in which [`Executor`] they hand it. A verb that
-//! exists twice is a defect (design §2.10), and the P4 parity gate makes that mechanical
-//! by comparing the two binaries' `--json` output byte for byte.
+//! The clap tree, the argument types, the rendering and the `--json` contract live here once;
+//! `webcam-handler-cli` and `webcam-handler-client` differ only in which [`Executor`] they
+//! hand it. A verb that exists twice is a defect (design §2.10), and the P4 parity gate makes
+//! that mechanical by comparing the two binaries' `--json` output byte for byte.
 //!
 //! ## Why the executor is a trait and not a backend
 //!
-//! `wchc` links no backend and no engine — that is the thin-client wall (T6). So the
-//! thing this crate calls cannot *be* a backend; it is a seam with two implementations
+//! `webcam-handler-client` links no backend and no engine — that is the thin-client wall (T6).
+//! So the thing this crate calls cannot *be* a backend; it is a seam with two implementations
 //! living in the two binaries: an in-process engine over `Box<dyn CameraBackend>` for
-//! `wch`, and a generated RPC client for `wchc` at P4. Everything above the seam —
-//! argument parsing, table layout, JSON emission, exit codes — happens once, here.
+//! `webcam-handler-cli`, and a generated RPC client for `webcam-handler-client` at P4.
+//! Everything above the seam — argument parsing, table layout, JSON emission, exit codes —
+//! happens once, here.
 //!
 //! ## The `--json` contract
 //!
@@ -51,11 +52,11 @@ use schema::session::{Session, SessionList, SessionStatus, SweepRequest, SweepSp
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::vocabulary::closed_vocabulary;
 
-// The wire and the command line name the same session and the same selection, so they are
-// one type in the schema rather than two that drift (design §2.10). Re-exported rather
-// than aliased so `cli_core::SessionRef` — the spelling every `Executor` signature and
-// both binaries already use — keeps meaning something, and so `wchc` can hand what it
-// parsed straight to the T5 client at P4f.
+// The wire and the command line name the same session and the same selection, so they are one
+// type in the schema rather than two that drift (design §2.10). Re-exported rather than
+// aliased so `cli_core::SessionRef` — the spelling every `Executor` signature and both
+// binaries already use — keeps meaning something, and so `webcam-handler-client` can hand what
+// it parsed straight to the T5 client at P4f.
 pub use schema::session::{ChosenBy, Selection, SessionRef};
 
 pub use photograph::Photograph;
@@ -63,8 +64,9 @@ pub use render::{SweepWatcher, report_probe};
 
 /// The photo answer, and its bytes when the caller asked for them.
 ///
-/// Defined here rather than imported from the engine: `wchc` links no engine (T6), and the
-/// command surface both binaries share cannot name a type only one of them can see.
+/// Defined here rather than imported from the engine: `webcam-handler-client` links no engine
+/// (T6), and the command surface both binaries share cannot name a type only one of them can
+/// see.
 mod photograph {
     use schema::capture::PhotoReport;
 
@@ -112,12 +114,13 @@ pub use render::{Bar, Output, Quiet, Stream};
 closed_vocabulary! {
     /// Which root is running the one command surface.
     ///
-    /// The surface is shared and the *name* is not: `wch --help`, `wch --version` and the
-    /// line a failed `wch` prints all say `wch`, and the identical run of `wchc` has to say
-    /// `wchc`. The naive way to get that is a second `#[command(name = …)]` on a second
-    /// root type, which is the one thing T4 forbids — a verb would then exist twice, and
-    /// the P4f parity gate scrapes `--help` for its verb population, so a forked tree would
-    /// be a gate that compares a surface with itself.
+    /// The surface is shared and the *name* is not: `webcam-handler-cli --help`,
+    /// `webcam-handler-cli --version` and the line a failed `webcam-handler-cli` prints all
+    /// say `webcam-handler-cli`, and the identical run of `webcam-handler-client` has to say
+    /// `webcam-handler-client`. The naive way to get that is a second `#[command(name = …)]`
+    /// on a second root type, which is the one thing T4 forbids — a verb would then exist
+    /// twice, and the P4f parity gate scrapes `--help` for its verb population, so a forked
+    /// tree would be a gate that compares a surface with itself.
     ///
     /// So the name is a **parameter of the parse** rather than a property of the tree.
     /// [`Cli::try_parse_checked_from`] takes one of these and renames the built
@@ -127,15 +130,20 @@ closed_vocabulary! {
     /// exist at all.
     ///
     /// It carries the error prefix too ([`Program::error_line`]), because that is the same
-    /// question wearing a different hat: `wch: {error}` and `wchc: {error}` are one format
-    /// with one variable in it, and two roots each holding their own `format!` is the
-    /// second copy design §2.10 is about.
+    /// question wearing a different hat: `webcam-handler-cli: {error}` and
+    /// `webcam-handler-client: {error}` are one format with one variable in it, and two roots
+    /// each holding their own `format!` is the second copy design §2.10 is about.
+    ///
+    /// The variants are spelled short — `Cli`, `Client` — because a Rust identifier cannot
+    /// carry the hyphens the names have; [`Program::as_str`] below is the one place the
+    /// spellings a user sees are written down (note **N90**).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Program {
-        /// `wch` — the direct CLI, driving a backend in-process.
-        Wch,
-        /// `wchc` — the daemon client, driving `wchd` over the T5 wire.
-        Wchc,
+        /// `webcam-handler-cli` — the direct CLI, driving a backend in-process.
+        Cli,
+        /// `webcam-handler-client` — the daemon client, driving `webcam-handler-daemon` over
+        /// the T5 wire.
+        Client,
     }
 }
 
@@ -149,8 +157,8 @@ impl Program {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Program::Wch => "wch",
-            Program::Wchc => "wchc",
+            Program::Cli => "webcam-handler-cli",
+            Program::Client => "webcam-handler-client",
         }
     }
 
@@ -160,7 +168,7 @@ impl Program {
     /// the difference between the two binaries' help output. `Cli` therefore carries no
     /// `#[command(name = …)]` of its own: a default name on the derive would be a second
     /// answer that a caller reaching for [`clap::Parser::parse`] could get by accident,
-    /// and it would be `wch`'s name in `wchc`'s mouth.
+    /// and it would be `webcam-handler-cli`'s name in `webcam-handler-client`'s mouth.
     #[must_use]
     pub fn command(self) -> clap::Command {
         use clap::CommandFactory as _;
@@ -191,8 +199,9 @@ impl std::fmt::Display for Program {
 /// The derive takes an argument's id from its **field name**, and `ArgMatches` is a map on
 /// that id — so this string and the field below are one name spelled twice, which is exactly
 /// the drift a test has to catch: a lookup on an id no argument has answers `None`, which
-/// reads as "the flag was not typed" and would make `wchc`'s refusal quietly stop refusing.
-/// `the_backend_flag_is_reachable_by_the_id_the_matches_are_keyed_on` is that test.
+/// reads as "the flag was not typed" and would make `webcam-handler-client`'s refusal quietly
+/// stop refusing. `the_backend_flag_is_reachable_by_the_id_the_matches_are_keyed_on` is that
+/// test.
 const BACKEND_ARG: &str = "backend";
 
 /// Drive V4L2 webcams: enumerate, inspect, and capture device profiles.
@@ -293,13 +302,13 @@ impl Cli {
     /// Whether the command line **named** a backend, rather than taking the default.
     ///
     /// `--backend` carries `default_value = "v4l2"`, so [`Cli::backend`] always holds one and
-    /// the value alone cannot answer "did somebody ask for this?". `wchc` needs the
-    /// question answered, because it refuses the flag: the daemon chose its backend at its
-    /// own composition root and a client cannot change it, so `wchc --backend v4l2` has to
-    /// be refused exactly as `wchc --backend fake` is. Refusing on the *value* would let the
-    /// spelling that happens to match the default through, and a client that silently
-    /// accepted `--backend v4l2` while the daemon replayed a profile would be lying about
-    /// which machine's cameras it was showing.
+    /// the value alone cannot answer "did somebody ask for this?". `webcam-handler-client`
+    /// needs the question answered, because it refuses the flag: the daemon chose its backend
+    /// at its own composition root and a client cannot change it, so `webcam-handler-client
+    /// --backend v4l2` has to be refused exactly as `webcam-handler-client --backend fake` is.
+    /// Refusing on the *value* would let the spelling that happens to match the default
+    /// through, and a client that silently accepted `--backend v4l2` while the daemon replayed
+    /// a profile would be lying about which machine's cameras it was showing.
     ///
     /// `false` for a [`Cli`] that did not come through [`Cli::try_parse_checked_from`] —
     /// clap's own `Parser::try_parse_from` builds one without ever seeing this — which is
@@ -391,11 +400,11 @@ vocabulary_arg!(MetricArg, MetricName, "metric");
 /// busy" are different kinds of failure and a script deciding whether to retry needs to
 /// tell them apart.
 ///
-/// A newtype over the schema's [`ControlWrite`] for the reason [`BackendKindArg`] is one
-/// over `BackendKind`: "which control, and what value" is one shape, and the wire carries
-/// it (`wch_set` takes `Vec<ControlWrite>`, D10). A second struct with the same two fields
-/// here would be a copy of a rule (design §2.10) and would put a conversion at exactly the
-/// seam `wch` and `wchc` are compared across (P4f's parity gate).
+/// A newtype over the schema's [`ControlWrite`] for the reason [`BackendKindArg`] is one over
+/// `BackendKind`: "which control, and what value" is one shape, and the wire carries it
+/// (`wch_set` takes `Vec<ControlWrite>`, D10). A second struct with the same two fields here
+/// would be a copy of a rule (design §2.10) and would put a conversion at exactly the seam
+/// `webcam-handler-cli` and `webcam-handler-client` are compared across (P4f's parity gate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment(pub ControlWrite);
 
@@ -581,10 +590,11 @@ pub enum Command {
 
         /// Wait for the camera rather than being refused while it is busy (D12).
         ///
-        /// Inert under `wch`, which opens its own camera per invocation and runs one verb:
-        /// the queue it would be waiting for is its own and always empty. It is meaningful
-        /// under `wchc`, where the daemon serves every client from one thread per camera —
-        /// see [`Command::photo_request`], which is where the flag became reachable.
+        /// Inert under `webcam-handler-cli`, which opens its own camera per invocation and
+        /// runs one verb: the queue it would be waiting for is its own and always empty. It is
+        /// meaningful under `webcam-handler-client`, where the daemon serves every client from
+        /// one thread per camera — see [`Command::photo_request`], which is where the flag
+        /// became reachable.
         #[arg(long)]
         wait: bool,
     },
@@ -626,9 +636,10 @@ impl StreamArgs {
             interval: None,
             buffer_count: schema::limits::DEFAULT_BUFFER_COUNT,
             // Not a command-line flag and deliberately not one: D5's 2026-08-13 amendment
-            // derives it from where the photo is going, and `PhotoRequest::stream_for_sink`
-            // is the one place that happens — for `wchc` as much as for `wch`, since the
-            // derivation runs where the photo is taken rather than where it is typed.
+            // derives it from where the photo is going, and `PhotoRequest::stream_for_sink` is
+            // the one place that happens — for `webcam-handler-client` as much as for
+            // `webcam-handler-cli`, since the derivation runs where the photo is taken rather
+            // than where it is typed.
             sink_fidelity: schema::camera::SinkFidelity::default(),
         }
     }
@@ -687,7 +698,7 @@ pub struct SessionArg {
     pub session: Option<uuid::Uuid>,
 }
 
-/// `wch calibrate …` — the calibration session verbs (design D8).
+/// `webcam-handler-cli calibrate …` — the calibration session verbs (design D8).
 #[derive(Debug, Subcommand)]
 pub enum CalibrateCommand {
     /// Open a session for a camera and a task.
@@ -1003,21 +1014,23 @@ impl std::str::FromStr for ChosenByArg {
 impl Command {
     /// The photo request a `photo` invocation describes, and where its bytes go.
     ///
-    /// `cwd` is the caller's directory, passed in rather than read: D10 says a relative
-    /// `-o` resolves against the *caller's* cwd, and at P4 the caller is on the other end
-    /// of a socket. Resolving it here — in the shared command surface — is what makes
-    /// `wch photo -o out.jpg` and `wchc photo -o out.jpg` mean the same file.
+    /// `cwd` is the caller's directory, passed in rather than read: D10 says a relative `-o`
+    /// resolves against the *caller's* cwd, and at P4 the caller is on the other end of a
+    /// socket. Resolving it here — in the shared command surface — is what makes
+    /// `webcam-handler-cli photo -o out.jpg` and `webcam-handler-client photo -o out.jpg` mean
+    /// the same file.
     ///
     /// `--wait` is D12's flag and it **landed here at P4f**, with the surface that can mean
     /// it. The absence this doc used to argue was note N42's and note N56 restated it: "the
-    /// consumer where it is meaningful is `wchc`, whose transport is P4f's… It stays a wire
-    /// field until the surface that can mean it exists." That surface exists now, so the
-    /// flag is a flag: `wchc photo --wait` asks the daemon to *queue* behind whatever is
-    /// holding the camera's one thread (`limits::CAMERA_ENQUEUE_WAIT_MS` bounds the wait),
-    /// where without it a busy camera is `Error::Busy`. It is still inert under `wch` for
-    /// exactly the reason it was inert before — one process, one camera, one verb, an empty
-    /// queue — and its `--help` line says so rather than leaving a user to discover it,
-    /// which is the objection that kept a flag with no reachable consumer out of P4b.
+    /// consumer where it is meaningful is `webcam-handler-client`, whose transport is P4f's…
+    /// It stays a wire field until the surface that can mean it exists." That surface exists
+    /// now, so the flag is a flag: `webcam-handler-client photo --wait` asks the daemon to
+    /// *queue* behind whatever is holding the camera's one thread
+    /// (`limits::CAMERA_ENQUEUE_WAIT_MS` bounds the wait), where without it a busy camera is
+    /// `Error::Busy`. It is still inert under `webcam-handler-cli` for exactly the reason it
+    /// was inert before — one process, one camera, one verb, an empty queue — and its `--help`
+    /// line says so rather than leaving a user to discover it, which is the objection that
+    /// kept a flag with no reachable consumer out of P4b.
     ///
     /// `PhotoRequest::wait` is `#[serde(default)]`, so nothing about the committed schema
     /// artifacts moves with this — asserted by `scripts/gates/schema-artifacts-current.sh`
@@ -1026,11 +1039,11 @@ impl Command {
     /// # Errors
     ///
     /// [`Error::IllegalTransition`] from [`Sink::writable_format`] when the output path's
-    /// extension names an encoding this build does not write, naming both the extension
-    /// and the three it does. Raised *here* — while a command line is being parsed, before
-    /// anything opens a camera — but decided on the type, because `wchd` links no
-    /// `cli-core` and the same refusal has to hold for a sink a socket built (note N46,
-    /// debt D-1). Deliberately not `FormatUnsupported`: that variant is the camera saying
+    /// extension names an encoding this build does not write, naming both the extension and
+    /// the three it does. Raised *here* — while a command line is being parsed, before
+    /// anything opens a camera — but decided on the type, because `webcam-handler-daemon`
+    /// links no `cli-core` and the same refusal has to hold for a sink a socket built (note
+    /// N46, debt D-1). Deliberately not `FormatUnsupported`: that variant is the camera saying
     /// what it cannot offer, and `.webp` is not the camera's fault (E3).
     pub fn photo_request(&self, cwd: &camino::Utf8Path) -> Result<Option<PhotoRequest>> {
         let Command::Photo {
@@ -1055,12 +1068,12 @@ impl Command {
                     cwd.join(path)
                 };
                 let sink = Sink::ServerPath { path: absolute };
-                // Asked, not repeated. The refusal for an extension this build cannot
-                // write is `Sink`'s, beside the variants, so `wch photo -o a.webp` and a
-                // socket sending `{"kind":"server_path","path":"/tmp/a.webp"}` are refused
-                // by one rule with one message. What is local to this surface is only
-                // *when*: at parse time, before a camera is opened, which is why the answer
-                // it produces is discarded and the error is not.
+                // Asked, not repeated. The refusal for an extension this build cannot write is
+                // `Sink`'s, beside the variants, so `webcam-handler-cli photo -o a.webp` and a
+                // socket sending `{"kind":"server_path","path":"/tmp/a.webp"}` are refused by
+                // one rule with one message. What is local to this surface is only *when*: at
+                // parse time, before a camera is opened, which is why the answer it produces
+                // is discarded and the error is not.
                 sink.writable_format()?;
                 sink
             }
@@ -1071,17 +1084,18 @@ impl Command {
             settle: settle.policy(),
             transform: transform.0,
             sink,
-            // D12's flag, carried verbatim rather than decided here. The surface says what
-            // was asked for; whether asking means anything is the *executor's* answer, and
-            // the two executors differ — see this method's doc. Nothing in this crate
-            // branches on it, which is what makes `wch photo --wait` and `wch photo`
-            // produce byte-identical `--json` while `wchc`'s two differ.
+            // D12's flag, carried verbatim rather than decided here. The surface says what was
+            // asked for; whether asking means anything is the *executor's* answer, and the two
+            // executors differ — see this method's doc. Nothing in this crate branches on it,
+            // which is what makes `webcam-handler-cli photo --wait` and `webcam-handler-cli
+            // photo` produce byte-identical `--json` while `webcam-handler-client`'s two
+            // differ.
             wait: *wait,
         }))
     }
 }
 
-/// `wch profile …`
+/// `webcam-handler-cli profile …`
 #[derive(Debug, Subcommand)]
 pub enum ProfileCommand {
     /// Capture a camera's profile: everything enumerable about it, as one document.
@@ -1102,10 +1116,10 @@ pub enum ProfileCommand {
 
 /// What a binary must be able to do for the command surface to work.
 ///
-/// Deliberately narrow: every method answers with a schema value, and none of them
-/// renders, prints, or decides an exit code. `wch` implements it over an in-process
-/// engine; `wchc` will implement it over the generated RPC client at P4, and the parity
-/// gate then proves the two produce identical `--json`.
+/// Deliberately narrow: every method answers with a schema value, and none of them renders,
+/// prints, or decides an exit code. `webcam-handler-cli` implements it over an in-process
+/// engine; `webcam-handler-client` will implement it over the generated RPC client at P4, and
+/// the parity gate then proves the two produce identical `--json`.
 pub trait Executor {
     /// Every camera, plus anything worth saying about what is missing (D1).
     ///
@@ -1226,9 +1240,10 @@ pub trait Executor {
 
     /// Sweep one control, reporting progress as it goes (D8).
     ///
-    /// `watch` is where the progress events go while the sweep runs. It is this crate's
-    /// seam rather than the engine's, because `wchc` links no engine (T6): the binaries
-    /// bridge whichever stream they have onto it, and the rendering happens once, here.
+    /// `watch` is where the progress events go while the sweep runs. It is this crate's seam
+    /// rather than the engine's, because `webcam-handler-client` links no engine (T6): the
+    /// binaries bridge whichever stream they have onto it, and the rendering happens once,
+    /// here.
     ///
     /// # Errors
     ///
@@ -1400,7 +1415,7 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
     }
 }
 
-/// `wch calibrate …`, dispatched.
+/// `webcam-handler-cli calibrate …`, dispatched.
 ///
 /// Its own function rather than seven more arms in [`run`]: the calibration verbs share a
 /// shape — resolve a camera, name a session, hand the answer to a renderer — and the shape
@@ -1633,14 +1648,17 @@ mod tests {
 
     #[test]
     fn each_root_announces_its_own_name_over_the_one_shared_tree() {
-        // The property T4 needs and the parity gate rests on: one surface, two names. If
-        // the name were a property of the tree instead of the parse, `wchc --help` would
-        // announce `wch` and the P4f gate would be scraping a verb population from a
-        // binary that had told it the wrong story about which binary it was.
+        // The property T4 needs and the parity gate rests on: one surface, two names. If the
+        // name were a property of the tree instead of the parse, `webcam-handler-client
+        // --help` would announce `webcam-handler-cli` and the P4f gate would be scraping a
+        // verb population from a binary that had told it the wrong story about which binary it
+        // was.
         //
-        // Every assertion is anchored rather than a `contains`, because `wch` is a prefix
-        // of `wchc`: an unanchored membership test would pass for `Wch` over `wchc`'s
-        // output and the arm that matters would never go red.
+        // Every assertion is anchored rather than a `contains`, because `webcam-handler-cli`
+        // is a prefix of `webcam-handler-client` — the same trap `wch`/`wchc` set before note
+        // **N90**'s rename, and it survived it intact. An unanchored membership test would
+        // pass for `Program::Cli` over `webcam-handler-client`'s output, and the arm that
+        // matters would never go red.
         let mut verbs: Option<Vec<String>> = None;
         for &program in Program::ALL {
             let command = program.command();
@@ -1678,8 +1696,9 @@ mod tests {
 
     #[test]
     fn the_error_line_names_the_program_that_met_the_error() {
-        // One format, one variable. The two roots print failures through this rather than
-        // each holding a `format!`, so `wchc`'s prefix cannot drift from `wch`'s shape.
+        // One format, one variable. The two roots print failures through this rather than each
+        // holding a `format!`, so `webcam-handler-client`'s prefix cannot drift from
+        // `webcam-handler-cli`'s shape.
         let error = Error::Busy {
             path: "/dev/video0".into(),
             holders: Vec::new(),
@@ -1714,12 +1733,13 @@ mod tests {
 
     #[test]
     fn the_read_verbs_parse_the_way_the_agent_guide_will_teach_them() {
-        let cli = Cli::try_parse_from(["wch", "list"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "list"]).expect("parses");
         assert!(matches!(cli.command, Command::List));
         assert!(!cli.json);
         assert_eq!(cli.backend, BackendKindArg(BackendKind::V4l2));
 
-        let cli = Cli::try_parse_from(["wch", "--json", "info", "cam:obsbot"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "--json", "info", "cam:obsbot"])
+            .expect("parses");
         assert!(cli.json);
         let Command::Info(arg) = &cli.command else {
             panic!("expected info");
@@ -1727,7 +1747,8 @@ mod tests {
         assert_eq!(arg.id().expect("an id").as_str(), "cam:obsbot");
 
         // The prefix D1 promises, and the `cam:` prefix being optional on input.
-        let cli = Cli::try_parse_from(["wch", "controls", "obsbot"]).expect("parses");
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "controls", "obsbot"]).expect("parses");
         let Command::Controls {
             camera,
             discover_pairs,
@@ -1741,8 +1762,15 @@ mod tests {
             "the probe is opt-in: it writes to the camera"
         );
 
-        let cli = Cli::try_parse_from(["wch", "profile", "capture", "cam:x", "-o", "p.json"])
-            .expect("parses");
+        let cli = Cli::try_parse_from([
+            "webcam-handler-cli",
+            "profile",
+            "capture",
+            "cam:x",
+            "-o",
+            "p.json",
+        ])
+        .expect("parses");
         let Command::Profile(ProfileCommand::Capture { out, capturer, .. }) = &cli.command else {
             panic!("expected profile capture");
         };
@@ -1755,7 +1783,7 @@ mod tests {
         // The inverse of the test below, and the reason `required_if_eq` is on the
         // argument: a fake backend with no documents enumerates nothing, which reads
         // exactly like a machine whose cameras disappeared.
-        let error = Cli::try_parse_from(["wch", "--backend", "fake", "list"])
+        let error = Cli::try_parse_from(["webcam-handler-cli", "--backend", "fake", "list"])
             .expect_err("--backend fake without --profile must not parse");
         assert_eq!(
             error.kind(),
@@ -1765,13 +1793,13 @@ mod tests {
         assert!(error.to_string().contains("--profile"), "{error}");
 
         // …and the default backend needs no profile at all.
-        assert!(Cli::try_parse_from(["wch", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["webcam-handler-cli", "list"]).is_ok());
     }
 
     #[test]
     fn the_fake_backend_is_selectable_with_the_profiles_it_replays() {
         let cli = Cli::try_parse_from([
-            "wch",
+            "webcam-handler-cli",
             "--backend",
             "fake",
             "--profile",
@@ -1789,8 +1817,9 @@ mod tests {
     fn the_backend_flag_is_reachable_by_the_id_the_matches_are_keyed_on() {
         // `BACKEND_ARG` and the field it names are one name spelled twice, and the failure
         // mode of a mismatch is silent: `ArgMatches::value_source` on an id no argument has
-        // answers `None`, which reads exactly like "the flag was not typed" — so `wchc`
-        // would stop refusing `--backend` and nothing else would notice.
+        // answers `None`, which reads exactly like "the flag was not typed" — so
+        // `webcam-handler-client` would stop refusing `--backend` and nothing else would
+        // notice.
         for &program in Program::ALL {
             assert!(
                 program
@@ -1804,17 +1833,20 @@ mod tests {
 
     #[test]
     fn a_backend_that_was_typed_is_distinguishable_from_the_one_that_was_defaulted() {
-        // The fact `wchc` refuses on, and the reason it is a fact rather than a comparison:
-        // `--backend` carries `default_value = "v4l2"`, so the *value* is the same in both
-        // rows below and only the provenance differs.
+        // The fact `webcam-handler-client` refuses on, and the reason it is a fact rather than
+        // a comparison: `--backend` carries `default_value = "v4l2"`, so the *value* is the
+        // same in both rows below and only the provenance differs.
         let defaulted =
-            Cli::try_parse_checked_from(Program::Wchc, ["wchc", "list"]).expect("parses");
+            Cli::try_parse_checked_from(Program::Client, ["webcam-handler-client", "list"])
+                .expect("parses");
         assert_eq!(defaulted.backend, BackendKindArg(BackendKind::V4l2));
         assert!(!defaulted.backend_was_chosen());
 
-        let typed =
-            Cli::try_parse_checked_from(Program::Wchc, ["wchc", "--backend", "v4l2", "list"])
-                .expect("parses");
+        let typed = Cli::try_parse_checked_from(
+            Program::Client,
+            ["webcam-handler-client", "--backend", "v4l2", "list"],
+        )
+        .expect("parses");
         assert_eq!(typed.backend, defaulted.backend, "the values are the same");
         assert!(
             typed.backend_was_chosen(),
@@ -1823,8 +1855,15 @@ mod tests {
 
         // The other spelling, so the fact is about the flag rather than about one value.
         let other = Cli::try_parse_checked_from(
-            Program::Wchc,
-            ["wchc", "--backend", "fake", "--profile", "p.json", "list"],
+            Program::Client,
+            [
+                "webcam-handler-client",
+                "--backend",
+                "fake",
+                "--profile",
+                "p.json",
+                "list",
+            ],
         )
         .expect("parses");
         assert!(other.backend_was_chosen());
@@ -1840,14 +1879,21 @@ mod tests {
 
     #[test]
     fn the_write_verbs_parse_the_way_the_agent_guide_will_teach_them() {
-        let cli = Cli::try_parse_from(["wch", "get", "cam:x", "brightness"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "get", "cam:x", "brightness"])
+            .expect("parses");
         let Command::Get { control, .. } = &cli.command else {
             panic!("expected get");
         };
         assert_eq!(control, "brightness");
 
-        let cli = Cli::try_parse_from(["wch", "set", "cam:x", "brightness=200", "contrast=10"])
-            .expect("parses");
+        let cli = Cli::try_parse_from([
+            "webcam-handler-cli",
+            "set",
+            "cam:x",
+            "brightness=200",
+            "contrast=10",
+        ])
+        .expect("parses");
         let Command::Set {
             assignments,
             no_guard,
@@ -1868,10 +1914,11 @@ mod tests {
         );
         assert!(!no_guard, "the guard is the default (D3)");
 
-        let cli =
-            Cli::try_parse_from(["wch", "snapshot", "cam:x", "-o", "s.json"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "snapshot", "cam:x", "-o", "s.json"])
+            .expect("parses");
         assert!(matches!(cli.command, Command::Snapshot { .. }));
-        let cli = Cli::try_parse_from(["wch", "restore", "cam:x", "s.json"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "restore", "cam:x", "s.json"])
+            .expect("parses");
         assert!(matches!(cli.command, Command::Restore { .. }));
     }
 
@@ -1880,7 +1927,7 @@ mod tests {
         // A usage error rather than a device error: exit 2 rather than 1, so a script
         // that retries on "the camera is busy" does not retry on a typo.
         for bad in ["brightness", "brightness=high", "=5"] {
-            let error = Cli::try_parse_from(["wch", "set", "cam:x", bad])
+            let error = Cli::try_parse_from(["webcam-handler-cli", "set", "cam:x", bad])
                 .expect_err("a malformed assignment must not parse");
             assert_eq!(
                 error.kind(),
@@ -1889,8 +1936,9 @@ mod tests {
             );
         }
         // …and a well-formed one, negative values included, does parse.
-        let cli = Cli::try_parse_from(["wch", "set", "cam:x", "pan_absolute=-468000"])
-            .expect("negative control values are ordinary");
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "set", "cam:x", "pan_absolute=-468000"])
+                .expect("negative control values are ordinary");
         let Command::Set { assignments, .. } = &cli.command else {
             panic!("expected set");
         };
@@ -1901,7 +1949,7 @@ mod tests {
     fn the_photo_vocabularies_are_the_schemas_and_an_unknown_name_lists_the_known_ones() {
         for &transform in Transform::ALL {
             let cli = Cli::try_parse_from([
-                "wch",
+                "webcam-handler-cli",
                 "photo",
                 "cam:x",
                 "--transform",
@@ -1917,7 +1965,7 @@ mod tests {
         }
 
         let error = Cli::try_parse_from([
-            "wch",
+            "webcam-handler-cli",
             "photo",
             "cam:x",
             "--transform",
@@ -1937,8 +1985,11 @@ mod tests {
         // Without `-o`, the photo's bytes *are* standard output. Emitting a JSON document
         // there too would produce a file that is neither. clap refuses it, so the answer
         // is a usage error rather than a corrupt image.
-        let error = Cli::try_parse_checked_from(Program::Wch, ["wch", "--json", "photo", "cam:x"])
-            .expect_err("--json without -o must not parse");
+        let error = Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "--json", "photo", "cam:x"],
+        )
+        .expect_err("--json without -o must not parse");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
@@ -1948,23 +1999,38 @@ mod tests {
         // Both halves of the inverse: `-o` with `--json`, and no `--json` without `-o`.
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
-                ["wch", "--json", "photo", "cam:x", "-o", "a.jpg"]
+                Program::Cli,
+                [
+                    "webcam-handler-cli",
+                    "--json",
+                    "photo",
+                    "cam:x",
+                    "-o",
+                    "a.jpg"
+                ]
             )
             .is_ok()
         );
-        assert!(Cli::try_parse_checked_from(Program::Wch, ["wch", "photo", "cam:x"]).is_ok());
+        assert!(
+            Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "photo", "cam:x"])
+                .is_ok()
+        );
         // And the rule is about `photo` alone: every other verb answers in JSON with no
         // path at all, which is the whole point of `--json`.
-        assert!(Cli::try_parse_checked_from(Program::Wch, ["wch", "--json", "list"]).is_ok());
+        assert!(
+            Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "--json", "list"])
+                .is_ok()
+        );
     }
 
     #[test]
     fn a_relative_output_path_is_resolved_against_the_callers_directory() {
-        // D10: `-o out.jpg` means the caller's directory in `wch` and in `wchc` alike, and
-        // the resolution happens here — in the shared surface — so the two cannot differ.
+        // D10: `-o out.jpg` means the caller's directory in `webcam-handler-cli` and in
+        // `webcam-handler-client` alike, and the resolution happens here — in the shared
+        // surface — so the two cannot differ.
         let cli =
-            Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "shots/a.jpg"]).expect("parses");
+            Cli::try_parse_from(["webcam-handler-cli", "photo", "cam:x", "-o", "shots/a.jpg"])
+                .expect("parses");
         let request = cli
             .command
             .photo_request(camino::Utf8Path::new("/home/someone"))
@@ -1978,8 +2044,8 @@ mod tests {
         );
 
         // An absolute path is left alone.
-        let cli =
-            Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "/tmp/a.jpg"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "photo", "cam:x", "-o", "/tmp/a.jpg"])
+            .expect("parses");
         let request = cli
             .command
             .photo_request(camino::Utf8Path::new("/home/someone"))
@@ -1995,8 +2061,9 @@ mod tests {
 
     #[test]
     fn an_output_extension_this_build_cannot_write_is_refused_before_the_camera_is_opened() {
-        let cli = Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "/tmp/a.webp"])
-            .expect("clap does not know about encodings");
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "photo", "cam:x", "-o", "/tmp/a.webp"])
+                .expect("clap does not know about encodings");
         let error = cli
             .command
             .photo_request(camino::Utf8Path::new("/tmp"))
@@ -2019,7 +2086,7 @@ mod tests {
     #[test]
     fn the_settle_flags_build_the_policy_and_conflict_where_they_should() {
         let cli = Cli::try_parse_from([
-            "wch",
+            "webcam-handler-cli",
             "photo",
             "cam:x",
             "-o",
@@ -2051,7 +2118,7 @@ mod tests {
         // rule about which wins, and clap refusing is a better answer than inventing one.
         assert!(
             Cli::try_parse_from([
-                "wch",
+                "webcam-handler-cli",
                 "photo",
                 "cam:x",
                 "-o",
@@ -2065,7 +2132,8 @@ mod tests {
         );
 
         // With neither, the limits table decides.
-        let plain = Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "a.jpg"]).expect("parses");
+        let plain = Cli::try_parse_from(["webcam-handler-cli", "photo", "cam:x", "-o", "a.jpg"])
+            .expect("parses");
         let request = plain
             .command
             .photo_request(camino::Utf8Path::new("/tmp"))
@@ -2076,14 +2144,21 @@ mod tests {
 
     #[test]
     fn the_wait_flag_reaches_the_request_and_is_absent_from_it_by_default() {
-        // D12's flag, which landed at P4f with the surface that can mean it (notes N42,
-        // N56). Both directions, because a request that always waited and one that never
-        // did would each pass one of them — and the daemon branches on this field, so a
-        // build that dropped it would turn `wchc photo --wait` into a `Busy` refusal on a
-        // camera that was about to be free.
+        // D12's flag, which landed at P4f with the surface that can mean it (notes N42, N56).
+        // Both directions, because a request that always waited and one that never did would
+        // each pass one of them — and the daemon branches on this field, so a build that
+        // dropped it would turn `webcam-handler-client photo --wait` into a `Busy` refusal on
+        // a camera that was about to be free.
         let waiting = Cli::try_parse_checked_from(
-            Program::Wch,
-            ["wch", "photo", "cam:x", "-o", "a.jpg", "--wait"],
+            Program::Cli,
+            [
+                "webcam-handler-cli",
+                "photo",
+                "cam:x",
+                "-o",
+                "a.jpg",
+                "--wait",
+            ],
         )
         .expect("parses");
         let request = waiting
@@ -2093,9 +2168,11 @@ mod tests {
             .expect("a request");
         assert!(request.wait);
 
-        let plain =
-            Cli::try_parse_checked_from(Program::Wch, ["wch", "photo", "cam:x", "-o", "a.jpg"])
-                .expect("parses");
+        let plain = Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "photo", "cam:x", "-o", "a.jpg"],
+        )
+        .expect("parses");
         let request = plain
             .command
             .photo_request(camino::Utf8Path::new("/tmp"))
@@ -2106,11 +2183,15 @@ mod tests {
         // It is a flag on `photo` and on nothing else: the queue it waits for is a camera's
         // one thread, and no other verb takes a capture through it. A `--wait` clap accepted
         // anywhere would be a flag with no reader.
-        assert!(Cli::try_parse_checked_from(Program::Wch, ["wch", "list", "--wait"]).is_err());
+        assert!(
+            Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "list", "--wait"])
+                .is_err()
+        );
 
-        // And the `--help` line says it is inert under `wch`, which is the alternative to
-        // leaving a user to discover it. Read off the built tree rather than from the source
-        // (rubric rule 6), and asserted for both roots, because the surface is shared.
+        // And the `--help` line says it is inert under `webcam-handler-cli`, which is the
+        // alternative to leaving a user to discover it. Read off the built tree rather than
+        // from the source (rubric rule 6), and asserted for both roots, because the surface is
+        // shared.
         for &program in Program::ALL {
             let help = program
                 .command()
@@ -2119,7 +2200,10 @@ mod tests {
                 .render_long_help()
                 .to_string();
             assert!(help.contains("--wait"), "{program}: {help}");
-            assert!(help.contains("Inert under `wch`"), "{program}: {help}");
+            assert!(
+                help.contains("Inert under `webcam-handler-cli`"),
+                "{program}: {help}"
+            );
         }
     }
 
@@ -2127,23 +2211,39 @@ mod tests {
     fn a_malformed_size_is_refused_naming_the_shape_it_wanted() {
         for bad in ["1920", "1920*1080", "wide x tall"] {
             assert!(
-                Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "a.jpg", "--size", bad])
-                    .is_err(),
+                Cli::try_parse_from([
+                    "webcam-handler-cli",
+                    "photo",
+                    "cam:x",
+                    "-o",
+                    "a.jpg",
+                    "--size",
+                    bad
+                ])
+                .is_err(),
                 "{bad} should not parse as a size"
             );
         }
         assert!(
-            Cli::try_parse_from(["wch", "photo", "cam:x", "-o", "a.jpg", "--size", "640x480"])
-                .is_ok()
+            Cli::try_parse_from([
+                "webcam-handler-cli",
+                "photo",
+                "cam:x",
+                "-o",
+                "a.jpg",
+                "--size",
+                "640x480"
+            ])
+            .is_ok()
         );
     }
 
     #[test]
     fn the_calibrate_verbs_parse_the_way_the_agent_guide_will_teach_them() {
         let cli = Cli::try_parse_checked_from(
-            Program::Wch,
+            Program::Cli,
             [
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "start",
                 "cam:obsbot",
@@ -2173,9 +2273,9 @@ mod tests {
         assert_eq!(criteria, &["text clarity", "colour accuracy"]);
 
         let cli = Cli::try_parse_checked_from(
-            Program::Wch,
+            Program::Cli,
             [
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "apply",
                 "cam:obsbot",
@@ -2199,8 +2299,15 @@ mod tests {
 
         // `--partial` is opt-in: without it the D8 gate is the one that answers.
         let cli = Cli::try_parse_checked_from(
-            Program::Wch,
-            ["wch", "calibrate", "apply", "cam:obsbot", "--task", "f"],
+            Program::Cli,
+            [
+                "webcam-handler-cli",
+                "calibrate",
+                "apply",
+                "cam:obsbot",
+                "--task",
+                "f",
+            ],
         )
         .expect("parses");
         let Command::Calibrate(CalibrateCommand::Apply { partial, .. }) = &cli.command else {
@@ -2212,9 +2319,9 @@ mod tests {
         // other argument: it puts the camera back where *that session* found it, and there
         // is nothing to choose (note N23).
         let cli = Cli::try_parse_checked_from(
-            Program::Wch,
+            Program::Cli,
             [
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "restore",
                 "cam:obsbot",
@@ -2235,15 +2342,16 @@ mod tests {
         // …and it needs one, like every other session verb.
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
-                ["wch", "calibrate", "restore", "cam:obsbot"]
+                Program::Cli,
+                ["webcam-handler-cli", "calibrate", "restore", "cam:obsbot"]
             )
             .is_err()
         );
 
         // `list` takes an optional camera: every session on the machine, or one camera's.
-        let cli = Cli::try_parse_checked_from(Program::Wch, ["wch", "calibrate", "list"])
-            .expect("parses");
+        let cli =
+            Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "calibrate", "list"])
+                .expect("parses");
         assert!(matches!(
             cli.command,
             Command::Calibrate(CalibrateCommand::List { camera: None })
@@ -2264,9 +2372,9 @@ mod tests {
             ["--values", "-108000,0,108000"].as_slice(),
         ] {
             let cli = Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "sweep",
                     "cam:obsbot",
@@ -2299,12 +2407,18 @@ mod tests {
             ["--value", "-3600", "--by", "agent"].as_slice(),
         ] {
             let cli = Cli::try_parse_checked_from(
-                Program::Wch,
-                ["wch", "calibrate", "select", "cam:obsbot", "pan_absolute"]
-                    .iter()
-                    .copied()
-                    .chain(["--task", "framing"])
-                    .chain(args.iter().copied()),
+                Program::Cli,
+                [
+                    "webcam-handler-cli",
+                    "calibrate",
+                    "select",
+                    "cam:obsbot",
+                    "pan_absolute",
+                ]
+                .iter()
+                .copied()
+                .chain(["--task", "framing"])
+                .chain(args.iter().copied()),
             )
             .unwrap_or_else(|error| panic!("{args:?} must parse: {error}"));
             let Command::Calibrate(CalibrateCommand::Select { by, .. }) = &cli.command else {
@@ -2325,8 +2439,15 @@ mod tests {
     fn a_session_is_named_by_task_or_by_id_and_never_by_neither_or_both() {
         let id = "019fd0f0-0000-7000-8000-000000000001";
         let cli = Cli::try_parse_checked_from(
-            Program::Wch,
-            ["wch", "calibrate", "status", "cam:x", "--session", id],
+            Program::Cli,
+            [
+                "webcam-handler-cli",
+                "calibrate",
+                "status",
+                "cam:x",
+                "--session",
+                id,
+            ],
         )
         .expect("parses");
         let Command::Calibrate(CalibrateCommand::Status { which, .. }) = &cli.command else {
@@ -2342,14 +2463,17 @@ mod tests {
         // Neither, and both: usage errors, because the tool cannot guess which session is
         // meant and must not pick one.
         assert!(
-            Cli::try_parse_checked_from(Program::Wch, ["wch", "calibrate", "status", "cam:x"])
-                .is_err()
+            Cli::try_parse_checked_from(
+                Program::Cli,
+                ["webcam-handler-cli", "calibrate", "status", "cam:x"]
+            )
+            .is_err()
         );
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "status",
                     "cam:x",
@@ -2364,9 +2488,9 @@ mod tests {
         // And a UUID that is not one is refused at parse time rather than looked up.
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "status",
                     "cam:x",
@@ -2382,7 +2506,7 @@ mod tests {
     fn every_sweep_plan_flag_maps_to_the_spec_it_names_and_the_four_are_alternatives() {
         let spec = |args: &[&str]| -> SweepSpec {
             let mut argv = vec![
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "sweep",
                 "cam:x",
@@ -2391,7 +2515,7 @@ mod tests {
                 "focus_absolute",
             ];
             argv.extend_from_slice(args);
-            let cli = Cli::try_parse_checked_from(Program::Wch, argv).expect("parses");
+            let cli = Cli::try_parse_checked_from(Program::Cli, argv).expect("parses");
             let Command::Calibrate(CalibrateCommand::Sweep { plan, .. }) = &cli.command else {
                 panic!("expected calibrate sweep");
             };
@@ -2412,9 +2536,9 @@ mod tests {
         // two of them.
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "sweep",
                     "cam:x",
@@ -2427,9 +2551,9 @@ mod tests {
         );
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "sweep",
                     "cam:x",
@@ -2446,9 +2570,9 @@ mod tests {
 
         // Motion is never implicit (design §5), and the flag is what makes it explicit.
         let cli = Cli::try_parse_checked_from(
-            Program::Wch,
+            Program::Cli,
             [
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "sweep",
                 "cam:x",
@@ -2479,7 +2603,7 @@ mod tests {
     fn the_selector_flags_record_who_chose_and_refuse_the_combinations_that_would_lie() {
         let selection = |args: &[&str]| -> Result<Selection> {
             let mut argv = vec![
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "select",
                 "cam:x",
@@ -2488,7 +2612,7 @@ mod tests {
                 "focus_absolute",
             ];
             argv.extend_from_slice(args);
-            let cli = Cli::try_parse_checked_from(Program::Wch, argv).expect("parses");
+            let cli = Cli::try_parse_checked_from(Program::Cli, argv).expect("parses");
             let Command::Calibrate(CalibrateCommand::Select { by, .. }) = &cli.command else {
                 panic!("expected calibrate select");
             };
@@ -2519,9 +2643,9 @@ mod tests {
         // invented, which is the one thing D8's selector field exists to prevent.
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "select",
                     "cam:x",
@@ -2571,9 +2695,9 @@ mod tests {
         // A metric and a value together is two answers to one question.
         assert!(
             Cli::try_parse_checked_from(
-                Program::Wch,
+                Program::Cli,
                 [
-                    "wch",
+                    "webcam-handler-cli",
                     "calibrate",
                     "select",
                     "cam:x",
@@ -2592,9 +2716,9 @@ mod tests {
         );
         // And a metric this build does not compute is refused naming the ones it does.
         let error = Cli::try_parse_checked_from(
-            Program::Wch,
+            Program::Cli,
             [
-                "wch",
+                "webcam-handler-cli",
                 "calibrate",
                 "select",
                 "cam:x",

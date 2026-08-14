@@ -10,11 +10,11 @@
 //
 // ## The order the page comes up in, and why it is this order
 //
-// The token, then the socket, then `wch_list`, then everything else. Each step's failure is
-// a different sentence and none of them is "something went wrong": a page with no token is
-// an operator who did not use the URL `wchd` printed, a socket that will not open is a wrong
-// token or a stopped daemon, and an empty camera list is a diagnosis the daemon itself
-// supplies (D1: "an empty enumeration is diagnosed, not shrugged at").
+// The token, then the socket, then `wch_list`, then everything else. Each step's failure is a
+// different sentence and none of them is "something went wrong": a page with no token is an
+// operator who did not use the URL `webcam-handler-daemon` printed, a socket that will not
+// open is a wrong token or a stopped daemon, and an empty camera list is a diagnosis the
+// daemon itself supplies (D1: "an empty enumeration is diagnosed, not shrugged at").
 //
 // ## What this page will not do
 //
@@ -79,9 +79,9 @@ async function main() {
     // is *absent*, not permissive). Both are named rather than one guessed at.
     say(
       nodes.connection,
-      "this page was opened without the ?token= the daemon prints. If wchd was started " +
+      "this page was opened without the ?token= the daemon prints. If webcam-handler-daemon was started " +
         "with --http-insecure-loopback there is no token and the camera routes are open; " +
-        "otherwise the socket and the preview will be refused, and the URL wchd printed is " +
+        "otherwise the socket and the preview will be refused, and the URL webcam-handler-daemon printed is " +
         "the one to open.",
       true,
     );
@@ -297,7 +297,7 @@ async function watchDevices(retry = true) {
 
 /** What a closed socket means for a page that is still on screen. */
 function socketClosed() {
-  say(nodes.connection, "the connection to wchd closed; reload the URL wchd printed", true);
+  say(nodes.connection, "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed", true);
   nodes.takePhoto.disabled = true;
   // The preview is a *separate* HTTP request and does not end with the socket, so it is
   // ended here rather than left painting frames from a daemon this page can no longer ask

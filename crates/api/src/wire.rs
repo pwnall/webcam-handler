@@ -10,13 +10,13 @@
 //! lists that agree until somebody edits one, and the one that is not the wire loses
 //! silently.
 //!
-//! So the trait and the inventory are **one declaration**. `wire_surface!` takes the
-//! methods once and emits both halves: the `#[rpc(server, client)]` trait the daemon
-//! implements and `wchc` consumes, and `METHODS`, the walkable population xtask reads. A
-//! method cannot reach one and miss the other, because there is nowhere for it to be
-//! written twice. This is the shape `webcam-handler-schema`'s `closed_vocabulary!` already
-//! uses for an enum and its `ALL` — "these macros generate the enum and its `ALL` from one
-//! source, so the list cannot drift from the type" — applied to a trait and its inventory.
+//! So the trait and the inventory are **one declaration**. `wire_surface!` takes the methods
+//! once and emits both halves: the `#[rpc(server, client)]` trait the daemon implements and
+//! `webcam-handler-client` consumes, and `METHODS`, the walkable population xtask reads. A
+//! method cannot reach one and miss the other, because there is nowhere for it to be written
+//! twice. This is the shape `webcam-handler-schema`'s `closed_vocabulary!` already uses for an
+//! enum and its `ALL` — "these macros generate the enum and its `ALL` from one source, so the
+//! list cannot drift from the type" — applied to a trait and its inventory.
 //!
 //! What the macro cannot own is jsonrpsee's *spelling* of a wire name: the namespace
 //! separator belongs to the proc macro, not to us. That one genuinely-two-derivations fact

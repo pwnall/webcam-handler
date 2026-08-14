@@ -1,13 +1,14 @@
-//! What a real signal does to a real `wchd` that is in the middle of something (docs/7
-//! P4e-ii).
+//! What a real signal does to a real `webcam-handler-daemon` that is in the middle of
+//! something (docs/7 P4e-ii).
 //!
 //! `daemon::shutdown`'s own unit tests drive the teardown from values: a scripted signal
 //! source, a scriptable transport, a recording supervisor, and a paused clock. They are how
 //! the *order* is asserted, and they can assert combinations no real server can be made to
 //! produce. What none of them can say is that any of it happens when the **kernel** delivers
 //! `SIGTERM` to the shipped binary — a signal is a fact about a process, so the daemon here is
-//! a real `wchd` spawned as a subprocess, exactly as `tests/lock.rs` and `tests/systemd.rs`
-//! spawn one for their own process-shaped claims. The three share `support/wchd.rs`.
+//! a real `webcam-handler-daemon` spawned as a subprocess, exactly as `tests/lock.rs` and
+//! `tests/systemd.rs` spawn one for their own process-shaped claims. The three share
+//! `support/wchd.rs`.
 //!
 //! Two tests, one per signal, over one helper. AGENTS states `SIGTERM ≡ SIGINT` as a daemon
 //! rule and `daemon::shutdown`'s header states it as a design one; here it is a **comparison**
@@ -156,9 +157,9 @@ struct Drained {
 /// - **the lock is free** is D9's ordered release, which `daemon::state`'s header deferred to
 ///   this sub-milestone — and it is the kernel's guarantee only because the process is gone;
 /// - **the socket is still there** because `daemon::uds` argues at length that it is
-///   deliberately not unlinked: the next `wchd` binds by replacing it under a directory
-///   descriptor it verified, and a stop that tidied it away would be racing a daemon that had
-///   already started.
+///   deliberately not unlinked: the next `webcam-handler-daemon` binds by replacing it under a
+///   directory descriptor it verified, and a stop that tidied it away would be racing a daemon
+///   that had already started.
 fn a_drained_stop() -> Drained {
     Drained {
         // Read from the daemon's own constant rather than written out: a build that changed
@@ -184,21 +185,23 @@ async fn a_sigterm_mid_sweep_ends_the_subscription_with_a_reason_and_drains_what
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sigint_mid_sweep_ends_the_subscription_with_a_reason_and_drains_what_it_accepted() {
-    // Ctrl-C in the terminal a `wchd` was started from, which AGENTS says is the same request
-    // — and this is where "the same" is a measurement rather than a sentence. The comparison
-    // is against the same value the SIGTERM test compares against, so a build that branched on
-    // `Stop` two lines later fails here rather than in review.
+    // Ctrl-C in the terminal a `webcam-handler-daemon` was started from, which AGENTS says is
+    // the same request — and this is where "the same" is a measurement rather than a sentence.
+    // The comparison is against the same value the SIGTERM test compares against, so a build
+    // that branched on `Stop` two lines later fails here rather than in review.
     assert_eq!(stopped_by(Signal::INT).await, a_drained_stop());
 }
 
-/// Start a `wchd`, wedge a sweep inside it, signal it, and answer what everybody saw.
+/// Start a `webcam-handler-daemon`, wedge a sweep inside it, signal it, and answer what
+/// everybody saw.
 ///
 /// The arrangement, in the order it has to happen in:
 ///
-/// 1. a `wchd` replaying the committed synthetic profile — the camera count, the control and
-///    its range all have to be numbers this test knows, and a v4l2 daemon would be replaying
-///    whatever is plugged into the machine running CI. It is the same document `Fixture`
-///    hands the in-process suites, so "this camera" means the same thing here as there;
+/// 1. a `webcam-handler-daemon` replaying the committed synthetic profile — the camera count,
+///    the control and its range all have to be numbers this test knows, and a v4l2 daemon
+///    would be replaying whatever is plugged into the machine running CI. It is the same
+///    document `Fixture` hands the in-process suites, so "this camera" means the same thing
+///    here as there;
 /// 2. a subscription, opened **before** the sweep, because a fan-out buffers nothing for a
 ///    subscriber who has not arrived (`daemon::events`);
 /// 3. a session, a plan, and a fifo at the second sample's photo path;
@@ -225,10 +228,10 @@ async fn stopped_by(stop: Signal) -> Drained {
 
     // **The daemon never self-daemonizes**, and D9's lock record is where that is visible: the
     // process holding the state directory is the one this test spawned, not a child it forked
-    // off and left behind. `tests/lock.rs` asserts the *refusal* a `wch` meets carries the
-    // same pid; this is the record itself, and it is here because everything below reads that
-    // record again after the process is gone — an assertion that it is free afterwards is
-    // worth nothing without one that it was held before.
+    // off and left behind. `tests/lock.rs` asserts the *refusal* a `webcam-handler-cli` meets
+    // carries the same pid; this is the record itself, and it is here because everything below
+    // reads that record again after the process is gone — an assertion that it is free
+    // afterwards is worth nothing without one that it was held before.
     let holder = store
         .holder()
         .expect("a serving daemon holds the state directory for its lifetime");

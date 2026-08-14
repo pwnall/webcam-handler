@@ -1,33 +1,35 @@
-//! `wchc` end to end: the refusals it owns, and the verbs it answers over a real socket.
+//! `webcam-handler-client` end to end: the refusals it owns, and the verbs it answers over a
+//! real socket.
 //!
 //! One file for the fake backend, where `crates/daemon/tests/` is eight. Its subject is a
-//! single thing — the shipped `wchc` against a daemon replaying a committed document — and
-//! everything it needs *around* that is now `support/fixture.rs`, shared with the R3 arms in
-//! `hardware.rs`. Until P4g it was all here, on the argument that a `#[path]`-included module
-//! would be note **N49**'s hazard bought for nothing; the second includer is what buys it,
-//! and that module's header records the trade the second time round.
+//! single thing — the shipped `webcam-handler-client` against a daemon replaying a committed
+//! document — and everything it needs *around* that is now `support/fixture.rs`, shared with
+//! the R3 arms in `hardware.rs`. Until P4g it was all here, on the argument that a
+//! `#[path]`-included module would be note **N49**'s hazard bought for nothing; the second
+//! includer is what buys it, and that module's header records the trade the second time round.
 //!
 //! ## The two halves
 //!
-//! **Without a daemon.** Everything `wchc` decides on its own: the flags it refuses because
-//! it is a client and not a composition root, the refusal for a socket nothing is listening
-//! on, and the three exit codes. These run the shipped binary as a subprocess, because the
-//! exit code and the `wchc:` line are process facts.
+//! **Without a daemon.** Everything `webcam-handler-client` decides on its own: the flags it
+//! refuses because it is a client and not a composition root, the refusal for a socket nothing
+//! is listening on, and the three exit codes. These run the shipped binary as a subprocess,
+//! because the exit code and the `webcam-handler-client:` line are process facts.
 //!
-//! **With one.** A real `wchd` beside a real `wchc`, replaying a committed device profile —
-//! the same arrangement `crates/daemon/tests/systemd.rs` and `signals.rs` use, and for the
-//! same reason (`support/supervised.rs`: a v4l2 daemon "would be reporting whatever is
-//! plugged into the machine running CI"). Some of these drive the binary and some drive the
+//! **With one.** A real `webcam-handler-daemon` beside a real `webcam-handler-client`,
+//! replaying a committed device profile — the same arrangement
+//! `crates/daemon/tests/systemd.rs` and `signals.rs` use, and for the same reason
+//! (`support/supervised.rs`: a v4l2 daemon "would be reporting whatever is plugged into the
+//! machine running CI"). Some of these drive the binary and some drive the
 //! [`client::remote::Remote`] executor directly; which one is a question of what can be
 //! observed, and each says so where it matters.
 //!
-//! ## `wchd` is resolved, not assumed
+//! ## `webcam-handler-daemon` is resolved, not assumed
 //!
-//! `env!("CARGO_BIN_EXE_wchd")` is defined only for the package that declares that binary,
-//! and this is not it. So the daemon is looked up **beside** `wchc`, which cargo does
-//! guarantee a path to, and its absence is a loud failure naming what to run rather than a
-//! skip: a suite that quietly passed without the daemon it is about would be the "skip that
-//! reads as pass" AGENTS bans.
+//! `env!("CARGO_BIN_EXE_webcam-handler-daemon")` is defined only for the package that declares
+//! that binary, and this is not it. So the daemon is looked up **beside**
+//! `webcam-handler-client`, which cargo does guarantee a path to, and its absence is a loud
+//! failure naming what to run rather than a skip: a suite that quietly passed without the
+//! daemon it is about would be the "skip that reads as pass" AGENTS bans.
 //!
 //! ## Nothing here sleeps
 //!
@@ -75,7 +77,8 @@ fn profile(name: &str) -> Utf8PathBuf {
     path
 }
 
-/// Start a `wchd` replaying a committed profile, and wait until it is serving.
+/// Start a `webcam-handler-daemon` replaying a committed profile, and wait until it is
+/// serving.
 ///
 /// The backend arguments are this file's and the spawning is `support/fixture.rs`'s, which is
 /// the whole of the split between the two suites that share that module: a document is what
@@ -94,16 +97,16 @@ fn replaying(fixture: &Fixture, profile_name: &str) -> Daemon {
 
 #[test]
 fn a_socket_nothing_is_listening_on_is_refused_by_name_and_leaves_code_one() {
-    // The refusal `crates/daemon/tests/support/mod.rs` calls "the refusal P4f's `wchc` has
-    // to render". It **names the socket it tried**, because "no daemon is running" and
-    // "your `$XDG_RUNTIME_DIR` is not what you think" are different problems with the same
-    // symptom and only the path tells them apart.
+    // The refusal `crates/daemon/tests/support/mod.rs` calls "the refusal P4f's
+    // `webcam-handler-client` has to render". It **names the socket it tried**, because "no
+    // daemon is running" and "your `$XDG_RUNTIME_DIR` is not what you think" are different
+    // problems with the same symptom and only the path tells them apart.
     let fixture = Fixture::new();
     let ran = fixture.run(&["list"]);
 
     assert_eq!(ran.code, 1, "{}", ran.stderr);
     assert!(
-        ran.stderr.starts_with("wchc: "),
+        ran.stderr.starts_with("webcam-handler-client: "),
         "the line names the program that met the error: {}",
         ran.stderr
     );
@@ -122,7 +125,7 @@ fn no_runtime_directory_at_all_is_a_different_refusal_from_no_daemon() {
     // rather than worked around (`schema::paths::runtime_dir` has no `/tmp` fallback).
     let mut command = wchc();
     command.env_remove("XDG_RUNTIME_DIR").arg("list");
-    let output = command.output().expect("wchc runs");
+    let output = command.output().expect("webcam-handler-client runs");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -147,10 +150,18 @@ fn the_flags_a_client_cannot_honour_are_refused_before_the_socket_is_touched() {
     ] {
         let ran = fixture.run(args);
         assert_eq!(ran.code, 1, "{args:?}: {}", ran.stderr);
-        assert!(ran.stderr.starts_with("wchc: "), "{}", ran.stderr);
+        assert!(
+            ran.stderr.starts_with("webcam-handler-client: "),
+            "{}",
+            ran.stderr
+        );
         // It names the place the decision does live, which is the difference between a
         // refusal and a wall.
-        assert!(ran.stderr.contains("wchd"), "{args:?}: {}", ran.stderr);
+        assert!(
+            ran.stderr.contains("webcam-handler-daemon"),
+            "{args:?}: {}",
+            ran.stderr
+        );
         assert!(
             !ran.stderr.contains(schema::limits::DAEMON_SOCKET_FILE),
             "{args:?}: the socket was reached before the flag was refused: {}",
@@ -176,8 +187,20 @@ fn a_command_line_that_is_not_one_leaves_claps_code_and_names_this_binary() {
         assert_eq!(ran.code, 2, "{args:?}: {}", ran.stderr);
         // The usage block names *this* binary, so an operator with both is sent to the
         // right `--help` (`Program`'s whole reason for existing).
-        assert!(ran.stderr.contains("wchc"), "{args:?}: {}", ran.stderr);
-        assert!(!ran.stderr.contains("wch "), "{args:?}: {}", ran.stderr);
+        assert!(
+            ran.stderr.contains("webcam-handler-client"),
+            "{args:?}: {}",
+            ran.stderr
+        );
+        // The trailing space is load-bearing and survived note N90's rename intact:
+        // `webcam-handler-cli` is a prefix of `webcam-handler-client` exactly as `wch` was
+        // of `wchc`, so an unanchored membership test could never go red here. `…-cli `
+        // with a separator after it is the other binary and nothing else.
+        assert!(
+            !ran.stderr.contains("webcam-handler-cli "),
+            "{args:?}: {}",
+            ran.stderr
+        );
     }
 
     // …and the inverse, without which "exit 2" would prove nothing: a well-formed command
@@ -185,7 +208,7 @@ fn a_command_line_that_is_not_one_leaves_claps_code_and_names_this_binary() {
     let version = fixture.run(&["--version"]);
     assert_eq!(version.code, 0, "{}", version.stderr);
     assert!(
-        String::from_utf8_lossy(version.ok()).starts_with("wchc "),
+        String::from_utf8_lossy(version.ok()).starts_with("webcam-handler-client "),
         "{}",
         String::from_utf8_lossy(&version.stdout)
     );
@@ -222,7 +245,7 @@ fn the_read_verbs_answer_the_camera_the_daemon_is_replaying() {
     assert!(
         missing
             .stderr
-            .starts_with("wchc: no control named \"warp_drive\""),
+            .starts_with("webcam-handler-client: no control named \"warp_drive\""),
         "{}",
         missing.stderr
     );
@@ -240,7 +263,7 @@ fn one_verb_with_a_flag_reaches_two_wire_methods_and_answers_the_same_document()
     // this asserts is that the superset was unwrapped: both invocations answer a
     // `ControlReport` with the same keys, so a build that handed the raw `DiscoveryReport`
     // to the renderer would fail here rather than shipping a `--json` document with two
-    // extra top-level fields that `wch` never produces.
+    // extra top-level fields that `webcam-handler-cli` never produces.
     // A camera with a motor on it, which is what gives the probe something to *say*: it
     // refuses to move one (design §5) and reports the refusal, and that report is the whole
     // difference between the two methods on a fake backend whose pairs are otherwise
@@ -262,7 +285,7 @@ fn one_verb_with_a_flag_reaches_two_wire_methods_and_answers_the_same_document()
     assert!(
         probed
             .stderr
-            .contains("wchc: did not probe focus_automatic_continuous:"),
+            .contains("webcam-handler-client: did not probe focus_automatic_continuous:"),
         "the probe's own report is missing: {}",
         probed.stderr
     );
@@ -296,9 +319,9 @@ fn one_verb_with_a_flag_reaches_two_wire_methods_and_answers_the_same_document()
             "{withheld} leaked into the answer: {probed}"
         );
     }
-    // The probe wrote to the camera and put it back; a run that could not would have said
-    // so on standard error, through the renderer `wch` shares. Nothing did here, which is
-    // the fake replaying a camera whose controls all restore.
+    // The probe wrote to the camera and put it back; a run that could not would have said so
+    // on standard error, through the renderer `webcam-handler-cli` shares. Nothing did here,
+    // which is the fake replaying a camera whose controls all restore.
     assert_eq!(
         probed["camera"], read["camera"],
         "the two methods answered about different cameras"
@@ -307,9 +330,9 @@ fn one_verb_with_a_flag_reaches_two_wire_methods_and_answers_the_same_document()
 
 #[test]
 fn a_photo_arrives_as_bytes_through_base64_and_as_a_file_on_the_daemons_disk() {
-    // The third that is not 1:1, in both of its sinks. The `ReturnBytes` half is the one
-    // that exercises D10's encoding end to end — the daemon base64s the frame, `wchc`
-    // decodes it, checks the payload against the report
+    // The third that is not 1:1, in both of its sinks. The `ReturnBytes` half is the one that
+    // exercises D10's encoding end to end — the daemon base64s the frame,
+    // `webcam-handler-client` decodes it, checks the payload against the report
     // (`PhotoResponse::bytes_match_the_delivery`, whose second consumer this is — note N34)
     // and hands a `cli_core::Photograph` to the renderer both binaries share.
     let fixture = Fixture::new();
@@ -426,7 +449,7 @@ fn a_sweep_delivers_its_progress_while_the_call_it_belongs_to_is_still_in_flight
     let control = ControlSlug::parse("brightness").expect("literal slug");
 
     let session = remote
-        .calibrate_start(&camera, "wchc sweep", "", &[])
+        .calibrate_start(&camera, "webcam-handler-client sweep", "", &[])
         .expect("a session opens");
     // By id rather than by task, which is what makes the filter the **exact** one — see
     // `remote::SweepFilter`, whose two precisions are unit-tested beside it.
@@ -609,7 +632,11 @@ fn the_calibration_arc_runs_end_to_end_over_the_socket() {
     // not this client's: the refusal crossed the wire and came back typed.
     let refused = fixture.run(&["--json", "calibrate", "apply", &id, "--task", "legibility"]);
     assert_eq!(refused.code, 1, "{}", refused.stderr);
-    assert!(refused.stderr.starts_with("wchc: "), "{}", refused.stderr);
+    assert!(
+        refused.stderr.starts_with("webcam-handler-client: "),
+        "{}",
+        refused.stderr
+    );
     let applied = fixture
         .run(&[
             "--json",

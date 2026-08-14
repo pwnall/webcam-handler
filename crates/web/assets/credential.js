@@ -2,12 +2,12 @@
 //
 // ## Where the token comes from
 //
-// `wchd` prints a ready-to-open URL and an operator opens it, so the credential arrives as
-// this document's own query string (D11). `location.search` is where the page reads it
-// from, and that is not a new exposure: every script running in this origin could already
-// read it, and `daemon::http::rpc`'s header prices the three residuals that are real (the
-// devtools network panel, an intermediary's access log, the browser history — the last of
-// which is the *navigation's* cost rather than this module's).
+// `webcam-handler-daemon` prints a ready-to-open URL and an operator opens it, so the
+// credential arrives as this document's own query string (D11). `location.search` is where the
+// page reads it from, and that is not a new exposure: every script running in this origin
+// could already read it, and `daemon::http::rpc`'s header prices the three residuals that are
+// real (the devtools network panel, an intermediary's access log, the browser history — the
+// last of which is the *navigation's* cost rather than this module's).
 //
 // ## Why the token is in a URL and not in a header
 //

@@ -137,13 +137,13 @@ pub fn set(
 /// Set the values a caller asked for, against the pair set **this device is in now**.
 ///
 /// [`set`] takes the pair set as a parameter, because the calibration sweep has one it
-/// computed for its own reasons. Every *other* caller has the same three lines in front of
-/// it — read the controls, ask [`pairing::in_effect`] which relationships this device
-/// actually exhibits, and turn the wire's [`ControlWrite`]s into the planner's targets — and
-/// that composition is a rule rather than plumbing: which pair set a write plans against
-/// decides whether an automation control is switched off first, and two copies of it are two
-/// opinions about what a camera's automation looks like. It had two authors as `wch set` and
-/// `wch_set` landed, which is what this exists to stop (AGENTS "One home per law").
+/// computed for its own reasons. Every *other* caller has the same three lines in front of it
+/// — read the controls, ask [`pairing::in_effect`] which relationships this device actually
+/// exhibits, and turn the wire's [`ControlWrite`]s into the planner's targets — and that
+/// composition is a rule rather than plumbing: which pair set a write plans against decides
+/// whether an automation control is switched off first, and two copies of it are two opinions
+/// about what a camera's automation looks like. It had two authors as `webcam-handler-cli set`
+/// and `wch_set` landed, which is what this exists to stop (AGENTS "One home per law").
 ///
 /// `Vec::new()` for the measured pairs is part of the rule and not an omission: measuring
 /// pairs writes to the camera, so a `set` that measured would be performing D3's probe on

@@ -31,32 +31,30 @@
 //!
 //! The engine, and only the engine. Every routed verb reaches the same functions
 //! `crates/cli`'s in-process executor reaches — `engine::resolve::{camera, list}`,
-//! `engine::pairing::{in_effect, describe}`, `engine::write::set`,
-//! `engine::snapshot::{take, restore}`, `engine::discover::report`,
-//! `engine::profile::capture`, `engine::photo::take`, `engine::calibrate::run`, and
-//! `engine::lifecycle::{status, list, session_to_update, create, discover_pairs, draft,
-//! select, apply, restore}` — because a verb implemented twice is the defect T4 and T5
-//! exist to prevent, and P4f's parity gate will compare the two surfaces byte for byte.
-//! Where the two used to differ was in *assembly*, not in policy, so the assemblies with a
-//! rule inside them moved into the engine as this landed rather than being copied here. At
-//! P4b that was `list`, which was copied, D1 comment and all, and the P4b review caught it.
+//! `engine::pairing::{in_effect, describe}`, `engine::write::set`, `engine::snapshot::{take,
+//! restore}`, `engine::discover::report`, `engine::profile::capture`, `engine::photo::take`,
+//! `engine::calibrate::run`, and `engine::lifecycle::{status, list, session_to_update, create,
+//! discover_pairs, draft, select, apply, restore}` — because a verb implemented twice is the
+//! defect T4 and T5 exist to prevent, and P4f's parity gate will compare the two surfaces byte
+//! for byte. Where the two used to differ was in *assembly*, not in policy, so the assemblies
+//! with a rule inside them moved into the engine as this landed rather than being copied here.
+//! At P4b that was `list`, which was copied, D1 comment and all, and the P4b review caught it.
 //! At P4c it was [`engine::discover::report`] — the `DiscoveryReport` assembly note **N34**
-//! booked against this sub-milestone, because probe-then-read-then-merge has three rules in
-//! it and a second author is free to get any of them wrong — plus the two host facts
+//! booked against this sub-milestone, because probe-then-read-then-merge has three rules in it
+//! and a second author is free to get any of them wrong — plus the two host facts
 //! `profile_capture` records, `engine::profile::kernel_release` and `schema::TOOL_VERSION`;
 //! the extension-to-encoding rule `photo` needs, which moved onto
-//! [`schema::capture::Sink::writable_format`] so that a `.webp` off a socket is refused by
-//! the same sentence `wch photo -o a.webp` is refused by (note N46, debt D-1); the three
-//! control-shaped assemblies — `engine::write::set_requested`,
+//! [`schema::capture::Sink::writable_format`] so that a `.webp` off a socket is refused by the
+//! same sentence `webcam-handler-cli photo -o a.webp` is refused by (note N46, debt D-1); the
+//! three control-shaped assemblies — `engine::write::set_requested`,
 //! `engine::snapshot::take_in_effect` and `engine::snapshot::restore_in_effect` — whose rule
 //! is *which pair set this device is in now*, read off the device rather than supplied,
 //! because that decides whether an automation control is switched off first and D4's restore
 //! order (the P4c review caught these three as copies, which is the same finding the P4b
 //! review made about `list`); and finally the four the calibrate verbs needed —
 //! `session_to_update` (the token is *proof*, and the read is half of the read-modify-write),
-//! `select` (the `Selection` match records a selector whichever branch runs), `restore`
-//! (which pair set, and "no snapshot is not a failure"), and the branch `calibrate_plan`
-//! keeps.
+//! `select` (the `Selection` match records a selector whichever branch runs), `restore` (which
+//! pair set, and "no snapshot is not a failure"), and the branch `calibrate_plan` keeps.
 //!
 //! What this module adds on top of an engine call is small and each piece is about a
 //! request a socket can build and a command line cannot: `addressable`, which answers for a
@@ -86,14 +84,14 @@
 //!
 //! ## The state directory's lock, and the thing `flock` cannot do
 //!
-//! D9 gives the daemon one advisory lock for its lifetime, [`crate::state::OwnedState`]
-//! takes it, and this module holds the *same* token — never a second one. Taking a second
-//! is not a deadlock but something worse: `flock` denies a second open file description in
-//! this process exactly as it denies another process's, so
-//! [`engine::store::SessionStore::with_lock`] here would answer a client
-//! [`schema::Error::StoreLocked`] naming this daemon's own pid and advising it to use
-//! `wchc` against the daemon it is already talking to. `crate::state`'s header is where
-//! that trap is written down and `tests/lock.rs` is the red test.
+//! D9 gives the daemon one advisory lock for its lifetime, [`crate::state::OwnedState`] takes
+//! it, and this module holds the *same* token — never a second one. Taking a second is not a
+//! deadlock but something worse: `flock` denies a second open file description in this process
+//! exactly as it denies another process's, so [`engine::store::SessionStore::with_lock`] here
+//! would answer a client [`schema::Error::StoreLocked`] naming this daemon's own pid and
+//! advising it to use `webcam-handler-client` against the daemon it is already talking to.
+//! `crate::state`'s header is where that trap is written down and `tests/lock.rs` is the red
+//! test.
 //!
 //! The read verbs take no lock at all — reading is not a state write, and a
 //! `calibrate status` that refused while a daemon held the lock would be a status verb
@@ -102,15 +100,16 @@
 //! write to a *camera*, or to a path the caller named, and none of them touches the session
 //! tree.
 //!
-//! **A held lock does not serialize this daemon against itself, and that is a defect
-//! waiting to be written rather than a subtlety** (note **N47**). `wch` is safe because D9's
-//! daemonless protocol takes the flock per operation, so two `wch` processes cannot
-//! interleave a read-modify-write; a daemon holding one flock for its lifetime gets no
-//! mutual exclusion between its own concurrent request tasks, and `calibrate_plan --order`
-//! and `calibrate_select` open no camera at all, so not even the per-camera actor separates
-//! them. So the token lives behind `Inner::sessions`, a `tokio::sync::Mutex`, and the only
-//! way to reach it is to hold that mutex — structural rather than remembered, in the same
-//! spirit as `engine::store` expressing "under the lock" as a parameter.
+//! **A held lock does not serialize this daemon against itself, and that is a defect waiting
+//! to be written rather than a subtlety** (note **N47**). `webcam-handler-cli` is safe because
+//! D9's daemonless protocol takes the flock per operation, so two `webcam-handler-cli`
+//! processes cannot interleave a read-modify-write; a daemon holding one flock for its
+//! lifetime gets no mutual exclusion between its own concurrent request tasks, and
+//! `calibrate_plan --order` and `calibrate_select` open no camera at all, so not even the
+//! per-camera actor separates them. So the token lives behind `Inner::sessions`, a
+//! `tokio::sync::Mutex`, and the only way to reach it is to hold that mutex — structural
+//! rather than remembered, in the same spirit as `engine::store` expressing "under the lock"
+//! as a parameter.
 
 use std::sync::Arc;
 
@@ -309,15 +308,15 @@ pub struct Wchd(Arc<Inner>);
 
 /// The daemon's shared state. One of each, never two.
 ///
-/// **There is no backend handle here, and that is the point.** `engine::actor`'s header
-/// rests the concurrency model on "nothing hands the `Box<dyn Camera>` out … two callers
-/// write at once is unrepresentable rather than prevented", and a
-/// `Arc<dyn CameraBackend>` beside the registry would make `inner.backend.open(&id)?`
-/// compile in every handler in this module — a second descriptor on a node an actor
-/// already owns, one line away from the P4c author who copies `crates/cli`'s in-process
-/// executor (where the same call is correct, because a `wch` process has no actor). The
-/// two things the daemon needs of a backend, [`Cameras::enumerate`] and [`Cameras::list`],
-/// are on the registry instead, and the registry has no `open`.
+/// **There is no backend handle here, and that is the point.** `engine::actor`'s header rests
+/// the concurrency model on "nothing hands the `Box<dyn Camera>` out … two callers write at
+/// once is unrepresentable rather than prevented", and a `Arc<dyn CameraBackend>` beside the
+/// registry would make `inner.backend.open(&id)?` compile in every handler in this module — a
+/// second descriptor on a node an actor already owns, one line away from the P4c author who
+/// copies `crates/cli`'s in-process executor (where the same call is correct, because a
+/// `webcam-handler-cli` process has no actor). The two things the daemon needs of a backend,
+/// [`Cameras::enumerate`] and [`Cameras::list`], are on the registry instead, and the registry
+/// has no `open`.
 #[derive(Debug)]
 struct Inner {
     /// One actor per open camera, and the daemon's only handle on the backend the
@@ -343,12 +342,12 @@ struct Inner {
     ///
     /// The cost, which is real and is stated rather than discovered: `wch_calibrate_sweep`
     /// holds this for the whole sweep, which is minutes of camera time, so a
-    /// `wch_calibrate_select` against an unrelated session waits for it. `wch` pays the
-    /// same cost in a different currency — a concurrent `wch` is *refused* `StoreLocked`
-    /// rather than made to wait — and waiting is the better answer for a daemon, because
-    /// the refusal it would otherwise give names this daemon's own pid. The bound is the
-    /// sweep's own (`limits::MAX_SWEEP_SAMPLES`) plus the client's request timeout, which
-    /// `crates/api`'s `calibrate_sweep` doc already tells a client to raise.
+    /// `wch_calibrate_select` against an unrelated session waits for it. `webcam-handler-cli`
+    /// pays the same cost in a different currency — a concurrent `webcam-handler-cli` is
+    /// *refused* `StoreLocked` rather than made to wait — and waiting is the better answer for
+    /// a daemon, because the refusal it would otherwise give names this daemon's own pid. The
+    /// bound is the sweep's own (`limits::MAX_SWEEP_SAMPLES`) plus the client's request
+    /// timeout, which `crates/api`'s `calibrate_sweep` doc already tells a client to raise.
     sessions: tokio::sync::Mutex<Arc<StoreLock>>,
     /// Where `now` enters. The actor reads no clock — every command carries the caller's
     /// reading (note N41) — so this is the caller. Two readers now: the idle deadline, and
@@ -407,11 +406,11 @@ impl Inner {
     /// The camera listing, assembled once for both callers that want one.
     ///
     /// `engine::resolve::list`'s assembly, reached through the registry — the same function
-    /// `wch list` reaches through T4's executor, because D1's "an empty enumeration is
-    /// diagnosed" is a rule and a rule copied to a second composition root is where the two
-    /// surfaces P4f's parity gate compares start to differ. The two callers here are the
-    /// `wch_list` handler and [`Wchd::list_cameras`], which is what the daemon's startup
-    /// status is built from.
+    /// `webcam-handler-cli list` reaches through T4's executor, because D1's "an empty
+    /// enumeration is diagnosed" is a rule and a rule copied to a second composition root is
+    /// where the two surfaces P4f's parity gate compares start to differ. The two callers here
+    /// are the `wch_list` handler and [`Wchd::list_cameras`], which is what the daemon's
+    /// startup status is built from.
     fn list_cameras(&self) -> schema::Result<schema::report::CameraList> {
         self.cameras.list()
     }
@@ -714,15 +713,14 @@ impl Wchd {
     /// Run [`Wchd::sweep_idle_cameras`] every `cadence_ms`, until the daemon is asked to
     /// stop.
     ///
-    /// D12 says the daemon "closes on idle", and a deadline nobody checks is not a
-    /// deadline: `engine::actor` computes idleness and **this is the thing that asks**.
-    /// How long after a deadline a camera closes, and what a pass costs, are
-    /// [`limits::CAMERA_IDLE_SWEEP_MS`]'s to state — restating them here would be two
-    /// homes for one piece of arithmetic, which is how they come to disagree.
-    /// Without it a shipped `wchd` would open a camera on the first `wch_info` and hold
-    /// the descriptor until the process exited, which is precisely the complaint D12
-    /// exists to answer — so the driver is a parameterised function with a test on it
-    /// rather than a body only `main` reaches.
+    /// D12 says the daemon "closes on idle", and a deadline nobody checks is not a deadline:
+    /// `engine::actor` computes idleness and **this is the thing that asks**. How long after a
+    /// deadline a camera closes, and what a pass costs, are [`limits::CAMERA_IDLE_SWEEP_MS`]'s
+    /// to state — restating them here would be two homes for one piece of arithmetic, which is
+    /// how they come to disagree. Without it a shipped `webcam-handler-daemon` would open a
+    /// camera on the first `wch_info` and hold the descriptor until the process exited, which
+    /// is precisely the complaint D12 exists to answer — so the driver is a parameterised
+    /// function with a test on it rather than a body only `main` reaches.
     ///
     /// A timer, not a sleep-as-synchronization: nothing waits on this to learn anything,
     /// and the tests that drive it run on tokio's paused clock, where advancing time is an
@@ -813,10 +811,11 @@ impl Wchd {
 
     /// Resolve a caller-supplied id or prefix (D1) against a live enumeration.
     ///
-    /// The rule is `engine::resolve::camera`'s, which is what stops `wch` and `wchd`
-    /// disagreeing about what a prefix means. Enumeration is live every time (E2): a daemon
-    /// that cached its camera list would answer about a camera that had been unplugged, and
-    /// noticing that is P4d's hotplug watch rather than an assumption this can make.
+    /// The rule is `engine::resolve::camera`'s, which is what stops `webcam-handler-cli` and
+    /// `webcam-handler-daemon` disagreeing about what a prefix means. Enumeration is live
+    /// every time (E2): a daemon that cached its camera list would answer about a camera that
+    /// had been unplugged, and noticing that is P4d's hotplug watch rather than an assumption
+    /// this can make.
     async fn resolve(&self, requested: CameraId) -> schema::Result<CameraInfo> {
         self.offload(move |inner| {
             let cameras = inner.cameras.enumerate()?;
@@ -1106,12 +1105,12 @@ const fn recheck_walks() -> u64 {
 /// refusals — which is what keeps this an early check rather than a duplicated one.
 ///
 /// - [`Sink::is_addressable`] is note **N34**'s orphan predicate and this is the consumer it
-///   named. `cli_core::Command::photo_request` resolves a relative `-o` against the
-///   *caller's* cwd before sending (D10), so neither `wch` nor `wchc` can produce a relative
-///   `Sink::ServerPath`; a hand-written client can, and this daemon's working directory
-///   under systemd is `/`, so `{"kind":"server_path","path":"out.jpg"}` would write
-///   `/out.jpg` as the daemon's uid. The predicate lives beside the variants it constrains
-///   because a paragraph is a thing an implementer has to have read.
+///   named. `cli_core::Command::photo_request` resolves a relative `-o` against the *caller's*
+///   cwd before sending (D10), so neither `webcam-handler-cli` nor `webcam-handler-client` can
+///   produce a relative `Sink::ServerPath`; a hand-written client can, and this daemon's
+///   working directory under systemd is `/`, so `{"kind":"server_path","path":"out.jpg"}`
+///   would write `/out.jpg` as the daemon's uid. The predicate lives beside the variants it
+///   constrains because a paragraph is a thing an implementer has to have read.
 /// - [`Sink::writable_format`] is the same shape for the other question, and it is called
 ///   again inside `engine::photo` where the answer is used. That is one rule asked twice
 ///   rather than two rules: the engine's call is the backstop every caller gets, and this
@@ -1166,11 +1165,11 @@ fn addressable(sink: &Sink) -> schema::Result<()> {
 ///
 /// Two flags do the work, and they do different halves:
 ///
-/// - `O_NONBLOCK` is what makes the open itself a *refusal* rather than a wait. A fifo with
-///   no reader answers `ENXIO` instead of blocking until somebody reads it, which is the
-///   wedge N51 measured — one `mkfifo` and one `wch_photo` used to make the operator's
-///   webcam unusable by any application until `wchd` was restarted. `rustix` carries the
-///   per-architecture value, so the flag costs neither a guess nor an `unsafe` block (this
+/// - `O_NONBLOCK` is what makes the open itself a *refusal* rather than a wait. A fifo with no
+///   reader answers `ENXIO` instead of blocking until somebody reads it, which is the wedge
+///   N51 measured — one `mkfifo` and one `wch_photo` used to make the operator's webcam
+///   unusable by any application until `webcam-handler-daemon` was restarted. `rustix` carries
+///   the per-architecture value, so the flag costs neither a guess nor an `unsafe` block (this
 ///   crate is `#![forbid(unsafe_code)]`, and N51's 2026-08-10 amendment is the ruling).
 /// - The `fstat` is what refuses the rest: a directory, a socket, a character device, and
 ///   `/dev/stdout` — which under systemd is the journal, and a camera frame in the journal
@@ -1221,8 +1220,8 @@ fn open_destination(path: &Utf8Path) -> schema::Result<std::fs::File> {
         path.as_std_path(),
         OFlags::WRONLY | OFlags::CREATE | OFlags::NONBLOCK | OFlags::CLOEXEC,
         // 0666 before the umask, which is what `File::create` asks for and therefore what a
-        // photo written by `wch` already gets. A daemon that tightened it here would make
-        // the same photo readable or not depending on which surface took it.
+        // photo written by `webcam-handler-cli` already gets. A daemon that tightened it here
+        // would make the same photo readable or not depending on which surface took it.
         Mode::from_bits_truncate(0o666),
     );
     let opened = match opened {
@@ -1312,10 +1311,10 @@ fn enqueueing(wait: bool) -> Enqueue {
 
 /// The one file a photo request may write, opened before this daemon touched a camera.
 ///
-/// The daemon's [`engine::photo::Destination`], and the reason that trait exists: `wch`
-/// opens a path when the bytes are ready because a person typed it, and this daemon cannot,
-/// because its open would run on a camera actor's one thread (note **N51**, and
-/// [`open_destination`] for the two flags).
+/// The daemon's [`engine::photo::Destination`], and the reason that trait exists:
+/// `webcam-handler-cli` opens a path when the bytes are ready because a person typed it, and
+/// this daemon cannot, because its open would run on a camera actor's one thread (note
+/// **N51**, and [`open_destination`] for the two flags).
 ///
 /// It holds a descriptor rather than a name, so the `path` it is handed at write time is
 /// used for the error message and nothing else — **that is the fix**, stated as a type: the
@@ -1345,13 +1344,13 @@ impl engine::photo::Destination for OpenedAhead {
 /// The photo answer, checked against itself before it is sent.
 ///
 /// [`api::PhotoResponse::bytes_match_the_delivery`] is note **N34**'s other orphan predicate
-/// and this is the consumer it named: "the daemon, which refuses a `PhotoResponse` it is
-/// about to send that disagrees with itself (P4c)". `engine::photo::from_capture` produces
-/// the two halves together — `returned` is `Some` exactly when the delivery is `Bytes` —
-/// so a self-consistent answer is the ordinary case and this is the assertion that it
-/// stays one. A truncated payload with an intact `byte_count` is what a client cannot
-/// distinguish from a whole photo, and after P4f `wchc` makes the same check from the other
-/// end, which is what makes the pair worth two call sites.
+/// and this is the consumer it named: "the daemon, which refuses a `PhotoResponse` it is about
+/// to send that disagrees with itself (P4c)". `engine::photo::from_capture` produces the two
+/// halves together — `returned` is `Some` exactly when the delivery is `Bytes` — so a
+/// self-consistent answer is the ordinary case and this is the assertion that it stays one. A
+/// truncated payload with an intact `byte_count` is what a client cannot distinguish from a
+/// whole photo, and after P4f `webcam-handler-client` makes the same check from the other end,
+/// which is what makes the pair worth two call sites.
 ///
 /// The refusal is [`Error::DeviceIo`] because the failure is **ours**: this process assembled
 /// an answer that disagrees with itself, and spelling that like a camera refusal would be
@@ -1424,7 +1423,8 @@ fn not_this_daemon(pid: i32) -> schema::Result<()> {
         return Err(Error::IllegalTransition {
             from: format!("this_daemon({pid})"),
             op: "signal a camera's holder; that pid is this daemon, which holds the node \
-                 because a request asked it to — stop `wchd` itself, or wait for the idle \
+                 because a request asked it to — stop `webcam-handler-daemon` itself, or \
+                 wait for the idle \
                  close, rather than asking it to terminate itself"
                 .to_owned(),
         });
@@ -1467,11 +1467,11 @@ impl WchRpcServer for Wchd {
         camera: CameraId,
         session: SessionRef,
     ) -> Result<SessionStatus, WireError> {
-        // No lock, under either of D9's protocols. A `with_lock` here would not hang —
-        // `flock` denies a second open file description in the same process and
-        // `StoreLock::take` never blocks — it would answer this client `StoreLocked`,
-        // naming this daemon's own pid and advising it to use `wchc` against the daemon it
-        // is already talking to. `crate::state` is where that trap is written down.
+        // No lock, under either of D9's protocols. A `with_lock` here would not hang — `flock`
+        // denies a second open file description in the same process and `StoreLock::take`
+        // never blocks — it would answer this client `StoreLocked`, naming this daemon's own
+        // pid and advising it to use `webcam-handler-client` against the daemon it is already
+        // talking to. `crate::state` is where that trap is written down.
         let info = self.resolve(camera).await?;
         Ok(self
             .offload(move |inner| {
@@ -1572,12 +1572,12 @@ impl WchRpcServer for Wchd {
         capturer: String,
     ) -> Result<DeviceProfile, WireError> {
         // The provenance is assembled off the runtime, because reading it blocks:
-        // `kernel_release` reads a pseudo-file, and work that blocks and needs no camera
-        // goes to the blocking pool. Both host facts have exactly one home —
+        // `kernel_release` reads a pseudo-file, and work that blocks and needs no camera goes
+        // to the blocking pool. Both host facts have exactly one home —
         // `engine::profile::kernel_release` moved beside the field it fills when this verb
         // acquired a second author, and `schema::TOOL_VERSION` is the one reading of "which
-        // build wrote this" — because `wch profile capture` writes the same document into
-        // the same corpus.
+        // build wrote this" — because `webcam-handler-cli profile capture` writes the same
+        // document into the same corpus.
         let context = self
             .offload(move |inner| {
                 Ok(engine::profile::CaptureContext {
@@ -1796,20 +1796,20 @@ impl WchRpcServer for Wchd {
             task,
             goal,
             criteria,
-            // The schema crate's reading of one fact, not this binary's: `wch calibrate
-            // start` records provenance into the same documents.
+            // The schema crate's reading of one fact, not this binary's: `webcam-handler-cli
+            // calibrate start` records provenance into the same documents.
             tool_version: schema::TOOL_VERSION.to_owned(),
         };
         Ok(self
             .on_resolved_camera_with_state(info, move |inner, device| {
                 let now = schema::time::Stamp::now();
                 let mut session = engine::lifecycle::create(&inner.store, &lock, &spec, now)?;
-                // D3's empirical probe, at session start and nowhere else (N16). It
-                // *writes* to the camera and puts it back, which is why this verb needs the
-                // device at all — and why the `Discovery` it answers is dropped here: T5's
-                // `calibrate_start` answers a `Session`, and `wch` prints the probe's other
-                // two facts on stderr, which a socket client cannot see. `wch_discover_pairs`
-                // is the verb that hands them over (note N30).
+                // D3's empirical probe, at session start and nowhere else (N16). It *writes*
+                // to the camera and puts it back, which is why this verb needs the device at
+                // all — and why the `Discovery` it answers is dropped here: T5's
+                // `calibrate_start` answers a `Session`, and `webcam-handler-cli` prints the
+                // probe's other two facts on stderr, which a socket client cannot see.
+                // `wch_discover_pairs` is the verb that hands them over (note N30).
                 engine::lifecycle::discover_pairs(
                     &inner.store,
                     &lock,
@@ -1842,9 +1842,9 @@ impl WchRpcServer for Wchd {
         if order {
             // The camera is deliberately not opened: reordering a queue is an edit to a
             // document, and a caller who wanted to put exposure before focus should not be
-            // refused because something else currently holds the device. Routing this
-            // through the actor would compile, would pass every test that did not hold a
-            // camera, and would break parity with `wch` the day somebody reordered a queue
+            // refused because something else currently holds the device. Routing this through
+            // the actor would compile, would pass every test that did not hold a camera, and
+            // would break parity with `webcam-handler-cli` the day somebody reordered a queue
             // during a sweep.
             return Ok(self
                 .offload(move |inner| {
@@ -2746,9 +2746,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_camera_opens_on_the_first_verb_that_needs_it_and_never_before() {
-        // D12 through the wire surface, which is where the claim actually matters: a
-        // running `wchd` must not hold a webcam somebody else wants. `list` is the verb
-        // that proves the negative half — it answers from enumeration, so a daemon that
+        // D12 through the wire surface, which is where the claim actually matters: a running
+        // `webcam-handler-daemon` must not hold a webcam somebody else wants. `list` is the
+        // verb that proves the negative half — it answers from enumeration, so a daemon that
         // opened cameras to list them would fail here.
         let (backend, _temp, wchd) = daemon(limits::CAMERA_IDLE_CLOSE_MS);
         assert_eq!(backend.opens(), 0, "constructing a daemon opened a camera");
@@ -2857,10 +2857,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_driver_the_daemon_spawns_closes_an_idle_camera_with_nobody_asking() {
-        // The half of D12 that makes a running `wchd` not hold somebody's webcam, asserted
-        // through the thing that actually ships it. Every other idle-close assertion in
-        // this workspace calls a sweep itself; this one calls none — it starts the driver,
-        // moves the clock, and waits for the *descriptor* to go away.
+        // The half of D12 that makes a running `webcam-handler-daemon` not hold somebody's
+        // webcam, asserted through the thing that actually ships it. Every other idle-close
+        // assertion in this workspace calls a sweep itself; this one calls none — it starts
+        // the driver, moves the clock, and waits for the *descriptor* to go away.
         //
         // Nothing sleeps. Time is tokio's paused clock, so advancing it is an argument;
         // the wait afterwards is a blocking `recv` on the pool, which ends when the

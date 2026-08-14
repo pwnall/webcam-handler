@@ -377,14 +377,14 @@ impl Serving {
     ///
     /// ## The join is **bounded**, and P5b is where that stopped being optional
     ///
-    /// [`schema::limits::WEB_LISTENER_STOP_MS`], and the case it exists for was measured rather
-    /// than predicted: **an open MJPEG tab whose reader has stopped reading makes a graceful
-    /// shutdown wait forever, and cancelling the stream does not fix it.** `axum::serve` waits
-    /// for a response that is being written; [`super::preview`]'s writer watches the same
-    /// cancellation this server does and ends its body when it fires — which is necessary and
-    /// is *not* sufficient, because ending a body leaves hyper a final chunk to **write**, and a
-    /// client with a full socket cannot be written to. Without a bound here, `wchd` stops when
-    /// somebody scrolls a browser tab back into view.
+    /// [`schema::limits::WEB_LISTENER_STOP_MS`], and the case it exists for was measured
+    /// rather than predicted: **an open MJPEG tab whose reader has stopped reading makes a
+    /// graceful shutdown wait forever, and cancelling the stream does not fix it.**
+    /// `axum::serve` waits for a response that is being written; [`super::preview`]'s writer
+    /// watches the same cancellation this server does and ends its body when it fires — which
+    /// is necessary and is *not* sufficient, because ending a body leaves hyper a final chunk
+    /// to **write**, and a client with a full socket cannot be written to. Without a bound
+    /// here, `webcam-handler-daemon` stops when somebody scrolls a browser tab back into view.
     ///
     /// So on expiry the listener task is **aborted** — its sockets close with it, which is what
     /// unblocks nothing and ends everything — and the daemon says so at `warn`, naming the

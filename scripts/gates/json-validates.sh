@@ -9,9 +9,10 @@
 # envelope, added a timestamp, or emitted a hand-built object would satisfy the first
 # check and fail this one.
 #
-# **Run against the fake backend, deliberately.** The shape of `wch list --json` must not
-# depend on what is plugged in, and a gate that needed a camera could not run in CI. The
-# committed corpus supplies the devices; `wch --backend fake --profile …` replays them.
+# **Run against the fake backend, deliberately.** The shape of `webcam-handler-cli list --json`
+# must not depend on what is plugged in, and a gate that needed a camera could not run in CI.
+# The committed corpus supplies the devices; `webcam-handler-cli --backend fake --profile …`
+# replays them.
 #
 # The verb-to-type mapping below is the one thing here that is written down rather than
 # derived: a Rust trait does not reify its methods, and nothing in the bundle records
@@ -20,12 +21,12 @@
 #
 # **The binary comes from the real checkout, the bundle and the corpus from the tree under
 # test.** That asymmetry is deliberate and it is the seam the selftest drives: building
-# `wch` inside each of the selftest's scratch copies would cost a full compile per case,
-# and this predicate's subject is the *document* — whether what the binary prints is one of
-# the bundle's types. So the failing arms move the schema and the replayed profile, which
-# is where the interesting inverses live. What that does not catch is a source change that
-# alters the emitted shape without a rebuild; `just ci` builds before it runs the gates, so
-# in the pipeline the binary is current, and this line is the recorded limit rather than an
+# `webcam-handler-cli` inside each of the selftest's scratch copies would cost a full compile
+# per case, and this predicate's subject is the *document* — whether what the binary prints is
+# one of the bundle's types. So the failing arms move the schema and the replayed profile,
+# which is where the interesting inverses live. What that does not catch is a source change
+# that alters the emitted shape without a rebuild; `just ci` builds before it runs the gates,
+# so in the pipeline the binary is current, and this line is the recorded limit rather than an
 # unstated assumption.
 set -euo pipefail
 
@@ -148,11 +149,11 @@ export XDG_STATE_HOME="$scratch/state"
 
 # The real checkout, whatever tree is under test — see the note above.
 checkout="$(git rev-parse --show-toplevel)"
-binary="$checkout/target/debug/wch"
+binary="$checkout/target/debug/webcam-handler-cli"
 if [[ ! -x "$binary" ]]; then
-    (cd "$checkout" && cargo build --locked --offline -p webcam-handler-cli --bin wch >/dev/null 2>&1) ||
+    (cd "$checkout" && cargo build --locked --offline -p webcam-handler-cli --bin webcam-handler-cli >/dev/null 2>&1) ||
         {
-            gate_fail "could not build wch"
+            gate_fail "could not build webcam-handler-cli"
             gate_finish
         }
 fi
@@ -181,12 +182,12 @@ for row in "${verbs[@]}"; do
     # shellcheck disable=SC2086
     output="$("$binary" --backend fake --profile "$profile" --json $argv 2>/dev/null)" || status=$?
     if ((status != 0)); then
-        gate_fail "wch --json $argv exited $status; a verb that cannot answer cannot be validated"
+        gate_fail "webcam-handler-cli --json $argv exited $status; a verb that cannot answer cannot be validated"
         continue
     fi
 
     if ! printf '%s' "$output" | jq -e . >/dev/null 2>&1; then
-        gate_fail "wch --json $argv did not emit parseable JSON"
+        gate_fail "webcam-handler-cli --json $argv did not emit parseable JSON"
         continue
     fi
 
@@ -208,7 +209,7 @@ for row in "${verbs[@]}"; do
              end)
           end
     ' --arg d "$def" "$bundle" >/dev/null 2>&1; then
-        gate_fail "wch --json $argv does not match #/\$defs/$def in the committed bundle"
+        gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/$def in the committed bundle"
         continue
     fi
     # Counted here, at the end, and not on entry: a row that failed to answer or failed
@@ -226,13 +227,13 @@ gate_require_nonzero "$checked" "--json verb answers"
 # because two of the ten top-level names are subtrees.
 #
 # The single-level version of this loop was the P3 review's finding: it scraped only
-# `wch --help`, and its membership test accepted a top-level verb if *any* row's name began
-# with it, so one `calibrate-start` row satisfied the whole seven-verb `calibrate` subtree.
-# Deleting the other six rows left the gate green while it validated six fewer documents —
-# the criterion in `phase-criteria.tsv`, docs/7 §P3d and docs/9 all assert a property the
-# predicate did not have. Before P3 the gap was latent (`profile` had one subcommand); P3d
-# made `calibrate` a seven-verb tree and made it load-bearing. Note N10's family, again:
-# a gate green while checking less than it claims.
+# `webcam-handler-cli --help`, and its membership test accepted a top-level verb if *any* row's
+# name began with it, so one `calibrate-start` row satisfied the whole seven-verb `calibrate`
+# subtree. Deleting the other six rows left the gate green while it validated six fewer
+# documents — the criterion in `phase-criteria.tsv`, docs/7 §P3d and docs/9 all assert a
+# property the predicate did not have. Before P3 the gap was latent (`profile` had one
+# subcommand); P3d made `calibrate` a seven-verb tree and made it load-bearing. Note N10's
+# family, again: a gate green while checking less than it claims.
 help_commands() {
     "$binary" "$@" --help 2>/dev/null |
         awk '/^Commands:/ { inside = 1; next } inside && /^[[:space:]]+[a-z]/ { print $1 } inside && /^$/ { inside = 0 }' |

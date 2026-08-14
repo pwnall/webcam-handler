@@ -1,10 +1,10 @@
 //! Assembling a device profile from an open camera (design T3).
 //!
-//! One home for the T3 split. `wch profile capture` writes what this produces; the
-//! hardware rung compares a live capture against the committed corpus by calling the same
-//! function; the daemon's `profile_capture` method will call it at P4. A second copy would
-//! be a second opinion about which fields are invariant, and the whole value of the corpus
-//! rests on that answer being one answer.
+//! One home for the T3 split. `webcam-handler-cli profile capture` writes what this produces;
+//! the hardware rung compares a live capture against the committed corpus by calling the same
+//! function; the daemon's `profile_capture` method will call it at P4. A second copy would be
+//! a second opinion about which fields are invariant, and the whole value of the corpus rests
+//! on that answer being one answer.
 //!
 //! The split, restated where it is implemented:
 //!
@@ -92,12 +92,12 @@ pub fn capture(camera: &mut dyn Camera, context: &CaptureContext) -> Result<Devi
 
 /// Read a committed device profile from `path`, refusing one this build cannot replay.
 ///
-/// The other half of T3's round trip, and here for [`capture`]'s reason: **both**
-/// composition roots read these documents to build a fake backend — `wch --backend fake
-/// --profile …` and `wchd --backend fake --profile …` — and a version check written at each
-/// of them is two answers to "can this build replay this document". Design §2.11 says a
-/// backend is constructed at the roots and nowhere else; what the roots must not each own
-/// is the *reading*.
+/// The other half of T3's round trip, and here for [`capture`]'s reason: **both** composition
+/// roots read these documents to build a fake backend — `webcam-handler-cli --backend fake
+/// --profile …` and `webcam-handler-daemon --backend fake --profile …` — and a version check
+/// written at each of them is two answers to "can this build replay this document". Design
+/// §2.11 says a backend is constructed at the roots and nowhere else; what the roots must not
+/// each own is the *reading*.
 ///
 /// The version is read from a probe that deserializes **only** `schema_version`, which is
 /// the same shape `crate::store` uses for a session document and for the same reason: a
@@ -154,12 +154,12 @@ pub fn read(path: &camino::Utf8Path) -> Result<DeviceProfile> {
 /// runtime external binaries, and this is one line of a pseudo-file. A host without
 /// `/proc` records the absence rather than a guess.
 ///
-/// It lives beside the field it fills rather than in a composition root, because P4c gave
-/// it a second one: `wch profile capture` and `wchd`'s `wch_profile_capture` write the same
-/// document, and two readings of one host fact could disagree about what `"(unknown)"`
-/// means. It is *not* part of [`CaptureContext`]'s construction, because the rest of that
-/// value — the clock, the tool version, who asked — is the caller's to supply and this is
-/// the only field a host can answer for itself.
+/// It lives beside the field it fills rather than in a composition root, because P4c gave it a
+/// second one: `webcam-handler-cli profile capture` and `webcam-handler-daemon`'s
+/// `wch_profile_capture` write the same document, and two readings of one host fact could
+/// disagree about what `"(unknown)"` means. It is *not* part of [`CaptureContext`]'s
+/// construction, because the rest of that value — the clock, the tool version, who asked — is
+/// the caller's to supply and this is the only field a host can answer for itself.
 #[must_use]
 pub fn kernel_release() -> String {
     std::fs::read_to_string("/proc/sys/kernel/osrelease")

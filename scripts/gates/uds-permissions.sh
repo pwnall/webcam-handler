@@ -3,13 +3,14 @@
 # The daemon's socket directory is 0700 — docs/9's **UDS permissions** row (P4b), design
 # D11, AGENTS.md "Hardware and privacy".
 #
-# D11 makes filesystem permissions the whole authentication model for `wchd`: there is no
-# token, no peer-credential check and no allowlist on the Unix socket, because on Linux
-# `connect(2)` needs search permission on every component of the path and the *directory*
+# D11 makes filesystem permissions the whole authentication model for `webcam-handler-daemon`:
+# there is no token, no peer-credential check and no allowlist on the Unix socket, because on
+# Linux `connect(2)` needs search permission on every component of the path and the *directory*
 # is therefore the boundary. The socket inode is not — it is created `0777 & ~umask` and
 # asserting its mode would be asserting the wrong thing. So this predicate asks the one
-# question that matters: **is the directory a shipped `wchd` actually serves from private,
-# and does a `wchd` handed a directory that is not private refuse to serve?**
+# question that matters: **is the directory a shipped `webcam-handler-daemon` actually serves
+# from private, and does a `webcam-handler-daemon` handed a directory that is not private
+# refuse to serve?**
 #
 # ## Why a shell predicate, when docs/9's row reads like a Rust test
 #
@@ -24,10 +25,10 @@
 #
 # ## What it drives, and the seam
 #
-# It runs a real `wchd` against a scratch pair of XDG directories, learns from the daemon's
-# own stderr that it is serving — nothing here waits on a clock — and then inspects what it
-# left behind. `timeout` is a watchdog, not synchronisation: a daemon that neither
-# announces nor exits would otherwise hang CI forever.
+# It runs a real `webcam-handler-daemon` against a scratch pair of XDG directories, learns from
+# the daemon's own stderr that it is serving — nothing here waits on a clock — and then
+# inspects what it left behind. `timeout` is a watchdog, not synchronisation: a daemon that
+# neither announces nor exits would otherwise hang CI forever.
 #
 # Inspecting the directory *after* the daemon has been stopped is deliberate and it is
 # sound: this build never unlinks its socket, and P4e-ii's shutdown discipline deliberately
@@ -38,8 +39,9 @@
 # a process.
 #
 # $WCH_GATE_WCHD is the documented seam — the daemon-shaped program to drive. The selftest
-# points it at programs that get D11 wrong in one way each; `pass_case` always drives the
-# real `wchd`, which is rubric rule 6's requirement that one arm runs the real tool [S:N10].
+# points it at programs that get D11 wrong in one way each; `pass_case` always drives the real
+# `webcam-handler-daemon`, which is rubric rule 6's requirement that one arm runs the real tool
+# [S:N10].
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -71,17 +73,17 @@ fi
 gate_note "the socket this gate looks for is \$XDG_RUNTIME_DIR/$app_dir/$socket_file"
 
 # The binary comes from the real checkout for `json-validates.sh`'s reason: building
-# `wchd` inside each of the selftest's scratch copies would cost a full compile per case,
-# and the subject here is the daemon's *behaviour*, which the seam below replaces wholesale
-# when a case wants a different one.
+# `webcam-handler-daemon` inside each of the selftest's scratch copies would cost a full
+# compile per case, and the subject here is the daemon's *behaviour*, which the seam below
+# replaces wholesale when a case wants a different one.
 checkout="$(git rev-parse --show-toplevel)"
-wchd="${WCH_GATE_WCHD:-$checkout/target/debug/wchd}"
+wchd="${WCH_GATE_WCHD:-$checkout/target/debug/webcam-handler-daemon}"
 if [[ -n "${WCH_GATE_WCHD:-}" ]]; then
     gate_note "driving the daemon-shaped program at $wchd (WCH_GATE_WCHD)"
 elif [[ ! -x "$wchd" ]]; then
-    (cd "$checkout" && cargo build --locked --offline -p webcam-handler-daemon --bin wchd >/dev/null 2>&1) ||
+    (cd "$checkout" && cargo build --locked --offline -p webcam-handler-daemon --bin webcam-handler-daemon >/dev/null 2>&1) ||
         {
-            gate_fail "could not build wchd; this gate has nothing to drive"
+            gate_fail "could not build webcam-handler-daemon; this gate has nothing to drive"
             gate_finish
         }
 fi
@@ -144,7 +146,8 @@ serve() {
 
 # ------------------------------------------------------------------ claim 1
 #
-# The directory a shipped `wchd` serves from is private, and owned by whoever ran it.
+# The directory a shipped `webcam-handler-daemon` serves from is private, and owned by whoever
+# ran it.
 
 runtime="$scratch/run"
 socket_dir="$runtime/$app_dir"
@@ -178,7 +181,7 @@ else
         gate_fail "the daemon announced $socket and there is nothing there; the directory checked above is not one anything served from"
     fi
 fi
-gate_checked "$directories" "live socket directory(s) a shipped wchd served from, checked for mode $wanted_mode and owner"
+gate_checked "$directories" "live socket directory(s) a shipped webcam-handler-daemon served from, checked for mode $wanted_mode and owner"
 gate_require_nonzero "$directories" "socket directories"
 
 # ------------------------------------------------------------------ claim 2

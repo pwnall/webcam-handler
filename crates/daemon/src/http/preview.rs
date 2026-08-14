@@ -226,10 +226,10 @@ async fn stream(State(previews): State<Previews>, request: Request) -> Response 
                 format!("{STREAM_CONTENT_TYPE}; boundary={BOUNDARY}"),
             ),
             // A camera frame is served, never stored (design §5: "the web client's preview is
-            // served, never stored, and `wchd` records nothing it was not asked to record").
-            // A cache is storage, and it is storage on the operator's disk with a picture of
-            // their room in it, so the response says so rather than relying on
-            // `multipart/x-mixed-replace` being un-cacheable in practice.
+            // served, never stored, and `webcam-handler-daemon` records nothing it was not
+            // asked to record"). A cache is storage, and it is storage on the operator's disk
+            // with a picture of their room in it, so the response says so rather than relying
+            // on `multipart/x-mixed-replace` being un-cacheable in practice.
             (header::CACHE_CONTROL, "no-store".to_owned()),
         ],
         axum::body::Body::from_stream(ReceiverStream::new(body)),

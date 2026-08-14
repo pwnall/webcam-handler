@@ -610,11 +610,11 @@ fn a_sweep_that_cannot_make_its_photo_directory_still_ends_the_stream_it_opened(
     // "One start, one end": a sweep that emitted `SweepStarted` emits exactly one terminal
     // event, whatever stops it. The sample loop always did; the two store calls that prepare
     // the pass's photo directory sat *between* the start event and the loop, so an operator
-    // who could not write there got a stream that began and never ended. Whoever made the
-    // call still got the refusal as its answer; a subscriber — the web client tracking a
-    // sweep it did not start, an agent watching a session another process drives — got a
-    // sweep that reads as still running, and `wchc`'s tail (notes N69, N70) spent its whole
-    // budget on an `is_terminal` that was never coming.
+    // who could not write there got a stream that began and never ended. Whoever made the call
+    // still got the refusal as its answer; a subscriber — the web client tracking a sweep it
+    // did not start, an agent watching a session another process drives — got a sweep that
+    // reads as still running, and `webcam-handler-client`'s tail (notes N69, N70) spent its
+    // whole budget on an `is_terminal` that was never coming.
     //
     // Arranged for real rather than scripted, because the store's fault menu cannot express
     // "healthy until here": a blanket `StoreFault::DiskFull` fails the `begin_sweep` commit

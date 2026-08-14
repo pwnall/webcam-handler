@@ -1161,8 +1161,8 @@ mod tests {
 
     /// The OBSBOT's measured node shape, at whatever paths the caller names.
     ///
-    /// The caps words are the ones `wch list --json` reported on 2026-08-11 — a capture
-    /// node and a metadata node, byte-identical before and after the reload that moved
+    /// The caps words are the ones `webcam-handler-cli list --json` reported on 2026-08-11 — a
+    /// capture node and a metadata node, byte-identical before and after the reload that moved
     /// them from `video4,5` to `video0,1`.
     fn obsbot_at(paths: [&str; 2]) -> CameraInfo {
         let mut info = grouped(&[(paths[0], CAP_VIDEO_CAPTURE), (paths[1], CAP_META_CAPTURE)]);

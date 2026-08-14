@@ -260,8 +260,9 @@ test("the calibration view tracks a sweep it did not start", async ({ page }) =>
   // `engine::photo::take` is its only caller, so `wch_calibrate_sweep` against a camera this
   // page is previewing is refused `Busy` — measured here, at 2026-08-13, by this rung failing
   // that way. That is the deployment's own arrangement (the owner watches the client *while*
-  // calibrating from `wchc`), so it is recorded in this sub-milestone's report rather than
-  // worked around silently; what is worked around is only this claim's need for a free camera.
+  // calibrating from `webcam-handler-client`), so it is recorded in this sub-milestone's
+  // report rather than worked around silently; what is worked around is only this claim's need
+  // for a free camera.
   //
   // Matched on the *path*, not on a substring: `/preview.js` is one of the client's modules,
   // and a `/\/preview/` regex aborts it — which is a page that never runs at all, and is how
@@ -379,7 +380,7 @@ test("the client loads with no credential and the camera is still refused", asyn
   // failed WebSocket handshake, so the page names both candidates instead of guessing.
   await expect(page.locator("#connection")).toHaveClass(/failed/);
   await expect(page.locator("#connection")).toHaveText(
-    "wchd did not accept a WebSocket: either the token this page was opened with is not this " +
+    "webcam-handler-daemon did not accept a WebSocket: either the token this page was opened with is not this " +
       "run's, or nothing is listening on this port any more.",
   );
 
@@ -443,7 +444,7 @@ test("the page reports a lost socket and works again on the next one", async ({ 
 
   dropped.close();
   await expect(page.locator("#connection")).toHaveText(
-    "the connection to wchd closed; reload the URL wchd printed",
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
   );
   await expect(page.locator("#take-photo")).toBeDisabled();
   // The preview is a *separate* HTTP request and would otherwise keep painting frames from a
@@ -453,9 +454,9 @@ test("the page reports a lost socket and works again on the next one", async ({ 
     await page.evaluate(() => document.getElementById("preview-frame").hasAttribute("src")),
   ).toBe(false);
 
-  // And the reconnect, which is the client's own advice ("reload the URL wchd printed") taken
-  // literally: the same token opens a second socket on the same daemon, and a full round-trip
-  // over it repaints the panel from the device.
+  // And the reconnect, which is the client's own advice ("reload the URL webcam-handler-daemon
+  // printed") taken literally: the same token opens a second socket on the same daemon, and a
+  // full round-trip over it repaints the panel from the device.
   await page.unrouteAll();
   await openClient(page);
   await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);

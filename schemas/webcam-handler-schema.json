@@ -2112,7 +2112,7 @@
         },
         {
           "const": "per_operation",
-          "description": "A daemonless `wch`'s: taken for one mutating operation and released at its\nend, because a CLI that held it between invocations would lock out the daemon\nit does not know about.",
+          "description": "A daemonless `webcam-handler-cli`'s: taken for one mutating operation and released\nat its end, because a CLI that held it between invocations would lock out the\ndaemon it does not know about.",
           "type": "string"
         }
       ]
@@ -2608,7 +2608,7 @@
       ]
     },
     "PhotoDelivery": {
-      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports\nhow much is on its way. **The bytes themselves are not in this document**: `wch` streams\nthem to standard output, and D10's base64-in-JSON encoding lives with the wire surface\nthat needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report rather\nthan inside this enum. Carrying an unused encoding here would be a dependency nobody\nreads, and it would put base64 in every session file and `--json` document too.",
+      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports how\nmuch is on its way. **The bytes themselves are not in this document**: `webcam-handler-cli`\nstreams them to standard output, and D10's base64-in-JSON encoding lives with the wire\nsurface that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report\nrather than inside this enum. Carrying an unused encoding here would be a dependency nobody\nreads, and it would put base64 in every session file and `--json` document too.",
       "oneOf": [
         {
           "description": "The bytes were handed back to the caller.",
@@ -2811,7 +2811,7 @@
       "type": "object"
     },
     "PhotoRequest": {
-      "description": "Everything one photo needs (design D5, D6, D10).\n\nAssembled by the caller so `wch photo`, the daemon's `photo` method and a calibration\nsample all ask for a photo the same way — the sweep at P3 varies the control values\nbetween shots and nothing else.",
+      "description": "Everything one photo needs (design D5, D6, D10).\n\nAssembled by the caller so `webcam-handler-cli photo`, the daemon's `photo` method and a\ncalibration sample all ask for a photo the same way — the sweep at P3 varies the control\nvalues between shots and nothing else.",
       "properties": {
         "settle": {
           "$ref": "#/$defs/SettlePolicy",
@@ -3793,7 +3793,7 @@
       "type": "object"
     },
     "SweepRequest": {
-      "description": "Everything one sweep needs that is not the session, the camera, or the clock.\n\nA DTO rather than an engine struct because three callers need the same request and two\nof them cannot see the engine: `wch` parses one from a command line through the shared\ncommand surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and\n`webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type\nrather than defining a second one — a request that had to be translated at each seam is\na request three places can disagree about.",
+      "description": "Everything one sweep needs that is not the session, the camera, or the clock.\n\nA DTO rather than an engine struct because three callers need the same request and two of\nthem cannot see the engine: `webcam-handler-cli` parses one from a command line through the\nshared command surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and\n`webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type rather\nthan defining a second one — a request that had to be translated at each seam is a request\nthree places can disagree about.",
       "properties": {
         "allow_motion": {
           "default": false,

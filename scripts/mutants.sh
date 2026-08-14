@@ -9,11 +9,17 @@
 #
 # ## The scope lives in `.cargo/mutants.toml`
 #
-# Six files: the planners, the state machine, the settle policy, the store, the metrics.
-# That file carries the reasoning for what is in and what is deliberately out. This script
-# does not restate the list — it asks cargo-mutants what the scope resolved to and prints
-# the answer, and refuses to run on an empty one: a mutation job over zero files is the
-# "check that examines nothing" this suite exists to prevent.
+# The planners, the state machine, the settle policy, the store, the metrics, and since
+# P5e the three `daemon::http` folds that decide who may reach a camera. That file carries
+# the reasoning for what is in and what is deliberately out, one paragraph per decision.
+# This script does not restate the list — it asks cargo-mutants what the scope resolved to
+# and prints the answer, and refuses to run on an empty one: a mutation job over zero files
+# is the "check that examines nothing" this suite exists to prevent.
+#
+# It said "Six files" until P5e, by which time the scope was ten and about to be fourteen —
+# a count transcribed into a header two widenings before anybody read it again, in the very
+# file whose next sentence promises not to restate the list. Kept as a sentence about what
+# is in scope and not as a number, because the number has a home and this is not it.
 #
 # ## Survivors are triaged, never tolerated
 #
@@ -334,12 +340,50 @@ else
     fi
     printf 'mutants: build directories under %s (%s GiB free, %s GiB held back)\n' \
         "$build_root" "$avail_gib" "$reserve_gib"
+    # ## The two modes, and why only one of them may say PASS
+    #
+    # **Full** is the floor: every mutant in scope is generated and tested, so a green run
+    # supports the *negative* claim — there is no unaccepted survivor in this scope. That is
+    # the claim the `g4` criterion buys and the only one worth quoting.
+    #
+    # **Iterate** (`--iterate`, owner's request 2026-08-13) skips what a previous run already
+    # caught, which turns a re-run from hours into the handful of mutants that were still
+    # open. It is for development stages: run it after each one, and keep the full run for CI
+    # and for a review pass. What it cannot do is the negative claim, and the reason is exact:
+    # **the mutants it skips are precisely the ones a deleted test would have stopped
+    # catching.** A test removed between two iterate runs is invisible to the second, because
+    # its mutant is on last time's caught list and is never re-tested. So an iterate run can
+    # still *find* a survivor — a positive claim, and a real finding when it fires — and it
+    # can never certify their absence.
+    #
+    # Which is why this script refuses to print `PASS` for one. AGENTS rule 3 says an
+    # auto-skipping rung reports a named, counted skip and never silence, and a run that
+    # tested a third of the scope while printing the word the full run prints is the plainest
+    # form of "skip reads as pass" this repository has a rule against. It ends on `PARTIAL`,
+    # says how many it tested, and names the claim it is not making.
+    #
+    # Both spellings route here. `just mutants --iterate` forwards the flag through `"$@"`,
+    # and a flag that reached cargo-mutants without passing this block would enable the mode
+    # with none of the accounting — one mode with two doors, one of them unwatched.
     declare -a extra=()
+    iterating=0
     if [[ "${WCH_MUTANTS_ITERATE:-0}" == "1" ]]; then
-        # Development convenience only: re-runs skip what a previous run already caught. A
-        # gate run never sets it, because "caught last time" is not a measurement of this tree.
+        iterating=1
+    fi
+    for arg in "$@"; do
+        [[ "$arg" == "--iterate" ]] && iterating=1
+    done
+    if ((iterating == 1)); then
+        # Added here rather than left in `"$@"` so the flag is passed exactly once however it
+        # arrived; cargo-mutants takes it twice without complaint, but a script that could not
+        # say which door a mode came through is the thing this block exists to prevent.
+        declare -a forwarded=()
+        for arg in "$@"; do
+            [[ "$arg" == "--iterate" ]] || forwarded+=("$arg")
+        done
+        set -- ${forwarded[@]+"${forwarded[@]}"}
         extra+=(--iterate)
-        printf 'mutants: WCH_MUTANTS_ITERATE=1 — skipping mutants caught by a previous run; this is NOT a gate run\n'
+        printf 'mutants: ITERATE — skipping mutants a previous run already caught; this run cannot certify that no survivor exists and is NOT a gate run\n'
     fi
 
     printf 'mutants: running %s job(s) over the workspace suite\n' "$jobs"
@@ -511,6 +555,18 @@ if ((failures > 0)); then
     printf 'mutants: FAIL — %s finding(s) over %s mutants, %s named skip(s)\n' \
         "$failures" "$generated" "$skips" >&2
     exit 1
+fi
+
+if ((${iterating:-0} == 1)); then
+    # Not `PASS`, and the difference is the whole point of the mode. See the block that adds
+    # `--iterate`: what this run skipped is exactly what a deleted test would have stopped
+    # catching, so "nothing survived here" is a statement about the mutants that ran and not
+    # about the scope. Counted, named, and spelled differently from the word the full run
+    # earns.
+    printf 'mutants: PARTIAL — %s mutant(s) tested, %s caught, %s accepted survivor(s), %s named skip(s)\n' \
+        "$generated" "$caught" "$(wc -l <"$scratch/accepted")" "$skips"
+    printf 'mutants: iterate mode found no unaccepted survivor among the mutants it ran; it did NOT re-test the ones a previous run caught, so it makes no claim about the scope. "just mutants" is the run that does.\n'
+    exit 0
 fi
 
 printf 'mutants: PASS — %s mutants, %s caught, %s accepted survivor(s), %s named skip(s)\n' \

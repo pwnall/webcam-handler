@@ -1,4 +1,5 @@
-//! `wchd` internals, as a library so integration tests can drive a real server.
+//! `webcam-handler-daemon` internals, as a library so integration tests can drive a real
+//! server.
 //!
 //! | Module | Home of |
 //! |---|---|
@@ -12,10 +13,10 @@
 //! | [`systemd`] | every protocol a service manager speaks: `sd_notify`, the watchdog, socket activation, `$JOURNAL_STREAM` (P4e-ii) |
 //! | [`uds`] | the Unix-socket transport — the one piece of transport code we own (D11) |
 //!
-//! The binary beside this library is the daemon's **composition root** (design §2.11):
-//! the process's edges — argument handling, the state-directory lock, the subscriber, the
-//! backend factory match — live there, and everything here takes what it needs as a
-//! parameter. That is what makes an integration test able to run a real `wchd` in its own
+//! The binary beside this library is the daemon's **composition root** (design §2.11): the
+//! process's edges — argument handling, the state-directory lock, the subscriber, the backend
+//! factory match — live there, and everything here takes what it needs as a parameter. That is
+//! what makes an integration test able to run a real `webcam-handler-daemon` in its own
 //! process without a socket path, a state directory or an environment variable of the
 //! machine's leaking into it.
 #![forbid(unsafe_code)]

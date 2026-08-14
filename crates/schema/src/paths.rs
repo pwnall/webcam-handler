@@ -3,16 +3,16 @@
 //!
 //! ## Why the runtime half is here and the state half is not
 //!
-//! `$XDG_RUNTIME_DIR/webcam-handler` is a **transport** fact. Two processes have to agree
-//! on it and they have almost nothing else in common: `wchd` binds the socket there
-//! (design D11) and `wchc` connects to it. The thin-client wall (T6, enforced by
-//! `scripts/gates/dependency-walls.sh`) says `webcam-handler-client` links no backend and
-//! no engine, so a client that had to reach `webcam-handler-engine` to learn where a
-//! socket lives would be linking a session store to find a file descriptor. This crate is
+//! `$XDG_RUNTIME_DIR/webcam-handler` is a **transport** fact. Two processes have to agree on
+//! it and they have almost nothing else in common: `webcam-handler-daemon` binds the socket
+//! there (design D11) and `webcam-handler-client` connects to it. The thin-client wall (T6,
+//! enforced by `scripts/gates/dependency-walls.sh`) says `webcam-handler-client` links no
+//! backend and no engine, so a client that had to reach `webcam-handler-engine` to learn where
+//! a socket lives would be linking a session store to find a file descriptor. This crate is
 //! the only home below both ends of that socket, which is the same argument
 //! [`crate::limits::DAEMON_SOCKET_FILE`] is already here for — and the directory a socket
-//! hangs in cannot live one crate above the socket's own file name without the pair of
-//! them becoming two answers to one question (design §2.10).
+//! hangs in cannot live one crate above the socket's own file name without the pair of them
+//! becoming two answers to one question (design §2.10).
 //!
 //! The **state** directory is the other half, and it stays in
 //! `webcam-handler-engine::paths` on purpose. D9's session tree is a *storage* fact:
@@ -94,8 +94,8 @@ impl Env for SystemEnv {
 /// A fabricated environment: the scriptable double for the [`Env`] seam.
 ///
 /// Public rather than test-only because the daemon's integration tests, the CLI's
-/// golden-output tests and P4f's `wchc` tests need the same fixed environment, and three
-/// copies of a two-field map is three copies of a law (design §2.10).
+/// golden-output tests and P4f's `webcam-handler-client` tests need the same fixed
+/// environment, and three copies of a two-field map is three copies of a law (design §2.10).
 #[derive(Debug, Clone, Default)]
 pub struct MapEnv {
     vars: std::collections::BTreeMap<String, String>,
@@ -142,7 +142,8 @@ impl Env for MapEnv {
 /// session, which the operator needs to be told rather than worked around.
 ///
 /// Read by `webcam-handler-daemon::uds`, which binds the socket, and — the reason this
-/// function is in this crate rather than in the engine — by `wchc`, which connects to it.
+/// function is in this crate rather than in the engine — by `webcam-handler-client`, which
+/// connects to it.
 ///
 /// # Errors
 ///
@@ -273,7 +274,8 @@ mod tests {
     #[test]
     fn an_empty_variable_counts_as_unset() {
         // The specification's wording, and the shape a shell produces by accident:
-        // `XDG_RUNTIME_DIR= wchd` exports an empty string, not an absent variable.
+        // `XDG_RUNTIME_DIR= webcam-handler-daemon` exports an empty string, not an absent
+        // variable.
         let env = MapEnv::from_pairs(&[("XDG_RUNTIME_DIR", "")]);
         assert_eq!(
             runtime_dir(&env).expect_err("empty is unset").kind(),

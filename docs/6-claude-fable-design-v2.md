@@ -48,7 +48,7 @@ names its source, so a reviewer can check the absorption against the record:
 | The write path's ioctl dispatch belongs to the *descriptor*, never to the caller's value variant | T2 (§2.3) | E4 (notes) |
 | `webcam-handler-api` is exempt from the tokio half of the T6 wall; its own wall (no axum/hyper/tower-http) is gate-asserted | §2.8 | N5 |
 | `directories` is not a dependency; the two XDG paths are ~thirty owned lines (`option-ext` is MPL-2.0) | §2.8 | N2 |
-| The dev-only privileged helper `wch-priv`, its boundary, and its G6 revisit trigger are recorded | §2.13 (new) | N8 |
+| The dev-only privileged helper `webcam-handler-priv`, its boundary, and its G6 revisit trigger are recorded | §2.13 (new) | N8 |
 | The R2 rung has executed, gained write/stream arms, and serializes with R3; §3.1 restates what its green proves | §3.1 | E2, E3 (notes) |
 | The structural-gap register is regenerated: single-host evidence and the mid-stream device-loss limit join it | §3.3 | E3 (notes), N8 |
 | The PF registry runs PF:1–16; PF:13–16 were measured during implementation | §1.2 | notes |
@@ -89,23 +89,23 @@ names its source, so a reviewer can check the absorption against the record:
 
 ## 1. Scope
 
-**Expected usage (owner, 2026-08-12).** `wchd` runs on a computer whose cameras are pointed
-at a **device under test**. The primary consumer is an **AI agent harness** — Claude Code or
-similar — which drives the client to photograph the device under test in order to check its
-own work; the worked example is a display driver, whose correctness is validated by
-photographing the device's display. The same agent also wants **video of the device under
-test, to validate animations and transitions** — photographs are the primary case, video a
-very desirable secondary one — which makes **P6 agent-facing rather than trailing**, and
-makes frame timing a payload rather than metadata (D7's measured-interval rewrite). The
-other consumer is the **owner at the web client**, occasionally, to check up on the cameras
-and to calibrate them at the beginning of a development run. Everything below was designed for that deployment before it was written
-down; it is recorded here because it is what settles a trade-off. The three it settles most
-often: the primary consumer is unattended, so a verb that needs a call sequence and an error
-that cannot be branched on are defects rather than rough edges (D13, T4); the product is
-**comparability across time** rather than image quality, so when the two conflict
-repeatability wins (D3, D4, D8); and the two consumers meet on one camera as the ordinary
-case rather than as a race (D12, note N83). The full statement, with its consequences and
-what would change them, is at the top of `docs/implementation-notes.md`.
+**Expected usage (owner, 2026-08-12).** `webcam-handler-daemon` runs on a computer whose
+cameras are pointed at a **device under test**. The primary consumer is an **AI agent harness**
+— Claude Code or similar — which drives the client to photograph the device under test in order
+to check its own work; the worked example is a display driver, whose correctness is validated
+by photographing the device's display. The same agent also wants **video of the device under
+test, to validate animations and transitions** — photographs are the primary case, video a very
+desirable secondary one — which makes **P6 agent-facing rather than trailing**, and makes frame
+timing a payload rather than metadata (D7's measured-interval rewrite). The other consumer is
+the **owner at the web client**, occasionally, to check up on the cameras and to calibrate them
+at the beginning of a development run. Everything below was designed for that deployment before
+it was written down; it is recorded here because it is what settles a trade-off. The three it
+settles most often: the primary consumer is unattended, so a verb that needs a call sequence
+and an error that cannot be branched on are defects rather than rough edges (D13, T4); the
+product is **comparability across time** rather than image quality, so when the two conflict
+repeatability wins (D3, D4, D8); and the two consumers meet on one camera as the ordinary case
+rather than as a race (D12, note N83). The full statement, with its consequences and what would
+change them, is at the top of `docs/implementation-notes.md`.
 
 **Goals (v1).** A Rust 2024 edition Cargo workspace providing, for V4L2 webcams on Linux,
 behind a pluggable backend trait:
@@ -125,9 +125,9 @@ behind a pluggable backend trait:
   sweeps over control ranges with a photo per sample, score samples with built-in metrics,
   and persist everything as inspectable files an agent or human can review (D8, D9).
 - **Four consumers of one library** (five deliverables counting the library): a direct CLI
-  (`wch`), a daemon serving JSON-RPC (`wchd`), a CLI client for the daemon (`wchc`), and a
-  browser web client served by the daemon. The direct CLI and the daemon client share one
-  command surface (T4).
+  (`webcam-handler-cli`), a daemon serving JSON-RPC (`webcam-handler-daemon`), a CLI client for
+  the daemon (`webcam-handler-client`), and a browser web client served by the daemon. The
+  direct CLI and the daemon client share one command surface (T4).
 
 **The in-process constraint (owner's requirement).** The tool links Rust libraries and
 performs the work in-process (multiple threads are fine); it does not orchestrate external
@@ -252,14 +252,14 @@ load-bearing citations, not anecdotes.
 ### 2.1 System overview
 
 ```
-            ┌────────────────────────────  one command surface (T4)  ───────────────────┐
-            │                                                                           │
-  wch (CLI) ──▶ engine (in-process) ──▶ CameraBackend trait (T1/T2) ──▶ webcam-handler-v4l2 ──▶ /dev/video*
-            │        ▲                                              └─▶ webcam-handler-fake ──▶ device-profile corpus
- wchc (CLI) ──▶ jsonrpsee client ─┐                                                 (captured from real cameras)
-  web client ──▶ WS / HTTP ───────┴─▶ wchd: jsonrpsee server ──▶ engine (same trait objects)
-                                        │  UDS always · TCP opt-in (D11)
-                                        └─▶ axum: static web assets · MJPEG preview · WS
+                      ┌────────────────────────────  one command surface (T4)  ───────────────────┐
+                      │                                                                           │
+   webcam-handler-cli ──▶ engine (in-process) ──▶ CameraBackend trait (T1/T2) ──▶ webcam-handler-v4l2 ──▶ /dev/video*
+                      │        ▲                                              └─▶ webcam-handler-fake ──▶ device-profile corpus
+webcam-handler-client ──▶ jsonrpsee client ─┐                                                 (captured from real cameras)
+           web client ──▶ WS / HTTP ────────┴─▶ webcam-handler-daemon: jsonrpsee server ──▶ engine (same trait objects)
+                                                  │  UDS always · TCP opt-in (D11)
+                                                  └─▶ axum: static web assets · MJPEG preview · WS
 ```
 
 | Component | Crate | Role |
@@ -270,20 +270,20 @@ load-bearing citations, not anecdotes.
 | V4L2 backend | `webcam-handler-v4l2` | T1/T2 impl: sysfs+devnode enumeration, raw QUERY_EXT_CTRL control layer, raw-ioctl mmap streaming, uevent hotplug [Linux I/O] |
 | Fake backend | `webcam-handler-fake` | T1/T2 impl: scriptable in-memory cameras + device-profile replay (T3) [pure] |
 | API | `webcam-handler-api` | the jsonrpsee `#[rpc(server, client)]` trait over schema types + the error-code registry (T5) [no web stack; tokio arrives via jsonrpsee — N5, §2.8] |
-| Direct CLI | `webcam-handler-cli` (bin `wch`) | command core → engine, in-process |
-| Daemon | `webcam-handler-daemon` (bin `wchd`) | jsonrpsee server on UDS (+ opt-in TCP), axum web serving, MJPEG preview, subscriptions, systemd integration |
-| Daemon client | `webcam-handler-client` (bin `wchc`) | command core → generated jsonrpsee client |
-| Web assets | `webcam-handler-web` | vanilla HTML/JS/CSS, rust-embed'ed into `wchd` |
+| Direct CLI | `webcam-handler-cli` | command core → engine, in-process |
+| Daemon | `webcam-handler-daemon` | jsonrpsee server on UDS (+ opt-in TCP), axum web serving, MJPEG preview, subscriptions, systemd integration |
+| Daemon client | `webcam-handler-client` | command core → generated jsonrpsee client |
+| Web assets | `webcam-handler-web` | vanilla HTML/JS/CSS, rust-embed'ed into `webcam-handler-daemon` |
 | Test kit | `webcam-handler-testkit` | device-profile corpus loader, synthetic image fixtures, container oracles — dev-dependency only |
 
-**Request lifecycle (photo, via daemon).** `wchc photo cam:obsbot --settle 1s -o
-out.jpg` (an unambiguous id prefix, D1) → generated client sends `photo` over UDS → daemon routes to the per-camera actor
-(D12) → actor snapshots requested controls if `--guarded` writes are pending, negotiates
-format (D5), streams until the settle policy is satisfied [PF:11], takes the frame →
-imaging emits verbatim JPEG or PNG (D6) → EXIF stamped (capture time, camera identity,
-control values in effect) → bytes returned or written server-side per the request's sink →
-the actor restores anything it changed (D4) → response carries `{requested, applied}` for
-every control it touched (D3).
+**Request lifecycle (photo, via daemon).** `webcam-handler-client photo cam:obsbot --settle 1s
+-o out.jpg` (an unambiguous id prefix, D1) → generated client sends `photo` over UDS → daemon
+routes to the per-camera actor (D12) → actor snapshots requested controls if `--guarded` writes
+are pending, negotiates format (D5), streams until the settle policy is satisfied [PF:11],
+takes the frame → imaging emits verbatim JPEG or PNG (D6) → EXIF stamped (capture time, camera
+identity, control values in effect) → bytes returned or written server-side per the request's
+sink → the actor restores anything it changed (D4) → response carries `{requested, applied}`
+for every control it touched (D3).
 
 **Concurrency model (D12).** The engine owns each open camera through a dedicated OS
 thread (the *camera actor*): V4L2 ioctls and DQBUF block, so each camera gets one blocking
@@ -553,32 +553,32 @@ $XDG_STATE_HOME/webcam-handler/sessions/<fingerprint-slug>/<task-slug>/<uuidv7>/
   photos/<control-slug>/<value>.jpg|png
 ```
 
-Writes go through one audited `write_json_atomic` (tempfile in-dir → sync_all → rename →
-fsync parent). Cross-process safety is one advisory `fd-lock` at the state-dir root: the
-daemon holds it exclusively for its lifetime; a daemonless `wch` takes it per mutating
-operation; `wch` finding it held reports "daemon owns the state (and likely the camera) —
-use wchc" rather than corrupting or blocking (D13). Photo paths inside session files are
-relative `camino` UTF-8 paths, so a session directory is relocatable as a unit. Every JSON
-file carries `schema_version` from day one.
+Writes go through one audited `write_json_atomic` (tempfile in-dir → sync_all → rename → fsync
+parent). Cross-process safety is one advisory `fd-lock` at the state-dir root: the daemon holds
+it exclusively for its lifetime; a daemonless `webcam-handler-cli` takes it per mutating
+operation; `webcam-handler-cli` finding it held reports "daemon owns the state (and likely the
+camera) — use webcam-handler-client" rather than corrupting or blocking (D13). Photo paths
+inside session files are relative `camino` UTF-8 paths, so a session directory is relocatable
+as a unit. Every JSON file carries `schema_version` from day one.
 
-**D10 — One wire surface, one home (T5).** The whole daemon API is one jsonrpsee
-`#[rpc(server, client)]` trait in `webcam-handler-api` over `webcam-handler-schema` DTOs. The daemon implements
-the server half; `wchc` consumes the generated typed client; the direct CLI calls the same
-methods on the engine through T4's executor abstraction — so a verb exists exactly once.
-Methods (namespace `wch`): `list`, `info`, `controls`, `discover_pairs` (D3's empirical
-pass), `get`, `set` (guarded flag), `snapshot`, `restore`, `photo`,
-`record_start/stop/status` (progress by polling `record_status` — no recording
-subscription in v1), `profile_capture` (T3), `terminate_holder { camera, pid }` (the
-explicit kill, §5 — refuses if the pid no longer holds the device), `calibrate_*` (start,
-plan, sweep, status, select, apply, list), `subscribe_events` (hotplug), and
-`subscribe_calibration` (per-session progress). Binary results (photo/record) cross the
-wire via a two-variant sink DTO in `webcam-handler-schema`: `ReturnBytes { format }`
-(base64 in the JSON result) or `ServerPath { path }` (absolute UTF-8 camino path; clients
-resolve relative paths against their own cwd *before* sending, so `-o out.jpg` means the
-caller's directory in both `wch` and `wchc`). Errors cross the wire as the structured
-registry (D13): `code` from a closed numeric range, `message` human, `data` typed. DTOs
-derive `schemars::JsonSchema`; the build emits a JSON Schema bundle + OpenRPC document as
-generated artifacts (documentation, not a second source of truth).
+**D10 — One wire surface, one home (T5).** The whole daemon API is one jsonrpsee `#[rpc(server,
+client)]` trait in `webcam-handler-api` over `webcam-handler-schema` DTOs. The daemon
+implements the server half; `webcam-handler-client` consumes the generated typed client; the
+direct CLI calls the same methods on the engine through T4's executor abstraction — so a verb
+exists exactly once. Methods (namespace `webcam-handler-cli`): `list`, `info`, `controls`,
+`discover_pairs` (D3's empirical pass), `get`, `set` (guarded flag), `snapshot`, `restore`,
+`photo`, `record_start/stop/status` (progress by polling `record_status` — no recording
+subscription in v1), `profile_capture` (T3), `terminate_holder { camera, pid }` (the explicit
+kill, §5 — refuses if the pid no longer holds the device), `calibrate_*` (start, plan, sweep,
+status, select, apply, list), `subscribe_events` (hotplug), and `subscribe_calibration`
+(per-session progress). Binary results (photo/record) cross the wire via a two-variant sink DTO
+in `webcam-handler-schema`: `ReturnBytes { format }` (base64 in the JSON result) or `ServerPath
+{ path }` (absolute UTF-8 camino path; clients resolve relative paths against their own cwd
+*before* sending, so `-o out.jpg` means the caller's directory in both `webcam-handler-cli` and
+`webcam-handler-client`). Errors cross the wire as the structured registry (D13): `code` from a
+closed numeric range, `message` human, `data` typed. DTOs derive `schemars::JsonSchema`; the
+build emits a JSON Schema bundle + OpenRPC document as generated artifacts (documentation, not
+a second source of truth).
 
 **D11 — Transports and the security posture.** The Unix socket
 (`$XDG_RUNTIME_DIR/webcam-handler/wchd.sock`, directory 0700) is always served: filesystem
@@ -613,10 +613,10 @@ property of the composition and is now a property of a list — and the two thin
 go red in its place; it retires note N76.
 
 **D12 — Concurrency and ownership** — see §2.1. One additional rule: the actor enforces
-*exclusive streaming* (V4L2 allows one streamer per node); control reads/writes interleave
-with streaming, but a second capture request queues or is refused with `Busy` per its
-`wait` flag. The daemon never opens a camera until first use and closes on idle (configurable), so
-`wchd` running does not itself block other applications from the webcam.
+*exclusive streaming* (V4L2 allows one streamer per node); control reads/writes interleave with
+streaming, but a second capture request queues or is refused with `Busy` per its `wait` flag.
+The daemon never opens a camera until first use and closes on idle (configurable), so
+`webcam-handler-daemon` running does not itself block other applications from the webcam.
 
 **Amended (owner ruling, 2026-08-12): a photo suspends a live preview rather than being
 refused by it.** Exclusive streaming is unchanged and is now enforced by a sequence rather
@@ -755,21 +755,20 @@ E4 and N6]:
   P4d landed the last of them and deleted the variant (N6, retired), so every method of
   every shipped backend now reaches real work.
 
-**T3 — The device profile.** A JSON capture of everything a backend can enumerate about
-a camera, in **two sections whose comparison semantics differ**: the *invariant*
-description — identity, nodes, formats/sizes/intervals, the full control set with menus,
-ranges and non-volatile flags, measured automation pairs (D3) — and the *state* block —
-current control values and the INACTIVE-class flag snapshot, which change with use
-[PF:3, PF:4] and are compared loosely or not at all (re-capturing a profile after a
-sweep must not read as corpus drift). Provenance (`captured_at`, kernel, tool version)
-rides outside both. `wch profile capture` emits one from live hardware; the committed corpus
-(`corpus/profiles/`) holds profiles of real devices — the three probe-era cameras seed
-it —
-and `webcam-handler-fake` replays them: enumeration, control graph (including INACTIVE coupling
-simulation [PF:3], clamping [PF:6], sparse menus [PF:2]), and synthetic frames whose
-image content responds to control values (brightness shifts luma, focus blurs a test
-pattern) so calibration logic is testable offline end-to-end. E5 applies: the fake's
-behavioral claims are resemblance-tested against the profile it replays.
+**T3 — The device profile.** A JSON capture of everything a backend can enumerate about a
+camera, in **two sections whose comparison semantics differ**: the *invariant* description —
+identity, nodes, formats/sizes/intervals, the full control set with menus, ranges and
+non-volatile flags, measured automation pairs (D3) — and the *state* block — current control
+values and the INACTIVE-class flag snapshot, which change with use [PF:3, PF:4] and are
+compared loosely or not at all (re-capturing a profile after a sweep must not read as corpus
+drift). Provenance (`captured_at`, kernel, tool version) rides outside both.
+`webcam-handler-cli profile capture` emits one from live hardware; the committed corpus
+(`corpus/profiles/`) holds profiles of real devices — the three probe-era cameras seed it — and
+`webcam-handler-fake` replays them: enumeration, control graph (including INACTIVE coupling
+simulation [PF:3], clamping [PF:6], sparse menus [PF:2]), and synthetic frames whose image
+content responds to control values (brightness shifts luma, focus blurs a test pattern) so
+calibration logic is testable offline end-to-end. E5 applies: the fake's behavioral claims are
+resemblance-tested against the profile it replays.
 
 ### 2.4 The engine
 
@@ -867,32 +866,34 @@ libsystemd) under systemd.
 
 ### 2.7 The clients
 
-**The command core (T4).** Its own crate, `webcam-handler-cli-core` (`crates/cli-core/`)
-— committed to up front, because the module-of-`wch`-reused-by-`wchc` alternative would
-give `webcam-handler-cli` a library target and drag the engine and the V4L2 backend into
-`wchc`'s link graph, which the thin-client wall (T6, §2.8) exists to forbid. It defines the clap
-command tree, argument types (humantime durations, control `slug=value` pairs), rendering
-(comfy-table for listings, indicatif for sweeps, anstream color discipline, `--json`
-emitting schema DTOs verbatim), and an executor trait with two impls living in the
-binaries: in-process engine (`wch`) and generated RPC client (`wchc`). A verb, its flags,
-and its rendering exist once; the two binaries differ only in executor and connection
-bootstrapping. `wch` refuses politely when the daemon holds the state lock (D9/D13).
+**The command core (T4).** Its own crate, `webcam-handler-cli-core` (`crates/cli-core/`) —
+committed to up front, because the
+module-of-`webcam-handler-cli`-reused-by-`webcam-handler-client` alternative would give
+`webcam-handler-cli` a library target and drag the engine and the V4L2 backend into
+`webcam-handler-client`'s link graph, which the thin-client wall (T6, §2.8) exists to forbid.
+It defines the clap command tree, argument types (humantime durations, control `slug=value`
+pairs), rendering (comfy-table for listings, indicatif for sweeps, anstream color discipline,
+`--json` emitting schema DTOs verbatim), and an executor trait with two impls living in the
+binaries: in-process engine (`webcam-handler-cli`) and generated RPC client
+(`webcam-handler-client`). A verb, its flags, and its rendering exist once; the two binaries
+differ only in executor and connection bootstrapping. `webcam-handler-cli` refuses politely
+when the daemon holds the state lock (D9/D13).
 
-**As built at P4f, three refinements of that paragraph.** `wchc`'s executor lives in
-`webcam-handler-client`'s **library** rather than in its binary — `src/main.rs` is four
-lines — because the sweep's progress goes to a `SweepWatcher` and the shipped watcher is an
-indicatif bar that draws *nothing* when stderr is not a terminal, so a suite that could only
+**As built at P4f, three refinements of that paragraph.** `webcam-handler-client`'s executor
+lives in `webcam-handler-client`'s **library** rather than in its binary — `src/main.rs` is
+four lines — because the sweep's progress goes to a `SweepWatcher` and the shipped watcher is
+an indicatif bar that draws *nothing* when stderr is not a terminal, so a suite that could only
 see a subprocess could assert that a sweep answered and never that its events arrived. The
-root's **name is a parameter of the parse** (`cli_core::Program`, note N64), not a property
-of the tree, so both roots' `--help`, `--version`, clap usage blocks and `{program}: {error}`
+root's **name is a parameter of the parse** (`cli_core::Program`, note N64), not a property of
+the tree, so both roots' `--help`, `--version`, clap usage blocks and `{program}: {error}`
 lines come off one command tree. And the two binaries differ in one thing more than the
-executor: `--backend` and `--profile` are **global flags a client cannot honour**, because
-the daemon chose its backend at its own composition root, so `wchc` **refuses** them —
-reading clap's `ValueSource` rather than the value, since `--backend` carries a default —
-and names `wchd --backend` as where that decision lives. Ignoring them would let a script
-pointed at real cameras believe it was replaying a profile; forking the surface is what T4
-forbids. `scripts/gates/cli-parity.sh` compares the two roots' `--json` on every read verb
-and buckets the rest with a reason apiece.
+executor: `--backend` and `--profile` are **global flags a client cannot honour**, because the
+daemon chose its backend at its own composition root, so `webcam-handler-client` **refuses**
+them — reading clap's `ValueSource` rather than the value, since `--backend` carries a default
+— and names `webcam-handler-daemon --backend` as where that decision lives. Ignoring them would
+let a script pointed at real cameras believe it was replaying a profile; forking the surface is
+what T4 forbids. `scripts/gates/cli-parity.sh` compares the two roots' `--json` on every read
+verb and buckets the rest with a reason apiece.
 
 **The web client.** Vanilla ES modules, no build step, no npm, no CDN (assets embed;
 external fetches would violate both the offline posture and the license inventory): a
@@ -923,7 +924,8 @@ webcam-handler/
                         #              little_exif, imageproc, y4m; the AVI muxer is ours]
     engine/             # webcam-handler-engine  [schema + imaging + tempfile + fd-lock + tracing;
                         #              consumes Box<dyn CameraBackend>, names no backend]
-    backends/fake/      # webcam-handler-fake    [pure; dev + test instrument, ships for `wch --backend fake`]
+    backends/fake/      # webcam-handler-fake    [pure; dev + test instrument, ships for
+                        #              `webcam-handler-cli --backend fake`]
     backends/v4l2/      # webcam-handler-v4l2    [v4l (default features ONLY), kobject-uevent, libc,
                         #              rustix(net) — the uevent socket, safe-wrapped so the hotplug
                         #              edge adds no unsafe block. No `tracing`: this crate has never
@@ -931,15 +933,15 @@ webcam-handler/
     api/                # webcam-handler-api     [jsonrpsee macros + schema + serde/serde_json +
                         #              schemars + base64 (D10's transport encoding, here only)]
     cli-core/           # webcam-handler-cli-core [T4: clap tree, rendering, executor trait]
-    cli/                # webcam-handler-cli     (bin wch)  [cli-core + engine + both backends; holds a
+    cli/                # webcam-handler-cli     [cli-core + engine + both backends; holds a
                         #              backend factory match]
-    priv/               # webcam-handler-priv    (bin wch-priv) [dev-only privileged helper (§2.13);
+    priv/               # webcam-handler-priv    [dev-only privileged helper (§2.13);
                         #              never a dependency of any product crate — gate-asserted]
-    client/             # webcam-handler-client  (bin wchc) [cli-core + jsonrpsee client
+    client/             # webcam-handler-client  [cli-core + jsonrpsee client
                         #              (async-client) + soketto + tokio-util(compat) + tokio(rt,net);
                         #              links no backend and no engine (T6). A lib, not just a bin, so a
                         #              test can hand the executor a recording sweep watcher]
-    daemon/             # webcam-handler-daemon  (bin wchd) [engine + both backends + factory match +
+    daemon/             # webcam-handler-daemon  [engine + both backends + factory match +
                         #              jsonrpsee server, rustix(fs,net,process,rand) — N39's dirfd-held
                         #              socket directory and D11's getrandom(2) bearer token, both
                         #              safe-wrapped so this crate stays #![forbid(unsafe_code)] —
@@ -961,13 +963,16 @@ webcam-handler/
   docs/  scripts/gates/
 ```
 
-**Naming convention (owner ruling):** every package name carries the full
-`webcam-handler-` prefix; directory names stay short (`webcam-handler-engine` lives in
-`crates/engine/`); library targets use bare `lib.name`s (`schema`, `engine`, …) so
-in-code paths stay readable — the same package-prefix/bare-lib split the predecessor
-uses. Binary target names are the user-facing commands `wch`, `wchd`, `wchc`. Doc
-shorthand of the form `webcam-handler-engine::store` names the package; the in-code path
-is `engine::store`.
+**Naming convention (owner ruling, amended 2026-08-13 — note N90):** every package name
+carries the full `webcam-handler-` prefix; directory names stay short (`webcam-handler-engine`
+lives in `crates/engine/`); library targets use bare `lib.name`s (`schema`, `engine`, …) so
+in-code paths stay readable — the same package-prefix/bare-lib split the predecessor uses.
+**A binary is named after the package it comes from**, so `cargo install --path crates/daemon`
+installs `webcam-handler-daemon`: the four are `webcam-handler-cli`, `webcam-handler-daemon`,
+`webcam-handler-client` and the dev-only `webcam-handler-priv`. The short forms this document
+used until that ruling — `wch`, `wchd`, `wchc`, `wch-priv` — are gone rather than aliased; a
+second name for one program is what the ruling exists to remove. Doc shorthand of the form
+`webcam-handler-engine::store` names the package; the in-code path is `engine::store`.
 
 Dependency edges, stated explicitly (an arrow means "is depended on by"; the shorthand
 version of this list was ambiguous enough to review):
@@ -1042,84 +1047,81 @@ entries said "this needs a dependency decision" where they should have said "thi
 doing" (N39, N48, N51). A deferral whose stated ground has evaporated is how a debt
 outlives the thing that created it.
 
-Core picks, as verified 2026-08-07 (versions are pins-at-adoption, not commitments):
-`v4l` 0.14 (MIT; semi-dormant — pinned, wrapped behind T1/T2, with `v4l2r` 0.0.8 (MIT,
-active, AOSP-integrated) recorded as the migration target if it dies), `kobject-uevent`
-0.2 (MIT), rustix 1.1.4 (Apache-2.0-WITH-LLVM-exception OR Apache-2.0 OR MIT; adopted at
-P4d as a direct edge of `webcam-handler-v4l2` (`net`) and `webcam-handler-daemon`
-(`fs`, `net`, `process`) — already in the lock via fd-lock, already allowlisted, and
-chosen over `libc` because it is a **safe** wrapper whose `sockaddr_nl` is `linux-raw-sys`
-bindgen output: a `#![forbid(unsafe_code)]` crate can make the syscalls, and the one crate
-that may say `unsafe` did not have to), tokio 1.x / axum 0.8 / tower-http 0.7 (MIT),
-tokio-util 0.7.19 (MIT; **promoted from a dev-only edge to a normal one at P4e-ii**. It
-arrived at P4e-i as a *dev*-dependency of `webcam-handler-daemon` for its `compat` bridge,
-which is what puts a `tokio::net::UnixStream` onto the `futures::io` traits soketto takes;
-P4e-ii made it a normal edge because `daemon::shutdown::Shutdown` is a `CancellationToken` —
-one stop token, cloned to every open subscription and to the idle-sweep driver. The normal
-edge deliberately carries **no feature**, because `sync` is unconditional in 0.7.19 and a
-feature enabled on a normal edge is enabled for every build of the workspace; the dev entry
-keeps `compat`, which is why one package is two entries), jsonrpsee 0.26 (MIT;
-0.x — minor pinned workspace-wide; **the `async-client` feature is adopted at P4f** on
-`webcam-handler-client`, being the only route to the generated *subscription* client the
-sweep needs, and re-measured the way N38 measured the server's: exactly **one** package
-joins the graph and no web-stack crate does), futures-timer 3.0.4 (MIT OR Apache-2.0; that
-one package. **No crate in this workspace names it** — it is `jsonrpsee`'s dependency,
-carried here as an inert `[workspace.dependencies]` row so the adoption is visible in the
-registry, and the lock rather than that line is what pins the version. N57 named its cost
-at P4e-i and declined to pay it; P4f is the consumer that needed it. The adoption was
-re-measured the way N38 measured the server's, and the durable form of that measurement is a
-lockfile diff: **exactly one package name joins `Cargo.lock`** across the commit, and it is
-this one. `3992d88` records the dependency-closure figures it took at the time), rust-embed 8 (MIT; solo maintainer on a self-hosted
-forge — reviewed on bump, `include_dir` fallback), zune-jpeg 0.5 (MIT/Apache/Zlib), yuv
-0.8 (BSD-3/Apache), image 0.25 `default-features=false, features=["png","jpeg"]`
-(MIT/Apache; the default `avif` feature drags rav1e — never enable by accident), png 0.18,
-imageproc 0.27 (MIT), little_exif 0.6 (MIT/Apache; builds the APP1 bytes only — our
-splice writes them, and the library's own JPEG writer never sees a camera file [PF:16]),
-y4m 0.8 (MIT), clap 4 + complete +
-mangen, comfy-table 8 (MIT), indicatif 0.18 (MIT), anstream/anstyle (MIT/Apache),
-thiserror 2 / anyhow 1, tracing + tracing-subscriber + tracing-journald 0.3.2 (MIT, no
-libsystemd — the journald layer is *this crate* rather than the `systemd` bindings, which is
-how §2.6's "pure-Rust protocol" is met by a dependency instead of by a feature flag on one;
-pinned at P0 with no consumer and **adopted at P4e-ii**, where `daemon::logging` installs it
-**instead of** the fmt layer when `$JOURNAL_STREAM` says stderr already is the journal, both
-layers together being every line in the journal twice), serde/serde_json, toml 1 (config), schemars 1 (MIT), tempfile
-3, fd-lock 4, uuid 1 (v7), jiff 0.2 (Unlicense/MIT; RFC 3339 strings on disk make it
-swappable), camino 1, humantime 2, base64 0.23 (MIT/Apache; **`webcam-handler-api` only**
-— D10's "base64 in the JSON result" is a transport encoding and this is its one home, so
-`webcam-handler-schema` stays free of it; pinned at P0 with no consumer and adopted at
-P4a when the wire photo answer landed), sd-notify 0.5.0 + listenfd 1.0.2 (pure-Rust systemd
-protocols, both pinned at P0 with no consumer and **adopted at P4e-ii**, where
-`daemon::systemd` is the one module that reads either. sd-notify (MIT OR Apache-2.0) is
-`READY=1`, `STATUS=…`, `STOPPING=1` and `WATCHDOG=1` on `$NOTIFY_SOCKET`, default features
-only — `fdstore` would add `sendfd` for a descriptor store this daemon does not use — and its
-`notify` answering `Ok(())` with the variable unset is what lets the real `Supervisor` run
-unconditionally instead of behind an "are we under systemd" guess. listenfd (Apache-2.0) is
-the `LISTEN_FDS`/`LISTEN_PID` protocol, taken as a dependency for the half that is *not* the
-protocol: `take_unix_listener` validates that the descriptor really is a listening `AF_UNIX`
-stream socket, which is the check that stops a `from_raw_fd` on a passed-in number being a lie
-this process then serves from. Its `libc` edge is its own — the daemon stays
-`#![forbid(unsafe_code)]` and adds none), soketto 0.8.1 (Apache-2.0 OR MIT, adopted at P4e-i as a
-**dev-only** edge of `webcam-handler-daemon` and **a shipping edge of
-`webcam-handler-client` since P4f**: it is jsonrpsee-server's *own* WebSocket
-implementation and was already in the lock through it, so the subscription suite's
-hand-driven upgrade over `AF_UNIX`, `wchc`'s transport and the daemon's frame layer cannot
-disagree about what a frame is. The P4e-i entry noted that it is deliberately *not*
-jsonrpsee's client, because `SubscriptionClientT` is unimplementable outside
-`jsonrpsee-core` (note N57); P4f is where that resolved — `wchc` uses soketto for the
-handshake and the frames and wraps it in `TransportSenderT`/`TransportReceiverT` so
-jsonrpsee's own async client drives one connection carrying calls *and* subscriptions), kamadak-exif 0.6 (BSD-2, **dev-only**: the independent EXIF reader that
-verifies what little_exif wrote — a gate-commissioned test oracle gets its §2.8 entry at
-commissioning time, docs/9). `directories` was dropped before the scaffold settled [N2]:
-it drags MPL-2.0 `option-ext`, the license gate caught it on its first run, and the tool
-needs exactly two XDG paths on one platform — `schema::paths` owns the runtime one and
-`engine::paths` the state one, in ~thirty lines between them (split at P4f, §2.10: a
-runtime directory is a transport fact and a state directory a storage one), and the
-transitive culprit is on the ban list so the drop cannot silently revert.
-Test-time external tooling, outside the shipped license
-inventory but named here so it is chosen once: ffprobe/mpv as container oracles, and a
-pinned Playwright + Chromium for the browser rung (§3.1) — node is a test-host
-convenience, never a build dependency. Rejections with reasons live in §7 and stay there
-so they are not re-litigated.
+Core picks, as verified 2026-08-07 (versions are pins-at-adoption, not commitments): `v4l` 0.14
+(MIT; semi-dormant — pinned, wrapped behind T1/T2, with `v4l2r` 0.0.8 (MIT, active,
+AOSP-integrated) recorded as the migration target if it dies), `kobject-uevent` 0.2 (MIT),
+rustix 1.1.4 (Apache-2.0-WITH-LLVM-exception OR Apache-2.0 OR MIT; adopted at P4d as a direct
+edge of `webcam-handler-v4l2` (`net`) and `webcam-handler-daemon` (`fs`, `net`, `process`) —
+already in the lock via fd-lock, already allowlisted, and chosen over `libc` because it is a
+**safe** wrapper whose `sockaddr_nl` is `linux-raw-sys` bindgen output: a
+`#![forbid(unsafe_code)]` crate can make the syscalls, and the one crate that may say `unsafe`
+did not have to), tokio 1.x / axum 0.8 / tower-http 0.7 (MIT), tokio-util 0.7.19 (MIT;
+**promoted from a dev-only edge to a normal one at P4e-ii**. It arrived at P4e-i as a
+*dev*-dependency of `webcam-handler-daemon` for its `compat` bridge, which is what puts a
+`tokio::net::UnixStream` onto the `futures::io` traits soketto takes; P4e-ii made it a normal
+edge because `daemon::shutdown::Shutdown` is a `CancellationToken` — one stop token, cloned to
+every open subscription and to the idle-sweep driver. The normal edge deliberately carries **no
+feature**, because `sync` is unconditional in 0.7.19 and a feature enabled on a normal edge is
+enabled for every build of the workspace; the dev entry keeps `compat`, which is why one
+package is two entries), jsonrpsee 0.26 (MIT; 0.x — minor pinned workspace-wide; **the
+`async-client` feature is adopted at P4f** on `webcam-handler-client`, being the only route to
+the generated *subscription* client the sweep needs, and re-measured the way N38 measured the
+server's: exactly **one** package joins the graph and no web-stack crate does), futures-timer
+3.0.4 (MIT OR Apache-2.0; that one package. **No crate in this workspace names it** — it is
+`jsonrpsee`'s dependency, carried here as an inert `[workspace.dependencies]` row so the
+adoption is visible in the registry, and the lock rather than that line is what pins the
+version. N57 named its cost at P4e-i and declined to pay it; P4f is the consumer that needed
+it. The adoption was re-measured the way N38 measured the server's, and the durable form of
+that measurement is a lockfile diff: **exactly one package name joins `Cargo.lock`** across the
+commit, and it is this one. `3992d88` records the dependency-closure figures it took at the
+time), rust-embed 8 (MIT; solo maintainer on a self-hosted forge — reviewed on bump,
+`include_dir` fallback), zune-jpeg 0.5 (MIT/Apache/Zlib), yuv 0.8 (BSD-3/Apache), image 0.25
+`default-features=false, features=["png","jpeg"]` (MIT/Apache; the default `avif` feature drags
+rav1e — never enable by accident), png 0.18, imageproc 0.27 (MIT), little_exif 0.6 (MIT/Apache;
+builds the APP1 bytes only — our splice writes them, and the library's own JPEG writer never
+sees a camera file [PF:16]), y4m 0.8 (MIT), clap 4 + complete + mangen, comfy-table 8 (MIT),
+indicatif 0.18 (MIT), anstream/anstyle (MIT/Apache), thiserror 2 / anyhow 1, tracing +
+tracing-subscriber + tracing-journald 0.3.2 (MIT, no libsystemd — the journald layer is *this
+crate* rather than the `systemd` bindings, which is how §2.6's "pure-Rust protocol" is met by a
+dependency instead of by a feature flag on one; pinned at P0 with no consumer and **adopted at
+P4e-ii**, where `daemon::logging` installs it **instead of** the fmt layer when
+`$JOURNAL_STREAM` says stderr already is the journal, both layers together being every line in
+the journal twice), serde/serde_json, toml 1 (config), schemars 1 (MIT), tempfile 3, fd-lock 4,
+uuid 1 (v7), jiff 0.2 (Unlicense/MIT; RFC 3339 strings on disk make it swappable), camino 1,
+humantime 2, base64 0.23 (MIT/Apache; **`webcam-handler-api` only** — D10's "base64 in the JSON
+result" is a transport encoding and this is its one home, so `webcam-handler-schema` stays free
+of it; pinned at P0 with no consumer and adopted at P4a when the wire photo answer landed),
+sd-notify 0.5.0 + listenfd 1.0.2 (pure-Rust systemd protocols, both pinned at P0 with no
+consumer and **adopted at P4e-ii**, where `daemon::systemd` is the one module that reads
+either. sd-notify (MIT OR Apache-2.0) is `READY=1`, `STATUS=…`, `STOPPING=1` and `WATCHDOG=1`
+on `$NOTIFY_SOCKET`, default features only — `fdstore` would add `sendfd` for a descriptor
+store this daemon does not use — and its `notify` answering `Ok(())` with the variable unset is
+what lets the real `Supervisor` run unconditionally instead of behind an "are we under systemd"
+guess. listenfd (Apache-2.0) is the `LISTEN_FDS`/`LISTEN_PID` protocol, taken as a dependency
+for the half that is *not* the protocol: `take_unix_listener` validates that the descriptor
+really is a listening `AF_UNIX` stream socket, which is the check that stops a `from_raw_fd` on
+a passed-in number being a lie this process then serves from. Its `libc` edge is its own — the
+daemon stays `#![forbid(unsafe_code)]` and adds none), soketto 0.8.1 (Apache-2.0 OR MIT,
+adopted at P4e-i as a **dev-only** edge of `webcam-handler-daemon` and **a shipping edge of
+`webcam-handler-client` since P4f**: it is jsonrpsee-server's *own* WebSocket implementation
+and was already in the lock through it, so the subscription suite's hand-driven upgrade over
+`AF_UNIX`, `webcam-handler-client`'s transport and the daemon's frame layer cannot disagree
+about what a frame is. The P4e-i entry noted that it is deliberately *not* jsonrpsee's client,
+because `SubscriptionClientT` is unimplementable outside `jsonrpsee-core` (note N57); P4f is
+where that resolved — `webcam-handler-client` uses soketto for the handshake and the frames and
+wraps it in `TransportSenderT`/`TransportReceiverT` so jsonrpsee's own async client drives one
+connection carrying calls *and* subscriptions), kamadak-exif 0.6 (BSD-2, **dev-only**: the
+independent EXIF reader that verifies what little_exif wrote — a gate-commissioned test oracle
+gets its §2.8 entry at commissioning time, docs/9). `directories` was dropped before the
+scaffold settled [N2]: it drags MPL-2.0 `option-ext`, the license gate caught it on its first
+run, and the tool needs exactly two XDG paths on one platform — `schema::paths` owns the
+runtime one and `engine::paths` the state one, in ~thirty lines between them (split at P4f,
+§2.10: a runtime directory is a transport fact and a state directory a storage one), and the
+transitive culprit is on the ban list so the drop cannot silently revert. Test-time external
+tooling, outside the shipped license inventory but named here so it is chosen once: ffprobe/mpv
+as container oracles, and a pinned Playwright + Chromium for the browser rung (§3.1) — node is
+a test-host convenience, never a build dependency. Rejections with reasons live in §7 and stay
+there so they are not re-litigated.
 
 ### 2.9 Seams and doubles
 
@@ -1167,11 +1169,11 @@ proxy, a vendor SDK):
    `Box<dyn CameraBackend>` and depends on no backend crate (§2.8's edge list).
 2. Capture device profiles (T3) from real hardware; commit them; the fake replays them —
    the backend's quirks become corpus the day they are discovered.
-3. Add the variant to `BackendKind` (the closed vocabulary in `webcam-handler-schema`)
-   and the crate to the two composition roots' factory matches (`wch` and `wchd` each
-   hold one exhaustive `match BackendKind` constructing the backend they link) — the
-   compiler stops both builds until the new backend is wired, which is the
-   compile-fail-on-new-backend property, living where the dependency edges already are.
+3. Add the variant to `BackendKind` (the closed vocabulary in `webcam-handler-schema`) and the
+   crate to the two composition roots' factory matches (`webcam-handler-cli` and
+   `webcam-handler-daemon` each hold one exhaustive `match BackendKind` constructing the
+   backend they link) — the compiler stops both builds until the new backend is wired, which is
+   the compile-fail-on-new-backend property, living where the dependency edges already are.
 4. Run the backend conformance battery (`webcam-handler-testkit`): enumeration sanity, control-model
    invariants (D2: unknown types survive round-trip; sparse menus preserved), write
    read-back (D3), snapshot/restore inverse (D4), stream lifecycle, hotplug watch
@@ -1213,29 +1215,29 @@ E4/A4 (byte fidelity) in this domain's terms.
   stream is the camera's own bitstream; calibration samples never pass through a decode/
   re-encode round trip that would smuggle codec artifacts into a sharpness comparison.
 
-### 2.13 The privileged development helper (`wch-priv`)
+### 2.13 The privileged development helper (`webcam-handler-priv`)
 
 New in v2; note N8 is the full record and the owner rulings live there. Nothing in the
 *product* needs privilege — §1's in-process rule is about the product, and it stands.
-Development needs three privileged things, each formerly gated on a human typing a
-password: loading `vivid` (the R2 rung had never executed for want of it — notes E1/E2),
-cycling `uvcvideo` (a soldered-down laptop camera cannot be unplugged, and P4's hotplug
-evidence needs a camera to disappear), and binding the P4 uevent socket
-(`NETLINK_KOBJECT_UEVENT`, *predicted* to need `CAP_NET_ADMIN` — a prediction P4d
-measured and **disproved**, §8 item 10 and PF:21; the grant survives until G6 narrows it,
-and the hotplug rung spends none of it). `crates/priv/` builds `wch-priv`, blessed once
-by `just bless` with `cap_sys_module,cap_net_admin+ep`. The load-bearing facts:
+Development needs three privileged things, each formerly gated on a human typing a password:
+loading `vivid` (the R2 rung had never executed for want of it — notes E1/E2), cycling
+`uvcvideo` (a soldered-down laptop camera cannot be unplugged, and P4's hotplug evidence needs
+a camera to disappear), and binding the P4 uevent socket (`NETLINK_KOBJECT_UEVENT`, *predicted*
+to need `CAP_NET_ADMIN` — a prediction P4d measured and **disproved**, §8 item 10 and PF:21;
+the grant survives until G6 narrows it, and the hotplug rung spends none of it). `crates/priv/`
+builds `webcam-handler-priv`, blessed once by `just bless` with
+`cap_sys_module,cap_net_admin+ep`. The load-bearing facts:
 
 - **It never ships.** It is a dependency of no product crate (gate-asserted,
   `privileged-helper.sh`), and its `modprobe` subprocess is a *development* dependency in
   the same category as the ffprobe oracle — also the license-correct choice, since the
   in-process alternative (`libkmod`) is LGPL and a process boundary is not a link edge.
-- **The security boundary is the file mode, not a capability design.** The owner chose
-  the generic `exec` wrapper over a closed verb vocabulary — only a wrapper can put a
-  capability inside a *test process* — accepting the stated consequence that
-  `wch-priv -- /bin/sh` is a root shell. The blessed copy is mode `0700` in gitignored
-  `.wch-bin/` (outside `target/`, which cargo rewrites and file capabilities do not
-  survive), and `privileged-helper.sh` re-checks the mode on every `just ci`.
+- **The security boundary is the file mode, not a capability design.** The owner chose the
+  generic `exec` wrapper over a closed verb vocabulary — only a wrapper can put a capability
+  inside a *test process* — accepting the stated consequence that `webcam-handler-priv --
+  /bin/sh` is a root shell. The blessed copy is mode `0700` in gitignored `.wch-bin/` (outside
+  `target/`, which cargo rewrites and file capabilities do not survive), and
+  `privileged-helper.sh` re-checks the mode on every `just ci`.
 - **It refuses to unload `uvcvideo` while any process holds a `/dev/video*` open.** That
   interlock also bounds what tests may do with it: real-hardware device-loss evidence
   runs with cameras closed (hotplug add/remove), and mid-stream loss stays a scripted
@@ -1377,11 +1379,10 @@ counted, re-runnable criterion sets consuming this document's decision registry
 The analog of the predecessor's spend rules — the resources here are the camera, the
 motors, and the user's privacy:
 
-- **A camera frame may contain a person.** Captured frames never enter the repository
-  (§3.2), never appear in logs, and land only in caller-named output paths or the
-  session's `photos/` directory. Test captures go to gitignored scratch dirs. The web
-  client's preview is served, never stored, and `wchd` records nothing it was not asked
-  to record.
+- **A camera frame may contain a person.** Captured frames never enter the repository (§3.2),
+  never appear in logs, and land only in caller-named output paths or the session's `photos/`
+  directory. Test captures go to gitignored scratch dirs. The web client's preview is served,
+  never stored, and `webcam-handler-daemon` records nothing it was not asked to record.
 - **Leave the camera as found.** Every sweep/guarded operation restores state by default
   (D4); R3 test suites assert restoration. `--keep` is the explicit exception.
 - **Motors wear, and the two halves of the rule differ (owner ruling, 2026-08-08).** PTZ
@@ -1429,10 +1430,10 @@ motors, and the user's privacy:
   recovery (the G3 crash-recovery criterion).
 - **rust-embed governance** (solo maintainer, self-hosted repo): reviewed on bump;
   `include_dir` fallback named.
-- **A root-equivalent development binary lives in the workspace** (`wch-priv`, §2.13).
-  Its boundary is a file mode, not a capability design — accepted and time-boxed by
-  owner ruling (N8). The residual risk is the revisit being forgotten, which is why the
-  G6 trigger is written into docs/7's post-plan table rather than into anyone's memory.
+- **A root-equivalent development binary lives in the workspace** (`webcam-handler-priv`,
+  §2.13). Its boundary is a file mode, not a capability design — accepted and time-boxed by
+  owner ruling (N8). The residual risk is the revisit being forgotten, which is why the G6
+  trigger is written into docs/7's post-plan table rather than into anyone's memory.
 
 ## 7. Considered and not adopted
 
@@ -1508,8 +1509,8 @@ Recorded with reasons so they are not re-derived:
    until then D13 reports driver errors honestly.
 6. **Metric growth** (response-curve fitting, SSIM stability scoring): named triggers in
    §7; do not build ahead of a calibration session that needs them.
-7. **`wch` auto-forwarding to a running daemon** (instead of refusing when the lock is
-   held): decide after real usage shows whether the refusal is friction or a feature.
+7. **`webcam-handler-cli` auto-forwarding to a running daemon** (instead of refusing when the
+   lock is held): decide after real usage shows whether the refusal is friction or a feature.
 8. **Session retention/GC**: sessions accumulate photos; a `calibrate gc` with
    age/size policy is sketched but uncommissioned until someone's disk fills.
 9. **An MCP server surface.** Agents reach the tool today through the CLIs and the

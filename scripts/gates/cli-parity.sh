@@ -1,36 +1,39 @@
 #!/usr/bin/env bash
 #
-# `wch` and `wchc` are one surface — docs/9's **CLI parity** row (P4f), design T4, T5, D9.
+# `webcam-handler-cli` and `webcam-handler-client` are one surface — docs/9's **CLI parity**
+# row (P4f), design T4, T5, D9.
 #
-# T4 says a verb exists once: `webcam-handler-cli-core` owns the clap tree, the argument
-# types and both renderings, and the two binaries differ only in an `Executor` — an engine in
-# this process for `wch`, a socket for `wchc`. That is a claim about *behaviour*, and the
-# smallest place it is observable from outside is the `--json` document, which is "the schema
-# document and nothing else — no envelope, no timestamp, no tool version"
+# T4 says a verb exists once: `webcam-handler-cli-core` owns the clap tree, the argument types
+# and both renderings, and the two binaries differ only in an `Executor` — an engine in this
+# process for `webcam-handler-cli`, a socket for `webcam-handler-client`. That is a claim about
+# *behaviour*, and the smallest place it is observable from outside is the `--json` document,
+# which is "the schema document and nothing else — no envelope, no timestamp, no tool version"
 # (`cli_core::render`). So this predicate runs the two shipped binaries against one daemon
 # replaying one committed profile and compares the bytes.
 #
 # ## The population is the surface's own, and every leaf lands in a named bucket
 #
-# The leaf verbs are scraped from `wch --help` at **both** levels — `json-validates.sh`'s
-# idiom and the P3 review's finding, because two of the ten top-level names are subtrees and
-# a single-level scrape once let one row answer for a seven-verb tree. Each leaf must match a
-# row below **exactly**, and a leaf in no row is a failure: that is what makes the table
-# complete rather than transcribed. Rows that name no leaf fail too, so a verb deleted from
-# the surface cannot leave a row here quietly answering for it.
+# The leaf verbs are scraped from `webcam-handler-cli --help` at **both** levels —
+# `json-validates.sh`'s idiom and the P3 review's finding, because two of the ten top-level
+# names are subtrees and a single-level scrape once let one row answer for a seven-verb tree.
+# Each leaf must match a row below **exactly**, and a leaf in no row is a failure: that is what
+# makes the table complete rather than transcribed. Rows that name no leaf fail too, so a verb
+# deleted from the surface cannot leave a row here quietly answering for it.
 #
 # Four buckets, and three of them carry a check that their own reason implies — an exemption
 # whose reason nothing tests is the "silently exempted" docs/9 forbids, wearing a label:
 #
 # - **compared** — the read verbs. Both roots answer, both exit 0, and the bytes are equal.
 # - **exempt, session** — writes D9's session tree. Comparing them would mean two sessions in
-#   two states, and `wch` cannot run one beside a live `wchd` at all: D9 gives the daemon the
-#   store lock for its lifetime, and a `wch` meeting it is refused with
-#   `LockProtocol::HeldForLifetime`'s advice. *Checked both ways*: `wchc` answers it, and
-#   `wch` is refused, in that refusal's own words.
-# - **exempt, device** — drives and mutates the camera. `wch` and `wchd` each replay the
-#   profile into a device state **of their own**, so a comparison would write to two devices
-#   and read back two answers about two of them. *Checked*: `wchc` answers it.
+#   two states, and `webcam-handler-cli` cannot run one beside a live `webcam-handler-daemon`
+#   at all: D9 gives the daemon the store lock for its lifetime, and a `webcam-handler-cli`
+#   meeting it is refused with `LockProtocol::HeldForLifetime`'s advice. *Checked both ways*:
+#   `webcam-handler-client` answers it, and `webcam-handler-cli` is refused, in that refusal's
+#   own words.
+# - **exempt, device** — drives and mutates the camera. `webcam-handler-cli` and
+#   `webcam-handler-daemon` each replay the profile into a device state **of their own**, so a
+#   comparison would write to two devices and read back two answers about two of them.
+#   *Checked*: `webcam-handler-client` answers it.
 # - **exempt, stamped** — `snapshot` reads the camera and mutates nothing, but
 #   `Snapshot::taken_at` stamps the instant of the read, so two invocations differ by
 #   construction. It is deliberately **not** filed as mutating, because it is not.
@@ -45,44 +48,44 @@
 #
 # ## Why the two argv differ in their global flags, and why the answers are still comparable
 #
-# `wch` is handed `--backend fake --profile <profile>` and `wchc` must **not** be: those two
-# flags name a composition root's decision, `wchc` is not one, and P4f made it refuse them
-# rather than ignore them (`webcam-handler-client`'s root header argues the three available
-# answers). That is a difference in how each process is *pointed at a camera*, not in what
-# the verb is — the daemon was started on the same committed profile, so both ends resolve
-# the same replayed device and the document under comparison is the verb's answer about it.
-# A flag that selects a backend sits upstream of the surface T4 shares; if it did not,
-# `wchd --backend` and `wch --backend` would be two spellings of one decision and the parity
-# claim would be about the wrong thing. So this is not an exemption and is not recorded as
-# one.
+# `webcam-handler-cli` is handed `--backend fake --profile <profile>` and
+# `webcam-handler-client` must **not** be: those two flags name a composition root's decision,
+# `webcam-handler-client` is not one, and P4f made it refuse them rather than ignore them
+# (`webcam-handler-client`'s root header argues the three available answers). That is a
+# difference in how each process is *pointed at a camera*, not in what the verb is — the daemon
+# was started on the same committed profile, so both ends resolve the same replayed device and
+# the document under comparison is the verb's answer about it. A flag that selects a backend
+# sits upstream of the surface T4 shares; if it did not, `webcam-handler-daemon --backend` and
+# `webcam-handler-cli --backend` would be two spellings of one decision and the parity claim
+# would be about the wrong thing. So this is not an exemption and is not recorded as one.
 #
 # ## `terminate_holder` is out of this population by construction
 #
 # It reached the T5 wire at P4c with no T4 spelling at all (note **N48**: "nothing here
-# schedules it"), so `wch --help` does not offer it and it is not a leaf. It is absent
-# because the surface does not have it, not because this table excused it — which is the
+# schedules it"), so `webcam-handler-cli --help` does not offer it and it is not a leaf. It is
+# absent because the surface does not have it, not because this table excused it — which is the
 # distinction docs/9 asks for when it says nothing may be silently absent.
 #
 # ## The load-bearing property, which this gate also happens to exercise
 #
-# One `wchd` holds the state directory for its whole lifetime, and this gate runs `wch`
-# beside it against **the same** `$XDG_STATE_HOME`. That works only because `wch`'s *read*
-# verbs take no lock under either D9 protocol — `crates/daemon/src/state.rs`'s header argues
-# exactly this — so `wch calibrate status` answers a session a daemon owns while the daemon
-# owns it, and `wch calibrate plan` does not. Both halves are asserted here, one per bucket,
-# so the property the fixture rests on is a thing this gate checks rather than a thing it
-# assumes.
+# One `webcam-handler-daemon` holds the state directory for its whole lifetime, and this gate
+# runs `webcam-handler-cli` beside it against **the same** `$XDG_STATE_HOME`. That works only
+# because `webcam-handler-cli`'s *read* verbs take no lock under either D9 protocol —
+# `crates/daemon/src/state.rs`'s header argues exactly this — so `webcam-handler-cli calibrate
+# status` answers a session a daemon owns while the daemon owns it, and `webcam-handler-cli
+# calibrate plan` does not. Both halves are asserted here, one per bucket, so the property the
+# fixture rests on is a thing this gate checks rather than a thing it assumes.
 #
 # ## The table is ordered, and the order is part of the fixture
 #
 # Row order is execution order, for `json-validates.sh`'s reason and one more. Its reason: a
-# calibration verb's answer only exists once the verbs before it have run, so the session
-# rows run `start` → `plan` → `sweep` → `select` → `apply` → `restore`, and the two compared
+# calibration verb's answer only exists once the verbs before it have run, so the session rows
+# run `start` → `plan` → `sweep` → `select` → `apply` → `restore`, and the two compared
 # session-reading rows come after them. The extra one: the compared rows whose subject is the
-# *camera* run **before** anything writes to it, because `wch` replays the profile fresh in
-# its own process while `wchc` reads a device this gate has been driving — so a `get`
-# compared after a `set` would be comparing two different device states and calling it a
-# defect.
+# *camera* run **before** anything writes to it, because `webcam-handler-cli` replays the
+# profile fresh in its own process while `webcam-handler-client` reads a device this gate has
+# been driving — so a `get` compared after a `set` would be comparing two different device
+# states and calling it a defect.
 #
 # ## What it drives, and the seams
 #
@@ -158,7 +161,7 @@ for candidate in $(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\
     fi
 done
 if [[ -z "$profile" ]]; then
-    gate_fail "no committed profile exposes a writable integer control, so the write verbs this table exempts could not be driven through wchc at all"
+    gate_fail "no committed profile exposes a writable integer control, so the write verbs this table exempts could not be driven through webcam-handler-client at all"
     gate_finish
 fi
 
@@ -177,8 +180,8 @@ if ((value < control_min)); then value="$control_min"; fi
 if ((value > control_max)); then value="$control_max"; fi
 gate_note "replaying $(basename "$profile") as cam:$camera_id, naming $control=$value"
 
-# Where the daemon puts its socket, and the words `wch` refuses a locked store with. All
-# three derived from the crates that own them — `schema::paths::APP_DIR`,
+# Where the daemon puts its socket, and the words `webcam-handler-cli` refuses a locked store
+# with. All three derived from the crates that own them — `schema::paths::APP_DIR`,
 # `schema::limits::DAEMON_SOCKET_FILE` and `schema::error::LockProtocol::advice` — because a
 # gate that transcribed the refusal would keep asserting a sentence the product had stopped
 # saying (docs/9's derived-population rule).
@@ -209,34 +212,40 @@ checkout="$(git rev-parse --show-toplevel)"
 # Resolves into $resolved rather than through a command substitution: `gate_fail` inside a
 # subshell would be counted by a shell that is about to exit, which is a gate reporting
 # nothing while looking like it reported something.
+#
+# **One name, and that is the owner's ruling rather than a shortcut** (note N90): every
+# binary is named after the package it comes from, so `-p`, `--bin` and the path leaf under
+# `target/debug/` are one string. Two parameters that are always handed the same value would
+# be a second place to be wrong about which of the three this gate meant.
 resolved=""
 resolve() {
-    local override="$1" package="$2" bin="$3"
-    resolved="${override:-$checkout/target/debug/$bin}"
+    local override="$1" name="$2"
+    resolved="${override:-$checkout/target/debug/$name}"
     if [[ -z "$override" && ! -x "$resolved" ]]; then
-        (cd "$checkout" && cargo build --locked --offline -p "$package" --bin "$bin" >/dev/null 2>&1) || true
+        (cd "$checkout" && cargo build --locked --offline -p "$name" --bin "$name" >/dev/null 2>&1) || true
     fi
     if [[ ! -x "$resolved" ]]; then
         gate_fail "$resolved is not an executable program; this gate has nothing to drive"
         gate_finish
     fi
     if [[ -n "$override" ]]; then
-        gate_note "driving the $bin-shaped program at $resolved"
+        gate_note "driving the $name-shaped program at $resolved"
     fi
 }
 
-resolve "${WCH_GATE_WCH:-}" webcam-handler-cli wch
+resolve "${WCH_GATE_WCH:-}" webcam-handler-cli
 wch="$resolved"
-resolve "${WCH_GATE_WCHC:-}" webcam-handler-client wchc
+resolve "${WCH_GATE_WCHC:-}" webcam-handler-client
 wchc="$resolved"
-resolve "${WCH_GATE_WCHD:-}" webcam-handler-daemon wchd
+resolve "${WCH_GATE_WCHD:-}" webcam-handler-daemon
 wchd="$resolved"
 
 # ------------------------------------------------------------------ the fixture
 #
-# One scratch pair of XDG directories, shared by the daemon and by every `wch` this gate
-# runs — which is the whole point: two processes read one state directory concurrently, and
-# the read verbs answering while the daemon holds it is the property the header names.
+# One scratch pair of XDG directories, shared by the daemon and by every `webcam-handler-cli`
+# this gate runs — which is the whole point: two processes read one state directory
+# concurrently, and the read verbs answering while the daemon holds it is the property the
+# header names.
 #
 # From `gate_socket_scratch_root` and not from `gate_scratch_root`, which is the one place
 # that trade is argued: the 2026-08-12 ruling moved test scratch under `target/`, and a Unix
@@ -294,7 +303,7 @@ while IFS= read -r line <&3; do
 done
 if ((serving == 0)); then
     exec 3<&-
-    gate_fail "no daemon is serving $socket, so there is nothing for wchc to be compared against; a gate that could not reach a daemon must never read as parity"
+    gate_fail "no daemon is serving $socket, so there is nothing for webcam-handler-client to be compared against; a gate that could not reach a daemon must never read as parity"
     printf '%s' "$transcript" | sed 's/^/        /' >&2
     gate_finish
 fi
@@ -331,7 +340,7 @@ for verb in "${offered[@]}"; do
 done
 
 if ((${#leaves[@]} == 0)); then
-    gate_fail "wch --help offered no verbs at all; there is no population here to bucket"
+    gate_fail "webcam-handler-cli --help offered no verbs at all; there is no population here to bucket"
     gate_finish
 fi
 
@@ -358,7 +367,7 @@ for row in "${verbs[@]}"; do
         if [[ "$leaf" == "$name" ]]; then found=1; fi
     done
     if ((found == 0)); then
-        gate_fail "a row above names '$name', which wch --help does not offer; the population is the surface's and not this table's"
+        gate_fail "a row above names '$name', which webcam-handler-cli --help does not offer; the population is the surface's and not this table's"
     fi
     known=0
     for allowed in "${buckets[@]}"; do
@@ -368,7 +377,7 @@ for row in "${verbs[@]}"; do
         gate_fail "'$name' is in bucket '$bucket', which is not one of: ${buckets[*]}; an unreadable bucket is how a verb gets exempted without anybody naming a reason"
     fi
 done
-gate_checked "${#leaves[@]}" "leaf verb(s) scraped from wch --help at both levels, each required to fall in exactly one named bucket"
+gate_checked "${#leaves[@]}" "leaf verb(s) scraped from webcam-handler-cli --help at both levels, each required to fall in exactly one named bucket"
 gate_require_nonzero "${#leaves[@]}" "leaf verbs"
 
 # ------------------------------------------------------------------ driving them
@@ -413,19 +422,19 @@ for row in "${verbs[@]}"; do
         # fixture through: two programs that both failed would agree on an empty document and
         # be reported as parity.
         if ((wch_status != 0)); then
-            gate_fail "wch --json $argv exited $wch_status: $(head -n1 "$scratch/wch.err")"
+            gate_fail "webcam-handler-cli --json $argv exited $wch_status: $(head -n1 "$scratch/wch.err")"
             continue
         fi
         if ((wchc_status != 0)); then
-            gate_fail "wchc --json $argv exited $wchc_status: $(head -n1 "$scratch/wchc.err")"
+            gate_fail "webcam-handler-client --json $argv exited $wchc_status: $(head -n1 "$scratch/wchc.err")"
             continue
         fi
         if ! printf '%s' "$mine" | jq -e . >/dev/null 2>&1; then
-            gate_fail "wch --json $argv did not emit a parseable document, so there is nothing here to compare"
+            gate_fail "webcam-handler-cli --json $argv did not emit a parseable document, so there is nothing here to compare"
             continue
         fi
         if [[ "$mine" != "$theirs" ]]; then
-            gate_fail "wch and wchc do not agree on '${name/-/ }' --json; T4 says a verb exists once and these two renderings have forked"
+            gate_fail "webcam-handler-cli and webcam-handler-client do not agree on '${name/-/ }' --json; T4 says a verb exists once and these two renderings have forked"
             diff <(printf '%s\n' "$mine") <(printf '%s\n' "$theirs") | head -n 20 | sed 's/^/        /' >&2
             continue
         fi
@@ -441,7 +450,7 @@ for row in "${verbs[@]}"; do
         # shellcheck disable=SC2086
         "$wchc" --json $argv >"$scratch/snapshot.json" 2>"$scratch/wchc.err" || wchc_status=$?
         if ((wch_status != 0 || wchc_status != 0)); then
-            gate_fail "'${name/-/ }' did not answer from both roots (wch $wch_status, wchc $wchc_status), so its exemption cannot be measured"
+            gate_fail "'${name/-/ }' did not answer from both roots (webcam-handler-cli $wch_status, webcam-handler-client $wchc_status), so its exemption cannot be measured"
             continue
         fi
         theirs="$(cat "$scratch/snapshot.json")"
@@ -467,18 +476,18 @@ for row in "${verbs[@]}"; do
 
     device | session)
         # The local-only test, and it is a test rather than a repetition of docs/9's claim: a
-        # verb `wchc` cannot serve would fail here, and that is exactly what a local-only verb
-        # is. At P4 there are none, so every exempt row is expected to answer — and one that
-        # stops answering names itself.
+        # verb `webcam-handler-client` cannot serve would fail here, and that is exactly what a
+        # local-only verb is. At P4 there are none, so every exempt row is expected to answer —
+        # and one that stops answering names itself.
         # shellcheck disable=SC2086
         if ! "$wchc" --json $argv >"$scratch/exempt.json" 2>"$scratch/wchc.err"; then
-            gate_fail "wchc cannot answer '${name/-/ }', which wch offers: $(head -n1 "$scratch/wchc.err"); a verb only one root can run is a local-only verb, and docs/9 requires it named as one rather than met here"
+            gate_fail "webcam-handler-client cannot answer '${name/-/ }', which webcam-handler-cli offers: $(head -n1 "$scratch/wchc.err"); a verb only one root can run is a local-only verb, and docs/9 requires it named as one rather than met here"
             continue
         fi
         if [[ "$name" == "calibrate-start" ]]; then
             session="$(jq -r '.id // empty' "$scratch/exempt.json" 2>/dev/null || true)"
             if [[ -z "$session" ]]; then
-                gate_fail "the session wchc opened carries no id, so the compared status row below has nothing to name"
+                gate_fail "the session webcam-handler-client opened carries no id, so the compared status row below has nothing to name"
             fi
         fi
         exempted=$((exempted + 1))
@@ -486,21 +495,22 @@ for row in "${verbs[@]}"; do
         if [[ "$bucket" == session ]]; then
             # The other half of the session exemption, and the half that makes it structural
             # rather than a preference: D9 gives a running daemon the store lock for its
-            # lifetime, so `wch` cannot write this session even if somebody wanted the
-            # comparison. Asserted in the refusal's own words, read out of `schema::error`.
+            # lifetime, so `webcam-handler-cli` cannot write this session even if somebody
+            # wanted the comparison. Asserted in the refusal's own words, read out of
+            # `schema::error`.
             # shellcheck disable=SC2086
             if "$wch" --backend fake --profile "$profile" --json $argv >/dev/null 2>"$scratch/wch.err"; then
-                gate_fail "wch ran '${name/-/ }' while a daemon held $state; D9 gives the daemon that lock for its lifetime and this row's exemption rests on it"
+                gate_fail "webcam-handler-cli ran '${name/-/ }' while a daemon held $state; D9 gives the daemon that lock for its lifetime and this row's exemption rests on it"
                 continue
             fi
             if ! grep -qF "$lock_advice" "$scratch/wch.err"; then
-                gate_fail "wch refused '${name/-/ }' without D9's advice ($lock_advice): $(head -n1 "$scratch/wch.err"); a refusal for some other reason does not establish that the store lock is what stands between these two roots"
+                gate_fail "webcam-handler-cli refused '${name/-/ }' without D9's advice ($lock_advice): $(head -n1 "$scratch/wch.err"); a refusal for some other reason does not establish that the store lock is what stands between these two roots"
                 continue
             fi
             refusals=$((refusals + 1))
-            gate_note "$name → exempt, session: answered by wchc, and refused to wch by the daemon's lock"
+            gate_note "$name → exempt, session: answered by webcam-handler-client, and refused to webcam-handler-cli by the daemon's lock"
         else
-            gate_note "$name → exempt, device: answered by wchc, and never driven twice"
+            gate_note "$name → exempt, device: answered by webcam-handler-client, and never driven twice"
         fi
         ;;
     *)
@@ -512,12 +522,12 @@ for row in "${verbs[@]}"; do
 done
 
 # The read verbs still answering is the fixture's own load-bearing property, so it is reported
-# rather than implied: `wch` read a state directory the daemon had locked.
-gate_checked "$compared" "read verb(s) answered by both roots and compared byte for byte, with wch reading a state directory the daemon holds"
+# rather than implied: `webcam-handler-cli` read a state directory the daemon had locked.
+gate_checked "$compared" "read verb(s) answered by both roots and compared byte for byte, with webcam-handler-cli reading a state directory the daemon holds"
 gate_require_nonzero "$compared" "compared read verbs"
-gate_checked "$exempted" "exempt verb(s) driven through wchc alone, each required to answer — docs/9's 'no local-only verbs at P4' tested rather than repeated"
+gate_checked "$exempted" "exempt verb(s) driven through webcam-handler-client alone, each required to answer — docs/9's 'no local-only verbs at P4' tested rather than repeated"
 gate_require_nonzero "$exempted" "exempt verbs"
-gate_checked "$refusals" "session-writing verb(s) refused to wch in D9's own words while the daemon held the store"
+gate_checked "$refusals" "session-writing verb(s) refused to webcam-handler-cli in D9's own words while the daemon held the store"
 gate_require_nonzero "$refusals" "lock refusals"
 gate_checked "$stamped" "stamped verb(s) shown to differ in exactly the one field their exemption names"
 gate_require_nonzero "$stamped" "stamped verbs"

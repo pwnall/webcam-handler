@@ -115,11 +115,11 @@ async fn upgrade(socket: &Utf8Path) -> std::io::Result<String> {
 
 /// One method, deliberately **not** a wire method.
 ///
-/// The T5 surface is `webcam-handler-api`'s trait and the daemon mounts it with
-/// `into_rpc()` — inventing a second registration path is the thing D10 exists to
-/// prevent, and a transport suite that needed the real surface would be asserting the
-/// routing as well as the pipe. `transport_probe` cannot be mistaken for a wire name: the
-/// namespace is `wch` and `crates/api`'s own test pins every registered spelling.
+/// The T5 surface is `webcam-handler-api`'s trait and the daemon mounts it with `into_rpc()` —
+/// inventing a second registration path is the thing D10 exists to prevent, and a transport
+/// suite that needed the real surface would be asserting the routing as well as the pipe.
+/// `transport_probe` cannot be mistaken for a wire name: the namespace is `webcam-handler-cli`
+/// and `crates/api`'s own test pins every registered spelling.
 fn probe_module() -> RpcModule<()> {
     let mut module = RpcModule::new(());
     module
@@ -241,7 +241,7 @@ async fn the_server_stops_when_the_test_that_started_it_says_so() {
     // Resolves once the accept loop and every connection it spawned are gone, and says
     // *why* it stopped. A server that ignored the stop handle would hang here rather than
     // passing, and one that reported a give-up as a clean stop would answer the wrong
-    // thing — which is what `wchd`'s exit code is made of.
+    // thing — which is what `webcam-handler-daemon`'s exit code is made of.
     serving
         .handle
         .stopped()

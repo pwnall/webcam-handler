@@ -31,11 +31,11 @@
 //! a fixture can drive and the mutation floor can examine, so it is the one that is not
 //! under `src/sys/`.
 //!
-//! [`holders`] is the one module here that is **public and not about V4L2**: it is a
-//! `/proc` walk plus a `SIGTERM`, and it lives in this crate because a [`schema::Error::Busy`]
-//! refusal has to name the process and because this is the only crate that may say
-//! `unsafe`. `wchd` reaches it by name to route `terminate_holder` (design D10, note N48);
-//! nothing else outside this crate does.
+//! [`holders`] is the one module here that is **public and not about V4L2**: it is a `/proc`
+//! walk plus a `SIGTERM`, and it lives in this crate because a [`schema::Error::Busy`] refusal
+//! has to name the process and because this is the only crate that may say `unsafe`.
+//! `webcam-handler-daemon` reaches it by name to route `terminate_holder` (design D10, note
+//! N48); nothing else outside this crate does.
 //!
 //! Nothing above `src/sys/` names a kernel type; `scripts/gates/dependency-walls.sh` holds
 //! that line for the rest of the workspace by refusing `v4l::` outside this crate.

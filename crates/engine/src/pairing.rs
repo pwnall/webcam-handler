@@ -363,12 +363,12 @@ pub fn applicable(controls: &[ControlDesc], pairs: &[AutomationPair]) -> Vec<Aut
 
 /// The pair set every verb plans against, for one device.
 ///
-/// The declared table (D3) merged with whatever a probe measured on this camera (E1),
-/// narrowed by [`applicable`] to the relationships the device can actually exhibit. One
-/// function because it is one law with several readers: a `set` that guarded against a
-/// different pair set than the `snapshot` that decided roles would order its restore
-/// against a device the two halves disagreed about — and now that both composition roots
-/// answer a `controls` report (`wch` through T4, `wchd` through T5), two copies of this
+/// The declared table (D3) merged with whatever a probe measured on this camera (E1), narrowed
+/// by [`applicable`] to the relationships the device can actually exhibit. One function
+/// because it is one law with several readers: a `set` that guarded against a different pair
+/// set than the `snapshot` that decided roles would order its restore against a device the two
+/// halves disagreed about — and now that both composition roots answer a `controls` report
+/// (`webcam-handler-cli` through T4, `webcam-handler-daemon` through T5), two copies of this
 /// composition would be two opinions about what a camera's automation looks like.
 ///
 /// `measured` is empty for every caller that did not run the probe, which is every read
@@ -385,9 +385,10 @@ pub fn in_effect(controls: &[ControlDesc], measured: Vec<AutomationPair>) -> Vec
 ///
 /// The whole descriptor rather than the bare value, because a value with no range, no flags
 /// and no menu is not renderable — but the reason this lives here rather than at a call site
-/// is the *refusal*: `wch get brightnes` and `wch set brightnes=1` have to name the same
-/// near misses, or a caller corrects a typo twice. The suggestion list is the planner's, so
-/// asking the planner is how the two stay one answer, and both composition roots ask.
+/// is the *refusal*: `webcam-handler-cli get brightnes` and `webcam-handler-cli set
+/// brightnes=1` have to name the same near misses, or a caller corrects a typo twice. The
+/// suggestion list is the planner's, so asking the planner is how the two stay one answer, and
+/// both composition roots ask.
 ///
 /// # Errors
 ///

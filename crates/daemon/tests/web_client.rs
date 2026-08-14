@@ -168,7 +168,7 @@ impl Client {
             .unwrap_or_else(|status| panic!("the daemon refused the page's socket: {status}"))
     }
 
-    /// A second client on the *Unix* socket — an agent, or `wchc`.
+    /// A second client on the *Unix* socket — an agent, or `webcam-handler-client`.
     ///
     /// The calibration view's whole reason for existing: `wch_subscribe_calibration` takes no
     /// parameters because the stream is per **client** and every event carries its session id
@@ -812,8 +812,9 @@ async fn the_page_can_watch_a_sweep_it_did_not_start() {
     // **What `wch_subscribe_calibration`'s parameterless shape is for.** The stream is per
     // *client* and every event carries its session id (`crates/api`'s `WchEvents`), so the
     // calibration view can paint a sweep an agent started on the Unix socket — which is the
-    // arrangement this project actually has, since `wchc` and `wch` are where sweeps are
-    // driven from and this page deliberately starts none (`assets/calibration.js` says why).
+    // arrangement this project actually has, since `webcam-handler-client` and
+    // `webcam-handler-cli` are where sweeps are driven from and this page deliberately starts
+    // none (`assets/calibration.js` says why).
     //
     // Two connections, and the sweep is put on the second with `Ws::write` and collected much
     // later with `Ws::answer`, because that is the only shape in which the events and the

@@ -9,8 +9,8 @@ reasoning lives in `docs/8-claude-fable-code-review-rubric-v2.md` (rubric) and
 
 ## Who runs this, and why (owner, 2026-08-12)
 
-`wchd` runs on a computer whose cameras are **pointed at a device under test**. Two
-consumers, shaped nothing alike:
+`webcam-handler-daemon` runs on a computer whose cameras are **pointed at a device under
+test**. Two consumers, shaped nothing alike:
 
 - **An AI agent harness (Claude Code or similar) drives the client to photograph the device
   under test, to check its own work** — e.g. a display driver is validated by photographing
@@ -41,20 +41,22 @@ controls (pan/tilt/zoom, focus, exposure — with auto/manual pairing handled), 
 and videos in-process (no ffmpeg, no v4l2-ctl at runtime), and run calibration sessions
 (sweep a control, photo per value, score, track per-control status, apply later).
 
-Rust 2024 workspace, one library + four consumers: `webcam-handler-schema` (every shared
-type, the backend traits, `BackendKind`),
-`webcam-handler-imaging` (codecs, our AVI muxer, metrics), `webcam-handler-engine` (camera actors, guarded
-writes, snapshot/restore, calibration, session store), backends behind one trait
-(`webcam-handler-v4l2` real, `webcam-handler-fake` replaying **captured device profiles**), `webcam-handler-api` (the one
-jsonrpsee wire surface), binaries `wch` (direct CLI, in `webcam-handler-cli`), `wchd`
-(daemon: JSON-RPC over UDS always, web client over opt-in loopback TCP + token, in
-`webcam-handler-daemon`), `wchc` (daemon CLI client, in `webcam-handler-client` — a lib as
-well as a bin, so a test can drive the executor a subprocess cannot observe),
-`webcam-handler-web` (vanilla-JS, embedded, Chrome-targeted — Firefox/Safari best-effort,
-never a feature constraint). `wch` and `wchc` share one command surface via
-`webcam-handler-cli-core` — a verb exists once; `wchc` links no backend and no engine.
-Packages carry the full `webcam-handler-` prefix; directories are short
-(`crates/engine/`); lib names are bare; binaries are `wch`/`wchd`/`wchc`.
+Rust 2024 workspace, one library + four consumers: `webcam-handler-schema` (every shared type,
+the backend traits, `BackendKind`), `webcam-handler-imaging` (codecs, our AVI muxer, metrics),
+`webcam-handler-engine` (camera actors, guarded writes, snapshot/restore, calibration, session
+store), backends behind one trait (`webcam-handler-v4l2` real, `webcam-handler-fake` replaying
+**captured device profiles**), `webcam-handler-api` (the one jsonrpsee wire surface), binaries
+`webcam-handler-cli` (direct CLI), `webcam-handler-daemon` (daemon: JSON-RPC over UDS always,
+web client over opt-in loopback TCP + token), `webcam-handler-client` (daemon CLI client — a
+lib as well as a bin, so a test can drive the executor a subprocess cannot observe),
+`webcam-handler-web` (vanilla-JS, embedded, Chrome-targeted — Firefox/Safari best-effort, never
+a feature constraint). `webcam-handler-cli` and `webcam-handler-client` share one command
+surface via `webcam-handler-cli-core` — a verb exists once; `webcam-handler-client` links no
+backend and no engine. Packages carry the full `webcam-handler-` prefix; directories are short
+(`crates/engine/`); lib names are bare; and since the owner's ruling of 2026-08-13 (note
+**N90**) **every binary is named after the package it comes from** — no short alias, no second
+`[[bin]]`, no symlink, so `cargo install --path crates/daemon` installs
+`webcam-handler-daemon`. The dev-only helper `webcam-handler-priv` follows the same rule.
 
 Work is phase-gated (docs/7, G0–G6; P0–P3 are closed); each gate is a named, counted,
 re-runnable `just gate-gN` over `scripts/gates/phase-criteria.tsv` — one row per
@@ -208,11 +210,11 @@ green and the notes current, and the phase review gets its own session.
   motors run by default (owner ruling, 2026-08-08; `WCH_NO_MOTION=1` opts out); in the
   *product* a plan that would move motors still says so first (`--allow-motion` —
   design §5 carries the split).
-- `wch-priv` (dev-only, root-equivalent — design §2.13, note N8): its boundary is the
-  `0700` file mode, checked every `just ci`. Never widen its verbs to take
-  caller-supplied module names or paths without amending N8; it refuses to unload
-  `uvcvideo` while any `/dev/video*` is open — design tests around that, don't fight
-  it. The narrowing reckoning is G6's (docs/7 P6e).
+- `webcam-handler-priv` (dev-only, root-equivalent — design §2.13, note N8): its boundary is
+  the `0700` file mode, checked every `just ci`. Never widen its verbs to take caller-supplied
+  module names or paths without amending N8; it refuses to unload `uvcvideo` while any
+  `/dev/video*` is open — design tests around that, don't fight it. The narrowing reckoning is
+  G6's (docs/7 P6e).
 
 ## Done means
 
@@ -232,11 +234,12 @@ green and the notes current, and the phase review gets its own session.
   sentence — moves a committed file, and `schema-artifacts-current.sh` goes red until
   `just generate` is run and the result committed. The gate is the backstop and it works;
   this line exists so the trap costs a command rather than a CI cycle.
-- `--json` output round-trips against the committed schemas; `wch`/`wchc` parity holds —
-  which since P4f is `./scripts/gates/cli-parity.sh` rather than an aspiration: it compares
-  the two roots byte for byte on every read verb over the fake, and puts every other verb
-  `wch --help` offers in a named bucket with a reason, because a verb neither compared nor
-  named is the way this claim quietly stops being true.
+- `--json` output round-trips against the committed schemas;
+  `webcam-handler-cli`/`webcam-handler-client` parity holds — which since P4f is
+  `./scripts/gates/cli-parity.sh` rather than an aspiration: it compares the two roots byte for
+  byte on every read verb over the fake, and puts every other verb `webcam-handler-cli --help`
+  offers in a named bucket with a reason, because a verb neither compared nor named is the way
+  this claim quietly stops being true.
 
 ## Docs and dependencies
 

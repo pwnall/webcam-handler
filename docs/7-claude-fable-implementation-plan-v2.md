@@ -16,7 +16,7 @@ their criteria are unchanged; what changed is that criteria now accrete row by r
 `scripts/gates/phase-criteria.tsv` as sub-milestones land, and the phase-closing review
 gets a session of its own. Two work items were also added on standing instructions v1 had
 already recorded: the mutation floor docs/9 scheduled "before G4, not after" (P3f), and
-the `wch-priv` narrowing N8 tied to G6 (P6e).
+the `webcam-handler-priv` narrowing N8 tied to G6 (P6e).
 
 ## Closure ledger — P0–P4
 
@@ -29,7 +29,7 @@ already prove. Evidence entries live in `docs/implementation-notes.md`.
 | P1 — V4L2 read path | `59f8293`, fixes through `b7f84c3` | `g1`: 16 rows | E1 (+ its amendments) | 4 confirmed defects, fixed; PF:14–15 and N7 landed, and PF:13 (recorded while P0 was open) became corpus |
 | P2 — writes + photo | `52ec45c`, fixes in `7181aef` | `g2`: 25 rows | E2, E3, E4 | 31 candidates, 15 confirmed, fixed; PF:16 and N9 landed |
 | P3 — calibration | `abafc25`, `856170a`, fixes in the commit carrying E6 | `g3`: 31 rows | E5, E6, E7 | 31 candidates, 12 confirmed (9 distinct defects), fixed; PF:17–20, N11–N21 landed as the phase ran, N22–N24 with the fixes; the eighth calibrate verb (`calibrate restore`) is the review's one surface change |
-| P4 — daemon and daemon client | `06489e3`, `9c8b46a`, `5faa4ee`, fixes through `e69ffba`, closed by the commit carrying this row | `g4`: 42 rows | E8–E14 (+ E13's two amendments) | **E14** holds the review, written last and named in P4g's own list after three of its four items had landed without it; no candidate count was kept, and that one is not recoverable — the refutation ran *inside* the find pass, as docs/8 Part E asks, so a candidate that died left nothing behind, and E14 declines to add a G4 row to N54's table rather than print a 0-of-8 beside four rows counting something else. **8 confirmed**, 7 fixed and 1 ruled on and left (twelve predicates run twice per `just gate-g4`, kept because the named rows carry each criterion's claim and `run-all.sh` says only "22 predicates green"). Two are HIGH and both are in the phase's own newest code, one of them silently deleting its own fix. PF:21–23 and N28–N69 landed as the phase ran, N70–N73 with the fixes. **No surface change** — the review added no verb and no flag; what it changed is `wchc`'s sweep tail, a hardware rung's decline vocabulary (fifteen typed disqualifiers where a `SKIP` line had one sentence), and two gates |
+| P4 — daemon and daemon client | `06489e3`, `9c8b46a`, `5faa4ee`, fixes through `e69ffba`, closed by the commit carrying this row | `g4`: 42 rows | E8–E14 (+ E13's two amendments) | **E14** holds the review, written last and named in P4g's own list after three of its four items had landed without it; no candidate count was kept, and that one is not recoverable — the refutation ran *inside* the find pass, as docs/8 Part E asks, so a candidate that died left nothing behind, and E14 declines to add a G4 row to N54's table rather than print a 0-of-8 beside four rows counting something else. **8 confirmed**, 7 fixed and 1 ruled on and left (twelve predicates run twice per `just gate-g4`, kept because the named rows carry each criterion's claim and `run-all.sh` says only "22 predicates green"). Two are HIGH and both are in the phase's own newest code, one of them silently deleting its own fix. PF:21–23 and N28–N69 landed as the phase ran, N70–N73 with the fixes. **No surface change** — the review added no verb and no flag; what it changed is `webcam-handler-client`'s sweep tail, a hardware rung's decline vocabulary (fifteen typed disqualifiers where a `SKIP` line had one sentence), and two gates |
 
 Where E7 and E8 attach was open and is ruled here, because an evidence entry no row
 names is an entry nobody re-reads. **E7 is P3's and E8 is P4's.** The Evidence column
@@ -50,8 +50,8 @@ commits are all P4g's, and G4's mutation-floor row rests on the register in
 `scripts/mutants-accepted.txt` being clean in both directions, not on E7's transcript.
 
 Also landed along the way, outside any v1 phase: the privileged development helper
-`wch-priv` (§2.13, note N8) and the managed R2 rung (`just rung-vivid-managed`), which
-changed what later phases can test — the vivid arms and the P4 hotplug evidence below
+`webcam-handler-priv` (§2.13, note N8) and the managed R2 rung (`just rung-vivid-managed`),
+which changed what later phases can test — the vivid arms and the P4 hotplug evidence below
 exist because of it.
 
 **Standing debts carried into this plan**, each already recorded where it arose:
@@ -106,19 +106,19 @@ exist because of it.
   `limits::CAMERA_ENQUEUE_WAITERS`, which bounds *how many* callers may hold that budget at
   once: a waiter parks a blocking-pool thread the whole daemon shares, and the WebSocket
   surface this sub-milestone turned on lets one connection hold arbitrarily many calls in
-  flight, so the count needed a permit pool rather than an arithmetic argument (note
-  **N59**). The flag changes *when* the answer arrives and never what it says: the refusal
-  at the bound is the same `Error::Busy` with the same empty holder list, and so is the
-  refusal a caller past the permit pool takes. ~~The third item took its **permitted
-  alternative — an argued absence** of a command-line spelling: `wch` opens its own camera per
+  flight, so the count needed a permit pool rather than an arithmetic argument (note **N59**).
+  The flag changes *when* the answer arrives and never what it says: the refusal at the bound
+  is the same `Error::Busy` with the same empty holder list, and so is the refusal a caller
+  past the permit pool takes. ~~The third item took its **permitted alternative — an argued
+  absence** of a command-line spelling: `webcam-handler-cli` opens its own camera per
   invocation, so the queue the flag chooses about is always empty, and the consumer where it
-  means something is `wchc`, whose transport is P4f's.~~ **The third item is discharged at
-  P4f** (note **N42**, whose own words were "it stays a wire field until the surface that can
-  mean it exists"): that surface is `wchc`, so `--wait` is a flag now. It is on the *shared*
-  T4 root, because a verb exists once, and its `--help` says out loud that it is inert under
-  `wch` rather than leaving a user to find out. No committed artifact moved, as N42 predicted
-  for a `#[serde(default)]` field, and `schema-artifacts-current.sh` is the proof of that
-  rather than the prediction.
+  means something is `webcam-handler-client`, whose transport is P4f's.~~ **The third item is
+  discharged at P4f** (note **N42**, whose own words were "it stays a wire field until the
+  surface that can mean it exists"): that surface is `webcam-handler-client`, so `--wait` is a
+  flag now. It is on the *shared* T4 root, because a verb exists once, and its `--help` says
+  out loud that it is inert under `webcam-handler-cli` rather than leaving a user to find out.
+  No committed artifact moved, as N42 predicted for a `#[serde(default)]` field, and
+  `schema-artifacts-current.sh` is the proof of that rather than the prediction.
 - ~~**Two `engine` integration tests can be handed a different typed error by a loaded
   machine**, and the mutation floor found it (note **N60**).
   `crates/engine/tests/sweep.rs` builds its context with `MonotonicClock::new()` — a real
@@ -153,13 +153,13 @@ exist because of it.
   `MonotonicClock` inside the actor closure, so a daemon test that takes a real photo still
   settles on a clock no test can reach — *exposed* rather than observed (5 runs at
   sixty-four spinners, 0 failures), and not blocked on N45 either.
-- `terminate_holder` reached the wire at P4c with **no command-line spelling**, and the
-  absence is counted rather than assumed (N48). `schema::report`'s header had already put
+- `terminate_holder` reached the wire at P4c with **no command-line spelling**, and the absence
+  is counted rather than assumed (N48). `schema::report`'s header had already put
   `TerminationReport` in the OpenRPC document rather than the JSON Schema bundle for that
   reason. A T4 verb would move two derived gate populations — `json-validates.sh`'s, scraped
-  from `wch --help`, and P4f's parity population — so until a sub-milestone wants the verb
-  the method is reachable only by a client that speaks raw JSON-RPC. Nothing here schedules
-  it.
+  from `webcam-handler-cli --help`, and P4f's parity population — so until a sub-milestone
+  wants the verb the method is reachable only by a client that speaks raw JSON-RPC. Nothing
+  here schedules it.
 - ~~The empty `CameraId` a hand-written client can send is a wildcard on every method that
   names a camera.~~ **Discharged at P4c** (note **N50**), and the reason it had been deferred
   was wrong: this half was bundled with `PixelFormat`'s and both were put off because "each
@@ -240,9 +240,9 @@ exist because of it.
   there, and says which of the two paths it is on at startup so the difference is legible in
   the journal. Nothing schedules it, and nothing can without a `bindat(2)` Linux does not
   have.
-- `wchc`'s **subscribe-before-call ordering is argued, not proved** (note **N65**). The
-  daemon buffers nothing for a client that has not arrived (N57), so a sweep that called
-  before it subscribed would silently drop the start of every run — and yet a
+- `webcam-handler-client`'s **subscribe-before-call ordering is argued, not proved** (note
+  **N65**). The daemon buffers nothing for a client that has not arrived (N57), so a sweep that
+  called before it subscribed would silently drop the start of every run — and yet a
   subscribe-*after*-call mutant stayed **green**, because the sweep opens a camera and settles
   a sensor before its first event, which is far longer than the round trip a late subscribe
   costs. The race never loses, so no test can watch it lose. Closing it needs a daemon that
@@ -250,18 +250,18 @@ exist because of it.
   emission; neither exists, and building one for this claim alone would be a fixture asserting
   the thing it was built from. The method's own doc says which of its four steps is measured
   and which is reasoned. Nothing schedules it.
-- Under `--task`, `wchc calibrate sweep`'s **progress filter admits another camera's sweep of
-  the same control** (note **N65**, `remote::SweepFilter`). Which session occupies a task slot
-  is a fact only the daemon holds until the call answers — which is *after* every event has
-  been rendered — so the filter falls back to the one thing the request does pin down, the
-  control being swept. Named by `--session <uuid>` it is exact. The rejected alternative was to
-  resolve the task to an id with a `calibrate_status` call before subscribing, and it was
-  rejected for a reason worth keeping: it changes *which* D13 refusal a bad `--task` produces
-  — the status verb's rather than the sweep's — and `cli-parity.sh` compares exactly that
-  against `wch`. What is lost is a bar's accuracy, on a daemon running two sweeps at once.
-  Nothing schedules it.
-- The `wch-priv` powers are broader than demonstrated need, time-boxed to the plan; P6e
-  executes the narrowing ruling (N8).
+- Under `--task`, `webcam-handler-client calibrate sweep`'s **progress filter admits another
+  camera's sweep of the same control** (note **N65**, `remote::SweepFilter`). Which session
+  occupies a task slot is a fact only the daemon holds until the call answers — which is
+  *after* every event has been rendered — so the filter falls back to the one thing the request
+  does pin down, the control being swept. Named by `--session <uuid>` it is exact. The rejected
+  alternative was to resolve the task to an id with a `calibrate_status` call before
+  subscribing, and it was rejected for a reason worth keeping: it changes *which* D13 refusal a
+  bad `--task` produces — the status verb's rather than the sweep's — and `cli-parity.sh`
+  compares exactly that against `webcam-handler-cli`. What is lost is a bar's accuracy, on a
+  daemon running two sweeps at once. Nothing schedules it.
+- The `webcam-handler-priv` powers are broader than demonstrated need, time-boxed to the plan;
+  P6e executes the narrowing ruling (N8).
 - ~~The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.~~
   **Discharged 2026-08-09**: `just mutants` over the six pure cores, its survivors triaged,
   and the schedule mechanised as the `g4` row of `phase-criteria.tsv` rather than left as
@@ -312,15 +312,15 @@ criteria are v1's, distributed below; `just gate-g3` accretes them.
 
 ### P3a — The session store (D9)
 
-**Lands:** `engine::store`: the session directory layout under the XDG state dir
-(`paths` already owns the two XDG roots — N2); `write_json_atomic` (tempfile in-dir →
-`sync_all` → rename → fsync parent) as the one home for state writes; the one advisory
-fd-lock at the state-dir root with both protocols (daemon holds for lifetime; daemonless
-`wch` takes per mutating operation); `log.ndjson` append and load — a torn *last* line
-is dropped, a torn middle line is typed corruption; fingerprint-matched session lookup;
-the store fault menu as an exhaustive-match enum: disk full (`StorageIo`), lock held
-(`StoreLocked { holder }`), torn line, foreign `schema_version`
-(`SchemaVersionForeign`). The temp-dir store double for engine tests.
+**Lands:** `engine::store`: the session directory layout under the XDG state dir (`paths`
+already owns the two XDG roots — N2); `write_json_atomic` (tempfile in-dir → `sync_all` →
+rename → fsync parent) as the one home for state writes; the one advisory fd-lock at the
+state-dir root with both protocols (daemon holds for lifetime; daemonless `webcam-handler-cli`
+takes per mutating operation); `log.ndjson` append and load — a torn *last* line is dropped, a
+torn middle line is typed corruption; fingerprint-matched session lookup; the store fault menu
+as an exhaustive-match enum: disk full (`StorageIo`), lock held (`StoreLocked { holder }`),
+torn line, foreign `schema_version` (`SchemaVersionForeign`). The temp-dir store double for
+engine tests.
 
 **Proves / gate rows:** every fault-menu variant driven both directions;
 `atomic-write-home.sh` widened per its docs/9 P3 row — it learns the session-dir
@@ -361,13 +361,13 @@ loop meets a real driver without touching a camera.
 
 ### P3d — The `calibrate` verbs
 
-**Lands:** `wch calibrate start/plan/sweep/status/select/apply/list` in the T4 command
-core; `select` records selector identity (`agent`/`human`/`metric:<name>`); `apply`
-replays with D4 ordering against a fingerprint-matched camera and refuses naming the
-differing fields; `--partial` as the only path around uncalibrated controls; indicatif
-progress consuming the P3c hook; session files validate against the xtask-emitted
-session schema in tests; `json-validates.sh` learns the new verbs (its verb population
-derives from `--help`, so landing them without validation rows fails the gate).
+**Lands:** `webcam-handler-cli calibrate start/plan/sweep/status/select/apply/list` in the T4
+command core; `select` records selector identity (`agent`/`human`/`metric:<name>`); `apply`
+replays with D4 ordering against a fingerprint-matched camera and refuses naming the differing
+fields; `--partial` as the only path around uncalibrated controls; indicatif progress consuming
+the P3c hook; session files validate against the xtask-emitted session schema in tests;
+`json-validates.sh` learns the new verbs (its verb population derives from `--help`, so landing
+them without validation rows fails the gate).
 
 **Proves / gate rows:** CLI subprocess tests over trees built to pass and to fail;
 schema-validation rows.
@@ -420,12 +420,13 @@ OpenRPC drift both directions.
 
 ### P4b — Daemon skeleton: UDS, lock, actors
 
-**Lands:** `wchd`: the UDS server glue (tower-service over `UnixListener`; the one piece
-of transport code we own, version-coupled to jsonrpsee and integration-tested on both
-sides), socket directory 0700 asserted at startup; the state-dir lock held for the
-daemon lifetime and `wch`'s held-lock refusal ("daemon owns the state — use wchc");
-per-camera actor threads (D12) with open-on-first-use and idle close; read-verb routing
-(`list`, `info`, `controls`, `get`, `calibrate status/list`); `tracing` fmt layer.
+**Lands:** `webcam-handler-daemon`: the UDS server glue (tower-service over `UnixListener`; the
+one piece of transport code we own, version-coupled to jsonrpsee and integration-tested on both
+sides), socket directory 0700 asserted at startup; the state-dir lock held for the daemon
+lifetime and `webcam-handler-cli`'s held-lock refusal ("daemon owns the state — use
+webcam-handler-client"); per-camera actor threads (D12) with open-on-first-use and idle close;
+read-verb routing (`list`, `info`, `controls`, `get`, `calibrate status/list`); `tracing` fmt
+layer.
 
 **Proves / gate rows:** read-verb integration tests over in-memory and UDS transports;
 the UDS-permissions row (0700 asserted in test; other-uid check where CI permits, else
@@ -573,96 +574,99 @@ subscription and a mid-flight sweep, and the reason this half came second is tha
 disconnect fixture already carried both ingredients; the systemd subprocess suite
 (`binary(systemd)`), against a notify socket the suite binds itself;
 `./scripts/gates/systemd-units.sh`, which re-derives `Type=notify`, `SocketMode=0600`,
-`DirectoryMode=0700`, the socket file name and the `TimeoutStopSec`-exceeds-drain pair from
-the tree rather than reading a transcription — a pair that can only be wrong together;
-`./scripts/gates/socket-activation.sh`, a real `wchd` under `systemd-socket-activate` compared
-by socket *inode* plus the abstract-address and two-descriptor refusals and the journald
-layer's `_TRANSPORT=journal` under a transient `systemd-run --user` unit (**every arm ran for
-real on this host and no skip was taken**); and the three in-place deferrals as one row. The
-outcome of a signal is asserted as **one record of eight fields** rather than two lists of
-assertions, because the claim is that the two signals produce the *same* outcome and two lists
-can drift while both stay green.
+`DirectoryMode=0700`, the socket file name and the `TimeoutStopSec`-exceeds-drain pair from the
+tree rather than reading a transcription — a pair that can only be wrong together;
+`./scripts/gates/socket-activation.sh`, a real `webcam-handler-daemon` under
+`systemd-socket-activate` compared by socket *inode* plus the abstract-address and
+two-descriptor refusals and the journald layer's `_TRANSPORT=journal` under a transient
+`systemd-run --user` unit (**every arm ran for real on this host and no skip was taken**); and
+the three in-place deferrals as one row. The outcome of a signal is asserted as **one record of
+eight fields** rather than two lists of assertions, because the claim is that the two signals
+produce the *same* outcome and two lists can drift while both stay green.
 
-### P4f — `wchc` and parity
+### P4f — `webcam-handler-client` and parity
 
-**Lands** (`ed51d18`, `3992d88`), in two commits, and the first of them contains no `wchc`
-code at all: it removes the one structural obstacle standing in front of it. **The paths
-split and the program identity.** `wchc` has to resolve
+**Lands** (`ed51d18`, `3992d88`), in two commits, and the first of them contains no
+`webcam-handler-client` code at all: it removes the one structural obstacle standing in front
+of it. **The paths split and the program identity.** `webcam-handler-client` has to resolve
 `$XDG_RUNTIME_DIR/webcam-handler/wchd.sock`, and `schema::limits::DAEMON_SOCKET_FILE` already
 sat in the schema saying so — but `APP_DIR` and `runtime_dir` were in `engine::paths`, which
-the thin-client wall forbids `wchc` from linking (T6). One string was reachable and the rule
-that composes it was not. The line drawn is *what a directory is for*: a runtime directory is
-a **transport** fact and goes to `schema::paths`, a state directory is a **storage** fact and
-stays in `engine::paths`, one home each (§2.10) and **no re-export shim**. `cli_core::Program`
-is the other half — a closed vocabulary whose value is a *parameter of the parse*, so
-`--help`, `--version`, every clap usage block and `{program}: {error}` come off **one** tree
-with the right binary's name on them; `#[command(name = "wch")]` left the derive, so nobody
-can put `wch`'s name in `wchc`'s mouth by accident. Note **N64**. **Then the client itself:**
-the UDS transport — a soketto handshake wrapped in jsonrpsee's two transport traits, 96
-non-comment lines, one connection carrying calls *and* subscriptions because
-`calibrate sweep` needs both — the T4 `Executor` over the generated client, bootstrapping,
-the daemon-not-running refusal, live sweep progress, D12's `--wait` flag, and the two
-composition-root flags refused rather than ignored.
+the thin-client wall forbids `webcam-handler-client` from linking (T6). One string was
+reachable and the rule that composes it was not. The line drawn is *what a directory is for*: a
+runtime directory is a **transport** fact and goes to `schema::paths`, a state directory is a
+**storage** fact and stays in `engine::paths`, one home each (§2.10) and **no re-export shim**.
+`cli_core::Program` is the other half — a closed vocabulary whose value is a *parameter of the
+parse*, so `--help`, `--version`, every clap usage block and `{program}: {error}` come off
+**one** tree with the right binary's name on them; `#[command(name = "webcam-handler-cli")]`
+left the derive, so nobody can put `webcam-handler-cli`'s name in `webcam-handler-client`'s
+mouth by accident. Note **N64**. **Then the client itself:** the UDS transport — a soketto
+handshake wrapped in jsonrpsee's two transport traits, 96 non-comment lines, one connection
+carrying calls *and* subscriptions because `calibrate sweep` needs both — the T4 `Executor`
+over the generated client, bootstrapping, the daemon-not-running refusal, live sweep progress,
+D12's `--wait` flag, and the two composition-root flags refused rather than ignored.
 
-**What it found, which is not what it planned.** Four things, each recorded where it lives.
-(1) **"Modeled on reth's IPC adapter" is a shape, not a framing** — reth's IPC is
-newline-framed raw JSON-RPC and `wchd` speaks HTTP/1.1 with a WebSocket upgrade on the same
+**What it found, which is not what it planned.** Four things, each recorded where it lives. (1)
+**"Modeled on reth's IPC adapter" is a shape, not a framing** — reth's IPC is newline-framed
+raw JSON-RPC and `webcam-handler-daemon` speaks HTTP/1.1 with a WebSocket upgrade on the same
 socket, so what carried over was the `TransportSenderT`/`TransportReceiverT` idea and none of
-the framing. (2) **Five gate scripts went red the moment `APP_DIR` moved**, because they
-`sed` it out of the crate that defines it — the derived-population rule paying for itself,
-since a transcribed constant would have stayed green and started lying (N64). (3) **Two
-things were measured rather than asserted and one of them was then deleted**: the runtime is
-current-thread (`Threads: 1` as shipped, `Threads: 9` with `new_multi_thread` on this 8-core
-host), and the sweep's drain was written, measured at **zero events over five runs**, and
-removed, because on a current-thread runtime nothing can be pushed between the two polls of
-one biased `select!` turn (N65). (4) **The subscribe-before-call ordering is argued, not
-proved** — a subscribe-after-call mutant stayed green, because the sweep opens a camera and
-settles a sensor before its first event. The test says so rather than claiming credit, and it
-is in the standing debts above.
+the framing. (2) **Five gate scripts went red the moment `APP_DIR` moved**, because they `sed`
+it out of the crate that defines it — the derived-population rule paying for itself, since a
+transcribed constant would have stayed green and started lying (N64). (3) **Two things were
+measured rather than asserted and one of them was then deleted**: the runtime is current-thread
+(`Threads: 1` as shipped, `Threads: 9` with `new_multi_thread` on this 8-core host), and the
+sweep's drain was written, measured at **zero events over five runs**, and removed, because on
+a current-thread runtime nothing can be pushed between the two polls of one biased `select!`
+turn (N65). (4) **The subscribe-before-call ordering is argued, not proved** — a
+subscribe-after-call mutant stayed green, because the sweep opens a camera and settles a sensor
+before its first event. The test says so rather than claiming credit, and it is in the standing
+debts above.
 
-**Two debts discharged and one deliberately not.** N42/N56's `--wait` had taken its
-permitted alternative, an *argued absence* of a command-line spelling, whose own words were
-"it stays a wire field until the surface that can mean it exists" — that surface is `wchc`,
-so the flag lands here, on the shared T4 root, with its `--help` saying it is inert under
-`wch`. No committed artifact moved, exactly as N42 predicted for a `#[serde(default)]` field.
-N57's declined dependency is paid: `jsonrpsee/async-client` is the only route to the
-generated subscription client and it drags `futures-timer`; re-measured the way N38 did,
-**one** package joins the graph, `api`'s closure goes 112 → 115, and no web-stack crate
-enters. **N48's `terminate_holder` is not discharged** and stays where it is: it still has no
-T4 spelling, so it is out of the parity population by construction rather than by exemption.
+**Two debts discharged and one deliberately not.** N42/N56's `--wait` had taken its permitted
+alternative, an *argued absence* of a command-line spelling, whose own words were "it stays a
+wire field until the surface that can mean it exists" — that surface is
+`webcam-handler-client`, so the flag lands here, on the shared T4 root, with its `--help`
+saying it is inert under `webcam-handler-cli`. No committed artifact moved, exactly as N42
+predicted for a `#[serde(default)]` field. N57's declined dependency is paid:
+`jsonrpsee/async-client` is the only route to the generated subscription client and it drags
+`futures-timer`; re-measured the way N38 did, **one** package joins the graph, `api`'s closure
+goes 112 → 115, and no web-stack crate enters. **N48's `terminate_holder` is not discharged**
+and stays where it is: it still has no T4 spelling, so it is out of the parity population by
+construction rather than by exemption.
 
 **Proves / gate rows:** four new `g4` rows. `./scripts/gates/cli-parity.sh` — the **CLI parity
-gate** docs/9 commissioned: `wch <verb> --json` and `wchc <verb> --json` byte-identical on
-every read verb over the fake, the population scraped from `wch --help` at both levels with
-an exact row match, and **every** leaf in one of four named buckets (compared; exempt-session;
-exempt-device; exempt-stamped) so that a verb in no bucket is a failure. Three of the four
-buckets carry a check their own reason implies — the session verbs are shown to be refused to
-`wch` by D9's store lock *in that refusal's own words*, and `snapshot`'s exemption is measured
-to be exactly one field (`taken_at`) wide rather than asserted. docs/9's "local-only verbs
-(none at P4)" is **tested** rather than repeated: every exempt verb is driven through `wchc`
-alone and must answer, and a verb only `wch` could run would name itself there. It came back
-none, so the claim survived. The gate also exercises the property its own fixture rests on —
-one `wch` reads the very state directory a live `wchd` holds, because read verbs take no lock
-under either D9 protocol. Then `binary(wchc)`, the subprocess suite; the client crate's unit
-tests; and the `cli-core` tests that pin one command tree with one name per root. Evidence
-**E12**: the same comparison run once against the **real** cameras over v4l2, five verbs
-byte-identical, with the daemon exiting 0 on the SIGTERM that ended the run.
+gate** docs/9 commissioned: `webcam-handler-cli <verb> --json` and `webcam-handler-client
+<verb> --json` byte-identical on every read verb over the fake, the population scraped from
+`webcam-handler-cli --help` at both levels with an exact row match, and **every** leaf in one
+of four named buckets (compared; exempt-session; exempt-device; exempt-stamped) so that a verb
+in no bucket is a failure. Three of the four buckets carry a check their own reason implies —
+the session verbs are shown to be refused to `webcam-handler-cli` by D9's store lock *in that
+refusal's own words*, and `snapshot`'s exemption is measured to be exactly one field
+(`taken_at`) wide rather than asserted. docs/9's "local-only verbs (none at P4)" is **tested**
+rather than repeated: every exempt verb is driven through `webcam-handler-client` alone and
+must answer, and a verb only `webcam-handler-cli` could run would name itself there. It came
+back none, so the claim survived. The gate also exercises the property its own fixture rests on
+— one `webcam-handler-cli` reads the very state directory a live `webcam-handler-daemon` holds,
+because read verbs take no lock under either D9 protocol. Then `binary(wchc)`, the subprocess
+suite; the client crate's unit tests; and the `cli-core` tests that pin one command tree with
+one name per root. Evidence **E12**: the same comparison run once against the **real** cameras
+over v4l2, five verbs byte-identical, with the daemon exiting 0 on the SIGTERM that ended the
+run.
 
 ### P4g — G4 close
 
-**Lands** (`06489e3`, `9c8b46a`, `1a51c81`, `5faa4ee`), in four commits: the remaining
-criteria rows, counted — seven of them, and the hole they filled was `run-all.sh`, which
-g0, g1, g2 and g3 all carry and g4 did not, so nine of the twenty-one shipped predicates
-were reachable from `just ci` and from no phase gate at all, `counted-selections.sh`
-among them; R3 evidence — the daemon against the real cameras: a photo over UDS, a
-calibrate sweep over UDS with live `wchc` progress — recorded in the notes as **E13**.
-The **hotplug cycle is already recorded**, as note E9 at P4d, with the transcript and
-the two mutants that arm was watched failing; G4's own entry cites it rather than
-re-running it, because a transcript written twice is two transcripts nobody can tell
-apart. [PF:23] is the one thing this sub-milestone did not plan: the OBSBOT stopped
-advertising 3840×2160 and 120 fps with nothing on our side of the cable moved, and the
-corpus was re-captured on the owner's ruling — the device is the authority on itself,
-and a committed profile is `declared` the moment the device stops agreeing with it.
+**Lands** (`06489e3`, `9c8b46a`, `1a51c81`, `5faa4ee`), in four commits: the remaining criteria
+rows, counted — seven of them, and the hole they filled was `run-all.sh`, which g0, g1, g2 and
+g3 all carry and g4 did not, so nine of the twenty-one shipped predicates were reachable from
+`just ci` and from no phase gate at all, `counted-selections.sh` among them; R3 evidence — the
+daemon against the real cameras: a photo over UDS, a calibrate sweep over UDS with live
+`webcam-handler-client` progress — recorded in the notes as **E13**. The **hotplug cycle is
+already recorded**, as note E9 at P4d, with the transcript and the two mutants that arm was
+watched failing; G4's own entry cites it rather than re-running it, because a transcript
+written twice is two transcripts nobody can tell apart. [PF:23] is the one thing this
+sub-milestone did not plan: the OBSBOT stopped advertising 3840×2160 and 120 fps with nothing
+on our side of the cable moved, and the corpus was re-captured on the owner's ruling — the
+device is the authority on itself, and a committed profile is `declared` the moment the device
+stops agreeing with it.
 
 **Then, in its own session, and it is where the phase's headline is:** the adversarial
 review (`f61b2ae`, `b436e62`, `9142b81`, `2a3a58c`, `e69ffba`), whose eight confirmed
@@ -785,20 +789,19 @@ verified only through the JSON the page consumes is not verified (rubric B7).
 ### P5d — The R1-web rung
 
 **Lands:** the pinned Playwright + Chromium suite (versions pinned, traces on failure),
-subprocess-launched from a daemon integration-gate test that self-skips **counted and
-named** without node — node is never a build dependency. Asserts in a real headless
-Chromium: the control panel renders from live DTOs (a sparse menu becomes a select with
-the right indices), the preview `<img>` paints successive MJPEG frames, WS JSON-RPC
-round-trips and survives reconnect, the calibration view tracks its subscription, and
-anonymous requests **for the camera** are refused — an anonymous `new WebSocket("ws://…/rpc")`
-and an `<img src="/preview?camera=…">` with no token, both of which the page can be made to
-attempt from a real browser. Not "anonymous requests are refused", which was written when
-every request was gated: since the owner's 2026-08-12 ruling the page itself loads with no
-credential, and a rung asserting otherwise would assert something false (D11's amendment,
-note **N82**). The other half is worth a browser too, because only a browser can show it:
-the client **works** when opened at the URL `wchd` printed — the module graph loads
-unauthenticated, and the two camera resources authenticate with the token the page was
-opened with.
+subprocess-launched from a daemon integration-gate test that self-skips **counted and named**
+without node — node is never a build dependency. Asserts in a real headless Chromium: the
+control panel renders from live DTOs (a sparse menu becomes a select with the right indices),
+the preview `<img>` paints successive MJPEG frames, WS JSON-RPC round-trips and survives
+reconnect, the calibration view tracks its subscription, and anonymous requests **for the
+camera** are refused — an anonymous `new WebSocket("ws://…/rpc")` and an `<img
+src="/preview?camera=…">` with no token, both of which the page can be made to attempt from a
+real browser. Not "anonymous requests are refused", which was written when every request was
+gated: since the owner's 2026-08-12 ruling the page itself loads with no credential, and a rung
+asserting otherwise would assert something false (D11's amendment, note **N82**). The other
+half is worth a browser too, because only a browser can show it: the client **works** when
+opened at the URL `webcam-handler-daemon` printed — the module graph loads unauthenticated, and
+the two camera resources authenticate with the token the page was opened with.
 
 **Proves / gate rows:** the docs/9 R1-web row; on the dev machine the rung runs, and the
 gate close records whether it ran or skipped, by name.
@@ -828,10 +831,10 @@ re-parsing our own output.
 
 ### P6b — `record` in the engine and CLI
 
-**Lands:** the Y4M sink (mono and 4:2:x are both in the Y4M vocabulary); the record
-executor with duration/size caps from `limits`; disk-full mid-recording → typed error
-and a valid file up to the last complete frame; `wch record`; the MJPG-only muxer
-policy — non-MJPG requests get Y4M or `FormatUnsupported { available }`.
+**Lands:** the Y4M sink (mono and 4:2:x are both in the Y4M vocabulary); the record executor
+with duration/size caps from `limits`; disk-full mid-recording → typed error and a valid file
+up to the last complete frame; `webcam-handler-cli record`; the MJPG-only muxer policy —
+non-MJPG requests get Y4M or `FormatUnsupported { available }`.
 
 **Proves / gate rows:** cap-enforcement tests (duration, size, disk-full); CLI
 subprocess tests; every fault leaves a parseable file.
@@ -839,7 +842,7 @@ subprocess tests; every fault leaves a parseable file.
 ### P6c — The wire completes
 
 **Lands:** `record_start/stop/status` on the T5 trait (D10 is now complete), daemon
-routing, `wchc` rendering; progress by polling `record_status` — no recording
+routing, `webcam-handler-client` rendering; progress by polling `record_status` — no recording
 subscription in v1.
 
 **Proves / gate rows:** the method-count walk green over the now-complete trait (its
@@ -859,20 +862,21 @@ criterion; evidence entry.
 ### P6e — The agent guide, G6 close, and the helper reckoning
 
 **Lands:** the xtask-generated agent usage guide from the T4 command core (so it cannot
-drift): wch/wchc vocabulary, `--json` contracts, the D13 error vocabulary, a
-calibration walkthrough — the successor to the vendored skill's command sequences;
+drift): webcam-handler-cli/webcam-handler-client vocabulary, `--json` contracts, the D13
+error vocabulary, a calibration walkthrough — the successor to the vendored skill's command
+sequences;
 `vendor/v4l2-webcam-skill/` gains its deprecation pointer; guide examples smoke-checked
 against the built binaries, regeneration diffs clean in CI (docs/9 row).
 
 **G6 close:** all criteria rows counted; **then, in its own session,** the adversarial
 review; fixes; evidence entry; reconciliation.
 
-**Then the N8 ruling executes** (the owner's recorded trigger): answer the three
-questions with the plan's evidence — which capabilities were actually spent (P4d's
-measurement decides `CAP_NET_ADMIN`), whether `exec` ever did more than delegate to a
-test process, whether anything routine still loads modules unattended — and narrow or
-delete `wch-priv`, `just bless`, and `privileged-helper.sh` accordingly, recording the
-outcome in the notes. This is a plan step, not a memory.
+**Then the N8 ruling executes** (the owner's recorded trigger): answer the three questions with
+the plan's evidence — which capabilities were actually spent (P4d's measurement decides
+`CAP_NET_ADMIN`), whether `exec` ever did more than delegate to a test process, whether
+anything routine still loads modules unattended — and narrow or delete `webcam-handler-priv`,
+`just bless`, and `privileged-helper.sh` accordingly, recording the outcome in the notes. This
+is a plan step, not a memory.
 
 ## Post-plan triggers (recorded, uncommissioned)
 
@@ -881,13 +885,13 @@ outcome in the notes. This is a plan step, not a memory.
 | UVC H.264 → MP4 remux (L1) | hardware that exhibits `V4L2_PIX_FMT_H264` | D7, §8.3 |
 | Control-change events (`VIDIOC_SUBSCRIBE_EVENT`) | live control sync in the web UI | §2.5, §8.4 |
 | AV1 encode feature (rav1e) | a real offline-transcode/timelapse need | D7 L2 |
-| `wch` auto-forward to daemon | refusal friction observed in real use | §8.7 |
+| `webcam-handler-cli` auto-forward to daemon | refusal friction observed in real use | §8.7 |
 | Session GC | ~~a full disk~~ — **fired twice, 2026-08-09 and 2026-08-10, and neither firing was ours** (note N55): a `tmpfs` build root filled under the mutation floor while the whole session store was 904 KiB. Still uncommissioned, deliberately. The row stays, and N55 argues the trigger should be re-phrased against a quantity a program can evaluate — and that the *measurement* should land before the policy, since nothing today reports the session store's size | §8.8, N55 |
 | Cross-session query store (SQLite) | queries at scale | §7 |
 | Audio | a license-clean path appears | §8.2 |
 | Re-run N5's jsonrpsee measurement | any jsonrpsee bump — delete the api tokio exemption if the original wall becomes satisfiable | §2.8, note N5 |
 | Re-check PF:16 against `little_exif` | any little_exif bump — the splice likely stays (it keeps a device-byte parse under our rules), but the *reason* changes from fix to defense | D6, PF:16 |
-| Narrow or delete `wch-priv` | **P6e executes this**; the row stays here until it does | §2.13, note N8 |
+| Narrow or delete `webcam-handler-priv` | **P6e executes this**; the row stays here until it does | §2.13, note N8 |
 
 ## Risks to the plan
 

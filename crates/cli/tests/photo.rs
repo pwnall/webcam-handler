@@ -1,4 +1,4 @@
-//! `wch photo` end to end, against the fake backend (docs/7 G2).
+//! `webcam-handler-cli photo` end to end, against the fake backend (docs/7 G2).
 //!
 //! G2 names this suite by what it must prove: a photo whose **EXIF reads back through an
 //! independent reader**, and a photo from the **GREY-format chicony-ir profile**, because
@@ -22,9 +22,9 @@ use std::process::Command;
 use camino::{Utf8Path, Utf8PathBuf};
 use exif::{In, Tag};
 
-/// The `wch` binary this test drives, built by cargo alongside it.
+/// The `webcam-handler-cli` binary this test drives, built by cargo alongside it.
 fn wch() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_wch"))
+    Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"))
 }
 
 /// A scratch directory under the one scratch root (note N84), and the paths under it.
@@ -61,7 +61,7 @@ fn replayed(name: &str, camera: &str) -> Replayed {
     }
 }
 
-/// Run `wch photo` against a replayed camera, returning stdout and stderr.
+/// Run `webcam-handler-cli photo` against a replayed camera, returning stdout and stderr.
 fn photo(device: &Replayed, extra: &[&str]) -> (String, String) {
     let output = wch()
         .args([
@@ -74,10 +74,10 @@ fn photo(device: &Replayed, extra: &[&str]) -> (String, String) {
         ])
         .args(extra)
         .output()
-        .expect("wch runs");
+        .expect("webcam-handler-cli runs");
     assert!(
         output.status.success(),
-        "wch photo {extra:?} failed: {}",
+        "webcam-handler-cli photo {extra:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     (
@@ -264,7 +264,8 @@ fn wch_photo_json_reports_the_negotiated_stream_and_the_rendering_it_chose() {
 
 #[test]
 fn wch_photo_without_a_path_writes_the_image_to_standard_output_and_the_table_to_stderr() {
-    // `wch photo cam:x > shot.jpg` has to be a photo, not a photo with a table in it.
+    // `webcam-handler-cli photo cam:x > shot.jpg` has to be a photo, not a photo with a table
+    // in it.
     let device = replayed("chicony-rgb", "cam:integrated-camera-integrated-c");
     let output = wch()
         .args([
@@ -276,7 +277,7 @@ fn wch_photo_without_a_path_writes_the_image_to_standard_output_and_the_table_to
             &device.camera,
         ])
         .output()
-        .expect("wch runs");
+        .expect("webcam-handler-cli runs");
     assert!(output.status.success());
 
     assert!(

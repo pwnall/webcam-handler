@@ -49,9 +49,9 @@ closed_vocabulary! {
         /// The daemon's: taken once at startup and held until the process exits, because
         /// the daemon owns the state directory for as long as it is running.
         HeldForLifetime,
-        /// A daemonless `wch`'s: taken for one mutating operation and released at its
-        /// end, because a CLI that held it between invocations would lock out the daemon
-        /// it does not know about.
+        /// A daemonless `webcam-handler-cli`'s: taken for one mutating operation and released
+        /// at its end, because a CLI that held it between invocations would lock out the
+        /// daemon it does not know about.
         PerOperation,
     }
 }
@@ -68,22 +68,23 @@ impl LockProtocol {
 
     /// What to tell whoever this protocol just refused — **D9's sentence, and its home**.
     ///
-    /// Design D9 writes the first arm itself: a `wch` finding the lock held "reports
-    /// *daemon owns the state (and likely the camera) — use wchc* rather than corrupting or
-    /// blocking (D13)". It lives here, on the fact it turns on, so that it exists once: the
-    /// same words reach a human through [`Error`]'s `Display` in `wch`, through the wire
-    /// message the daemon sends, and through `wchc` rendering a received D13 document, none
-    /// of which re-word it.
+    /// Design D9 writes the first arm itself: a `webcam-handler-cli` finding the lock held
+    /// "reports *daemon owns the state (and likely the camera) — use webcam-handler-client*
+    /// rather than corrupting or blocking (D13)". It lives here, on the fact it turns on, so
+    /// that it exists once: the same words reach a human through [`Error`]'s `Display` in
+    /// `webcam-handler-cli`, through the wire message the daemon sends, and through
+    /// `webcam-handler-client` rendering a received D13 document, none of which re-word it.
     ///
-    /// The second arm is the same law read the other way, and it is why this is a `match`
-    /// and not an `if`: telling somebody to start a different program because another `wch`
-    /// is a few milliseconds into `calibrate select` would be advice that makes their
-    /// situation worse. A third protocol cannot be added without answering this question.
+    /// The second arm is the same law read the other way, and it is why this is a `match` and
+    /// not an `if`: telling somebody to start a different program because another
+    /// `webcam-handler-cli` is a few milliseconds into `calibrate select` would be advice that
+    /// makes their situation worse. A third protocol cannot be added without answering this
+    /// question.
     #[must_use]
     pub const fn advice(self) -> &'static str {
         match self {
             LockProtocol::HeldForLifetime => {
-                "daemon owns the state (and likely the camera) — use wchc"
+                "daemon owns the state (and likely the camera) — use webcam-handler-client"
             }
             LockProtocol::PerOperation => "it is held for one operation and will be free shortly",
         }
@@ -425,12 +426,20 @@ impl Error {
             },
             ErrorKind::StoreLocked => Error::StoreLocked {
                 holder: Some(Holder {
+                    // `webcam-handler-`, and not `webcam-handler-daemon`, because this
+                    // sample is a `comm` and a `comm` is fifteen characters: the kernel's
+                    // `TASK_COMM_LEN` is 16 including the NUL, so every binary in this
+                    // workspace now reports the same truncation of the shared prefix
+                    // (measured, note **N90**). A sample carrying a name `/proc` never
+                    // hands out would teach a client author to match on one.
                     pid: 909,
-                    comm: Some("wchd".to_owned()),
+                    comm: Some("webcam-handler-".to_owned()),
                 }),
                 // The daemon's protocol, because it is the one D9 writes a sentence for:
                 // this sample is what the OpenRPC document shows a client author, and the
-                // refusal they need to render is "use wchc", not "try again".
+                // refusal they need to render is "use webcam-handler-client", not "try
+                // again" — which is also why the *protocol* and never the `comm` is what the
+                // advice turns on now that the four binaries share one `comm`.
                 protocol: Some(LockProtocol::HeldForLifetime),
             },
             ErrorKind::HolderGone => Error::HolderGone { pid: 4242 },
@@ -486,9 +495,9 @@ fn format_holder(holder: &Option<Holder>) -> String {
 /// D9's advice for whoever just met a held lock, when the holder said which protocol it
 /// follows.
 ///
-/// Nothing when it did not, on the same principle `format_holder` follows: the advice
-/// turns entirely on a fact we read out of the holder's record, and inventing it from a
-/// record we could not read would tell somebody to go and start `wchc` against a daemon
+/// Nothing when it did not, on the same principle `format_holder` follows: the advice turns
+/// entirely on a fact we read out of the holder's record, and inventing it from a record we
+/// could not read would tell somebody to go and start `webcam-handler-client` against a daemon
 /// that may not exist.
 fn format_advice(protocol: &Option<LockProtocol>) -> String {
     match protocol {
@@ -637,11 +646,12 @@ mod tests {
 
     #[test]
     fn a_daemons_lock_is_refused_in_the_words_d9_writes() {
-        // Quoted from design D9, parenthetical and em dash included: "`wch` finding it
-        // held reports *daemon owns the state (and likely the camera) — use wchc* rather
-        // than corrupting or blocking (D13)". The literal is here, in the test, so that
-        // rewording the constant is a red test rather than a diff nobody reads; docs/7's
-        // shorter summary of the same sentence is a plan's abbreviation, not a second law.
+        // Quoted from design D9, parenthetical and em dash included: "`webcam-handler-cli`
+        // finding it held reports *daemon owns the state (and likely the camera) — use
+        // webcam-handler-client* rather than corrupting or blocking (D13)". The literal is
+        // here, in the test, so that rewording the constant is a red test rather than a diff
+        // nobody reads; docs/7's shorter summary of the same sentence is a plan's
+        // abbreviation, not a second law.
         //
         // Asserted against `sample` rather than a value built here, because that is the
         // one the generated documents carry: `Error::sample` is the walkable population
@@ -650,29 +660,38 @@ mod tests {
         let err = Error::sample(ErrorKind::StoreLocked);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("daemon owns the state (and likely the camera) — use wchc"),
+            rendered.contains(
+                "daemon owns the state (and likely the camera) — use webcam-handler-client"
+            ),
             "{rendered}"
         );
         // And it still names who, because "somebody has it, go and use another program" is
-        // half an answer: the pid is what an operator checks before believing us.
-        assert!(rendered.contains("wchd (pid 909)"), "{rendered}");
+        // half an answer: the pid is what an operator checks before believing us. The name
+        // beside it is fifteen characters because a `comm` is (note **N90**), which is
+        // precisely why the pid is the half that identifies anybody.
+        assert!(rendered.contains("webcam-handler- (pid 909)"), "{rendered}");
     }
 
     #[test]
     fn a_momentary_lock_is_not_a_reason_to_go_and_start_wchc() {
-        // The other direction, and the one that makes the first arm a decision rather than
-        // a constant: another `wch` a few milliseconds into a mutating verb will be gone
-        // shortly, and sending its user off to a daemon that does not exist would make
+        // The other direction, and the one that makes the first arm a decision rather than a
+        // constant: another `webcam-handler-cli` a few milliseconds into a mutating verb will
+        // be gone shortly, and sending its user off to a daemon that does not exist would make
         // their situation worse.
+        //
+        // The `comm` is the same fifteen characters the daemon's sample carries, and that is
+        // the point rather than a copy-paste: since note **N90** every binary here truncates
+        // to `webcam-handler-`, so the record's *protocol* is the only field that can tell
+        // these two refusals apart, and this arm is what proves the advice reads it.
         let err = Error::StoreLocked {
             holder: Some(Holder {
                 pid: 123,
-                comm: Some("wch".to_owned()),
+                comm: Some("webcam-handler-".to_owned()),
             }),
             protocol: Some(LockProtocol::PerOperation),
         };
         let rendered = err.to_string();
-        assert!(!rendered.contains("wchc"), "{rendered}");
+        assert!(!rendered.contains("webcam-handler-client"), "{rendered}");
         assert!(rendered.contains("free shortly"), "{rendered}");
 
         // And an unreadable record advises nothing at all, because the advice turns

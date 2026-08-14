@@ -6,10 +6,11 @@
 //!
 //! ## Why the sink lives here and not in the renderer
 //!
-//! `-o out.jpg` has to mean the same thing in `wch` and in `wchc` (D10), and the way that
-//! is guaranteed is that both turn the flag into a [`Sink`] and hand it to this function.
-//! A CLI that wrote the bytes itself would be a second answer to "where do photos go", and
-//! the two would diverge the first time the daemon needed a different rule.
+//! `-o out.jpg` has to mean the same thing in `webcam-handler-cli` and in
+//! `webcam-handler-client` (D10), and the way that is guaranteed is that both turn the flag
+//! into a [`Sink`] and hand it to this function. A CLI that wrote the bytes itself would be a
+//! second answer to "where do photos go", and the two would diverge the first time the daemon
+//! needed a different rule.
 //!
 //! ## Stamping is not re-encoding
 //!
@@ -21,14 +22,14 @@
 //! ## Why *how* the file is opened is a seam and *where* it goes is not
 //!
 //! [`Destination`] is the one thing about the write that differs between this module's two
-//! callers, and note **N51** is why it has to. `wch` resolves `-o` on a command line
-//! somebody typed and opens it when the bytes are ready — a fifo or `/dev/stdout` is a
+//! callers, and note **N51** is why it has to. `webcam-handler-cli` resolves `-o` on a command
+//! line somebody typed and opens it when the bytes are ready — a fifo or `/dev/stdout` is a
 //! feature there, and a person who typed one has Ctrl-C. The daemon has none of that: an
 //! `open(2)` that blocks runs inside a camera's actor thread, so a client that named a fifo
 //! would park that camera for the life of the process. So the daemon supplies its own
 //! [`Destination`], which resolves the name to a *descriptor* before it touches a camera at
-//! all — and *where* photos go is still answered exactly once, here, by this module's
-//! own `deliver`.
+//! all — and *where* photos go is still answered exactly once, here, by this module's own
+//! `deliver`.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -121,7 +122,7 @@ pub trait Destination: std::fmt::Debug + Send {
 /// store's protocol for documents the tool re-reads and must never find half-written (D9). A
 /// photo is written once for a human or an agent, at a path they named, and a
 /// temp-file-plus-rename would silently break the case where that path is a fifo or
-/// `/dev/stdout` — which for `wch` is a feature rather than a hazard.
+/// `/dev/stdout` — which for `webcam-handler-cli` is a feature rather than a hazard.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WhereverTheCallerSaid;
 
@@ -175,14 +176,15 @@ pub fn write_to_open_file(file: &mut std::fs::File, path: &Utf8Path, bytes: &[u8
 /// rather than a field on [`Photograph`].
 ///
 /// `outcome` first, because it is what nearly every caller wants: `take(…).outcome?` is the
-/// whole of the migration for a caller that runs no previews (`wch`, and every test here).
+/// whole of the migration for a caller that runs no previews (`webcam-handler-cli`, and every
+/// test here).
 #[derive(Debug)]
 pub struct Taken {
     /// The photo, or the refusal that stood in for it.
     pub outcome: Result<Photograph>,
     /// What this photo did to a preview, when there was one to interrupt. `None` when the
-    /// camera was not streaming for anybody — which is every `wch` invocation and every
-    /// daemon request that arrived with no tab open.
+    /// camera was not streaming for anybody — which is every `webcam-handler-cli` invocation
+    /// and every daemon request that arrived with no tab open.
     pub gap: Option<Gap>,
 }
 
@@ -193,10 +195,10 @@ pub struct Taken {
 /// runs on. They are different things and conflating them is how an NTP step becomes a
 /// settle failure.
 ///
-/// `destination` is an argument for the reason this module's header gives: a CLI and a
-/// daemon open a caller-named path differently and both are right (note **N51**).
-/// [`WhereverTheCallerSaid`] is what `wch` hands in and what this pipeline did before the
-/// seam existed.
+/// `destination` is an argument for the reason this module's header gives: a CLI and a daemon
+/// open a caller-named path differently and both are right (note **N51**).
+/// [`WhereverTheCallerSaid`] is what `webcam-handler-cli` hands in and what this pipeline did
+/// before the seam existed.
 ///
 /// ## A live preview is suspended for the capture and started again after it
 ///
@@ -204,9 +206,9 @@ pub struct Taken {
 /// [`schema::Error::Busy`] here. Since the owner's ruling of 2026-08-12 it does not:
 /// [`crate::preview::while_suspended`] stops that stream, takes the frame and starts it again,
 /// and this is the one place that happens — **inside the photo pipeline rather than beside
-/// it**, so `wch`, `wchd` and anything that reaches this function get the same behaviour
-/// without arranging anything, and a second copy of the sequence cannot drift from this one
-/// (§2.10). Note **N83** carries the ruling.
+/// it**, so `webcam-handler-cli`, `webcam-handler-daemon` and anything that reaches this
+/// function get the same behaviour without arranging anything, and a second copy of the
+/// sequence cannot drift from this one (§2.10). Note **N83** carries the ruling.
 ///
 /// **Only the capture is inside the suspension.** The sink check, the control read, the
 /// render, the EXIF stamp and the write are all outside it — none of them touches the stream,
@@ -296,12 +298,12 @@ pub fn from_capture(
 ) -> Result<Photograph> {
     let camera_id = camera.info().id.clone();
     let fingerprint = camera.info().fingerprint.clone();
-    // The sink decides the encoding, and the sink is also what refuses one this build
-    // cannot write — `Sink::writable_format` is that one home, beside the variants, because
-    // the rule has to hold for a request a socket built as much as for one a command line
-    // did (note N46, debt D-1). A caller that can refuse earlier should: `wchd` validates
-    // the sink before it opens a camera, and `wch` refuses while parsing. This is the
-    // backstop for whoever does neither.
+    // The sink decides the encoding, and the sink is also what refuses one this build cannot
+    // write — `Sink::writable_format` is that one home, beside the variants, because the rule
+    // has to hold for a request a socket built as much as for one a command line did (note
+    // N46, debt D-1). A caller that can refuse earlier should: `webcam-handler-daemon`
+    // validates the sink before it opens a camera, and `webcam-handler-cli` refuses while
+    // parsing. This is the backstop for whoever does neither.
     let format = request.sink.writable_format()?;
     let photo = imaging::photo::render(&captured.frame, format, request.transform)?;
 

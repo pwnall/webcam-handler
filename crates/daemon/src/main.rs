@@ -1,4 +1,4 @@
-//! `wchd` — the webcam-handler daemon.
+//! `webcam-handler-daemon` — the webcam-handler daemon.
 //!
 //! One of the two composition roots (design §2.11). This file is the process's edges and
 //! nothing else: the subscriber, the argument surface, the backend factory match, the
@@ -17,13 +17,13 @@
 //! 1. **The signal handlers**, before this process owns anything at all — so there is no
 //!    window in which a daemon that already holds the lock and the socket is killed by the
 //!    disposition it was about to replace.
-//! 2. **The state-directory lock** (D9), taken once and held for the process's lifetime.
-//!    It is the daemon's mutual exclusion — a second `wchd` is refused right here — and
-//!    it is also what licenses step 4: a leftover socket file can only be removed by a
+//! 2. **The state-directory lock** (D9), taken once and held for the process's lifetime. It is
+//!    the daemon's mutual exclusion — a second `webcam-handler-daemon` is refused right here —
+//!    and it is also what licenses step 4: a leftover socket file can only be removed by a
 //!    process that has already established no other daemon is alive. It is taken on **both**
 //!    startup paths: systemd binding the socket says nothing about who owns the state
-//!    directory, and two `wchd`s sharing one activated socket would be two writers of one
-//!    session tree.
+//!    directory, and two `webcam-handler-daemon`s sharing one activated socket would be two
+//!    writers of one session tree.
 //! 3. **The socket directory**, created 0700 and *asserted* 0700 (D11) — on the self-bound
 //!    path. On the activated path the directory is the one the *inherited socket* is in, and
 //!    the same mode-and-owner check is made about it, by the same function; what cannot be
@@ -64,19 +64,19 @@
 //! maybe, and `daemon::http::listener`'s header is where that doctrine is argued for this
 //! transport.
 //!
-//! **What is still not claimed.** A cancellation reaches tokio tasks, and a camera actor is
-//! an OS thread by construction (D12) — so a command parked in a device ioctl is ended by the
+//! **What is still not claimed.** A cancellation reaches tokio tasks, and a camera actor is an
+//! OS thread by construction (D12) — so a command parked in a device ioctl is ended by the
 //! process exiting, not by the token, and the drain bound is what keeps that from making the
 //! stop unbounded (`daemon::shutdown`'s residual, note **N59**). The socket file is not
 //! unlinked: the exits that matter are the ones that run no code at all, and whoever starts
 //! next removes it under the state lock (`daemon::uds::SocketDir::bind`). And an un-drained
 //! exit is survivable rather than a hole for the reason it always was: Linux releases an
-//! `flock` when the last descriptor on its open file description closes, so a *killed* `wchd`
-//! releases the state lock, and the same sentence covers every camera descriptor its actors
-//! held. Nor is an in-flight **HTTP** response bounded: everything P5a serves is a file of a
-//! few kilobytes, and the response that does not end on its own — P5b's MJPEG preview — is
-//! where design §2.6's "an open MJPEG tab must not hang shutdown" becomes a thing to build
-//! rather than a thing to inherit.
+//! `flock` when the last descriptor on its open file description closes, so a *killed*
+//! `webcam-handler-daemon` releases the state lock, and the same sentence covers every camera
+//! descriptor its actors held. Nor is an in-flight **HTTP** response bounded: everything P5a
+//! serves is a file of a few kilobytes, and the response that does not end on its own — P5b's
+//! MJPEG preview — is where design §2.6's "an open MJPEG tab must not hang shutdown" becomes a
+//! thing to build rather than a thing to inherit.
 //!
 //! ## The systemd half, which is now here
 //!
@@ -84,12 +84,12 @@
 //! paragraph used to defer is in [`daemon::systemd`]. This build passes
 //! [`daemon::systemd::Supervisor`] — the real `sd_notify` implementation — rather than
 //! `daemon::shutdown::Unsupervised`, and it does so **unconditionally**: `sd_notify::notify`
-//! answers `Ok(())` with `$NOTIFY_SOCKET` unset, so a `wchd` started from a shell opens
-//! nothing and says nothing, which is exactly what `Unsupervised` provided, while a `wchd`
-//! started from a unit gets `READY=1`, a `STATUS=` an operator can read in `systemctl status`,
-//! a watchdog ping if the unit asked for one, and `STOPPING=1` before the teardown takes any
-//! time. Socket activation and the journald layer are the same story told about a listener
-//! and a log line.
+//! answers `Ok(())` with `$NOTIFY_SOCKET` unset, so a `webcam-handler-daemon` started from a
+//! shell opens nothing and says nothing, which is exactly what `Unsupervised` provided, while
+//! a `webcam-handler-daemon` started from a unit gets `READY=1`, a `STATUS=` an operator can
+//! read in `systemctl status`, a watchdog ping if the unit asked for one, and `STOPPING=1`
+//! before the teardown takes any time. Socket activation and the journald layer are the same
+//! story told about a listener and a log line.
 //!
 //! **The camera count does not gate readiness.** `READY=1` goes out as soon as there is a
 //! socket, and the number of cameras this machine had at startup arrives afterwards as a
@@ -98,16 +98,16 @@
 //! duration is a property of the hardware, and an enumeration that fails is a status line
 //! rather than a daemon that will not start (E3, AGENTS rule 7).
 //!
-//! **This daemon still never self-daemonizes.** There is no `fork` anywhere in this
-//! workspace, no `setsid`, no PID file, and no `Type=forking` unit — the process a supervisor
-//! starts is the process that serves, which is what makes `NotifyAccess=main` sufficient,
-//! what makes the pid in D9's lock record the pid systemd knows about, and what makes the
-//! `SIGTERM` a `systemctl stop` sends arrive at the handler installed above. Since P4e-ii
-//! that is a claim something checks rather than a sentence here:
-//! `scripts/gates/systemd-units.sh` derives it from the shipped unit files (`Type=notify`,
-//! never `Type=forking`, no `PIDFile=`), and `scripts/gates/socket-activation.sh` starts a
-//! real `wchd` under `systemd-socket-activate` and asserts the process that was started is
-//! the one holding the socket.
+//! **This daemon still never self-daemonizes.** There is no `fork` anywhere in this workspace,
+//! no `setsid`, no PID file, and no `Type=forking` unit — the process a supervisor starts is
+//! the process that serves, which is what makes `NotifyAccess=main` sufficient, what makes the
+//! pid in D9's lock record the pid systemd knows about, and what makes the `SIGTERM` a
+//! `systemctl stop` sends arrive at the handler installed above. Since P4e-ii that is a claim
+//! something checks rather than a sentence here: `scripts/gates/systemd-units.sh` derives it
+//! from the shipped unit files (`Type=notify`, never `Type=forking`, no `PIDFile=`), and
+//! `scripts/gates/socket-activation.sh` starts a real `webcam-handler-daemon` under
+//! `systemd-socket-activate` and asserts the process that was started is the one holding the
+//! socket.
 //!
 //! `std::process::exit` is lint-banned in this workspace precisely so the release above stays
 //! true: main returns an [`ExitCode`] and the stack unwinds, releasing the lock on the way.
@@ -142,7 +142,7 @@ use schema::paths::SystemEnv;
 
 /// Serve webcam-handler over a Unix socket (design D10, D11).
 #[derive(Debug, Parser)]
-#[command(name = "wchd", version, about, long_about = None)]
+#[command(name = "webcam-handler-daemon", version, about, long_about = None)]
 struct Args {
     /// Which backend to drive.
     #[arg(long, value_name = "KIND", default_value = "v4l2", value_parser = backend_kind)]
@@ -150,8 +150,8 @@ struct Args {
 
     /// Device profiles for the fake backend to replay. Repeatable.
     ///
-    /// Required with `--backend fake`, and enforced by clap rather than at run time, for
-    /// the reason `wch`'s identical flag states: a backend with nothing to replay
+    /// Required with `--backend fake`, and enforced by clap rather than at run time, for the
+    /// reason `webcam-handler-cli`'s identical flag states: a backend with nothing to replay
     /// enumerates nothing, and "no cameras" is exactly what an operator whose cameras had
     /// vanished would see. A usage mistake must not be spelled like a device answer.
     #[arg(long, value_name = "PATH", required_if_eq("backend", "fake"))]
@@ -196,9 +196,9 @@ const DEFAULT_HTTP_BIND: &str = "127.0.0.1:0";
 ///
 /// Not a `ValueEnum` derive, for the reason `cli-core` newtypes the same vocabulary: the
 /// spelling belongs to [`BackendKind::as_str`] and a derive would put a second copy of it
-/// here. Not `cli_core::BackendKindArg` either — `wchd` links no `cli-core`, because T4 is
-/// the *command* surface `wch` and `wchc` share and this daemon has no verbs, only a
-/// backend to choose.
+/// here. Not `cli_core::BackendKindArg` either — `webcam-handler-daemon` links no `cli-core`,
+/// because T4 is the *command* surface `webcam-handler-cli` and `webcam-handler-client` share
+/// and this daemon has no verbs, only a backend to choose.
 fn backend_kind(text: &str) -> std::result::Result<BackendKind, String> {
     BackendKind::parse(text).ok_or_else(|| {
         let known: Vec<&str> = BackendKind::ALL.iter().map(|kind| kind.as_str()).collect();
@@ -209,7 +209,7 @@ fn backend_kind(text: &str) -> std::result::Result<BackendKind, String> {
     })
 }
 
-/// The one place `wchd` names a backend.
+/// The one place `webcam-handler-daemon` names a backend.
 ///
 /// The second of exactly two exhaustive matches over [`BackendKind`] (design §2.11): the
 /// vocabulary is closed, so adding a backend stops *both* composition roots' builds until
@@ -246,7 +246,7 @@ async fn main() -> ExitCode {
             // The typed error, rendered once, on the stream systemd captures. D13 already
             // says which directory is wrong and what is wrong with it; there is nothing
             // for this line to add.
-            tracing::error!(%error, "wchd cannot serve");
+            tracing::error!(%error, "webcam-handler-daemon cannot serve");
             ExitCode::FAILURE
         }
     }
@@ -275,8 +275,8 @@ async fn run(args: &Args) -> Result<()> {
 
     // D9's daemon protocol, and this binding's lifetime is the lock's: `state` lives until
     // `run` returns, which is until the process stops serving. Never blocks — a second
-    // `wchd` is answered with `StoreLocked` naming the holder rather than waiting for a
-    // lock that, by this protocol's definition, will not be free.
+    // `webcam-handler-daemon` is answered with `StoreLocked` naming the holder rather than
+    // waiting for a lock that, by this protocol's definition, will not be free.
     let state = OwnedState::take(&env)?;
 
     // Two startup paths, one socket. The lock above is taken on both — an activated socket
@@ -304,7 +304,7 @@ async fn run(args: &Args) -> Result<()> {
     // The one line an operator looks for, and the one every subprocess test and shell
     // predicate in this project waits on. A socket path is not a frame and not derived from
     // one (see `daemon::logging`).
-    tracing::info!(socket = %socket, backend = backend_name, "wchd is serving");
+    tracing::info!(socket = %socket, backend = backend_name, "webcam-handler-daemon is serving");
 
     // The wire surface is `webcam-handler-api`'s T5 surface, and the daemon *mounts* it
     // with the generated `into_rpc()` rather than registering methods of its own —
@@ -337,9 +337,10 @@ async fn run(args: &Args) -> Result<()> {
     let housekeeping = wchd.spawn_idle_sweeps();
     // **`mount` is called once in this process**, and what the two transports share is the
     // value it produced rather than the call that produced it — a `Methods` clone is an `Arc`
-    // bump, so `wchc` over `AF_UNIX` and a browser over the WebSocket answer out of one
-    // registration. Two `mount` calls would compile, would pass every test that asks either
-    // wire a question, and would be the second registration path D10 exists to prevent.
+    // bump, so `webcam-handler-client` over `AF_UNIX` and a browser over the WebSocket answer
+    // out of one registration. Two `mount` calls would compile, would pass every test that
+    // asks either wire a question, and would be the second registration path D10 exists to
+    // prevent.
     let methods = daemon::server::mount(wchd.clone())?;
     let mut serving = uds::serve(listener, methods.clone());
 
@@ -379,18 +380,18 @@ async fn run(args: &Args) -> Result<()> {
             // after it reads as a token that failed to render.
             tracing::info!(
                 url = %web.ready_to_open_url(),
-                "wchd is serving the web client"
+                "webcam-handler-daemon is serving the web client"
             );
             Some(web)
         }
     };
 
     // The real supervisor, passed unconditionally: with `$NOTIFY_SOCKET` unset every one of
-    // these is a no-op, so a `wchd` in a terminal behaves exactly as it did when this was
-    // `Unsupervised` (`daemon::systemd::Supervisor` has the argument). Behind an `Arc`
-    // because two other things hold it — the startup status task and, from here, the teardown
-    // — and the seam is `&dyn` by design: the *order* these are sent in relative to the
-    // teardown is a claim `daemon::shutdown` makes, and a claim about a side effect that
+    // these is a no-op, so a `webcam-handler-daemon` in a terminal behaves exactly as it did
+    // when this was `Unsupervised` (`daemon::systemd::Supervisor` has the argument). Behind an
+    // `Arc` because two other things hold it — the startup status task and, from here, the
+    // teardown — and the seam is `&dyn` by design: the *order* these are sent in relative to
+    // the teardown is a claim `daemon::shutdown` makes, and a claim about a side effect that
     // leaves the process needs a recording double to be assertable at all.
     let notify: Arc<dyn Notifying> = Arc::new(Supervisor::new());
     notify.ready(&format!("serving on {socket} ({backend_name})"));
@@ -475,14 +476,21 @@ mod tests {
         // backend is opt-in and cannot be selected without something to replay. Both
         // directions, because a `--backend fake` that defaulted to an empty profile list
         // would enumerate nothing and look exactly like a machine with no webcam.
-        let default = Args::try_parse_from(["wchd"]).expect("no arguments is a valid daemon");
+        let default = Args::try_parse_from(["webcam-handler-daemon"])
+            .expect("no arguments is a valid daemon");
         assert_eq!(default.backend, BackendKind::V4l2);
         assert!(default.profile.is_empty());
 
-        Args::try_parse_from(["wchd", "--backend", "fake"])
+        Args::try_parse_from(["webcam-handler-daemon", "--backend", "fake"])
             .expect_err("a replay backend with nothing to replay");
-        let replaying = Args::try_parse_from(["wchd", "--backend", "fake", "--profile", "a.json"])
-            .expect("a profile to replay");
+        let replaying = Args::try_parse_from([
+            "webcam-handler-daemon",
+            "--backend",
+            "fake",
+            "--profile",
+            "a.json",
+        ])
+        .expect("a profile to replay");
         assert_eq!(replaying.backend, BackendKind::Fake);
         assert_eq!(replaying.profile, vec![Utf8PathBuf::from("a.json")]);
     }
@@ -504,9 +512,10 @@ mod tests {
         // D11's "TCP is **opt-in**", at the surface where it is opt-in. `None` is not a
         // default address and not a disabled listener: it is the branch in `run` that opens no
         // socket and mints no token, and a `--http` that had acquired a `default_value` would
-        // pass every other test in this file while putting a socket on every `wchd` on the
-        // machine.
-        let default = Args::try_parse_from(["wchd"]).expect("no arguments is a valid daemon");
+        // pass every other test in this file while putting a socket on every
+        // `webcam-handler-daemon` on the machine.
+        let default = Args::try_parse_from(["webcam-handler-daemon"])
+            .expect("no arguments is a valid daemon");
 
         assert_eq!(default.http, None);
         assert!(!default.http_insecure_loopback);
@@ -519,7 +528,8 @@ mod tests {
         // the default, the flag with an address takes the address, and the flag does not eat
         // the argument that follows it — which is what `num_args = 0..=1` would do to a
         // command line if clap did not stop at the next `--`.
-        let bare = Args::try_parse_from(["wchd", "--http"]).expect("the flag needs no value");
+        let bare = Args::try_parse_from(["webcam-handler-daemon", "--http"])
+            .expect("the flag needs no value");
         assert_eq!(
             bare.http,
             Some(DEFAULT_HTTP_BIND.parse().expect("D11's default parses"))
@@ -530,8 +540,9 @@ mod tests {
             "the port is the kernel's to pick"
         );
 
-        let followed = Args::try_parse_from(["wchd", "--http", "--backend", "v4l2"])
-            .expect("the flag before another flag");
+        let followed =
+            Args::try_parse_from(["webcam-handler-daemon", "--http", "--backend", "v4l2"])
+                .expect("the flag before another flag");
         assert_eq!(followed.http, bare.http);
         assert_eq!(followed.backend, BackendKind::V4l2);
     }
@@ -542,16 +553,17 @@ mod tests {
         // is refused by the parser rather than resolved, because the *reach* of the bind is
         // what decides whether D11 requires a token, and a name with two addresses behind it
         // is a name with two answers to that question.
-        let wildcard = Args::try_parse_from(["wchd", "--http", "0.0.0.0:8080"])
+        let wildcard = Args::try_parse_from(["webcam-handler-daemon", "--http", "0.0.0.0:8080"])
             .expect("an address and a port");
         assert_eq!(
             wildcard.http,
             Some("0.0.0.0:8080".parse().expect("an address this test wrote"))
         );
 
-        Args::try_parse_from(["wchd", "--http", "localhost:8080"])
+        Args::try_parse_from(["webcam-handler-daemon", "--http", "localhost:8080"])
             .expect_err("a host name is not a bind address");
-        Args::try_parse_from(["wchd", "--http", "127.0.0.1"]).expect_err("an address with no port");
+        Args::try_parse_from(["webcam-handler-daemon", "--http", "127.0.0.1"])
+            .expect_err("an address with no port");
     }
 
     #[test]
@@ -559,11 +571,15 @@ mod tests {
         // Both halves of "meaningless without `--http`". Clap refuses the flag on its own, so
         // it cannot be a flag that parsed cleanly and did nothing — which is the second way an
         // operator comes to believe in a listener that is not there.
-        Args::try_parse_from(["wchd", "--http-insecure-loopback"])
+        Args::try_parse_from(["webcam-handler-daemon", "--http-insecure-loopback"])
             .expect_err("a flag about a listener nobody asked for");
 
-        let insecure = Args::try_parse_from(["wchd", "--http", "--http-insecure-loopback"])
-            .expect("D11's token-less loopback cell");
+        let insecure = Args::try_parse_from([
+            "webcam-handler-daemon",
+            "--http",
+            "--http-insecure-loopback",
+        ])
+        .expect("D11's token-less loopback cell");
         assert!(insecure.http_insecure_loopback);
 
         // And **not** refused off loopback, which is the fourth cell of D11's matrix and a
@@ -571,7 +587,7 @@ mod tests {
         // daemon that will not start. `daemon::http::posture` is what makes the flag inert and
         // says so out loud.
         let inert = Args::try_parse_from([
-            "wchd",
+            "webcam-handler-daemon",
             "--http",
             "192.168.1.10:8080",
             "--http-insecure-loopback",
@@ -587,7 +603,7 @@ mod tests {
         // that shrugged and started with an empty backend would answer `wch_list` with
         // "no cameras", which is E3's conversion at the composition root.
         let args = Args::try_parse_from([
-            "wchd",
+            "webcam-handler-daemon",
             "--backend",
             "fake",
             "--profile",
@@ -603,8 +619,9 @@ mod tests {
 
         // And the arm that needs no file: the real backend is constructible on any host,
         // because constructing one opens nothing (D12).
-        let real = backend_for(&Args::try_parse_from(["wchd"]).expect("no arguments"))
-            .expect("the v4l2 backend is a value, not a device");
+        let real =
+            backend_for(&Args::try_parse_from(["webcam-handler-daemon"]).expect("no arguments"))
+                .expect("the v4l2 backend is a value, not a device");
         assert_eq!(real.kind(), BackendKind::V4l2);
     }
 }

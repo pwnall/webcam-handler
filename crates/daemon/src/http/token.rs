@@ -79,13 +79,13 @@ use schema::{Error, Result};
 /// characters in a URL nobody types by hand.
 ///
 /// **It lives here rather than in `webcam-handler-schema::limits`**, and the precedent is
-/// [`crate::uds::SOCKET_DIR_MODE`] one module along — D11's *other* security constant, in
-/// the crate that reads it. The rule AGENTS states is about bounds ("settle deadlines, sweep
-/// caps, recording caps, channel depths, shutdown drains"), and what makes
-/// `schema::limits` the right home for `DAEMON_SOCKET_FILE` is that **two** crates have to
-/// agree on it — `wchc` resolves the same path the daemon binds. Nothing outside this crate
-/// mints or checks a token: the web client receives one and the CLI clients never see one.
-/// A number moved to the shared crate for tidiness would be a number `webcam-handler-schema`
+/// [`crate::uds::SOCKET_DIR_MODE`] one module along — D11's *other* security constant, in the
+/// crate that reads it. The rule AGENTS states is about bounds ("settle deadlines, sweep caps,
+/// recording caps, channel depths, shutdown drains"), and what makes `schema::limits` the
+/// right home for `DAEMON_SOCKET_FILE` is that **two** crates have to agree on it —
+/// `webcam-handler-client` resolves the same path the daemon binds. Nothing outside this crate
+/// mints or checks a token: the web client receives one and the CLI clients never see one. A
+/// number moved to the shared crate for tidiness would be a number `webcam-handler-schema`
 /// carries for a reader it does not have.
 pub const TOKEN_BYTES: usize = 32;
 

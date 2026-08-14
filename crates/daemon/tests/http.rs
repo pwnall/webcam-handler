@@ -30,11 +30,11 @@
 //!
 //! Two entry points, deliberately, because they establish different things.
 //!
-//! [`Web::opened`] calls `daemon::http::open` — **the function `wchd`'s composition root
-//! calls**, which decides the posture from the address, mints the token only where D11 gates
-//! it, binds, and serves. Everything after that in `main.rs` is: log what it answers, join it.
-//! So a test that opens a listener this way and then opens the URL it published is asserting
-//! about the shipped daemon and not about a rehearsal of it.
+//! [`Web::opened`] calls `daemon::http::open` — **the function `webcam-handler-daemon`'s
+//! composition root calls**, which decides the posture from the address, mints the token only
+//! where D11 gates it, binds, and serves. Everything after that in `main.rs` is: log what it
+//! answers, join it. So a test that opens a listener this way and then opens the URL it
+//! published is asserting about the shipped daemon and not about a rehearsal of it.
 //!
 //! Both hand in a **surface with no methods on it** ([`no_methods`]), because the subject
 //! here is the gate and the matrix. What the WebSocket endpoint on the same listener carries,
@@ -193,10 +193,10 @@ fn address(text: &str) -> SocketAddr {
 /// The wire surface this suite hands the listener: none.
 ///
 /// See the header. The listener takes the T5 surface as a value, so a suite whose subject is
-/// the credential can hand it an empty one and still be driving the function `wchd` calls —
-/// and a suite that handed it a real one would be claiming, in this file, something
-/// `web_rpc.rs` claims properly. What it does **not** mean is that the endpoint is absent:
-/// `daemon::http::rpc`'s route is registered either way, which is why
+/// the credential can hand it an empty one and still be driving the function
+/// `webcam-handler-daemon` calls — and a suite that handed it a real one would be claiming, in
+/// this file, something `web_rpc.rs` claims properly. What it does **not** mean is that the
+/// endpoint is absent: `daemon::http::rpc`'s route is registered either way, which is why
 /// [`the_wire_route_is_gated_and_the_page_beside_it_is_not`] can ask about it here.
 fn no_methods() -> jsonrpsee_server::Methods {
     jsonrpsee_server::Methods::new()
@@ -518,7 +518,8 @@ async fn the_wire_route_is_gated_and_the_page_beside_it_is_not() {
 #[tokio::test]
 async fn d11_loopback_without_the_flag_requires_the_token() {
     // **D11's first cell**: "loopback + token is the default". Reached through the composition
-    // root's own function with no flag at all, which is what `wchd --http` does.
+    // root's own function with no flag at all, which is what `webcam-handler-daemon --http`
+    // does.
     let web = Web::opened(false).await;
 
     assert_eq!(web.serving.posture().token(), TokenRule::Required);

@@ -1,6 +1,6 @@
 [package]
 name = "webcam-handler-client"
-description = "wchc — the webcam-handler daemon CLI client. Links no backend and no engine (the thin-client wall)."
+description = "The webcam-handler daemon CLI client. Links no backend and no engine (the thin-client wall)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,7 +15,7 @@ authors.workspace = true
 name = "client"
 
 [[bin]]
-name = "wchc"
+name = "webcam-handler-client"
 path = "src/main.rs"
 
 [lints]
@@ -44,7 +44,7 @@ jsonrpsee = { workspace = true, features = ["async-client"] }
 # The frame layer, and the same one the daemon serves: `soketto` is jsonrpsee-server's own
 # WebSocket implementation, so the two halves of a frame cannot disagree about what a frame
 # is. It is a **normal** dependency here where it is a dev-dependency of the daemon,
-# because `wchc`'s transport is the shipped product rather than a fixture.
+# because `webcam-handler-client`'s transport is the shipped product rather than a fixture.
 soketto.workspace = true
 # `net` for `UnixStream`, `rt` for the current-thread runtime this binary owns (see
 # `remote::Remote`), `macros` for the `select!` that runs a sweep beside its progress
@@ -60,8 +60,8 @@ tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
 # `tokio::net::UnixStream` speaks tokio's. One adapter, at the one place the two meet.
 tokio-util = { workspace = true, features = ["compat"] }
 # One type name: a session id, which is what `remote::SweepFilter` compares a progress event
-# against. `wchc` mints none — the daemon does, at its own composition root, because the
-# engine reads no clock (D9) — so this edge is a spelling and not a capability.
+# against. `webcam-handler-client` mints none — the daemon does, at its own composition root,
+# because the engine reads no clock (D9) — so this edge is a spelling and not a capability.
 uuid.workspace = true
 webcam-handler-api.workspace = true
 webcam-handler-cli-core.workspace = true
@@ -80,20 +80,21 @@ image.workspace = true
 # `libc` for `webcam-handler-daemon`'s reason — this crate is `#![forbid(unsafe_code)]` and
 # rustix is a safe wrapper — and it is already resolved for the daemon's own suites.
 rustix = { workspace = true, features = ["process"] }
-# `wchc`'s own suites spawn the shipped binary and read what it writes, so the fixtures they
-# need are a private pair of XDG directories and a device profile for the daemon beside it to
-# replay. **Dev-dependencies do not ship**, which is why `webcam-handler-engine` may be named
-# here and nowhere above: `dependency-walls.sh`'s thin-client wall counts normal edges only,
-# and `TempRuntimeDir`/`TempStore` are the engine's for the reason the daemon's own suites
-# give — a third copy of a temp-directory fixture is a third answer to "where does this run".
+# `webcam-handler-client`'s own suites spawn the shipped binary and read what it writes, so the
+# fixtures they need are a private pair of XDG directories and a device profile for the daemon
+# beside it to replay. **Dev-dependencies do not ship**, which is why `webcam-handler-engine`
+# may be named here and nowhere above: `dependency-walls.sh`'s thin-client wall counts normal
+# edges only, and `TempRuntimeDir`/`TempStore` are the engine's for the reason the daemon's own
+# suites give — a third copy of a temp-directory fixture is a third answer to "where does this
+# run".
 serde_json.workspace = true
 # `test-util`, and it is here rather than above for the reason a dev-dependency exists: a
-# shipped `wchc` must not be able to pause its own clock. The sweep tail's bound is the
-# *subject* of two tests (`remote::tests`, note **N70** finding F2) and AGENTS' rule for that
-# shape is a clock the test owns — `tokio::time::pause` plus auto-advance, so a hundred
-# simulated milliseconds cost nothing and the assertion is about the number rather than about
-# how loaded the machine was. Cargo resolves dev-dependency features for test targets only,
-# so the binary still links exactly the four features the normal edge above names.
+# shipped `webcam-handler-client` must not be able to pause its own clock. The sweep tail's
+# bound is the *subject* of two tests (`remote::tests`, note **N70** finding F2) and AGENTS'
+# rule for that shape is a clock the test owns — `tokio::time::pause` plus auto-advance, so a
+# hundred simulated milliseconds cost nothing and the assertion is about the number rather than
+# about how loaded the machine was. Cargo resolves dev-dependency features for test targets
+# only, so the binary still links exactly the four features the normal edge above names.
 tokio = { workspace = true, features = ["test-util"] }
 webcam-handler-engine.workspace = true
 # The conformance battery's own answers to "may a test write to this control", "is there a

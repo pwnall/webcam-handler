@@ -1,6 +1,6 @@
 [package]
 name = "webcam-handler-cli"
-description = "wch — the direct webcam-handler CLI, driving the engine in-process."
+description = "The direct webcam-handler CLI, driving the engine in-process."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "wch"
+name = "webcam-handler-cli"
 path = "src/main.rs"
 
 [lints]
@@ -19,7 +19,7 @@ workspace = true
 [dependencies]
 camino.workspace = true
 # No clap: `Cli::parse_checked` lives in the shared command surface, because the rule it
-# enforces beyond clap's own attributes has to hold for `wchc` too (T4).
+# enforces beyond clap's own attributes has to hold for `webcam-handler-client` too (T4).
 serde_json.workspace = true
 # A session's identity is a UUIDv7 the *caller* mints: the engine reads no clock, so the
 # composition root is where "now" enters (design D9).

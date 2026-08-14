@@ -20,7 +20,7 @@
 //! [`schema::Error::Busy`] renders an empty list as "an unidentified process" rather than
 //! claiming anything about `/proc`.
 //!
-//! ## The deliberate duplication with `wch-priv`
+//! ## The deliberate duplication with `webcam-handler-priv`
 //!
 //! Note N8 records it and declines to merge it: `modules::video_holders` there asks "is
 //! *any* camera in use", to decide whether unloading `uvcvideo` would pull the driver out

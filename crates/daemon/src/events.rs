@@ -719,10 +719,10 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// time, because P4e's subscription is per *client* and a client may watch a daemon running
 /// more than one session".
 ///
-/// It replaces the `engine::progress::Silent` the sweep emitted into at P4c, at the seam
-/// that file said was "already the shape P4e needs". `engine::progress::ChannelSink` stays
-/// exactly where it is — that one is `wch`'s, feeding indicatif over a `std::sync::mpsc`
-/// the engine can name without a runtime.
+/// It replaces the `engine::progress::Silent` the sweep emitted into at P4c, at the seam that
+/// file said was "already the shape P4e needs". `engine::progress::ChannelSink` stays exactly
+/// where it is — that one is `webcam-handler-cli`'s, feeding indicatif over a
+/// `std::sync::mpsc` the engine can name without a runtime.
 #[derive(Debug)]
 pub(crate) struct ProgressBroadcast(Arc<Events>);
 

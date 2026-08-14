@@ -39,8 +39,8 @@ pub(crate) const SESSION_TASK: &str = "exposure";
 /// A daemon over two replayed cameras and a state directory with one session in it.
 ///
 /// Everything the transports need is held here because dropping any of it would take the
-/// socket, the lock or the state tree with it — the arrangement a real `wchd` has, which is
-/// why this is one value and not six locals.
+/// socket, the lock or the state tree with it — the arrangement a real `webcam-handler-daemon`
+/// has, which is why this is one value and not six locals.
 pub(crate) struct Fixture {
     pub(crate) backend: Arc<FakeBackend>,
     /// The daemon behind both wires, for the questions no wire answers.

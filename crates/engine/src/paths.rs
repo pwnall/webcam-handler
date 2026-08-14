@@ -1,14 +1,14 @@
 //! The state directory: where D9's session tree lives, and the fixtures that fake one.
 //!
 //! The other XDG directory this tool needs is in [`schema::paths`], and the split is
-//! deliberate. `$XDG_RUNTIME_DIR/webcam-handler` is a **transport** fact — the daemon
-//! binds a socket in it (D11) and `wchc` connects to that socket, and the thin-client
-//! wall (T6) forbids `webcam-handler-client` from linking this crate, so a thin client
-//! that had to come here to learn where a socket lives could not be a thin client. The
-//! state directory is a **storage** fact: it is the first line of opening a session store,
-//! and nothing asks for it that is not already linking the engine to read what is inside.
-//! One home each (design §2.10), and the line is drawn along what a directory is *for*
-//! rather than along which module resolved both first.
+//! deliberate. `$XDG_RUNTIME_DIR/webcam-handler` is a **transport** fact — the daemon binds a
+//! socket in it (D11) and `webcam-handler-client` connects to that socket, and the thin-client
+//! wall (T6) forbids `webcam-handler-client` from linking this crate, so a thin client that
+//! had to come here to learn where a socket lives could not be a thin client. The state
+//! directory is a **storage** fact: it is the first line of opening a session store, and
+//! nothing asks for it that is not already linking the engine to read what is inside. One home
+//! each (design §2.10), and the line is drawn along what a directory is *for* rather than
+//! along which module resolved both first.
 //!
 //! What that leaves here is [`state_dir`], the `$HOME` fallback the specification gives it,
 //! and the temporary-directory fixtures — including [`TempRuntimeDir`], which is about the
@@ -17,7 +17,7 @@
 //! would have bought one crate's convenience with a dependency on the crate every other
 //! crate links. `tempfile` is already here, for [`crate::store::write_json_atomic`]'s
 //! in-directory temporary file, so the fixture costs this workspace nothing where it is —
-//! and `wchc`'s tests can take a dev-dependency on the engine, which
+//! and `webcam-handler-client`'s tests can take a dev-dependency on the engine, which
 //! `scripts/gates/dependency-walls.sh` counts as no edge at all because a test binary ships
 //! nowhere.
 //!
@@ -80,8 +80,8 @@ pub fn state_dir(env: &dyn Env) -> Result<Utf8PathBuf> {
 /// It is here rather than beside the path it joins for this module header's reason —
 /// `webcam-handler-schema` carries no `tempfile` edge and is not gaining one for a fixture —
 /// and it is public, and un-gated by any feature, for [`crate::store::TempStore`]'s reason:
-/// the daemon's tests, the CLI's, the backend's and `wchc`'s all need it, and a
-/// `#[cfg(test)]` helper is a helper only this crate can use.
+/// the daemon's tests, the CLI's, the backend's and `webcam-handler-client`'s all need it, and
+/// a `#[cfg(test)]` helper is a helper only this crate can use.
 ///
 /// [`TempRuntimeDir`] below is the deliberate exception and the two are worth reading
 /// together.
@@ -102,8 +102,8 @@ pub fn scratch_dir() -> Result<tempfile::TempDir> {
 /// A private `$XDG_RUNTIME_DIR` that disappears with the value.
 ///
 /// The runtime half of [`crate::store::TempStore`], and public for the same reason: the
-/// daemon's own tests, the CLI's subprocess tests and P4f's `wchc` tests all need a
-/// runtime directory that is real, empty, and gone afterwards, and three copies of that
+/// daemon's own tests, the CLI's subprocess tests and P4f's `webcam-handler-client` tests all
+/// need a runtime directory that is real, empty, and gone afterwards, and three copies of that
 /// fixture is three copies of a law (design §2.10). [`schema::paths::runtime_dir`]
 /// deliberately has no `/tmp` fallback — the 0700 socket-directory promise rests on the
 /// platform's — so without this a test would have to weaken the thing it is testing.
@@ -245,8 +245,9 @@ mod tests {
     #[test]
     fn an_empty_variable_counts_as_unset() {
         // The specification's wording, and the shape a shell produces by accident:
-        // `XDG_STATE_HOME= wchd` exports an empty string, not an absent variable. The
-        // runtime directory's half of this rule is asserted where the resolver is.
+        // `XDG_STATE_HOME= webcam-handler-daemon` exports an empty string, not an absent
+        // variable. The runtime directory's half of this rule is asserted where the resolver
+        // is.
         let env = MapEnv::from_pairs(&[("XDG_STATE_HOME", ""), ("HOME", "/home/someone")]);
         assert_eq!(
             state_dir(&env).expect("HOME is set"),

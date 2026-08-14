@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# A real `wchd` under a real service manager (docs/7 P4e-ii, design D11, §2.6).
+# A real `webcam-handler-daemon` under a real service manager (docs/7 P4e-ii, design D11,
+# §2.6).
 #
 # `daemon::systemd`'s unit tests take every decision in that module apart over values, and
 # `crates/daemon/tests/systemd.rs` drives a real daemon against a notify socket this project
@@ -27,8 +28,8 @@
 #    because binding the right inode and announcing another would be a daemon nobody can find.
 # 2. **An abstract-namespace socket is refused.** `-l @name` binds one with no filesystem
 #    presence at all: no directory, no mode, no owner. D11 makes filesystem permissions the
-#    whole of this daemon's authentication, so a `wchd` that served one would be serving a
-#    camera to every process in the network namespace that can spell the name.
+#    whole of this daemon's authentication, so a `webcam-handler-daemon` that served one would
+#    be serving a camera to every process in the network namespace that can spell the name.
 # 3. **More than one inherited descriptor is refused.** This daemon serves one socket. Picking
 #    the first of several would be a guess an operator cannot see.
 # 4. **When stderr really is the journal, the log goes there as structured entries.** Design
@@ -43,9 +44,10 @@
 #
 # $WCH_GATE_WCHD is the documented seam — the daemon-shaped program to start. The selftest
 # points it at programs that get one of these wrong each; `pass_case` always drives the real
-# `wchd`, which is rubric rule 6's requirement that one arm runs the real tool [S:N10].
-# $WCH_GATE_SOCKET_ACTIVATE is the other seam, and it exists for the skip: a case can point it
-# at a program that is not there and watch this predicate decline in a way that is counted.
+# `webcam-handler-daemon`, which is rubric rule 6's requirement that one arm runs the real tool
+# [S:N10]. $WCH_GATE_SOCKET_ACTIVATE is the other seam, and it exists for the skip: a case can
+# point it at a program that is not there and watch this predicate decline in a way that is
+# counted.
 #
 # `timeout` is a watchdog and not synchronisation: every wait here is a read on the daemon's
 # own stderr, which blocks until the daemon writes and ends when it exits.
@@ -72,18 +74,18 @@ if [[ -z "$app_dir" || -z "$socket_file" ]]; then
 fi
 gate_note "the socket this gate has systemd bind is \$XDG_RUNTIME_DIR/$app_dir/$socket_file"
 
-# The binary comes from the real checkout for `uds-permissions.sh`'s reason: building `wchd`
-# inside each of the selftest's scratch copies would cost a full compile per case, and the
-# subject here is the daemon's *behaviour*, which the seam below replaces wholesale when a
-# case wants a different one.
+# The binary comes from the real checkout for `uds-permissions.sh`'s reason: building
+# `webcam-handler-daemon` inside each of the selftest's scratch copies would cost a full
+# compile per case, and the subject here is the daemon's *behaviour*, which the seam below
+# replaces wholesale when a case wants a different one.
 checkout="$(git rev-parse --show-toplevel)"
-wchd="${WCH_GATE_WCHD:-$checkout/target/debug/wchd}"
+wchd="${WCH_GATE_WCHD:-$checkout/target/debug/webcam-handler-daemon}"
 if [[ -n "${WCH_GATE_WCHD:-}" ]]; then
     gate_note "driving the daemon-shaped program at $wchd (WCH_GATE_WCHD)"
 elif [[ ! -x "$wchd" ]]; then
-    (cd "$checkout" && cargo build --locked --offline -p webcam-handler-daemon --bin wchd >/dev/null 2>&1) ||
+    (cd "$checkout" && cargo build --locked --offline -p webcam-handler-daemon --bin webcam-handler-daemon >/dev/null 2>&1) ||
         {
-            gate_fail "could not build wchd; this gate has nothing to drive"
+            gate_fail "could not build webcam-handler-daemon; this gate has nothing to drive"
             gate_finish
         }
 fi
@@ -109,8 +111,8 @@ bound_inode=""
 serving_inode=""
 runs=0
 
-# Start `wchd` under the activator with the given `--listen` addresses, and wait — on the
-# daemon's own stderr, never on a clock — for it to announce the socket or exit.
+# Start `webcam-handler-daemon` under the activator with the given `--listen` addresses, and
+# wait — on the daemon's own stderr, never on a clock — for it to announce the socket or exit.
 #
 #   $1  the private runtime directory to give it
 #   $2  the socket path whose inode is watched (empty when there is nothing on the filesystem)
@@ -135,12 +137,14 @@ activated() {
     done
 
     # `--now` starts the child immediately instead of waiting for a connection, which is what
-    # lets this gate assert what the daemon does with the descriptor without needing a client
-    # — `wchc` is P4f's and there is no other JSON-RPC-over-UDS client in this tree.
+    # lets this gate assert what the daemon does with the descriptor without needing a client —
+    # `webcam-handler-client` is P4f's and there is no other JSON-RPC-over-UDS client in this
+    # tree.
     #
     # `-E` for each variable because the activator does **not** pass its own environment
-    # through: measured on this host, a `wchd` started without them refused with
-    # "$XDG_STATE_HOME: unset", which is the daemon's own startup refusal and not this claim.
+    # through: measured on this host, a `webcam-handler-daemon` started without them refused
+    # with "$XDG_STATE_HOME: unset", which is the daemon's own startup refusal and not this
+    # claim.
     timeout "$deadline" "$activate" --now "${addresses[@]}" \
         -E "XDG_RUNTIME_DIR=$runtime" -E "XDG_STATE_HOME=$state" -E "RUST_LOG=info" \
         -- "$wchd" >/dev/null 2>"$fifo" &
@@ -269,7 +273,7 @@ else
         # other suite in this project already waits for.
         entry="$(timeout "$journal_deadline" journalctl --user --unit="$unit" --output=json \
             --output-fields=MESSAGE,_TRANSPORT --follow --lines=50 2>/dev/null |
-            grep -m1 '"MESSAGE"[^}]*wchd is serving' || true)"
+            grep -m1 '"MESSAGE"[^}]*webcam-handler-daemon is serving' || true)"
         systemctl --user stop "$unit" >/dev/null 2>&1 || true
         systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
 

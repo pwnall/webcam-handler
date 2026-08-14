@@ -1,6 +1,6 @@
 [package]
 name = "webcam-handler-web"
-description = "The webcam-handler web client: vanilla HTML/CSS/ES modules, embedded into wchd. No build step, no npm, no CDN."
+description = "The webcam-handler web client: vanilla HTML/CSS/ES modules, embedded into webcam-handler-daemon. No build step, no npm, no CDN."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,37 +21,36 @@ workspace = true
 # to argue for.
 #
 # **`debug-embed` is on, and that is a decision rather than a default made comfortable.**
-# Without it rust-embed embeds in release builds and reads `assets/` **from the filesystem**
-# in debug ones, at the absolute path this crate was compiled from. That would make a debug
-# `wchd` a daemon that serves the camera's control panel out of its author's source tree:
-# it works on the machine that built it, serves nothing anywhere else, and — worse for a
-# project whose tests are the argument — means every test in `crates/daemon/tests/http.rs`
-# would be exercising a *different mechanism* from the one a release binary ships, so
-# "assets embed" would be a claim with no reader. With the feature on there is one
-# mechanism in both profiles and `Assets::get` is a lookup in a table fixed at compile
-# time, which is also what makes `..` in a request path unable to name anything (see
+# Without it rust-embed embeds in release builds and reads `assets/` **from the filesystem** in
+# debug ones, at the absolute path this crate was compiled from. That would make a debug
+# `webcam-handler-daemon` a daemon that serves the camera's control panel out of its author's
+# source tree: it works on the machine that built it, serves nothing anywhere else, and — worse
+# for a project whose tests are the argument — means every test in
+# `crates/daemon/tests/http.rs` would be exercising a *different mechanism* from the one a
+# release binary ships, so "assets embed" would be a claim with no reader. With the feature on
+# there is one mechanism in both profiles and `Assets::get` is a lookup in a table fixed at
+# compile time, which is also what makes `..` in a request path unable to name anything (see
 # `get`'s doc).
 #
 # The residual is stated rather than hidden: editing `assets/` now needs a rebuild before
-# `wchd` serves the change, because the bytes are in the binary. That is the cost of the
-# property, it is one `cargo run` away, and P5c's client is developed against a daemon that
-# is rebuilt anyway.
+# `webcam-handler-daemon` serves the change, because the bytes are in the binary. That is the
+# cost of the property, it is one `cargo run` away, and P5c's client is developed against a
+# daemon that is rebuilt anyway.
 #
-# **`debug-embed` is the only feature, and there is no `default-features = false` beside
-# it because rust-embed 8 declares no `default` feature at all** — the list below is the
-# whole posture rather than half of it. What is left off: `actix`, `axum-ex`, `poem-ex`,
-# `salvo-ex` and `warp-ex`, which are framework integrations (the axum one would give this
-# crate its own axum and tokio edges, and serving is `webcam-handler-daemon`'s half of the
-# seam, not this one's); `compression`, a second copy of every asset behind an
-# `include-flate` edge, for a page measured in kilobytes; `mime-guess`, a thousand-entry
-# MIME table for the four extensions a no-build-step client has — `content_type` is those
-# four and a test asserts every embedded asset is one of them, which is a forcing function
-# the table alone would not be. (`mime_guess` still appears in `Cargo.lock`: it is a
-# non-optional dependency of `rust-embed-impl`, which is a **proc macro**, so it runs at
-# compile time on the host and is not linked into `wchd`. The feature above is about
-# whether *this crate* asks it a question at run time, and it does not.) Then
-# `interpolate-folder-path`, which lets an environment
+# **`debug-embed` is the only feature, and there is no `default-features = false` beside it
+# because rust-embed 8 declares no `default` feature at all** — the list below is the whole
+# posture rather than half of it. What is left off: `actix`, `axum-ex`, `poem-ex`, `salvo-ex`
+# and `warp-ex`, which are framework integrations (the axum one would give this crate its own
+# axum and tokio edges, and serving is `webcam-handler-daemon`'s half of the seam, not this
+# one's); `compression`, a second copy of every asset behind an `include-flate` edge, for a
+# page measured in kilobytes; `mime-guess`, a thousand-entry MIME table for the four extensions
+# a no-build-step client has — `content_type` is those four and a test asserts every embedded
+# asset is one of them, which is a forcing function the table alone would not be. (`mime_guess`
+# still appears in `Cargo.lock`: it is a non-optional dependency of `rust-embed-impl`, which is
+# a **proc macro**, so it runs at compile time on the host and is not linked into
+# `webcam-handler-daemon`. The feature above is about whether *this crate* asks it a question
+# at run time, and it does not.) Then `interpolate-folder-path`, which lets an environment
 # variable decide what gets embedded and is the exact opposite of the property above; and
-# `include-exclude` and `deterministic-timestamps`, which have nothing to say about a
-# directory this crate owns outright.
+# `include-exclude` and `deterministic-timestamps`, which have nothing to say about a directory
+# this crate owns outright.
 rust-embed = { workspace = true, features = ["debug-embed"] }

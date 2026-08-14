@@ -42,9 +42,9 @@ use caps::{CapSet, Capability};
 
 /// The capabilities `just bless` grants, and the argument it passes to `setcap`.
 ///
-/// One home: the justfile reads this string out of `wch-priv doctor --setcap-argument`
-/// rather than repeating it, so the bless and the runtime check cannot disagree about
-/// what "blessed" means.
+/// One home: the justfile reads this string out of `webcam-handler-priv doctor
+/// --setcap-argument` rather than repeating it, so the bless and the runtime check cannot
+/// disagree about what "blessed" means.
 pub(crate) const BLESSING: &str = "cap_sys_module,cap_net_admin+ep";
 
 /// Every capability this helper needs, with what each one is for.
@@ -212,7 +212,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::NotBlessed { what, held } => {
-                writeln!(f, "this copy of wch-priv is {what}.")?;
+                writeln!(f, "this copy of webcam-handler-priv is {what}.")?;
                 // Deduplicated: a capability absent from both sets is one problem with
                 // one fix, and printing it twice reads like two.
                 for purpose in held.missing() {

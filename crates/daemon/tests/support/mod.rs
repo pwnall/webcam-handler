@@ -36,7 +36,7 @@ use tokio::net::UnixStream;
 /// The io failure is **returned**, not asserted away: "nobody is listening on that socket"
 /// is the answer a client gets when no daemon is running, and a helper that panicked on it
 /// would make that case untestable — which is precisely the case `read_verbs.rs` uses to
-/// prove its two wires are two, and the refusal P4f's `wchc` has to render.
+/// prove its two wires are two, and the refusal P4f's `webcam-handler-client` has to render.
 pub(crate) async fn call(socket: &Utf8Path, request: &str) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket.as_std_path()).await?;
     let framed = format!(

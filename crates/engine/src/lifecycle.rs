@@ -210,11 +210,11 @@ pub fn find(store: &SessionStore, id: Uuid) -> Result<Option<Session>> {
 /// and a UUID names one session wherever it lives — including under another camera, which
 /// is what gives [`belongs_to`] something to refuse.
 ///
-/// One function because it is one law with two surfaces now: `wch calibrate status` reaches
-/// it through T4's executor and `wch_calibrate_status` reaches it through T5's server, and
-/// a second copy would be a second answer to "which session did you mean, and is it this
-/// camera's". Before the P3 review the check inside it existed on one verb out of three,
-/// which is exactly what a composition living at its call sites costs.
+/// One function because it is one law with two surfaces now: `webcam-handler-cli calibrate
+/// status` reaches it through T4's executor and `wch_calibrate_status` reaches it through T5's
+/// server, and a second copy would be a second answer to "which session did you mean, and is
+/// it this camera's". Before the P3 review the check inside it existed on one verb out of
+/// three, which is exactly what a composition living at its call sites costs.
 ///
 /// The `SessionRef` here is the wire/command vocabulary in [`schema::session`], spelled
 /// out because this module also names [`crate::store::SessionRef`], which is the *found
@@ -240,7 +240,7 @@ pub fn session_for(
     };
     let session = found.ok_or_else(|| Error::IllegalTransition {
         from: format!("no_session({named})"),
-        op: "read this session; `wch calibrate start` opens one".to_owned(),
+        op: "read this session; `webcam-handler-cli calibrate start` opens one".to_owned(),
     })?;
     belongs_to(&session, fingerprint)?;
     Ok(session)
@@ -249,22 +249,23 @@ pub fn session_for(
 /// The same, for a verb that is about to change something.
 ///
 /// The [`StoreLock`] is **proof, not a parameter**. D9's daemonless protocol is a
-/// read-modify-write under one advisory lock, and [`SessionStore`] expresses "under the
-/// lock" as a `&StoreLock` argument on every mutating method exactly so the discipline
-/// cannot be forgotten — but that argument can only guard the *write*. Each mutating
-/// calibrate verb used to load the session document immediately before `with_lock` and then
-/// commit a draft cloned from that pre-lock read, so only the write half of the cycle was
-/// protected: two concurrent `wch` processes whose windows overlapped could both exit 0
-/// with one of them silently republishing the other's document without its samples.
-/// Requiring the token here means a caller that has not taken the lock cannot perform the
-/// read at all, which is the one kind of hold that does not decay.
+/// read-modify-write under one advisory lock, and [`SessionStore`] expresses "under the lock"
+/// as a `&StoreLock` argument on every mutating method exactly so the discipline cannot be
+/// forgotten — but that argument can only guard the *write*. Each mutating calibrate verb used
+/// to load the session document immediately before `with_lock` and then commit a draft cloned
+/// from that pre-lock read, so only the write half of the cycle was protected: two concurrent
+/// `webcam-handler-cli` processes whose windows overlapped could both exit 0 with one of them
+/// silently republishing the other's document without its samples. Requiring the token here
+/// means a caller that has not taken the lock cannot perform the read at all, which is the one
+/// kind of hold that does not decay.
 ///
-/// **It is here rather than at a composition root because there are two of them.** `wch`
-/// takes D9's per-operation lock and `wchd` holds D9's lifetime lock, and the discipline is
-/// the same discipline; a copy at each surface is a copy that can be dropped from one. Note
-/// that the token proves nothing about a *daemon's* concurrency with itself — `flock` does
-/// not exclude the holder from itself, so `wchd` serializes its own request tasks in the
-/// process (note N47) and passes the one token it has held since startup.
+/// **It is here rather than at a composition root because there are two of them.**
+/// `webcam-handler-cli` takes D9's per-operation lock and `webcam-handler-daemon` holds D9's
+/// lifetime lock, and the discipline is the same discipline; a copy at each surface is a copy
+/// that can be dropped from one. Note that the token proves nothing about a *daemon's*
+/// concurrency with itself — `flock` does not exclude the holder from itself, so
+/// `webcam-handler-daemon` serializes its own request tasks in the process (note N47) and
+/// passes the one token it has held since startup.
 ///
 /// # Errors
 ///
@@ -281,10 +282,11 @@ pub fn session_to_update(
 /// What `calibrate status` answers: a session's document and its history.
 ///
 /// [`session_for`] plus [`history`], and it is one function because it is one verb with two
-/// surfaces — `wch calibrate status` through T4 and `wch_calibrate_status` through T5. The
-/// ordering is not interchangeable and is the reason this is not two calls at each of them:
-/// the document is loaded and checked against the camera *first*, so a status verb pointed
-/// at another camera's session refuses rather than handing back that session's log.
+/// surfaces — `webcam-handler-cli calibrate status` through T4 and `wch_calibrate_status`
+/// through T5. The ordering is not interchangeable and is the reason this is not two calls at
+/// each of them: the document is loaded and checked against the camera *first*, so a status
+/// verb pointed at another camera's session refuses rather than handing back that session's
+/// log.
 ///
 /// **No lock, under either of D9's protocols.** Reading is not a state write, and a status
 /// verb that refused while a daemon held the state directory would be one nobody can use on
@@ -626,7 +628,7 @@ pub fn discover_pairs(
 /// calibrate is recorded [`schema::session::ControlStatus::Blocked`] with the device's own
 /// reason rather than left out — a draft that silently omitted the read-only controls would
 /// read as a device that does not have them, and the operator verifying the draft against
-/// `wch controls` would find the two disagreeing.
+/// `webcam-handler-cli controls` would find the two disagreeing.
 ///
 /// **A control that already has a history is left alone.** Re-drafting a session mid-run is
 /// ordinary (a second `plan` after the queue was reordered), and a draft that re-classified

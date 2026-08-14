@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Every route the web listener registers is a route the token gate is over, and the only thing
-# `wchd` serves without D11's bearer token is a lookup in the embedded asset table (D11 and its
-# 2026-08-12 amendment, note **N82**, AGENTS.md "Hardware and privacy").
+# `webcam-handler-daemon` serves without D11's bearer token is a lookup in the embedded asset
+# table (D11 and its 2026-08-12 amendment, note **N82**, AGENTS.md "Hardware and privacy").
 #
 # ## This exists because a ruling took a property away
 #

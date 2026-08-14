@@ -32,14 +32,14 @@
 //! feature — it would make the daemon block a runtime worker on every request, which is
 //! the thing `crates/api`'s trait doc rejects `#[method(blocking)]` for.
 //!
-//! So the actor names no reply channel at all. [`CameraActor::submit`] takes a closure
-//! that is *given* the open device and closes over whatever the caller wants to answer
-//! through: the daemon's handler closes over a `tokio::sync::oneshot::Sender`, whose
-//! `send` is synchronous and non-blocking — exactly what a blocking thread needs — and
-//! awaits the receiver; [`CameraActor::ask`] closes over a `std` channel for callers that
-//! have a thread to spare, which is this module's own tests today and `wch` when it stops
-//! opening a camera per invocation. One actor API, two transports, no runtime in the
-//! engine. Note **N41** records the measurement and the two readings that were rejected.
+//! So the actor names no reply channel at all. [`CameraActor::submit`] takes a closure that is
+//! *given* the open device and closes over whatever the caller wants to answer through: the
+//! daemon's handler closes over a `tokio::sync::oneshot::Sender`, whose `send` is synchronous
+//! and non-blocking — exactly what a blocking thread needs — and awaits the receiver;
+//! [`CameraActor::ask`] closes over a `std` channel for callers that have a thread to spare,
+//! which is this module's own tests today and `webcam-handler-cli` when it stops opening a
+//! camera per invocation. One actor API, two transports, no runtime in the engine. Note
+//! **N41** records the measurement and the two readings that were rejected.
 //!
 //! ## Why every command carries the time
 //!
@@ -1024,8 +1024,8 @@ impl Cameras {
     /// What `list` answers, assembled where D1's rule lives.
     ///
     /// The other half of the forward above, for the same reason, and it forwards to
-    /// [`crate::resolve::list`] rather than assembling anything here — the rule that an
-    /// empty enumeration is diagnosed has one home, and it is shared with `wch`.
+    /// [`crate::resolve::list`] rather than assembling anything here — the rule that an empty
+    /// enumeration is diagnosed has one home, and it is shared with `webcam-handler-cli`.
     ///
     /// # Errors
     ///

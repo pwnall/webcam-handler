@@ -1,10 +1,10 @@
-//! `wchc` — the daemon CLI client. Links no backend and no engine.
+//! `webcam-handler-client` — the daemon CLI client. Links no backend and no engine.
 //!
 //! The second of the two consumers of the one command surface (T4). Everything the user sees
-//! comes from `webcam-handler-cli-core`, exactly as it does for `wch`; this crate contributes
-//! an [`Executor`](cli_core::Executor) that speaks the T5 wire instead of driving a camera,
-//! and the process's edges — argument parsing, the socket it connects to, the exit code, and
-//! turning a typed error into a line on standard error.
+//! comes from `webcam-handler-cli-core`, exactly as it does for `webcam-handler-cli`; this
+//! crate contributes an [`Executor`](cli_core::Executor) that speaks the T5 wire instead of
+//! driving a camera, and the process's edges — argument parsing, the socket it connects to,
+//! the exit code, and turning a typed error into a line on standard error.
 //!
 //! | File | Home of |
 //! |---|---|
@@ -36,21 +36,24 @@
 //!
 //! ## What this root refuses, and why refusing is the answer
 //!
-//! `--backend` and `--profile` are **global** flags on the shared [`Cli`], because the
-//! surface is shared and a verb exists once (T4). `wchc` cannot honour either: the daemon
-//! chose its backend at *its own* composition root — `wchd --backend fake --profile …` — and
-//! a client on the other end of a socket cannot change what a running process is driving.
+//! `--backend` and `--profile` are **global** flags on the shared [`Cli`], because the surface
+//! is shared and a verb exists once (T4). `webcam-handler-client` cannot honour either: the
+//! daemon chose its backend at *its own* composition root — `webcam-handler-daemon --backend
+//! fake --profile …` — and a client on the other end of a socket cannot change what a running
+//! process is driving.
 //!
 //! Three answers were available and two of them are worse:
 //!
-//! - **Fork the surface**, so `wchc` has its own flagless root. That is the one thing T4
-//!   forbids — the parity gate scrapes `--help` for its verb population, so a forked tree
-//!   would be a gate comparing a surface with itself (`Program`'s own doc says this).
-//! - **Ignore them.** `wchc --backend fake` would then look like it did something, and a
-//!   script pointed at a daemon serving real cameras would believe it was replaying a
-//!   profile. Silently doing the opposite of what was typed is the worst of the three.
-//! - **Refuse, naming where the decision lives.** The refusal says `wchd --backend`, so the
-//!   reader is sent to the process that can actually answer.
+//! - **Fork the surface**, so `webcam-handler-client` has its own flagless root. That is the
+//!   one thing T4 forbids — the parity gate scrapes `--help` for its verb population, so a
+//!   forked tree would be a gate comparing a surface with itself (`Program`'s own doc says
+//!   this).
+//! - **Ignore them.** `webcam-handler-client --backend fake` would then look like it did
+//!   something, and a script pointed at a daemon serving real cameras would believe it was
+//!   replaying a profile. Silently doing the opposite of what was typed is the worst of the
+//!   three.
+//! - **Refuse, naming where the decision lives.** The refusal says `webcam-handler-daemon
+//!   --backend`, so the reader is sent to the process that can actually answer.
 //!
 //! It is a **typed** error rather than a clap usage error, and that is a deliberate reading
 //! of the exit codes `cli_core::exit_code` fixes: the command line is well-formed — every
@@ -83,11 +86,12 @@ use schema::paths::Env;
 
 /// Which root this is.
 ///
-/// The command surface is shared with `wch` (T4), so the name is a parameter rather than a
-/// property of the tree — see [`Program`]. One value, read by every edge of this process
-/// that has to say it: the parser that renders `--help` and `--version`, the lines a failing
-/// run writes to standard error, and the probe notes `controls --discover-pairs` prints.
-pub const PROGRAM: Program = Program::Wchc;
+/// The command surface is shared with `webcam-handler-cli` (T4), so the name is a parameter
+/// rather than a property of the tree — see [`Program`]. One value, read by every edge of this
+/// process that has to say it: the parser that renders `--help` and `--version`, the lines a
+/// failing run writes to standard error, and the probe notes `controls --discover-pairs`
+/// prints.
+pub const PROGRAM: Program = Program::Client;
 
 /// Connect, and run one verb.
 ///
@@ -109,8 +113,8 @@ pub fn run(cli: &Cli, env: &dyn Env, out: &mut Output) -> Result<()> {
 /// Refuse the two flags that name a *composition root's* decision, which this root is not.
 ///
 /// The module header argues the decision; this is where it happens, and it happens **before**
-/// the socket is touched, so `wchc --backend fake list` says what is wrong with it rather
-/// than reporting that no daemon is running.
+/// the socket is touched, so `webcam-handler-client --backend fake list` says what is wrong
+/// with it rather than reporting that no daemon is running.
 ///
 /// # Errors
 ///
@@ -120,10 +124,10 @@ pub fn run(cli: &Cli, env: &dyn Env, out: &mut Output) -> Result<()> {
 /// `SelectorArgs::selection`), and it keeps the D13 registry closed: P4f adds no nineteenth
 /// variant.
 fn refuse_composition_flags(cli: &Cli) -> Result<()> {
-    // The *provenance*, not the value: `--backend` carries a default, so `cli.backend`
-    // always holds one — see `Cli::backend_was_chosen`. Refusing on the value would let
-    // `wchc --backend v4l2` through while the daemon replayed a profile, which is a client
-    // agreeing with a claim it cannot check.
+    // The *provenance*, not the value: `--backend` carries a default, so `cli.backend` always
+    // holds one — see `Cli::backend_was_chosen`. Refusing on the value would let
+    // `webcam-handler-client --backend v4l2` through while the daemon replayed a profile,
+    // which is a client agreeing with a claim it cannot check.
     if cli.backend_was_chosen() {
         return Err(refused(
             "--backend",
@@ -145,8 +149,8 @@ fn refused(flag: &str, because: &str) -> Error {
         from: format!("{PROGRAM} is a client"),
         op: format!(
             "honour {flag}: {because}. Start the daemon with the backend you want \
-             (`wchd {flag} …`), or run the verb with `wch`, which drives a camera in this \
-             process"
+             (`webcam-handler-daemon {flag} …`), or run the verb with `webcam-handler-cli`, \
+             which drives a camera in this process"
         ),
     }
 }
@@ -155,7 +159,8 @@ fn refused(flag: &str, because: &str) -> Error {
 ///
 /// Composed from the two homes that own its halves — [`schema::paths::runtime_dir`] for the
 /// directory and [`limits::DAEMON_SOCKET_FILE`] for the name — rather than written out, so
-/// `wchd` and `wchc` cannot come to disagree about a path they both have to know.
+/// `webcam-handler-daemon` and `webcam-handler-client` cannot come to disagree about a path
+/// they both have to know.
 ///
 /// The environment is a parameter for [`schema::paths`]'s reason: `std::env::set_var` is a
 /// data race and this crate forbids `unsafe`, so a test that wants a different runtime
@@ -178,9 +183,9 @@ fn socket(env: &dyn Env) -> Result<Utf8PathBuf> {
 /// than leave it at jsonrpsee's sixty-second default; this is where that is honoured, and
 /// both numbers are priced in [`schema::limits`] against the caps they have to outlast.
 ///
-/// A `match` on the verb rather than a maximum applied to all of them: a `wchc list` that
-/// hung for an hour because a sweep might have needed one would be this client refusing to
-/// tell an operator that their daemon has stopped answering.
+/// A `match` on the verb rather than a maximum applied to all of them: a
+/// `webcam-handler-client list` that hung for an hour because a sweep might have needed one
+/// would be this client refusing to tell an operator that their daemon has stopped answering.
 fn request_timeout(command: &Command) -> Duration {
     match command {
         Command::Calibrate(cli_core::CalibrateCommand::Sweep { .. }) => {
@@ -202,9 +207,9 @@ mod tests {
 
     #[test]
     fn the_socket_is_the_one_the_daemon_binds_and_says_so_when_there_is_nowhere_to_put_it() {
-        // Composed from the same two homes `wchd` composes it from — the assertion is
-        // against those, not against a literal, so a fixture cannot pin a path the daemon
-        // would not bind.
+        // Composed from the same two homes `webcam-handler-daemon` composes it from — the
+        // assertion is against those, not against a literal, so a fixture cannot pin a path
+        // the daemon would not bind.
         let env = MapEnv::from_pairs(&[(XDG_RUNTIME_DIR, "/run/user/1000")]);
         assert_eq!(
             socket(&env).expect("the variable is set"),
@@ -228,42 +233,59 @@ mod tests {
         // reading the provenance rather than the value: a client that accepted the spelling
         // that happens to match the default would be agreeing with a claim it cannot check.
         for args in [
-            ["wchc", "--backend", "v4l2", "list"].as_slice(),
-            ["wchc", "--backend", "fake", "--profile", "p.json", "list"].as_slice(),
+            ["webcam-handler-client", "--backend", "v4l2", "list"].as_slice(),
+            [
+                "webcam-handler-client",
+                "--backend",
+                "fake",
+                "--profile",
+                "p.json",
+                "list",
+            ]
+            .as_slice(),
         ] {
             let error = refuse_composition_flags(&parse(args)).expect_err("--backend is refused");
             assert_eq!(error.kind(), schema::ErrorKind::IllegalTransition);
             let rendered = error.to_string();
             assert!(rendered.contains("--backend"), "{rendered}");
             // The refusal sends the reader to the process that can answer.
-            assert!(rendered.contains("wchd"), "{rendered}");
+            assert!(rendered.contains("webcam-handler-daemon"), "{rendered}");
         }
 
         // `--profile` alone, which clap does not tie to `--backend` in that direction.
-        let error =
-            refuse_composition_flags(&parse(["wchc", "--profile", "p.json", "list"].as_ref()))
-                .expect_err("--profile is refused");
+        let error = refuse_composition_flags(&parse(
+            ["webcam-handler-client", "--profile", "p.json", "list"].as_ref(),
+        ))
+        .expect_err("--profile is refused");
         assert_eq!(error.kind(), schema::ErrorKind::IllegalTransition);
         assert!(error.to_string().contains("--profile"), "{error}");
 
         // The inverse arm, without which every command line would be refused and the two
         // assertions above would prove nothing: an ordinary invocation passes, and so does
         // one carrying every *other* global flag.
-        assert!(refuse_composition_flags(&parse(&["wchc", "list"])).is_ok());
-        assert!(refuse_composition_flags(&parse(&["wchc", "--json", "list"])).is_ok());
+        assert!(refuse_composition_flags(&parse(&["webcam-handler-client", "list"])).is_ok());
         assert!(
-            refuse_composition_flags(&parse(&["wchc", "photo", "cam:x", "--wait"])).is_ok(),
+            refuse_composition_flags(&parse(&["webcam-handler-client", "--json", "list"])).is_ok()
+        );
+        assert!(
+            refuse_composition_flags(&parse(&[
+                "webcam-handler-client",
+                "photo",
+                "cam:x",
+                "--wait"
+            ]))
+            .is_ok(),
             "--wait is this client's flag, not the daemon's"
         );
     }
 
     #[test]
     fn only_the_sweep_gets_the_long_budget_and_every_other_verb_gets_the_short_one() {
-        // The two constants, reached through the verb that chooses them. A build that
-        // applied the sweep's hour to everything would leave `wchc list` unable to tell an
-        // operator that their daemon is gone.
+        // The two constants, reached through the verb that chooses them. A build that applied
+        // the sweep's hour to everything would leave `webcam-handler-client list` unable to
+        // tell an operator that their daemon is gone.
         let sweep = parse(&[
-            "wchc",
+            "webcam-handler-client",
             "calibrate",
             "sweep",
             "cam:x",
@@ -278,9 +300,17 @@ mod tests {
         );
 
         for args in [
-            ["wchc", "list"].as_slice(),
-            ["wchc", "photo", "cam:x", "--wait"].as_slice(),
-            ["wchc", "calibrate", "status", "cam:x", "--task", "t"].as_slice(),
+            ["webcam-handler-client", "list"].as_slice(),
+            ["webcam-handler-client", "photo", "cam:x", "--wait"].as_slice(),
+            [
+                "webcam-handler-client",
+                "calibrate",
+                "status",
+                "cam:x",
+                "--task",
+                "t",
+            ]
+            .as_slice(),
         ] {
             assert_eq!(
                 request_timeout(&parse(args).command),

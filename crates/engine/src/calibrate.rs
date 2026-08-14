@@ -58,17 +58,17 @@
 //! event — `SweepFinished` or `SweepInterrupted`, the two
 //! [`CalibrationProgress::is_terminal`] answers — on every path out of [`run`].
 //!
-//! It is a law rather than a courtesy because the stream is read by consumers that are not
-//! the caller. Whoever made the call learns of a refusal from its own answer; a *subscriber*
-//! has nothing else to read. P4e's subscription is per client, the web client's calibration
-//! view exists to track a sweep it did not start, and an agent watching a session another
-//! process drives is in the same position — to all of them a start with no end is
-//! indistinguishable from a sweep still running, and stays that way. `wchc` pays for it from
+//! It is a law rather than a courtesy because the stream is read by consumers that are not the
+//! caller. Whoever made the call learns of a refusal from its own answer; a *subscriber* has
+//! nothing else to read. P4e's subscription is per client, the web client's calibration view
+//! exists to track a sweep it did not start, and an agent watching a session another process
+//! drives is in the same position — to all of them a start with no end is indistinguishable
+//! from a sweep still running, and stays that way. `webcam-handler-client` pays for it from
 //! the other side: the bounded tail notes N69 and N70 built ends on `is_terminal`, so an
-//! ending that is never coming costs it the whole budget and still renders a sweep that
-//! stops mid-sentence. AGENTS' "who runs this" is what makes that decisive rather than
-//! untidy — the primary consumer is an unattended agent harness with no hands, and a
-//! progress stream is the only thing it can watch.
+//! ending that is never coming costs it the whole budget and still renders a sweep that stops
+//! mid-sentence. AGENTS' "who runs this" is what makes that decisive rather than untidy — the
+//! primary consumer is an unattended agent harness with no hands, and a progress stream is the
+//! only thing it can watch.
 //!
 //! The guarantee is structural: the private `execute` is everything between the two events,
 //! every one of its refusals is one `Result` arriving at one `match` in [`run`], and the
@@ -507,9 +507,9 @@ fn one_sample(
     let controls = photo::controls_in_effect(camera);
     // The sweep's samples are written in one encoding for the whole session, so the format
     // ranking is told what that encoding can carry exactly as `photo::take` tells it (D5's
-    // 2026-08-13 amendment). A sweep whose choice of mode differed from the photo verb's
-    // would produce samples nobody could reproduce with `wch photo` afterwards, which is the
-    // same reason `StreamArgs` is one declaration flattened into both verbs.
+    // 2026-08-13 amendment). A sweep whose choice of mode differed from the photo verb's would
+    // produce samples nobody could reproduce with `webcam-handler-cli photo` afterwards, which
+    // is the same reason `StreamArgs` is one declaration flattened into both verbs.
     let stream_request = step
         .request
         .stream

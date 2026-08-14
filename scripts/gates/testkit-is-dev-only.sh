@@ -4,7 +4,7 @@
 #
 # It holds the conformance battery, the corpus loader and the container oracles, so it
 # will grow dependencies chosen for convenience rather than for the shipped licence
-# inventory. A normal or build edge onto it puts those in `wch`.
+# inventory. A normal or build edge onto it puts those in `webcam-handler-cli`.
 #
 # Both directions matter, and the second one is the reason this file exists: a testkit
 # nothing depends on would satisfy "no normal edge" perfectly while proving that the

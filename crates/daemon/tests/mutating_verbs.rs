@@ -12,11 +12,11 @@
 //!
 //! ## What a mutating suite has to prove that a read suite does not
 //!
-//! - **The write goes through the one planner.** `set` reaches
-//!   `engine::pairing` → `engine::write::set`, the same functions `wch set` reaches, in
-//!   both guard directions. A second write path is the defect design §2.10 names, and the
-//!   observable difference between the two directions — an automation switch-off written
-//!   *first* — is what a second path would get wrong.
+//! - **The write goes through the one planner.** `set` reaches `engine::pairing` →
+//!   `engine::write::set`, the same functions `webcam-handler-cli set` reaches, in both guard
+//!   directions. A second write path is the defect design §2.10 names, and the observable
+//!   difference between the two directions — an automation switch-off written *first* — is
+//!   what a second path would get wrong.
 //! - **Requested is not applied, across a socket.** A driver that clamps is a *warning on
 //!   the report* and never an error (AGENTS rule 5, E4, \[PF:6\]). Both halves of every
 //!   `{requested, applied}` pair have to survive serialization, so the assertion is made on
@@ -36,14 +36,15 @@
 //!   survive base64 and a socket unchanged, so the payload that comes back is compared
 //!   against the bytes the engine produced for the same request at the same instant — not
 //!   against a length, and not against a hash of itself.
-//! - **A request a socket can build and a command line cannot.** `wch` resolves `-o` against
-//!   the caller's cwd and refuses an extension this build cannot write, both while parsing;
-//!   `wchd` links no `cli-core`, so a relative `Sink::ServerPath` and a `.webp` one are
-//!   requests only this surface can meet. Both are refused **before a camera opens**, which
-//!   `FakeBackend::opens()` is what makes assertable (note N34, note N46, debt D-1).
+//! - **A request a socket can build and a command line cannot.** `webcam-handler-cli` resolves
+//!   `-o` against the caller's cwd and refuses an extension this build cannot write, both
+//!   while parsing; `webcam-handler-daemon` links no `cli-core`, so a relative
+//!   `Sink::ServerPath` and a `.webp` one are requests only this surface can meet. Both are
+//!   refused **before a camera opens**, which `FakeBackend::opens()` is what makes assertable
+//!   (note N34, note N46, debt D-1).
 //! - **The answer agrees with itself.** `PhotoResponse::bytes_match_the_delivery` is note
-//!   N34's other orphan predicate and the daemon calls it before it sends; every photo
-//!   answer this suite receives is checked with it too, from the side `wchc` will.
+//!   N34's other orphan predicate and the daemon calls it before it sends; every photo answer
+//!   this suite receives is checked with it too, from the side `webcam-handler-client` will.
 //! - **One streamer per node** (D12). Two photo requests in flight against one camera reach
 //!   one actor, and the fake refuses a second `start_stream` while one is running — so two
 //!   answers and two sequential streams on one descriptor is the assertion.
@@ -804,8 +805,8 @@ async fn a_restore_puts_back_what_a_write_moved_and_an_owned_control_counts_as_r
 #[tokio::test]
 async fn the_failure_directions_cross_both_transports_as_the_same_typed_error() {
     // Every refusal these five verbs can make over the fake, recovered client-side through
-    // `api::codes::typed` — the half `wchc` depends on and the half a server-side assertion
-    // cannot see.
+    // `api::codes::typed` — the half `webcam-handler-client` depends on and the half a
+    // server-side assertion cannot see.
     let fixture = Fixture::start();
     let ask = fixture.ask();
     let controls = fixture.controls();
@@ -956,11 +957,11 @@ async fn a_camera_another_process_holds_is_busy_and_stays_busy_across_the_wire()
 #[tokio::test]
 async fn the_camera_verbs_leave_d9s_session_tree_alone_and_never_answer_store_locked() {
     // The trap `crate::state`'s header exists for, from the other side. A daemon holds one
-    // advisory lock for its lifetime, so a handler that reached for D9's *daemonless*
-    // protocol would not hang — it would answer this client `StoreLocked`, naming the
-    // daemon's own pid and advising it to use `wchc` against the daemon it is already
-    // talking to. `tests/lock.rs` pins the symptom; this is the negative for the five verbs
-    // P4c's first step routes, which write to a camera and to nothing else.
+    // advisory lock for its lifetime, so a handler that reached for D9's *daemonless* protocol
+    // would not hang — it would answer this client `StoreLocked`, naming the daemon's own pid
+    // and advising it to use `webcam-handler-client` against the daemon it is already talking
+    // to. `tests/lock.rs` pins the symptom; this is the negative for the five verbs P4c's
+    // first step routes, which write to a camera and to nothing else.
     let fixture = Fixture::start();
     let ask = fixture.ask();
     let controls = fixture.controls();
@@ -1133,8 +1134,9 @@ async fn a_returned_photo_crosses_the_wire_byte_for_byte_as_the_cameras_own_bits
             .await
             .unwrap_or_else(|err| panic!("{name}: {err}"));
 
-        // Note N34's predicate, from the side `wchc` will call it from (P4f). The daemon
-        // has already refused to send an answer that fails it; this is the client half.
+        // Note N34's predicate, from the side `webcam-handler-client` will call it from (P4f).
+        // The daemon has already refused to send an answer that fails it; this is the client
+        // half.
         assert!(answer.bytes_match_the_delivery(), "{name}: {answer:?}");
 
         // The camera's own bitstream, and the report says so rather than leaving a caller
@@ -1342,9 +1344,10 @@ async fn the_negotiated_format_and_size_are_surfaced_when_they_differ_from_the_r
 #[tokio::test]
 async fn a_sink_only_a_socket_can_build_is_refused_before_any_camera_is_opened() {
     // Note N34's `is_addressable` and debt D-1's extension refusal, which are the two things
-    // this daemon adds on top of an engine call — and the two requests neither `wch` nor
-    // `wchc` can produce, because `cli_core::Command::photo_request` resolves against the
-    // caller's cwd and refuses an unwritable extension while parsing.
+    // this daemon adds on top of an engine call — and the two requests neither
+    // `webcam-handler-cli` nor `webcam-handler-client` can produce, because
+    // `cli_core::Command::photo_request` resolves against the caller's cwd and refuses an
+    // unwritable extension while parsing.
     //
     // The evidence that they are refused *early* is `FakeBackend::opens()`: a request this
     // build was never going to honour must not cost anybody a descriptor, and on a machine
@@ -1463,12 +1466,12 @@ async fn a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_i
     // for the life of the process. Everything after that follows: the request never answers,
     // the actor's queue fills and every later request for that camera is `Busy`, and D12's
     // idle close never fires because `CameraActor::sweep` sees `busy` first — the operator's
-    // webcam is unusable by any application until `wchd` is restarted.
+    // webcam is unusable by any application until `webcam-handler-daemon` is restarted.
     //
-    // Neither `wch` nor `wchc` can send this: `-o` is resolved on a command line somebody
-    // typed. It is `daemon::server::open_destination`'s rule, beside the two `addressable`
-    // answers, and for their reason — a request this build was never going to honour must
-    // not cost anybody a descriptor.
+    // Neither `webcam-handler-cli` nor `webcam-handler-client` can send this: `-o` is resolved
+    // on a command line somebody typed. It is `daemon::server::open_destination`'s rule,
+    // beside the two `addressable` answers, and for their reason — a request this build was
+    // never going to honour must not cost anybody a descriptor.
     //
     // **What P4e-i changed under this test, without changing what it asserts.** The refusal
     // used to be a `stat` of the *name*; it is now an `O_NONBLOCK` open plus an `fstat` of
@@ -1558,12 +1561,12 @@ async fn a_path_swapped_after_the_check_cannot_redirect_the_photo_or_park_the_ca
     // Nothing here sleeps. The swap happens while the camera is provably inside a frame,
     // announced by the `Holding` decorator, and the release is this test speaking.
     //
-    // The red-on-inverse, watched before this was called done: with the daemon's
-    // destination replaced by one that resolves the *name* at write time
-    // (`engine::photo::WhereverTheCallerSaid`, which is the right answer for `wch` and the
-    // wrong one here), the write blocks in `open(2)` on the fifo below and the run becomes a
-    // named `TIMEOUT` (`.config/nextest.toml`, 60 s x 3) — which is this test's name on a
-    // failure, and is also exactly the harm note N51 measured.
+    // The red-on-inverse, watched before this was called done: with the daemon's destination
+    // replaced by one that resolves the *name* at write time
+    // (`engine::photo::WhereverTheCallerSaid`, which is the right answer for
+    // `webcam-handler-cli` and the wrong one here), the write blocks in `open(2)` on the fifo
+    // below and the run becomes a named `TIMEOUT` (`.config/nextest.toml`, 60 s x 3) — which
+    // is this test's name on a failure, and is also exactly the harm note N51 measured.
     let (entered, entrances) = std::sync::mpsc::sync_channel::<()>(1);
     let (release, held) = std::sync::mpsc::sync_channel::<()>(1);
     let fixture = Fixture::start_behind(|fake| {

@@ -1,5 +1,5 @@
-//! A private pair of XDG directories, a `wchd` inside them, and one `wchc` invocation's
-//! output.
+//! A private pair of XDG directories, a `webcam-handler-daemon` inside them, and one
+//! `webcam-handler-client` invocation's output.
 //!
 //! Included by `wchc.rs` and `hardware.rs` — the two suites whose subject is the **shipped
 //! pair of binaries** rather than a value. Everything here was `wchc.rs`'s until P4g, and
@@ -50,26 +50,27 @@ use engine::paths::TempRuntimeDir;
 use engine::store::TempStore;
 use serde_json::Value;
 
-/// The `wchc` binary these suites drive, built by cargo alongside them.
+/// The `webcam-handler-client` binary these suites drive, built by cargo alongside them.
 pub(crate) fn wchc() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_wchc"))
+    Command::new(env!("CARGO_BIN_EXE_webcam-handler-client"))
 }
 
-/// The `wchd` binary beside it.
+/// The `webcam-handler-daemon` binary beside it.
 ///
 /// `CARGO_BIN_EXE_*` exists only for the package that declares the binary, so this is a
 /// sibling lookup rather than an environment variable — and a missing sibling is a panic
 /// naming the command that produces it, because "the daemon was not built" and "the daemon
 /// misbehaved" must not look the same from here.
 fn wchd() -> Command {
-    let wchc = Utf8PathBuf::from(env!("CARGO_BIN_EXE_wchc"));
+    let wchc = Utf8PathBuf::from(env!("CARGO_BIN_EXE_webcam-handler-client"));
     let wchd = wchc
         .parent()
         .expect("the test binary's directory")
-        .join("wchd");
+        .join("webcam-handler-daemon");
     assert!(
         wchd.exists(),
-        "wchd is not beside wchc at {wchd}; this suite drives the shipped daemon, so build \
+        "webcam-handler-daemon is not beside webcam-handler-client at {wchd}; this suite \
+         drives the shipped daemon, so build \
          the workspace (`cargo nextest run --workspace`, which is what `just ci` runs) \
          rather than this package alone"
     );
@@ -107,7 +108,7 @@ impl Fixture {
             .join(schema::limits::DAEMON_SOCKET_FILE)
     }
 
-    /// A `wchc` bound to these directories, with the arguments given.
+    /// A `webcam-handler-client` bound to these directories, with the arguments given.
     fn wchc(&self, args: &[&str]) -> Command {
         let mut command = wchc();
         command
@@ -119,9 +120,12 @@ impl Fixture {
         command
     }
 
-    /// Run `wchc` and collect everything the process produced.
+    /// Run `webcam-handler-client` and collect everything the process produced.
     pub(crate) fn run(&self, args: &[&str]) -> Ran {
-        let output = self.wchc(args).output().expect("wchc runs");
+        let output = self
+            .wchc(args)
+            .output()
+            .expect("webcam-handler-client runs");
         Ran {
             code: output.status.code().unwrap_or(-1),
             stdout: output.stdout,
@@ -129,7 +133,7 @@ impl Fixture {
         }
     }
 
-    /// Start a `wchd` with the arguments given, and wait until it is serving.
+    /// Start a `webcam-handler-daemon` with the arguments given, and wait until it is serving.
     ///
     /// `args` is where the two includers differ and the only place they do — see the header.
     pub(crate) fn spawn(&self, args: &[&str]) -> Daemon {
@@ -152,7 +156,9 @@ impl Fixture {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
 
-        let mut child = command.spawn().expect("wchd is built beside this test");
+        let mut child = command
+            .spawn()
+            .expect("webcam-handler-daemon is built beside this test");
         let stderr = BufReader::new(child.stderr.take().expect("stderr was piped"));
         let mut daemon = Daemon {
             child,
@@ -168,7 +174,7 @@ impl Fixture {
     }
 }
 
-/// What one `wchc` invocation produced.
+/// What one `webcam-handler-client` invocation produced.
 pub(crate) struct Ran {
     pub(crate) code: i32,
     /// Bytes, not a string: a photo with no `-o` **is** standard output.
@@ -179,7 +185,11 @@ pub(crate) struct Ran {
 impl Ran {
     /// The answer, asserting the verb succeeded.
     pub(crate) fn ok(&self) -> &[u8] {
-        assert_eq!(self.code, 0, "wchc failed: {}", self.stderr);
+        assert_eq!(
+            self.code, 0,
+            "webcam-handler-client failed: {}",
+            self.stderr
+        );
         &self.stdout
     }
 
@@ -200,7 +210,7 @@ impl Ran {
     }
 }
 
-/// A running `wchd`, killed with the value.
+/// A running `webcam-handler-daemon`, killed with the value.
 pub(crate) struct Daemon {
     /// `pub(crate)` because one includer stops the daemon *deliberately* and reads what the
     /// kernel says about how it went — a hardware run's last claim is that the process which
@@ -218,7 +228,7 @@ impl Daemon {
             let mut line = String::new();
             match self.stderr.read_line(&mut line) {
                 Ok(0) | Err(_) => panic!(
-                    "wchd exited without saying {wanted:?}; it said:\n{}",
+                    "webcam-handler-daemon exited without saying {wanted:?}; it said:\n{}",
                     self.said.join("\n")
                 ),
                 Ok(_) => {

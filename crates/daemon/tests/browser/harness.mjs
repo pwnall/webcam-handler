@@ -26,7 +26,7 @@ function required(name) {
   return value;
 }
 
-/** The URL `wchd` printed — the one an operator opens, credential and all. */
+/** The URL `webcam-handler-daemon` printed — the one an operator opens, credential and all. */
 export const readyToOpenUrl = required("WCH_E2E_URL");
 
 /** The camera the fake replays. */

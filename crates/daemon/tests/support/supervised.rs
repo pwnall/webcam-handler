@@ -1,5 +1,5 @@
-//! A `wchd` a service manager would recognise: one that replays a known device, and one that
-//! can be sent a real signal.
+//! A `webcam-handler-daemon` a service manager would recognise: one that replays a known
+//! device, and one that can be sent a real signal.
 //!
 //! Included by `systemd.rs` and `signals.rs`, and by nothing else — the two suites that put a
 //! *supervisor's* half of the contract on the other end of a real process. `support/wchd.rs`
@@ -11,16 +11,17 @@
 //!
 //! `--backend fake --profile …` for the reason `crates/cli`'s suites use it: both of these
 //! suites assert something about *what the daemon can see* — a camera count in a startup
-//! status, a control swept to a value — and a v4l2 `wchd` would be reporting whatever is
-//! plugged into the machine running CI. `lock.rs` contends for a state directory and needs no
-//! such thing, which is why the flag pair is here rather than in the shared command.
+//! status, a control swept to a value — and a v4l2 `webcam-handler-daemon` would be reporting
+//! whatever is plugged into the machine running CI. `lock.rs` contends for a state directory
+//! and needs no such thing, which is why the flag pair is here rather than in the shared
+//! command.
 
 use camino::Utf8Path;
 use rustix::process::Signal;
 
 use crate::wchd::{Daemon, Scratch};
 
-/// A `wchd` replaying `profile`, not yet started.
+/// A `webcam-handler-daemon` replaying `profile`, not yet started.
 pub(crate) fn replaying(scratch: &Scratch, profile: &Utf8Path) -> std::process::Command {
     let mut command = scratch.wchd();
     command.args(["--backend", "fake", "--profile", profile.as_str()]);

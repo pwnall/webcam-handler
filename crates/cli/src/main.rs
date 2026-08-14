@@ -1,4 +1,4 @@
-//! `wch` — the direct CLI. Drives a backend in-process.
+//! `webcam-handler-cli` — the direct CLI. Drives a backend in-process.
 //!
 //! This is one of the two composition roots (design §2.11): the only places that name a
 //! concrete backend. The `match` over [`BackendKind`] below is exhaustive on purpose —
@@ -42,11 +42,11 @@ use schema::time::Stamp;
 
 /// Which root this is.
 ///
-/// The command surface is shared with `wchc` (T4), so the name is a parameter rather than
-/// a property of the tree — see [`Program`]. One value, read by both edges of this process
-/// that have to say it: the parser that renders `--help` and `--version`, and the lines a
-/// failing run writes to standard error.
-const PROGRAM: Program = Program::Wch;
+/// The command surface is shared with `webcam-handler-client` (T4), so the name is a parameter
+/// rather than a property of the tree — see [`Program`]. One value, read by both edges of this
+/// process that have to say it: the parser that renders `--help` and `--version`, and the
+/// lines a failing run writes to standard error.
+const PROGRAM: Program = Program::Cli;
 
 fn main() -> ExitCode {
     let cli = Cli::parse_checked(PROGRAM);
@@ -71,7 +71,7 @@ fn run(cli: &Cli, out: &mut Output) -> Result<()> {
     cli_core::run(cli, &mut executor, out)
 }
 
-/// The one place `wch` names a backend.
+/// The one place `webcam-handler-cli` names a backend.
 fn backend_for(cli: &Cli) -> Result<Box<dyn CameraBackend>> {
     match cli.backend.0 {
         BackendKind::V4l2 => Ok(Box::new(v4l2::V4l2Backend::new())),
@@ -81,9 +81,9 @@ fn backend_for(cli: &Cli) -> Result<Box<dyn CameraBackend>> {
             // rather than letting it arrive as a camera error later.
             let mut profiles = Vec::with_capacity(cli.profile.len());
             for path in &cli.profile {
-                // Read through the engine, which is where T3's round trip lives: `wchd`
-                // has the same flag at its own composition root, and a version check
-                // written at each root is two answers to one question.
+                // Read through the engine, which is where T3's round trip lives:
+                // `webcam-handler-daemon` has the same flag at its own composition root, and a
+                // version check written at each root is two answers to one question.
                 profiles.push(engine::profile::read(path)?);
             }
             Ok(Box::new(fake::FakeBackend::new(profiles)?))
@@ -103,10 +103,10 @@ struct InProcess {
 impl InProcess {
     /// Resolve a caller-supplied id or prefix (D1) against a live enumeration.
     ///
-    /// Enumerating first is what lets the refusal name the candidates, which is the
-    /// difference between `CameraAmbiguous` being actionable and being a shrug. The rule
-    /// itself lives in `engine::resolve`, so `wch` and the P4 daemon cannot disagree
-    /// about what a prefix means.
+    /// Enumerating first is what lets the refusal name the candidates, which is the difference
+    /// between `CameraAmbiguous` being actionable and being a shrug. The rule itself lives in
+    /// `engine::resolve`, so `webcam-handler-cli` and the P4 daemon cannot disagree about what
+    /// a prefix means.
     fn resolve(&self, requested: &CameraId) -> Result<CameraInfo> {
         let cameras = self.backend.enumerate()?;
         engine::resolve::camera(&cameras, requested).cloned()
@@ -121,10 +121,10 @@ impl InProcess {
 
 /// The calibration half of the executor (design D8, D9).
 ///
-/// Every mutating verb runs inside [`SessionStore::with_lock`] — take, run, release — which
-/// is D9's *daemonless* protocol, and the whole of it: a `wch` that met a lock a daemon
-/// holds is refused with [`schema::Error::StoreLocked`] naming the holder rather than blocking, and
-/// that refusal comes out of the store rather than out of a check written here.
+/// Every mutating verb runs inside [`SessionStore::with_lock`] — take, run, release — which is
+/// D9's *daemonless* protocol, and the whole of it: a `webcam-handler-cli` that met a lock a
+/// daemon holds is refused with [`schema::Error::StoreLocked`] naming the holder rather than
+/// blocking, and that refusal comes out of the store rather than out of a check written here.
 ///
 /// Which session a verb means, and what a verb about to change one has to hold to read it,
 /// are [`lifecycle::session_for`]'s and [`lifecycle::session_to_update`]'s — both moved into
@@ -140,12 +140,13 @@ impl InProcess {
 
 /// The engine's progress seam, fed from the command surface's.
 ///
-/// Two traits with one method because of the thin-client wall (T6): `cli-core` is shared
-/// with `wchc`, which links no engine and cannot name `engine::progress::ProgressSink`.
-/// This is the whole of the bridge — the events on both sides are the same schema DTOs, so
-/// nothing is translated. P4e-i built the daemon's half onto the same seam — a
-/// `ProgressSink` that fans the events out to subscribers (`daemon::events`) rather than
-/// rendering them — which is why the seam is a sink and not a `&dyn Fn`.
+/// Two traits with one method because of the thin-client wall (T6): `cli-core` is shared with
+/// `webcam-handler-client`, which links no engine and cannot name
+/// `engine::progress::ProgressSink`. This is the whole of the bridge — the events on both
+/// sides are the same schema DTOs, so nothing is translated. P4e-i built the daemon's half
+/// onto the same seam — a `ProgressSink` that fans the events out to subscribers
+/// (`daemon::events`) rather than rendering them — which is why the seam is a sink and not a
+/// `&dyn Fn`.
 #[derive(Debug)]
 struct Watched<'a>(&'a dyn SweepWatcher);
 
@@ -157,10 +158,10 @@ impl engine::progress::ProgressSink for Watched<'_> {
 
 /// Say what the probe touched and what it put back, on standard error.
 ///
-/// One line of assembly over [`cli_core::report_probe`], which is where the rendering moved
-/// at P4f: `wchc` runs the same probe over `wch_discover_pairs` and prints the same two
-/// notes, and a second copy here would be the fork design §2.10 forbids. What stays local is
-/// only the program's own name, which is this root's one fact about itself.
+/// One line of assembly over [`cli_core::report_probe`], which is where the rendering moved at
+/// P4f: `webcam-handler-client` runs the same probe over `wch_discover_pairs` and prints the
+/// same two notes, and a second copy here would be the fork design §2.10 forbids. What stays
+/// local is only the program's own name, which is this root's one fact about itself.
 fn report_probe(skipped: &[ProbeSkip], restored: &RestoreReport) {
     cli_core::report_probe(PROGRAM, skipped, restored);
 }
@@ -183,9 +184,9 @@ impl Executor for InProcess {
         if discover_pairs {
             // The probe writes, and the document it produces is assembled in the engine —
             // probe first, read the control set afterwards, merge declared with measured.
-            // `wchd`'s `wch_discover_pairs` answers that whole document; this surface shows
-            // its `controls` and prints the other two fields on standard error. Two authors
-            // of one assembly is what note N34 booked the move against.
+            // `webcam-handler-daemon`'s `wch_discover_pairs` answers that whole document; this
+            // surface shows its `controls` and prints the other two fields on standard error.
+            // Two authors of one assembly is what note N34 booked the move against.
             let found = engine::discover::report(camera.as_mut(), Stamp::now())?;
             report_probe(&found.skipped, &found.restored);
             return Ok(found.controls);
@@ -217,9 +218,9 @@ impl Executor for InProcess {
     ) -> Result<WriteReport> {
         let (_, mut camera) = self.open(requested)?;
         // The composition — which pair set this write plans against, and where the wire's
-        // `ControlWrite` stops (note N35) — is the engine's, because `wchd`'s `wch_set`
-        // reaches the same rule and a second author for it is two opinions about what a
-        // camera's automation looks like.
+        // `ControlWrite` stops (note N35) — is the engine's, because `webcam-handler-daemon`'s
+        // `wch_set` reaches the same rule and a second author for it is two opinions about
+        // what a camera's automation looks like.
         engine::write::set_requested(camera.as_mut(), writes, guarded)
     }
 
@@ -238,22 +239,23 @@ impl Executor for InProcess {
         let taken = engine::photo::take(
             camera.as_mut(),
             request,
-            // The blocking open, which for `wch` is a feature rather than note N51's
-            // hazard: a person typed this path, `-o /dev/stdout` and `-o` a fifo both work,
-            // and Ctrl-C exists. The daemon's destination is the other one (design §2.10 —
-            // one rule, two callers, and the difference is stated rather than assumed).
+            // The blocking open, which for `webcam-handler-cli` is a feature rather than note
+            // N51's hazard: a person typed this path, `-o /dev/stdout` and `-o` a fifo both
+            // work, and Ctrl-C exists. The daemon's destination is the other one (design §2.10
+            // — one rule, two callers, and the difference is stated rather than assumed).
             &mut engine::photo::WhereverTheCallerSaid,
             &engine::settle::MonotonicClock::new(),
             Stamp::now(),
         )
-        // `wch` opens a camera per invocation, takes one photo and closes it, so nothing in
-        // this process can be previewing the device and the gap beside the answer is always
-        // `None`. It is dropped here rather than asserted: what a *different* caller does
-        // with it is `daemon::server`'s business, and the suspend/resume this discards the
-        // report of is the same mechanism either way (note **N83**).
+        // `webcam-handler-cli` opens a camera per invocation, takes one photo and closes it,
+        // so nothing in this process can be previewing the device and the gap beside the
+        // answer is always `None`. It is dropped here rather than asserted: what a *different*
+        // caller does with it is `daemon::server`'s business, and the suspend/resume this
+        // discards the report of is the same mechanism either way (note **N83**).
         .outcome?;
-        // Two structurally identical types, and they stay separate on purpose: `wchc`
-        // links no engine (T6), so the shared command surface cannot name the engine's.
+        // Two structurally identical types, and they stay separate on purpose:
+        // `webcam-handler-client` links no engine (T6), so the shared command surface cannot
+        // name the engine's.
         Ok(Photograph {
             report: taken.report,
             returned: taken.returned,
@@ -279,9 +281,9 @@ impl Executor for InProcess {
                 task: task.to_owned(),
                 goal: goal.to_owned(),
                 criteria: criteria.to_vec(),
-                // The schema crate's reading of one fact, not this binary's: `wchd` records
-                // provenance into the same documents, and two readings of "which tool
-                // version wrote this" could disagree.
+                // The schema crate's reading of one fact, not this binary's:
+                // `webcam-handler-daemon` records provenance into the same documents, and two
+                // readings of "which tool version wrote this" could disagree.
                 tool_version: schema::TOOL_VERSION.to_owned(),
             };
             let mut session = lifecycle::create(&store, lock, &spec, Stamp::now())?;
@@ -369,9 +371,9 @@ impl Executor for InProcess {
         requested: &CameraId,
         which: &SessionRef,
     ) -> Result<SessionStatus> {
-        // No lock: reading is not a state write, and a `wch calibrate status` that refused
-        // while a daemon held the lock would be a status verb nobody can use on the machine
-        // the sessions are on.
+        // No lock: reading is not a state write, and a `webcam-handler-cli calibrate status`
+        // that refused while a daemon held the lock would be a status verb nobody can use on
+        // the machine the sessions are on.
         let store = self.store()?;
         let info = self.resolve(requested)?;
         lifecycle::status(&store, &info.fingerprint, which)
@@ -389,8 +391,9 @@ impl Executor for InProcess {
         store.with_lock(|lock| {
             let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             // The `Selection` match is the engine's, beside the two transitions it chooses
-            // between: `wchd`'s `wch_calibrate_select` crosses the same boundary, and a
-            // second copy is a second chance to record a selector no metric earned.
+            // between: `webcam-handler-daemon`'s `wch_calibrate_select` crosses the same
+            // boundary, and a second copy is a second chance to record a selector no metric
+            // earned.
             lifecycle::select(&store, lock, &mut session, control, selection, Stamp::now())?;
             Ok(session)
         })
@@ -428,8 +431,8 @@ impl Executor for InProcess {
             let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             // `lifecycle::restore` rather than `recover` plus two decisions written here:
             // which pair set a restore plans against (the session's, N16) and what "no
-            // snapshot" means (not a failure) are rules, and `wchd`'s `wch_calibrate_restore`
-            // answers the same verb.
+            // snapshot" means (not a failure) are rules, and `webcam-handler-daemon`'s
+            // `wch_calibrate_restore` answers the same verb.
             lifecycle::restore(&store, lock, &mut session, camera.as_mut(), Stamp::now())
         })
     }
@@ -455,9 +458,9 @@ impl Executor for InProcess {
             &engine::profile::CaptureContext {
                 captured_at: schema::time::Stamp::now(),
                 // Both host facts read where they have one home: the kernel release moved
-                // beside the field it fills when `wchd` acquired this verb, and the tool
-                // version is the schema crate's, so a profile captured over a socket and
-                // one captured on a command line carry the same provenance.
+                // beside the field it fills when `webcam-handler-daemon` acquired this verb,
+                // and the tool version is the schema crate's, so a profile captured over a
+                // socket and one captured on a command line carry the same provenance.
                 kernel: engine::profile::kernel_release(),
                 tool_version: schema::TOOL_VERSION.to_owned(),
                 capturer: capturer.to_owned(),

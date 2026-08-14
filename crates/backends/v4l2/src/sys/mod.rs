@@ -138,12 +138,12 @@ impl Fd {
         // streaming path (P2) wants a blocking DQBUF bounded by its own deadline.
         //
         // O_CLOEXEC is deliberately *present*, and it has to be said here because
-        // `v4l::v4l2::open` passes its flags straight to `open(2)` and adds nothing
-        // (checked in the pinned 0.14.0 source). A `/dev/video*` descriptor is the
-        // exclusive-access capability D12 rests on and the thing `wch-priv`'s interlock
-        // counts holders of, so leaking one into a child — this crate's own R3 arm spawns
-        // `wch-priv uvcvideo cycle`, and `modprobe` execs further — would make the helper
-        // refuse an unload while naming a process that is not the real holder. Same
+        // `v4l::v4l2::open` passes its flags straight to `open(2)` and adds nothing (checked
+        // in the pinned 0.14.0 source). A `/dev/video*` descriptor is the exclusive-access
+        // capability D12 rests on and the thing `webcam-handler-priv`'s interlock counts
+        // holders of, so leaking one into a child — this crate's own R3 arm spawns
+        // `webcam-handler-priv uvcvideo cycle`, and `modprobe` execs further — would make the
+        // helper refuse an unload while naming a process that is not the real holder. Same
         // argument `sys::uevent` states for the netlink socket, on the more valuable
         // descriptor.
         match v4l::v4l2::open(path.as_std_path(), libc::O_RDWR | libc::O_CLOEXEC) {
@@ -255,12 +255,12 @@ mod tests {
 
     #[test]
     fn a_device_descriptor_is_not_inherited_by_anything_this_process_execs() {
-        // `v4l::v4l2::open` hands its flags to `open(2)` unchanged, so `O_CLOEXEC` is
-        // ours to pass or to forget — and this is the descriptor it matters most for. A
-        // `/dev/video*` held across an `exec` makes every child a camera holder, which is
-        // what `wch-priv`'s unload interlock counts: the R3 hotplug arm spawns
-        // `wch-priv uvcvideo cycle`, `modprobe` execs further, and a leaked node would
-        // have the helper refuse the unload while naming a process that never opened a
+        // `v4l::v4l2::open` hands its flags to `open(2)` unchanged, so `O_CLOEXEC` is ours to
+        // pass or to forget — and this is the descriptor it matters most for. A `/dev/video*`
+        // held across an `exec` makes every child a camera holder, which is what
+        // `webcam-handler-priv`'s unload interlock counts: the R3 hotplug arm spawns
+        // `webcam-handler-priv uvcvideo cycle`, `modprobe` execs further, and a leaked node
+        // would have the helper refuse the unload while naming a process that never opened a
         // camera. Asserted off `F_GETFD` rather than off the flags argument, for
         // `the_socket_directory_is_created_private`'s reason: the argument is what was
         // requested and the descriptor is what was applied (AGENTS rule 5).

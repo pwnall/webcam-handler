@@ -1,4 +1,4 @@
-//! `wchc`'s composition root: the process's edges and nothing else.
+//! `webcam-handler-client`'s composition root: the process's edges and nothing else.
 //!
 //! Everything this binary does is in `webcam-handler-client`'s library half, for the reason
 //! that crate's header gives — the sweep's ordering is only assertable from inside the
@@ -29,10 +29,10 @@ fn main() -> ExitCode {
     match client::run(&cli, &schema::paths::SystemEnv, &mut out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            // The typed error, rendered once, through the same `Display` `wch` renders it
-            // with — including the ones that arrived over the wire, which `api::codes::typed`
-            // turned back into `schema::Error` values rather than into transport prose. That
-            // identity is what the parity gate compares.
+            // The typed error, rendered once, through the same `Display` `webcam-handler-cli`
+            // renders it with — including the ones that arrived over the wire, which
+            // `api::codes::typed` turned back into `schema::Error` values rather than into
+            // transport prose. That identity is what the parity gate compares.
             let _ = out.line(Stream::Stderr, &PROGRAM.error_line(&error));
             ExitCode::from(cli_core::exit_code(&error))
         }

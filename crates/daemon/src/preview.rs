@@ -23,13 +23,13 @@
 //!
 //! **The `watch` itself cannot live in the engine**, because `tokio::sync::watch` is tokio and
 //! design §2.8 gives the engine no runtime — a wall `scripts/gates/dependency-walls.sh`
-//! enforces as a linkage fact rather than a paragraph. This is the same fork note **N41**
-//! took for the actor's *reply* channel and for the same reason ("a `tokio::sync::oneshot` in
-//! the signature would force a runtime on `wch`"), so the resolution is the same one: the
-//! engine names a trait (`engine::preview::FrameSink`), the caller brings the channel, and the
-//! channel is here because here is where the transport is. A `std::sync::mpsc` in the engine
-//! would satisfy the letter and lose the point — it is a queue, and a queue is precisely what
-//! D12's sentence rules out.
+//! enforces as a linkage fact rather than a paragraph. This is the same fork note **N41** took
+//! for the actor's *reply* channel and for the same reason ("a `tokio::sync::oneshot` in the
+//! signature would force a runtime on `webcam-handler-cli`"), so the resolution is the same
+//! one: the engine names a trait (`engine::preview::FrameSink`), the caller brings the
+//! channel, and the channel is here because here is where the transport is. A
+//! `std::sync::mpsc` in the engine would satisfy the letter and lose the point — it is a
+//! queue, and a queue is precisely what D12's sentence rules out.
 //!
 //! ## The property, proved rather than restated
 //!
@@ -450,10 +450,11 @@ impl Previews {
 
     /// Start reading `requested`'s preview, starting the capture if this is the first reader.
     ///
-    /// The resolution is `engine::resolve::camera`'s — the same function `wch`, `wchc` and
-    /// every other daemon verb reach, so a prefix means the same thing on this route as it
-    /// does on the wire (D1) — and it runs on a blocking pool thread because enumeration is an
-    /// `open` and a walk of ioctls per node (E2: live every time, never cached).
+    /// The resolution is `engine::resolve::camera`'s — the same function `webcam-handler-cli`,
+    /// `webcam-handler-client` and every other daemon verb reach, so a prefix means the same
+    /// thing on this route as it does on the wire (D1) — and it runs on a blocking pool thread
+    /// because enumeration is an `open` and a walk of ioctls per node (E2: live every time,
+    /// never cached).
     ///
     /// **The registry lock is not held across anything device-shaped.** The feed is created
     /// and inserted under it; the `STREAMON` is the driver's, after the lock is released, and

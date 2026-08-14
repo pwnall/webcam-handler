@@ -499,9 +499,9 @@ fn assert_every_answer_is_an_answer(answers: &Surface, ask: &Ask, seen: &str) {
     assert!(answers.set.disabled_automation.is_empty(), "{seen}");
     assert!(!answers.snapshot.entries.is_empty(), "{seen}");
 
-    // Note N34's predicate from the side `wchc` will call it from (P4f). The daemon has
-    // already refused to send an answer that fails it; this is the client half, and it is
-    // the assertion that makes a truncated payload visible here rather than in a file.
+    // Note N34's predicate from the side `webcam-handler-client` will call it from (P4f). The
+    // daemon has already refused to send an answer that fails it; this is the client half, and
+    // it is the assertion that makes a truncated payload visible here rather than in a file.
     assert!(answers.photo.bytes_match_the_delivery(), "{seen}");
     assert!(
         answers

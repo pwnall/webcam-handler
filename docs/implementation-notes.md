@@ -13368,3 +13368,127 @@ decline above unsound rather than merely loud.
 
 **Retires when:** a control set, an identity or a measured pair set is seen moving across a
 plug event, at which point the one-section predicate stops describing the hardware.
+
+## N90 — Two requests from the owner, 2026-08-13: every binary carries the full name, and the README says how to install and where to start
+
+**These are the owner's, stated in his own words on 2026-08-13, and recorded here before either
+was implemented** so that the request and its execution are separately auditable. Both are
+changes to things this repository had already decided; neither is a defect report.
+
+> 1. All binaries and crates must have names that start with `webcam-handler`. Example:
+>    `webcam-handler-daemon`.
+> 2. README sections: installing all the binaries via `cargo install --path` commands; usage
+>    overview recommending the daemon + CLI client with a brief tutorial on the calibration
+>    process.
+
+He added: implement both "as soon as it's convenient (no negative interactions with other
+ongoing efforts)" — which is a scheduling instruction and is why this entry exists rather than
+a commit alone.
+
+### Request 1, and what it actually changes
+
+**The crates already comply.** All fourteen workspace packages carry the full prefix —
+`webcam-handler-api`, `-cli`, `-cli-core`, `-client`, `-daemon`, `-engine`, `-fake`,
+`-imaging`, `-priv`, `-schema`, `-testkit`, `-v4l2`, `-web`, `-xtask`. What does not comply is
+the **four binaries**, and AGENTS.md states the old rule in as many words: "Packages carry the
+full `webcam-handler-` prefix; directories are short (`crates/engine/`); lib names are bare;
+binaries are `wch`/`wchd`/`wchc`." That last clause is what this request overturns.
+
+The mapping is not a choice once the request is read against the example given — the owner's
+`webcam-handler-daemon` **is** the daemon's package name, so binary name becomes package name
+throughout:
+
+| was | becomes | package |
+|---|---|---|
+| `wch` | `webcam-handler-cli` | `webcam-handler-cli` |
+| `wchd` | `webcam-handler-daemon` | `webcam-handler-daemon` |
+| `wchc` | `webcam-handler-client` | `webcam-handler-client` |
+| `wch-priv` | `webcam-handler-priv` | `webcam-handler-priv` |
+
+It also makes request 2 answerable in one line each: `cargo install --path crates/daemon`
+installs a binary named after the crate it came from, which is the property a reader of an
+install command expects and did not have.
+
+**Directories are not in scope, clarified by the owner the same day:** *"the names of the
+`crates/` directories can remain short."* So `crates/cli/`, `crates/daemon/` and the rest keep
+their names, and AGENTS.md's "directories are short (`crates/engine/`)" stays true — it is
+only that sentence's final clause, "binaries are `wch`/`wchd`/`wchc`", that this request
+overturns. Worth stating because the install command above reads `crates/daemon` and produces
+`webcam-handler-daemon`, so the short directory and the long binary are visibly different
+strings on the same line and a later reader could otherwise take one of them for a mistake.
+
+**What it costs, measured rather than guessed:** 112 files mention one of the four names.
+Four `[[bin]]` targets carry them; the rest are call sites, gate predicates, nextest
+selections (`binary(wchd)` in `scripts/gates/phase-criteria.tsv` is a *criterion* keyed on a
+binary name), systemd units, packaging, the browser rung's harness, and prose.
+
+**The one judgement this entry fixes before the work starts: history is not rewritten.**
+`docs/implementation-notes.md`'s existing entries and `docs/historical/` say `wchd` because
+that is what the binary was called on the day each was written. They are append-only case law
+and a dated record that silently acquires a name nobody used at the time is a worse document,
+not a tidier one. So the rename touches live code, live configuration, live scripts and the
+*current* documents; earlier entries keep their vocabulary, and this entry is the pointer that
+explains the discontinuity to whoever meets it.
+
+**And the ergonomic cost is real and is the owner's to accept, which he has:** `wchc` is four
+keystrokes and `webcam-handler-client` is twenty-one. Nothing in this repository shortens it
+back — no alias, no symlink, no second `[[bin]]` — because a second name for one program is
+the thing the request exists to remove.
+
+### The cost nobody predicted: `comm` is fifteen bytes, and all four names now collide in it
+
+`TASK_COMM_LEN` is 16 including the NUL, so the kernel hands out **`webcam-handler-`** for
+every one of the four programs. Measured against a live process rather than reasoned from the
+header. D9's lock record carries `/proc/self/comm` verbatim, so three things moved:
+
+- `crates/daemon/tests/lock.rs` asserted `Some("wchd")` and now asserts `Some("webcam-handler-")`;
+- `Error::sample(StoreLocked)` carries the same string, and that sample **ships** — it is the
+  example a client author reads in `schemas/webcam-handler-openrpc.json`;
+- and the field **can no longer tell a CLI holder from a daemon holder**, because all four
+  truncate to the same fifteen bytes.
+
+That last one is a real loss of diagnostic value and it is worth being plain about: before the
+rename, "who holds the lock" could be answered by `comm` alone. It cannot now. What carries
+the answer instead is the `pid` beside it, and — for the *advice* rather than the identity —
+`LockProtocol`, which is what the refusal always turned on. Nothing was weakened that a
+program branches on; what was lost is what a human reads first.
+
+It is not a reason to reverse the request, and no workaround was invented: a program that set
+its own `comm` to something other than its name would be a second name for one program, which
+is exactly what request 1 removes. Recorded so the next person to read
+`"comm": "webcam-handler-"` in the shipped schema knows it is the kernel's answer and not a
+truncation bug in this project.
+
+### Two things left undone, both the owner's
+
+- **`xtask` is a fifth binary and does not comply.** `webcam-handler-xtask` declares
+  `[[bin]] name = "xtask"`. The ruling's own mapping names four, so inventing a fifth row was
+  declined rather than assumed. It is one line if wanted: no `.cargo/config.toml` alias exists
+  (`just generate` runs `cargo run -p webcam-handler-xtask --`) and the gate rows select it by
+  `package(…)` rather than by `binary(xtask)`.
+- **`wch-priv`'s blessing is stale and needs a `sudo`.** `.wch-bin/wch-priv` (mode 0700,
+  capped, blessed 2026-08-08) is still on disk and nothing reads it: `just bless`,
+  `just priv-doctor`, `just rung-vivid-managed` and `privileged-helper.sh` all name
+  `.wch-bin/webcam-handler-priv`, which does not exist. So `privileged-helper.sh` takes its
+  documented named, counted skip, and **the R2 vivid rung is unavailable until `just bless` is
+  re-run**. `just bless` will do the right thing (its stamp check requires the stable path to
+  exist, which it does not), but it will not remove the old root-capable file — that deletion
+  is the owner's.
+
+### Request 2, and what it is not
+
+An installation section and a usage overview, with the recommendation being **the daemon plus
+the CLI client** rather than the direct CLI, and a short calibration tutorial. Worth recording
+that this is a documentation request with a *product* opinion inside it: `wch` (now
+`webcam-handler-cli`) links a backend and drives the device in-process, and the recommended
+path is instead the daemon with a thin client over a socket. That matches AGENTS' "Who runs
+this" — an unattended agent harness and an occasional human at the same cameras — and it is
+the first time the README has been asked to say which of the two a new reader should reach
+for.
+
+It is **not** the agent usage guide. That is docs/7's **P6e**, generated by xtask from the T4
+command core so it cannot drift, and it remains P6e's. This is the human-facing front page,
+and the two are allowed to overlap on the calibration walkthrough.
+
+**Amend this note if** the binaries acquire short aliases after all, which would mean the
+ergonomic cost was underestimated here.

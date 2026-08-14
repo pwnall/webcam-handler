@@ -18,11 +18,11 @@
 //!   written, `sync_all`ed, renamed over the destination, and the parent directory
 //!   fsynced so the rename itself survives a power cut. Everything in between can fail;
 //!   the destination file is either the old one or the new one.
-//! - **Two processes never interleave.** One advisory `fd-lock` at the state directory's
-//!   root, with D9's two protocols spelled as [`LockProtocol`]: the daemon takes it once
-//!   and holds it for its lifetime, a daemonless `wch` takes it for one mutating
-//!   operation. Every mutating method here takes a `&`[`StoreLock`], so "under the lock"
-//!   is a signature rather than a comment.
+//! - **Two processes never interleave.** One advisory `fd-lock` at the state directory's root,
+//!   with D9's two protocols spelled as [`LockProtocol`]: the daemon takes it once and holds
+//!   it for its lifetime, a daemonless `webcam-handler-cli` takes it for one mutating
+//!   operation. Every mutating method here takes a `&`[`StoreLock`], so "under the lock" is a
+//!   signature rather than a comment.
 //! - **A crash is survivable, and corruption is not silently repaired.** A torn *last*
 //!   line of `log.ndjson` is a process that died mid-append; it is dropped. A torn line
 //!   anywhere else is corruption, and corruption is a typed refusal.
@@ -423,8 +423,8 @@ impl SessionStore {
 
     /// Take the one advisory lock at the state directory's root.
     ///
-    /// Never blocks. D9 is explicit that a `wch` meeting a held lock reports it rather
-    /// than "corrupting or blocking" — a CLI that hangs waiting for a daemon that will
+    /// Never blocks. D9 is explicit that a `webcam-handler-cli` meeting a held lock reports it
+    /// rather than "corrupting or blocking" — a CLI that hangs waiting for a daemon that will
     /// hold the lock until it exits is a CLI that hangs forever.
     ///
     /// # Errors
@@ -450,8 +450,8 @@ impl SessionStore {
         StoreLock::acquire(&self.root, protocol)
     }
 
-    /// Run one mutating operation under the lock — D9's daemonless `wch` protocol, as one
-    /// call so a caller cannot take the lock and forget to release it.
+    /// Run one mutating operation under the lock — D9's daemonless `webcam-handler-cli`
+    /// protocol, as one call so a caller cannot take the lock and forget to release it.
     ///
     /// # Errors
     ///
@@ -759,6 +759,12 @@ pub struct LockRecord {
     pub pid: i32,
     /// Its `comm`, when `/proc` let us read it — the same field, from the same place, as
     /// the `Busy` refusal's holder walk.
+    ///
+    /// It is fifteen characters at most, because that is what `comm` is (`TASK_COMM_LEN` is
+    /// 16 including the NUL), and since note **N90** gave every binary here the
+    /// `webcam-handler-` prefix that is exactly what all four of them report. So this field
+    /// says "something of ours" and the `pid` beside it says *which* — which is the division
+    /// of labour it always had, now with nothing left over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comm: Option<String>,
     /// Which protocol it is following.
@@ -1981,11 +1987,11 @@ mod tests {
 
     #[test]
     fn an_unidentifiable_holder_is_reported_as_unidentified() {
-        // The lock record is decoration; the lock is the kernel's. A holder whose record
-        // is unreadable must produce `holder: None` — an honest "somebody" — rather than
-        // an invented pid. The protocol falls with it: advising somebody to switch to
-        // `wchc` on the strength of a record we could not read would be inventing the one
-        // fact the advice turns on.
+        // The lock record is decoration; the lock is the kernel's. A holder whose record is
+        // unreadable must produce `holder: None` — an honest "somebody" — rather than an
+        // invented pid. The protocol falls with it: advising somebody to switch to
+        // `webcam-handler-client` on the strength of a record we could not read would be
+        // inventing the one fact the advice turns on.
         let temp = TempStore::new().expect("a temp dir");
         let held = temp.store().lock(LockProtocol::PerOperation).expect("free");
         fs::write(temp.store().lock_path().as_std_path(), b"{ torn").expect("writable");
@@ -1996,7 +2002,7 @@ mod tests {
                     matches!(err, Error::StoreLocked { protocol: None, .. }),
                     "an unidentified holder named a protocol: {err:?}"
                 );
-                assert!(!err.to_string().contains("wchc"), "{err}");
+                assert!(!err.to_string().contains("webcam-handler-client"), "{err}");
             }
             other => panic!("expected an unidentified holder, got {other:?}"),
         }
@@ -2093,9 +2099,9 @@ mod tests {
         // `an_unidentifiable_holder_is_reported_as_unidentified` covers the record that
         // cannot be read. Nothing covered the record that can, so P3f's mutation run
         // inverted the emptiness filter on `comm` — making *every* record carry
-        // `comm: None` — with the workspace green. "Somebody holds the lock" and "wch
-        // (pid 1234) holds the lock" were indistinguishable to the suite, and the whole
-        // reason the record exists is the difference between them.
+        // `comm: None` — with the workspace green. "Somebody holds the lock" and
+        // "webcam-handler- (pid 1234) holds the lock" were indistinguishable to the suite,
+        // and the whole reason the record exists is the difference between them.
         let record = LockRecord::for_this_process(LockProtocol::HeldForLifetime);
         assert_eq!(record.protocol, LockProtocol::HeldForLifetime);
         assert_eq!(record.pid, LockRecord::pid_or_unknown(std::process::id()));

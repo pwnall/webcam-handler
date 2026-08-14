@@ -12,13 +12,12 @@
 //!
 //! ## Why one declaration, and why both halves in one crate
 //!
-//! D10 makes the whole daemon API one `#[rpc(server, client)]` trait: the daemon
-//! implements the server half, `wchc` consumes the generated client, and the direct CLI
+//! D10 makes the whole daemon API one `#[rpc(server, client)]` trait: the daemon implements
+//! the server half, `webcam-handler-client` consumes the generated client, and the direct CLI
 //! calls the same operations on the engine through T4's executor. A verb therefore exists
-//! exactly once. Splitting the *surface* so the client and the server could live in
-//! different crates would produce two wire surfaces, which is the thing D10 exists to
-//! prevent — and it is the alternative note N5 weighed and rejected when the tokio
-//! question came up.
+//! exactly once. Splitting the *surface* so the client and the server could live in different
+//! crates would produce two wire surfaces, which is the thing D10 exists to prevent — and it
+//! is the alternative note N5 weighed and rejected when the tokio question came up.
 //!
 //! P4e-i makes it **one declaration and two generated traits**: `WchRpc` carries the
 //! nineteen calls and `WchEvents` the two subscriptions, both out of one `wire_surface!`
@@ -44,12 +43,13 @@
 //!
 //! ## Paths on the wire
 //!
-//! D10: a relative `-o out.jpg` resolves against the **caller's** cwd, *before* the
-//! request is sent, so it means the same file under `wch` and `wchc`. That resolution
-//! lives once, in the shared command surface (`cli_core::Command::photo_request`), which
-//! is why the methods here take an assembled [`schema::capture::PhotoRequest`] rather than
-//! the flags one is built from: a server handed the raw flags would have to build the
-//! sink, and the only cwd it has is its own — under systemd, `/`.
+//! D10: a relative `-o out.jpg` resolves against the **caller's** cwd, *before* the request is
+//! sent, so it means the same file under `webcam-handler-cli` and `webcam-handler-client`.
+//! That resolution lives once, in the shared command surface
+//! (`cli_core::Command::photo_request`), which is why the methods here take an assembled
+//! [`schema::capture::PhotoRequest`] rather than the flags one is built from: a server handed
+//! the raw flags would have to build the sink, and the only cwd it has is its own — under
+//! systemd, `/`.
 //!
 //! Paths travelling the *other* way are the server's and are not caller-relative:
 //! `SessionListing::path` is absolute in the daemon's state directory, and a sample's
@@ -119,13 +119,13 @@ wire_surface! {
     /// `param_kind = map` — and emits [`METHODS`] from the same tokens, so the document
     /// xtask writes cannot describe a surface this trait does not have.
     ///
-    /// The namespace is `wch` and jsonrpsee's default separator is `_`, so the wire names are
-    /// `wch_list`, `wch_calibrate_start`, and so on. Every method takes **named** parameters,
-    /// and the emitted document says so (`"paramStructure": "by-name"`): a request object
-    /// costs nothing on the server, and it buys a legible OpenRPC document and a hand-written
-    /// web client (P5c) that reads its own requests. The generated server also accepts a
-    /// positional array — but not for every method (see [`wire::Param`]), which is why the
-    /// document commits to the one shape that always works rather than to "either".
+    /// The namespace is `webcam-handler-cli` and jsonrpsee's default separator is `_`, so the
+    /// wire names are `wch_list`, `wch_calibrate_start`, and so on. Every method takes
+    /// **named** parameters, and the emitted document says so (`"paramStructure": "by-name"`):
+    /// a request object costs nothing on the server, and it buys a legible OpenRPC document
+    /// and a hand-written web client (P5c) that reads its own requests. The generated server
+    /// also accepts a positional array — but not for every method (see [`wire::Param`]), which
+    /// is why the document commits to the one shape that always works rather than to "either".
     ///
     /// Every method is `async`. The daemon's implementation hands the request to the camera's
     /// actor thread (D12) and awaits a reply; `#[method(blocking)]` would put a minutes-long
@@ -181,8 +181,8 @@ wire_surface! {
         ///
         /// The answer is more than a [`ControlReport`] for the same reason: what the probe
         /// declined to touch, and what it could not put back, are facts about the run that
-        /// `wch` prints on standard error. A caller that could not see them would be running a
-        /// write with its restoration report withheld.
+        /// `webcam-handler-cli` prints on standard error. A caller that could not see them
+        /// would be running a write with its restoration report withheld.
         ///
         /// # Errors
         ///
@@ -240,8 +240,8 @@ wire_surface! {
         /// Put a snapshot back, automation before manual (D4).
         ///
         /// Takes the snapshot document itself, not a path: a client reads its own file and
-        /// sends the value, so `wchc restore` reads the caller's filesystem rather than the
-        /// daemon's.
+        /// sends the value, so `webcam-handler-client restore` reads the caller's filesystem
+        /// rather than the daemon's.
         ///
         /// # Errors
         ///
@@ -533,10 +533,10 @@ wire_surface! {
         /// Every calibration sweep's live progress, from every session (D8, D10, P3c).
         ///
         /// `schema::progress::ProgressEvent` verbatim and no second vocabulary: the same
-        /// events `wch calibrate sweep` renders its progress bar from, which is what
-        /// docs/7's risk register asked P3c to guarantee. Each carries its session id and
-        /// each in-flight variant carries `index`/`total`, so a client that connects
-        /// mid-sweep can paint a truthful bar from the first event it sees.
+        /// events `webcam-handler-cli calibrate sweep` renders its progress bar from, which is
+        /// what docs/7's risk register asked P3c to guarantee. Each carries its session id and
+        /// each in-flight variant carries `index`/`total`, so a client that connects mid-sweep
+        /// can paint a truthful bar from the first event it sees.
         ///
         /// **Every session, filtered by the consumer.** The stream is per client, not per
         /// session; `ProgressEvent::session` is what a client with one session in mind

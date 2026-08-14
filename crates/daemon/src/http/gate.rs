@@ -105,8 +105,8 @@ pub const BEARER_CHALLENGE: &str = "Bearer";
 /// gate answers before the route's handler has run, and a `401` is all a client has to branch
 /// on.
 pub const REFUSAL: &str = "this listener serves a live camera and needs the bearer token \
-                           this run printed — open the URL wchd logged at startup, or send \
-                           it as `Authorization: Bearer <token>`\n";
+                           this run printed — open the URL webcam-handler-daemon logged at \
+                           startup, or send it as `Authorization: Bearer <token>`\n";
 
 /// The middleware itself: verify, or refuse without running the route.
 ///

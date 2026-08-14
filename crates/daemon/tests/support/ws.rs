@@ -1,16 +1,16 @@
 //! One real WebSocket connection to the daemon, and the JSON-RPC on top of it.
 //!
 //! Included by `subscriptions.rs`, which drives the two subscriptions an in-process daemon
-//! registers, by `signals.rs`, which watches one across a **real signal** to a real `wchd`
-//! (docs/7 P4e-ii), since P5b by `web_rpc.rs`, which opens the same JSON-RPC over the TCP
-//! listener's WebSocket route, and since P5c by `web_client.rs`, which opens the socket the
-//! shipped page opens — and a *second* one on the Unix socket, because the page's calibration
-//! view watches sweeps another client started. Four includers rather than one, which is why
-//! this is a module of its own and `support/subscribe.rs` — [`crate::subscribe::Watching`],
-//! whose in-memory arm only a suite with a `Methods` value can construct — is still next door:
-//! a `#[path]`-included module is compiled into every binary that includes it, so an item with
-//! one user has to live in a module with one includer, down to an enum variant nobody
-//! constructs (note **N49**).
+//! registers, by `signals.rs`, which watches one across a **real signal** to a real
+//! `webcam-handler-daemon` (docs/7 P4e-ii), since P5b by `web_rpc.rs`, which opens the same
+//! JSON-RPC over the TCP listener's WebSocket route, and since P5c by `web_client.rs`, which
+//! opens the socket the shipped page opens — and a *second* one on the Unix socket, because
+//! the page's calibration view watches sweeps another client started. Four includers rather
+//! than one, which is why this is a module of its own and `support/subscribe.rs` —
+//! [`crate::subscribe::Watching`], whose in-memory arm only a suite with a `Methods` value can
+//! construct — is still next door: a `#[path]`-included module is compiled into every binary
+//! that includes it, so an item with one user has to live in a module with one includer, down
+//! to an enum variant nobody constructs (note **N49**).
 //!
 //! That rule is what shaped `web_client.rs`'s test list as much as its subject did, and it is
 //! worth recording rather than leaving as a coincidence: every item here has a user there

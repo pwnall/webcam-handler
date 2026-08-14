@@ -1,4 +1,4 @@
-//! `wch-priv` — the privileged helper.
+//! `webcam-handler-priv` — the privileged helper.
 //!
 //! A blessed copy of this binary carries `cap_sys_module` and `cap_net_admin`, which lets
 //! the development loop load `vivid` (the R2 rung), cycle `uvcvideo` to make a real camera
@@ -7,16 +7,17 @@
 //!
 //! # The security boundary, stated plainly
 //!
-//! **`wch-priv exec` runs any program with `CAP_SYS_MODULE`, and `CAP_SYS_MODULE` is
-//! root.** A process that can load a kernel module can do anything a kernel can do. So
-//! this binary is not "a tool with some extra permissions" — a blessed copy is a root
-//! escalation for whoever can execute it, and the *only* things standing between it and
-//! the rest of the machine are:
+//! **`webcam-handler-priv exec` runs any program with `CAP_SYS_MODULE`, and `CAP_SYS_MODULE`
+//! is root.** A process that can load a kernel module can do anything a kernel can do. So this
+//! binary is not "a tool with some extra permissions" — a blessed copy is a root escalation
+//! for whoever can execute it, and the *only* things standing between it and the rest of the
+//! machine are:
 //!
 //! 1. **The file mode.** `just bless` chmods the blessed copy `0700` *before* it calls
 //!    `setcap`, so only its owner can run it. This is the boundary, not a nicety.
-//! 2. **The path.** The blessed copy lives at `.wch-bin/wch-priv`, gitignored, never
-//!    inside `target/` (cargo rewrites those, and writing a file strips its capabilities).
+//! 2. **The path.** The blessed copy lives at `.wch-bin/webcam-handler-priv`, gitignored,
+//!    never inside `target/` (cargo rewrites those, and writing a file strips its
+//!    capabilities).
 //! 3. **Who has an account on the machine.** Nothing here defends against a second
 //!    logged-in user who is also the owner.
 //!
@@ -53,7 +54,7 @@ use clap::{Parser, Subcommand};
 
 /// Privileged helper for webcam-handler's development loop.
 #[derive(Debug, Parser)]
-#[command(name = "wch-priv", version, about, long_about = None)]
+#[command(name = "webcam-handler-priv", version, about, long_about = None)]
 struct Cli {
     /// What to do.
     #[command(subcommand)]
@@ -72,7 +73,8 @@ enum Verb {
     /// Run a program with the capabilities, via the ambient set.
     ///
     /// Shaped for `cargo nextest`'s target-runner: point it at
-    /// `[".wch-bin/wch-priv", "exec"]` and the test binary arrives as the first argument.
+    /// `[".wch-bin/webcam-handler-priv", "exec"]` and the test binary arrives as the first
+    /// argument.
     Exec {
         /// The program, and everything to pass it.
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
@@ -132,7 +134,7 @@ fn main() -> ExitCode {
     match run(&Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("wch-priv: {message}");
+            eprintln!("webcam-handler-priv: {message}");
             ExitCode::FAILURE
         }
     }
@@ -155,7 +157,7 @@ fn doctor(setcap_argument: bool) -> Result<(), String> {
     }
 
     let held = caps::Held::read().map_err(|error| error.to_string())?;
-    println!("wch-priv {}", env!("CARGO_PKG_VERSION"));
+    println!("webcam-handler-priv {}", env!("CARGO_PKG_VERSION"));
     println!("  blessing:    {}", caps::BLESSING);
     println!(
         "  permitted:   {}",
@@ -324,7 +326,7 @@ fn uvcvideo(verb: &UvcVerb) -> Result<(), String> {
             if !cycled.returned {
                 println!(
                     "  warning: the nodes had not all returned within the settle deadline; \
-                     `wch-priv uvcvideo status` will say whether they have since"
+                     `webcam-handler-priv uvcvideo status` will say whether they have since"
                 );
             }
             if !cycled.holders_seen.is_empty() {
@@ -399,7 +401,7 @@ mod tests {
         // and those routinely start with `-`. A parser that ate them would silently run
         // the test with the wrong arguments.
         let cli = Cli::try_parse_from([
-            "wch-priv",
+            "webcam-handler-priv",
             "exec",
             "/path/to/test-binary",
             "--exact",
@@ -414,18 +416,24 @@ mod tests {
 
     #[test]
     fn exec_with_no_program_is_refused_by_the_parser() {
-        assert!(Cli::try_parse_from(["wch-priv", "exec"]).is_err());
+        assert!(Cli::try_parse_from(["webcam-handler-priv", "exec"]).is_err());
     }
 
     #[test]
     fn the_device_count_is_range_checked_at_the_parser() {
         // A device count is device-facing input even here: `n_devs=0` loads a driver with
         // no nodes, and a large one floods /dev.
-        assert!(Cli::try_parse_from(["wch-priv", "vivid", "up", "--devices", "0"]).is_err());
-        assert!(Cli::try_parse_from(["wch-priv", "vivid", "up", "--devices", "9"]).is_err());
-        assert!(Cli::try_parse_from(["wch-priv", "vivid", "up", "--devices", "8"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["webcam-handler-priv", "vivid", "up", "--devices", "0"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["webcam-handler-priv", "vivid", "up", "--devices", "9"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["webcam-handler-priv", "vivid", "up", "--devices", "8"]).is_ok()
+        );
 
-        let cli = Cli::try_parse_from(["wch-priv", "vivid", "up"]).expect("parses");
+        let cli = Cli::try_parse_from(["webcam-handler-priv", "vivid", "up"]).expect("parses");
         let Verb::Vivid(VividVerb::Up { devices }) = cli.command else {
             panic!("expected vivid up");
         };
@@ -434,7 +442,8 @@ mod tests {
 
     #[test]
     fn cycling_requires_an_explicit_flag_to_override_the_interlock() {
-        let cli = Cli::try_parse_from(["wch-priv", "uvcvideo", "cycle"]).expect("parses");
+        let cli =
+            Cli::try_parse_from(["webcam-handler-priv", "uvcvideo", "cycle"]).expect("parses");
         let Verb::Uvcvideo(UvcVerb::Cycle { force }) = cli.command else {
             panic!("expected cycle");
         };

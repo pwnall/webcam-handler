@@ -1,13 +1,13 @@
-//! What a real `wchd` says to a real notify socket, and where it logs when it is told the
-//! journal is on its stderr (docs/7 P4e-ii).
+//! What a real `webcam-handler-daemon` says to a real notify socket, and where it logs when it
+//! is told the journal is on its stderr (docs/7 P4e-ii).
 //!
 //! `daemon::systemd`'s own unit tests take every decision in that module apart over values —
 //! the divisor, the fd count, the address shape, the `device:inode` comparison. What none of
 //! them can assert is the one thing the module exists for: that **datagrams leave the
 //! process**, in the right order, and that a real `SIGTERM` produces `STOPPING=1` before the
-//! process is gone. That is a claim about a process, so the daemon here is a real `wchd`
-//! spawned as a subprocess, exactly as `tests/lock.rs` spawns one for the claim that the
-//! shipped binary holds the state directory for as long as it runs.
+//! process is gone. That is a claim about a process, so the daemon here is a real
+//! `webcam-handler-daemon` spawned as a subprocess, exactly as `tests/lock.rs` spawns one for
+//! the claim that the shipped binary holds the state directory for as long as it runs.
 //!
 //! ## The supervisor is this test
 //!
@@ -90,7 +90,7 @@ impl Supervisor {
         Supervisor { socket, path }
     }
 
-    /// A `wchd` that will notify *this* supervisor, not yet started.
+    /// A `webcam-handler-daemon` that will notify *this* supervisor, not yet started.
     fn supervised(&self, scratch: &Scratch) -> Command {
         let mut command = replaying(scratch, &profile());
         command.env("NOTIFY_SOCKET", self.path.as_str());
@@ -245,10 +245,10 @@ fn a_unit_that_asks_for_a_watchdog_gets_pinged_inside_the_interval_it_set() {
 fn an_unsupervised_daemon_serves_without_a_notify_socket_and_says_nothing_to_anybody() {
     // The other direction, and the whole argument for `main` passing `Supervisor`
     // unconditionally: with `$NOTIFY_SOCKET` unset, `sd_notify` opens nothing and answers
-    // `Ok(())`, so a `wchd` in a terminal behaves exactly as it did when the composition root
-    // passed `Unsupervised`. A build that had made the supervisor a hard edge — an `expect`,
-    // or a refusal to start without a socket — would fail right here, which is every `wchd`
-    // anybody runs by hand.
+    // `Ok(())`, so a `webcam-handler-daemon` in a terminal behaves exactly as it did when the
+    // composition root passed `Unsupervised`. A build that had made the supervisor a hard edge
+    // — an `expect`, or a refusal to start without a socket — would fail right here, which is
+    // every `webcam-handler-daemon` anybody runs by hand.
     let scratch = Scratch::new();
     let supervisor = Supervisor::listening(&scratch);
     let mut daemon = Daemon::serving(replaying(&scratch, &profile()), &scratch.socket());
@@ -310,7 +310,8 @@ fn a_journal_stream_that_is_not_this_stderr_leaves_the_daemon_logging_to_stderr(
 
     let said = transcript_to_end(&mut daemon);
     assert!(
-        said.contains("wchd is serving") && said.contains(scratch.socket().as_str()),
+        said.contains("webcam-handler-daemon is serving")
+            && said.contains(scratch.socket().as_str()),
         "a daemon whose $JOURNAL_STREAM is not its stderr logged nothing to stderr; it said:\n{said}"
     );
 }

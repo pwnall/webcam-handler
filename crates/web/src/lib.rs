@@ -4,7 +4,7 @@
 //! CDN (assets embed; external fetches would violate both the offline posture and the license
 //! inventory)" — and this crate is where the third one is true. `assets/` is a directory of
 //! hand-written HTML, CSS and, from P5c, ES modules; `rust-embed` turns it into a table
-//! compiled into `wchd`, and [`get`] is the only way back out.
+//! compiled into `webcam-handler-daemon`, and [`get`] is the only way back out.
 //!
 //! ## What is here
 //!
@@ -235,7 +235,7 @@ mod tests {
         // is a debug build reading `assets/` off the filesystem at an absolute path, and the
         // observable difference is exactly this: `Cow::Borrowed` is a slice of the binary,
         // `Cow::Owned` is a `Vec` that was just read from a directory that may not exist on
-        // the machine running `wchd`.
+        // the machine running `webcam-handler-daemon`.
         //
         // Asserted over every asset rather than over one, because the feature is per-build
         // and a single sample would pass on a tree where somebody had added a file the walk
@@ -311,8 +311,9 @@ mod tests {
         // 1. every reference resolves to an asset this build embeds — a renamed module is a
         //    `404` inside a module graph, which a browser reports by running *nothing*, and
         //    is therefore the cheapest way to ship a page that silently does not work;
-        // 2. every asset is reachable — a file nobody imports is bytes in `wchd` that no
-        //    request will ever ask for, and the honest fix for one is to delete it.
+        // 2. every asset is reachable — a file nobody imports is bytes in
+        //    `webcam-handler-daemon` that no request will ever ask for, and the honest fix for
+        //    one is to delete it.
         //
         // Neither implies the other, and neither is a claim about a browser: this is a graph
         // over a table of names fixed at compile time, which is exactly the kind of thing

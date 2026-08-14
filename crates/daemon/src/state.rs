@@ -1,20 +1,21 @@
 //! The state directory, owned for the daemon's lifetime (D9).
 //!
-//! Design D9 gives the state directory one advisory `fd-lock` and two protocols over it:
-//! "the daemon holds it exclusively for its lifetime; a daemonless `wch` takes it per
-//! mutating operation". This module is the first half — [`OwnedState::take`] is the only
-//! producer of [`LockProtocol::HeldForLifetime`] in the shipped tree, and holding the value
-//! it returns *is* the lifetime.
+//! Design D9 gives the state directory one advisory `fd-lock` and two protocols over it: "the
+//! daemon holds it exclusively for its lifetime; a daemonless `webcam-handler-cli` takes it
+//! per mutating operation". This module is the first half — [`OwnedState::take`] is the only
+//! producer of [`LockProtocol::HeldForLifetime`] in the shipped tree, and holding the value it
+//! returns *is* the lifetime.
 //!
 //! ## Why it is here rather than three lines in `main`
 //!
-//! Two reasons, and neither is tidiness. The lock is what licenses everything that follows
-//! it — [`crate::uds::SocketDir::bind`] takes a `&StoreLock` by signature because a
-//! leftover socket is only stale if no other daemon is alive — so the order in which the
-//! daemon establishes ownership is a thing worth being able to *test*, and a composition
-//! root is the one part of a binary an integration test cannot call. And what a second
-//! `wchd` is answered with is a typed value, not a line on stderr: a test that asserted the
-//! rendered sentence would pass on a build that refused for the wrong reason.
+//! Two reasons, and neither is tidiness. The lock is what licenses everything that follows it
+//! — [`crate::uds::SocketDir::bind`] takes a `&StoreLock` by signature because a leftover
+//! socket is only stale if no other daemon is alive — so the order in which the daemon
+//! establishes ownership is a thing worth being able to *test*, and a composition root is the
+//! one part of a binary an integration test cannot call. And what a second
+//! `webcam-handler-daemon` is answered with is a typed value, not a line on stderr: a test
+//! that asserted the rendered sentence would pass on a build that refused for the wrong
+//! reason.
 //!
 //! ## What this crate deliberately does not do with the lock
 //!
@@ -24,20 +25,21 @@
 //! the one it already holds. In particular the daemon must never call
 //! [`engine::store::SessionStore::with_lock`], which is D9's *daemonless* protocol.
 //!
-//! **What that mistake does is worse than hanging, which is why it is written down here.**
-//! It does not deadlock: `flock` denies a second open file description in the same process
+//! **What that mistake does is worse than hanging, which is why it is written down here.** It
+//! does not deadlock: `flock` denies a second open file description in the same process
 //! exactly as it denies another process's, `StoreLock::take` uses `try_write` and never
-//! blocks, and the call returns in milliseconds with
-//! [`schema::Error::StoreLocked`] — naming *this process's own pid* as the obstruction and
-//! rendering D9's advice, "daemon owns the state (and likely the camera) — use wchc", to a
-//! client that is already using the daemon. So the symptom is a client told to go and use
-//! `wchc` against the `wchd` it is talking to, and an operator sent looking for a lock
-//! leak. `the_daemons_own_lock_refuses_the_daemonless_protocol_rather_than_deadlocking` in
-//! `tests/lock.rs` pins it, so the shape is a red test rather than a paragraph.
+//! blocks, and the call returns in milliseconds with [`schema::Error::StoreLocked`] — naming
+//! *this process's own pid* as the obstruction and rendering D9's advice, "daemon owns the
+//! state (and likely the camera) — use webcam-handler-client", to a client that is already
+//! using the daemon. So the symptom is a client told to go and use `webcam-handler-client`
+//! against the `webcam-handler-daemon` it is talking to, and an operator sent looking for a
+//! lock leak. `the_daemons_own_lock_refuses_the_daemonless_protocol_rather_than_deadlocking`
+//! in `tests/lock.rs` pins it, so the shape is a red test rather than a paragraph.
 //!
-//! Read verbs take no lock at all, under either protocol, and that is what makes a
-//! lifetime hold survivable for the operator sitting at the same machine: `wch calibrate
-//! status` and `wch calibrate list` keep working while `wchd` runs.
+//! Read verbs take no lock at all, under either protocol, and that is what makes a lifetime
+//! hold survivable for the operator sitting at the same machine: `webcam-handler-cli calibrate
+//! status` and `webcam-handler-cli calibrate list` keep working while `webcam-handler-daemon`
+//! runs.
 
 use std::sync::Arc;
 
@@ -48,13 +50,13 @@ use schema::paths::Env;
 /// The state directory this process owns, and the lock that says so.
 ///
 /// Dropping it releases the lock — the release is the *close* of the descriptor, so a
-/// `wchd` that is killed releases it too (`engine::store::StoreLock`'s own paragraph is the
-/// home of that argument). That is why P4b can exit without a signal handler and still
-/// leave the state directory usable. The "store-lock release" P4e-ii owed was always about
-/// doing it in an *order* rather than about doing it at all, and that order landed: this value
-/// is dropped by `main` after [`crate::shutdown::serve_until_stopped`] returns, which is step
-/// 7 of the teardown that module's header states — last, after the subscriptions have been
-/// told, the transport has stopped and the drain has run.
+/// `webcam-handler-daemon` that is killed releases it too (`engine::store::StoreLock`'s own
+/// paragraph is the home of that argument). That is why P4b can exit without a signal handler
+/// and still leave the state directory usable. The "store-lock release" P4e-ii owed was always
+/// about doing it in an *order* rather than about doing it at all, and that order landed: this
+/// value is dropped by `main` after [`crate::shutdown::serve_until_stopped`] returns, which is
+/// step 7 of the teardown that module's header states — last, after the subscriptions have
+/// been told, the transport has stopped and the drain has run.
 #[derive(Debug)]
 #[must_use = "dropping this releases the state directory, which is the daemon's to hold"]
 pub struct OwnedState {
@@ -78,19 +80,18 @@ impl OwnedState {
     /// test's choosing, and could not be tested in parallel with anything.
     ///
     /// This never blocks. D9 is explicit that a held lock is *reported*, not waited on, and
-    /// the daemon needs that as much as `wch` does: the holder it finds may be another
-    /// `wchd` that will hold the lock until somebody stops it, and a daemon that waited for
-    /// that would look like a daemon that hung on startup.
+    /// the daemon needs that as much as `webcam-handler-cli` does: the holder it finds may be
+    /// another `webcam-handler-daemon` that will hold the lock until somebody stops it, and a
+    /// daemon that waited for that would look like a daemon that hung on startup.
     ///
     /// # Errors
     ///
-    /// [`schema::Error::StoreLocked`] when somebody else holds the state directory —
-    /// carrying who, and which protocol they follow, so the refusal can say whether waiting
-    /// would help. A second `wchd` is refused here, and this is the daemon's whole mutual
-    /// exclusion: there is no pid file and no "is a daemon running" probe, because the lock
-    /// is the only answer that cannot go stale.
-    /// [`schema::Error::StorageIo`] when the state directory cannot be resolved or the lock
-    /// file cannot be opened.
+    /// [`schema::Error::StoreLocked`] when somebody else holds the state directory — carrying
+    /// who, and which protocol they follow, so the refusal can say whether waiting would help.
+    /// A second `webcam-handler-daemon` is refused here, and this is the daemon's whole mutual
+    /// exclusion: there is no pid file and no "is a daemon running" probe, because the lock is
+    /// the only answer that cannot go stale. [`schema::Error::StorageIo`] when the state
+    /// directory cannot be resolved or the lock file cannot be opened.
     pub fn take(env: &dyn Env) -> Result<OwnedState> {
         let store = SessionStore::from_env(env)?;
         let lock = Arc::new(store.lock(LockProtocol::HeldForLifetime)?);
@@ -160,7 +161,7 @@ mod tests {
         // The claim in one test: a daemon owns the directory for as long as it exists, and
         // for no longer. Both halves matter — a hold that outlived the process would make
         // the state directory unusable until a reboot, and one that did not last would let
-        // a second `wchd` in.
+        // a second `webcam-handler-daemon` in.
         let temp = TempStore::new().expect("a state directory");
         let env = env_over(&temp);
         let store = peer(&env).expect("a resolvable state directory");

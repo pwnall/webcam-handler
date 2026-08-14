@@ -1,5 +1,5 @@
-//! Everything `wchd` says to a service manager, and everything it takes from one (docs/7
-//! P4e-ii, second half).
+//! Everything `webcam-handler-daemon` says to a service manager, and everything it takes from
+//! one (docs/7 P4e-ii, second half).
 //!
 //! Note **N58** split this sub-milestone in two: the first half shipped the *order* the
 //! daemon stops in and the [`crate::shutdown::Notifying`] seam, with nobody on the other end
@@ -16,10 +16,10 @@
 //! it does not need one:
 //!
 //! - **Notifying** is a no-op when `$NOTIFY_SOCKET` is unset — `sd_notify::notify` returns
-//!   `Ok(())` without opening anything — so [`Supervisor`] is correct for a `wchd` in a
-//!   terminal, in a test, and in a container with no service manager at all. That is the
-//!   whole argument for `main` passing it unconditionally instead of
-//!   [`crate::shutdown::Unsupervised`], which was the shipped implementation only because
+//!   `Ok(())` without opening anything — so [`Supervisor`] is correct for a
+//!   `webcam-handler-daemon` in a terminal, in a test, and in a container with no service
+//!   manager at all. That is the whole argument for `main` passing it unconditionally instead
+//!   of [`crate::shutdown::Unsupervised`], which was the shipped implementation only because
 //!   nothing had yet been written to talk to (`crate::shutdown`'s note on that type).
 //! - **The watchdog** is a task that exists only when `$WATCHDOG_USEC` says a service manager
 //!   is holding a stopwatch ([`spawn_watchdog`]).
@@ -47,7 +47,7 @@
 //! every other thread's `getenv`, and this daemon is multi-threaded from `#[tokio::main]`
 //! onwards. This crate is `#![forbid(unsafe_code)]` and stays that way. What the unsetting
 //! buys — a child process that cannot re-adopt the parent's notify socket — costs this daemon
-//! nothing, because `wchd` spawns no children at all.
+//! nothing, because `webcam-handler-daemon` spawns no children at all.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,20 +62,21 @@ use crate::shutdown::{Notifying, Shutdown};
 /// The real [`Notifying`]: `sd_notify(3)` on `$NOTIFY_SOCKET`.
 ///
 /// **A notify that fails is a `warn!`, never a failure.** The three sentences this sends are
-/// bookkeeping for whoever started the daemon; a `wchd` that could not reach its supervisor's
-/// socket — the socket was removed, the datagram did not fit, the manager restarted — still
-/// has a camera to serve and a client waiting on it. Turning that into a startup failure or a
-/// non-zero exit would be an availability problem converted into a capability one, which is
-/// E3 and AGENTS rule 7 stated about a service manager instead of a device.
+/// bookkeeping for whoever started the daemon; a `webcam-handler-daemon` that could not reach
+/// its supervisor's socket — the socket was removed, the datagram did not fit, the manager
+/// restarted — still has a camera to serve and a client waiting on it. Turning that into a
+/// startup failure or a non-zero exit would be an availability problem converted into a
+/// capability one, which is E3 and AGENTS rule 7 stated about a service manager instead of a
+/// device.
 ///
 /// **Safe to construct and to use unconditionally**, which is why `main` no longer chooses
 /// between this and [`crate::shutdown::Unsupervised`]. `sd_notify::notify` reads
-/// `$NOTIFY_SOCKET` on every call and returns `Ok(())` when it is unset, so a `wchd` started
-/// from a shell sends nothing, opens nothing, and logs nothing — exactly the behaviour
-/// `Unsupervised` was written to provide, with the difference that a daemon started *under* a
-/// supervisor now gets the other half. `Unsupervised` stays where it is: it is what the
-/// shutdown suite's recording double is compared against, and it is the honest value for a
-/// caller that wants to be sure nothing leaves the process.
+/// `$NOTIFY_SOCKET` on every call and returns `Ok(())` when it is unset, so a
+/// `webcam-handler-daemon` started from a shell sends nothing, opens nothing, and logs nothing
+/// — exactly the behaviour `Unsupervised` was written to provide, with the difference that a
+/// daemon started *under* a supervisor now gets the other half. `Unsupervised` stays where it
+/// is: it is what the shutdown suite's recording double is compared against, and it is the
+/// honest value for a caller that wants to be sure nothing leaves the process.
 ///
 /// A unit struct rather than a value holding a socket, because the crate holds no state: each
 /// call connects, sends one datagram, and closes. That costs a `connect` per notification —
@@ -156,7 +157,7 @@ pub fn ping_interval(watchdog: Duration) -> Duration {
 ///
 /// `None` when there is no watchdog — `$WATCHDOG_USEC` unset, or set for a different pid
 /// (`sd_watchdog_enabled(3)` says `WATCHDOG_PID` decides that, and sd-notify implements it) —
-/// which is the ordinary case for every `wchd` that is not under a unit with
+/// which is the ordinary case for every `webcam-handler-daemon` that is not under a unit with
 /// `WatchdogSec=`. A task that pinged into an unset environment would be a timer the daemon
 /// pays for and nobody reads.
 ///
@@ -239,9 +240,10 @@ fn spawn_watchdog_every(
 /// subscriber-driven by design — it exists exactly while somebody is subscribed — so keeping
 /// this number current would mean either running a watch nobody asked for (a thread and a
 /// netlink socket for a line in `systemctl status`) or hanging device enumeration off the
-/// idle-sweep cadence, which is the one loop in this daemon that is careful to touch no
-/// device at all. Either would buy a status line at the cost of the property D12 is about. An
-/// operator who wants the live answer runs `wchc list`, which enumerates when asked.
+/// idle-sweep cadence, which is the one loop in this daemon that is careful to touch no device
+/// at all. Either would buy a status line at the cost of the property D12 is about. An
+/// operator who wants the live answer runs `webcam-handler-client list`, which enumerates when
+/// asked.
 ///
 /// **An enumeration that fails becomes a status that says so, never a startup failure.** A
 /// machine with no cameras, a `/dev` this user cannot read, a driver that is mid-`modprobe` —
@@ -272,7 +274,8 @@ pub fn publish_camera_count(wchd: Wchd, notify: Arc<dyn Notifying>) {
 fn camera_count_status(enumerated: &Result<schema::report::CameraList>) -> String {
     match enumerated {
         Ok(list) => format!(
-            "serving; {} camera(s) at startup (not live — `wchc list` enumerates)",
+            "serving; {} camera(s) at startup (not live — `webcam-handler-client list` \
+             enumerates)",
             list.cameras.len()
         ),
         // The typed refusal, rendered. It names what could not be done rather than reporting
@@ -349,7 +352,8 @@ impl Activation {
                 operation: "adopt the socket the service manager passed in".to_owned(),
                 errno: err.raw_os_error(),
                 message: format!(
-                    "{err} — `wchd` serves one JSON-RPC socket over AF_UNIX (D11), so the unit \
+                    "{err} — `webcam-handler-daemon` serves one JSON-RPC socket over \
+                     AF_UNIX (D11), so the unit \
                  that starts it must use ListenStream= on a filesystem path"
                 ),
             })?;
@@ -388,9 +392,9 @@ impl Activation {
     /// An **abstract or unnamed** address is refused outright and before any of that. An
     /// abstract-namespace socket (`@name`) has no filesystem presence at all: no directory, no
     /// mode, no owner, and reachable by any process in the network namespace that can spell
-    /// the name. There is nothing to check because there is nothing there, so a `wchd` serving
-    /// one would be a camera daemon with *no* authentication rather than one whose
-    /// authentication this build could not verify.
+    /// the name. There is nothing to check because there is nothing there, so a
+    /// `webcam-handler-daemon` serving one would be a camera daemon with *no* authentication
+    /// rather than one whose authentication this build could not verify.
     ///
     /// ## What it cannot check, which is note **N39**'s defence
     ///
@@ -483,7 +487,8 @@ fn only_socket(passed: usize) -> Result<Option<usize>> {
             operation: "adopt the sockets the service manager passed in".to_owned(),
             errno: None,
             message: format!(
-                "LISTEN_FDS announced {several} descriptors and `wchd` serves exactly one \
+                "LISTEN_FDS announced {several} descriptors and `webcam-handler-daemon` \
+                 serves exactly one \
                  socket (D11) — there is no rule here that would say which of them is the \
                  JSON-RPC socket, and picking the first would be a guess an operator could \
                  not see. Give the daemon one .socket unit with one ListenStream="
@@ -614,9 +619,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn no_watchdog_in_the_environment_is_no_task_at_all() {
         // Both directions of the decision, driven from a value because the input is an
-        // environment variable and a test may not write one (see `spawn_watchdog_every`).
-        // The `None` arm is what a `wchd` in a terminal gets, and a build that spawned
-        // anyway would be paying for a timer whose datagrams go nowhere.
+        // environment variable and a test may not write one (see `spawn_watchdog_every`). The
+        // `None` arm is what a `webcam-handler-daemon` in a terminal gets, and a build that
+        // spawned anyway would be paying for a timer whose datagrams go nowhere.
         let shutdown = Shutdown::new();
         assert!(
             spawn_watchdog_every(None, &shutdown).is_none(),
@@ -636,17 +641,17 @@ mod tests {
     #[test]
     fn a_supervisor_nobody_is_running_is_silent_rather_than_noisy() {
         // The failure policy, driven through the real `sd_notify` call: with `$NOTIFY_SOCKET`
-        // unset — which is this test process, and every `wchd` in a terminal — each of the
-        // three sentences is a no-op that answers `Ok(())`, so running `Supervisor`
-        // unconditionally costs an unsupervised daemon nothing at all. That is the whole
-        // argument for `main` no longer choosing between this and `Unsupervised`.
+        // unset — which is this test process, and every `webcam-handler-daemon` in a terminal
+        // — each of the three sentences is a no-op that answers `Ok(())`, so running
+        // `Supervisor` unconditionally costs an unsupervised daemon nothing at all. That is
+        // the whole argument for `main` no longer choosing between this and `Unsupervised`.
         //
         // The assertion is the *absence* of a warning, and it is what makes the `warn!` in
         // `tell` meaningful: a build that logged on every no-op would put a line in the
         // journal for every watchdog ping, and one that logged nothing at all would hide a
         // supervisor that had actually gone away. The real-delivery half — that these three
         // arrive as datagrams when somebody *is* listening — is `tests/systemd.rs`, which
-        // spawns a `wchd` with a notify socket it holds.
+        // spawns a `webcam-handler-daemon` with a notify socket it holds.
         let ((), logged) = capturing(|| {
             let supervisor = Supervisor::new();
             supervisor.ready("serving");
@@ -688,10 +693,10 @@ mod tests {
 
     #[test]
     fn one_socket_is_the_only_number_of_sockets_this_daemon_serves() {
-        // The policy, both directions. Zero is a `wchd` a person started and must not be a
-        // refusal; one is the unit file; anything else is a refusal that has to name the
-        // count, because the operator's next act is to look at a `.socket` unit and count the
-        // `ListenStream=` lines in it.
+        // The policy, both directions. Zero is a `webcam-handler-daemon` a person started and
+        // must not be a refusal; one is the unit file; anything else is a refusal that has to
+        // name the count, because the operator's next act is to look at a `.socket` unit and
+        // count the `ListenStream=` lines in it.
         assert_eq!(only_socket(0), Ok(None));
         assert_eq!(only_socket(1), Ok(Some(0)));
 
@@ -776,10 +781,11 @@ mod tests {
     #[test]
     fn the_journal_stream_comparison_is_about_the_stream_and_not_about_the_variable() {
         // systemd's own test, both directions and the malformed middle. The non-matching case
-        // is the one the comparison exists for: `$JOURNAL_STREAM` is inherited by children,
-        // so a `wchd` started from a unit whose stderr somebody redirected has the variable
-        // and *is not* on the journal — a build that trusted the variable alone would send
-        // every line to a socket nobody is reading, which is silence rather than noise.
+        // is the one the comparison exists for: `$JOURNAL_STREAM` is inherited by children, so
+        // a `webcam-handler-daemon` started from a unit whose stderr somebody redirected has
+        // the variable and *is not* on the journal — a build that trusted the variable alone
+        // would send every line to a socket nobody is reading, which is silence rather than
+        // noise.
         assert!(journal_stream_matches("42:1337", 42, 1337));
         assert!(!journal_stream_matches("42:1337", 42, 1338));
         assert!(!journal_stream_matches("42:1337", 43, 1337));
@@ -811,13 +817,14 @@ mod tests {
         //
         // **What this arm catches, at its real size**: a detection that answers without
         // looking. It cannot catch the more interesting defect — a detection that trusts the
-        // variable *being set* — because in this process the variable is not set at all, and
-        // a test may not set one (`std::env::set_var` is a data race, `unsafe` in Rust 2024,
-        // and process-global in a binary every other test shares). That defect is caught one
-        // level out, by `tests/systemd.rs`, which spawns a `wchd` with `$JOURNAL_STREAM` set
-        // to a `device:inode` that is not its stderr and asserts the readiness line is still
-        // on stderr. Written down here because an assertion whose reach is smaller than its
-        // name is how a suite comes to believe it has covered something.
+        // variable *being set* — because in this process the variable is not set at all, and a
+        // test may not set one (`std::env::set_var` is a data race, `unsafe` in Rust 2024, and
+        // process-global in a binary every other test shares). That defect is caught one level
+        // out, by `tests/systemd.rs`, which spawns a `webcam-handler-daemon` with
+        // `$JOURNAL_STREAM` set to a `device:inode` that is not its stderr and asserts the
+        // readiness line is still on stderr. Written down here because an assertion whose
+        // reach is smaller than its name is how a suite comes to believe it has covered
+        // something.
         //
         // It is an assertion rather than a conditional skip: the false branch of "if the
         // variable is set" cannot go red, and a test that cannot go red is not a test

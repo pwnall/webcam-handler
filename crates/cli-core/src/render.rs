@@ -77,8 +77,9 @@ impl Output {
 
     /// Write raw bytes, with no newline and no interpretation.
     ///
-    /// `wch photo cam:x > shot.jpg` is the reason this exists: with no `-o`, the photo's
-    /// bytes *are* the answer, and a `line` would append a byte the image does not have.
+    /// `webcam-handler-cli photo cam:x > shot.jpg` is the reason this exists: with no `-o`,
+    /// the photo's bytes *are* the answer, and a `line` would append a byte the image does not
+    /// have.
     ///
     /// # Errors
     ///
@@ -105,7 +106,7 @@ impl Output {
     /// # Errors
     ///
     /// [`Error::StorageIo`] when the stream refuses — a closed pipe is a real outcome and
-    /// `wch list | head -1` must not panic on it.
+    /// `webcam-handler-cli list | head -1` must not panic on it.
     pub fn line(&mut self, stream: Stream, text: &str) -> Result<()> {
         let sink = match stream {
             Stream::Stdout => &mut self.stdout,
@@ -129,19 +130,20 @@ impl Output {
 /// should still see them.
 ///
 /// **Here rather than in a binary, because it has two binaries.** It began in
-/// `crates/cli/src/main.rs`, where `wch` was the only root that could run a probe; P4f gives
-/// `wchc` the same two callers — `controls --discover-pairs` over `wch_discover_pairs`, whose
-/// answer carries these two fields on the wire precisely so a socket client is not running a
-/// write with its restoration report withheld (note N30) — and two copies of a rendering is
-/// the second home design §2.10 forbids and the thing the parity gate would then be
-/// comparing against itself.
+/// `crates/cli/src/main.rs`, where `webcam-handler-cli` was the only root that could run a
+/// probe; P4f gives `webcam-handler-client` the same two callers — `controls --discover-pairs`
+/// over `wch_discover_pairs`, whose answer carries these two fields on the wire precisely so a
+/// socket client is not running a write with its restoration report withheld (note N30) — and
+/// two copies of a rendering is the second home design §2.10 forbids and the thing the parity
+/// gate would then be comparing against itself.
 ///
 /// `program` is a parameter for [`crate::Program`]'s reason: the line names the binary that
-/// met the probe, and `wch:` in `wchc`'s mouth would send an operator to the wrong `--help`.
+/// met the probe, and `webcam-handler-cli:` in `webcam-handler-client`'s mouth would send an
+/// operator to the wrong `--help`.
 ///
 /// Takes the two facts rather than a probe result, because its callers hold them in
 /// different shapes: a [`schema::report::DiscoveryReport`] over the wire, and the engine's
-/// own `Discovery` in `wch`.
+/// own `Discovery` in `webcam-handler-cli`.
 ///
 /// Writes with `eprintln!` rather than through [`Output`]: its callers are inside
 /// [`crate::Executor`] implementations, which are handed no output sink — the seam answers
@@ -726,8 +728,8 @@ pub(crate) fn restore(report: &RestoreReport, as_json: bool, out: &mut Output) -
 /// `photo` — where the bytes went, and what was done to them.
 ///
 /// With no `-o`, the bytes go to standard output and the summary to standard error, so
-/// `wch photo cam:x > shot.jpg` is a photo and not a photo with a table in it. `--json`
-/// requires `-o` for exactly that reason, and clap enforces it.
+/// `webcam-handler-cli photo cam:x > shot.jpg` is a photo and not a photo with a table in it.
+/// `--json` requires `-o` for exactly that reason, and clap enforces it.
 pub(crate) fn photo(
     report: &PhotoReport,
     returned: Option<&[u8]>,
@@ -1198,11 +1200,12 @@ pub(crate) fn sessions(list: &SessionList, as_json: bool, out: &mut Output) -> R
 
 /// Where a running sweep's events go while the CLI renders them.
 ///
-/// This crate's seam, not the engine's, and the wall is why: `wchc` links no engine (T6),
-/// so the shared command surface cannot name `engine::progress::ProgressSink`. Each binary
-/// bridges the stream it has — an in-process sink for `wch`, a subscription for `wchc` at
-/// P4e — onto this one object, and the rendering happens once, here. The events themselves
-/// are schema DTOs on both sides, so nothing is translated in between.
+/// This crate's seam, not the engine's, and the wall is why: `webcam-handler-client` links no
+/// engine (T6), so the shared command surface cannot name `engine::progress::ProgressSink`.
+/// Each binary bridges the stream it has — an in-process sink for `webcam-handler-cli`, a
+/// subscription for `webcam-handler-client` at P4e — onto this one object, and the rendering
+/// happens once, here. The events themselves are schema DTOs on both sides, so nothing is
+/// translated in between.
 pub trait SweepWatcher: Send + Sync + std::fmt::Debug {
     /// One event, as it happens.
     fn event(&self, event: &ProgressEvent);
@@ -1783,8 +1786,8 @@ mod tests {
             serde_json::from_str::<schema::profile::DeviceProfile>(&written).expect("valid"),
             document
         );
-        // The path goes to stderr so `wch profile capture -o f.json` prints nothing a
-        // pipeline would have to strip.
+        // The path goes to stderr so `webcam-handler-cli profile capture -o f.json` prints
+        // nothing a pipeline would have to strip.
         assert!(stdout.text().is_empty(), "{}", stdout.text());
         assert!(stderr.text().contains(path.as_str()), "{}", stderr.text());
     }

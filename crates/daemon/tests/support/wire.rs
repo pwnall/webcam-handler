@@ -116,10 +116,10 @@ impl ClientT for Wire {
         R: DeserializeOwned + fmt::Debug + 'a,
     {
         // Batching is a transport property, not a surface one: the bound the daemon serves
-        // under is `schema::limits::RPC_MAX_BATCH` and it is asserted where the transport
-        // is, in `uds.rs`. Nothing this project ships batches — `wch` and `wchc` run one
-        // verb per invocation — so a batching client here would be a client with no
-        // product behind it.
+        // under is `schema::limits::RPC_MAX_BATCH` and it is asserted where the transport is,
+        // in `uds.rs`. Nothing this project ships batches — `webcam-handler-cli` and
+        // `webcam-handler-client` run one verb per invocation — so a batching client here
+        // would be a client with no product behind it.
         Err(ClientError::Custom(
             "these suites send one call at a time".to_owned(),
         ))
@@ -168,7 +168,7 @@ fn decode<R: DeserializeOwned>(answer: &str) -> Result<R, ClientError> {
     }
 }
 
-/// Recover the D13 error a refusal carried, the way `wchc` will.
+/// Recover the D13 error a refusal carried, the way `webcam-handler-client` will.
 ///
 /// The code is returned beside the error rather than checked here, so the caller asserts it
 /// against the kind it expected: `codes::typed` already refuses an object whose code and

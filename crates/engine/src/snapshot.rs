@@ -124,12 +124,12 @@ pub fn take(camera: &mut dyn Camera, pairs: &[AutomationPair], now: Stamp) -> Re
 
 /// Record every writable control, against the pair set **this device is in now**.
 ///
-/// [`take`] takes the pair set as a parameter, because a calibration has one it computed
-/// for its own reasons. Every other caller composes the same two lines in front of it, and
-/// that composition is a rule rather than plumbing — which relationships a snapshot calls
-/// automation decides D4's restore *order*, so two copies of it are two opinions about what
-/// a camera's automation looks like. It had two authors as `wch snapshot` and `wch_snapshot`
-/// landed, which is what this exists to stop (AGENTS "One home per law").
+/// [`take`] takes the pair set as a parameter, because a calibration has one it computed for
+/// its own reasons. Every other caller composes the same two lines in front of it, and that
+/// composition is a rule rather than plumbing — which relationships a snapshot calls
+/// automation decides D4's restore *order*, so two copies of it are two opinions about what a
+/// camera's automation looks like. It had two authors as `webcam-handler-cli snapshot` and
+/// `wch_snapshot` landed, which is what this exists to stop (AGENTS "One home per law").
 ///
 /// `now` stays an argument, because the engine reads no clock.
 ///

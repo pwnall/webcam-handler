@@ -668,22 +668,22 @@ impl WriteWarning {
 /// applied}` pair lives; nothing here records what the device took, because at this point
 /// nothing has asked it.
 ///
-/// **How far this spelling reaches, and why it stops there.** It is the shape of a
-/// requested write from the command line inward: `cli_core::Assignment` is a clap newtype
-/// over one of these, and `cli_core::Executor::set` takes a slice of them — so `wch` and
-/// `wchc` hand their shared command surface the *same* value, and P4f's parity gate
-/// compares two paths whose input has one shape. `engine::pairing` and `engine::write`
-/// still take `(ControlSlug, ControlValue)` pairs, and that is a deliberate stop rather
-/// than an oversight: the planner is a pure core on the mutation floor, its callers build
-/// targets inline in dozens of places, and nothing downstream of the executor serializes
-/// anything — a named pair buys a wire document nothing there emits. The conversion to
-/// the planner's spelling is [`ControlWrite::target`], which is on the type rather than at
-/// its call sites because P4c gave it a second caller: `wch set` and `wchd`'s `wch_set`
-/// both cross this boundary, and two spellings of "which fields of a requested write are
-/// the target" is how the two surfaces P4f compares start to differ. Note N35 carries the
-/// rest. Contrast [`crate::pairing::ProbeSkip`], which *was* pushed all
-/// the way into `engine::discover`: there the tuple had one producer and one consumer, so
-/// one spelling cost four lines.
+/// **How far this spelling reaches, and why it stops there.** It is the shape of a requested
+/// write from the command line inward: `cli_core::Assignment` is a clap newtype over one of
+/// these, and `cli_core::Executor::set` takes a slice of them — so `webcam-handler-cli` and
+/// `webcam-handler-client` hand their shared command surface the *same* value, and P4f's
+/// parity gate compares two paths whose input has one shape. `engine::pairing` and
+/// `engine::write` still take `(ControlSlug, ControlValue)` pairs, and that is a deliberate
+/// stop rather than an oversight: the planner is a pure core on the mutation floor, its
+/// callers build targets inline in dozens of places, and nothing downstream of the executor
+/// serializes anything — a named pair buys a wire document nothing there emits. The conversion
+/// to the planner's spelling is [`ControlWrite::target`], which is on the type rather than at
+/// its call sites because P4c gave it a second caller: `webcam-handler-cli set` and
+/// `webcam-handler-daemon`'s `wch_set` both cross this boundary, and two spellings of "which
+/// fields of a requested write are the target" is how the two surfaces P4f compares start to
+/// differ. Note N35 carries the rest. Contrast [`crate::pairing::ProbeSkip`], which *was*
+/// pushed all the way into `engine::discover`: there the tuple had one producer and one
+/// consumer, so one spelling cost four lines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ControlWrite {
     /// Which control.

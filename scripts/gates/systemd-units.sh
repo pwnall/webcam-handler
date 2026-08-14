@@ -30,11 +30,12 @@
 #    this red instead of shipping a unit that binds a socket nothing connects to.
 # 4. **`TimeoutStopSec` exceeds `limits::DAEMON_SHUTDOWN_DRAIN_MS`.** This is the pair worth a
 #    predicate. The daemon's stop is an *order* (`daemon::shutdown`) bounded by its own drain
-#    constant; systemd's `TimeoutStopSec` is when it stops asking and sends `SIGKILL`. Whichever
-#    is smaller is the bound that fires, and if it is systemd's then the ordered release never
-#    runs and every sentence this project writes about *how* `wchd` stops describes a path
-#    nothing takes. Tune either number alone — raise the drain, trim the unit — and everything
-#    still compiles and every test still passes.
+#    constant; systemd's `TimeoutStopSec` is when it stops asking and sends `SIGKILL`.
+#    Whichever is smaller is the bound that fires, and if it is systemd's then the ordered
+#    release never runs and every sentence this project writes about *how*
+#    `webcam-handler-daemon` stops describes a path nothing takes. Tune either number alone —
+#    raise the drain, trim the unit — and everything still compiles and every test still
+#    passes.
 #
 # ## What this predicate is not
 #
@@ -42,7 +43,7 @@
 # `systemd-analyze verify` is that check and it is not run here: it needs a systemd on the
 # host, it resolves `ExecStart=` against a binary that is not installed in a checkout, and its
 # verdict about a missing executable is not a verdict about this project. The runtime half —
-# a real `wchd` under a real service manager — is `socket-activation.sh`.
+# a real `webcam-handler-daemon` under a real service manager — is `socket-activation.sh`.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -124,7 +125,7 @@ for service in "${services[@]}"; do
     name="${service#"$root/"}"
     type="$(directive "$service" Type)"
     if [[ "$type" != "notify" ]]; then
-        gate_fail "$name is Type=${type:-<unset, which systemd reads as simple>}; \`wchd\` sends READY=1 once its socket is bound (daemon::systemd::Supervisor), and only Type=notify makes \"active (running)\" mean a client's request will be answered"
+        gate_fail "$name is Type=${type:-<unset, which systemd reads as simple>}; \`webcam-handler-daemon\` sends READY=1 once its socket is bound (daemon::systemd::Supervisor), and only Type=notify makes \"active (running)\" mean a client's request will be answered"
     fi
     if [[ "$type" == "forking" ]]; then
         gate_fail "$name is Type=forking and nothing in this workspace forks; systemd would wait for a parent that never exits and then track the wrong process"
@@ -156,7 +157,7 @@ for socket in "${sockets[@]}"; do
         gate_fail "$name has SocketMode=${mode:-<unset, which is 0666>}; the socket inode is not D11's boundary but it is not somebody else's to write to either"
     fi
     if [[ "$dir_mode" != "0700" ]]; then
-        gate_fail "$name has DirectoryMode=${dir_mode:-<unset, which systemd defaults to 0755>}; filesystem permissions on that directory are the whole of what authenticates this socket (D11), and a wchd handed a socket inside a wider one refuses to start"
+        gate_fail "$name has DirectoryMode=${dir_mode:-<unset, which systemd defaults to 0755>}; filesystem permissions on that directory are the whole of what authenticates this socket (D11), and a webcam-handler-daemon handed a socket inside a wider one refuses to start"
     fi
     if [[ -z "$listen" ]]; then
         gate_fail "$name has no ListenStream=; a socket unit that listens on nothing activates nothing"
@@ -172,7 +173,7 @@ for socket in "${sockets[@]}"; do
         fi
     fi
     if [[ "$(directive "$socket" Accept)" == "yes" ]]; then
-        gate_fail "$name has Accept=yes, which spawns a daemon per connection; \`wchd\` serves many clients over one socket and bounds them with limits::DAEMON_MAX_CONNECTIONS, and one process per connection would be that many contenders for one state-directory lock (D9)"
+        gate_fail "$name has Accept=yes, which spawns a daemon per connection; \`webcam-handler-daemon\` serves many clients over one socket and bounds them with limits::DAEMON_MAX_CONNECTIONS, and one process per connection would be that many contenders for one state-directory lock (D9)"
     fi
 done
 gate_checked "${#sockets[@]}" "socket unit(s) checked for SocketMode 0600, DirectoryMode 0700, and a ListenStream ending in $app_dir/$socket_file"

@@ -9,16 +9,16 @@ runtime — the tool links Rust libraries and talks to the kernel itself.
 
 **Status: under construction.** The architecture is settled (`docs/6`), the work is
 phase-gated (`docs/7`; P0–P2 are closed), and this README grows a usage section when
-`wch` grows verbs.
+`webcam-handler-cli` grows verbs.
 
 ## Deliverables
 
 | | |
 |---|---|
-| `wch` | the direct CLI — drives the engine in-process |
-| `wchd` | the daemon — JSON-RPC over a Unix socket always, opt-in loopback TCP for the browser |
-| `wchc` | the daemon CLI client — the same command surface as `wch`, over the wire |
-| web client | vanilla JS served by `wchd`: camera list, live preview, controls, calibration |
+| `webcam-handler-cli` | the direct CLI — drives the engine in-process |
+| `webcam-handler-daemon` | the daemon — JSON-RPC over a Unix socket always, opt-in loopback TCP for the browser |
+| `webcam-handler-client` | the daemon CLI client — the same command surface as `webcam-handler-cli`, over the wire |
+| web client | vanilla JS served by `webcam-handler-daemon`: camera list, live preview, controls, calibration |
 | the library | `webcam-handler-engine` over a pluggable `CameraBackend` trait |
 
 ## Building
@@ -43,7 +43,8 @@ grants it to the seat owner automatically; otherwise:
 sudo usermod -aG video "$USER"   # log out and back in
 ```
 
-`wch` says so itself, with the path it could not open, rather than failing obscurely.
+`webcam-handler-cli` says so itself, with the path it could not open, rather than failing
+obscurely.
 
 ## Development
 

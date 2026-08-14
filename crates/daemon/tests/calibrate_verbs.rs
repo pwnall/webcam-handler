@@ -8,23 +8,23 @@
 //!
 //! ## What a session suite has to prove that a camera suite does not
 //!
-//! - **The engine, and only the engine.** Every verb here reaches the same
-//!   `engine::lifecycle` function `wch calibrate …` reaches, including the four that moved
-//!   there when this daemon acquired the verbs: `session_to_update` (the token is *proof*,
-//!   and the read is half of a read-modify-write), `select` (the `Selection` match records a
-//!   selector whichever branch runs), `restore` (which pair set, and "no snapshot is not a
-//!   failure"), and the two-way branch `calibrate_plan` keeps.
+//! - **The engine, and only the engine.** Every verb here reaches the same `engine::lifecycle`
+//!   function `webcam-handler-cli calibrate …` reaches, including the four that moved there
+//!   when this daemon acquired the verbs: `session_to_update` (the token is *proof*, and the
+//!   read is half of a read-modify-write), `select` (the `Selection` match records a selector
+//!   whichever branch runs), `restore` (which pair set, and "no snapshot is not a failure"),
+//!   and the two-way branch `calibrate_plan` keeps.
 //! - **The lock is one lock, and it is not the daemonless one.** A handler that reached for
 //!   `SessionStore::with_lock` would not hang: it would answer this client `StoreLocked`
-//!   naming the daemon's own pid and advising it to use `wchc` against the daemon it is
-//!   already talking to. `tests/lock.rs` pins the symptom from the outside; here it is the
-//!   negative — no calibrate verb ever answers that variant.
-//! - **`flock` does not exclude a daemon from itself** (note **N47**). `wch` is safe because
-//!   D9's daemonless protocol takes the lock per operation, so two `wch` processes serialize;
-//!   a daemon holds one for its lifetime and gets nothing between its own request tasks, and
-//!   two of these verbs (`calibrate_plan --order` and `calibrate_select`) open no camera, so
-//!   not even the per-camera actor separates them. The serialization is
-//!   `daemon::server`'s `Inner::sessions`, and it has a test.
+//!   naming the daemon's own pid and advising it to use `webcam-handler-client` against the
+//!   daemon it is already talking to. `tests/lock.rs` pins the symptom from the outside; here
+//!   it is the negative — no calibrate verb ever answers that variant.
+//! - **`flock` does not exclude a daemon from itself** (note **N47**). `webcam-handler-cli` is
+//!   safe because D9's daemonless protocol takes the lock per operation, so two
+//!   `webcam-handler-cli` processes serialize; a daemon holds one for its lifetime and gets
+//!   nothing between its own request tasks, and two of these verbs (`calibrate_plan --order`
+//!   and `calibrate_select`) open no camera, so not even the per-camera actor separates them.
+//!   The serialization is `daemon::server`'s `Inner::sessions`, and it has a test.
 //! - **A session belongs to (camera fingerprint, task)** and every mutating verb refuses on
 //!   a mismatch *naming the fields that differ* (rubric B5, S:E6). A check implemented in
 //!   one verb is a check the other verbs walk around, so the walk here is over all of them.
@@ -38,15 +38,15 @@
 //! ## Progress, and where it is now asserted
 //!
 //! `calibrate_sweep` emits `schema::progress::ProgressEvent`s, and at P4c they went into
-//! `engine::progress::Silent` and were dropped — the T5 method's own documented answer,
-//! which puts the live events on their own subscription rather than threading a watcher
-//! through a call. **P4e-i attached that subscription** (`daemon::events`,
-//! `wch_subscribe_calibration`), so the events these tests provoke now reach whoever is
-//! watching. Nothing in *this* binary subscribes, deliberately: a sweep with no listener is
-//! still the ordinary case, and the delivery claim belongs to `tests/subscriptions.rs`,
-//! which drives it over both transports. What remains true here and is worth stating
-//! because no gate covers it: `wchc calibrate sweep` renders nothing until **P4f** builds
-//! the client transport that consumes the stream.
+//! `engine::progress::Silent` and were dropped — the T5 method's own documented answer, which
+//! puts the live events on their own subscription rather than threading a watcher through a
+//! call. **P4e-i attached that subscription** (`daemon::events`, `wch_subscribe_calibration`),
+//! so the events these tests provoke now reach whoever is watching. Nothing in *this* binary
+//! subscribes, deliberately: a sweep with no listener is still the ordinary case, and the
+//! delivery claim belongs to `tests/subscriptions.rs`, which drives it over both transports.
+//! What remains true here and is worth stating because no gate covers it:
+//! `webcam-handler-client calibrate sweep` renders nothing until **P4f** builds the client
+//! transport that consumes the stream.
 //!
 //! ## What is deliberately not asserted
 //!
@@ -720,11 +720,11 @@ async fn every_mutating_calibrate_verb_refuses_another_cameras_session_naming_th
 async fn no_calibrate_verb_answers_store_locked() {
     // An absence, so it needs a walk.
     //
-    // **`StoreLocked`** is the trap `daemon::state`'s header exists for: the daemon holds
-    // one advisory lock for its lifetime, and a handler that reached for D9's *daemonless*
-    // protocol would answer this client `StoreLocked` naming the daemon's own pid and
-    // advising it to use `wchc` against the daemon it is already talking to. It does not
-    // hang, which is why a test is the only thing that catches it.
+    // **`StoreLocked`** is the trap `daemon::state`'s header exists for: the daemon holds one
+    // advisory lock for its lifetime, and a handler that reached for D9's *daemonless*
+    // protocol would answer this client `StoreLocked` naming the daemon's own pid and advising
+    // it to use `webcam-handler-client` against the daemon it is already talking to. It does
+    // not hang, which is why a test is the only thing that catches it.
     //
     // This walk **used to carry a second absence** and no longer does. `Unimplemented` was
     // note N43's retirement — these six verbs were the last rows in the map
@@ -861,7 +861,7 @@ async fn a_queue_edit_cannot_interleave_with_a_sweep_that_is_rewriting_the_same_
     // it from a sweep on the same session: both would read the document, both would write a
     // draft cloned from what they read, and one client's edit would vanish while both
     // answered `Ok`. That is the exact defect `crates/cli`'s `session_to_update` doc records
-    // having been found in `wch`, transplanted inside one process.
+    // having been found in `webcam-handler-cli`, transplanted inside one process.
     //
     // **What this test can and cannot claim.** The green direction is *certain*: the sweep
     // holds `Inner::sessions` for its whole run, so the reorder cannot have completed while

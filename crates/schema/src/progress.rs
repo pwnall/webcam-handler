@@ -1,10 +1,9 @@
 //! The calibration progress stream (design D8; docs/7 P3c and P4e).
 //!
-//! A sweep is the one operation in this tool that takes minutes: a photo per value, each
-//! one waiting for a sensor to settle \[PF:11\]. Something has to say what it is doing
-//! while it does it, and there are two consumers with one answer between them — `wch`
-//! renders a progress bar from it now, and P4e's `subscribe_calibration` puts it on the
-//! wire.
+//! A sweep is the one operation in this tool that takes minutes: a photo per value, each one
+//! waiting for a sensor to settle \[PF:11\]. Something has to say what it is doing while it
+//! does it, and there are two consumers with one answer between them — `webcam-handler-cli`
+//! renders a progress bar from it now, and P4e's `subscribe_calibration` puts it on the wire.
 //!
 //! **That is why this lives in the schema crate and not in the engine.** docs/7's risk
 //! register states the consequence in as many words: *if the hook is not schema-shaped

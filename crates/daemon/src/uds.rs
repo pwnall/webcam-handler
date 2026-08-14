@@ -17,15 +17,15 @@
 //! `Server::builder().set_config(…).to_service_builder()`, and
 //! `TowerServiceBuilder::build(methods, stop_handle)`.
 //!
-//! Because the connection carries HTTP, a caller speaks `POST /` with
-//! `content-type: application/json`. That is a consequence of mounting jsonrpsee's own
-//! service rather than a choice, and it is the fact P4f's client transport has to be built
-//! against: it is an HTTP/1.1 client on a `UnixStream`, not a newline-framed JSON-RPC
-//! pipe. The same connection carries a **WebSocket upgrade**, which is how P4e-i's
-//! subscriptions reach a `wchc` that has no TCP listener to use: jsonrpsee's HTTP path
-//! builds `RpcServiceCfg::OnlyCalls`, so a `wch_subscribe_*` over `POST /` is answered
-//! `-32603` — calls and subscriptions really are two capabilities over one socket, and
-//! [`serve`] enables the second with the two bounds it costs.
+//! Because the connection carries HTTP, a caller speaks `POST /` with `content-type:
+//! application/json`. That is a consequence of mounting jsonrpsee's own service rather than a
+//! choice, and it is the fact P4f's client transport has to be built against: it is an
+//! HTTP/1.1 client on a `UnixStream`, not a newline-framed JSON-RPC pipe. The same connection
+//! carries a **WebSocket upgrade**, which is how P4e-i's subscriptions reach a
+//! `webcam-handler-client` that has no TCP listener to use: jsonrpsee's HTTP path builds
+//! `RpcServiceCfg::OnlyCalls`, so a `wch_subscribe_*` over `POST /` is answered `-32603` —
+//! calls and subscriptions really are two capabilities over one socket, and [`serve`] enables
+//! the second with the two bounds it costs.
 //!
 //! ## What breaks on a bump, and how it is noticed
 //!
@@ -223,10 +223,10 @@ impl SocketDir {
     /// `st_uid` against `geteuid()`, which is the check N39 recorded as absent by omission.
     /// The ordinary non-root case is nearly self-refuting — a 0700 directory belonging to
     /// somebody else is one this process cannot traverse, so the bind would fail `EACCES`
-    /// anyway — but "nearly" is doing work there: a daemon running as root traverses
-    /// anything, so a root `wchd` pointed at a *user's* `$XDG_RUNTIME_DIR` would happily
-    /// serve the camera from a directory that user can replace at will. That is the case
-    /// this refuses, and it costs one comparison on a `Stat` already read.
+    /// anyway — but "nearly" is doing work there: a daemon running as root traverses anything,
+    /// so a root `webcam-handler-daemon` pointed at a *user's* `$XDG_RUNTIME_DIR` would
+    /// happily serve the camera from a directory that user can replace at will. That is the
+    /// case this refuses, and it costs one comparison on a `Stat` already read.
     ///
     /// ## Why `$XDG_RUNTIME_DIR` must already exist
     ///
@@ -343,11 +343,10 @@ impl SocketDir {
     /// that anything at the socket path is stale by construction.
     ///
     /// That is why the lock is a parameter rather than a sentence in this comment: the
-    /// ordering (lock, then directory, then unlink, then bind) is the whole safety
-    /// argument, and a caller cannot get here without the first step. The protocol is
-    /// checked because only the lifetime protocol carries the argument — `wch`'s
-    /// per-operation lock is released moments later and proves nothing about who is
-    /// running.
+    /// ordering (lock, then directory, then unlink, then bind) is the whole safety argument,
+    /// and a caller cannot get here without the first step. The protocol is checked because
+    /// only the lifetime protocol carries the argument — `webcam-handler-cli`'s per-operation
+    /// lock is released moments later and proves nothing about who is running.
     ///
     /// The folklore alternative — connect to the socket and treat `ECONNREFUSED` as
     /// "stale" — is rejected: it is racy (a daemon may be mid-startup), it is weaker (a
@@ -420,7 +419,8 @@ impl SocketDir {
                     "is {} bytes long and a Unix socket path may be at most {} — \
                      $XDG_RUNTIME_DIR is too deep for a client to reach a socket under. \
                      The daemon binds through a descriptor and would not have tripped on \
-                     the length itself; this refusal is on behalf of the `wchc` that would \
+                     the length itself; this refusal is on behalf of the \
+                     `webcam-handler-client` that would \
                      have to connect by this name and could not",
                     socket.as_str().len(),
                     limits::MAX_UNIX_SOCKET_PATH_BYTES
@@ -685,11 +685,11 @@ pub(crate) fn check_directory_mode_and_owner(path: &Utf8Path) -> Result<()> {
 
 /// A running server, and the reason it will eventually stop.
 ///
-/// A value rather than a bare [`ServerHandle`] because *why* the accept loop ended is a
-/// fact the composition root has to act on. jsonrpsee's `ServerHandle::stopped` is
-/// `watch::Sender::closed()` — it resolves when the last receiver is dropped, which the
-/// accept loop dropping its own would do — so a loop that gave up would otherwise look
-/// exactly like a clean stop, and `wchd` would exit `SUCCESS` after announcing that it had
+/// A value rather than a bare [`ServerHandle`] because *why* the accept loop ended is a fact
+/// the composition root has to act on. jsonrpsee's `ServerHandle::stopped` is
+/// `watch::Sender::closed()` — it resolves when the last receiver is dropped, which the accept
+/// loop dropping its own would do — so a loop that gave up would otherwise look exactly like a
+/// clean stop, and `webcam-handler-daemon` would exit `SUCCESS` after announcing that it had
 /// stopped accepting connections. A supervisor reads that as "the service completed", and
 /// `Restart=on-failure` declines to restart it.
 #[derive(Debug)]
@@ -1376,10 +1376,10 @@ mod tests {
 
     #[test]
     fn the_socket_is_where_d11_says_it_is() {
-        // A *pin*, in the tradition of `crates/api/fixtures/d13-rpc-codes.tsv`: the path
-        // is a compatibility contract with a client that is not written yet (P4f's
-        // `wchc` connects to it), so moving it has to be a diff somebody wrote on
-        // purpose rather than a rename that stayed green.
+        // A *pin*, in the tradition of `crates/api/fixtures/d13-rpc-codes.tsv`: the path is a
+        // compatibility contract with a client that is not written yet (P4f's
+        // `webcam-handler-client` connects to it), so moving it has to be a diff somebody
+        // wrote on purpose rather than a rename that stayed green.
         let runtime = TempRuntimeDir::new().expect("a temporary directory");
         let dir = SocketDir::prepare(&runtime.env()).expect("a fresh runtime directory");
         assert_eq!(
@@ -1568,7 +1568,7 @@ mod tests {
 
         let err = dir
             .bind(&momentary)
-            .expect_err("a per-operation lock is a `wch`'s, not a daemon's");
+            .expect_err("a per-operation lock is a `webcam-handler-cli`'s, not a daemon's");
         assert_eq!(err.kind(), ErrorKind::StorageIo);
         assert!(err.to_string().contains("held_for_lifetime"), "{err}");
         assert!(
@@ -1592,12 +1592,13 @@ mod tests {
 
     #[tokio::test]
     async fn giving_up_on_accept_is_a_failure_the_daemon_reports_rather_than_a_clean_stop() {
-        // `wchd`'s exit code is made of this. The accept loop ending is not by itself
-        // distinguishable from somebody asking the server to stop — jsonrpsee's
+        // `webcam-handler-daemon`'s exit code is made of this. The accept loop ending is not
+        // by itself distinguishable from somebody asking the server to stop — jsonrpsee's
         // `ServerHandle::stopped` resolves when the last stop-handle receiver is dropped,
-        // which a loop that gave up would do — so without a reason travelling back, a
-        // daemon that hit a persistent `EMFILE` would log one line, exit 0, and be left
-        // alone by `Restart=on-failure` while `wchc` reported that nobody was listening.
+        // which a loop that gave up would do — so without a reason travelling back, a daemon
+        // that hit a persistent `EMFILE` would log one line, exit 0, and be left alone by
+        // `Restart=on-failure` while `webcam-handler-client` reported that nobody was
+        // listening.
         const EMFILE: i32 = 24;
 
         let mut serving = serve_accepting(NeverAccepts(EMFILE), RpcModule::new(()));

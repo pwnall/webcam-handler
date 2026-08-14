@@ -1,9 +1,9 @@
 # Both-direction cases for `json-validates.sh`.
 #
-# The seams are the bundle and the binary. Doctoring the *bundle* is how the failing arms
-# stay cheap: rebuilding `wch` per case would make the selftest take minutes, and the
-# claim under test — "the emitted document matches the committed schema" — goes red just
-# as truly when the schema moves as when the document does.
+# The seams are the bundle and the binary. Doctoring the *bundle* is how the failing arms stay
+# cheap: rebuilding `webcam-handler-cli` per case would make the selftest take minutes, and the
+# claim under test — "the emitted document matches the committed schema" — goes red just as
+# truly when the schema moves as when the document does.
 #
 # One arm does exercise the other direction, by doctoring the committed *profile* the
 # answers are derived from, so the gate is not only sensitive to its schema input.
@@ -76,11 +76,11 @@ fail_case_the_corpus_has_no_profile_to_replay() {
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
-# The completeness half, and the only arm whose seam is the predicate's own row table
-# rather than the tree. The P3 review's finding was that six of the seven `calibrate`
-# subverbs could vanish from that table with the gate still green, so the shape of the
-# inverse is exactly "a row is missing": there is no way to seed it in the tree without
-# rebuilding `wch` with an eighth subverb, which would cost a full compile per selftest
+# The completeness half, and the only arm whose seam is the predicate's own row table rather
+# than the tree. The P3 review's finding was that six of the seven `calibrate` subverbs could
+# vanish from that table with the gate still green, so the shape of the inverse is exactly "a
+# row is missing": there is no way to seed it in the tree without rebuilding
+# `webcam-handler-cli` with an eighth subverb, which would cost a full compile per selftest
 # run. The mutated *predicate* still drives the real binary, the real bundle and the real
 # corpus — only the list under test is doctored, which is rule 2's "construct the buggy
 # implementation" rather than N10's stub that agrees with its author.

@@ -50,12 +50,12 @@ pub enum SweepSpec {
 
 /// Everything one sweep needs that is not the session, the camera, or the clock.
 ///
-/// A DTO rather than an engine struct because three callers need the same request and two
-/// of them cannot see the engine: `wch` parses one from a command line through the shared
-/// command surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and
-/// `webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type
-/// rather than defining a second one — a request that had to be translated at each seam is
-/// a request three places can disagree about.
+/// A DTO rather than an engine struct because three callers need the same request and two of
+/// them cannot see the engine: `webcam-handler-cli` parses one from a command line through the
+/// shared command surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and
+/// `webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type rather
+/// than defining a second one — a request that had to be translated at each seam is a request
+/// three places can disagree about.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SweepRequest {
     /// Which control to sweep.
@@ -820,7 +820,7 @@ mod tests {
     fn a_sweep_request_parsed_from_nothing_but_its_two_required_fields_is_the_default_sweep() {
         // The defaults are the schema's own, so a request built in Rust and one that
         // arrived as `{"control":…,"plan":…}` describe the same sweep — which is what lets
-        // `wch`, P4's wire, and the executor share one type instead of three.
+        // `webcam-handler-cli`, P4's wire, and the executor share one type instead of three.
         let parsed: SweepRequest =
             serde_json::from_str(r#"{"control":"focus_absolute","plan":{"kind":"all"}}"#)
                 .expect("deserialize");

@@ -1,17 +1,17 @@
 # Both-direction cases for `uds-permissions.sh`.
 #
-# The subject is a *running daemon's* socket directory, not text in the tree, so the
-# failing arms drive the predicate's documented seam — $WCH_GATE_WCHD, the daemon-shaped
-# program it starts — at programs that get D11 wrong in one way each. `pass_case` drives
-# the real `wchd`, which is the arm rubric rule 6 requires [S:N10]: a predicate whose only
-# input is injectable proves nothing about the repository.
+# The subject is a *running daemon's* socket directory, not text in the tree, so the failing
+# arms drive the predicate's documented seam — $WCH_GATE_WCHD, the daemon-shaped program it
+# starts — at programs that get D11 wrong in one way each. `pass_case` drives the real
+# `webcam-handler-daemon`, which is the arm rubric rule 6 requires [S:N10]: a predicate whose
+# only input is injectable proves nothing about the repository.
 #
-# Each stub is a *plausible* wrong daemon rather than a nonsense one. They are the ways
-# this has actually gone wrong — in other projects, and in this one: the umask decided the
-# mode, the daemon announced before it bound, the daemon "helpfully" repaired a directory
-# it should have refused, and the daemon checked the mode by *path* so a symlink answered
-# for its target. The last of those is what `wchd` itself did until the P4b review
-# measured it (note N39).
+# Each stub is a *plausible* wrong daemon rather than a nonsense one. They are the ways this
+# has actually gone wrong — in other projects, and in this one: the umask decided the mode, the
+# daemon announced before it bound, the daemon "helpfully" repaired a directory it should have
+# refused, and the daemon checked the mode by *path* so a symlink answered for its target. The
+# last of those is what `webcam-handler-daemon` itself did until the P4b review measured it
+# (note N39).
 #
 # shellcheck shell=bash
 
@@ -27,8 +27,8 @@ _socket_names() {
         "$root/crates/schema/src/limits.rs" | head -n1
 }
 
-# Write a daemon-shaped program that prepares its socket directory as told, optionally
-# binds nothing at all, announces the socket the way `wchd` does, and exits. Exiting
+# Write a daemon-shaped program that prepares its socket directory as told, optionally binds
+# nothing at all, announces the socket the way `webcam-handler-daemon` does, and exits. Exiting
 # rather than serving is invisible to the predicate: it stops the daemon the moment it
 # announces and then reads to end-of-file either way.
 #
@@ -43,14 +43,14 @@ _stub_daemon() {
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$behaviour" == refuse ]]; then
-    printf 'wchd cannot serve\n' >&2
+    printf 'webcam-handler-daemon cannot serve\n' >&2
     exit 1
 fi
 dir="\$XDG_RUNTIME_DIR/$app_dir"
 mkdir -p "\$dir"
 chmod $mode "\$dir"
 if [[ "$bind" == bind ]]; then : >"\$dir/$socket_file"; fi
-printf 'wchd is serving socket=%s\n' "\$dir/$socket_file" >&2
+printf 'webcam-handler-daemon is serving socket=%s\n' "\$dir/$socket_file" >&2
 STUB
     chmod +x "$script"
 }
@@ -107,11 +107,11 @@ mkdir -p "\$dir"
 # By path, following whatever the name leads to — which is the whole defect.
 mode="\$(stat -Lc %a "\$dir")"
 if [[ "\$mode" != 700 ]]; then
-    printf 'wchd cannot serve: %s is mode %s\\n' "\$dir" "\$mode" >&2
+    printf 'webcam-handler-daemon cannot serve: %s is mode %s\\n' "\$dir" "\$mode" >&2
     exit 1
 fi
 : >"\$dir/$socket_file"
-printf 'wchd is serving socket=%s\\n' "\$dir/$socket_file" >&2
+printf 'webcam-handler-daemon is serving socket=%s\\n' "\$dir/$socket_file" >&2
 STUB
     chmod +x "$stub"
     WCH_GATE_WCHD="$stub" "$GATE"

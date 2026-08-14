@@ -36,12 +36,12 @@ pub const STORE_LOCK_FILE: &str = "lock";
 /// The daemon's Unix socket inside the runtime directory (design D11):
 /// `<XDG runtime dir>/webcam-handler/wchd.sock`.
 ///
-/// Here rather than in the daemon because `wchc` has to resolve the same path to connect
-/// (P4f), and two string literals is the drift this module exists to prevent. The
+/// Here rather than in the daemon because `webcam-handler-client` has to resolve the same path
+/// to connect (P4f), and two string literals is the drift this module exists to prevent. The
 /// *directory* is the security boundary — `connect(2)` checks search permission on every
-/// component and write permission on the socket inode, and the socket file itself is
-/// created with `0777 & ~umask` — so the 0700 mode D11 names belongs to the directory,
-/// which is where `webcam-handler-daemon::uds` asserts it.
+/// component and write permission on the socket inode, and the socket file itself is created
+/// with `0777 & ~umask` — so the 0700 mode D11 names belongs to the directory, which is where
+/// `webcam-handler-daemon::uds` asserts it.
 pub const DAEMON_SOCKET_FILE: &str = "wchd.sock";
 
 /// The longest Unix socket path the kernel will bind.
@@ -83,9 +83,9 @@ const _: () =
 /// The most connections the daemon serves at once.
 ///
 /// jsonrpsee's own default is 100 and this is not it: a per-user daemon behind a 0700
-/// directory has one `wchc` invocation, maybe a browser tab, and whatever a script is
-/// doing. The cap exists so a client that leaks connections is refused rather than able
-/// to exhaust the daemon's file descriptors, which on this process are also the camera's.
+/// directory has one `webcam-handler-client` invocation, maybe a browser tab, and whatever a
+/// script is doing. The cap exists so a client that leaks connections is refused rather than
+/// able to exhaust the daemon's file descriptors, which on this process are also the camera's.
 pub const DAEMON_MAX_CONNECTIONS: u32 = 32;
 
 /// The largest JSON-RPC request body the daemon reads.
@@ -106,13 +106,13 @@ pub const RPC_MAX_RESPONSE_BYTES: u32 = 64 * 1024 * 1024;
 
 /// The most calls one JSON-RPC batch may carry.
 ///
-/// jsonrpsee defaults to unlimited, which is an unbounded loop over caller-supplied input
-/// on the one socket the daemon always serves. Nothing this project ships batches — `wch`
-/// and `wchc` run one verb per invocation — so the bound is small on purpose: it keeps
-/// the protocol feature available without making it a lever.
+/// jsonrpsee defaults to unlimited, which is an unbounded loop over caller-supplied input on
+/// the one socket the daemon always serves. Nothing this project ships batches —
+/// `webcam-handler-cli` and `webcam-handler-client` run one verb per invocation — so the bound
+/// is small on purpose: it keeps the protocol feature available without making it a lever.
 pub const RPC_MAX_BATCH: u32 = 16;
 
-/// How long `wchc` waits for an ordinary verb's answer.
+/// How long `webcam-handler-client` waits for an ordinary verb's answer.
 ///
 /// jsonrpsee's client default is sixty seconds, which is somebody else's number for
 /// somebody else's deployment — and here it is not even the right *shape*, because the
@@ -129,18 +129,18 @@ pub const RPC_MAX_BATCH: u32 = 16;
 /// timeout that fired while the daemon was still working would be this client inventing a
 /// failure the daemon had not had, which is E3's conversion wearing a stopwatch.
 ///
-/// Read by `wchc`'s `Remote::request_timeout`, once per invocation.
+/// Read by `webcam-handler-client`'s `Remote::request_timeout`, once per invocation.
 pub const CLIENT_REQUEST_TIMEOUT_MS: u64 = 120_000;
 
 // The relation the paragraph above argues, checked where all four numbers are: the ordinary
-// budget has to outlast the worst ordinary command, or `wchc photo --wait` would time out on
-// a daemon that was about to answer it.
+// budget has to outlast the worst ordinary command, or `webcam-handler-client photo --wait`
+// would time out on a daemon that was about to answer it.
 const _: () = assert!(
     CLIENT_REQUEST_TIMEOUT_MS
         > CAMERA_ENQUEUE_WAIT_MS + DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS
 );
 
-/// How long `wchc` waits for a calibration sweep's answer.
+/// How long `webcam-handler-client` waits for a calibration sweep's answer.
 ///
 /// Its own number because a sweep is the one method on this surface "whose latency is
 /// unbounded by design" (`webcam-handler-api`'s `wch_calibrate_sweep`, which asks a client
@@ -154,30 +154,32 @@ const _: () = assert!(
 /// this build will run is a little under half an hour. An hour is that with room for the
 /// writes and the per-sample scoring the arithmetic leaves out.
 ///
-/// Read by `wchc`'s `Remote::request_timeout`, for the one verb that needs it.
+/// Read by `webcam-handler-client`'s `Remote::request_timeout`, for the one verb that needs
+/// it.
 pub const CLIENT_SWEEP_REQUEST_TIMEOUT_MS: u64 = 3_600_000;
 
 // The arithmetic above, where the numbers are. A budget shorter than the sweep the planner
-// will happily run would make `wchc calibrate sweep --all` fail on exactly the sweeps that
-// took the longest to get wrong — and it would fail *after* the camera had been driven.
+// will happily run would make `webcam-handler-client calibrate sweep --all` fail on exactly
+// the sweeps that took the longest to get wrong — and it would fail *after* the camera had
+// been driven.
 const _: () = assert!(
     CLIENT_SWEEP_REQUEST_TIMEOUT_MS
         > MAX_SWEEP_SAMPLES as u64 * (DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS)
 );
 
-/// How many requests `wchc` may have in flight on its one connection.
+/// How many requests `webcam-handler-client` may have in flight on its one connection.
 ///
-/// jsonrpsee sizes the channel to its background task from this and defaults it to 256,
-/// which is a server-shaped number: `wchc` runs **one verb per invocation**, so what is
-/// actually in flight is a call, at most one subscribe beside it (the sweep, note N57), and
-/// the unsubscribe a dropped `Subscription` sends. Four is that with one to spare.
+/// jsonrpsee sizes the channel to its background task from this and defaults it to 256, which
+/// is a server-shaped number: `webcam-handler-client` runs **one verb per invocation**, so
+/// what is actually in flight is a call, at most one subscribe beside it (the sweep, note
+/// N57), and the unsubscribe a dropped `Subscription` sends. Four is that with one to spare.
 ///
 /// Small on purpose rather than generous: this is the one place a client could buffer work
 /// the daemon has not agreed to yet, and a bound that could never be reached would not be a
-/// bound. Read by `wchc`'s `Remote::connect`.
+/// bound. Read by `webcam-handler-client`'s `Remote::connect`.
 pub const CLIENT_MAX_CONCURRENT_REQUESTS: usize = 4;
 
-/// How many undelivered events `wchc` holds for one subscription.
+/// How many undelivered events `webcam-handler-client` holds for one subscription.
 ///
 /// jsonrpsee's client **closes** a subscription whose buffer overflows, so this is not a
 /// drop policy like [`WS_MESSAGE_BUFFER_CAPACITY`] one hop upstream — it is the depth at
@@ -189,13 +191,14 @@ pub const CLIENT_MAX_CONCURRENT_REQUESTS: usize = 4;
 /// Equal to [`SUBSCRIPTION_BROADCAST_DEPTH`] because the two bound the same thing from two
 /// ends — how far behind a subscriber may fall — and a client that buffered less than the
 /// daemon's fan-out would make the client the first to fail on a burst the daemon was
-/// built to absorb. Read by `wchc`'s `Remote::connect`.
+/// built to absorb. Read by `webcam-handler-client`'s `Remote::connect`.
 pub const CLIENT_SUBSCRIPTION_BUFFER: usize = 256;
 
 // The ordering the paragraph above argues, checked where both numbers are.
 const _: () = assert!(CLIENT_SUBSCRIPTION_BUFFER > WS_MESSAGE_BUFFER_CAPACITY as usize);
 
-/// How long `wchc` keeps reading a sweep's progress after the sweep itself has answered.
+/// How long `webcam-handler-client` keeps reading a sweep's progress after the sweep itself
+/// has answered.
 ///
 /// The bound on the **tail**, and the tail exists because a sweep's answer and its last
 /// progress event leave the daemon on two different tasks — `wch_calibrate_sweep`'s method
@@ -224,15 +227,15 @@ const _: () = assert!(CLIENT_SUBSCRIPTION_BUFFER > WS_MESSAGE_BUFFER_CAPACITY as
 /// already happened, before the pause is the thing a person notices? A quarter of a second
 /// is this project's answer, given once.
 ///
-/// Read by `wchc`'s `Remote::calibrate_sweep`, through `remote::SWEEP_DRAIN_BUDGET` — the one
-/// place the number becomes a `Duration` — and read *as a duration that has to be able to
-/// expire* by the test named
-/// `the_tail_waits_the_moment_out_and_the_budget_is_what_pays_for_it`,
-/// which delivers a sweep's terminal event a hundred milliseconds behind its answer on a
-/// paused clock and asserts the bar still gets it. That test exists because this number spent
-/// a day being read by nothing that could go red: every tail test passed `Duration::ZERO`, so
-/// **zero passed the entire workspace suite** — the fix note **N69** landed, deleted, with its
-/// code left in place (note **N70**, finding F2).
+/// Read by `webcam-handler-client`'s `Remote::calibrate_sweep`, through
+/// `remote::SWEEP_DRAIN_BUDGET` — the one place the number becomes a `Duration` — and read *as
+/// a duration that has to be able to expire* by the test named
+/// `the_tail_waits_the_moment_out_and_the_budget_is_what_pays_for_it`, which delivers a
+/// sweep's terminal event a hundred milliseconds behind its answer on a paused clock and
+/// asserts the bar still gets it. That test exists because this number spent a day being read
+/// by nothing that could go red: every tail test passed `Duration::ZERO`, so **zero passed the
+/// entire workspace suite** — the fix note **N69** landed, deleted, with its code left in
+/// place (note **N70**, finding F2).
 pub const CLIENT_SWEEP_DRAIN_MS: u64 = 250;
 
 // The floor, and it is mechanical rather than a matter of taste: a tail that cannot wait
@@ -460,9 +463,9 @@ const _: () =
 /// the number is.** `daemon::systemd`'s watchdog task is a tokio task that pings on a timer,
 /// so a ping means the runtime is still scheduling — it does not mean a camera answers, that
 /// the socket accepts, or that any request has ever completed. A watchdog that health-checked
-/// a device would have to open one, and D12's whole posture is that `wchd` running does not
-/// itself hold a camera; an availability check that took the camera would be the one failure
-/// mode it exists to prevent (AGENTS rule 7 — availability is not capability).
+/// a device would have to open one, and D12's whole posture is that `webcam-handler-daemon`
+/// running does not itself hold a camera; an availability check that took the camera would be
+/// the one failure mode it exists to prevent (AGENTS rule 7 — availability is not capability).
 ///
 /// Read by `daemon::systemd::ping_interval`, which is the only thing that divides by it.
 pub const WATCHDOG_PING_DIVISOR: u32 = 2;
@@ -475,17 +478,17 @@ const _: () = assert!(WATCHDOG_PING_DIVISOR > 1);
 
 /// How long an open camera may go unused before the next idle sweep closes it.
 ///
-/// D12's "the daemon never opens a camera until first use and closes on idle
-/// (configurable), so `wchd` running does not itself block other applications from the
+/// D12's "the daemon never opens a camera until first use and closes on idle (configurable),
+/// so `webcam-handler-daemon` running does not itself block other applications from the
 /// webcam" — this is the *default* that makes "configurable" have something to configure
 /// (`engine::actor::Cameras::with_idle_timeout` is the override).
 ///
 /// Thirty seconds is chosen from the two failures it sits between. Too short and every
-/// `wchc get` in a shell loop pays a fresh `open` and the driver's first-frame settle
-/// \[PF:11\]; too long and a person who ran one command cannot start a video call without
-/// stopping the daemon, which is precisely the complaint D12 exists to answer. A human
-/// working at a terminal issues their next command inside thirty seconds, and has stopped
-/// caring about the camera long before they switch applications.
+/// `webcam-handler-client get` in a shell loop pays a fresh `open` and the driver's
+/// first-frame settle \[PF:11\]; too long and a person who ran one command cannot start a
+/// video call without stopping the daemon, which is precisely the complaint D12 exists to
+/// answer. A human working at a terminal issues their next command inside thirty seconds, and
+/// has stopped caring about the camera long before they switch applications.
 ///
 /// **Measured from when a command *starts*, plus one sweep cadence** (note N45). The actor
 /// reads no clock, so the stamp is taken on the way in and this timeout runs from there. For
@@ -548,11 +551,11 @@ const _: () = assert!(CAMERA_IDLE_SWEEP_MS > 0 && CAMERA_IDLE_SWEEP_MS < CAMERA_
 /// [`crate::Error::Busy`].
 ///
 /// A bound, not a buffer. One camera is one blocking thread (D12), so everything past the
-/// command being executed is already waiting on a device that can only do one thing at a
-/// time, and a deeper queue buys a caller nothing but a longer wait before the same
-/// answer. Eight is enough that a browser tab's poll and a `wchc` invocation arriving
-/// together never collide; a caller past it is told the camera is busy — which is the
-/// refusal D12 names — rather than made to wait for a queue nobody bounded.
+/// command being executed is already waiting on a device that can only do one thing at a time,
+/// and a deeper queue buys a caller nothing but a longer wait before the same answer. Eight is
+/// enough that a browser tab's poll and a `webcam-handler-client` invocation arriving together
+/// never collide; a caller past it is told the camera is busy — which is the refusal D12 names
+/// — rather than made to wait for a queue nobody bounded.
 pub const CAMERA_COMMAND_QUEUE_DEPTH: usize = 8;
 
 /// How long a request that asked to *wait* for a place in that queue is willing to wait.

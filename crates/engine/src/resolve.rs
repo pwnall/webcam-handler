@@ -1,10 +1,10 @@
 //! Turning what a caller typed into the camera they meant, and what a caller who typed
 //! nothing is told (design D1).
 //!
-//! One home. `wch` resolves here before opening; the daemon resolves here before
-//! dispatching to an actor. Backends do **not** resolve — `CameraBackend::open`
-//! takes an id that already means exactly one camera, which is why a backend can answer
-//! it with a lookup rather than with a policy.
+//! One home. `webcam-handler-cli` resolves here before opening; the daemon resolves here
+//! before dispatching to an actor. Backends do **not** resolve — `CameraBackend::open` takes
+//! an id that already means exactly one camera, which is why a backend can answer it with a
+//! lookup rather than with a policy.
 //!
 //! That split matters beyond tidiness. Prefix resolution needs the *whole* enumeration to
 //! decide whether a prefix is ambiguous, so a backend resolving it would be answering a
@@ -26,9 +26,9 @@ use schema::report::CameraList;
 /// looks like, which is why the diagnosis is asked of it (note N7).
 ///
 /// One home because there are two composition roots and P4f's parity gate compares their
-/// `--json` byte for byte: `wch list` reaches this through T4's in-process executor and
-/// `wch_list` reaches it through T5's server, and a second assembly is how the two come to
-/// disagree about what a listing carries.
+/// `--json` byte for byte: `webcam-handler-cli list` reaches this through T4's in-process
+/// executor and `wch_list` reaches it through T5's server, and a second assembly is how the
+/// two come to disagree about what a listing carries.
 ///
 /// # Errors
 ///

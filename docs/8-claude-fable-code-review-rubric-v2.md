@@ -313,7 +313,8 @@ impl · `review` human/agent judgment, no mechanical gate yet.
 
 ### B7 · CLIs and the web client
 
-- [ ] One command surface (T4): `wch` and `wchc` share verb definitions and rendering;
+- [ ] One command surface (T4): `webcam-handler-cli` and `webcam-handler-client` share verb
+  definitions and rendering;
       the parity gate (read verbs byte-identical `--json` on the fake) stays green; a
       verb added to one binary only is unrepresentable by construction — review any
       change that would make it representable. `CI` `review`
@@ -568,15 +569,15 @@ is recorded in E4 and matters equally: no unsound `unsafe`, no aliasing defect i
 mmap path, no availability-to-capability conversion — the B10 and A4 rules held.
 
 **G3 (P3, twelve confirmed of thirty-one candidates — nine distinct defects; notes E6).**
-Predicted by the rubric, and this is the first gate where the answer is mostly *yes*: A8's
-"a typed declaration nothing reads" caught the largest one exactly as written —
-`Session::pre_snapshot` was written by the product and read only by tests, so `wch
-calibrate sweep` could not honour rule 8 (fixed as an eighth verb, note N23). Rule 6's
-addendum caught two more: `json-validates.sh`'s verb population derived from top-level
-`--help` only, so six of seven new subverbs could vanish green, and
-`atomic-write-home.sh`'s primitive list omitted std's own aliases for two primitives it
-did catch. Both are [S:N10]'s family for the third and fourth time, and the row that keeps
-finding them is worth its space.
+Predicted by the rubric, and this is the first gate where the answer is mostly *yes*: A8's "a
+typed declaration nothing reads" caught the largest one exactly as written —
+`Session::pre_snapshot` was written by the product and read only by tests, so
+`webcam-handler-cli calibrate sweep` could not honour rule 8 (fixed as an eighth verb, note
+N23). Rule 6's addendum caught two more: `json-validates.sh`'s verb population derived from
+top-level `--help` only, so six of seven new subverbs could vanish green, and
+`atomic-write-home.sh`'s primitive list omitted std's own aliases for two primitives it did
+catch. Both are [S:N10]'s family for the third and fourth time, and the row that keeps finding
+them is worth its space.
 
 What the rubric *named but under-specified*, and now says: Part C's smells had no row for
 **a test whose fixture cannot exercise the rule it pins** — the whole-device plan test drafts
@@ -660,20 +661,19 @@ side (N52's verdict moving with `nproc`, N66's and N68's disk, N71's selftest ru
 tmpfs out of quota and reporting it as a predicate being wrong about the tree). One rule,
 two faces: **a run's resources are part of its result.**
 
-**What the rubric named but under-specified, and now says.** Part C's clock row said "a
-policy object with a stepped clock", which is one shape of two and not the one the broken
-path needed: N67's tests had nothing to say about a duration and wanted a deadline that
-*cannot expire*, and `FrozenClock` is stateless and therefore `Sync` by construction, so
-N45's ruling was untouched rather than worked around. AGENTS has named both shapes since
-`364ea5f`; this document does now. **A8 fired twice in one phase, once in each
-direction.** Forward, and not at the review — at P4g's check-off of N34 and N42: asking
-what reads `PhotoResponse::bytes_match_the_delivery` found its doc still saying a consumer
-"is still owed", naming `wchc` as owing it, two sub-milestones after `Remote::photo` began
-calling it. The declaration was sound and the *bookkeeping* was the stale artefact, which
-is A8's question answering correctly about a paragraph. Backward, at the review: F2 is
-A8's converse, a constant the **product** reads that no test constrains — which "a typed
-declaration nothing reads" cannot express, because something did read it. The row asks
-both halves now.
+**What the rubric named but under-specified, and now says.** Part C's clock row said "a policy
+object with a stepped clock", which is one shape of two and not the one the broken path needed:
+N67's tests had nothing to say about a duration and wanted a deadline that *cannot expire*, and
+`FrozenClock` is stateless and therefore `Sync` by construction, so N45's ruling was untouched
+rather than worked around. AGENTS has named both shapes since `364ea5f`; this document does
+now. **A8 fired twice in one phase, once in each direction.** Forward, and not at the review —
+at P4g's check-off of N34 and N42: asking what reads `PhotoResponse::bytes_match_the_delivery`
+found its doc still saying a consumer "is still owed", naming `webcam-handler-client` as owing
+it, two sub-milestones after `Remote::photo` began calling it. The declaration was sound and
+the *bookkeeping* was the stale artefact, which is A8's question answering correctly about a
+paragraph. Backward, at the review: F2 is A8's converse, a constant the **product** reads that
+no test constrains — which "a typed declaration nothing reads" cannot express, because
+something did read it. The row asks both halves now.
 
 **Rule 6 and [S:N10]'s family, twice more in one phase, and only one came from the
 adversarial session.** `smoke-hw.sh` printed "N claim(s) declined by tests that ran" out

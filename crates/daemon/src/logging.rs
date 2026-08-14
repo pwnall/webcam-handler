@@ -20,9 +20,9 @@
 //! assertable, and neither can be arranged by a test that may not write the environment).
 //!
 //! Asking that narrow question is also what makes the daemon behave correctly in the case the
-//! broad one gets wrong: a `wchd` started from a unit but with its stderr redirected to a file
-//! inherits `$JOURNAL_STREAM` and is **not** on the journal, and a build that trusted the
-//! variable would send its whole log to a socket nobody is reading.
+//! broad one gets wrong: a `webcam-handler-daemon` started from a unit but with its stderr
+//! redirected to a file inherits `$JOURNAL_STREAM` and is **not** on the journal, and a build
+//! that trusted the variable would send its whole log to a socket nobody is reading.
 //!
 //! **A journald layer that cannot be built is a `warn` and the fmt layer, never silence.**
 //! `tracing_journald::layer()` connects to `/run/systemd/journal/socket`, and a sandbox or a
@@ -43,10 +43,10 @@
 //!
 //! ## Why installation lives in the composition root
 //!
-//! [`install`] is called by `wchd`'s `main` and by nothing else. A subscriber installed
-//! from library code would be installed by every integration test that drove a server —
-//! the daemon exists as a library precisely so tests can — and the first one to win would
-//! then be capturing every other test's events. Same shape as the rest of the workspace:
+//! [`install`] is called by `webcam-handler-daemon`'s `main` and by nothing else. A subscriber
+//! installed from library code would be installed by every integration test that drove a
+//! server — the daemon exists as a library precisely so tests can — and the first one to win
+//! would then be capturing every other test's events. Same shape as the rest of the workspace:
 //! seams live in the shell, and the composition root is where the process's edges are.
 //!
 //! ## Stderr, not stdout
@@ -74,12 +74,12 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 
 /// The level the daemon logs at when the operator has not said otherwise.
 ///
-/// `info` because the events at that level are the ones an operator running `wchd` in a
-/// terminal or reading `journalctl` needs — the socket it is serving, a camera opened, a
-/// camera closed on idle — and nothing below it is about their machine. `RUST_LOG`
-/// overrides it with the usual `tracing-subscriber` syntax, which is why the `env-filter`
-/// feature is worth its four transitive crates: raising the level on a daemon that is
-/// already misbehaving must not require a restart flag it was not started with.
+/// `info` because the events at that level are the ones an operator running
+/// `webcam-handler-daemon` in a terminal or reading `journalctl` needs — the socket it is
+/// serving, a camera opened, a camera closed on idle — and nothing below it is about their
+/// machine. `RUST_LOG` overrides it with the usual `tracing-subscriber` syntax, which is why
+/// the `env-filter` feature is worth its four transitive crates: raising the level on a daemon
+/// that is already misbehaving must not require a restart flag it was not started with.
 pub const DEFAULT_LOG_FILTER: &str = "info";
 
 /// Install the one layer this process should have. Called once, from `main`.

@@ -2,11 +2,11 @@
 #
 # The blessed helper is root. This gate is what keeps that contained (note N8).
 #
-# `wch-priv exec` grants `CAP_SYS_MODULE` to any program, and a process that can load a
-# kernel module can do anything a kernel can do. There is therefore no meaningful
-# *capability* boundary around this binary — the boundary is entirely about **who can
-# execute it** and **what links it**. Those are exactly the two things a gate can check,
-# so it checks them:
+# `webcam-handler-priv exec` grants `CAP_SYS_MODULE` to any program, and a process that can
+# load a kernel module can do anything a kernel can do. There is therefore no meaningful
+# *capability* boundary around this binary — the boundary is entirely about **who can execute
+# it** and **what links it**. Those are exactly the two things a gate can check, so it checks
+# them:
 #
 #   1. **A blessed copy is never committed.** `.wch-bin/` must be gitignored, and no file
 #      under it may be tracked. Git does not preserve xattrs, so a committed copy would be
@@ -24,9 +24,9 @@
 #      one crate where the consequence is different in kind, so a future edit that reaches
 #      for `libc` has to argue with two gates instead of one.
 #
-# What it cannot check, recorded rather than implied: that the *owner* is trustworthy,
-# that no second session is logged in as them, and that nobody has already run
-# `wch-priv exec /bin/sh`. Those were accepted when the exec-wrapper shape was chosen.
+# What it cannot check, recorded rather than implied: that the *owner* is trustworthy, that no
+# second session is logged in as them, and that nobody has already run `webcam-handler-priv
+# exec /bin/sh`. Those were accepted when the exec-wrapper shape was chosen.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
@@ -76,21 +76,21 @@ gate_checked "$checked" "containment claim(s) about $blessed_dir/"
 
 # ------------------------------------------------------------------ claim 2
 
-blessed="$root/$blessed_dir/wch-priv"
+blessed="$root/$blessed_dir/webcam-handler-priv"
 if [[ -e "$blessed" ]]; then
     mode="$(stat -c %a "$blessed")"
     owner="$(stat -c %U "$blessed")"
     if [[ "$mode" != "700" ]]; then
-        gate_fail "$blessed_dir/wch-priv is mode $mode; a root-capable binary must be 0700 (owner only) — re-run \`just bless\`"
+        gate_fail "$blessed_dir/webcam-handler-priv is mode $mode; a root-capable binary must be 0700 (owner only) — re-run \`just bless\`"
     fi
     if [[ "$owner" != "$(id -un)" ]]; then
-        gate_fail "$blessed_dir/wch-priv is owned by $owner, not $(id -un)"
+        gate_fail "$blessed_dir/webcam-handler-priv is owned by $owner, not $(id -un)"
     fi
     gate_checked 1 "blessed helper checked for owner-only mode"
     gate_note "blessed copy present: mode $mode, owner $owner"
 else
     # Legitimate and common: CI never blesses, and a fresh checkout has not either.
-    gate_skip 1 "no blessed helper at $blessed_dir/wch-priv; nothing to check its mode on"
+    gate_skip 1 "no blessed helper at $blessed_dir/webcam-handler-priv; nothing to check its mode on"
 fi
 
 # ------------------------------------------------------------------ claim 3

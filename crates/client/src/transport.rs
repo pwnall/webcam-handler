@@ -3,10 +3,10 @@
 //! Design §2.6 asks for "a small client transport (~200 lines, modeled on reth's production
 //! IPC adapter — vendored knowledge, not a git dependency)". **The model is the two trait
 //! impls, not the framing**, and the difference matters: reth's IPC is newline-framed raw
-//! JSON-RPC on a `UnixStream`, and `wchd` speaks **HTTP/1.1** on its socket because the
-//! service jsonrpsee hands the daemon is an HTTP service (`daemon::uds`'s header states it,
-//! and `crates/daemon/tests/support/mod.rs` writes the `POST` by hand so the fact is in the
-//! repository rather than in a memory). So the shape here is:
+//! JSON-RPC on a `UnixStream`, and `webcam-handler-daemon` speaks **HTTP/1.1** on its socket
+//! because the service jsonrpsee hands the daemon is an HTTP service (`daemon::uds`'s header
+//! states it, and `crates/daemon/tests/support/mod.rs` writes the `POST` by hand so the fact
+//! is in the repository rather than in a memory). So the shape here is:
 //!
 //! ```text
 //! UnixStream::connect → soketto handshake → into_builder().finish()
@@ -26,9 +26,9 @@
 //! `SubscriptionClientT`.
 //!
 //! `soketto` is jsonrpsee-server's own WebSocket implementation, so the two halves of the
-//! frame layer cannot disagree about what a frame is. It is a normal dependency of `wchc`
-//! where it is a dev-dependency of the daemon, and that asymmetry is the point: for the
-//! daemon it is a fixture, for this binary it is the product.
+//! frame layer cannot disagree about what a frame is. It is a normal dependency of
+//! `webcam-handler-client` where it is a dev-dependency of the daemon, and that asymmetry is
+//! the point: for the daemon it is a fixture, for this binary it is the product.
 //!
 //! ## What is bounded here
 //!
@@ -126,7 +126,8 @@ pub async fn connect(socket: &Utf8Path) -> Result<(Sender, Receiver)> {
                 None,
                 &format!(
                     "something is listening there, but it declined a WebSocket upgrade \
-                     ({other:?}); that socket is not a wchd this build can talk to"
+                     ({other:?}); that socket is not a webcam-handler-daemon this build \
+                     can talk to"
                 ),
             ));
         }
@@ -197,9 +198,9 @@ impl TransportSenderT for Sender {
     }
 
     async fn close(&mut self) -> std::result::Result<(), FrameError> {
-        // A real close frame, so the daemon's connection task ends on a peer that said
-        // goodbye rather than on a read error. `wchc` runs one verb and exits, so this is
-        // the ordinary end of every connection this binary opens.
+        // A real close frame, so the daemon's connection task ends on a peer that said goodbye
+        // rather than on a read error. `webcam-handler-client` runs one verb and exits, so
+        // this is the ordinary end of every connection this binary opens.
         self.0.close().await
     }
 }

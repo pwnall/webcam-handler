@@ -11,9 +11,10 @@
 #     both talk to the same actor API" — and §2.8 gives the engine no runtime, which is
 #     precisely why `engine::actor` names no reply channel of its own and hands the caller
 #     a closure to build one with (note N41): a `tokio::sync::oneshot` in the signature
-#     would force a runtime on `wch`. That argument stops being true the moment the engine
-#     links tokio, and nothing about `engine::actor` would have to change for it to happen,
-#     so it is a linkage fact here instead of a paragraph in a doc comment.
+#     would force a runtime on `webcam-handler-cli`. That argument stops being true the
+#     moment the engine links tokio, and nothing about `engine::actor` would have to change
+#     for it to happen, so it is a linkage fact here instead of a paragraph in a doc
+#     comment.
 #   * `api` links no *web* stack. It is exempt from the tokio half, and only that half:
 #     `#[rpc(server, client)]` cannot expand without `jsonrpsee-core`, which activates
 #     tokio in both its `client` and `server` features. Measured, not assumed — see note

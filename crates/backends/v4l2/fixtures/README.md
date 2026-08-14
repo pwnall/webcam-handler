@@ -13,9 +13,9 @@ functions over bytes a real kernel produced rather than over bytes a test author
 which is what makes the Miri job (`just miri`, design §2.5) worth running: Miri cannot
 cross an ioctl, so the decoding half has to be reachable without one.
 
-These are **not** the device-profile corpus. `corpus/profiles/` holds T3 profiles captured
-by `wch profile capture` and is uniformly tool-captured (§3.2); these are sub-profile
-byte-level fixtures belonging to one crate's decoder, so they live with it.
+These are **not** the device-profile corpus. `corpus/profiles/` holds T3 profiles captured by
+`webcam-handler-cli profile capture` and is uniformly tool-captured (§3.2); these are
+sub-profile byte-level fixtures belonging to one crate's decoder, so they live with it.
 
 ## Provenance
 
@@ -70,7 +70,7 @@ about attacker-shaped input that only a driver cycle can reach is an assertion n
 | Kernel | 7.0.0-29-generic (x86_64) |
 | Driver | `uvcvideo` |
 | Cameras | Chicony `3-4:1.0` RGB and `3-4:1.2` IR; OBSBOT Tiny 3 `3-1:1.0`; Dell U3224KB/A `2-3.4.1.1:1.0` \[PF:19\] — ten `video4linux` nodes, four cameras |
-| Trigger | one `.wch-bin/wch-priv uvcvideo cycle`, every camera closed, no `--force` |
+| Trigger | one `.wch-bin/webcam-handler-priv uvcvideo cycle`, every camera closed, no `--force` |
 | Listener | uid 1000, `CapEff: 0000000000000000` — **no capability at all** \[PF:21\] |
 | Socket | `socket(AF_NETLINK, SOCK_DGRAM\|SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT)`, `bind(nl_pid=0, nl_groups=1)` |
 | Method | an independent Python socket, **not** this crate's `sys::uevent` — a fixture produced by the code under test proves nothing |

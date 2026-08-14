@@ -1,10 +1,10 @@
 //! The T4 executor over the T5 wire.
 //!
-//! Everything the user sees is `webcam-handler-cli-core`'s; this file is the seam between
-//! that surface and the generated RPC client, and nothing else. [`cli_core::Executor`]'s own
-//! doc named it before it existed: "`wch` implements it over an in-process engine; `wchc`
-//! will implement it over the generated RPC client at P4, and the parity gate then proves
-//! the two produce identical `--json`."
+//! Everything the user sees is `webcam-handler-cli-core`'s; this file is the seam between that
+//! surface and the generated RPC client, and nothing else. [`cli_core::Executor`]'s own doc
+//! named it before it existed: "`webcam-handler-cli` implements it over an in-process engine;
+//! `webcam-handler-client` will implement it over the generated RPC client at P4, and the
+//! parity gate then proves the two produce identical `--json`."
 //!
 //! ## Sixteen of nineteen are assembly; three are decisions
 //!
@@ -25,16 +25,16 @@
 //! ## The runtime is this file's, and it has one thread
 //!
 //! `jsonrpsee`'s async client is driven by a background task, so something has to own a
-//! runtime. **Current-thread, not multi-thread**, and the reason is the shape of this
-//! process rather than a preference: `wchc` runs *one verb per invocation*, so the only
-//! concurrency it ever has is a call and the connection's background task — and a
+//! runtime. **Current-thread, not multi-thread**, and the reason is the shape of this process
+//! rather than a preference: `webcam-handler-client` runs *one verb per invocation*, so the
+//! only concurrency it ever has is a call and the connection's background task — and a
 //! current-thread runtime drives both inside the `block_on` that is already there. A
 //! multi-thread runtime would start one worker per core to serve a program that issues one
-//! request, and the difference was **measured** rather than assumed: `wchc list` against a
-//! real daemon, reading `/proc/self/status` at the moment the client is built, is
-//! `Threads: 1` as shipped and `Threads: 9` on the same 8-core host with
-//! `Builder::new_multi_thread`. Eight worker threads spawned, none of which had anything to
-//! do — and reaching for them at all needs `tokio/rt-multi-thread`, a feature this crate
+//! request, and the difference was **measured** rather than assumed: `webcam-handler-client
+//! list` against a real daemon, reading `/proc/self/status` at the moment the client is built,
+//! is `Threads: 1` as shipped and `Threads: 9` on the same 8-core host with
+//! `Builder::new_multi_thread`. Eight worker threads spawned, none of which had anything to do
+//! — and reaching for them at all needs `tokio/rt-multi-thread`, a feature this crate
 //! deliberately does not enable, so the cheap choice is also the one the manifest makes
 //! visible.
 //!
@@ -69,7 +69,7 @@ use uuid::Uuid;
 
 use crate::PROGRAM;
 
-/// A connected `wchd`, and the runtime that drives it.
+/// A connected `webcam-handler-daemon`, and the runtime that drives it.
 #[derive(Debug)]
 pub struct Remote {
     /// The socket this client is talking to, kept so every transport failure can name it.
@@ -87,13 +87,13 @@ pub struct Remote {
 impl Remote {
     /// Connect to the daemon's socket and build the client over it.
     ///
-    /// `request_timeout` is a parameter rather than a constant because it is a property of
-    /// the *verb*: `wch_calibrate_sweep` is "the one method whose latency is unbounded by
-    /// design" (`webcam-handler-api`) and everything else on the surface answers in
-    /// camera-time. `wchc` runs one verb per invocation, so choosing the budget at
-    /// connection time costs nothing and keeps `wchc list` from hanging for an hour on a
-    /// daemon that has stopped answering. `crate::request_timeout` is the one place that
-    /// chooses.
+    /// `request_timeout` is a parameter rather than a constant because it is a property of the
+    /// *verb*: `wch_calibrate_sweep` is "the one method whose latency is unbounded by design"
+    /// (`webcam-handler-api`) and everything else on the surface answers in camera-time.
+    /// `webcam-handler-client` runs one verb per invocation, so choosing the budget at
+    /// connection time costs nothing and keeps `webcam-handler-client list` from hanging for
+    /// an hour on a daemon that has stopped answering. `crate::request_timeout` is the one
+    /// place that chooses.
     ///
     /// # Errors
     ///
@@ -162,11 +162,11 @@ impl Remote {
 
 /// A client error as one of D13's.
 ///
-/// The typed half is `webcam-handler-api`'s and is not re-implemented here:
-/// [`codes::typed`] reconstructs the [`schema::Error`] the daemon sent — checking both that
-/// the payload is one of ours and that its kind maps back to the code that carried it — so
-/// `wchc` renders the *same value* `wch` renders, through the same `Display`. That identity
-/// is what the parity gate compares.
+/// The typed half is `webcam-handler-api`'s and is not re-implemented here: [`codes::typed`]
+/// reconstructs the [`schema::Error`] the daemon sent — checking both that the payload is one
+/// of ours and that its kind maps back to the code that carried it — so
+/// `webcam-handler-client` renders the *same value* `webcam-handler-cli` renders, through the
+/// same `Display`. That identity is what the parity gate compares.
 ///
 /// Everything else is a transport failure, and it is deliberately not dressed up as a camera
 /// answer (E3: availability is not capability). It becomes [`Error::StorageIo`] naming the
@@ -221,15 +221,15 @@ fn refusal(socket: &Utf8Path, error: &ClientError) -> Error {
 ///   is where the second half arrives, and it is the whole reason a `--task` sweep can tell
 ///   its own last word from another camera's (note **N70**, finding F1).
 ///
-/// **The residual is stated rather than hidden:** under `--task`, a second sweep of the
-/// *same control on a different camera*, running through the same daemon at the same moment,
-/// is admitted while the call is in flight, and the bar shows both. The alternative was to
+/// **The residual is stated rather than hidden:** under `--task`, a second sweep of the *same
+/// control on a different camera*, running through the same daemon at the same moment, is
+/// admitted while the call is in flight, and the bar shows both. The alternative was to
 /// resolve the task to an id with a `wch_calibrate_status` call before subscribing — rejected
 /// because it changes which D13 refusal a bad `--task` produces (the status verb's, not the
-/// sweep's), and the parity gate compares exactly that against `wch`. What is left is a bar's
-/// accuracy for as long as the call is outstanding — and **only** that, which is the sentence
-/// N69 falsified and this type's second predicate makes true again: the same event can no
-/// longer end this sweep early.
+/// sweep's), and the parity gate compares exactly that against `webcam-handler-cli`. What is
+/// left is a bar's accuracy for as long as the call is outstanding — and **only** that, which
+/// is the sentence N69 falsified and this type's second predicate makes true again: the same
+/// event can no longer end this sweep early.
 #[derive(Debug)]
 struct SweepFilter {
     /// The session, when the caller named one by id.
@@ -344,11 +344,12 @@ enum Arrival {
     /// A notification this build could not decode, on a stream that is **still open**.
     ///
     /// [`schema::progress::CalibrationProgress`] is an internally-tagged enum with no
-    /// catch-all arm, so a `wchd` newer than the `wchc` talking to it produces exactly this:
-    /// one variant this build has never heard of, one `serde_json` failure, and a queue of
-    /// perfectly decodable events behind it. It is skipped and never fatal — nothing about
-    /// one unreadable payload says anything about the next one, and there is no sweep-shaped
-    /// question it answers (which sweep it belonged to is itself inside the payload).
+    /// catch-all arm, so a `webcam-handler-daemon` newer than the `webcam-handler-client`
+    /// talking to it produces exactly this: one variant this build has never heard of, one
+    /// `serde_json` failure, and a queue of perfectly decodable events behind it. It is
+    /// skipped and never fatal — nothing about one unreadable payload says anything about the
+    /// next one, and there is no sweep-shaped question it answers (which sweep it belonged to
+    /// is itself inside the payload).
     Undecodable,
     /// Nothing further is coming: the daemon ended the stream, or dropped this client for
     /// falling too far behind ([`limits::CLIENT_SUBSCRIPTION_BUFFER`]).
@@ -625,9 +626,10 @@ impl Executor for Remote {
     }
 
     fn restore(&mut self, camera: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
-        // The snapshot travels as a **document**, not a path: `wchc restore` reads the
-        // caller's filesystem (the shared surface already did, in `cli_core::run`) and sends
-        // the value, so a snapshot on a machine the daemon cannot see still restores.
+        // The snapshot travels as a **document**, not a path: `webcam-handler-client restore`
+        // reads the caller's filesystem (the shared surface already did, in `cli_core::run`)
+        // and sends the value, so a snapshot on a machine the daemon cannot see still
+        // restores.
         self.on(self.client.restore(camera.clone(), snapshot.clone()))
     }
 
@@ -783,18 +785,19 @@ impl Executor for Remote {
     /// ## A notification this build cannot read is not the end of the stream
     ///
     /// [`schema::progress::CalibrationProgress`] is internally tagged with no catch-all arm,
-    /// so a `wchd` newer than this `wchc` produces a decode failure per unknown variant.
-    /// jsonrpsee keeps such a subscription **open** — only a dry receiver closes it — so the
-    /// events behind it are still coming and still decodable. They are skipped one at a time
-    /// and neither the loop nor the tail ends on one (note **N70**, finding F3).
+    /// so a `webcam-handler-daemon` newer than this `webcam-handler-client` produces a decode
+    /// failure per unknown variant. jsonrpsee keeps such a subscription **open** — only a dry
+    /// receiver closes it — so the events behind it are still coming and still decodable. They
+    /// are skipped one at a time and neither the loop nor the tail ends on one (note **N70**,
+    /// finding F3).
     ///
-    /// **They are not counted onto anything a person sees**, and that is the same decision
-    /// N69 made for a dropped terminal event rather than a new one: `wch` cannot produce this
-    /// condition at all — its sink is synchronous and nothing is serialized — so a line on
-    /// `wchc`'s stderr would be a divergence between the two roots in the one place the
-    /// parity gate does not look, for a rendering that is already what a dropped event looks
-    /// like (note N57). What a person sees is a bar missing a line, and the daemon counts its
-    /// own drops for the operator who needs the number.
+    /// **They are not counted onto anything a person sees**, and that is the same decision N69
+    /// made for a dropped terminal event rather than a new one: `webcam-handler-cli` cannot
+    /// produce this condition at all — its sink is synchronous and nothing is serialized — so
+    /// a line on `webcam-handler-client`'s stderr would be a divergence between the two roots
+    /// in the one place the parity gate does not look, for a rendering that is already what a
+    /// dropped event looks like (note N57). What a person sees is a bar missing a line, and
+    /// the daemon counts its own drops for the operator who needs the number.
     ///
     /// # Errors
     ///
@@ -1380,12 +1383,13 @@ mod tests {
 
     #[tokio::test]
     async fn another_cameras_sweep_of_this_control_does_not_disarm_this_ones_tail() {
-        // **F1's headline, held still (note N70).** Two `wchc calibrate sweep --task framing
-        // --control brightness` on two cameras: the fan-out is one per daemon, so the other
-        // camera's `SweepFinished` arrives on this socket, and under `--task` the control is
-        // all this process has to filter on — so it is admitted. It must not be allowed to
-        // say that *this* sweep is over, and the session that decides is the one the daemon
-        // names in its **answer**, which arrives exactly one step before the tail needs it.
+        // **F1's headline, held still (note N70).** Two `webcam-handler-client calibrate sweep
+        // --task framing --control brightness` on two cameras: the fan-out is one per daemon,
+        // so the other camera's `SweepFinished` arrives on this socket, and under `--task` the
+        // control is all this process has to filter on — so it is admitted. It must not be
+        // allowed to say that *this* sweep is over, and the session that decides is the one
+        // the daemon names in its **answer**, which arrives exactly one step before the tail
+        // needs it.
         let mine = Uuid::from_u128(1);
         let theirs = Uuid::from_u128(2);
         let filter = SweepFilter::new(
@@ -1423,12 +1427,12 @@ mod tests {
     #[tokio::test]
     async fn a_payload_this_build_cannot_read_is_skipped_and_the_stream_read_on() {
         // **F3, held still (note N70).** `CalibrationProgress` is an internally-tagged enum
-        // with no catch-all arm, so one variant a newer `wchd` has and this `wchc` does not
-        // is one `serde_json` failure — and jsonrpsee hands that back as `Some(Err(_))` on a
-        // subscription that is **still open** with the rest of the sweep behind it. Reading
-        // it as the end of the stream discarded every remaining event while they sat
-        // decodable in the queue: a bar frozen mid-sweep, which is N69's symptom from a cause
-        // N69 did not consider.
+        // with no catch-all arm, so one variant a newer `webcam-handler-daemon` has and this
+        // `webcam-handler-client` does not is one `serde_json` failure — and jsonrpsee hands
+        // that back as `Some(Err(_))` on a subscription that is **still open** with the rest
+        // of the sweep behind it. Reading it as the end of the stream discarded every
+        // remaining event while they sat decodable in the queue: a bar frozen mid-sweep, which
+        // is N69's symptom from a cause N69 did not consider.
         let (session, filter) = mine();
         let watcher = Recording::default();
         let mut events = Scripted::of([

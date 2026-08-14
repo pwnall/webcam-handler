@@ -7,11 +7,12 @@
 //! the arrangement an operator actually runs.
 //!
 //! Until P4g there was no such suite anywhere, and the hole had a name. Note **E12** compared
-//! `wch` and `wchc` against these cameras on **five read verbs**, and its own "what it does
-//! not establish" lists what this file is for: no write verb had ever been compared against
-//! hardware, `photo` is one of the four `device`-bucket exemptions with "no real-hardware
-//! comparison anywhere", and nothing at all had been said about "the `wchc` sweep's progress
-//! rendering". Two arms, one for each half.
+//! `webcam-handler-cli` and `webcam-handler-client` against these cameras on **five read
+//! verbs**, and its own "what it does not establish" lists what this file is for: no write
+//! verb had ever been compared against hardware, `photo` is one of the four `device`-bucket
+//! exemptions with "no real-hardware comparison anywhere", and nothing at all had been said
+//! about "the `webcam-handler-client` sweep's progress rendering". Two arms, one for each
+//! half.
 //!
 //! ## What a socket adds that the backend rung cannot see
 //!
@@ -122,7 +123,7 @@ mod fixture;
 
 use fixture::{Daemon, Fixture};
 
-/// A `wchd` driving this machine's cameras.
+/// A `webcam-handler-daemon` driving this machine's cameras.
 ///
 /// The one line in this file that makes it a hardware suite, and the reason both arms are
 /// here rather than in `wchc.rs`: every assertion in that file is repeatable on a machine
@@ -355,7 +356,7 @@ fn hw_a_photo_over_the_socket_decodes_at_the_negotiated_size_and_an_mjpg_one_is_
         status.success(),
         "the daemon that served {taken} photo(s) did not stop cleanly: {status}"
     );
-    println!("wchd stopped on SIGTERM with {status} after {taken} photo(s)");
+    println!("webcam-handler-daemon stopped on SIGTERM with {status} after {taken} photo(s)");
 }
 
 // -------------------------------------------------- a calibrate sweep with live progress
@@ -364,8 +365,9 @@ fn hw_a_photo_over_the_socket_decodes_at_the_negotiated_size_and_an_mjpg_one_is_
 ///
 /// The observable a subprocess cannot give (see `crates/client/src/lib.rs`'s header): the
 /// shipped watcher draws nothing when standard error is not a terminal, so a suite that could
-/// only see `wchc`'s output could assert that a sweep *answered* and never that its progress
-/// arrived — which is the one property `Remote::calibrate_sweep`'s ordering exists to provide.
+/// only see `webcam-handler-client`'s output could assert that a sweep *answered* and never
+/// that its progress arrived — which is the one property `Remote::calibrate_sweep`'s ordering
+/// exists to provide.
 ///
 /// The [`Duration`] is measurement and not synchronization: nothing below branches on one.
 /// They are printed because a sweep whose events all landed in a burst at the end and a sweep
@@ -508,7 +510,7 @@ fn hw_a_sweep_over_the_socket_delivers_its_progress_live_and_leaves_the_camera_w
         status.success(),
         "the daemon that ran {swept} sweep(s) did not stop cleanly: {status}"
     );
-    println!("wchd stopped on SIGTERM with {status} after {swept} sweep(s)");
+    println!("webcam-handler-daemon stopped on SIGTERM with {status} after {swept} sweep(s)");
 }
 
 /// One camera's whole session, or `None` with a named reason on standard output.

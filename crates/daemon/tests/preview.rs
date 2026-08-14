@@ -59,7 +59,7 @@ use tokio::net::{TcpSocket, TcpStream};
 /// One daemon, one small-MJPEG camera, and the web listener D11 opens.
 ///
 /// Everything is held here because dropping any of it takes the state directory, the lock or
-/// the listener with it — the arrangement a real `wchd` has.
+/// the listener with it — the arrangement a real `webcam-handler-daemon` has.
 struct Preview {
     wchd: Wchd,
     backend: Arc<FakeBackend>,
@@ -93,7 +93,7 @@ impl Preview {
     /// reaches `http::serve` rather than `http::open`: the two differ in exactly the three
     /// values `open` computes, so this decides the same posture `open` would and mints the
     /// same kind of token, and the suite's other seven tests go through `open` — the function
-    /// `wchd` itself calls.
+    /// `webcam-handler-daemon` itself calls.
     async fn with_send_buffer(bytes: u32) -> Preview {
         Preview::listening(Some(bytes)).await
     }
