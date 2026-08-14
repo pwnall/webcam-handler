@@ -55,6 +55,11 @@
       "what": "N82 — the module graph loads and runs anonymously; the two camera routes do not"
     },
     {
+      "title": "a page in another origin cannot reach the camera, token and all",
+      "assertions": 5,
+      "what": "N93 — a sandboxed iframe's <img> and WebSocket are refused 403 by the daemon, with this run's token in both URLs"
+    },
+    {
       "title": "the page reports a lost socket and works again on the next one",
       "assertions": 10,
       "what": "the socket's loss is reported, the preview is ended, and the next socket works"

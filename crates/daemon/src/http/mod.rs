@@ -7,6 +7,7 @@
 //! | [`listener`] | the axum server, the embedded client behind it, and the graceful stop |
 //! | [`posture`] | D11's bind × token matrix, decided from values before anything is bound |
 //! | [`preview`] | the MJPEG preview: `multipart/x-mixed-replace` over the actor's latest-frame watch |
+//! | [`provenance`] | the cross-origin rule: what a browser says about where a request came from, and which answers this listener admits |
 //! | [`rpc`] | the WebSocket JSON-RPC endpoint: the T5 surface `crate::server::mount` produced, reached over TCP |
 //! | [`token`] | the per-run bearer token: minted from the kernel, compared in constant time, printed as a URL |
 //!
@@ -98,11 +99,36 @@
 //! requires a `401`, and `scripts/gates/web-routes-are-gated.sh` requires every `.route(` in
 //! this crate to name a path that is on it — because a test can only drive the paths somebody
 //! named, and the route nobody named is exactly the defect the narrowing created.
+//!
+//! ## The sixth module, and the one rule that is not about a credential
+//!
+//! [`provenance`] is the owner's ruling of 2026-08-13 — *"the daemon should refuse all calls
+//! tagged with cross-origin headers"* — and it is a **second admission rule beside [`gate`]**,
+//! not a second copy of it. The gate asks whether a request presented this run's token;
+//! provenance asks whether a browser has just reported that the request came from a page that
+//! is not ours. Note **N93** is the measurement it rests on, and its load-bearing row is that
+//! the preview `<img>` carries **no `Origin` at all** — so `Sec-Fetch-Site` is the primary
+//! signal and `Origin` corroborates, rather than the other way round.
+//!
+//! It is deliberately installed differently from the gate, in both of the two ways that
+//! matter, and that difference is why it is a module rather than a branch inside one:
+//!
+//! - **over more paths.** [`gate`] is a `Router::route_layer` over [`CAMERA_BEARING_PATHS`] and
+//!   not over the asset fallback, because N82 opened the client's own source code to
+//!   *anonymous* callers — which is not the same as opening it to *other origins*. Provenance
+//!   is a `Router::layer`, so it covers the routes, the fallback and the catch-all `404`.
+//! - **in more cells.** [`gate`] is installed in D11's three token-gated cells; provenance is
+//!   installed in all four, because the token-less loopback cell is the one the ruling is
+//!   about — there, nothing else stands between a foreign page and the T5 surface.
+//!
+//! `listener::router` composes both, in that order: provenance outside, so a cross-site request
+//! is refused before any credential it carries is read.
 
 pub mod gate;
 pub mod listener;
 pub mod posture;
 pub mod preview;
+pub mod provenance;
 pub mod rpc;
 pub mod token;
 

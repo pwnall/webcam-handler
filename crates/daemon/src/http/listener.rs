@@ -157,6 +157,35 @@
 //!
 //! Together they are the partition: every route is named, and every name is gated.
 //!
+//! ## The second admission rule, which is over everything the gate is not
+//!
+//! The owner ruled again on 2026-08-13 — *"the daemon should refuse all calls tagged with
+//! cross-origin headers"* — and [`super::provenance`] is that rule. It is composed here, in
+//! `router`, and it is deliberately installed with the **opposite** of everything the gate
+//! chose: `Router::layer` rather than `route_layer`, so it covers the asset fallback and the
+//! catch-all `404` as well as the routes; and outside the posture `match` rather than inside it,
+//! so it is installed in all four of D11's cells rather than in the three that mint a token.
+//!
+//! Both differences say the same thing: **anonymous is not the same as foreign.** The 2026-08-12
+//! ruling opened this client's source code to a caller presenting nothing, because it is
+//! open-source code; it did not open it to a page at somebody else's origin, which has no reason
+//! to want it. And the token-less cell — the one with no gate at all — is the cell the second
+//! ruling is *about*, because there the token that would otherwise stop a foreign page is absent
+//! by design.
+//!
+//! **What holds this one is not a list, and that is why it needs no gate predicate of its own.**
+//! `scripts/gates/web-routes-are-gated.sh` exists because the *token* gate covers a **subset** of
+//! what this listener serves, and a subset has to be written down — "a suite can only drive the
+//! paths somebody named", so the route nobody named is invisible to every test that could be
+//! written. This rule covers the **whole** listener, so there is no subset, no list, and no
+//! unnamed path: `crates/daemon/tests/http.rs` quantifies over a population derived the way the
+//! composition derives it — `web::paths()` for the assets, [`super::CAMERA_BEARING_PATHS`] for
+//! the routes, and a path that is neither for the catch-all — and a route added later is already
+//! forced onto that list by the existing predicate's claim 2, which puts it into this population
+//! by existing. A build that installed this rule with `route_layer` passes on the two routes and
+//! is red on every asset and on the 404; one that installed it inside the posture `match` is red
+//! in the token-less cell; one that dropped it is red everywhere.
+//!
 //! ## The client's own subresources, which the ruling is mostly about
 //!
 //! Note **N76** recorded the constraint this listener used to put on the client: the token
@@ -194,7 +223,7 @@ use tower_http::compression::CompressionLayer;
 use super::gate;
 use super::posture::{Posture, TokenRule};
 use super::token::Token;
-use super::{preview, rpc};
+use super::{preview, provenance, rpc};
 use crate::preview::Previews;
 use crate::shutdown::Shutdown;
 
@@ -753,14 +782,42 @@ impl AsyncWrite for Admitted {
 /// router with no routes at all — axum refusing to install a layer that could not run — which
 /// is the one arrangement in which this call would silently do nothing.
 ///
+/// ## The cross-origin rule, over everything and outside the gate
+///
+/// [`provenance::check`] is applied with `Router::layer` — **the exact tool the gate stopped
+/// using**, and here for the reason the gate stopped needing it. The owner ruled (2026-08-13)
+/// that this daemon refuses every call a browser tags as coming from another origin, and that
+/// rule is about *more* paths than D11's token is: N82 opened the client's own source code to
+/// **anonymous** callers, which is not the same thing as opening it to **other origins**. A
+/// foreign page has no business fetching this daemon's modules, its stylesheet or its `404`
+/// either, so `layer` — path router, fallback and catch-all — is what this one wants, and
+/// `route_layer` beside it is what the token wants. The two lines disagreeing is the policy.
+///
+/// It is applied to `served` rather than to `routes`, so it is **outside the gate and inside
+/// nothing else**, and both halves of that placement are load-bearing:
+///
+/// - **outside the gate**, so a request a browser tagged cross-site is refused before any
+///   credential it carries is read. That ordering is what lets [`provenance::REFUSAL`] honestly
+///   answer `403` rather than `401` — a foreign page holding this run's token gets no further
+///   than one that does not, and the refusal is not an invitation to retry;
+/// - **outside the `match`**, so it is installed in all four of D11's cells and not in three.
+///   The token-less loopback cell is the one the ruling is about: it has no gate at all, so
+///   before this line a page at any origin could open a WebSocket to `127.0.0.1` — a handshake
+///   is not subject to CORS — and drive the whole T5 surface. A cross-origin rule composed
+///   inside the arms above would have been absent from exactly the cell that needed it.
+///
+/// Note **N93** is the measurement underneath it, and `super::provenance`'s header carries the
+/// argument, including the row the design turns on: the preview `<img>` sends no `Origin` at
+/// all, so `Sec-Fetch-Site` is the primary signal and `Origin` corroborates.
+///
 /// ## The referrer policy, over everything and outermost
 ///
 /// [`REFERRER_POLICY`] is applied with `Router::layer` and applied **last**, so it is the
 /// outermost middleware and lands on every response this listener writes — the page, the
-/// assets, the preview's frames, the `404`, and the gate's own `401`, which is a response to a
-/// request whose URL may have carried the token in the first place. A header that covered only
-/// the half of the router somebody remembered would be the second list this module spent the
-/// paragraph above refusing to keep.
+/// assets, the preview's frames, the `404`, the gate's own `401` and the cross-origin rule's
+/// `403`, which are both responses to a request whose URL may have carried the token in the
+/// first place. A header that covered only the half of the router somebody remembered would be
+/// the second list this module spent the paragraph above refusing to keep.
 fn router(
     posture: Posture,
     token: Option<Arc<Token>>,
@@ -793,7 +850,9 @@ fn router(
             ));
         }
     };
-    Ok(served.layer(axum::middleware::map_response(no_referrer)))
+    Ok(served
+        .layer(axum::middleware::from_fn(provenance::check))
+        .layer(axum::middleware::map_response(no_referrer)))
 }
 
 /// Stamp [`REFERRER_POLICY`] on one response.

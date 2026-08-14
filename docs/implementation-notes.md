@@ -13759,3 +13759,90 @@ changes it leaks exactly as this did.
 
 **Retires when:** nothing retires it. The lesson is about a signature, and the signature is now the
 guard.
+
+## N95 — The daemon refuses a request a browser reports as foreign, and the rule lives outside the credential gate because the cell that needed it has no credential
+
+**The ruling (owner, 2026-08-13):** *"the daemon should refuse all calls tagged with cross-origin
+headers. I see no good reason to accept those."* Note **N93** is the measurement it rests on; this
+entry is what was built and what it does not close.
+
+**Repo:** `daemon::http::provenance` — a sibling of `gate`, not a part of it — installed in
+`listener::router`.
+
+### Three placement decisions, each of which would have been a hole
+
+1. **`Router::layer`, not `route_layer`.** The gate covers `CAMERA_BEARING_PATHS`; this covers
+   everything the listener serves, the asset fallback and the catch-all `404` included. N82 opened
+   the client's own source to a caller presenting **nothing**, and *anonymous is not the same as
+   foreign* — a page at somebody else's origin has no business loading these modules either. This
+   is the tool N75 recorded the gate giving up, wanted here in its original form.
+2. **Outside the posture `match`**, so it is installed in all four D11 cells rather than three.
+   The token-less cell is the one the ruling is *about*; a rule that lived inside `gate::admits`
+   would have been absent from precisely the cell that needed it.
+3. **Outside `gate::check`**, so a foreign request is refused before any credential is read. That
+   ordering is what lets the answer be an honest `403`.
+
+### Why `403` and not the gate's `401`
+
+`gate::REFUSAL` answers `401` with an RFC 6750 challenge because a credential is exactly what is
+missing and exactly what would fix it. Here a credential would not help, and **a challenge is an
+instruction to retry** — which a browser will obey, with the same headers, for ever. RFC 9110's
+`403` is "understood, refuses to authorize, regardless of any credentials the request may carry".
+The body names neither signal, so a caller cannot learn which header to drop.
+
+### `Sec-Fetch-Site: none` is admitted, and the reason is stronger than convenience
+
+A document cannot cause a `none`: every request a page initiates is classified against that page,
+so `none` is exactly the class the attacker-shaped thing — a page — **cannot produce**. It is also
+N93's first measured row, the operator's own first navigation, so refusing it would refuse the
+product.
+
+### `Origin` is compared against the request's own authority, not the bound address
+
+The bound address is the wrong anchor in two of D11's four cells: `--http 0.0.0.0:8080` binds an
+address no client ever types, and an operator reaching the same listener at `http://localhost:<port>/`
+is legitimately using a different authority. `Origin: null` — a sandboxed iframe, a `file://` page,
+some redirects — fails the `http://` split and is refused with no special case.
+
+### The rung got a claim that needed no synthesis
+
+N93 declined to draw a conclusion from a page *synthesised* by Playwright's interception. The new
+browser claim needs none: a **`srcdoc` iframe under `sandbox="allow-scripts"`**, whose document this
+daemon delivered and whose origin is opaque only because of the sandbox. It loads the preview with
+**this run's real token** and asserts the daemon answered `403` *and* that the request carried
+`sec-fetch-site: cross-site` — without that second half the claim would be satisfied by a browser
+that blocked the request on its own. `claims.json` moves to 11 claims / 84 assertions.
+
+### What it does not close, stated so nobody reads the fix as wider than it is
+
+- **A local process is unaffected.** It sends no headers and is admitted, exactly as
+  `webcam-handler-client` is. In the token-less cell that stays open by design; the token is what
+  closes it, and the flag says `insecure` in its own name.
+- **A header-forging non-browser client is unaffected**, by construction. The rule buys one thing:
+  a page in another origin, in the operator's own browser, cannot drive the camera.
+- **DNS rebinding is not closed, and N93 did not mention it.** A page served from a name that
+  resolves to this host sends a matching `Host` *and* `Origin`, and the browser classifies it
+  `same-origin` — neither signal fires. Closing it needs an allowlist of authorities, which would
+  refuse `http://localhost:<port>/` and every non-loopback cell's real name. **That is a bigger
+  decision than this ruling and it is the owner's**; it is also the reason the comparison was not
+  quietly anchored on the bound address instead.
+- **It does not stop an `<img>` rendering an opaque response** — it stops the request. The two
+  differ, and the difference is the whole argument for reading `Sec-Fetch-Site` (N93).
+
+### No gate predicate, and the argument for that
+
+`web-routes-are-gated.sh` exists because the token gate covers a **subset**, and a subset has to be
+written down — a suite can only drive the paths somebody named. **This rule covers the whole
+listener, so there is no subset and no list.** The test population is derived the way the
+composition derives it (`web::paths()`, `CAMERA_BEARING_PATHS`, and a path that is neither), and a
+route added later is forced onto that list by the existing predicate's claim 2 — which puts it into
+this population *by existing*. Each placement decision above is red on its own inverse:
+`route_layer` fails on every asset and the 404; inside the `match` fails in the token-less cell;
+absent fails everywhere.
+
+**Amend this note if** the DNS-rebinding question is ruled on, or if a browser ships a
+`Sec-Fetch-Site` value this build does not recognise — unrecognised values are **refused**
+(allowlist, not denylist), so that day is a red rung here rather than a silent hole.
+
+**Retires when:** nothing retires it, though the header table it depends on is N93's and retires
+with the browser that produced it.

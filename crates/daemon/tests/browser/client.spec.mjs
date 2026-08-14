@@ -425,6 +425,115 @@ test("the client loads with no credential and the camera is still refused", asyn
   expect(await paint(cameraId, token)).toBe("painted");
 });
 
+test("a page in another origin cannot reach the camera, token and all", async ({ page }) => {
+  // **The owner's ruling of 2026-08-13, asserted with headers a browser wrote rather than
+  // headers a test typed.** `crates/daemon/tests/http.rs` drives every shape of this rule over a
+  // hand-written socket, which is the right place for a matrix; what it cannot establish is that
+  // a *real* Chromium tags a *real* foreign request the way `daemon::http::provenance` expects.
+  // That is this claim, and it is the only place in the workspace where both halves — the tag
+  // and the refusal — are produced by the things that produce them in the field.
+  //
+  // **The foreign origin is a sandboxed iframe**, which is how a page gets an opaque origin
+  // without a second host, a DNS name or Playwright's request interception. Note **N93**
+  // deliberately refused to draw a conclusion from an intercepted `http://evil.example` — Chrome
+  // decides a document's IP address space from the connection that delivered it, so a synthesised
+  // page may not be classified the way a real one would. A `srcdoc` iframe under
+  // `sandbox="allow-scripts"` needs no such synthesis: the document is delivered by this daemon,
+  // and the sandbox alone makes its origin opaque, which is the property under test.
+  //
+  // **It carries this run's real token**, which is what makes the claim about the cross-origin
+  // rule rather than about the gate. Before 2026-08-13 this request was served: the token is in
+  // the URL, an `<img>` may carry no header, and D11's gate had nothing else to ask.
+  const previewed = [];
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (url.origin === origin && url.pathname === "/preview") {
+      previewed.push(
+        response
+          .request()
+          .allHeaders()
+          .then((headers) => ({ status: response.status(), headers })),
+      );
+    }
+  });
+
+  await page.goto(`${origin}/`);
+  const image = `${origin}/preview?${new URLSearchParams({ camera: cameraId, token })}`;
+  const socket = `${origin.replace(/^http/, "ws")}/rpc?${new URLSearchParams({ token })}`;
+
+  // The positive control, and it is the load-bearing one: this is the `<img>` shape N93 measured
+  // to carry **no `Origin` at all**, so a rule built on `Origin` alone would have had no opinion
+  // about it in either direction. It must still paint.
+  const ours = await page.evaluate(
+    (src) =>
+      new Promise((resolve) => {
+        const element = new Image();
+        element.addEventListener("load", () => resolve("painted"));
+        element.addEventListener("error", () => resolve("refused"));
+        element.src = src;
+      }),
+    image,
+  );
+  expect(ours).toBe("painted");
+
+  // The same two requests, from an origin the browser considers foreign. The iframe reports back
+  // by `postMessage`, which is all a sandboxed document may do to its parent.
+  const foreign = await page.evaluate(
+    async ({ image: src, socket: url }) => {
+      const inAnOpaqueOrigin = (script) =>
+        new Promise((resolve) => {
+          const frame = document.createElement("iframe");
+          frame.setAttribute("sandbox", "allow-scripts");
+          const answered = (event) => {
+            if (event.source === frame.contentWindow) {
+              window.removeEventListener("message", answered);
+              frame.remove();
+              resolve(event.data);
+            }
+          };
+          window.addEventListener("message", answered);
+          frame.srcdoc = `<script>${script}</script>`;
+          document.body.append(frame);
+        });
+
+      return {
+        painted: await inAnOpaqueOrigin(`
+          const element = new Image();
+          element.addEventListener("load", () => parent.postMessage("painted", "*"));
+          element.addEventListener("error", () => parent.postMessage("refused", "*"));
+          element.src = ${JSON.stringify(src)};
+        `),
+        upgrade: await inAnOpaqueOrigin(`
+          const connection = new WebSocket(${JSON.stringify(url)});
+          connection.addEventListener("open", () => parent.postMessage("opened", "*"));
+          connection.addEventListener("close", () => parent.postMessage("closed", "*"));
+          connection.addEventListener("error", () => parent.postMessage("errored", "*"));
+        `),
+      };
+    },
+    { image, socket },
+  );
+  expect(foreign.painted).toBe("refused");
+  // A refused handshake is not observable from script as a status — a browser hands a page an
+  // `error` or a `close` and never a code — so the honest assertion is the negative one, exactly
+  // as in the anonymous claim above.
+  expect(foreign.upgrade).not.toBe("opened");
+
+  // **What the daemon actually answered**, which is what turns "refused" from a fact about
+  // Chromium into a fact about `webcam-handler-daemon`. A browser that had blocked the request
+  // on its own — Private Network Access, a mixed-content rule, an extension — would produce the
+  // same `error` event and no response at all, and this suite would have claimed something it did
+  // not check. Two responses in order: ours, then theirs.
+  const seen = await Promise.all(previewed);
+  expect(seen.map((response) => response.status)).toEqual([200, 403]);
+
+  // …and the header the daemon read it from, so this claim re-measures N93's table for the shape
+  // no operator can produce by hand. The day a browser stops tagging an opaque-origin subresource
+  // this way, this line is where it is discovered — which is the reason N93 records the browser
+  // build beside the table.
+  expect(seen[1].headers["sec-fetch-site"]).toBe("cross-site");
+});
+
 test("the page reports a lost socket and works again on the next one", async ({ page }) => {
   // **How the socket is cut, and why it is cut this way.** What is being asserted is `rpc.js`'s
   // `close` handler and `app.js`'s answer to it — the path a stopped daemon or a dropped link

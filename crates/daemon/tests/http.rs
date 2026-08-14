@@ -26,6 +26,43 @@
 //! Every test that presents a credential presents it on a **gated** route, because a credential
 //! presented to an ungated one proves nothing about a gate.
 //!
+//! ## The second admission rule, since 2026-08-13
+//!
+//! The owner ruled again: *"the daemon should refuse all calls tagged with cross-origin headers.
+//! I see no good reason to accept those."* `daemon::http::provenance` is that rule, and the pair
+//! above is no longer the whole story either — this listener now has **two** ways to say no, and
+//! a suite that could not tell them apart would let one quietly become the other.
+//!
+//! What the tests below are shaped by is note **N93**, which measured what the pinned Chromium
+//! sends per request the shipped client makes. Three consequences, and each is a test:
+//!
+//!   * **the preview `<img>` carries no `Origin` at all** — a media tag performs a no-CORS load —
+//!     so `Sec-Fetch-Site` is the primary signal and `Origin` corroborates.
+//!     [`every_request_the_shipped_page_makes_is_still_served`] replays the measured table over
+//!     the wire, and it is the assertion that stops the rule being too strict;
+//!   * **absence must be admitted**, because `webcam-handler-client`, `curl` and the agent
+//!     harness AGENTS calls this project's primary consumer send neither header.
+//!     [`a_request_claiming_no_provenance_is_admitted_because_the_primary_consumer_sends_none`]
+//!     is the test that goes red if the rule is ever strengthened into "require a same-origin
+//!     header", which would lock out the consumer that matters most;
+//!   * **the rule covers more than the gate does**, because it is installed with `Router::layer`
+//!     rather than `route_layer` and in all four of D11's cells rather than three.
+//!     [`a_request_a_browser_tagged_cross_site_is_refused_on_every_path_this_listener_serves`]
+//!     quantifies over a population derived the way the composition derives it, and
+//!     [`the_token_less_cell_is_the_one_this_rule_is_for`] drives the cell that has no gate at
+//!     all — which is the cell the ruling is about.
+//!
+//! The two refusals are asserted to be **different answers**: `401` with RFC 6750's challenge
+//! for a missing credential, `403` with no challenge for a request no credential could fix
+//! ([`is_the_refusal`] and [`is_the_cross_origin_refusal`], and
+//! [`every_refused_shape_gets_the_same_answer`] between them).
+//!
+//! What this file cannot establish is that a **real** browser tags a **real** foreign request the
+//! way `provenance` expects: every header here was typed by this suite. That half is
+//! `crates/daemon/tests/browser/`'s claim "a page in another origin cannot reach the camera,
+//! token and all", which drives a sandboxed iframe in the pinned Chromium and reads the status
+//! this daemon answered it with.
+//!
 //! ## What the suite drives, and what that is worth
 //!
 //! Two entry points, deliberately, because they establish different things.
@@ -96,7 +133,7 @@ use std::sync::Arc;
 
 use daemon::http::{
     self, CAMERA_BEARING_PATHS, PREVIEW_PATH, Posture, RPC_PATH, TOKEN_QUERY_PARAM, Token,
-    TokenRule, gate,
+    TokenRule, gate, provenance,
 };
 use daemon::shutdown::Shutdown;
 use daemon::uds::{self, SocketDir};
@@ -214,6 +251,20 @@ impl Web {
         .expect("the listener is up")
     }
 
+    /// A `GET` carrying the headers a browser stamps on a request, whatever they are.
+    ///
+    /// The one entry point for `daemon::http::provenance`'s subject. Every field is spelled as a
+    /// literal by the caller and never read out of the daemon's own constants, which is the
+    /// inverse of how this file treats the token and is deliberate: `Sec-Fetch-Site` and
+    /// `Origin` are the **browser's** vocabulary, fixed by the Fetch and HTML specifications, so
+    /// a suite that read them out of `daemon::http` would keep passing against a build that
+    /// looked up a header no browser sends.
+    async fn tagged(&self, target: &str, fields: &[(&str, &str)]) -> Answer {
+        tcp::get(self.bound(), target, fields)
+            .await
+            .expect("the listener is up")
+    }
+
     /// Stop the way the daemon stops it, and wait for the task to end.
     ///
     /// The cancellation is the same one every subscription watches; the join is what turns
@@ -294,6 +345,24 @@ fn is_the_refusal(answer: &Answer, about: &str) {
         "{about}: a 401 with no challenge"
     );
     assert_eq!(answer.body(), gate::REFUSAL, "{about}");
+}
+
+/// Assert an answer is the cross-origin rule's refusal, in full.
+///
+/// Four claims, and the last two are what stop this being a restatement of [`is_the_refusal`]:
+/// the status a client branches on, the daemon's fixed sentence, the **absence** of RFC 6750's
+/// challenge — a `WWW-Authenticate` here would be an invitation to retry with a credential that
+/// cannot help — and that the body is not the gate's, so a build whose two refusals had merged
+/// into one fails rather than looking careful.
+fn is_the_cross_origin_refusal(answer: &Answer, about: &str) {
+    assert_eq!(answer.status(), 403, "{about}: {}", answer.body());
+    assert_eq!(answer.body(), provenance::REFUSAL, "{about}");
+    assert_eq!(
+        answer.header("WWW-Authenticate"),
+        None,
+        "{about}: a refusal no credential can lift offered a challenge"
+    );
+    assert_ne!(answer.body(), gate::REFUSAL, "{about}");
 }
 
 /// Assert an answer is the client's page.
@@ -550,6 +619,373 @@ async fn the_wire_route_is_gated_and_the_page_beside_it_is_not() {
     is_the_page(
         &web.anonymous("/").await,
         "the page beside it, with no credential at all",
+    );
+
+    web.stop().await;
+}
+
+// ------------------------------------------- the cross-origin rule (owner ruling, 2026-08-13)
+
+/// Every path this listener can answer, as a population derived from the daemon's own tables.
+///
+/// Four parts, and each is a different half of the composition — which is the whole reason a
+/// rule installed with `Router::layer` needs a population and the token gate did not. The asset
+/// table comes from `webcam-handler-web`'s own list, so a module P5c or anybody else adds joins
+/// this claim by existing; `/` is the same table reached by the one path that is a lookup rather
+/// than a name; `CAMERA_BEARING_PATHS` is the routes; and `/nothing-here` is the catch-all
+/// `404`, which is served by neither a route nor a named asset and is precisely the answer
+/// `Router::route_layer` would not have covered.
+fn every_path_this_listener_answers() -> Vec<String> {
+    let mut paths = vec!["/".to_owned(), "/nothing-here".to_owned()];
+    paths.extend(web::paths().map(|name| format!("/{name}")));
+    paths.extend(CAMERA_BEARING_PATHS.iter().map(|path| (*path).to_owned()));
+    paths
+}
+
+#[tokio::test]
+async fn every_request_the_shipped_page_makes_is_still_served() {
+    // **The assertion that stops the cross-origin rule being too strict**, and it is note
+    // **N93**'s measured table replayed over a real socket: the headers here are the ones the
+    // pinned Chromium was observed to send, per request the shipped client makes.
+    //
+    // Two rows carry **no `Origin` at all** — the stylesheet and the preview `<img>` — because a
+    // media tag performs a no-CORS load, and that is the finding the whole design turns on. A
+    // rule spelled "require a same-origin `Origin`" passes every negative test in this file and
+    // fails here, on the one route whose response body is a live camera.
+    //
+    // `Sec-Fetch-Site` and `Origin` are spelled as literals rather than read out of
+    // `daemon::http` (see `Web::tagged`), so a build that looked up a header no browser sends
+    // would be red here rather than quietly admitting everything.
+    let web = Web::opened(false).await;
+    let secret = web.secret();
+    let ours = format!("http://{bound}", bound = web.bound());
+
+    // The navigation an operator makes first: no initiator, so `none` — the value this rule has
+    // to admit and the one a page cannot cause.
+    is_the_page(
+        &web.tagged(
+            &with_token("/", &secret),
+            &[("Sec-Fetch-Dest", "document"), ("Sec-Fetch-Site", "none")],
+        )
+        .await,
+        "the page, opened from the URL the daemon printed",
+    );
+
+    // Every subresource the client has, from the asset crate's own table. The ES modules carry
+    // an `Origin` and the stylesheet does not; both were measured, and both must be served.
+    let mut subresources = 0_usize;
+    for name in web::paths() {
+        let module = name.ends_with(".js");
+        let mut fields = vec![
+            ("Sec-Fetch-Dest", if module { "script" } else { "style" }),
+            ("Sec-Fetch-Site", "same-origin"),
+        ];
+        if module {
+            fields.push(("Origin", ours.as_str()));
+        }
+        let answer = web.tagged(&format!("/{name}"), &fields).await;
+        assert_eq!(
+            answer.status(),
+            200,
+            "/{name} was refused a request the shipped page makes: {}",
+            answer.body()
+        );
+        subresources += 1;
+    }
+    assert!(
+        subresources > 0,
+        "the asset table is empty and this test is about nothing"
+    );
+
+    // The preview `<img>`: `same-origin`, and **no `Origin`**. Past both layers, so the answer is
+    // the preview's own complaint that no camera was named rather than a 401 or a 403.
+    assert_eq!(
+        web.tagged(
+            &with_token(PREVIEW_PATH, &secret),
+            &[
+                ("Sec-Fetch-Dest", "image"),
+                ("Sec-Fetch-Site", "same-origin")
+            ]
+        )
+        .await
+        .status(),
+        400,
+        "the preview <img> — the request that carries no Origin and a live camera"
+    );
+
+    // The WebSocket upgrade: an `Origin` and no Fetch Metadata at all, which is what the
+    // handshake sends. 405 is jsonrpsee's answer to a `GET` that is not an upgrade, so this
+    // provably reached the wire surface.
+    assert_eq!(
+        web.tagged(&with_token(RPC_PATH, &secret), &[("Origin", ours.as_str())])
+            .await
+            .status(),
+        405,
+        "the WebSocket upgrade's own Origin was treated as somebody else's"
+    );
+
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn a_request_a_browser_tagged_cross_site_is_refused_on_every_path_this_listener_serves() {
+    // **The ruling, over the whole listener**: *"the daemon should refuse all calls tagged with
+    // cross-origin headers"*. The population is derived rather than listed
+    // (`every_path_this_listener_answers`) because this rule is installed with `Router::layer`
+    // and therefore claims something about paths no route table names — the asset fallback and
+    // the catch-all `404` included. A build that installed it with `route_layer`, the way the
+    // token gate is installed, passes on the two camera routes and fails on everything else.
+    //
+    // **Both cells**, because the rule is not the gate's and does not share its installation:
+    // `--http-insecure-loopback` removes the token and must not remove this.
+    //
+    // **And the credential does not help**, which is the ordering claim: in the gated cell the
+    // same request is sent again carrying this run's real token, and it still meets the 403 — so
+    // the cross-origin layer is outside the gate rather than beside it, and a foreign page that
+    // somehow obtained the token gets no further than one that did not.
+    for insecure_loopback in [false, true] {
+        let web = Web::opened(insecure_loopback).await;
+        let cell = if insecure_loopback {
+            "the token-less cell"
+        } else {
+            "the default cell"
+        };
+
+        let mut refused = 0_usize;
+        for path in every_path_this_listener_answers() {
+            is_the_cross_origin_refusal(
+                &web.tagged(&path, &[("Sec-Fetch-Site", "cross-site")]).await,
+                &format!("{cell}: {path}, tagged cross-site"),
+            );
+            if let Some(secret) = web.token() {
+                is_the_cross_origin_refusal(
+                    &web.tagged(
+                        &with_token(&path, &secret),
+                        &[("Sec-Fetch-Site", "cross-site")],
+                    )
+                    .await,
+                    &format!("{cell}: {path}, tagged cross-site and carrying this run's token"),
+                );
+            }
+            refused += 1;
+        }
+        assert!(
+            refused > 3,
+            "{cell}: the population is {refused} path(s), which is fewer than the assets, the \
+             two routes and the 404 this rule has to cover"
+        );
+
+        // …and `same-site` is refused too, which `cross-site` alone does not imply: a page at
+        // another origin under the same registrable domain is still another origin.
+        is_the_cross_origin_refusal(
+            &web.tagged(PREVIEW_PATH, &[("Sec-Fetch-Site", "same-site")])
+                .await,
+            &format!("{cell}: the preview, tagged same-site"),
+        );
+
+        web.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn a_foreign_origin_is_refused_and_so_is_a_null_one() {
+    // The corroborating signal, on the route where it is the *only* one a browser sends: a
+    // `new WebSocket(url)` carries an `Origin` and no Fetch Metadata (note **N93**), and a
+    // WebSocket handshake is not subject to CORS — which is P5's review lens 1 in one sentence,
+    // and the reason the ruling was asked for at all.
+    //
+    // `Origin: null` is the row worth its own line. A sandboxed iframe, a `file://` document and
+    // some redirect chains all send it, and it is one careless `unwrap_or_default` away from
+    // being read as the request that presented nothing — which this daemon admits, because that
+    // is what `webcam-handler-client` looks like.
+    let web = Web::opened(false).await;
+    let secret = web.secret();
+    let bound = web.bound();
+
+    for origin in [
+        "http://evil.example".to_owned(),
+        "null".to_owned(),
+        // Same authority, other scheme — a different origin, and one no page of ours can be
+        // fulfilled at, since this listener speaks no TLS.
+        format!("https://{bound}"),
+        // Same host, other port.
+        format!(
+            "http://127.0.0.1:{port}",
+            port = bound.port().wrapping_add(1)
+        ),
+    ] {
+        for path in [RPC_PATH, PREVIEW_PATH, "/"] {
+            is_the_cross_origin_refusal(
+                &web.tagged(path, &[("Origin", &origin)]).await,
+                &format!("{path}, from {origin}"),
+            );
+            is_the_cross_origin_refusal(
+                &web.tagged(&with_token(path, &secret), &[("Origin", &origin)])
+                    .await,
+                &format!("{path}, from {origin}, carrying this run's token"),
+            );
+        }
+    }
+
+    // …and this listener's own origin still gets through, so the assertions above are about the
+    // authority rather than about a rule that refuses every `Origin` — which would refuse the
+    // client's own module graph and its WebSocket.
+    assert_eq!(
+        web.tagged(
+            &with_token(RPC_PATH, &secret),
+            &[("Origin", &format!("http://{bound}"))]
+        )
+        .await
+        .status(),
+        405,
+        "the listener's own origin was refused"
+    );
+
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn a_request_claiming_no_provenance_is_admitted_because_the_primary_consumer_sends_none() {
+    // **The deliberate weakening, asserted so it stays deliberate** (note **N93**).
+    // `webcam-handler-client`, `curl` and the AI agent harness AGENTS names as this project's
+    // *primary* consumer send neither header. The rule is therefore "refuse when a browser tells
+    // us it is cross-site", never "require a same-origin header" — and this is the test that
+    // goes red if somebody strengthens it into the second thing, which would lock out every
+    // consumer that has no hands.
+    //
+    // Both cells, and every kind of answer this listener gives: a file, a route behind the gate,
+    // and the 404. A request presenting nothing is what the rest of this suite sends, so a
+    // failure here is also a failure of most of the file — which is the point: this is the one
+    // test that says so on purpose.
+    for insecure_loopback in [false, true] {
+        let web = Web::opened(insecure_loopback).await;
+
+        is_the_page(&web.anonymous("/").await, "the page, claiming nothing");
+        assert_eq!(web.anonymous("/nothing-here").await.status(), 404);
+
+        let (rpc, preview) = match web.token() {
+            Some(secret) => (
+                web.anonymous(&with_token(RPC_PATH, &secret)).await,
+                web.anonymous(&with_token(PREVIEW_PATH, &secret)).await,
+            ),
+            None => (
+                web.anonymous(RPC_PATH).await,
+                web.anonymous(PREVIEW_PATH).await,
+            ),
+        };
+        assert_eq!(rpc.status(), 405, "the wire route: {}", rpc.body());
+        assert_eq!(preview.status(), 400, "the preview: {}", preview.body());
+
+        web.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn the_token_less_cell_is_the_one_this_rule_is_for() {
+    // **The cell the ruling is about.** D11's `--http-insecure-loopback` installs no gate at
+    // all, so before this rule a page at any origin in the operator's browser could open a
+    // WebSocket to `127.0.0.1` and drive the whole T5 surface — a handshake is not subject to
+    // CORS — and could paint the preview into an `<img>` it was not allowed to read. The owner's
+    // second sentence bounds what this fixes rather than how far it reaches: *"`--http-insecure-
+    // loopback` has `insecure` in it, so we'll fix all the obvious security holes, and accept
+    // that we may miss some more subtle ones."*
+    //
+    // Three shapes at the two camera routes, and the control that makes them mean something: the
+    // same requests untagged still reach the routes behind them, so this cell is still the cell
+    // that serves without a credential.
+    let web = Web::opened(true).await;
+    assert_eq!(web.serving.posture().token(), TokenRule::NotRequired);
+    assert_eq!(web.token(), None, "a token-less listener published one");
+
+    for path in CAMERA_BEARING_PATHS {
+        for (about, fields) in [
+            (
+                "a page in another site",
+                vec![("Sec-Fetch-Site", "cross-site")],
+            ),
+            ("a foreign origin", vec![("Origin", "http://evil.example")]),
+            (
+                "a sandboxed iframe",
+                vec![("Sec-Fetch-Site", "cross-site"), ("Origin", "null")],
+            ),
+        ] {
+            is_the_cross_origin_refusal(
+                &web.tagged(path, &fields).await,
+                &format!("{path}, from {about}, in the cell with no token"),
+            );
+        }
+    }
+    for (path, past) in [(RPC_PATH, 405), (PREVIEW_PATH, 400)] {
+        assert_eq!(
+            web.anonymous(path).await.status(),
+            past,
+            "{path} in the token-less cell no longer answers a request that claims nothing"
+        );
+    }
+
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn every_refused_shape_gets_the_same_answer() {
+    // The refusal says which rule refused and nothing else. Four shapes that trip two different
+    // signals — Fetch Metadata twice, `Origin` twice — and one answer byte for byte, so a caller
+    // cannot learn from the response which header to drop. It is asserted as an equality between
+    // the answers rather than as four comparisons against the constant, because a build that
+    // grew a second refusal body would satisfy the second and fail this.
+    //
+    // And it is **not** the gate's answer: a `403` with no challenge, where the gate's is a
+    // `401` with RFC 6750's. A client can tell "you are not our page" from "you did not present
+    // the token", which is the one distinction this daemon's refusals do draw — because the
+    // second is fixable by the caller and the first is not.
+    let web = Web::opened(false).await;
+
+    let mut answers = Vec::new();
+    for fields in [
+        vec![("Sec-Fetch-Site", "cross-site")],
+        vec![("Sec-Fetch-Site", "same-site")],
+        vec![("Origin", "http://evil.example")],
+        vec![("Origin", "null")],
+    ] {
+        let answer = web.tagged(RPC_PATH, &fields).await;
+        is_the_cross_origin_refusal(&answer, &format!("{fields:?}"));
+        answers.push((answer.status(), answer.body().to_owned()));
+    }
+    let first = answers.first().expect("four shapes were driven").clone();
+    for answer in &answers {
+        assert_eq!(
+            *answer, first,
+            "two refused shapes were answered differently"
+        );
+    }
+
+    // The gate's refusal, beside it, on the same route in the same run.
+    is_the_refusal(
+        &web.anonymous(RPC_PATH).await,
+        "a request that claims nothing and presents nothing",
+    );
+    assert_ne!(provenance::REFUSAL, gate::REFUSAL);
+
+    web.stop().await;
+}
+
+#[tokio::test]
+async fn the_cross_origin_refusal_carries_the_no_referrer_policy_too() {
+    // `every_answer_carries_the_no_referrer_policy`'s claim, at the answer that arrived after
+    // it was written. The policy is applied outermost so it lands on **every** response this
+    // listener writes, and a `403` is a response to a request whose URL may have carried the
+    // token — which is exactly the case the header exists for.
+    let web = Web::opened(false).await;
+
+    assert_eq!(
+        web.tagged(
+            &with_token("/", &web.secret()),
+            &[("Sec-Fetch-Site", "cross-site")]
+        )
+        .await
+        .header("Referrer-Policy"),
+        Some("no-referrer"),
+        "the cross-origin refusal"
     );
 
     web.stop().await;

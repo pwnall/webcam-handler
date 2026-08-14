@@ -17,6 +17,16 @@
 //! `if path == …` branch to [`check`] would have been the same ruling implemented in the one
 //! function whose whole job is to say no.
 //!
+//! **Nor did it change when the second ruling landed, which is the same point twice.** Since
+//! 2026-08-13 this listener has a second admission rule — [`super::provenance`], which refuses a
+//! request a browser reports as coming from another origin — and it is a module beside this one
+//! rather than a clause inside `admits`. The two ask different questions (*did you present the
+//! credential* against *are you our own page*), are installed over different sets of paths
+//! (`route_layer` over the camera routes against `layer` over everything), and are installed in
+//! different numbers of D11's cells (three against four). Provenance runs **first**, so a request
+//! this gate refuses is one that already claimed no foreign origin — and a cross-origin request
+//! never reaches [`Token::verify`] at all, whatever credential it carries.
+//!
 //! ## Two forms, and both are load-bearing
 //!
 //! - **`?token=<token>`** — what a *navigation* can carry, and **what every request the page
