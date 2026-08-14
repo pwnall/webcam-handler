@@ -892,6 +892,7 @@ is a plan step, not a memory.
 | Re-run N5's jsonrpsee measurement | any jsonrpsee bump — delete the api tokio exemption if the original wall becomes satisfiable | §2.8, note N5 |
 | Re-check PF:16 against `little_exif` | any little_exif bump — the splice likely stays (it keeps a device-byte parse under our rules), but the *reason* changes from fix to defense | D6, PF:16 |
 | Narrow or delete `webcam-handler-priv` | **P6e executes this**; the row stays here until it does | §2.13, note N8 |
+| WebM as a second recording output | **the owner has asked the next design revision to look at it** (2026-08-14, note N103), so this row is an input rather than a wait: the trigger is the revision itself. It is not a container swap — WebM carries only VP8/VP9/AV1, so it buys OpenAI ingestion at the price of an encode, which E6 and the notes' usage item 10 forbid becoming the *measurement* path. Matroska `V_MJPEG` remuxes but no major vendor ingests it, which sharpens §7's rejection rather than reversing it. N103 carries the trade-off, marks the API-support landscape `declared`, and says what would make it `measured` | §7, D7 L0/L2, E6, note N103 |
 
 ## Risks to the plan
 

@@ -14320,6 +14320,120 @@ besides the reference — a tool that does not resolve `@AGENTS.md`, or one that
 content there — because that is the day the redirect stops being a pointer and both this entry
 and the gate's byte claim are wrong about the same thing.
 
+## N103 — WebM would buy an agent API that AVI cannot reach, and it costs the one property the recording exists to carry
+
+**The request (owner, 2026-08-14):** *"Please add an implementation note stating that I want the
+designer to look into WebM container support -- seems more modern than AVI and more friendly to
+AI agents (directly supported by the OpenAI API). We'll tackle that in the next design revision,
+which will use the implementation experience you're collecting here."* And, on being shown what
+the swap would cost: *"AVI was definitely the right v1 choice, because we need at least one a
+container that carries the webcam bits verbatim, and AVI has more support (Gemini API) than MKV
+(none of the major 3 vendors mentioned above). Looks like WebM is a future extension that would
+bring OpenAI compatibility at the expense of re-encoding."*
+
+**Doc:** design **§7** ("Considered and not adopted" — MP4/MKV as the v1 video container), **D7
+L0** ("No encoder, no patent surface, no copyleft"), **D7 L2** (the AV1/rav1e post-plan trigger),
+**E6** (byte fidelity), and the notes' Expected usage item 10. Recorded 2026-08-14, the day P6a
+landed the muxer. **Uncommissioned**: this is an input to the next design revision, not a change
+to P6.
+
+### Why this reopens a settled item rather than re-litigating one
+
+AGENTS is explicit that §7's rejected alternatives are settled and that re-opening one takes new
+evidence — *"a new probe finding is evidence; taste is not"*. This clears that bar, and it is
+worth saying exactly how, because "more modern" on its own would not.
+
+§7 rejected MKV on two grounds and **both are producer-side**: player support for MJPEG "by
+ecosystem consensus", and a simpler muxer. Neither asks the question the owner is asking, which
+is *which container the thing that consumes these recordings will accept*. AGENTS' "Who runs
+this" makes that consumer the primary one — an AI agent harness, continuous and unattended —
+so a container an agent's API refuses is a recording that has to be converted by somebody with
+hands before it can be read. An API's accepted-format list is also evidence of the admissible
+kind: a fact about the world that can be looked up and dated, not a preference.
+
+### WebM is not a container swap, and this is what decides the shape of the answer
+
+The request reads as "change the container", and it is not, because of one fact worth having
+written down before the design revision spends a session rediscovering it.
+
+**WebM permits only VP8, VP9 and AV1 video.** MJPEG is not in its vocabulary. There *is* a
+container in this family that takes MJPEG — Matroska with `V_MJPEG`, which is precisely what §7
+already considered and declined — but a Matroska file is not a WebM file, so it does not buy the
+API acceptance that motivated the request. Getting real WebM out of this tool means **encoding**,
+and that lands on D7 L0's stated posture ("No encoder, no patent surface, no copyleft") and in
+the same territory as D7 L2's rav1e trigger, which is recorded as post-plan for that reason.
+
+So the design revision is not choosing between two containers. It is deciding whether to add a
+**second, lossy, ingestion-oriented output** beside the verbatim one — which is what the owner's
+second message concludes, and it is the right conclusion.
+
+### What a re-encode costs, quoted from the thing it would break
+
+E6 makes byte fidelity the product, and the notes say why for video specifically: *"a re-encode
+inserts motion artefacts exactly where the agent is looking for them. A transcoding step would
+fabricate evidence about smoothness, which is the one property being judged."*
+
+That sentence is the whole constraint on a WebM path. A recording exists so an agent can measure
+a transition — *"did this take 200 ms or 2 s"* — and re-encoding is the one operation that
+manufactures the artefacts the measurement is looking at. So a WebM output may exist beside the
+AVI, and it **may never be the default for the measurement use case, nor the only output**. If
+the design revision takes it, the honest framing is a convenience format for handing a recording
+to an API, produced from the verbatim capture and never in place of it.
+
+### The landscape, `declared` and not measured
+
+The owner's data, recorded as stated and marked `declared` per the house rule that a claim
+without a probe behind it says so: the Gemini API accepts AVI; the OpenAI API accepts WebM; MKV
+is accepted by none of the three major vendors.
+
+**What would make it `measured`:** read each target API's accepted-format list at design time and
+record the list with the date it was read. These lists change, they change without notice, and a
+container decision that outlives its evidence is the failure mode this project marks `declared`
+to avoid. Nothing in this entry should be relied on past that check.
+
+Two consequences, if the data holds.
+
+**It strengthens §7's rejection of MKV rather than weakening it.** §7 declined MKV on player
+support "by ecosystem consensus (declared, not measured — §3.3 item 5)", which is the softest
+claim in that section. "No major agent vendor ingests it" is a sharper criterion, it is checkable,
+and it is aimed at the consumer this project actually has. The conclusion did not move; its
+argument got better.
+
+**It supplies AVI a justification §7 never used.** Of the three, AVI is the only one that both
+carries the camera's bytes verbatim and is ingested by a major vendor's API. §7 chose it on
+player support and muxer simplicity and happened to be right for a reason it did not know about.
+That is worth recording precisely because it is luck, and the next container decision should not
+rely on the same luck twice.
+
+### What the design revision inherits from P6a
+
+The request asks for this note to carry the implementation experience, so:
+
+- **The reader was the expensive half.** N99's breakdown: the muxer is 568 lines of code, the
+  independently-derived reader is 795. If a second container is held to the same standard of
+  proof — and docs/7 P6a's "an independent re-parse path that is **not** the writer's code" is
+  the standard — then a second format is a second reader, not just a second writer. If it is not
+  held to that standard, the design revision should say what carries correctness instead, and
+  say it before the code is written rather than after.
+- **"The format is frozen" is what made AVI cheap**, and it is D7 L0's own stated reason for
+  owning the muxer at all. Matroska and WebM are versioned and extensible; whatever that is worth,
+  it is not the same bargain, and the ~300-line estimate that N99 already found optimistic for a
+  frozen format should not be reused for one that is not.
+- **The oracle assumption is the other half of N99**, and it applies here unchanged: AGENTS bars
+  runtime external binaries, so ffprobe/mpv are a present-or-counted-skip rung (docs/7 P6d) and
+  cannot be the thing that holds a format correct on a machine without them. A new container
+  inherits that constraint on day one.
+
+### Status
+
+Recorded, uncommissioned. docs/7's post-plan trigger table carries the row that points here, so
+the plan names it rather than leaving it in a note nobody re-reads. Nothing in P6 changes.
+
+**Amend this note if** a target API's accepted-format list is read and turns out to ingest
+Matroska with `V_MJPEG`, or MJPEG inside a WebM container — either would mean a remux reaches the
+API after all, the re-encode this entry is built around is not required, and the trade-off it
+describes is not the trade-off that exists.
+
 ## N104 — A test proved an ordering by asking what had happened since, which is a question with no stable answer
 
 **Doc:** AGENTS "Writing tests" ("No `sleep` as synchronization — settle logic runs on a clock
