@@ -1,0 +1,20 @@
+# Provenance for the frozen 4:2:2 Y4M beside this file.
+#
+# A sidecar rather than a marker in the bytes, for the reason the AVI fixture's sidecar gives
+# and one more of its own. YUV4MPEG2 *does* have somewhere to put a marker — an `X` vendor
+# extension in the header line — and using it would move the very bytes this fixture exists to
+# freeze, and would put a string of ours into a file whose whole claim is that every byte in it
+# is the device's own. `scripts/gates/no-frame-bytes-in-repo.sh` accepts either form.
+#
+# The long version of this table, with the generator arguments and what the file pins, is
+# `crates/imaging/fixtures/README.md`. Two homes for one fact is normally a defect; here the
+# README is prose for a person and this file is what a gate can read, so the gate reads this
+# one and the README states why.
+
+generated-by = "imaging::y4m::Y4mWriter over two synthetic YUYV frames from imaging::y4m::tests"
+generated-on = "2026-08-14"
+nature = "synthetic"
+camera = "none — no capture, no device, no frame off a sensor (design §5, AGENTS 'Hardware and privacy')"
+frames = "two 64x48 YUYV frames whose every sample is a function of its own position: luma(x,y) = (7x + 13y) % 251, cb(x,y) = 64 + (3x + 5y) % 61, cr(x,y) = 160 + (11x + 2y) % 61; sequences 0 and 1, timestamps 0 and 50000 us"
+stream = "64x48 YUYV -> C422, negotiated interval 66666 us, declared as F1000000:66666 and never rewritten"
+asserted-by = "imaging::y4m::tests::the_frozen_fixtures_are_still_the_files_the_y4m_sink_emits, which re-generates every sample and compares it against the planes it reads back out of these bytes through a parser derived from the format description"

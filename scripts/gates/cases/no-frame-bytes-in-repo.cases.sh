@@ -183,6 +183,81 @@ fail_case_avi_whose_frame_extent_cannot_be_read() {
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+# A Y4M whose header declares $2 x $3. Header line only: there is no frame in it, which is
+# the point — the predicate reads the declared extent, not samples. `Ip` and `C420` are in it
+# because the fields between `H` and `C` are what a naive "the third field is the
+# colorspace" reader would trip over, and this predicate must not be one.
+_write_y4m() {
+    local out="$1" width="$2" height="$3"
+    printf 'YUV4MPEG2 W%s H%s F1000000:33333 Ip C420\n' "$width" "$height" >"$out"
+}
+
+# The shape P6b landed: raw picture, in the one directory that owns it, with the marker in a
+# sidecar because the header has nowhere to put one that would not move the frozen bytes.
+pass_case_provenanced_y4m_fixture() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/y4m"
+    _write_y4m "$tree/crates/imaging/fixtures/y4m/generated.y4m" 64 48
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/y4m/generated.y4m.provenance.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The finding itself, repeated one container along: before this arm, a Y4M anywhere in the
+# tree matched no magic number and the run stayed green — over a format whose payload is one
+# luma sample per byte.
+fail_case_y4m_outside_its_fixture_directory() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    _write_y4m "$tree/docs/capture.y4m" 64 48
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_y4m_without_provenance() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/y4m"
+    _write_y4m "$tree/crates/imaging/fixtures/y4m/unmarked.y4m" 64 48
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# An AVI in the Y4M directory and a Y4M in the AVI directory are both a fixture that got
+# loose from the module that owns it, and each format has exactly one home.
+fail_case_y4m_in_the_avi_fixture_directory() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/avi"
+    _write_y4m "$tree/crates/imaging/fixtures/avi/stray.y4m" 64 48
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/avi/stray.y4m.provenance.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The same cap the still fixtures get, read out of the header line rather than out of a SOF0.
+fail_case_y4m_over_the_dimension_cap() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/y4m"
+    _write_y4m "$tree/crates/imaging/fixtures/y4m/vga.y4m" 640 480
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/y4m/vga.y4m.provenance.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# A provenanced Y4M whose header names no height. An extent it cannot read is an extent it
+# cannot bound, and a fixture nobody checked must not read as a checked one.
+fail_case_y4m_whose_frame_extent_cannot_be_read() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/crates/imaging/fixtures/y4m"
+    printf 'YUV4MPEG2 W64 F1000000:33333 C420\n' \
+        >"$tree/crates/imaging/fixtures/y4m/headerless.y4m"
+    printf 'generated-by = "the gate selftest"\n' \
+        >"$tree/crates/imaging/fixtures/y4m/headerless.y4m.provenance.toml"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 # An empty tree sniffs nothing, and a check that examined nothing cannot go red.
 fail_case_nothing_to_scan() {
     local tree

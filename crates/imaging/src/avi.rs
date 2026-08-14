@@ -32,70 +32,51 @@
 //! rewrites both, because a reader that finds them disagreeing has caught the defect and a
 //! reader that finds only one patched has been lied to consistently.
 //!
-//! [`AviSummary`] carries the same number *and* [`IntervalSource`], which is not
+//! [`RecordingSummary`] carries the same number *and* [`IntervalSource`], which is not
 //! decoration. The notes are blunt about what is at stake — "for a transition they *are*
 //! the measurement, because 'did this take 200 ms or 2 s' is the question being asked" —
 //! so a caller must be able to tell a rate that was **measured** from one that is merely
 //! what the camera was **asked** for. A mean needs two points; a one-frame recording has
 //! measured nothing, and says so rather than dressing the negotiated interval up as a
-//! finding. [`AviSummary::dropped_frames`] belongs to the same obligation: a gap in the
-//! driver's `sequence` is a frame that never arrived, and reporting it is what stops a
+//! finding. [`RecordingSummary::dropped_frames`] belongs to the same obligation: a gap in
+//! the driver's `sequence` is a frame that never arrived, and reporting it is what stops a
 //! dropped frame from reading as a slow transition.
 //!
-//! ## A recording is bounded by values, not by constants
+//! **This is the container that can do the rewrite, and it is the only one.** A Y4M header
+//! is variable-width text written before the first frame, so [`crate::y4m`] declares the
+//! negotiated interval and never reports [`IntervalSource::Measured`]; the asymmetry is
+//! argued where a reader meets it, in that module's header and in note **N106**.
 //!
-//! [`RecordingCaps`] has **no `Default`**, deliberately. docs/7 puts "duration/size caps
-//! from `limits`" in P6b and `webcam-handler-schema::limits`' own header says a constant
-//! nobody reads is a defect (rubric A8), so this crate takes the bounds as values and the
-//! caller owns which constants they came from. The consequence is the one worth having: a
-//! caller cannot forget to bound a recording, because there is no bound to forget — the
-//! type will not construct without all three.
+//! ## What this module owns, and what moved out of it at P6b
 //!
-//! ## A cap is an outcome; a malformed frame is an error
+//! P6a wrote [`RecordingCaps`], [`FrameOutcome`], [`CapReached`], [`IntervalSource`] and
+//! the finished-recording summary here, when AVI was the only container and nothing outside
+//! this crate could see them. P6b added a second container and a wire surface, so each of
+//! them moved to the one home its scope now demands — the wire-bearing three to
+//! [`schema::video`], the two container-shared ones to [`crate::video`] — and every one is
+//! re-exported below so P6a's spellings still resolve. The arguments moved with the types:
+//! **why a recording is bounded by values rather than by constants**, and **why a cap is an
+//! outcome while a malformed frame is an error**, are both stated in [`crate::video`]'s
+//! header, because they are now two containers' law rather than this one's. The summary
+//! type is [`RecordingSummary`] rather than `AviSummary` for the same reason: every claim it
+//! makes is one a Y4M take makes too.
 //!
-//! [`write::AviWriter::write_frame`] answers a cap with `Ok(`[`FrameOutcome::Refused`]`)`
-//! and a bad frame with `Err`. The split is AGENTS rule 7 in another costume —
-//! "availability is not capability" — because a recording that stopped at its size cap did
-//! exactly what it was told to, while a frame whose geometry disagrees with the stream's is
-//! a defect somewhere upstream. Collapsing the two would make an agent unable to tell "your
-//! recording is as long as you allowed" from "your camera is misbehaving", and the primary
-//! consumer has no hands to investigate with.
-
-use std::time::Duration;
+//! What is left here is what is genuinely AVI's: the muxer, the reader that distrusts it,
+//! the parameters that open a recording, and [`interval_micros`].
 
 use schema::camera::FrameInterval;
-
-use crate::vocabulary::closed_vocabulary;
 
 pub mod read;
 pub mod write;
 
-/// What a recording is allowed to cost.
-///
-/// Three bounds rather than one because they fail differently: `max_bytes` protects the
-/// disk, `max_frames` protects the index and the memory it lives in, and `max_span`
-/// protects the caller from a camera that is still delivering long after the thing being
-/// filmed stopped happening. Whichever binds first ends the recording, and
-/// [`AviSummary::cap_reached`] names it.
-///
-/// No `Default` (see the module doc): the values belong to the caller, and P6b is where
-/// they meet `webcam-handler-schema::limits`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RecordingCaps {
-    /// The largest the finished file may be, **index included**.
-    ///
-    /// Counted against the whole file rather than the frame payloads because the `idx1`
-    /// written at close is 16 bytes per frame, and a cap that stopped at the last frame
-    /// would be walked past by the close itself.
-    pub max_bytes: u64,
-    /// How many frames may be written.
-    pub max_frames: u32,
-    /// How far the last frame's timestamp may be from the first frame's.
-    ///
-    /// Measured on the driver's clock, from the first frame **written** — this crate reads
-    /// no clock of its own (design §2.10), so wall-clock time is the caller's question.
-    pub max_span: Duration,
-}
+// The vocabulary this container shares with the other one, re-exported so that P6a's
+// spellings — `imaging::avi::RecordingCaps`, `imaging::avi::CapReached` — still resolve, and
+// so that this module's own documentation can go on linking the types it argues about. A
+// re-export rather than a second definition: `schema::video` and `crate::video` are the
+// homes, and AGENTS' "one home per law" is the reason the definitions are not here any more.
+pub use schema::video::{CapReached, IntervalSource, RecordingSummary};
+
+pub use crate::video::{FrameOutcome, RecordingCaps};
 
 /// Everything the muxer needs before the first frame.
 ///
@@ -114,81 +95,6 @@ pub struct AviParams {
     pub negotiated_interval_us: Option<u32>,
     /// What the recording is allowed to cost.
     pub caps: RecordingCaps,
-}
-
-/// What happened to a frame handed to the muxer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameOutcome {
-    /// It is on the sink.
-    Written,
-    /// A cap was reached, so it was **not** written and neither will anything after it.
-    Refused(CapReached),
-}
-
-closed_vocabulary! {
-    /// Which bound ended the recording.
-    ///
-    /// `ALL` is generated from this definition, and the tests walk it: a cap that no
-    /// recording can reach is a bound that is not a bound, and a hand-written list of the
-    /// three would let one quietly stop being enforced (rubric rule 6).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum CapReached {
-        /// [`RecordingCaps::max_bytes`].
-        Size,
-        /// [`RecordingCaps::max_frames`].
-        Frames,
-        /// [`RecordingCaps::max_span`].
-        Span,
-    }
-}
-
-closed_vocabulary! {
-    /// Where the frame interval in the finished header came from.
-    ///
-    /// The distinction D7's CFR carve-out exists to preserve, carried out of the muxer so
-    /// the caller never has to guess whether the number it is reading was observed.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum IntervalSource {
-        /// The mean of the delivered frame timestamps — the close-time rewrite happened.
-        Measured,
-        /// What the camera was asked for. Fewer than two frames arrived, or their
-        /// timestamps described no usable span, so nothing was measured.
-        Negotiated,
-        /// Neither: the negotiation named no interval and none was measured, so the header
-        /// carries [`write::PROVISIONAL_INTERVAL_US`].
-        Provisional,
-    }
-}
-
-/// What a finished recording turned out to be.
-///
-/// Every field is a *measurement* of the file that was written, not a restatement of what
-/// was asked for — which is the point of returning it at all. `declared_interval_us` is the
-/// number now in both of the header's rate fields, and `interval_source` says whether it is
-/// a finding or a placeholder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AviSummary {
-    /// How many frame chunks are in `movi`.
-    pub frames_written: u32,
-    /// The size of the finished file, `idx1` included.
-    pub bytes_written: u64,
-    /// The frame interval now in `avih.dwMicroSecPerFrame` and `strh.dwScale`/`dwRate`.
-    pub declared_interval_us: u32,
-    /// Whether that interval was measured, negotiated or provisional.
-    pub interval_source: IntervalSource,
-    /// Frames the driver's `sequence` numbers say never arrived.
-    ///
-    /// A `u64` because the gaps accumulate: each one may be as large as a `u32`, and a
-    /// recording may hold as many gaps as it holds frames.
-    pub dropped_frames: u64,
-    /// The last written frame's timestamp minus the first's, when that is a duration.
-    ///
-    /// `None` when fewer than two frames were written, and when the driver's clock ran
-    /// backwards across the take — a negative span is not a duration, and reporting it as
-    /// zero would claim a measurement nobody made.
-    pub span_us: Option<u64>,
-    /// The bound that ended the recording, if one did.
-    pub cap_reached: Option<CapReached>,
 }
 
 /// A frame interval in microseconds, when the interval names one.

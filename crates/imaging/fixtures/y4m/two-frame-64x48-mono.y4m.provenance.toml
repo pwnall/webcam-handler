@@ -1,0 +1,16 @@
+# Provenance for the frozen mono Y4M beside this file.
+#
+# A sidecar rather than a marker in the bytes; the argument is in
+# `two-frame-64x48-c422.y4m.provenance.toml` beside this one and is not repeated here.
+#
+# This file is the opposite shape from its sibling: a mono take writes one plane and *two
+# empty ones*, and "the sink stopped writing the empty planes" is a change no length assertion
+# notices and these bytes do.
+
+generated-by = "imaging::y4m::Y4mWriter over two synthetic GREY frames from imaging::y4m::tests"
+generated-on = "2026-08-14"
+nature = "synthetic"
+camera = "none — no capture, no device, no frame off a sensor (design §5, AGENTS 'Hardware and privacy')"
+frames = "two 64x48 GREY frames whose every sample is a function of its own position: luma(x,y) = (7x + 13y) % 251; sequences 0 and 1, timestamps 0 and 50000 us"
+stream = "64x48 GREY -> Cmono, negotiated interval 66666 us, declared as F1000000:66666 and never rewritten"
+asserted-by = "imaging::y4m::tests::the_frozen_fixtures_are_still_the_files_the_y4m_sink_emits, which re-generates every sample and compares it against the planes it reads back out of these bytes through a parser derived from the format description"

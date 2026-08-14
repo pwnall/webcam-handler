@@ -14,6 +14,8 @@
 //! | [`photo`] | the pass-through-vs-re-encode decision (E6) |
 //! | [`exif`] | capture metadata stamped onto JPEG bytes (D6) |
 //! | [`avi`] | the D7 L0 video container, and an independent reader that distrusts it |
+//! | [`y4m`] | the D7 raw fallback: YUV4MPEG2 for the formats AVI cannot carry |
+//! | [`video`] | the one entry point both containers are reached through, and their caps |
 //! | [`metrics`] | the D8 metric set as pure functions over a luma image |
 //! | [`fixtures`] | deterministic synthetic images for tests, the fake, and the corpus |
 //!
@@ -48,7 +50,6 @@
 )]
 
 mod fault;
-mod vocabulary;
 
 pub mod avi;
 pub mod decode;
@@ -57,6 +58,8 @@ pub mod exif;
 pub mod fixtures;
 pub mod metrics;
 pub mod photo;
+pub mod video;
+pub mod y4m;
 
 pub use decode::{Decoded, SourceFormat, decode_frame};
 pub use metrics::measure_all;

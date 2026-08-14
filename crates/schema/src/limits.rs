@@ -823,6 +823,120 @@ pub const MAX_SETTLE_ROUNDS: u32 = 4_096;
 /// Buffers to request from the driver for a capture stream.
 pub const DEFAULT_BUFFER_COUNT: u32 = 4;
 
+/// How long a recording runs when the caller named no duration, in milliseconds.
+///
+/// **The bounds here are the agent's, not a human's** — the notes' Expected usage item 10, in
+/// the words the owner's statement gives it: *"A transition is seconds; the caps in
+/// `schema::limits` must comfortably hold one without an agent learning to work around them,
+/// while still bounding a runaway. A cap tuned for a human who notices a growing file is the
+/// wrong cap for an unattended caller that will not."* Every number in this group is priced
+/// against that sentence rather than against disk space.
+///
+/// Ten seconds, chosen from what the default is *for*: an agent validating an animation or a
+/// transition, where the thing being filmed lasts between a fifth of a second and two, and
+/// where the recording has to start before the transition does and end after it. Ten seconds
+/// is that with an order of magnitude of slack on both sides — enough that
+/// `webcam-handler-cli record` with no flag is the command an agent actually wants, which is
+/// the property the sentence above is really about. A default of one or two seconds would be
+/// "comfortably holds a transition" only for a caller that had already learned to time its
+/// own start, and an agent that has to learn that has learned to work around the cap.
+///
+/// It is a *default*, not a bound: a caller that names a duration gets it, up to
+/// [`MAX_RECORDING_MS`].
+///
+/// **No product reader yet.** The recording executor P6b's second half lands is what turns
+/// this into a `RecordingCaps`, and until then the only things holding it are the relations
+/// asserted below. That is recorded rather than hidden, because rubric A8 says a constant
+/// nobody reads is a defect and the honest state of this one is "read by the arithmetic and
+/// not yet by the product".
+pub const DEFAULT_RECORDING_MS: u64 = 10_000;
+
+/// The longest recording this build will make, in milliseconds.
+///
+/// Two minutes. The runaway this bounds is specific: a `record` that was asked for a
+/// transition and met a camera that never stops delivering, on a host nobody is watching. Two
+/// minutes is far past any transition — twelve times [`DEFAULT_RECORDING_MS`] — and far short
+/// of "a recording somebody meant to make", which this tool does not offer and D7 does not
+/// describe.
+///
+/// It is deliberately of the same order as [`MAX_RECORDING_BYTES`] rather than independent of
+/// it, and the arithmetic is worth writing down because two caps that describe different
+/// recordings would mean one of them is decoration. A 1080p MJPG frame off the seed hardware
+/// is on the order of 200 kB \[PF:9\] and the cameras here reach 120 fps, so the fastest
+/// compressed stream this project has measured is about **24 MB/s**:
+///
+/// - at 120 fps, this duration is ~2.9 GB — over [`MAX_RECORDING_BYTES`], so the **size** cap
+///   ends the take at about 90 seconds;
+/// - at 30 fps, the ordinary mode, it is ~720 MB — under the size cap, so the **duration**
+///   cap ends it at two minutes.
+///
+/// So both caps bind, on different streams, and neither is unreachable. For Y4M the size cap
+/// binds hard and early — 1920×1080 YUYV is 4.1 MB *per frame*, so 2 GiB is about seventeen
+/// seconds at 30 fps — and that is the correct answer rather than a defect: D7 calls the raw
+/// fallback "enormous but exact", and a caller that wants two minutes of it is asking for
+/// something this tool does not do.
+///
+/// **No product reader yet**, for [`DEFAULT_RECORDING_MS`]'s reason.
+pub const MAX_RECORDING_MS: u64 = 120_000;
+
+/// The largest recording file this build will write, in bytes.
+///
+/// Two gibibytes. Two ceilings meet here and the lower one wins.
+///
+/// The **format's** ceiling is `imaging::avi::write::MAX_RECORDING_BYTES`, which is
+/// `u32::MAX`: an `idx1` entry's `dwChunkOffset` is 32 bits, so an AVI that grows past four
+/// gibibytes cannot be indexed at all and every offset past the boundary wraps. That is not a
+/// policy and it is not this module's to state — it belongs to the container — so the
+/// relation between the two numbers is asserted in `imaging::video`, where both are visible,
+/// rather than restated here as a literal that could drift.
+///
+/// The **policy** ceiling is this one, and it is half of that: a cap that sat exactly on the
+/// format's would make every over-budget recording a discovery about `idx1` rather than a
+/// decision this project made, and it would leave Y4M — which has no 32-bit offset table and
+/// would happily pass four gigabytes — bounded by an accident of the *other* container.
+/// Two gibibytes is priced from [`MAX_RECORDING_MS`]'s arithmetic: it is the fastest
+/// compressed stream measured here running for about ninety seconds, which is the same
+/// recording the duration cap describes.
+///
+/// It is a bound on the **file**, index and trailer included, because that is what fills a
+/// disk and what `RecordingCaps::max_bytes` is compared against.
+///
+/// Read by `imaging::video`'s ceiling assertion, which is what keeps it under the AVI
+/// container's own limit at compile time.
+pub const MAX_RECORDING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// The most frames one recording may hold.
+///
+/// **A backstop rather than a bound anybody should meet**, and it is stated that way because a
+/// cap whose job is to be unreachable still has to be reachable in principle. At the fastest
+/// mode this project has measured — 120 fps — [`MAX_RECORDING_MS`] is 14 400 frames, so this
+/// is above it with room and the duration cap is what ends an honest take. What this catches
+/// is the case the other two cannot: a driver delivering faster than any mode it declares, or
+/// a clock that never advances, so neither the span nor the size projection moves.
+///
+/// 16 384 also bounds what a recording holds in *memory*, which is the second reason it exists
+/// at this size: `imaging::avi::write` keeps one eight-byte index entry per frame until close,
+/// so a recording at this cap holds 128 kB of index and writes 256 kB of `idx1` — small,
+/// finite, and stated here so the number is a decision rather than a round one.
+///
+/// **No product reader yet**, for [`DEFAULT_RECORDING_MS`]'s reason.
+pub const MAX_RECORDING_FRAMES: u32 = 16_384;
+
+// The three relations the paragraphs above argue, checked where all four numbers are —
+// `CAMERA_IDLE_SWEEP_MS`' tradition, because each one is a claim about a *pair* and nothing
+// else in this workspace reads them together.
+//
+// A default at or above the maximum is a default nobody can raise, and a zero default is a
+// recording of nothing; a frame cap below what the duration cap admits at 120 fps would make
+// the backstop the thing that always fires, which would silently turn every long recording
+// into a frame-capped one; and a size cap that could not hold a *default* take at the fastest
+// stream measured here (24 MB/s, so 24 000 bytes per millisecond) would refuse the ordinary
+// case the defaults exist to serve, which is exactly the "agent learning to work around them"
+// the notes' item 10 forbids.
+const _: () = assert!(DEFAULT_RECORDING_MS > 0 && DEFAULT_RECORDING_MS < MAX_RECORDING_MS);
+const _: () = assert!(MAX_RECORDING_FRAMES as u64 > MAX_RECORDING_MS / 1_000 * 120);
+const _: () = assert!(MAX_RECORDING_BYTES > DEFAULT_RECORDING_MS * 24_000);
+
 /// The most processes a `Busy` refusal names.
 ///
 /// The walk that finds them reads the whole process table, and a refusal listing four

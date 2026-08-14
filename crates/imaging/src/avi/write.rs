@@ -54,7 +54,7 @@
 //! reports nominal fps while delivering something else is answering the agent's question
 //! wrongly … it must not make a dropped frame look like a slow transition". So `finish`
 //! rewrites `avih.dwMicroSecPerFrame` **and** `strh.dwScale`/`dwRate`, and
-//! [`super::AviSummary`] reports which of the two things happened: a mean was measured, or
+//! [`super::RecordingSummary`] reports which of the two things happened: a mean was measured, or
 //! it was not and the header still carries what the camera was asked for.
 //!
 //! The mean is `(last − first) / (frames − 1)` over the delivered timestamps, truncating.
@@ -97,21 +97,15 @@ use schema::camera::PixelFormat;
 use schema::capture::Frame;
 use schema::error::Result;
 
-use super::{AviParams, AviSummary, CapReached, FrameOutcome, IntervalSource, RecordingCaps};
+use super::{AviParams, CapReached, FrameOutcome, IntervalSource, RecordingCaps, RecordingSummary};
 use crate::fault::imaging_failure;
 
-/// The frame interval a recording declares when nothing else named one.
-///
-/// 33 333 µs — 30 fps, the mode every webcam in this project offers and the one a caller
-/// who expressed no preference will almost certainly get. It is a *placeholder*, and
-/// [`IntervalSource::Provisional`] is how the summary refuses to pretend otherwise; the
-/// close-time rewrite replaces it the moment two frames have been delivered.
-///
-/// Not zero, which would be the honest "we do not know": a zero frame interval means
-/// infinite frame rate to every player, and it would force `strh.dwScale` to zero as well
-/// to keep the two homes agreeing. A meaningless number that parses everywhere is worse
-/// than a plausible one that is labelled.
-pub const PROVISIONAL_INTERVAL_US: u32 = 33_333;
+// The placeholder interval, re-exported so `imaging::avi::write::PROVISIONAL_INTERVAL_US`
+// still resolves. It was defined here at P6a, when this was the only container that could
+// need one; `crate::y4m` declares the same placeholder for the same reason, and a second copy
+// of a placeholder is a second placeholder — so the definition and its argument live in
+// `crate::video` since P6b.
+pub use crate::video::PROVISIONAL_INTERVAL_US;
 
 /// The largest `max_bytes` this muxer accepts, refused at [`AviWriter::begin`].
 ///
@@ -513,7 +507,7 @@ impl<W: Write + Seek> AviWriter<W> {
     /// [`schema::Error::DeviceIo`] when the sink refuses a write or a seek, or when it had
     /// already failed — in which case the message names the length of the prefix that is
     /// still a recoverable `movi` stream.
-    pub fn finish(mut self) -> Result<AviSummary> {
+    pub fn finish(mut self) -> Result<RecordingSummary> {
         self.check_sink(FINISH_OP)?;
         // Before `idx1`: the `movi` list ends where the index begins.
         let movi_size = self
@@ -559,7 +553,7 @@ impl<W: Write + Seek> AviWriter<W> {
             .flush()
             .map_err(|err| self.poison(FINISH_OP, &err))?;
 
-        Ok(AviSummary {
+        Ok(RecordingSummary {
             frames_written: self.frames_written,
             bytes_written: self.bytes_written,
             declared_interval_us,
@@ -1037,7 +1031,10 @@ mod tests {
     }
 
     /// Run a whole recording over an in-memory sink.
-    fn record(params: AviParams, frames: &[Frame]) -> (Vec<u8>, Vec<FrameOutcome>, AviSummary) {
+    fn record(
+        params: AviParams,
+        frames: &[Frame],
+    ) -> (Vec<u8>, Vec<FrameOutcome>, RecordingSummary) {
         let mut file = Vec::new();
         let mut writer = AviWriter::begin(Cursor::new(&mut file), params).expect("begin");
         let outcomes = frames

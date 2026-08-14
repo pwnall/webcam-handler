@@ -12,8 +12,8 @@
 #      or a JPEG comment segment both satisfy this) or in a `<file>.provenance.toml`
 #      sidecar. A fixture that cannot say what produced it is indistinguishable from a
 #      frame that came off a camera.
-#   2. It is a PNG, a JPEG or an AVI — the three formats this tool emits. Anything else in
-#      a fixture directory arrived from somewhere unexamined.
+#   2. It is a PNG, a JPEG, an AVI or a Y4M — the four formats this tool emits. Anything
+#      else in a fixture directory arrived from somewhere unexamined.
 #   3. It is small. The cap below is deliberately under VGA: 640x480 is the smallest mode
 #      a webcam commonly offers, so a fixture that exceeds the cap is either a frame or a
 #      fixture that should have been generated smaller.
@@ -34,9 +34,24 @@
 # container is a sidecar: our muxer writes no comment chunk, and adding one to carry a
 # marker would move the frozen bytes the fixture exists to freeze.
 #
+# ## Why a second container, which P6b is the answer to
+#
+# P6b added the D7 raw fallback, and `crates/imaging/fixtures/y4m/` holds two frozen
+# YUV4MPEG2 files. **A Y4M payload is not a bitstream that happens to contain a picture — it
+# is the picture**, one 8-bit luma sample per byte in raster order, which is the most direct
+# form a camera frame can take in this repository. It matched no magic number here, so both
+# files reported as "not an image" and the run stayed green: the P6a finding, one container
+# along, and against a format where a leaked frame would be readable with `od`.
+#
+# So a Y4M is sniffed by its `YUV4MPEG2 ` magic and held to the same three conditions, with
+# the extent read out of the header's own `W`/`H` fields. Provenance is a sidecar again, and
+# for one reason more than the AVI's: this format *does* have somewhere to put a marker (an
+# `X` vendor extension in the header line), and using it would both move the frozen bytes and
+# put a string of ours inside a file whose whole claim is that every byte is the device's own.
+#
 # Honest limit, recorded in docs/9 and design §3.3 item 6: this sniffs *known* formats. A
 # frame inside a container this file does not walk still passes, and review carries that
-# half — the list is now four still formats and one container rather than four and none,
+# half — the list is now four still formats and two containers rather than four and none,
 # which narrows the gap without closing it.
 set -euo pipefail
 
@@ -56,12 +71,18 @@ max_fixture_bytes=1048576
 # `corpus/images/` is design §3.2's synthetic still-image directory; the AVI belongs to one
 # crate's muxer and lives with it, the same split `crates/backends/v4l2/fixtures/` makes.
 image_dir="corpus/images"
-video_dir="crates/imaging/fixtures/avi"
+avi_dir="crates/imaging/fixtures/avi"
+y4m_dir="crates/imaging/fixtures/y4m"
 
 # Where a file of this format is allowed to be.
+#
+# One directory per container rather than one shared `fixtures/video/`, because the two
+# muxers are separate modules with separate frozen formats and a shared directory is where a
+# fixture ends up being loaded by the module it does not belong to.
 home_for() {
     case "$1" in
-    avi) printf '%s\n' "$video_dir" ;;
+    avi) printf '%s\n' "$avi_dir" ;;
+    y4m) printf '%s\n' "$y4m_dir" ;;
     *) printf '%s\n' "$image_dir" ;;
     esac
 }
@@ -90,6 +111,13 @@ sniff() {
     # cannot be two plausible bytes of anything else.
     if [[ "$head4" == "52494646" && "${head12:16:8}" == "41564920" ]]; then
         printf 'avi\n'
+    fi
+    # `YUV4MPEG2 ` — ten bytes, trailing space included, which is where the format itself
+    # puts the boundary between the magic and the first header field. Ten bytes of ASCII this
+    # specific are not two plausible bytes of anything else, so no size agreement is needed
+    # the way the BMP arm below needs one.
+    if [[ "${head12:0:20}" == "595556344d5045473220" ]]; then
+        printf 'y4m\n'
     fi
     # "BM" alone is two plausible bytes of text, so a BMP must also agree with itself
     # about its own size before we call it one.
@@ -155,6 +183,28 @@ avi_dimensions() {
     printf '%s %s\n' "$width" "$height"
 }
 
+# The frame extent a Y4M declares, out of its header line — nothing, if the line cannot be
+# read or does not carry both fields.
+#
+# The format puts the whole header on the first line as space-separated `<tag><value>`
+# fields, so this reads that line and nothing else: `head -n 1` stops at the first newline,
+# which is the terminator the format itself uses, so no sample byte is ever in the captured
+# string. A file that does not match prints nothing, which the caller turns into a failure —
+# a Y4M whose geometry cannot be read is a Y4M nobody checked.
+y4m_dimensions() {
+    local file="$1" header field width height
+    header="$(LC_ALL=C head -n 1 "$file" 2>/dev/null || true)"
+    [[ "$header" == "YUV4MPEG2 "* ]] || return 0
+    for field in $header; do
+        case "$field" in
+        W*) width="${field#W}" ;;
+        H*) height="${field#H}" ;;
+        esac
+    done
+    [[ "${width:-}" =~ ^[0-9]+$ && "${height:-}" =~ ^[0-9]+$ ]] || return 0
+    printf '%s %s\n' "$width" "$height"
+}
+
 has_provenance() {
     local file="$1" sidecar
     if LC_ALL=C grep -qaiE 'generated[-_]by' "$file"; then
@@ -205,8 +255,9 @@ while IFS= read -r -d '' file; do
     png) dims="$(png_dimensions "$file")" ;;
     jpeg) dims="$(jpeg_dimensions "$file")" ;;
     avi) dims="$(avi_dimensions "$file")" ;;
+    y4m) dims="$(y4m_dimensions "$file")" ;;
     *)
-        gate_fail "$rel is a $format; the fixture directories hold PNG, JPEG and AVI fixtures only"
+        gate_fail "$rel is a $format; the fixture directories hold PNG, JPEG, AVI and Y4M fixtures only"
         continue
         ;;
     esac
@@ -226,9 +277,9 @@ gate_require_nonzero "$sniffed" "files"
 gate_checked "$images" "files carrying frame data found in the tree"
 
 if ((fixtures == 0)); then
-    gate_skip 0 "provenanced fixtures validated — neither $image_dir/ nor $video_dir/ holds one; the nothing-anywhere-else claim above is what carries this run"
+    gate_skip 0 "provenanced fixtures validated — none of $image_dir/, $avi_dir/ or $y4m_dir/ holds one; the nothing-anywhere-else claim above is what carries this run"
 else
-    gate_checked "$fixtures" "fixtures in $image_dir/ and $video_dir/ checked for provenance, format, size and frame extent"
+    gate_checked "$fixtures" "fixtures in $image_dir/, $avi_dir/ and $y4m_dir/ checked for provenance, format, size and frame extent"
 fi
 
 gate_finish

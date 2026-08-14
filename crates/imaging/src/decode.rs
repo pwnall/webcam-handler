@@ -30,6 +30,7 @@ use image::{GrayImage, ImageBuffer, RgbImage};
 use schema::camera::PixelFormat;
 use schema::capture::Frame;
 use schema::error::{Error, Result};
+use schema::vocabulary::closed_vocabulary;
 use yuv::{
     YuvBiPlanarImage, YuvConversionMode, YuvPackedImage, YuvRange, YuvStandardMatrix,
     yuv_nv12_to_rgb, yuyv422_to_rgb,
@@ -40,7 +41,6 @@ use zune_jpeg::zune_core::colorspace::ColorSpace;
 use zune_jpeg::zune_core::options::DecoderOptions;
 
 use crate::fault::{imaging_failure, short_buffer};
-use crate::vocabulary::closed_vocabulary;
 
 closed_vocabulary! {
     /// A pixel format this crate can turn into pixels (design D6 closes the set).
@@ -459,7 +459,13 @@ pub fn decode_grey(
 }
 
 /// Reject a degenerate frame and widen the dimensions for byte arithmetic.
-fn geometry(width: u32, height: u32, operation: &str) -> Result<(usize, usize)> {
+///
+/// `pub(crate)` since P6b: [`crate::y4m`] rearranges the same raw formats into planes rather
+/// than into pixels, and the arithmetic that decides *how many bytes a driver owes us* is one
+/// law (AGENTS "one home per law"). A second copy in the Y4M sink would be a second answer to
+/// "what does `bytes_per_line: 0` mean", and the two would drift on the day one of them
+/// learned about a new format.
+pub(crate) fn geometry(width: u32, height: u32, operation: &str) -> Result<(usize, usize)> {
     if width == 0 || height == 0 {
         return Err(imaging_failure(
             operation,
@@ -480,7 +486,9 @@ fn bounds(width: u32, height: u32, operation: &str) -> Result<(usize, usize)> {
 ///
 /// A stride *below* one row of pixels is a driver contradicting itself; believing it
 /// would read one row's data as the next row's.
-fn stride_of(bytes_per_line: u32, row_bytes: usize, operation: &str) -> Result<usize> {
+///
+/// `pub(crate)` for [`geometry`]'s reason.
+pub(crate) fn stride_of(bytes_per_line: u32, row_bytes: usize, operation: &str) -> Result<usize> {
     if bytes_per_line == 0 {
         return Ok(row_bytes);
     }
@@ -501,7 +509,9 @@ fn stride_of(bytes_per_line: u32, row_bytes: usize, operation: &str) -> Result<u
 
 /// The bytes a plane occupies: full strides for every row but the last, which needs only
 /// its useful bytes. Padding after the final row is not something a driver owes us.
-fn plane_bytes(stride: usize, rows: usize, row_bytes: usize) -> Option<usize> {
+///
+/// `pub(crate)` for [`geometry`]'s reason.
+pub(crate) fn plane_bytes(stride: usize, rows: usize, row_bytes: usize) -> Option<usize> {
     let full = stride.checked_mul(rows.checked_sub(1)?)?;
     full.checked_add(row_bytes)
 }

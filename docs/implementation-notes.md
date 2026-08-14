@@ -14509,3 +14509,254 @@ about the observer.
 **Amend this note if** the failure is seen again on a tree carrying this repair, which would
 mean the racy `still_running()` was reporting something real and the diagnosis above is wrong
 about which of the two observations was late.
+
+## N105 — The imaging crate's copy of `closed_vocabulary!` deleted itself, three phases after the condition it named came true
+
+**Doc:** rubric **A5** (one home per law) and AGENTS' "One home per law (design §2.10) … A
+second copy or a bypass is a defect"; `crates/schema/src/vocabulary.rs`'s own header, which
+records the same thing happening once already. Recorded 2026-08-14, from P6b.
+
+**The condition, written by the copy itself.** `crates/imaging/src/vocabulary.rs` was a
+verbatim transcription of `webcam-handler-schema`'s `closed_vocabulary!`, and its module doc
+did not defend it — it filed it:
+
+> **This is a transcription of `webcam-handler-schema`'s `closed_vocabulary!`**, which is
+> `pub(crate)` there and therefore unreachable from this crate. A second copy of a law is a
+> rubric A5 finding, and this one is filed rather than defended: the fix is for
+> `webcam-handler-schema` to export the macro (`#[macro_export]`, or a `pub mod vocabulary`),
+> after which this file deletes itself and `crate::decode::SourceFormat` uses the one home.
+
+**True:** the condition had been met at **P3a** and nobody noticed, which is three phases of
+work ago. P3a exported the macro —
+`schema::vocabulary::closed_vocabulary` is `#[macro_export]`ed and re-exported, and schema's
+own header records that `webcam-handler-fake` carried an identical copy with an identical
+self-deleting note "which is what P3a did rather than land a third copy of a law".
+`crates/backends/fake/src/fault.rs` and `crates/engine/src/store.rs` have imported it from
+the one home ever since. So for the whole of P3b–P6a this workspace had **two** copies of the
+generator, one of them carrying a note describing precisely why it should not exist, and
+nothing in the suite could say so.
+
+**What P6b did:** deleted `crates/imaging/src/vocabulary.rs`, dropped its `mod` declaration,
+and pointed `imaging::decode::SourceFormat` at `schema::vocabulary::closed_vocabulary`. The
+two vocabularies in `imaging::avi` that also used it — `CapReached` and `IntervalSource` —
+did not need re-pointing, because they moved to `schema::video` in the same change for their
+own reasons (note **N106**). Every generated `ALL` still exists and every walk over one still
+compiles, which is what the workspace suite says.
+
+### Why nothing caught it, and what would have
+
+Nothing could. The claim is "this file should not exist once another file changed", which is
+not a value any test sees, and the two copies were byte-identical so no behaviour differed.
+The mechanisms this repository has for exactly this shape are gates —
+`avi-reparse-is-independent.sh` is a `grep` over `use` statements for the same reason — and
+none was written here because the copy was expected to be short-lived.
+
+**The cheap version exists and was not taken**: a `#[deprecated]` on the copy, or a gate
+counting `macro_rules! closed_vocabulary` across the tree and requiring exactly one. The
+second is three lines of shell and would have gone red the day P3a landed. It is not being
+added now, and that is a decision rather than an omission: with the copy deleted the
+population is one file, and a gate whose subject is a file that no longer exists is a gate
+that can only ever fail on a diff somebody is already reading. What carries it instead is
+that the copy is *gone* — a third copy would have to be typed out, and the macro is exported,
+so there is no longer a reason to.
+
+**Amend this note if** a second copy of any `macro_rules!` law appears again, at which point
+the population is two and the counting gate is worth its three lines.
+
+## N106 — A Y4M header cannot be rewritten at close, so that container declares the negotiated interval and never a measured one
+
+**Doc:** design **D7**'s CFR carve-out ("AVI is a constant-frame-rate container and cameras
+are not: the header's rate is the negotiated frame interval, rewritten at close to the
+measured mean interval") and its raw fallback ("Y4M … for YUYV/GREY cameras and pipeline
+use"); the notes' **Expected usage item 10** ("frame timing is the payload"); AGENTS' "a claim
+about a device without a probe behind it is marked `declared`". Recorded 2026-08-14, from P6b.
+
+**Believed** — by the shape of the code, if not by anybody out loud — that what D7 says about
+the AVI header generalises to whatever container P6b added: a recording measures its own mean
+frame interval and the file says so.
+
+**True:** it generalises to AVI because AVI's rate lives in fixed-width binary fields.
+`avih.dwMicroSecPerFrame` and `strh.dwScale` are four bytes each at known offsets, so
+`AviWriter::finish` seeks back and overwrites them and the file's length does not move. **A
+Y4M header is one line of variable-width text written before the first frame.**
+`F1000000:33333` is fourteen bytes and `F1000000:133333` is fifteen, so the same rewrite means
+either rewriting the whole file behind the header — a copy of the entire recording, which for
+this container is gigabytes — or writing the ratio zero-padded to a fixed width and patching
+the digits in place.
+
+### The padded-field option, and why it is `declared` rather than taken
+
+Zero-padding is the only cheap version, and this project has **not measured** whether it
+works. Marked `declared` in the repository's sense, with the evidence stated exactly:
+
+- the YUV4MPEG2 format description gives `F<numerator>:<denominator>` as decimal digits and
+  says nothing about leading zeros either way;
+- no parser in this project's dependency set, and no player on this desk, has been driven
+  with `F0001000000:0000033333`;
+- the one decoder that was read — the `y4m` crate's, which this build does not link (note
+  **N107**) — parses the ratio with `str::parse::<usize>()`, which accepts leading zeros. That
+  is one implementation, read rather than run, and it is the *least* interesting one because
+  it is not what a consumer of these files would use.
+
+**What would make it `measured`:** the ffprobe/mpv oracle rung docs/7 **P6d** is about to
+build. A file whose `F` field is zero-padded, handed to a third party that has never read our
+code, answering whether it reads back the rate we meant. That is a two-line addition to a rung
+that will exist anyway, which is exactly why the padding is not being guessed at now.
+
+### What the container does instead, and what it costs
+
+A Y4M take declares the **negotiated** interval — or the provisional placeholder when the
+negotiation named none — and its `RecordingSummary::interval_source` is `Negotiated` or
+`Provisional` and **never** `Measured`. The alternative was available and is worse: reporting
+`Measured` on a header that carries the negotiated number would be exactly the defect item 10
+names, *"a recording that silently reports nominal fps while delivering something else"*, with
+the lie moved from the header into the label on the header. `IntervalSource` exists to keep
+those apart; a container that could not honour it would have made the vocabulary decorative.
+
+The cost is smaller than it looks, and the shape of the summary is why. `span_us` and
+`frames_written` are measurements in **both** containers, and `RecordingSummary::
+measured_interval_us` is the subtraction — so an agent asking "did this take 200 ms or 2 s" is
+answered from observed numbers whichever container it used. What differs is only whether the
+*file alone*, handed to a player with no summary beside it, plays at the rate it was captured
+at. For the primary consumer, which reads the answer document, that is not the question being
+asked; for the owner double-clicking a `.y4m`, it is, and this note is where that is admitted.
+
+`imaging::video::tests::only_the_avi_container_ever_reports_a_measured_interval` is the
+assertion, and it is written as a walk over `VideoFormat::ALL` with a per-container arm, so a
+third container has to answer the question rather than inherit an answer. A hand-applied mutant
+that made the Y4M sink report `Measured` was watched failing it.
+
+**Retire this note if** P6d's oracle reads a padded `F` field correctly on every target it
+covers, at which point the Y4M sink can patch its header at close exactly as the AVI muxer
+does, `IntervalSource::Measured` becomes reachable in both containers, and the per-container
+arm in that test collapses to one branch.
+
+## N107 — The `y4m` crate expresses the format and not the sink, so P6b writes 51 lines instead of linking 175
+
+**Doc:** design **§2.8**'s dependency registry (`y4m = "0.8.0"`, pinned for this module) and
+**§2.1** ("Y4M writer" in `webcam-handler-imaging`); AGENTS' *"Adopting a crate that clears
+that bar is not an escalation … judge the licence and whether it looks solid, take it, and say
+what you concluded"*. Recorded 2026-08-14, from P6b. **This is the deviation, so it is stated
+with the measurement rather than the preference.**
+
+**Believed:** that `y4m 0.8.0` was the Y4M writer, because §2.8 pinned it for exactly this and
+because it expresses everything the *format* side of D7 asks for — `Colorspace::Cmono`,
+`Colorspace::C422`, `Colorspace::C420`, and an encoder generic over any `std::io::Write`. All
+three of those are true; the crate was read in full before anything was written.
+
+**True:** it expresses the format and not the sink, and the sink is where this module's
+obligations are. Four findings, in the order they bite:
+
+1. **`Encoder<W>` takes the writer by value and never gives it back.** No `into_inner`, no
+   `get_ref`, no `get_mut`, no accessor of any kind, and no `flush`. So a recording built on it
+   **cannot flush its sink at close**. `AviWriter::finish` does, and a `Recorder` with one arm
+   that flushes and one that does not is a landmine for any caller holding a `BufWriter`. The
+   only workarounds are a `Drop` impl that swallows the flush's error — which is the
+   skip-that-reads-as-pass this project refuses — or wrapping the sink in an
+   `Arc<Mutex<W>>` adapter the encoder then owns for ever, which costs a lock per write and
+   still cannot hand the sink back.
+2. **It reports nothing about what it wrote.** `RecordingSummary::bytes_written` and the size
+   cap's projection both need a byte count, and the header's length is the crate's to know.
+   Counting it means the same shared adapter as (1); deriving it means predicting the crate's
+   own `write!` output, which is a copy of a dependency's formatting in our arithmetic.
+3. **The header's colorspace tag is a `Debug` derive.** `write_header` emits it as
+   `write!(writer, " {:?}", self.colorspace)`, so the on-disk format contract is the derived
+   `Debug` of a `#[non_exhaustive]` enum. It is correct today only because `Cmono`, `C422` and
+   `C420` happen to be spelled the way the format spells them. A frozen byte fixture over that
+   is a fixture that can go red on a patch release for a reason that is nobody's defect.
+4. **Its decoder is not an independent reader.** `Decoder` ships in the same file as `Encoder`
+   and shares `get_plane_sizes` with it, so it agrees with the encoder by construction on
+   exactly the questions a re-parse is for. docs/7 P6a's standard — "an independent re-parse
+   path that is **not** the writer's code" — is not met by it, so P6b was going to own a parser
+   either way.
+
+### The measurement
+
+| | code lines |
+|---|---|
+| `y4m 0.8.0`'s encoder half (`Ratio`, `Colorspace`, `get_plane_sizes`, `EncoderBuilder`, `Encoder`, `encode`) | 175 |
+| Ours, doing the same job (`MAGIC`, `FRAME_MARKER`, `MICROS_PER_SECOND`, `Planar::tag`, `header_bytes`, `put`/`put_marker`/`put_planes`) | **51** |
+| `crates/imaging/src/y4m.rs`, product code, whole module | 535 |
+| … of which is the sink rather than the format: caps, plane extraction from V4L2 layouts, geometry and length validation, poisoning, the summary | 484 |
+
+So the crate would have supplied 51 of 535 lines and taken the flush, the byte count and the
+header's spelling with it. The ratio is the finding: **this module is 90% sink and 10%
+format**, and the dependency covers the 10%.
+
+That the format half is *fourteen lines of `write!` and a six-byte marker* is not a criticism
+of the crate — it is what makes YUV4MPEG2 the format it is, and it is the same argument D7 L0
+already made for owning the AVI muxer ("the format is frozen, so we own ~300 lines rather than
+linking a codec stack whose licence we could not ship"), at a twentieth of the size. Note
+**N99** re-priced that estimate for AVI; this is the same reasoning arriving at the opposite
+end of the scale.
+
+### What is *not* being changed
+
+`y4m = "0.8.0"` stays in `[workspace.dependencies]` and in design §2.8's registry. Removing a
+line from the registry is moving the bar, which AGENTS makes the owner's; and the entry is now
+what this note is attached to. No crate declares it, so it does not enter `Cargo.lock` and the
+lockfile is unchanged by P6b.
+
+**Amend this note if** `y4m` grows an accessor for its writer (`into_inner`, or `Encoder:
+:flush`) and stops deriving its header text, at which point findings 1–3 are gone, the trade
+is 51 lines against a maintained dependency, and it should be re-argued rather than inherited.
+Finding 4 would survive either way, and the hand-written parser with it.
+
+## N108 — A neutral-chroma fixture cannot tell Cb from Cr, and a swapped-plane mutant passed all 1261 tests
+
+**Doc:** AGENTS' "Writing tests" — *"Construct the buggy implementation first and watch it
+fail — at workspace scope"*; rubric rule 2. Recorded 2026-08-14, from P6b, and it is recorded
+because the rule **worked** and would not have been believed otherwise.
+
+**Believed:** that a round trip comparing every byte of every plane against an independently
+computed expectation constrains the plane extraction. It reads like the strongest kind of
+assertion there is.
+
+**True:** it constrains nothing about *which* plane is which when every chroma sample is the
+same number. `imaging::fixtures::pack_yuyv` and `pack_nv12` write `NEUTRAL_CHROMA` — 128 — into
+every Cb and every Cr, which is right for the decode round trips they were built for and fatal
+here. The first mutant P6b applied swapped `u` and `v` in `fill_c422`:
+
+```
+planes.u.push(*v);
+planes.v.push(*u);
+```
+
+and the **entire workspace suite passed**: 1261 tests run, 1261 passed. Every byte the round
+trip compared was 128 either way. On a real camera that mutant is every recorded colour
+inverted about the neutral axis — reds become blues — in a file whose whole claim is that its
+samples are the device's own.
+
+**The repair** is in `imaging::y4m`'s tests: three generators give luma, Cb and Cr **disjoint
+value ranges** and make every sample a function of its own position, with three different
+primes as the moduli so a plane shifted by one row or one column is a plane full of wrong
+numbers rather than one that happens to match. With that fixture the same mutant fails
+immediately, and so do the other seven P6b applied.
+
+### The half that is *not* fixed, and is reported rather than repaired
+
+**The same blindness exists in `imaging::decode`, and P6b did not touch it.**
+`a_gray_fixture_survives_the_yuyv_round_trip`, `a_gray_fixture_survives_the_nv12_round_trip`
+and `yuyv_limited_range_extremes_land_on_black_and_white` all run on neutral chroma, and
+`decode_yuyv`/`decode_nv12` hand `yuv`'s converter a `YuvPackedImage`/`YuvBiPlanarImage` whose
+Cb/Cr interpretation nothing in this workspace asserts. A build that fed the chroma planes to
+that crate the wrong way round would produce colour-inverted photographs and **no test in this
+repository would notice** — the metrics are computed on luma, and luma is unaffected.
+
+It is not repaired here for two reasons and neither is that it does not matter. The fix is a
+colour fixture plus an expectation stated in BT.601 rather than in the conversion library's own
+terms, which is a decode-side piece of work with its own argument about where the expected RGB
+comes from; and P6b's mandate is the recording path, where the defect class was found and is
+now closed. It is written down so the next person to open `imaging::decode` finds it as a task
+rather than as a surprise.
+
+**The class, stated so it is recognisable next time.** *A fixture whose values are constant
+along a dimension cannot constrain anything that permutes that dimension.* Neutral chroma is
+the obvious instance; a square fixture that cannot tell a transpose from an identity, a
+grayscale one that cannot tell a channel swap, and a fixture whose rows are all equal and
+therefore cannot tell a vertical flip are the same shape. The test to be suspicious of is one
+that compares whole buffers and still passes when two of them are exchanged.
+
+**Amend this note if** `imaging::decode`'s chroma orientation gets an assertion, which would
+close the half this entry leaves open and turn it into a finding with a date rather than an
+open task.

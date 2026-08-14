@@ -206,6 +206,31 @@
 #   is that its whole suite drives a `ScriptedCamera` with an exhaustive fault menu, so
 #   "the resume asks for the stream that was suspended" is a claim a mutant can break and a
 #   test can catch without a device.
+# ## What P6b widened, and the one honest qualification on it (2026-08-14)
+#
+# `crates/imaging/src/y4m.rs` and `crates/imaging/src/video.rs` — the D7 raw fallback and the
+# one entry point both containers are reached through. They are in for the reason
+# `avi/write.rs` one directory along is in: `Y4mWriter` takes a `W: Write` rather than values,
+# which would normally put it with `engine`'s shell, and what makes it decidable is that its
+# whole suite drives it over a `Cursor<Vec<u8>>` and a scripted `ShortSink` with a budget. So
+# "the size projection counts the `FRAME` marker", "the chroma plane is half-height at 4:2:0"
+# and "a Y4M take never claims a measured interval" are claims a mutant can break and a test
+# can catch with no rig. `video.rs` is thinner — an exhaustive match per method, a pairing
+# check and a compile-time ceiling — and is in because a survivor there is a unit test
+# somebody can write today.
+#
+# `crates/schema/src/video.rs` is deliberately **out**, and the exclusion is the ordinary
+# `crates/schema` one rather than a new argument: it is derives, data and two exhaustive
+# matches over a two-variant enum, and its laws are asserted by `imaging::video`'s pairing
+# walk, which is in scope. `VideoFormat::resolve` is the one fold in it that computes, and the
+# same walk drives both of its branches.
+#
+# **The floor has not been run against any of these.** P6b added them to the scope and
+# stopped there; the first run over them is owed, and note **N101**'s precedent says to expect
+# it to find something. The eight mutants P6b applied by hand were all killed (notes **N106**,
+# **N107**, **N108** record what they were and what one of them found), but eight
+# hand-chosen mutants is not a floor — the whole point of this job is the mutations nobody
+# thought of.
 examine_globs = [
     "crates/api/src/codes.rs",
     "crates/api/src/photo.rs",
@@ -224,6 +249,8 @@ examine_globs = [
     "crates/imaging/src/avi/read.rs",
     "crates/imaging/src/avi/write.rs",
     "crates/imaging/src/metrics.rs",
+    "crates/imaging/src/video.rs",
+    "crates/imaging/src/y4m.rs",
 ]
 
 # AGENTS.md rule 2: "Mutations verify at workspace scope." A mutant that only the

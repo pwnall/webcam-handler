@@ -12,6 +12,7 @@
 //! | [`control`] | the control model — represent, don't reject (D2) |
 //! | [`camera`] | camera identity, grouping, and the format tree (D1) |
 //! | [`capture`] | stream requests, negotiated results, frames, settle policy (D5/D6) |
+//! | [`video`] | the recording answer and D7's container-to-pixel-format pairing |
 //! | [`pairing`] | the declared auto/manual table and its provenance (D3) |
 //! | [`snapshot`] | snapshot/restore vocabulary and ordering (D4) |
 //! | [`session`] | calibration session state (D8/D9) |
@@ -56,6 +57,7 @@ pub mod session;
 pub mod slug;
 pub mod snapshot;
 pub mod time;
+pub mod video;
 
 pub use backend::{BackendKind, Camera, CameraBackend, HotplugEvent, HotplugWatch};
 pub use camera::{CameraFingerprint, CameraId, CameraInfo, PixelFormat};
@@ -75,6 +77,7 @@ pub use report::{
 pub use session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 pub use snapshot::{RestoreReport, Snapshot};
 pub use time::Stamp;
+pub use video::{CapReached, IntervalSource, RecordingSummary, VideoFormat};
 
 /// The version of this crate, for provenance blocks and `--json` output.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
