@@ -892,11 +892,22 @@ fn a_declined_rung_names_what_was_missing_and_counts_what_it_did_not_run() {
 #[test]
 fn node_is_never_a_build_dependency() {
     // Design §3.1 and §2.8 both say it, and it is the sort of claim that stays true right up
-    // until somebody adds a `build.rs` that shells out to a bundler. **This workspace runs no
-    // build script at all** — the V4L2 bindings are committed bindgen output rather than
-    // generated at build time — so the strongest available statement is also the simplest one:
-    // there is nothing for `cargo build` to run, in any member, so there is nothing that could
-    // reach for node.
+    // until somebody adds a `build.rs` that shells out to a bundler. What this test can say is
+    // therefore about *members*: no crate in this workspace declares a build script or a
+    // `[build-dependencies]` table, so `cargo build` runs no code of **ours** before this claim
+    // could be checked, and there is nothing of ours that could reach for node.
+    //
+    // Its honest limit is one level down the graph, and the limit is not hypothetical: 47
+    // packages in the resolved graph do run build scripts, `v4l2-sys-mit`'s among them, which
+    // is the `bindgen` run over the kernel UAPI headers that `## Building` installs libclang
+    // for \[PF:10\]. So "this workspace runs no build script at all" would be false, and a
+    // pinned allowlist of the 47 would churn on every dependency bump while proving nothing
+    // about node in particular. So a *dependency* whose build script reached for node is a gap
+    // this test does not cover, and nothing else covers it either: `.github/workflows/ci.yml`
+    // installs no node, but GitHub's Ubuntu runner image ships one anyway for its own actions,
+    // so a green CI run is not the witness it looks like. The gap is named here rather than
+    // papered over, because the alternative — widening the walk to the whole graph — buys a
+    // list that goes red for the wrong reason every time `serde` bumps.
     //
     // The population is derived rather than listed: every `Cargo.toml` under the workspace,
     // found by walking it, with the count asserted non-zero so a walk that found nothing cannot
