@@ -100,12 +100,33 @@
 //!    defaults this listener to loopback, where there is no intermediary; note **N79** names
 //!    the reverse-proxy shape as the thing that would change that, and it would change this
 //!    with it.
-//! 4. **This daemon's own logs — and that one is closed here.** jsonrpsee's service logs the
-//!    whole `http::Request` at `TRACE` on its own target, request line included, so
-//!    `RUST_LOG=trace` would have written the token into a journal. The Unix socket never
-//!    could: its request target is `/`. `without_the_query` strips the query string from
-//!    the request **after** the gate has read it and before the service sees it, which costs
-//!    one function and removes a whole class rather than documenting it.
+//! 4. **This daemon's own logs — and that one is closed here, in both of the shapes the gate
+//!    accepts.** jsonrpsee's service logs the whole `http::Request` at `TRACE` on its own
+//!    target — the `Debug` of the request line **and of the header map** — so `RUST_LOG=trace`
+//!    decides whether the key to somebody's camera is written into a journal that outlives the
+//!    process. Under systemd that journal is persistent and readable by `systemd-journal` and
+//!    `adm`, which is exactly the multi-user boundary D11's "loopback alone is not an auth
+//!    boundary" is about, and `/rpc` is the route that *drives* the camera. The Unix socket
+//!    never could: its request target is `/` and nothing that speaks to it presents a
+//!    credential at all.
+//!
+//!    `without_the_credential` takes **both** forms off the request, after the gate has read
+//!    it and before the service sees it. That it is both is P5's adversarial review's finding,
+//!    and the way it was missed is worth keeping rather than quietly fixing: this residual was
+//!    written when the request was rewritten by a function that took a [`Uri`] — and **a `Uri`
+//!    cannot express a header**, so no fixture in this module could reach the half that was
+//!    missing, and the test that covered it was named "the credential", singular, about a
+//!    function that handled one of two. Measured at `RUST_LOG=trace` before the repair:
+//!    `GET /rpc?token=…` arrived at the log as `uri: /rpc` with `{host, accept}` and
+//!    `GET /rpc` with `Authorization: Bearer …` arrived as
+//!    `headers {"authorization": "Bearer <the whole token>"}`. The signature is the repair and
+//!    the extra line is a consequence of it.
+//!
+//!    `crates/daemon/tests/http.rs` is where that can go red: it drives both forms at a real
+//!    socket and reads this process's own `tracing` output back through a global subscriber,
+//!    because the claim is about bytes the daemon **writes** rather than about a value it
+//!    holds — and because the line is written from a task `axum::serve` spawned, where a
+//!    thread-local capture sees nothing and passes.
 //!
 //! **What this endpoint's shape said about note N76's question, kept now that the question is
 //! retired.** N76 left two candidates for how the client's ES modules would authenticate, one
@@ -137,7 +158,7 @@ use std::sync::Arc;
 use axum::BoxError;
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, Uri};
+use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use jsonrpsee_server::{
@@ -196,11 +217,23 @@ pub(super) struct Mounted {
 /// The bounds come from [`crate::server::wire_bounds`], the same function [`crate::uds`]
 /// reads, so a browser's WebSocket runs under this project's numbers rather than jsonrpsee's —
 /// [`schema::limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION`] and
-/// [`schema::limits::WS_MESSAGE_BUFFER_CAPACITY`] included. The `ConnectionGuard` behind
-/// [`schema::limits::DAEMON_MAX_CONNECTIONS`] is *per builder*, so this transport gets a bound
-/// of its own rather than sharing the Unix socket's: a browser that leaks sockets cannot
-/// exhaust the transport `webcam-handler-client` uses, which is the direction D11's "opt-in"
-/// argues for everywhere else.
+/// [`schema::limits::WS_MESSAGE_BUFFER_CAPACITY`] included.
+///
+/// **What this builder's `ConnectionGuard` is, said correctly.** It is *per builder*, so this
+/// transport counts separately from the Unix socket — and what it counts is **in-flight
+/// requests**, not connections: the permit is taken inside `TowerService::call` and released
+/// with the response, which [`crate::uds`]'s header measured (128 idle connections were all
+/// accepted with the cap at 32). This doc used to read that as "this transport gets a bound of
+/// its own … a browser that leaks sockets cannot exhaust the transport `webcam-handler-client`
+/// uses", which was two claims resting on one guard that only carries the first of them; P5's
+/// adversarial review found the second one holding up nothing at all, because
+/// [`super::listener::serve`] was a bare `axum::serve` with no accept-time bound.
+///
+/// It is true now, and it is [`super::listener`]'s to make true: that module takes an owned
+/// permit at **accept**, out of a semaphore of its own over
+/// [`schema::limits::DAEMON_MAX_CONNECTIONS`], exactly as [`crate::uds`] does for the socket
+/// this daemon always serves. Two counters, one per transport, which is the direction D11's
+/// "opt-in" argues for everywhere else.
 pub(super) fn mount(methods: Methods) -> Mounted {
     let (stop, ending) = stop_channel();
     let builder = Server::builder()
@@ -233,8 +266,10 @@ pub(super) fn mount(methods: Methods) -> Mounted {
 struct Wire {
     /// Cloned per connection. The clone shares the `ConnectionGuard` and the connection-id
     /// counter, which is why it is held rather than rebuilt: a builder made per request would
-    /// hand out a fresh semaphore every time, and the connection bound would be a number
-    /// nothing counted.
+    /// hand out a fresh semaphore every time, and the request bound in
+    /// [`crate::server::wire_bounds`] would be a number nothing counted. (What bounds
+    /// *connections* on this transport is [`super::listener`]'s accept-time permit — see
+    /// [`mount`].)
     builder: WireServiceBuilder,
     /// The one registration this process has. Cloned per connection; the clone is an `Arc`
     /// bump, so every connection answers out of the same map the Unix socket answers out of.
@@ -274,16 +309,7 @@ async fn upgrade(State(wire): State<Arc<Wire>>, request: Request) -> Response {
     // The credential is stripped **here**, after the gate has read it and before the service
     // logs it — see this module's header, residual 4. The gate is a `route_layer` over this
     // route, so it has already run by the time this handler is called.
-    let request = match without_the_query(request.uri()) {
-        Some(target) => {
-            let mut request = request;
-            *request.uri_mut() = target;
-            request
-        }
-        None => request,
-    };
-
-    match service.call(request).await {
+    match service.call(without_the_credential(request)).await {
         Ok(answer) => answer.map(axum::body::Body::new).into_response(),
         Err(err) => unavailable(&err),
     }
@@ -310,19 +336,58 @@ fn unavailable(err: &BoxError) -> Response {
         .into_response()
 }
 
+/// The same request with **every** credential it presented taken off it — the query string and
+/// every `Authorization` header — for the wire surface to log and answer.
+///
+/// It takes and returns the [`Request`] because that is the shape of the rule, and the
+/// signature is the load-bearing half of this repair rather than a tidying of it: what stood
+/// here took a [`Uri`], and a `Uri` cannot express a header, so the module's whole fixture
+/// vocabulary was unable to state the case that was leaking (this module's header, residual 4).
+/// A function that can be handed both shapes is one a test can be wrong about **out loud**.
+///
+/// **Nothing downstream needs either of them.** The gate is a `route_layer` over this route
+/// (`super::listener::router`), so it has read the credential and decided before this handler
+/// runs; jsonrpsee performs no authorization of any kind and never reads `Authorization`; and
+/// the value it does read out of an upgrade — the soketto handshake's `Sec-WebSocket-Key` and
+/// friends — is untouched here. So this is a removal and not a redaction.
+///
+/// **`remove` and not `HeaderValue::set_sensitive`.** The `http` crate offers a flag that makes
+/// a value's `Debug` print `Sensitive`, which would close the *rendering* this residual is
+/// about and leave the secret in the request for everything else — a middleware added later, a
+/// jsonrpsee that one day echoed a header, a panic payload. Removing the value is the property
+/// worth having: after this line the credential is not in the request at all, so no future
+/// reader can be careless with it.
+///
+/// It is unconditional, and that is deliberate: there is no branch here to invert, and a
+/// request that presented nothing loses nothing. `HeaderMap::remove` takes the entry **and
+/// every extra value on it**, which matters because [`super::gate`] admits a request carrying
+/// two `Authorization` headers when both verify — a repair that took only the first would leave
+/// the second in the log for the one client shape the gate went out of its way to allow.
+fn without_the_credential(mut request: Request) -> Request {
+    if let Some(target) = without_the_query(request.uri()) {
+        *request.uri_mut() = target;
+    }
+    request.headers_mut().remove(header::AUTHORIZATION);
+    request
+}
+
 /// The same request target with its query string removed, or `None` when there is nothing to
 /// remove and nothing this can safely rebuild.
 ///
-/// A pure function over a [`Uri`] rather than four lines inside [`upgrade`], so the case that
-/// cannot be rewritten has somewhere to be asserted. Two `None`s, and they are different
-/// facts:
+/// Half of [`without_the_credential`]'s job and never the whole of it — see that function for
+/// why the distinction is written down rather than left to a reader. A pure function over a
+/// [`Uri`] rather than four lines inside its caller, so the case that cannot be rewritten has
+/// somewhere to be asserted. Two `None`s, and they are different facts:
 ///
-/// - **no query at all**, which is every request the page's own client makes with an
-///   `Authorization` header, and where rewriting would be a copy for nothing;
+/// - **no query at all**, which is every request that carries its credential in a header — the
+///   form this daemon's own `401` recommends, and the one a client that can set headers sends
+///   (the page cannot: `super::gate`'s header has what each form is for). Rewriting such a
+///   target would be a copy for nothing;
 /// - **a target with no path to stand on**, which is the authority-form request line
 ///   `CONNECT host:443` — [`Uri::path`] answers `""` for it and `""` is not a URI. Leaving it
 ///   alone is right rather than merely safe: there is no query string in an authority-form
-///   target, so there is no credential to strip.
+///   target, so there is no credential in *this* half to strip, and the header half is taken
+///   off it either way.
 ///
 /// Only the path is kept. The scheme and authority of a request target this daemon receives
 /// are absent in origin-form (which is what every browser sends), and jsonrpsee routes on
@@ -341,31 +406,136 @@ mod tests {
         text.parse().expect("a request target the tests wrote")
     }
 
+    /// The secret every request below presents, in whichever form the case is about.
+    ///
+    /// Short and obviously not a real token: what is asserted is that a *substring the client
+    /// sent* is gone from the request, and a 64-digit fixture would say nothing more.
+    const SECRET: &str = "c0ffee";
+
+    /// A request at `target` presenting `credentials` as `Authorization` headers, in order.
+    ///
+    /// A list rather than one value, because two `Authorization` headers is well-formed HTTP
+    /// and [`super::super::gate`] admits such a request when both verify — so it is a shape
+    /// this route really can be handed. The `Host` and the handshake header are on every
+    /// request this builds: they are what makes the "only the credential went" half of the
+    /// claim below assertable.
+    fn presenting(target: &str, credentials: &[&str]) -> Request {
+        let mut request = Request::builder()
+            .method("GET")
+            .uri(target)
+            .header(header::HOST, "127.0.0.1:9")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+        for credential in credentials {
+            request = request.header(header::AUTHORIZATION, *credential);
+        }
+        request
+            .body(axum::body::Body::empty())
+            .expect("a request the tests wrote")
+    }
+
+    /// The request as the wire surface's `TRACE` line renders it.
+    ///
+    /// `Debug`, and not a walk of the parts, because `Debug` is literally what jsonrpsee logs
+    /// (`tracing::trace!(target: LOG_TARGET, "{:?}", request)`) and therefore literally what
+    /// this residual is about. A test that inspected `uri()` and `headers()` separately would
+    /// be asserting about the two places a token is known to hide today rather than about the
+    /// string that reaches the journal.
+    fn as_logged(request: &Request) -> String {
+        format!("{request:?}")
+    }
+
     #[test]
-    fn the_credential_is_taken_off_the_target_the_wire_surface_is_handed() {
-        // The residual this closes is a token in a `RUST_LOG=trace` journal, so what is
-        // asserted is the *string*: the rewritten target does not contain the secret, in
-        // either of the shapes a client sends it (a bare token parameter, and one beside
-        // somebody else's).
-        let secret = "c0ffee";
-        for text in [
-            "/rpc?token=c0ffee",
-            "/rpc?camera=0&token=c0ffee",
-            "/rpc?token=c0ffee&token=c0ffee",
+    fn every_credential_the_gate_accepts_is_off_the_request_the_wire_surface_is_handed() {
+        // **The residual this closes is a token in a `RUST_LOG=trace` journal, and the gate
+        // accepts two forms**, so the population here is both of them and every combination
+        // this daemon will admit: the query parameter a `new WebSocket(url)` carries, the
+        // header a client that can set one sends, both at once (which the gate admits when
+        // they agree), and the duplicate-header shape it also admits. The predecessor of this
+        // test asserted the first row only — over a `Uri`, which cannot hold the other three —
+        // and every row below the first is what P5's review found being logged verbatim.
+        for (about, request) in [
+            ("the query form", presenting("/rpc?token=c0ffee", &[])),
+            (
+                "the query form beside somebody else's parameter",
+                presenting("/rpc?camera=0&token=c0ffee", &[]),
+            ),
+            ("the header form", presenting("/rpc", &["Bearer c0ffee"])),
+            (
+                "both forms at once, which the gate admits when they agree",
+                presenting("/rpc?token=c0ffee", &["Bearer c0ffee"]),
+            ),
+            (
+                "two headers, which the gate admits when they agree",
+                presenting("/rpc", &["Bearer c0ffee", "Bearer c0ffee"]),
+            ),
         ] {
-            let stripped =
-                without_the_query(&target(text)).expect("a target carrying a query string");
-            assert_eq!(stripped.path(), "/rpc", "{text}");
-            assert_eq!(stripped.query(), None, "{text}");
-            assert!(!stripped.to_string().contains(secret), "{text}");
+            let stripped = without_the_credential(request);
+            assert!(
+                !as_logged(&stripped).contains(SECRET),
+                "{about}: the wire surface would log {}",
+                as_logged(&stripped)
+            );
+            // …and the two mechanisms, named, so a failure says which half stopped working
+            // rather than only that the string is still there.
+            assert_eq!(stripped.uri().query(), None, "{about}");
+            assert_eq!(
+                stripped
+                    .headers()
+                    .get_all(header::AUTHORIZATION)
+                    .iter()
+                    .count(),
+                0,
+                "{about}: a credential the gate would have accepted is still on the request"
+            );
         }
     }
 
     #[test]
+    fn nothing_but_the_credential_is_taken_off_the_request() {
+        // The other direction, and it is not decoration: this route's whole job is to hand
+        // jsonrpsee a request it can *upgrade*, and the handshake is read off headers beside
+        // the one being removed. A repair that cleared the header map — or rebuilt the target
+        // as `/` — would pass the test above and answer every browser a `400`.
+        let stripped = without_the_credential(presenting("/rpc?token=c0ffee", &["Bearer c0ffee"]));
+
+        assert_eq!(stripped.method(), "GET");
+        assert_eq!(stripped.uri().path(), RPC_PATH);
+        assert_eq!(
+            stripped
+                .headers()
+                .get(header::HOST)
+                .map(|host| host.as_bytes()),
+            Some("127.0.0.1:9".as_bytes()),
+            "a header that is not a credential was taken off the request"
+        );
+        assert_eq!(
+            stripped
+                .headers()
+                .get("sec-websocket-key")
+                .map(|key| key.as_bytes()),
+            Some("dGhlIHNhbXBsZSBub25jZQ==".as_bytes()),
+            "the handshake this route exists to serve was taken off the request"
+        );
+    }
+
+    #[test]
+    fn a_request_that_presented_nothing_is_left_exactly_as_it_arrived() {
+        // The unconditional half, over the shape it is unconditional *for*: an anonymous
+        // request never reaches this handler (the gate refuses it), but a request in D11's
+        // token-less cell does, and there is no gate in front of it at all (note **N75**).
+        // Nothing to remove and nothing removed.
+        let untouched = without_the_credential(presenting("/rpc", &[]));
+
+        assert_eq!(untouched.uri(), &target("/rpc"));
+        assert!(!as_logged(&untouched).contains(SECRET));
+        assert_eq!(untouched.headers().len(), 2, "{:?}", untouched.headers());
+    }
+
+    #[test]
     fn a_target_with_nothing_to_strip_is_left_exactly_as_it_arrived() {
-        // The first `None`, and the reason it is a `None` rather than a copy: the page's own
-        // requests carry the token in a header, so most requests on this route have no query
-        // at all and rewriting them would be work for nothing.
+        // The first `None`, and the reason it is a `None` rather than a copy: a request whose
+        // credential is in a header has no query at all, so rewriting its target would be work
+        // for nothing — and the header half of the strip happens to it either way.
         assert_eq!(without_the_query(&target("/rpc")), None);
         assert_eq!(without_the_query(&target("/")), None);
     }

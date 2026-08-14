@@ -60,9 +60,34 @@
 //! suite, which is the one bug a "401 without, 200 with" pair is supposed to be unable to
 //! survive.
 //!
+//! ## The two things a credential can leak into, which are not the gate
+//!
+//! P5's adversarial review found both, and neither is reachable from a test that only asks what
+//! a route answers — so both are here, beside the gate they are about.
+//!
+//! **The daemon's own log.** jsonrpsee logs the whole `http::Request` at `TRACE` on its own
+//! target, request line *and headers*, so `RUST_LOG=trace` decides whether a credential this
+//! listener accepts ends up in a journal that outlives the run. `daemon::http::rpc` takes both
+//! forms off the request before the wire surface sees it, and
+//! [`neither_form_of_the_credential_reaches_the_daemons_own_log`] is what can go red on that —
+//! the one test in this workspace that reads `tracing` output back through a **global**
+//! subscriber, because the line is written from a task `axum::serve` spawned and a thread-local
+//! default cannot see it.
+//!
+//! **The descriptors behind the listener.** `limits::DAEMON_MAX_CONNECTIONS` exists so a client
+//! that leaks connections is refused rather than able to exhaust the daemon's file descriptors,
+//! "which on this process are also the camera's" — and jsonrpsee's cap of the same name is not
+//! that bound (`daemon::uds` measured it: 128 idle connections were all accepted with the cap at
+//! 32, because its permit is per in-flight *request*). So this transport takes a permit at
+//! accept, and [`connections_are_bounded_at_the_number_this_project_chose_on_this_transport_too`]
+//! is the TCP twin of `uds.rs`'s test of the same name: connections that send **nothing**, which
+//! is what makes the bound the only thing between a local process and the camera's descriptors —
+//! no byte is sent, so no gate, no route and no handler is ever reached.
+//!
 //! Nothing here waits on a clock: the client's read ends at end-of-file (`support/tcp.rs`),
 //! and the stop is a cancellation followed by a join.
 
+mod support;
 #[path = "support/tcp.rs"]
 mod tcp;
 
@@ -74,7 +99,14 @@ use daemon::http::{
     TokenRule, gate,
 };
 use daemon::shutdown::Shutdown;
+use daemon::uds::{self, SocketDir};
+use engine::paths::TempRuntimeDir;
+use engine::store::{LockProtocol, StoreLock, TempStore};
+use schema::limits;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::TcpStream;
 
+use crate::support::{body, call};
 use crate::tcp::Answer;
 
 /// A running web listener and the token it published, thrown away with the value.
@@ -164,7 +196,14 @@ impl Web {
             .expect("the listener is up")
     }
 
-    /// A `GET` presenting the token the way the page's own requests will (P5b).
+    /// A `GET` presenting the token the way a client that can set a header does — `curl`, a
+    /// script, and this suite, which is who `gate::REFUSAL` recommends it to.
+    ///
+    /// **Not the way the page does it**: P5c's client has no `Authorization` anywhere, because
+    /// the two things it reaches (`new WebSocket(url)` and `<img src>`) cannot carry one, so it
+    /// writes the token into a URL for both (`credential.js`, note **N74**). The daemon accepts
+    /// this form regardless, and it is a form a build can lose on its own, which is why the
+    /// suite drives it.
     async fn bearing(&self, target: &str, token: &str) -> Answer {
         tcp::get(
             self.bound(),
@@ -331,9 +370,10 @@ async fn every_asset_this_build_embeds_is_served_to_a_request_presenting_nothing
 #[tokio::test]
 async fn the_token_opens_a_gated_route_in_either_form() {
     // docs/9's "Token enforcement" row, at the routes the token is now for. Both forms, because
-    // they are two mechanisms a build can lose one at a time: the header is what code sends —
-    // the page's own `fetch` and its `<img>` — and the query parameter is what a URL can carry,
-    // which is all a `new WebSocket(url)` has (note **N74**).
+    // they are two mechanisms a build can lose one at a time: the header is what a client that
+    // can set one sends — `curl`, a script, the sentence this daemon's own 401 ends with — and
+    // the query parameter is what a URL can carry, which is all a `new WebSocket(url)` and an
+    // `<img src>` have, and therefore all P5c's client ever uses (note **N74**).
     //
     // "Past the gate" is asserted as an answer only the route behind it gives. `/rpc` answers
     // **405** to a `GET` that is not an upgrade, which is jsonrpsee's answer and could have come
@@ -443,7 +483,7 @@ async fn a_request_carrying_two_credentials_is_served_only_when_they_agree() {
             .await
             .status(),
         405,
-        "the page's own request, made from a URL that still carries the token"
+        "a scripted request presenting a header, sent at a URL that still carries the token"
     );
     is_the_refusal(
         &web.bearing(&with_token(RPC_PATH, &wrong), &secret).await,
@@ -693,6 +733,303 @@ async fn the_url_the_daemon_prints_carries_the_bound_port_and_opens_the_page() {
     );
 
     web.stop().await;
+}
+
+/// The daemon's **always-on** transport, started beside the opt-in one.
+///
+/// One test needs it, for one claim that cannot be made any other way:
+/// `limits::DAEMON_MAX_CONNECTIONS` is a bound *per transport* — `daemon::http::rpc` says so and
+/// D11's "opt-in" is the reason — so "a browser that leaks sockets cannot exhaust the transport
+/// `webcam-handler-client` uses" is a statement about two counters, and a suite with one socket
+/// cannot tell one counter from two.
+///
+/// It serves the same empty surface [`no_methods`] hands the web listener: what is being asked
+/// of it is whether it **answers at all** while the other transport is at its cap, and a
+/// registration with methods on it would not make that answer truer. `-32601` is what an empty
+/// registration says, and it is a document that crossed the socket both ways.
+struct Unix {
+    handle: uds::Serving,
+    dir: SocketDir,
+    _lock: StoreLock,
+    _store: TempStore,
+    _runtime: TempRuntimeDir,
+}
+
+impl Unix {
+    /// Bind a private socket directory and serve it. Must be called inside a runtime.
+    fn start() -> Unix {
+        let store = TempStore::new().expect("a state directory");
+        let lock = store
+            .store()
+            .lock(LockProtocol::HeldForLifetime)
+            .expect("nothing else holds a throw-away state directory");
+        let runtime = TempRuntimeDir::new().expect("a runtime directory");
+        let dir = SocketDir::prepare(&runtime.env()).expect("a fresh, private socket directory");
+        let listener = dir.bind(&lock).expect("nothing is in the way");
+
+        Unix {
+            handle: uds::serve(listener, no_methods()),
+            dir,
+            _lock: lock,
+            _store: store,
+            _runtime: runtime,
+        }
+    }
+
+    fn socket(&self) -> camino::Utf8PathBuf {
+        self.dir.socket_path()
+    }
+
+    /// Stop it the way `daemon::shutdown` does, and wait for the accept loop and its
+    /// connections — a listener nobody joined is a listener whose ending nothing waited for.
+    async fn stop(mut self) {
+        self.handle.stop();
+        self.handle
+            .stopped()
+            .await
+            .expect("the Unix socket was asked to stop");
+    }
+}
+
+/// Send one `GET` on a connection **the test already opened**, and read to end-of-file.
+///
+/// [`tcp::get`] connects, sends and parses in one call, and each of those is wrong here. The
+/// subject is what happens to a connection whose accept the test can reason about, so opening
+/// it and using it have to be two steps; and a connection that was *refused* has no HTTP answer
+/// to parse, which `Answer::of` panics on — turning the very outcome this test is looking for
+/// into a failure that reads like a broken helper.
+///
+/// `Connection: close` for `support::call`'s reason: the server ends the stream, so the read
+/// finishes at end-of-file rather than on a clock.
+async fn ask(stream: &mut TcpStream, bound: SocketAddr, target: &str) -> std::io::Result<String> {
+    let framed = format!(
+        "GET {target} HTTP/1.1\r\n\
+         Host: {bound}\r\n\
+         Connection: close\r\n\
+         \r\n"
+    );
+    stream.write_all(framed.as_bytes()).await?;
+    let mut answered = String::new();
+    stream.read_to_string(&mut answered).await?;
+    Ok(answered)
+}
+
+#[tokio::test]
+async fn connections_are_bounded_at_the_number_this_project_chose_on_this_transport_too() {
+    // **`uds.rs`'s `connections_are_bounded_at_the_number_this_project_chose`, on the transport
+    // that did not have the bound.** `limits::DAEMON_MAX_CONNECTIONS`'s doc says what it is for
+    // — "so a client that leaks connections is refused rather than able to exhaust the daemon's
+    // file descriptors, which on this process are also the camera's" — and jsonrpsee's
+    // `max_connections` is not it: that permit is taken per in-flight HTTP *request* and
+    // released with the response. `daemon::uds` measured that before this listener existed
+    // (with the cap at 32, 128 idle connections were all accepted and held) and grew an
+    // owned-permit semaphore at accept; the web listener was spawned as a bare `axum::serve`
+    // and never got one, which P5's adversarial review found.
+    //
+    // **Every held connection sends nothing, and that is the whole shape of the exposure.** A
+    // connection that sends no byte reaches no gate — `daemon::http::gate` is a `route_layer`,
+    // which is per request — takes no jsonrpsee permit, and matches no route, so it is refused
+    // by nothing and costs a descriptor for as long as it is held. It is also completely
+    // unauthenticated for the same reason: there is no credential in a connection that never
+    // spoke.
+    //
+    // **The connection past the bound is the one that asks for something**, because "refused"
+    // has to be observable: a bounded listener has already dropped it, so the request meets a
+    // closed socket, while an unbounded one answers it with the page. Both outcomes are
+    // immediate and neither waits on a clock — which is what makes this test go red rather than
+    // time out on the build it was written against.
+    let unix = Unix::start();
+    let web = Web::opened(false).await;
+    let bound = web.bound();
+    let cap = usize::try_from(limits::DAEMON_MAX_CONNECTIONS).expect("a small bound");
+
+    // At the bound, idle. `connect` returns when the handshake completes, and the kernel's
+    // accept queue is FIFO, so by the time the listener looks at the connection below it has
+    // taken a permit for every one of these — no ordering here is left to a scheduler.
+    let mut held = Vec::with_capacity(cap);
+    for connection in 0..cap {
+        held.push(
+            TcpStream::connect(bound)
+                .await
+                .unwrap_or_else(|err| panic!("connection {connection} was refused: {err}")),
+        );
+    }
+
+    // One past it. Either an immediate end-of-stream or a reset, depending on how far the write
+    // got before the daemon dropped its end — `uds.rs` says the same thing about the same
+    // moment. What matters is that no answer came back: the refusal *is* the connection going
+    // away, because there is no request yet for a `503` to be an answer to.
+    let mut past = TcpStream::connect(bound)
+        .await
+        .expect("the kernel completes a handshake into the listener's backlog");
+    match ask(&mut past, bound, "/").await {
+        Ok(answered) => assert!(
+            answered.is_empty(),
+            "a connection past this transport's bound was served: {status}",
+            // The status line alone: what is being said is that *something* came back, and a
+            // failure carrying the client's whole entry page buries that under the page.
+            status = answered.lines().next().unwrap_or_default()
+        ),
+        Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset, "{err}"),
+    }
+
+    // **And the daemon's always-on transport is untouched**, which is the half of
+    // `daemon::http::rpc`'s claim that was true and is worth keeping: the two bounds are two
+    // counters, so a browser that leaks sockets cannot cost `webcam-handler-client` the one
+    // socket this daemon always serves. A build that shared one semaphore between the
+    // transports passes every assertion above and fails here.
+    let answered = call(
+        &unix.socket(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"nothing_is_registered_here","params":{}}"#,
+    )
+    .await
+    .expect("the Unix socket is listening");
+    assert!(answered.starts_with("HTTP/1.1 200 OK"), "{answered}");
+    assert!(body(&answered).contains("-32601"), "{}", body(&answered));
+
+    // …and a connection the listener accepted *before* the bound was reached is still served,
+    // so what happened above is a bound and not a listener that stopped answering. This is also
+    // what says the held connections were accepted rather than left in the kernel's backlog.
+    let first = held.first_mut().expect("the bound is not zero");
+    let served = ask(first, bound, "/")
+        .await
+        .expect("a connection the listener accepted inside the bound");
+    assert!(served.starts_with("HTTP/1.1 200 OK"), "{served}");
+
+    web.stop().await;
+    unix.stop().await;
+}
+
+/// Everything this **process** logs, as bytes a test can read back.
+///
+/// Three things about it are load-bearing, and the first two are why
+/// `daemon::logging::capturing` — the workspace's other test writer — could not be used here
+/// even if an integration test could see it (it is `#[cfg(test)]` in the library, so it does
+/// not exist in the artifact this binary links).
+///
+/// **The subscriber is global, not thread-local.** The line under test is written by
+/// jsonrpsee's `TowerService::call`, which runs in the task `axum::serve` spawned for the
+/// connection — never on the thread that installed a default. `tracing::subscriber::set_default`
+/// captures the installing thread and nothing else, so a capture built that way would read an
+/// empty buffer and pass whatever the daemon logged. That is the shape of test this project
+/// bans by name, and it is the reason this is the only global subscriber in the workspace.
+///
+/// **The level is `TRACE`.** `tracing_subscriber::fmt`'s default is `INFO` and the event in
+/// question is a `TRACE` on somebody else's target, so a capture at the default would be the
+/// same passing-without-asserting test wearing a filter.
+///
+/// **It is installed once per process**, which under `cargo nextest` — what `just ci` runs — is
+/// once per test. Under `cargo test` the whole binary shares it, and the only consequence is
+/// that the buffer carries the other tests' lines as well: every assertion below is about *this*
+/// listener's secret, which is minted per run and appears in no other test's request.
+#[derive(Clone, Debug, Default)]
+struct CapturedLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CapturedLog {
+    /// Install this as the process's one subscriber, at `TRACE`, and hand it back.
+    fn installed_globally() -> CapturedLog {
+        let captured = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("this is the only test in this binary that installs a subscriber");
+        captured
+    }
+
+    /// Everything written so far, as an operator reading the journal would have.
+    fn rendered(&self) -> String {
+        let bytes = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+    type Writer = CapturedLog;
+
+    fn make_writer(&'a self) -> CapturedLog {
+        self.clone()
+    }
+}
+
+#[tokio::test]
+async fn neither_form_of_the_credential_reaches_the_daemons_own_log() {
+    // **The residual `daemon::http::rpc`'s header claims is closed, asserted at the only place
+    // it can be observed: the bytes the daemon writes.** jsonrpsee logs the whole
+    // `http::Request` at `TRACE` — `Debug` of the request line *and* the header map — so a
+    // daemon under `RUST_LOG=trace` decides, in this one line, whether the key to somebody's
+    // camera is in a journal that outlives the process. Under systemd that journal is
+    // persistent and readable by `systemd-journal` and `adm`, which is the multi-user boundary
+    // D11's "loopback alone is not an auth boundary" is about.
+    //
+    // **Both forms, because the gate accepts both and stripping one is not a fix.** The query
+    // form is what a `new WebSocket(url)` carries (note **N74**), and the header form is what
+    // this daemon's own `401` recommends (`daemon::http::gate::REFUSAL`) and what every client
+    // that can set headers sends — `curl`, a script, and this suite. Both are driven at a
+    // camera-bearing route, because a credential presented to an ungated one never reaches the
+    // wire surface that does the logging.
+    //
+    // **The non-vacuity assertion is the request's own `Host` header**, and it is what makes
+    // this test able to fail. The capture is global and at `TRACE` (see [`CapturedLog`]) for
+    // reasons that are easy to get subtly wrong, and every one of those mistakes produces an
+    // empty buffer, which satisfies "the secret is not in it". So the buffer has to be shown to
+    // carry the *sibling header* of the one being watched: `host` is in the same rendering of
+    // the same map, and a build that logs it logs `authorization` beside it unless something
+    // took that header off.
+    let captured = CapturedLog::installed_globally();
+    let web = Web::opened(false).await;
+    let secret = web.secret();
+    let bound = web.bound();
+
+    // Past the gate in both forms — 405 is jsonrpsee's answer to a `GET` that is not an upgrade,
+    // so each request provably reached the service that does the logging.
+    assert_eq!(
+        web.anonymous(&with_token(RPC_PATH, &secret)).await.status(),
+        405,
+        "the query form did not reach the wire surface"
+    );
+    assert_eq!(
+        web.bearing(RPC_PATH, &secret).await.status(),
+        405,
+        "the header form did not reach the wire surface"
+    );
+
+    web.stop().await;
+
+    let rendered = captured.rendered();
+    assert!(
+        rendered.contains("jsonrpsee"),
+        "nothing from the wire surface's own target reached this capture, so it could not \
+         have seen the line the credential rides on:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&bound.to_string()),
+        "the request's own Host header is not in this capture, so nothing here would notice a \
+         credential beside it:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(&secret),
+        "the daemon wrote the token this run minted into its own log"
+    );
 }
 
 #[tokio::test]

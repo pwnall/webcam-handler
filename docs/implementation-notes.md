@@ -13616,3 +13616,146 @@ old renderer before the fix was kept.
 **Amend this note if** a second screen is found to be arguing with the document behind it, at
 which point the lesson stops being about one branch and starts being about how `render`'s
 sentences are chosen.
+
+## N93 — What a browser actually tells the daemon about where a request came from, measured, and why `Origin` alone cannot defend the camera
+
+**The ruling (owner, 2026-08-13):** *"the daemon should refuse all calls tagged with cross-origin
+headers. I see no good reason to accept those."* And, on the token-less cell: *"`--http-insecure-loopback`
+has `insecure` in it, so we'll fix all the obvious security holes, and accept that we may miss some
+more subtle ones."* This entry is the research that ruling asked for, taken before the change.
+
+**Why it was asked for.** The P5 review's lens 1 measured that in D11's token-less cell a foreign
+page can drive the whole T5 surface: a WebSocket handshake is not subject to CORS, so any origin may
+open a socket to `127.0.0.1` and the only thing that normally stops it — the token — is absent by
+design in that cell. `daemon::http::rpc`'s header already contains that analysis and draws no
+conclusion from it.
+
+### Measured: what Chrome sends, per request the shipped client makes
+
+Pinned Chromium (Google Chrome for Testing 151.0.7922.34), against a live
+`webcam-handler-daemon --http 127.0.0.1:0` over the fake backend, headers read off each request:
+
+| request | `Sec-Fetch-Dest` | `Sec-Fetch-Site` | `Origin` |
+|---|---|---|---|
+| `/` (the page) | `document` | `none` | **absent** |
+| `/app.css` | `style` | `same-origin` | **absent** |
+| `/app.js` and the eight other modules | `script` | `same-origin` | present |
+| `/rpc` (WebSocket upgrade) | — | — | present (spec; not visible to the page API) |
+| **`/preview` (the `<img>`)** | `image` | `same-origin` | **absent** |
+
+**The load-bearing row is the last one, and it is the owner's own reading confirmed:** a media tag
+performs a **no-CORS** load. The response is *opaque* — renderable, not readable from script, and it
+taints a canvas — and the request carries **no `Origin` header at all**. So on `/preview`, the
+camera-carrying route, the page's own request and a foreign page's `<img src>` are
+**indistinguishable by `Origin`**, because neither has one.
+
+**Consequence, stated plainly: an `Origin`-only rule defends `/rpc` and does nothing for
+`/preview`.** `Sec-Fetch-Site` is the header that separates them — Chrome sends it on image loads,
+where `Origin` is absent — so the defence has to read Fetch Metadata as its primary signal and treat
+`Origin` as the corroborating one, rather than the other way round.
+
+### The constraint that shapes the rule: absence must be allowed
+
+`webcam-handler-client`, `curl`, and the agent harness AGENTS names as the primary consumer send
+**neither** `Origin` nor `Sec-Fetch-*`. A rule spelled "require a same-origin header" locks out
+every non-browser client, which is every consumer that matters most. So the rule is necessarily
+**"refuse when a browser tells us it is cross-site; admit when nothing is claimed"** — and that is a
+real weakening, written down here rather than discovered later: anything that can forge or omit the
+headers is unaffected. It buys exactly one thing, which is the thing asked for — **a page in another
+origin, in the operator's own browser, cannot drive the camera** — and it buys nothing against a
+local process, which is what the token is for.
+
+### One suggestive observation that is *not* evidence, and why
+
+A foreign page fulfilled at `http://evil.example` could not reach `http://127.0.0.1:<port>` at all
+in the pinned Chromium: `net::ERR_FAILED`, with **no connection arriving at a listener under my
+control** — the shape of Private Network Access refusing a public-origin page a local subresource.
+
+**This is recorded as an observation and must not be relied on.** The attacking page was *synthesised
+by Playwright's request interception* rather than served from a real public address, and Chrome
+decides a document's IP address space from the connection that delivered it — so the classification
+in this measurement may not be the classification a real attack would get. It is also a property of
+one browser at one version, and AGENTS makes Chrome the target but not the security boundary. **The
+daemon's own refusal is the defence; PNA is weather.**
+
+### What this does not close, so nobody reads the fix as more than it is
+
+- **A local process** is unaffected — no headers, admitted, exactly as `webcam-handler-client` is.
+  In the token-less cell that remains open by design; D11's token is what closes it, and the flag
+  says `insecure` in its own name.
+- **`<img>` rendering of an opaque response** is *not* what this stops. It stops the request. But a
+  reader should know the two are different: had the rule been `Origin`-only, the frames would still
+  have been fetched and displayed, unreadable but visible, which is a privacy breach with no data
+  exfiltration attached to it.
+- **Header-forging non-browser clients** are unaffected, by construction.
+
+**Amend this note if** a measurement is taken against a page served from a genuine public address,
+which would turn the PNA paragraph from an observation into evidence — in either direction.
+
+**Retires when:** never as a whole; the header table retires when a browser changes what it sends,
+which is why it is recorded with the browser build that produced it.
+
+## N94 — A `Uri` cannot express a header, so the mitigation that closed a credential leak closed half of it
+
+**Doc:** D11 (the token); `daemon::http::rpc`'s residual 4, which declared this class closed;
+rubric Part C ("a test whose fixture cannot exercise the rule it pins" \[S:E6\]).
+
+**Believed:** that the `?token=` form's log exposure was closed. `rpc.rs`'s header said so at
+length and correctly described the mechanism: jsonrpsee logs the whole `http::Request` at
+`TRACE`, so `without_the_query` strips the query after the gate has read it and before the
+service sees it — *"which costs one function and removes a whole class rather than documenting
+it"*.
+
+**True:** it removed half the class. jsonrpsee logs the request line **and the headers**, and the
+gate accepts a second credential form — `Authorization: Bearer` — which the daemon's own 401 body
+recommends. Measured at `RUST_LOG=trace` against a live listener: the query form arrives with
+`headers {host, accept}` and nothing leaked; the header form arrives with
+`"authorization": "Bearer <the whole token>"`. Under systemd `daemon::logging` installs the
+journald layer, so that lands in a persistent journal whose readers are the operator *plus*
+anyone in `systemd-journal`/`adm` — the multi-user boundary D11 exists about — for a token valid
+for the whole run, on `/rpc`, the route that **drives** a camera.
+
+**Repo:** `daemon::http::rpc::without_the_credential`, which takes and returns the `Request` and
+strips both forms; `without_the_query` survives as its private half so the authority-form arm
+stays assertable. Four unit tests, one integration test, two `g5` rows.
+
+### The blind spot was in the signature, and that is the transferable part
+
+`without_the_query` took a `Uri`. **A `Uri` cannot express a header** — so no fixture in that
+module could state the failing case, and none of the module's four tests was capable of going red
+on it however carefully they were written. The test that pinned the mitigation was called
+`the_credential_is_taken_off_the_target_the_wire_surface_is_handed`: *the* credential, singular
+and definite, about a function that handled one of two. And the test beside it said in its own
+comment that *"the page's own requests carry the token in a header, so most requests on this route
+have no query at all"* — the module recorded that the **majority** shape on the route was the one
+the mitigation did not cover, and drew no conclusion from it.
+
+Nor could the mutation floor have found it. `token.rs` joined the floor the same day and its 31
+mutants were all caught; this defect is an **absence in a neighbouring module**, and no mutation
+of any existing line produces it. A tool that edits expressions cannot report a missing one.
+
+So the repair that matters is not the extra line — it is that the function now takes the whole
+`Request`. A new credential form has to be handled somewhere, and this is the somewhere.
+
+### Two things the repair had to get right, both checked rather than assumed
+
+- **`HeaderMap::remove` takes the entry and every extra value**, so the two-`Authorization` shape
+  the gate deliberately admits (note **N74**) is covered. Asserted rather than reasoned.
+- **Only the credential is taken.** `Host` and `Sec-WebSocket-Key` survive; a repair that cleared
+  the map would answer `400` to every browser. That test is what stops the fix from being a
+  different defect.
+
+### Why the test needed a global subscriber, recorded so nobody rebuilds it wrongly
+
+There is no other test in this workspace that captures `tracing` output. jsonrpsee logs from a
+**spawned connection task**, so a thread-local `with_default` sees nothing and a test built that
+way passes by observing an empty buffer. The capture is a global layer over a shared writer, and it
+carries two non-vacuity clauses — the capture saw jsonrpsee's target, and saw the request's own
+`Host` header — without which "the secret is not in the log" is satisfied by a log that is empty.
+
+**Amend this note if** a third credential form is added, or if any route gains request logging of
+its own — `daemon::http::preview` reads a `?token=` today that nothing logs, and the day that
+changes it leaks exactly as this did.
+
+**Retires when:** nothing retires it. The lesson is about a signature, and the signature is now the
+guard.

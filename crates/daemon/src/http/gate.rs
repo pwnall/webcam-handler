@@ -19,13 +19,23 @@
 //!
 //! ## Two forms, and both are load-bearing
 //!
-//! - **`Authorization: Bearer <token>`** — what the page's own requests use once it is
-//!   running (P5b's WebSocket and preview). Code can set a header.
-//! - **`?token=<token>`** — what a *navigation* can carry. A browser opening a link sends the
-//!   headers it chose, and there is no way to attach an `Authorization` to it short of an
-//!   extension, so the first request an operator makes has to authenticate with what a URL
-//!   can hold. [`super::token::Token::ready_to_open_url`] builds exactly that form, and
+//! - **`?token=<token>`** — what a *navigation* can carry, and **what every request the page
+//!   makes carries too**. A browser opening a link sends the headers it chose, and there is no
+//!   way to attach an `Authorization` to it short of an extension, so the first request an
+//!   operator makes has to authenticate with what a URL can hold; and the two things the page
+//!   then reaches — a `new WebSocket(url)` and an `<img src>` — have no API for a header
+//!   either, which is why P5c's client writes the token into a URL in both cases
+//!   (`webcam-handler-web`'s `credential.js`, note **N74**, [`super::rpc`]'s header).
+//!   [`super::token::Token::ready_to_open_url`] builds exactly that form, and
 //!   [`super::TOKEN_QUERY_PARAM`] is the one spelling of the parameter's name.
+//! - **`Authorization: Bearer <token>`** — what a client that *can* set a header sends: `curl`,
+//!   a script, and this crate's own suites, which is also who [`REFUSAL`] recommends it to.
+//!   **No part of this project's web client uses it**, and that sentence used to read the
+//!   other way round — it said this was "what the page's own requests use", which was written
+//!   before P5c had a page and was wrong the day it did. P5's adversarial review found it
+//!   holding up a claim one module along: [`super::rpc`]'s residual 4 reasoned that a request
+//!   with no query string was the page's ordinary shape, and so stripped only the query before
+//!   handing the request to a service that logs it whole.
 //!
 //! Neither is a fallback for the other and neither takes precedence — see below, because
 //! "precedence" is the word the interesting failure hides behind.
@@ -258,9 +268,12 @@ mod tests {
 
     #[test]
     fn the_header_form_is_admitted_and_a_near_miss_is_not() {
-        // The form the page's own requests use (P5b). Both directions, and the negative one
-        // is an equal-length near miss rather than "some other string": a gate that checked
-        // only that the header was present would pass the first assertion and fail this one.
+        // The form a client that can set a header sends — `curl`, a script, this crate's own
+        // suites, and whoever read [`REFUSAL`] — which is not the page (this module's header
+        // says which form that uses and why the distinction was worth a finding). Both
+        // directions, and the negative one is an equal-length near miss rather than "some other
+        // string": a gate that checked only that the header was present would pass the first
+        // assertion and fail this one.
         let token = minted();
         let secret = token.expose_secret().to_owned();
 
@@ -356,7 +369,7 @@ mod tests {
                 Some(&format!("{TOKEN_QUERY_PARAM}={secret}")),
                 &token
             ),
-            "the page's own request, made from a URL that still carries the token"
+            "a scripted request presenting a header, sent at a URL that still carries the token"
         );
         assert!(
             !admits(

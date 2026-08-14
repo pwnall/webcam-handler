@@ -86,6 +86,21 @@
 //! such a connection is jsonrpsee's `ServerHandle`, which [`Serving::stopped`] asks and whose
 //! *timing* is an ordering rather than a detail (see that method, and [`super::rpc`]).
 //!
+//! ## A connection bound of its own, and it is not the one jsonrpsee's config carries
+//!
+//! [`schema::limits::DAEMON_MAX_CONNECTIONS`] exists "so a client that leaks connections is
+//! refused rather than able to exhaust the daemon's file descriptors, which on this process are
+//! also the camera's". Two things nearby look like that bound and neither is it: jsonrpsee's
+//! `ConnectionGuard` — configured from the very same constant — is per in-flight *request*
+//! (measured, one module along), and the kernel's backlog bounds callers waiting to be
+//! accepted rather than callers being held. So this
+//! listener takes an owned permit at **accept**, out of a semaphore of its own — `Bounded`,
+//! which is where the whole argument lives, including why it is separate from the Unix
+//! socket's and why it is a [`Listener`] decorator rather than an accept loop this module
+//! writes. Until P5's adversarial review there was no such bound here at all, and a local
+//! process could hold this listener's descriptors open having sent no byte and therefore having
+//! met no gate.
+//!
 //! **No accept-failure policy of its own.** [`crate::uds::serve`] gives up after
 //! [`schema::limits::MAX_CONSECUTIVE_ACCEPT_FAILURES`] consecutive failures because that
 //! transport is the daemon's *always-on* one and a daemon that has stopped accepting on it has
@@ -159,16 +174,21 @@
 //! preview's `<img src>`.
 
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use axum::serve::Listener;
 use jsonrpsee_server::{Methods, ServerHandle};
 use schema::{Error, Result, limits};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::compression::CompressionLayer;
 
 use super::gate;
@@ -435,6 +455,13 @@ impl Serving {
 /// Everything this function decides is in the one `match` over `posture` inside `router` —
 /// see the module header for what it takes as values and why.
 ///
+/// The listener is wrapped in `Bounded` before `axum::serve` sees it, so a connection is
+/// admitted only against a permit it then holds: that is
+/// [`schema::limits::DAEMON_MAX_CONNECTIONS`] on this transport, counted separately from the
+/// Unix socket's. It is a wrapper rather than a line here because "how many connections may be
+/// up" is a rule with an argument behind it, and that argument belongs beside the code that
+/// takes the permit.
+///
 /// `token` must be `Some` exactly when `posture` requires one. That is a fact about the caller
 /// rather than about a request, and it is checked rather than assumed for the reason
 /// `crate::shutdown`'s unreachable `Ending` arm is written: both disagreements are ways to open
@@ -466,7 +493,7 @@ pub fn serve(
     let router = router(posture, token.clone(), wire.route, preview::mount(previews))?;
 
     let serving = tokio::spawn(async move {
-        let served = axum::serve(listener, router)
+        let served = axum::serve(Bounded::over(listener), router)
             .with_graceful_shutdown(async move { shutdown.cancelled().await })
             .await;
         if let Err(err) = served {
@@ -488,6 +515,188 @@ pub fn serve(
         ending,
         serving,
     })
+}
+
+/// The listener `axum::serve` accepts on, with this daemon's connection bound taken **at the
+/// accept** — [`limits::DAEMON_MAX_CONNECTIONS`], counted separately from the Unix socket's.
+///
+/// ## Why a bound here at all, when two other things carry the same number
+///
+/// `limits::DAEMON_MAX_CONNECTIONS`'s doc says what it is for: "so a client that leaks
+/// connections is refused rather than able to exhaust the daemon's file descriptors, which on
+/// this process are also the camera's". Two things nearby look like that bound and **neither of
+/// them is it**:
+///
+/// - jsonrpsee's `ServerConfig::max_connections` ([`crate::server::wire_bounds`]) — its
+///   `ConnectionGuard` permit is acquired inside `TowerService::call`, per in-flight HTTP
+///   *request*, and released when the response is written. [`crate::uds`] measured the
+///   consequence rather than reasoning about it: with the cap at 32, 128 idle connections were
+///   all accepted and held. That measurement is why the Unix socket takes an owned permit in
+///   its own accept loop;
+/// - the kernel's backlog, which bounds callers *waiting* to be accepted and not callers being
+///   held (`limits::DAEMON_LISTEN_BACKLOG` states the ordering for the other transport).
+///
+/// So until P5's adversarial review this listener had no accept-time bound of any kind: any
+/// local process could open connections to `--http` and send **nothing**, and nothing would
+/// have refused them. A connection that sends no byte reaches no route, so it never meets
+/// [`gate`] — which is a `route_layer`, i.e. per request — and never takes a jsonrpsee permit
+/// either; it is therefore also entirely unauthenticated, because there is no credential in a
+/// connection that never spoke. `crates/daemon/tests/http.rs` holds
+/// `limits::DAEMON_MAX_CONNECTIONS` silent connections and asks for one more.
+///
+/// ## Why the bound is this transport's own, and not shared with the Unix socket's
+///
+/// [`super::rpc`]'s header states the property and it is the direction D11's "opt-in" argues
+/// for everywhere else: **a browser that leaks sockets must not be able to exhaust the
+/// transport `webcam-handler-client` uses.** One semaphore between the two would make a full
+/// web listener a Unix socket that stops answering — the always-on transport taken down by the
+/// optional one, which is the same inversion note **N81** refuses for accept failures. Two
+/// counters, and the test named above asks the Unix socket a question while this one is at its
+/// cap — which is the only arrangement in which "separately" is a measurement rather than a
+/// sentence.
+///
+/// ## Why a [`Listener`] decorator rather than an accept loop of this module's own
+///
+/// [`crate::uds`] writes its own loop because it also owns a give-up policy
+/// (`limits::MAX_CONSECUTIVE_ACCEPT_FAILURES`, which reaches `main`'s exit code) and drives
+/// jsonrpsee's per-connection future directly. **This module deliberately has neither** (note
+/// **N81**), and it must not grow them by accident: axum's own `Listener::accept` is what backs
+/// off and retries on an accept error, `axum::serve` is what performs the upgrade handoff every
+/// WebSocket on this listener depends on, and `with_graceful_shutdown` is how the daemon's one
+/// token reaches hyper. A hand-rolled loop here would be a second copy of all three. So the
+/// decorator delegates the accept to axum and adds exactly one thing: the permit.
+///
+/// It is also not `tower::limit::ConcurrencyLimit`, and for the reason the whole finding is
+/// about — that layer bounds *requests in flight*, which is the same thing jsonrpsee's cap of
+/// this name already is, and a connection that sends nothing makes no request.
+///
+/// ## Where the permit lives, and therefore when it is released
+///
+/// On the [`Admitted`] value the accept hands back, which is the connection's socket: hyper
+/// moves it into the task that serves the connection, and an **upgraded** connection moves it
+/// on into `hyper::upgrade::Upgraded`, so a WebSocket holds its permit for as long as the
+/// socket is open rather than for as long as the HTTP exchange took. Dropping the connection —
+/// ordinary end, graceful shutdown, or the abort [`Serving::stopped`] falls back on — releases
+/// it, so the bound counts connections that are **still up** rather than connections that were
+/// ever made. That is [`crate::uds`]'s rule in the shape this transport has for it.
+#[derive(Debug)]
+struct Bounded {
+    listener: TcpListener,
+    /// One permit per live connection. `Arc` because [`Semaphore::try_acquire_owned`] is what
+    /// produces a permit with no lifetime, which is the only kind that can ride on a socket
+    /// hyper owns.
+    connections: Arc<Semaphore>,
+}
+
+impl Bounded {
+    /// `listener`, with this project's number of permits in front of it.
+    fn over(listener: TcpListener) -> Bounded {
+        Bounded {
+            listener,
+            // `unwrap_or` rather than `expect`: the constant is a `u32` and this is a `usize`
+            // conversion that cannot fail on any platform this daemon builds for, and a
+            // composition root that refused to serve over an arithmetic impossibility would be
+            // a worse answer than serving with the largest bound the platform can count.
+            // `crate::uds` spells the same conversion the same way.
+            connections: Arc::new(Semaphore::new(
+                usize::try_from(limits::DAEMON_MAX_CONNECTIONS).unwrap_or(usize::MAX),
+            )),
+        }
+    }
+}
+
+impl Listener for Bounded {
+    type Io = Admitted;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Admitted, SocketAddr) {
+        loop {
+            // axum's, so the accept-error backoff note N81 relies on stays axum's.
+            let (stream, peer) = Listener::accept(&mut self.listener).await;
+            let Ok(permit) = Arc::clone(&self.connections).try_acquire_owned() else {
+                // Dropped, which closes it: a client past the bound is refused rather than
+                // queued, because a queue of connections is the descriptor exhaustion the bound
+                // exists to prevent (`crate::uds`, same words, same reason).
+                drop(stream);
+                tracing::warn!(
+                    limit = limits::DAEMON_MAX_CONNECTIONS,
+                    "refused a connection on the web listener: this daemon serves at most that \
+                     many at once, and the Unix socket has a count of its own"
+                );
+                continue;
+            };
+            return (
+                Admitted {
+                    stream,
+                    _permit: permit,
+                },
+                peer,
+            );
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+}
+
+/// One accepted connection, carrying the permit that admitted it.
+///
+/// The permit is a field and nothing reads it: what it does is **exist for exactly as long as
+/// the socket does**, which is the whole mechanism ([`Bounded`]'s doc argues where that matters,
+/// and the upgrade case is why it is here rather than in a spawned task's tail). Everything else
+/// is delegation to the [`TcpStream`] underneath.
+#[derive(Debug)]
+struct Admitted {
+    stream: TcpStream,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AsyncRead for Admitted {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Admitted {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+
+    /// Forwarded rather than left to the default, and so is [`Admitted::is_write_vectored`].
+    ///
+    /// hyper asks `is_write_vectored` and, when the answer is yes, writes a response's head and
+    /// body as one `writev`. The trait's defaults answer *no* and turn a vectored write into a
+    /// copy through `poll_write`, so a wrapper that took them would quietly cost every response
+    /// on this listener an extra syscall and an extra copy — including the preview's frames,
+    /// which are the largest thing it writes.
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
 }
 
 /// The routes, the compression layer over the half that wants one, D11's gate over the routes

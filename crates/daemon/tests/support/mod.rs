@@ -1,10 +1,13 @@
 //! The one JSON-RPC-over-`AF_UNIX` client this crate's tests use.
 //!
-//! Shared by every suite that reaches the socket — five binaries: `uds.rs`, which asserts the
-//! transport itself, and `read_verbs.rs`, `mutating_verbs.rs`, `calibrate_verbs.rs` and
+//! Shared by every suite that reaches the socket — six binaries: `uds.rs`, which asserts the
+//! transport itself; `read_verbs.rs`, `mutating_verbs.rs`, `calibrate_verbs.rs` and
 //! `method_surface.rs`, which assert what the daemon answers over it (the last four through
-//! `support/wire.rs`) — because a second copy of the framing would be a second opinion about
-//! what the daemon speaks, in the files most likely to disagree about it.
+//! `support/wire.rs`); and `http.rs`, which asks the Unix socket **one** question — does it
+//! still answer while the *other* transport is at its connection bound, which is the only way
+//! to say that `limits::DAEMON_MAX_CONNECTIONS` is two counters rather than one — because a
+//! second copy of the framing would be a second opinion about what the daemon speaks, in the
+//! files most likely to disagree about it.
 //!
 //! **Who includes this is load-bearing, which is why the list above is a list** (note
 //! **N49**). A `#[path]`-included module is compiled into *every* binary that includes it and
