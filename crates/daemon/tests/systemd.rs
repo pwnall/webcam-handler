@@ -192,25 +192,38 @@ fn a_supervised_daemon_announces_readiness_and_then_what_it_can_see() {
     // about readiness rather than about two lines.
     daemon.wait_for_line(scratch.socket().as_str());
 
+    // Alive at the moment it is signalled, which is what makes the signal below a stop rather
+    // than a no-op. Unlike the check this test used to make *after* `STOPPING=1` (note
+    // **N104**), nothing here is a race: a correct daemon serves until it is told to stop, so
+    // there is no window in which this can be false of a build that works. What it buys is a
+    // named failure — a daemon that died between announcing itself and being signalled would
+    // otherwise surface as the watchdog timing out on a datagram nobody was left to send.
+    assert!(
+        daemon.still_running(),
+        "the daemon announced itself and then went away before it could be asked to stop"
+    );
     signal(&daemon, Signal::TERM);
     // `STOPPING=1` is step 2 of `daemon::shutdown`'s order and the reason that order starts
     // with it: everything after it takes time, and a service manager that learns about the
     // stop only when the socket closes has been counting the drain against `TimeoutStopSec`.
     //
-    // "Before the process exits" is asserted by *receiving it while the process is still
-    // there to be waited for*: this recv happens before the `wait` below, so a daemon that
-    // sent nothing leaves the watchdog to fire with the transcript attached rather than
-    // leaving a green test.
+    // What *this* test establishes is that the bytes leave a real process and reach a real
+    // supervisor — a `Notifying` double can only say that the daemon called a method. A
+    // datagram cannot be sent by a process that has already exited, so the recv succeeding
+    // *is* the whole of the "before it exits" claim, and a daemon that sent nothing leaves
+    // the watchdog to fire with the transcript attached rather than leaving a green test.
+    //
+    // The ordering *within* the teardown — `STOPPING=1` before the drain rather than after
+    // it — is asserted where it can be asserted without a scheduler in the answer:
+    // `shutdown::stop_in_order`'s unit tests drive a recording `Notifying` double and compare
+    // the whole step sequence, which is what that module's header means by "a recording
+    // double is the only way to assert an order". This test deliberately does **not**
+    // re-assert it by asking whether the process happens to still be alive a moment after the
+    // datagram arrived: the daemon may legitimately finish its drain and exit inside the
+    // window between this recv returning and such a check running, so the observation goes
+    // red while the property it is named for holds (note **N104**).
     let stopping = supervisor.notified_with("STOPPING=1", &mut daemon).join("");
     assert!(stopping.contains("STATUS="), "{stopping}");
-    // And it really was *before*: the process is still there to be waited for at the moment
-    // the datagram has already arrived, which is the ordering `STOPPING=1` exists to make —
-    // a supervisor that learns about the stop from the socket closing has been counting the
-    // drain against `TimeoutStopSec`.
-    assert!(
-        daemon.still_running(),
-        "STOPPING=1 arrived from a daemon that had already gone"
-    );
     assert!(
         daemon.wait(),
         "a daemon asked to stop must exit cleanly, or `Restart=on-failure` restarts it \

@@ -14319,3 +14319,79 @@ the file is what settles it, because a tracked, unmodified file is absent from b
 besides the reference — a tool that does not resolve `@AGENTS.md`, or one that wants its own
 content there — because that is the day the redirect stops being a pointer and both this entry
 and the gate's byte claim are wrong about the same thing.
+
+## N104 — A test proved an ordering by asking what had happened since, which is a question with no stable answer
+
+**Doc:** AGENTS "Writing tests" ("No `sleep` as synchronization — settle logic runs on a clock
+the test owns, never on the real one"); note **N60**, whose lesson is that a check which cries
+wolf gets re-run until it agrees; `crates/daemon/src/shutdown.rs`'s header ("A recording double
+is the only way to assert an order"). Recorded 2026-08-14, from a `just ci` run during P6a.
+
+**Repo:** `crates/daemon/tests/systemd.rs`,
+`a_supervised_daemon_announces_readiness_and_then_what_it_can_see` — a P4e-ii test, unchanged
+since `c397f60`.
+
+**Believed:** that "`STOPPING=1` reached the supervisor *before* the daemon exited" could be
+witnessed by receiving the datagram and then asking whether the process was still there. The
+test said so in its own comment — *"'Before the process exits' is asserted by receiving it while
+the process is still there to be waited for"* — and the sentence reads as though the two
+observations were one.
+
+**True:** they are two observations with a scheduler between them, and the property holds on
+both sides of it. `daemon::shutdown` sends `STOPPING=1` as step 2 and then drains, closes and
+exits; the test's `recv` returns somewhere during that, and `still_running()` runs after it.
+A daemon that did everything right can finish the remaining five steps inside that window, and
+then:
+
+```
+thread 'a_supervised_daemon_announces_readiness_and_then_what_it_can_see' panicked at
+crates/daemon/tests/systemd.rs:210:5:
+STOPPING=1 arrived from a daemon that had already gone
+```
+
+The message is false in the only sense that matters. The datagram *had* arrived from a daemon
+that was alive when it sent it — a process cannot send a datagram after it has exited — and the
+test failed for having asked its question a moment too late.
+
+### How rare, measured rather than guessed
+
+One failure, in a full-workspace `just ci` (`366/1235`, seven daemon tests still running).
+Afterwards, on the same tree: **12** runs of the test alone, **6** with twelve spinning CPU
+hogs against eight cores, **3** of the whole `webcam-handler-daemon` package, and **3** of the
+full workspace suite — **all green**. So it is not reproducible on demand, and the numbers are
+recorded here because the next person to see it once will otherwise spend the same hour.
+
+What made it visible was almost certainly load-shape rather than load: P6a added 145 tests to
+`webcam-handler-imaging`, which changes what else nextest is running when the daemon spawns.
+That is a coincidence of scheduling and **not** a defect P6a introduced.
+
+### Why the repair is a deletion, and why that loses nothing
+
+The instinct is to make the assertion stronger — hold the daemon open, bound the window, retry.
+All three would be a clock the test does not own, which is the rule this repository already has.
+
+The better question is what the assertion was *for*, and the answer is that it was for a claim
+already proven somewhere better. **The order** — `STOPPING=1` before the drain rather than after
+it — is asserted deterministically by `shutdown::stop_in_order`'s unit tests, which drive a
+recording `Notifying` double and compare the whole step sequence with a flag on each step saying
+whether cancellation had happened yet. No scheduler is in that answer. **What only a real
+process can add** is that the bytes leave it and reach a real supervisor, which a double cannot
+establish and which the successful `recv` establishes completely.
+
+So the racy line was not covering a gap; it was re-asserting, badly, something covered exactly.
+It is gone, and the comment in its place says which test owns the ordering claim, so the next
+reader does not restore it as an oversight.
+
+### The class, stated so it is recognisable next time
+
+**An assertion that reads "and it is still true now" is a different claim from "it was true
+then", and only one of them is the property.** Two observations of a live system separated by a
+scheduler cannot witness an ordering between events inside it; what can is a record kept by the
+system, or a causal barrier the test controls. The shape to be suspicious of is a check whose
+failure message describes something the code under test is not allowed to do — here, sending a
+datagram after exiting — because a message describing an impossibility is usually a message
+about the observer.
+
+**Amend this note if** the failure is seen again on a tree carrying this repair, which would
+mean the racy `still_running()` was reporting something real and the diagnosis above is wrong
+about which of the two observations was late.
