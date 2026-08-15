@@ -140,8 +140,15 @@ struct Floor {
 /// line naming how far ahead the manifest has got — never silence, AGENTS rule 3 — and raising
 /// this pair is what closes a boundary.
 ///
-/// Measured, never estimated: **15 claims and 117 assertions** are what `claims.json` carries on
+/// Measured, never estimated: **16 claims and 138 assertions** are what `claims.json` carries on
 /// the run that landed this (the same two numbers the decline line above prints).
+///
+/// Raised at P6c's second half, which is what "raising this pair closes a boundary" looks like
+/// in practice — and it was not optional. The manifest grew by the recording claim (note
+/// **N117**), and the *self-test* below drives a manifest one claim short of the floor: one
+/// short of sixteen is fifteen, which cleared a floor of fifteen and complained about nothing,
+/// so the arm that has to go red went green. A floor left behind its manifest is a floor that
+/// lets that many claims be deleted in silence.
 ///
 /// It was written as 11 and 84 hours earlier, and moved in the same session — which is worth a
 /// sentence, because *how* it moved is the mechanism working rather than a number being patched.
@@ -154,8 +161,8 @@ struct Floor {
 /// floor of 11 and complains about nothing. **File isolation prevents collisions between edits and
 /// not between meanings** (note **N98**).
 const FLOOR: Floor = Floor {
-    claims: 15,
-    assertions: 117,
+    claims: 16,
+    assertions: 138,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.
@@ -370,6 +377,13 @@ fn pinned_chromium_build(suite: &Utf8Path) -> String {
 struct Serving {
     serving: http::Serving,
     camera: CameraId,
+    /// Where a claim that starts a recording may write one.
+    ///
+    /// Handed to the browser rather than chosen there, because `wch_record_start` takes an
+    /// **absolute server path** (note **N110**) and the one process that knows a writable
+    /// throw-away directory is this one — a spec that picked `/tmp/take.avi` would be a suite
+    /// writing outside the scratch root AGENTS gives it (note **N84**).
+    take: Utf8PathBuf,
     shutdown: Shutdown,
     _lock: Arc<StoreLock>,
     _state: TempStore,
@@ -425,6 +439,7 @@ impl Serving {
         Serving {
             serving,
             camera,
+            take: runtime.base().join("browser-take.avi"),
             shutdown,
             _lock: lock,
             _state: state,
@@ -516,6 +531,7 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
     let modules = web::paths().filter(|name| name.ends_with(".js")).count();
 
     let camera = daemon.camera.as_str().to_owned();
+    let take = daemon.take.clone();
     let workdir = suite.clone();
     let output_arg = output.clone();
     let run = tokio::task::spawn_blocking(move || {
@@ -526,6 +542,7 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
             .env("WCH_E2E_URL", url)
             .env("WCH_E2E_CAMERA", camera)
             .env("WCH_E2E_MODULE_COUNT", modules.to_string())
+            .env("WCH_E2E_TAKE", take.as_str())
             .env("WCH_E2E_OUTPUT", output_arg.as_str())
             .status()
     })

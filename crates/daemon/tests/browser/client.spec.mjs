@@ -51,7 +51,15 @@
 
 import { expect, test } from "@playwright/test";
 
-import { cameraId, control, moduleCount, openClient, origin, token } from "./harness.mjs";
+import {
+  cameraId,
+  control,
+  moduleCount,
+  openClient,
+  origin,
+  takePath,
+  token,
+} from "./harness.mjs";
 
 test("a sparse menu becomes a select carrying the device's own indices", async ({ page }) => {
   await openClient(page);
@@ -467,6 +475,142 @@ async function settledLuma(page) {
     .toBe(true);
   return last;
 }
+
+test("the preview paints a recording's own frames and the page says who owns the camera", async ({
+  page,
+}) => {
+  // **The owner's ruling of 2026-08-14, from the only side that can see it** (note **N117**).
+  // The notes' Expected usage item 10 said a recording and a preview collide in a way a
+  // photograph does not — a take holds the stream for its whole duration — and named two honest
+  // answers. The ruling took the first: the preview is fed the recording's own frames. From a
+  // viewer's side that is one claim, and it is not a claim any protocol test can make: **the
+  // picture goes on moving, on the request the page already had, while another client records.**
+  //
+  // Four things are asserted and each would survive the other three being broken:
+  //
+  //   1. the page **says** a recording owns the camera, with the daemon's own numbers in it —
+  //      item 10's *second* option, which the ruling made cheap rather than unnecessary, and the
+  //      only explanation a viewer gets when D7 records a format an `<img>` cannot paint;
+  //   2. the picture **keeps moving** while the take runs, proven by a control write changing
+  //      the mean luma — an ordering the fake declares, never a pixel value;
+  //   3. the `<img>` is the **same element with the same request** throughout, so the frames
+  //      arrived on the response the page opened before the take began rather than on one it
+  //      re-opened;
+  //   4. when the take ends the page says so, and the picture still moves — a preview that had
+  //      been left attached to nothing would satisfy 1 to 3 and fail here.
+  //
+  // The recording is driven on a **second** WebSocket, as the sweep claim below drives its
+  // sweep: a page that had started the take itself would prove nothing about two consumers on
+  // one camera, which is the arrangement the notes call the ordinary Tuesday of this deployment.
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);
+  await page.evaluate(() => {
+    window.wchRecordedFrame = document.getElementById("preview-frame");
+  });
+
+  const brightness = control(page, "brightness").locator("input[type=number]");
+  const write = async (value) => {
+    await brightness.fill(String(value));
+    await brightness.blur();
+    await expect(brightness).toHaveValue(String(value));
+  };
+  await write(255);
+  const before = await settledLuma(page);
+
+  // MJPG by name rather than by default, and that is this fixture's shape showing through: the
+  // camera's largest mode is uncompressed, so a take that asked for nothing would record YUYV —
+  // which is a real answer (D7's raw fallback) and is the one case the ruling cannot serve,
+  // because those bytes cannot go into an `<img>` labelled `image/jpeg`. That case is asserted
+  // in `crates/daemon/tests/preview.rs`, where a socket can watch a count; this claim is about
+  // the case a browser can see.
+  const socket = await page.evaluateHandle(
+    async ({ camera, wire, path }) => {
+      const connection = new WebSocket(wire);
+      await new Promise((opened, refused) => {
+        connection.addEventListener("open", opened, { once: true });
+        connection.addEventListener("error", () => refused(new Error("refused")), { once: true });
+      });
+      let next = 0;
+      connection.wchCall = (method, params) =>
+        new Promise((resolve, reject) => {
+          const id = (next += 1);
+          const onMessage = (event) => {
+            const frame = JSON.parse(event.data);
+            if (frame.id !== id) {
+              return;
+            }
+            connection.removeEventListener("message", onMessage);
+            if (frame.error === undefined) {
+              resolve(frame.result);
+            } else {
+              reject(new Error(JSON.stringify(frame.error)));
+            }
+          };
+          connection.addEventListener("message", onMessage);
+          connection.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        });
+      await connection.wchCall("wch_record_start", {
+        camera,
+        request: {
+          stream: { pixel_format: "MJPG" },
+          // Long enough that the luma dance below is comfortably inside the take, and short
+          // enough that its *own* ending is what this claim waits for rather than a
+          // `record_stop` — the ending is the state item 10's second option is about, and it is
+          // the one a poller meets: a take is over for as long as it takes its caller to notice.
+          duration_ms: 5000,
+          sink: { kind: "server_path", path },
+        },
+      });
+      return connection;
+    },
+    {
+      camera: cameraId,
+      wire: `${origin.replace(/^http/, "ws")}/rpc?token=${encodeURIComponent(token)}`,
+      path: takePath,
+    },
+  );
+
+  // Claim 1. Matched on the sentence's stable half — the numbers in it are a clock's and a
+  // regex over them would be a claim about how fast this machine is.
+  await expect(page.locator("#recording-status")).toContainText("a recording owns this camera");
+  await expect(page.locator("#recording-status")).toContainText("the recording's own frames");
+
+  // Claim 2. The same instrument the photo claim above uses, for the same reason: Chrome fires
+  // one `load` for a `multipart/x-mixed-replace` `<img>` and then replaces the frame silently,
+  // so what is observable is the pixels. A build in which the take kept its frames to itself
+  // paints the last pre-take frame for ever and this never moves.
+  await write(0);
+  expect(await settledLuma(page)).toBeLessThan(before);
+
+  // Claim 3, taken while the take is still running: one element, one request. `preview.js`
+  // replaces the node whenever it stops or repoints a feed, so a page that had torn its preview
+  // down and opened another — which is what a client would have to do if the daemon had simply
+  // ended the feed — fails here having satisfied everything above.
+  expect(
+    await page.evaluate(() => window.wchRecordedFrame === document.getElementById("preview-frame")),
+  ).toBe(true);
+
+  // Claim 4, in the two states a take really has. First it **ends on its own duration** and
+  // nobody has collected it — the state an agent's poll loop meets, and the one the page can
+  // still describe — and the sentence says the preview is this camera's own stream again, which
+  // is `Previews::release`'s second answer arriving at a person: a tab that is still open gets a
+  // driver back rather than the end of its response. Then it is **collected**, the daemon stops
+  // remembering it (note **N114**), and this line has nothing left to say and says nothing.
+  await expect(page.locator("#recording-status")).toContainText("finished");
+  await expect(page.locator("#recording-status")).toContainText("this camera's own stream again");
+  await page.evaluate(
+    ({ connection, camera }) => connection.wchCall("wch_record_stop", { camera }),
+    { connection: socket, camera: cameraId },
+  );
+  await expect(page.locator("#recording-status")).toHaveText("");
+
+  // …and the picture is still this camera's, on the same request, after all of it.
+  await write(255);
+  expect(await settledLuma(page)).toBeGreaterThan(0);
+  expect(
+    await page.evaluate(() => window.wchRecordedFrame === document.getElementById("preview-frame")),
+  ).toBe(true);
+});
 
 test("the calibration view tracks a sweep it did not start", async ({ page }) => {
   // **The preview is kept off this page, and the reason is a finding rather than a

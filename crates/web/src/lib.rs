@@ -177,8 +177,8 @@ pub fn paths() -> impl Iterator<Item = Cow<'static, str>> {
 /// forcing function is not the table's size, it is
 /// `every_asset_has_a_content_type`'s walk over the assets that actually exist.
 ///
-/// Three of the four now have shipped assets — P5c's client is one page, one stylesheet and
-/// eight modules — and `.mjs` is the one that does not, kept because it is the other spelling
+/// Three of the four now have shipped assets — this client is one page, one stylesheet and
+/// nine modules — and `.mjs` is the one that does not, kept because it is the other spelling
 /// the ecosystem uses for the thing this directory is full of and because the failure it
 /// prevents is expensive and quiet: a module served as `application/octet-stream` is a script
 /// a browser declines to execute, on a page that then does nothing and says nothing. The test

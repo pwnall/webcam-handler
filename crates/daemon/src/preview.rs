@@ -101,6 +101,43 @@
 //! cannot fit inside. The refusal stays E3-correct — availability is not capability, and it
 //! names the node.
 //!
+//! ## A recording is the second thing that can hold this camera, and the ruling about it
+//!
+//! A photo holds the stream for milliseconds, so N83's suspend/resume covers it. **A recording
+//! holds it for the whole take**, and the notes' Expected usage item 10 says so in the sentence
+//! that made it P6's obligation: the same trick would leave the owner's tab dark for seconds or
+//! minutes. The owner ruled on 2026-08-14 (note **N117**) between the two honest options, and
+//! took the one that costs more: **while a recording runs it is the only streamer, and its
+//! frames feed the preview too.**
+//!
+//! What that needs from this module is *less* than it looks, and the reason is worth stating
+//! because it is the whole of "where does the decision belong":
+//!
+//! - **Nothing new decides whether to start a stream.** `Previews::reserve` already starts one
+//!   for exactly the call that *created* a camera's feed and for no other, which is what makes
+//!   "the second tab is not a second streamer" structural. `crate::record` creates the feed
+//!   before it touches the device (`Previews::hand_over`), so every `attach` that arrives
+//!   during a take is the second tab by construction — it subscribes and starts nothing. There
+//!   is no "is this camera recording?" check in `drive`, and there must not be: that would be
+//!   a second answer to a question the registry already answers, one layer above the fact and
+//!   one race away from it (design §2.10; N83's own correction of the same class of guess).
+//! - **The frame arrives by the door that was already open.** `engine::record::turn` hands its
+//!   [`Frame`] back on the camera's actor thread, inside the command that dequeued it — which is
+//!   where `Publisher` already runs. So a recording publishes through *this* `Publisher`,
+//!   with the frame **moved** into the [`Shot`]: the second consumer costs no copy of the bytes
+//!   at all, because the recording's own frame becomes the viewers' frame after the muxer has
+//!   read it.
+//! - **What is new is a handshake, and only a handshake.** A preview that was already running
+//!   has a driver taking frames off the device, and two loops dequeuing from one stream would
+//!   halve the recording's frame rate — which item 10 forbids in as many words ("it must not
+//!   make a dropped frame look like a slow transition"). So `Previews::hand_over` marks the
+//!   feed `Source::Yielding` and **waits** for the driver to leave and stop the stream;
+//!   `Watchers::hand_back` gives it back. `Source` is where that state lives and it is one
+//!   field on the feed, because "who is taking this camera's frames" is one question.
+//!
+//! The four edges are answered where they happen — `Previews::hand_over`, `Watchers`,
+//! `Previews::release` and `Publisher::publish` — and note **N117** collects the arguments.
+//!
 //! Control reads and writes are unaffected — `VIDIOC_S_EXT_CTRLS` on a streaming node is
 //! ordinary — and they wait at most one `limits::PREVIEW_FRAME_WAIT_MS` behind the preview,
 //! because the preview holds the actor for one frame at a time (`engine::preview`'s header
@@ -226,20 +263,51 @@ struct Fanout {
     /// *event*, it is the only observable the pause has, and a test that polled for it would
     /// be a test with a sleep in it (AGENTS).
     interrupted: watch::Sender<u64>,
+    /// How many frames were refused for being a picture a browser cannot paint.
+    ///
+    /// **Only a recording can move this**, and that is the whole reason it exists. A preview
+    /// negotiates its own stream and `engine::preview::start` refuses a negotiation that is not
+    /// a JPEG bitstream before a single frame is taken; a *recording* negotiates whatever its
+    /// caller asked for — D7's raw fallback is a real answer, and on a camera whose first
+    /// format is YUYV \[PF:26\] it is the default one — and those frames cannot go into an
+    /// `<img>` labelled `image/jpeg`. They are dropped by [`Publisher::publish`] and counted
+    /// here, because a preview that quietly stops moving is the failure item 10 was written
+    /// against and rubric rule 3 wants a number rather than a silence.
+    ///
+    /// A `watch` rather than a counter for [`Fanout::published`]'s reason: it is the only
+    /// observable a raw take has, and a test that polled it would be a test with a sleep in it.
+    unpaintable: watch::Sender<u64>,
 }
 
 /// One camera's stream, as everything reading it sees it.
 #[derive(Debug)]
 struct Feed {
-    /// Which camera, for the log lines and for the registry key the driver removes.
-    camera: CameraId,
+    /// Which camera, for the log lines, for the registry key the driver removes — and, since
+    /// P6c, for the actor [`Previews::release`] needs when it puts a driver back on a feed a
+    /// recording has finished with. The whole [`CameraInfo`] rather than the id alone because
+    /// `engine::actor::Cameras::actor` resolves an actor from the *device*, and a feed that
+    /// carried only an id would have to enumerate again to find one (E2 says an enumeration is
+    /// live every time, which is exactly why it is not a thing to do on a resume).
+    info: CameraInfo,
     /// **The latest-frame channel.** One slot, overwritten per frame; the receiver count is
     /// the viewer count, which is why nothing here keeps a second tally of viewers.
     frames: watch::Sender<Option<Arc<Shot>>>,
+    /// Who is taking the frames this feed publishes.
+    ///
+    /// **The one home for "who owns this camera's stream"** (design §2.10). A `watch` rather
+    /// than a flag because [`Previews::hand_over`] has to *await* a transition: the handshake
+    /// that stops a preview's driver before a recording's `VIDIOC_STREAMON` is the only place
+    /// two loops could otherwise dequeue from one stream. Every transition is written under
+    /// `Fanout::live`'s lock, which is what makes it atomic with the map decision beside it —
+    /// a source read outside the lock is a hint, and the two readers that do so
+    /// ([`pump`] and [`Watchers::show`]) are both allowed to be one turn stale.
+    source: watch::Sender<Source>,
     /// `Fanout::published`, cloned so the actor thread can bump it without reaching back
     /// through a structure that holds this one. A `watch::Sender` clone is another handle on
     /// the same value, not a second value.
     published: watch::Sender<u64>,
+    /// `Fanout::unpaintable`, cloned for [`Feed::published`]'s reason.
+    unpaintable: watch::Sender<u64>,
     /// How many frames this feed refused for being larger than
     /// [`limits::PREVIEW_MAX_FRAME_BYTES`].
     ///
@@ -247,6 +315,33 @@ struct Feed {
     /// back one per frame, and a log line per frame is how a daemon fills a journal with a
     /// camera's frame rate.
     oversized: AtomicU64,
+}
+
+/// Who is taking the frames a [`Feed`] publishes.
+///
+/// Three states rather than two, because the middle one is a *handshake* rather than a
+/// condition: a recording that has claimed the camera still has to wait for the preview's
+/// driver to leave the device, and "claimed" and "left" are the two ends of that wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// This feed's own driver ([`drive`]), which started the stream and pumps it — the P5b
+    /// arrangement, and the only state in which anything in this module touches the device.
+    Preview,
+    /// This feed's own driver, on its way out because a recording claimed the camera.
+    ///
+    /// **A feed in this state is never removed from the registry**, by any path, and that
+    /// invariant is what makes [`Previews::hand_over`]'s wait safe: the value it is waiting on
+    /// lives in the feed, so a feed that could be taken away underneath it would be a wait
+    /// nothing ever ends.
+    Yielding,
+    /// Not this module. A recording is publishing into the feed, or the feed has left the
+    /// registry.
+    ///
+    /// The two are deliberately one state, because the one caller that waits on it
+    /// ([`Previews::hand_over`]) is asking *"is a preview driver still going to touch this
+    /// device?"* and the answer is no either way. A vocabulary that separated them would be a
+    /// vocabulary describing the observer rather than the device.
+    Elsewhere,
 }
 
 /// One published frame: the camera's own bytes, and where it sits in the sequence.
@@ -354,6 +449,7 @@ impl Previews {
             published: watch::Sender::new(0),
             skipped: watch::Sender::new(0),
             interrupted: watch::Sender::new(0),
+            unpaintable: watch::Sender::new(0),
         }))
     }
 
@@ -418,6 +514,19 @@ impl Previews {
         self.0.skipped.subscribe()
     }
 
+    /// How many frames were refused for being a picture a browser cannot paint, as something to
+    /// **await**.
+    ///
+    /// `Fanout::unpaintable`'s doc argues why the count exists at all; this is the shape a test
+    /// waits on. It is the *only* observable a raw take has from a viewer's side — nothing is
+    /// published, so [`Previews::watch_published`] does not move, and the readers are looking at
+    /// the last frame the preview's own driver took — so a build that let YUYV bytes into an
+    /// `<img>` and a build that dropped them silently are told apart here and nowhere else.
+    #[must_use]
+    pub fn watch_unpaintable(&self) -> watch::Receiver<u64> {
+        self.0.unpaintable.subscribe()
+    }
+
     /// The daemon's one stop token, for the response body that carries these frames.
     ///
     /// `crate::http::preview`'s writer has to watch it *itself* rather than rely on the feed
@@ -476,6 +585,11 @@ impl Previews {
         if owes_a_start.is_none() {
             // A feed that was already there: this reader is the second tab, and there is
             // nothing to wait for. It joins the stream in progress and sees the next frame.
+            //
+            // **This is also the whole of "a preview that arrives mid-recording".** A take
+            // creates the feed before it touches the device, so a reader that turns up during
+            // one takes this branch and is served the recording's own frames — no check here
+            // asks whether a recording is running, because the registry already answered.
             return Ok(viewer);
         }
 
@@ -485,13 +599,19 @@ impl Previews {
                 // A feed was inserted and nothing is ever going to drive it — an actor thread
                 // that could not be spawned is this process failing to compose itself, and
                 // leaving the entry behind would make every later viewer of that camera
-                // subscribe to a channel with no publisher.
-                self.withdraw(&feed).await;
+                // subscribe to a channel with no publisher. `Revive::Never`, because reviving
+                // it would spawn the actor that just refused to spawn.
+                self.release(&feed, Revive::Never).await;
                 return Err(err);
             }
         };
         let (answered, answer) = oneshot::channel();
-        tokio::spawn(drive(self.clone(), actor, feed, answered));
+        tokio::spawn(drive(
+            self.clone(),
+            actor,
+            feed,
+            Started::Attaching(answered),
+        ));
         match answer.await {
             Ok(Ok(())) => Ok(viewer),
             Ok(Err(err)) => Err(err),
@@ -546,18 +666,30 @@ impl Previews {
             return Ok((Arc::clone(feed), viewer, None));
         }
 
-        let feed = Arc::new(Feed {
-            camera: info.id.clone(),
-            frames: watch::Sender::new(None),
-            published: self.0.published.clone(),
-            oversized: AtomicU64::new(0),
-        });
+        let feed = self.feed(&info, Source::Preview);
         // Subscribed **before** the lock is released, so the driver this call is about to
         // spawn can never see a feed with no readers and retire it before its first frame.
         let viewer = self.viewer(&feed);
         live.insert(info.id.clone(), Arc::clone(&feed));
         self.0.feeds.send_replace(live.len());
         Ok((feed, viewer, Some(Starting)))
+    }
+
+    /// One camera's fan-out, not yet in the registry.
+    ///
+    /// The single constructor, so the two callers that create a feed — a first viewer
+    /// ([`Previews::reserve`]) and a recording ([`Previews::hand_over`]) — cannot disagree about
+    /// what one is. They differ in exactly one argument, which is the point: the same channel,
+    /// the same counts and the same caps, with a different thing publishing into it.
+    fn feed(&self, info: &CameraInfo, source: Source) -> Arc<Feed> {
+        Arc::new(Feed {
+            info: info.clone(),
+            frames: watch::Sender::new(None),
+            source: watch::Sender::new(source),
+            published: self.0.published.clone(),
+            unpaintable: self.0.unpaintable.clone(),
+            oversized: AtomicU64::new(0),
+        })
     }
 
     /// One reader of `feed`.
@@ -569,33 +701,144 @@ impl Previews {
         }
     }
 
-    /// Remove `feed` from the registry when nobody is reading it any more.
+    /// Take this camera's frames over for a recording, and wait until the device is free.
     ///
-    /// Answers whether it did. The re-check under the lock is the whole function: a viewer
-    /// that arrives between the driver's count and this call finds the feed still in the map
-    /// and subscribes to it, and this call then sees its receiver and declines — so the race
-    /// is resolved in favour of the reader that wants a camera, which is the direction a
-    /// preview should err in.
-    async fn retire(&self, feed: &Arc<Feed>) -> bool {
+    /// **The claim half of the 2026-08-14 ruling** (note **N117**), and it is called by
+    /// `crate::record::Recordings::reserve` *before* anything device-shaped — so by the time
+    /// `engine::record::start` reaches `VIDIOC_STREAMON`, nothing of this module's is going to
+    /// touch that node. Two things happen and each answers one of item 10's edges:
+    ///
+    /// - **There is a feed afterwards, whether or not anybody is watching.** A take with nobody
+    ///   watching costs one map entry and one `Arc` — and it is what makes "a preview that
+    ///   arrives mid-recording" need no code at all, because [`Previews::reserve`]'s existing
+    ///   second-tab branch is then the branch it takes. The alternative, creating the feed lazily
+    ///   when a reader turns up, cannot be written without this module asking the recording
+    ///   registry a question, which is the second answer §2.10 forbids.
+    /// - **A preview that was already running is stopped first, and this call waits for it.**
+    ///   Two loops dequeuing from one stream would give the recording every other frame, and
+    ///   item 10 is explicit that a recording must not make a dropped frame look like a slow
+    ///   transition. So the feed is marked [`Source::Yielding`], [`pump`] sees it between turns,
+    ///   [`drive`] stops the stream and only then marks it [`Source::Elsewhere`] — which is what
+    ///   this returns on. The wait is bounded by the turn already in flight, one
+    ///   `limits::PREVIEW_FRAME_WAIT_MS`, plus that `STREAMOFF`; a device that never returns
+    ///   from `DQBUF` wedges the camera's actor thread and therefore this wait too, which is the
+    ///   residual note **N59** states at its real size and `Recordings::collect` already carries.
+    ///
+    /// The registry lock is **not** held across the wait, so a `record_start` on one camera
+    /// delays no other camera's preview.
+    pub(crate) async fn hand_over(&self, info: &CameraInfo) -> Watchers {
+        let (feed, yielding) = {
+            let mut live = self.0.live.lock().await;
+            match live.get(&info.id) {
+                Some(feed) => {
+                    let feed = Arc::clone(feed);
+                    // `Preview` is the only state with a driver on the device. `Yielding` cannot
+                    // be seen here — the recording slot is reserved before this call, so there
+                    // is never a second claim in flight — and `Elsewhere` means the driver has
+                    // already gone.
+                    let yielding = *feed.source.borrow() == Source::Preview;
+                    if yielding {
+                        feed.source.send_replace(Source::Yielding);
+                    }
+                    (feed, yielding)
+                }
+                None => {
+                    let feed = self.feed(info, Source::Elsewhere);
+                    live.insert(info.id.clone(), Arc::clone(&feed));
+                    self.0.feeds.send_replace(live.len());
+                    (feed, false)
+                }
+            }
+        };
+        if yielding {
+            let mut leaving = feed.source.subscribe();
+            // `Err` is impossible while this call holds the `Arc` the sender lives in, and is
+            // answered the same way regardless: the wait is over because there is nothing left
+            // to wait for.
+            let _ = leaving
+                .wait_for(|source| *source == Source::Elsewhere)
+                .await;
+        }
+        self.watchers(feed)
+    }
+
+    /// A recording's handle on `feed`.
+    fn watchers(&self, feed: Arc<Feed>) -> Watchers {
+        Watchers {
+            sink: Publisher {
+                feed: Arc::clone(&feed),
+                shutdown: self.0.shutdown.clone(),
+            },
+            previews: self.clone(),
+            feed,
+        }
+    }
+
+    /// Give up `feed`, now that whatever was publishing into it has stopped.
+    ///
+    /// **The one home for "what happens to a fan-out when its publisher ends"**, and the reason
+    /// it is one function rather than the `retire`/`withdraw` pair it replaces: there are now
+    /// three publishers that can stop (a driver whose readers left, a driver a recording
+    /// displaced, and a recording that finished) and one set of three answers, so a second copy
+    /// would be a second opinion about whether an open tab keeps its picture.
+    ///
+    /// **Its contract is that the device is not streaming for this feed when it is called.**
+    /// That is what makes the answer safe whichever way it goes: a feed this removes cannot be
+    /// followed by a `STREAMOFF` that would land on a stream a recording had just started, which
+    /// is the one interleaving that could corrupt a take. [`drive`] therefore stops the stream
+    /// *before* calling this, where P5b stopped it after — the window that swaps costs a viewer
+    /// arriving in that instant a `STREAMON` it used to be spared, and is what the
+    /// [`Revive::IfWatched`] arm is for.
+    ///
+    /// The three answers, in the order they are decided:
+    ///
+    /// 1. **A recording claimed it** ([`Source::Yielding`]): the feed stays, marked
+    ///    [`Source::Elsewhere`], which is the signal [`Previews::hand_over`] is waiting on. Its
+    ///    readers keep their streams and the recording's frames arrive next.
+    /// 2. **Somebody is still reading it** and `revive` allows it: the feed stays, marked
+    ///    [`Source::Preview`] again, and the caller is handed the actor to drive it with — which
+    ///    is how a preview comes back after a take and how a reader that arrived during a
+    ///    `STREAMOFF` is served. That path is deliberately *not* open to a driver that ended
+    ///    because the device refused: reviving one of those is a loop that starts a stream, is
+    ///    refused, and starts it again.
+    /// 3. **Nobody wants it**: out of the registry, and its readers' streams end when the
+    ///    channel drops — the only honest thing left to give them.
+    ///
+    /// **It hands the actor back rather than spawning the driver itself**, and that is a
+    /// language constraint stated rather than hidden: a `release` that spawned a [`drive`] which
+    /// awaits `release` is a recursive `async fn`, and its future's `Send`-ness cannot be proven
+    /// (the opaque type is defined in terms of itself). So the two callers each do the obvious
+    /// thing with the answer — [`drive`] goes round its loop again, [`Watchers::hand_back`]
+    /// spawns — and the cycle is broken at the one place it can be.
+    async fn release(&self, feed: &Arc<Feed>, revive: Revive) -> Handed {
         let mut live = self.0.live.lock().await;
-        if feed.frames.receiver_count() > 0 {
-            return false;
+        if *feed.source.borrow() == Source::Yielding {
+            feed.source.send_replace(Source::Elsewhere);
+            return Handed::ToARecording;
+        }
+        // The shutdown check is not decoration: a daemon that is stopping must not start a
+        // stream for a tab it is about to disconnect, and `drive` would then have to notice the
+        // cancellation and stop it again.
+        if revive == Revive::IfWatched
+            && feed.frames.receiver_count() > 0
+            && !self.0.shutdown.is_cancelled()
+        {
+            // Under the lock, which is where every transition of `Feed::source` is written. The
+            // actor is a lookup in the registry the camera is already open in; the failing case
+            // is a thread that will not spawn, and it falls through to the removal below rather
+            // than leaving a feed nothing drives.
+            if let Ok(actor) = self.0.cameras.actor(&feed.info, self.0.clock.now_ms()) {
+                feed.source.send_replace(Source::Preview);
+                return Handed::ToAFreshDriver(actor);
+            }
         }
         remove(&mut live, feed);
         self.0.feeds.send_replace(live.len());
-        true
-    }
-
-    /// Remove `feed` from the registry whatever its readers are doing.
-    ///
-    /// The path out of the driver loop that is not `Previews::retire` — a cancelled daemon,
-    /// a camera that stopped delivering, a device that refused. Readers that are still
-    /// attached get the end of their stream when the feed's channel is dropped, which is the
-    /// only honest thing left to give them.
-    async fn withdraw(&self, feed: &Arc<Feed>) {
-        let mut live = self.0.live.lock().await;
-        remove(&mut live, feed);
-        self.0.feeds.send_replace(live.len());
+        // After the removal, and unconditional: nothing can be waiting on a feed that reached
+        // here — arm 1 is what a claim takes — and a source that still said `Preview` on a feed
+        // with no driver would be this module's own state lying to its next reader.
+        feed.source.send_replace(Source::Elsewhere);
+        Handed::Nobody
     }
 
     /// One frame's worth of device work, on the actor's thread.
@@ -647,10 +890,135 @@ impl Previews {
 /// says nobody is previewing it.
 fn remove(live: &mut BTreeMap<CameraId, Arc<Feed>>, feed: &Arc<Feed>) {
     if live
-        .get(&feed.camera)
+        .get(&feed.info.id)
         .is_some_and(|entry| Arc::ptr_eq(entry, feed))
     {
-        live.remove(&feed.camera);
+        live.remove(&feed.info.id);
+    }
+}
+
+/// Whether [`Previews::release`] may put a fresh driver on a feed somebody is still reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Revive {
+    /// Yes, if a reader is attached and this daemon is not stopping.
+    ///
+    /// The two callers that pass it are the two whose publisher stopped for a reason that says
+    /// nothing about the device: a driver that found no readers left, and a recording that
+    /// finished. Both can be followed by a working preview, and item 4 of the notes' Expected
+    /// usage — the two consumers overlapping is the ordinary case — is why they are.
+    IfWatched,
+    /// No. The publisher stopped because the *device* refused, this process could not compose
+    /// itself, or the daemon is shutting down; a fresh driver would meet the same answer.
+    Never,
+}
+
+/// What [`Previews::release`] did with a feed.
+///
+/// A value rather than a `bool` because there are three answers and the log line that reports
+/// them is the only place an operator sees a hand-over at all.
+#[derive(Debug, Clone)]
+enum Handed {
+    /// A recording had claimed the camera: the feed stays and the take publishes into it.
+    ToARecording,
+    /// A reader is still attached: the feed stays, and this is the actor to drive it with.
+    ToAFreshDriver(Arc<CameraActor>),
+    /// Nobody: the feed is out of the registry and its readers' streams have ended.
+    Nobody,
+}
+
+impl Handed {
+    /// The word a log line carries — a fixed vocabulary, for [`Ended::name`]'s reason.
+    fn name(&self) -> &'static str {
+        match self {
+            Handed::ToARecording => "a recording has the camera's frames",
+            Handed::ToAFreshDriver(_) => {
+                "a reader is still watching, so the stream was started again"
+            }
+            Handed::Nobody => "nobody was left watching",
+        }
+    }
+}
+
+/// A recording's place in one camera's fan-out: where its frames go, and the feed it owes back.
+///
+/// Held by `crate::record::Live` for the length of a take, which is why it is a value with an
+/// obligation in it rather than a pair of calls on [`Previews`]: the only way to get one is to
+/// claim the camera ([`Previews::hand_over`]), and the only thing to do with one is publish
+/// through it and hand it back. `crate::record::Reserved` and [`Starting`] carry the same shape
+/// for the same reason.
+///
+/// It holds the [`Publisher`] the *preview's own* driver uses rather than a second sink — "what
+/// may enter this fan-out" is one law (design §2.10), and a recording that published through a
+/// copy of it would be a second place the frame cap and the paintability guard could drift.
+pub(crate) struct Watchers {
+    previews: Previews,
+    feed: Arc<Feed>,
+    sink: Publisher,
+}
+
+impl std::fmt::Debug for Watchers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Hand-written for `crate::record::Live`'s reason one crate-module along: this value is
+        // reachable from `crate::record::Reserved`, which derives `Debug`, and the derived one
+        // would walk `Previews` into the registry, into every feed and into the `Shot` in its
+        // channel. That is safe — a `Shot` prints its byte count — and it is a lot of a
+        // camera's business to render because somebody formatted a reservation. A camera and a
+        // reader count are what this value is about.
+        f.debug_struct("Watchers")
+            .field("camera", &self.feed.info.id)
+            .field("readers", &self.feed.frames.receiver_count())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Watchers {
+    /// Show one of this take's frames to whoever is watching the camera.
+    ///
+    /// Called on the **camera's actor thread**, inside the command that dequeued the frame and
+    /// after the muxer has read it — see `crate::record`'s header for why that placement is the
+    /// point. The frame is *moved* in, so the second consumer costs no copy of the bytes.
+    ///
+    /// The demand is asked **before** the frame is handed over, which is the difference between
+    /// a take nobody is watching costing one comparison per frame and it costing an allocation,
+    /// a publication and a count nobody ever read. It is the same question
+    /// [`Publisher::publish`] answers on the way out; asking it twice is asking one question
+    /// twice, not keeping two answers.
+    pub(crate) fn show(&self, frame: Frame) {
+        if self.sink.demand() == Demand::Enough {
+            return;
+        }
+        let _ = self.sink.publish(frame);
+    }
+
+    /// Give the camera's frames back, now that this take has stopped its stream.
+    ///
+    /// [`Previews::release`]'s contract is that the device is not streaming for the feed, so
+    /// this is called after `engine::record::stop` and before the container is closed — a close
+    /// writes an index and flushes, and the owner's tab should not wait for a disk.
+    ///
+    /// **What it is not is a way for a recording to end a preview.** The three answers are
+    /// [`Previews::release`]'s, and the one that matters here is that a feed somebody is still
+    /// reading gets a driver again rather than being withdrawn: ending it would be a second home
+    /// for "how a preview ends" (§2.10), and the notes' item 4 says the overlap is the ordinary
+    /// case rather than an exception to clean up after.
+    pub(crate) async fn hand_back(&self) {
+        let handed = self.previews.release(&self.feed, Revive::IfWatched).await;
+        tracing::debug!(
+            camera = %self.feed.info.id,
+            outcome = handed.name(),
+            "the recording gave the camera's frames back"
+        );
+        if let Handed::ToAFreshDriver(actor) = handed {
+            // Spawned rather than awaited: this runs on the recording's driver, which still has
+            // a container to close, and a preview that had to wait for a flush would be the
+            // owner's tab paying for the agent's disk.
+            tokio::spawn(drive(
+                self.previews.clone(),
+                actor,
+                Arc::clone(&self.feed),
+                Started::Resuming,
+            ));
+        }
     }
 }
 
@@ -678,11 +1046,58 @@ pub(crate) fn node_of(info: &CameraInfo) -> camino::Utf8PathBuf {
 #[derive(Debug)]
 struct Starting;
 
+/// Who is waiting to hear whether this driver's stream started.
+///
+/// A value rather than an `Option<oneshot::Sender<_>>`, because the two cases want different
+/// things from a refusal: one has a caller holding an HTTP request open for the answer, and the
+/// other has nobody at all and would otherwise drop a device's own words on the floor.
+#[derive(Debug)]
+enum Started {
+    /// The [`Previews::attach`] that created this feed. Its `oneshot` is what turns a
+    /// `VIDIOC_STREAMON` refusal into the device's own sentence on the wire rather than an empty
+    /// `200` (`crate::http::preview`).
+    Attaching(oneshot::Sender<Result<()>>),
+    /// Nobody. This driver is taking a feed back — from a recording that finished, or from a
+    /// reader that arrived while the last driver's stream was being stopped — so a refusal is
+    /// logged here instead, and the feed's own withdrawal is what its readers see.
+    Resuming,
+}
+
+impl Started {
+    /// The stream is up.
+    fn started(self) {
+        if let Started::Attaching(answered) = self {
+            // Nobody left to tell is a request whose client went away, which is not this
+            // driver's problem: the feed is real and the frames are flowing.
+            let _ = answered.send(Ok(()));
+        }
+    }
+
+    /// The stream is not up, and this is what the device said.
+    fn refused(self, camera: &CameraId, err: Error) {
+        match self {
+            Started::Attaching(answered) => {
+                let _ = answered.send(Err(err));
+            }
+            Started::Resuming => {
+                tracing::warn!(
+                    %camera,
+                    error = %err,
+                    "the preview stream could not be started again after the camera was given back"
+                );
+            }
+        }
+    }
+}
+
 /// Why a driver loop ended.
 #[derive(Debug)]
 enum Ended {
     /// The last reader went away.
     Unwatched,
+    /// A recording claimed the camera, and this driver is getting off the device so the take can
+    /// have it (note **N117**). The feed survives; the *driver* is what ends.
+    HandedOver,
     /// The daemon is stopping.
     ShuttingDown,
     /// The camera delivered nothing for [`limits::PREVIEW_MAX_EMPTY_TURNS`] turns.
@@ -700,10 +1115,39 @@ impl Ended {
     fn name(&self) -> &'static str {
         match self {
             Ended::Unwatched => "the last viewer left",
+            Ended::HandedOver => "a recording took the camera over",
             Ended::ShuttingDown => "the daemon is shutting down",
             Ended::Silent => "the camera stopped delivering frames",
             Ended::Deferred => "the camera was busy with other work",
             Ended::Refused(_) => "the device refused",
+        }
+    }
+
+    /// Whether the feed this driver is giving up may be handed straight to a fresh one.
+    ///
+    /// **A `match` over the whole vocabulary rather than a condition at the call site**, and the
+    /// reason is that a hand-applied mutant proved the call site unconstrained: with the decision
+    /// written as a two-armed `match` inside [`drive`], flipping it to `Revive::Never` passed all
+    /// 1 329 tests (note **N117**, mutant M11), because the *window* it serves — a reader
+    /// arriving between a `STREAMOFF` and the removal that follows it — cannot be opened from
+    /// outside on purpose. Here it is a total function over five values that a test can walk, so
+    /// the rule is constrained even where the race is not reachable.
+    ///
+    /// Exactly one ending revives, and the other four each say why not: a driver that ended
+    /// because the *device* refused, because the camera went quiet or because it was busy with
+    /// other work would be replaced by a driver meeting the same answer; a daemon that is
+    /// stopping must not start a stream for a tab it is about to disconnect; and a hand-over
+    /// never reaches the question at all, because [`Previews::release`]'s first arm takes it —
+    /// which is why `HandedOver` answers [`Revive::Never`] rather than something louder. Saying
+    /// so twice is how the two could come to disagree.
+    fn revive(&self) -> Revive {
+        match self {
+            Ended::Unwatched => Revive::IfWatched,
+            Ended::HandedOver
+            | Ended::ShuttingDown
+            | Ended::Silent
+            | Ended::Deferred
+            | Ended::Refused(_) => Revive::Never,
         }
     }
 }
@@ -712,52 +1156,71 @@ impl Ended {
 ///
 /// A task rather than a loop inside the request handler, because the stream outlives any one
 /// reader: the second tab must find a running feed, and the first tab closing must not end a
-/// stream the second is watching. It ends by removing its feed from the registry **before**
-/// stopping the stream, so no viewer can attach to a feed whose device is on its way to
-/// `STREAMOFF`.
-async fn drive(
-    previews: Previews,
-    actor: Arc<CameraActor>,
-    feed: Arc<Feed>,
-    started: oneshot::Sender<Result<()>>,
-) {
-    let camera = feed.camera.clone();
-    if let Err(err) = previews
-        .ask(&actor, move |device| {
-            engine::preview::start(device, &engine::preview::request()).map(|_| ())
-        })
-        .await
-    {
-        // The feed never carried a frame, so the reader that asked for it gets the device's
-        // own words rather than an empty `200` — see `crate::http::preview` for what that
-        // becomes on the wire.
-        previews.withdraw(&feed).await;
-        let _ = started.send(Err(err));
-        return;
-    }
-    let _ = started.send(Ok(()));
-
-    let ended = pump(&previews, &actor, &feed).await;
-    previews.withdraw(&feed).await;
-    if let Err(err) = previews.ask(&actor, engine::preview::stop).await {
-        // The camera is open and not streaming for anybody, and the descriptor closes on the
-        // ordinary idle sweep — which stops the stream whatever this said. Worth a line
-        // because it names a device that is not behaving, and not worth an escalation because
-        // there is no client waiting on it.
-        tracing::debug!(%camera, error = %err, "the preview stream could not be stopped");
-    }
-
-    match &ended {
-        Ended::Refused(err) => {
-            tracing::warn!(%camera, error = %err, reason = ended.name(), "the preview stream ended");
+/// stream the second is watching. Since P6c it outlives the *driver* as well — a recording takes
+/// the feed and publishes into it — which is why what this ends with is
+/// [`Previews::release`]'s three-way answer rather than a withdrawal.
+///
+/// **The stream is stopped before the feed is given up**, which is the order P5b had the other
+/// way round. [`Previews::release`]'s doc argues it: a feed removed while a `STREAMOFF` is still
+/// queued is a `STREAMOFF` that can land on a stream a recording had just started. What the swap
+/// costs is that a viewer can now attach in the window between the stop and the removal, and
+/// what it buys that viewer is arm 2 of that answer — a fresh driver rather than a stream that
+/// ends the moment it opened. That arm is why this is a **loop**: the fresh driver is this task
+/// going round again, which is the same code doing the same thing and is also the only shape the
+/// borrow checker allows (`Previews::release`'s last paragraph says why a spawn here cannot be).
+async fn drive(previews: Previews, mut actor: Arc<CameraActor>, feed: Arc<Feed>, started: Started) {
+    let camera = feed.info.id.clone();
+    // Consumed by the first `STREAMON` and replaced, because only the first one has a caller:
+    // every round after it is a resume, whose refusals are logged rather than answered.
+    let mut waiting = started;
+    loop {
+        if let Err(err) = previews
+            .ask(&actor, move |device| {
+                engine::preview::start(device, &engine::preview::request()).map(|_| ())
+            })
+            .await
+        {
+            // The feed never carried a frame, so the reader that asked for it gets the device's
+            // own words rather than an empty `200` — see `crate::http::preview` for what that
+            // becomes on the wire. Nothing was started, so there is nothing to stop, and the
+            // feed is released without a revive: a fresh driver would meet the same refusal.
+            previews.release(&feed, Revive::Never).await;
+            waiting.refused(&camera, err);
+            return;
         }
-        _ => {
-            tracing::debug!(
-                %camera,
-                reason = ended.name(),
-                oversized = feed.oversized.load(Ordering::Relaxed),
-                "the preview stream ended"
-            );
+        std::mem::replace(&mut waiting, Started::Resuming).started();
+
+        let ended = pump(&previews, &actor, &feed).await;
+        if let Err(err) = previews.ask(&actor, engine::preview::stop).await {
+            // The camera is open and not streaming for anybody, and the descriptor closes on
+            // the ordinary idle sweep — which stops the stream whatever this said. Worth a line
+            // because it names a device that is not behaving, and not worth an escalation
+            // because there is no client waiting on it.
+            tracing::debug!(%camera, error = %err, "the preview stream could not be stopped");
+        }
+        // Which endings may be followed by a fresh driver is `Ended::revive`'s, walked
+        // exhaustively there rather than decided here — its doc argues why the decision moved
+        // out of this line.
+        let handed = previews.release(&feed, ended.revive()).await;
+
+        match &ended {
+            Ended::Refused(err) => {
+                tracing::warn!(%camera, error = %err, reason = ended.name(), "the preview stream ended");
+            }
+            _ => {
+                tracing::debug!(
+                    %camera,
+                    reason = ended.name(),
+                    outcome = handed.name(),
+                    oversized = feed.oversized.load(Ordering::Relaxed),
+                    "the preview stream ended"
+                );
+            }
+        }
+
+        match handed {
+            Handed::ToAFreshDriver(again) => actor = again,
+            Handed::ToARecording | Handed::Nobody => return,
         }
     }
 }
@@ -773,9 +1236,21 @@ async fn pump(previews: &Previews, actor: &CameraActor, feed: &Arc<Feed>) -> End
         if previews.0.shutdown.is_cancelled() {
             return Ended::ShuttingDown;
         }
+        // **Before the reader count**, and the order is the answer to one of item 10's edges: a
+        // recording that claimed a camera whose last tab closed in the same instant must find
+        // its feed still there. Both arms leave the loop, so this only decides which of the two
+        // reasons is reported — and `Previews::release`'s first arm decides the feed's fate
+        // under the lock either way, so a claim that lands between these two lines is still
+        // honoured. Read without the lock, which is what a `watch` is for: the value can only be
+        // one turn stale, and one stale turn is one more frame for the viewers.
+        if *feed.source.borrow() != Source::Preview {
+            return Ended::HandedOver;
+        }
         // Between frames, so the check costs nothing while frames are flowing and the stream
-        // ends within one `PREVIEW_FRAME_WAIT_MS` of the last tab closing.
-        if feed.frames.receiver_count() == 0 && previews.retire(feed).await {
+        // ends within one `PREVIEW_FRAME_WAIT_MS` of the last tab closing. The re-check under
+        // the lock — a viewer that arrives in this instant wins rather than races — is
+        // `Previews::release`'s, after the stream has been stopped.
+        if feed.frames.receiver_count() == 0 {
             return Ended::Unwatched;
         }
 
@@ -819,23 +1294,52 @@ async fn pump(previews: &Previews, actor: &CameraActor, feed: &Arc<Feed>) -> End
 
 /// The sink `engine::preview` hands each frame to — the daemon's half of D12's watch channel.
 ///
-/// Built per turn and dropped with it, because it holds only two handles and building it is
-/// two `Arc` bumps. It is called **on the camera's actor thread**, which is why nothing in
+/// Built per turn and dropped with it by the preview's own driver, because it holds only two
+/// handles and building it is two `Arc` bumps; held for the length of a take by [`Watchers`],
+/// because a recording's turns are the same loop with the muxer in front of the channel. It is
+/// called **on the camera's actor thread** either way, which is why nothing in
 /// `Publisher::publish` awaits, blocks or needs a runtime context: `watch::Sender` is usable
 /// from any thread, exactly as `crate::events`'s `broadcast::Sender` is and for the same
 /// reason.
 #[derive(Debug)]
-struct Publisher {
+pub(crate) struct Publisher {
     feed: Arc<Feed>,
     shutdown: Shutdown,
 }
 
 impl FrameSink for Publisher {
     fn publish(&self, frame: Frame) -> Demand {
+        // **A picture, before a size.** Only a recording can bring a frame that is not a JPEG
+        // bitstream here — a preview's own stream is refused at negotiation if it is not
+        // (`engine::preview::start`) — and this route serves `image/jpeg` parts, so YUYV bytes
+        // under that label are a *broken* image in a browser rather than a wrong one. The
+        // question is `PixelFormat::is_compressed`'s, asked of the schema that owns the format
+        // vocabulary (§2.10) and never re-derived here.
+        //
+        // Ordered ahead of the byte cap deliberately: a 4K raw frame is both unpaintable and
+        // oversized, and counting it as oversized would send an operator to
+        // `PREVIEW_MAX_FRAME_BYTES` for a frame no cap would have helped. The more specific
+        // fact wins.
+        if !frame.pixel_format.is_compressed() {
+            self.feed
+                .unpaintable
+                .send_modify(|count| *count = count.saturating_add(1));
+            return self.demand();
+        }
         // Device-derived and validated before it becomes an allocation this process keeps
         // (design §2.5). A frame over the cap is dropped and counted — the same answer a slow
         // reader's frames get, because the alternative is a driver deciding how much memory
         // this daemon uses.
+        //
+        // **On the frames this daemon actually publishes it cannot fire**, and that is worth
+        // recording rather than assuming either way: a preview is capped at
+        // `PREVIEW_MAX_WIDTH`×`PREVIEW_MAX_HEIGHT`, a recording's MJPG frames measure 90–220 kB
+        // at 1080p on this project's cameras, and the largest mode the seed rig offers —
+        // 4096×2160 \[PF:26\] — is ~4.4× those pixels and still an order of magnitude inside
+        // four mebibytes. What could exceed it is a *raw* frame (1920×1080 YUYV is 4.0 MiB and
+        // 4096×2160 is 17 MiB), and the guard above drops those first. So this stays what it
+        // has always been: the bound that keeps a driver from deciding this daemon's memory, and
+        // not a thing a healthy take meets.
         if frame.bytes.len() > limits::PREVIEW_MAX_FRAME_BYTES {
             self.feed.oversized.fetch_add(1, Ordering::Relaxed);
             return self.demand();
@@ -937,20 +1441,40 @@ mod tests {
 
     /// A feed with nobody driving it, for the publish-side assertions.
     fn feed() -> (Previews, Arc<Feed>) {
-        let previews = Previews::new(
+        let previews = fanout();
+        let feed = previews.feed(&camera(), Source::Preview);
+        (previews, feed)
+    }
+
+    /// A fan-out over a backend that replays no cameras.
+    ///
+    /// Enough for every assertion in this module, because none of them reaches a device: what is
+    /// under test here is the registry, the channel and the two guards on the way into it.
+    fn fanout() -> Previews {
+        Previews::new(
             Arc::new(Cameras::new(Arc::new(
                 fake::FakeBackend::new(Vec::new()).expect("a backend replaying no cameras"),
             ))),
             MonotonicClock::new(),
             Shutdown::new(),
-        );
-        let feed = Arc::new(Feed {
-            camera: CameraId::parse("cam:test").expect("a literal id"),
-            frames: watch::Sender::new(None),
-            published: previews.0.published.clone(),
-            oversized: AtomicU64::new(0),
-        });
-        (previews, feed)
+        )
+    }
+
+    /// The camera every feed in this module is about.
+    fn camera() -> CameraInfo {
+        testkit::fixtures::synthetic_basic().invariant.info
+    }
+
+    /// The same frame in a format no browser will paint.
+    ///
+    /// YUYV rather than an invented format, because it is what D7's raw fallback really records
+    /// and what \[PF:26\]'s camera really offers first — the case is a `.y4m` take, not a
+    /// hypothetical one.
+    fn raw(sequence: u32, bytes: usize) -> Frame {
+        Frame {
+            pixel_format: PixelFormat::YUYV,
+            ..frame(sequence, bytes)
+        }
     }
 
     fn publisher(previews: &Previews, feed: &Arc<Feed>) -> Publisher {
@@ -1054,10 +1578,208 @@ mod tests {
         // what design §2.6 says must not happen.
         let (previews, feed) = feed();
         let mut viewer = previews.viewer(&feed);
-        previews.withdraw(&feed).await;
+        assert!(matches!(
+            previews.release(&feed, Revive::Never).await,
+            Handed::Nobody
+        ));
         drop(feed);
 
         assert!(viewer.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_frame_a_browser_cannot_paint_is_dropped_and_counted_rather_than_served_as_jpeg() {
+        // The guard only a **recording** can reach, and the reason it is in `Publisher` rather
+        // than in `crate::record`: this route writes `image/jpeg` parts, so "what may enter this
+        // fan-out" is one law and it belongs where the fan-out is (design §2.10). A preview's own
+        // stream is refused at negotiation if it is not a JPEG bitstream
+        // (`engine::preview::start`), so nothing else can bring one.
+        //
+        // Both directions, because a guard that dropped *everything* would satisfy the first
+        // half: the YUYV frame is counted and not published, and the MJPG frame after it is
+        // published and not counted.
+        let (previews, feed) = feed();
+        let sink = publisher(&previews, &feed);
+        let mut viewer = previews.viewer(&feed);
+
+        assert_eq!(
+            sink.publish(raw(0, 16)),
+            Demand::More,
+            "a frame the fan-out cannot carry ended the stream instead of being dropped"
+        );
+        assert_eq!(*previews.watch_unpaintable().borrow(), 1);
+        assert_eq!(
+            *previews.watch_published().borrow(),
+            0,
+            "raw bytes were published into a route that serves image/jpeg"
+        );
+
+        sink.publish(frame(1, 16));
+        assert_eq!(*previews.watch_unpaintable().borrow(), 1);
+        assert_eq!(
+            viewer
+                .next()
+                .await
+                .expect("the frame that could be painted")
+                .sequence(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recording_claims_a_feed_that_a_later_reader_joins_without_starting_a_stream() {
+        // **The whole of "a preview that arrives mid-recording", as the two calls that make it
+        // need no code.** A take claims the camera before it touches the device, so the feed is
+        // already in the registry when a tab turns up — and `reserve`'s existing second-tab
+        // branch answers with no `Starting` witness, which is what says nobody owes this camera
+        // a `VIDIOC_STREAMON`. A build in which the take did not create the feed would hand back
+        // a witness here, `attach` would start a second stream, and the device would refuse it
+        // `Busy` — to the tab, about a daemon rather than about a machine.
+        let previews = fanout();
+        let info = camera();
+        let watchers = previews.hand_over(&info).await;
+        assert_eq!(
+            previews.feeds(),
+            1,
+            "a take with nobody watching has a feed"
+        );
+
+        let (_feed, _viewer, starting) = previews
+            .reserve(info.clone())
+            .await
+            .expect("a camera that is recording still takes readers");
+        assert!(
+            starting.is_none(),
+            "a tab that arrived during a take was told to start a stream"
+        );
+        assert_eq!(previews.feeds(), 1, "the tab created a second feed");
+        drop(watchers);
+    }
+
+    #[tokio::test]
+    async fn a_feed_a_recording_has_claimed_is_never_taken_away_by_the_driver_that_left() {
+        // The invariant `Previews::hand_over`'s wait rests on. That call marks the feed
+        // `Yielding` and then awaits a transition on a channel **inside the feed** — so a
+        // release path that removed a claimed feed would be a `record_start` parked for ever on
+        // a camera nothing was going to answer about. Both halves are asserted: the feed stays,
+        // and the source reaches the value the waiter is watching for.
+        let previews = fanout();
+        let info = camera();
+        let feed = previews.feed(&info, Source::Yielding);
+        previews
+            .0
+            .live
+            .lock()
+            .await
+            .insert(info.id.clone(), Arc::clone(&feed));
+        previews.0.feeds.send_replace(1);
+
+        // `Revive::Never` and no readers — the two conditions that make every *other* arm remove
+        // it, so what keeps it is the claim rather than an accident of this fixture.
+        assert!(matches!(
+            previews.release(&feed, Revive::Never).await,
+            Handed::ToARecording
+        ));
+        assert_eq!(previews.feeds(), 1, "a claimed feed was withdrawn");
+        assert_eq!(*feed.source.borrow(), Source::Elsewhere);
+    }
+
+    #[tokio::test]
+    async fn a_take_that_ends_leaves_a_watched_feed_a_driver_and_an_unwatched_one_nothing() {
+        // `Watchers::hand_back`'s two answers, which are item 10's third edge: when a take ends,
+        // a tab that is still open gets its own stream back rather than the end of its response
+        // — ending it would be a second home for "how a preview ends" (§2.10) and a tab that
+        // went dark every time an agent recorded. A feed nobody is reading is taken away, which
+        // is the same answer P5b gave a preview whose last viewer left.
+        let previews = fanout();
+        let info = camera();
+
+        let unwatched = previews.feed(&info, Source::Elsewhere);
+        previews
+            .0
+            .live
+            .lock()
+            .await
+            .insert(info.id.clone(), Arc::clone(&unwatched));
+        previews.0.feeds.send_replace(1);
+        assert!(matches!(
+            previews.release(&unwatched, Revive::IfWatched).await,
+            Handed::Nobody
+        ));
+        assert_eq!(previews.feeds(), 0);
+
+        let watched = previews.feed(&info, Source::Elsewhere);
+        previews
+            .0
+            .live
+            .lock()
+            .await
+            .insert(info.id.clone(), Arc::clone(&watched));
+        previews.0.feeds.send_replace(1);
+        let _viewer = previews.viewer(&watched);
+        assert!(matches!(
+            previews.release(&watched, Revive::IfWatched).await,
+            Handed::ToAFreshDriver(_)
+        ));
+        assert_eq!(
+            previews.feeds(),
+            1,
+            "a tab that was still open lost its feed"
+        );
+        assert_eq!(
+            *watched.source.borrow(),
+            Source::Preview,
+            "the feed was handed to a driver and not marked as having one"
+        );
+    }
+
+    #[test]
+    fn exactly_one_ending_may_be_followed_by_a_fresh_driver_and_the_other_five_say_why_not() {
+        // `Ended::revive`, walked over the whole vocabulary — which is what the decision moved
+        // out of `drive` to become (note **N117**, mutant M11: as a two-armed `match` at the call
+        // site it was unconstrained, because the race it serves cannot be opened on purpose from
+        // outside). Written as a list rather than as a loop over a `ALL` constant, because the
+        // point is that each answer was *chosen*: a new ending added to this enum fails to
+        // compile here until somebody says which of the two it is.
+        assert_eq!(Ended::Unwatched.revive(), Revive::IfWatched);
+        assert_eq!(Ended::HandedOver.revive(), Revive::Never);
+        assert_eq!(Ended::ShuttingDown.revive(), Revive::Never);
+        assert_eq!(Ended::Silent.revive(), Revive::Never);
+        assert_eq!(Ended::Deferred.revive(), Revive::Never);
+        assert_eq!(
+            Ended::Refused(Error::DeviceGone {
+                path: camino::Utf8PathBuf::from("/dev/video0")
+            })
+            .revive(),
+            Revive::Never
+        );
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_is_stopping_starts_no_stream_for_a_tab_it_is_about_to_disconnect() {
+        // The other direction of the arm above, and not a decoration: without the check, a take
+        // ended by `crate::shutdown` would hand its feed to a fresh driver during the drain —
+        // a `VIDIOC_STREAMON` issued by a process that has already been told to stop, which
+        // `pump` would then have to notice and undo. AGENTS: open streams are cancelled, never
+        // awaited.
+        let previews = fanout();
+        let info = camera();
+        let feed = previews.feed(&info, Source::Elsewhere);
+        previews
+            .0
+            .live
+            .lock()
+            .await
+            .insert(info.id.clone(), Arc::clone(&feed));
+        previews.0.feeds.send_replace(1);
+        let _viewer = previews.viewer(&feed);
+        previews.0.shutdown.cancel();
+
+        assert!(matches!(
+            previews.release(&feed, Revive::IfWatched).await,
+            Handed::Nobody
+        ));
+        assert_eq!(previews.feeds(), 0);
     }
 
     #[tokio::test]
@@ -1067,7 +1789,7 @@ mod tests {
         // something" — and it is asserted as a *kind* rather than a message so a rewording
         // does not fail it.
         let (previews, feed) = feed();
-        let info = testkit::fixtures::synthetic_basic().invariant.info;
+        let info = camera();
         previews
             .0
             .live

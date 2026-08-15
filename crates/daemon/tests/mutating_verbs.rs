@@ -2756,6 +2756,35 @@ async fn a_recording_reaches_the_device_and_the_report_counts_what_the_file_hold
     );
     assert_eq!(take.negotiated.pixel_format, PixelFormat::MJPG);
 
+    // **Polled until the take has a frame, and that is what makes the assertion below about the
+    // device rather than about this machine.** `record_stop` ends a take at its next turn, so a
+    // stop that arrives before the driver's first `DQBUF` collects an honest report of zero
+    // frames — and on a loaded host, where the fake is synthesizing a 3840x2160 JPEG for that
+    // first turn, it does: this test failed that way twice in one afternoon's runs before the
+    // loop below existed. Polling `record_status` is D10's own progress mechanism rather than a
+    // wait invented here (`webcam-handler-client`'s poll loop is the same call), and each poll
+    // is a live enumeration, so the loop is paced by the work it is asking about. The bound is
+    // asserted so a take that never reaches the device is a named failure instead of a hang.
+    let mut polls = 0;
+    loop {
+        let status = wire
+            .record_status(camera.clone())
+            .await
+            .expect("the camera resolves");
+        let reached = status
+            .take
+            .as_ref()
+            .is_some_and(|take| take.frames_written > 0 || take.ended.is_some());
+        if reached {
+            break;
+        }
+        polls += 1;
+        assert!(
+            polls < 4_096,
+            "the recording never reached the device: {status:?}"
+        );
+    }
+
     let report = wire
         .record_stop(camera.clone())
         .await

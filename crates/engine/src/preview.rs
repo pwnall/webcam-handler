@@ -58,6 +58,27 @@
 //!
 //! Note **N83** records the ruling, what the retired test pinned, and what replaced it.
 //!
+//! ## The second bullet's invariant is false since P6c, and this is where the answer went
+//!
+//! `crate::record` streams across commands too — a take holds its stream for its whole duration
+//! (note **N111**) — so "inside one actor there is exactly one thing that can be streaming" no
+//! longer holds, and [`while_suspended`] cannot tell the two apart: `Camera::streaming` answers
+//! about the **device**, and a device does not know what a stream is for. That is not a defect
+//! in this function; it is the limit of what the device can be asked, and inventing an answer
+//! here would put the question back above the fact — which is the mistake the bullet above
+//! records somebody already making once.
+//!
+//! Suspending a *recording* would be a loss rather than a pause: the frames inside the window
+//! are frames the take never gets, and the gap in the driver's timestamps is what D7's
+//! close-time rewrite turns into a slower mean interval for the whole file — which the notes'
+//! Expected usage item 10 forbids in as many words ("it must not make a dropped frame look like
+//! a slow transition"). So the caller that must not arrive here is kept away one layer up, where
+//! the answer exists: `daemon::server`'s `wch_photo` refuses a camera holding a running take
+//! with [`Error::Busy`] — *retry*, which is the right advice, because a take is bounded by its
+//! own duration (note **N118**). `webcam-handler-cli` cannot reach the case at all: it opens a
+//! camera per invocation, takes one photo and closes it, so nothing in that process is ever
+//! recording while a photo is taken.
+//!
 //! ## The stream is stopped by whoever ends the preview, and by the descriptor either way
 //!
 //! [`crate::capture`] stops its stream from a `Drop`, because there the stop and the command

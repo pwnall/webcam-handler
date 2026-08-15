@@ -33,6 +33,15 @@ export const readyToOpenUrl = required("WCH_E2E_URL");
 export const cameraId = required("WCH_E2E_CAMERA");
 
 /**
+ * An absolute path a claim may record into.
+ *
+ * `wch_record_start` takes a server path and refuses a relative one (note **N110**), and the
+ * only process that knows a writable throw-away directory is the Rust harness — so the path
+ * arrives the same way the URL does rather than being guessed at here.
+ */
+export const takePath = required("WCH_E2E_TAKE");
+
+/**
  * How many ES modules this build embeds.
  *
  * Passed in from `web::paths()` rather than counted here, so that a module added to the

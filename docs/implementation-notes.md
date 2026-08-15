@@ -158,6 +158,11 @@ part of a room is more likely to hold a person than one aimed at a circuit board
     and it is written here so P6 does not discover it late, the way P5 nearly discovered
     N76.
 
+    **Discharged 2026-08-14** — the owner ruled for the first option and note **N117** records
+    it, what the second would have cost, and the edges neither sentence above named. The
+    paragraph stays as written because it is the pricing statement the decision was made
+    against, and a pricing statement rewritten after the fact is one nobody can check.
+
 ## What would change this
 
 A second human on another machine (which is what D11's non-loopback cells and note **N79**'s
@@ -15437,3 +15442,344 @@ mislead the next reader.
 
 **Retire it only if** `[profile.dev.package."*"]` learns to cover monomorphised code, which is
 a Cargo question and not ours.
+
+## N117 — The preview is fed the recording's own frames, and the feed's existence is the one answer to who owns a camera's stream
+
+**The ruling (owner, 2026-08-14):**
+
+> The preview is fed from the recording's own frames.
+
+**Doc:** the "Expected usage" item 10 at the top of this file, which is the obligation being
+discharged — *"a recording and the preview collide in a way a photograph does not, and P6 owes
+an answer"* — plus design **D12** (exclusive streaming; the latest-frame `watch`), **D7**,
+**D10**, and notes **N83** (the photo's suspend/resume) and **N111** (why a recording is a chain
+of turns). Recorded 2026-08-14, from P6c's second half.
+
+### The obligation, and what the other option would have cost
+
+Item 10 named two honest answers and refused to pick: the preview is fed *from* the recording's
+frames, or the preview is **told**, in a way the page can render, that a recording owns the
+camera and for roughly how long. The owner picked the first, which is the expensive one, and
+this entry exists so a later reader can see that it was picked rather than defaulted into.
+
+**What the second option would have cost** is worth writing down because it is not nothing: it
+is one `wch_record_status` poll in the web client and a line of text — about forty lines
+altogether — against roughly three hundred here. What it would have bought is a tab that goes
+**dark for the length of every take**, with a sentence explaining why. The notes' item 4 says
+the two consumers overlapping on one camera is the ordinary Tuesday of this deployment rather
+than a race, and item 10 says in as many words that "the preview simply stops" is not
+automatically acceptable. A supervisory client that stops working whenever the primary consumer
+does its job is a client the owner stops opening.
+
+The two are **not exclusive**, and the second one landed as well: `crates/web/assets/
+recording.js` polls `wch_record_status` for the previewed camera and writes one line. It is
+cheap now (the frames are already flowing, so the line is context rather than an excuse) and it
+is load-bearing in exactly one case, which is the case the ruling cannot serve — see "the raw
+take" below.
+
+### Where the decision lives, which was the whole design question
+
+One streamer per node is the kernel's rule, so "who owns this camera's stream" must have one
+answer. Three places could have held it and two of them are wrong:
+
+- **A check in `daemon::preview::drive`** — "is this camera recording?" — is a second answer to a
+  question the fan-out registry already answers, one layer above the fact and one race away from
+  it. It is the same mistake note N83's old header made twice and corrected.
+- **The recording registry answering "who owns this camera's stream"** puts the answer in the
+  module that knows about takes and not about feeds, so `Previews::attach` would have to ask it,
+  which is `daemon::preview` depending on `daemon::record` depending on `daemon::preview`.
+- **The feed's existence**, which is what landed. `Previews::reserve` has *always* started a
+  stream for exactly the call that created a camera's feed and for no other — that is what makes
+  "two tabs are not two streamers" structural rather than lucky. So a recording **creates the
+  feed before it touches the device** (`Previews::hand_over`, called from `Recordings::reserve`),
+  and every `attach` that arrives during a take takes the existing second-tab branch: it
+  subscribes and starts nothing. There is no new check anywhere in the preview's driver.
+
+That is the answer to "a preview that arrives mid-recording": **no code**. It is worth stating
+as a design property rather than as a happy accident, because the alternative — creating the feed
+lazily when a reader turns up — cannot be written without one of the two wrong answers above.
+
+### The frame, and what the second consumer costs
+
+`engine::record::turn` hands a `Frame` back on the camera's actor thread, inside the command that
+dequeued it, which is where `daemon::preview::Publisher` already runs (note N111's second half
+recorded that the two-part split existed for exactly this). So `Recordings::turn`'s closure is
+three lines: the muxer reads the frame by reference, the fan-out takes it by **move**, and the
+step is returned. The viewers' `Shot` *is* the recording's frame; there is no copy of the bytes
+anywhere in this process, and there is no second `Publisher`, no second channel and no second
+registry — the byte cap and the paintability guard have one home because the sink does.
+
+A frame the container **refused** is not shown, and that is a decision rather than an omission:
+`absorb`'s `?` is what a cap and a full disk both come out of, the take is ending inside that
+same turn, and the viewers' next event is the hand-back.
+
+### The handshake, which is the only genuinely new mechanism
+
+A preview that was already running has a driver taking frames off the device. Two loops dequeuing
+from one stream would give the recording every other frame — and item 10 forbids that in as many
+words: *"it must not make a dropped frame look like a slow transition"*. So `Feed` carries a
+`Source` with three states, every transition written under the registry lock:
+
+- `Preview` — this feed's own driver has the device;
+- `Yielding` — a recording has claimed the camera and the driver has not left yet;
+- `Elsewhere` — nothing of that module's is on the device: a recording is publishing into the
+  feed, or the feed has left the registry. **The two are deliberately one state**, because the
+  only caller that waits on it is asking "is a preview driver still going to touch this device?"
+  and the answer is no either way.
+
+`hand_over` marks the feed `Yielding` and awaits `Elsewhere`; `pump` reads the source between
+turns and leaves; `drive` stops the stream and *then* releases the feed. The wait is bounded by
+the turn already in flight (one `PREVIEW_FRAME_WAIT_MS`) plus that `STREAMOFF`, and a device that
+never returns from `DQBUF` wedges the camera's actor thread and therefore this wait too — the
+residual note **N59** states at its real size and `Recordings::collect` already carries.
+
+**One invariant makes the wait safe and it is written down because it is not obvious: a feed
+whose source is `Yielding` is never removed from the registry by any path.** The value being
+waited on lives inside the feed, so a release that took a claimed feed away would be a
+`record_start` parked for ever on a camera nothing was going to answer about.
+
+### Two orderings that were reversed, each for a race
+
+**The stream is now stopped *before* the feed leaves the registry**, where P5b did the reverse
+and argued for it ("so no viewer can attach to a feed whose device is on its way to
+`STREAMOFF`"). The old order has a hole this sub-milestone opened: a feed removed while a
+`STREAMOFF` is still queued is a `STREAMOFF` that can land on a stream a recording started in
+between, which is a take that silently records nothing. Under the new order `hand_over` either
+finds the feed (and waits) or finds nothing (and the stop has already completed) — there is no
+third case. What the swap costs is that a viewer *can* now attach between the stop and the
+removal, and what it buys that viewer is `Previews::release`'s second arm: a fresh driver rather
+than a response that ends the moment it opened. `drive` became a loop to serve it, because a
+`release` that spawned a `drive` that awaits `release` is a recursive `async fn` whose future's
+`Send`-ness cannot be proven.
+
+**The hand-back happens before the container is closed.** A close seeks, writes an index and
+flushes on a blocking thread; the owner's tab should not wait for a disk to get its picture back.
+
+### The four edges, and the argument for each
+
+- **A preview already running when `record_start` arrives.** The recording takes the stream over,
+  at **its own** negotiated geometry — not the preview's cap. The alternative, making a take ask
+  for MJPG at `PREVIEW_MAX_WIDTH` because a tab happens to be open, would change the agent's
+  recording because a human is watching, which inverts every priority in the "Expected usage"
+  section. The page is not told the geometry changed and does not need to be: an `<img>` re-lays
+  out per part, and the *daemon's* answer to "what is this take" is `record_status.negotiated`,
+  which the page already polls.
+- **A recording that ends while a preview is attached.** The feed gets a **driver** again, not an
+  ending. Withdrawing it would be a second home for "how a preview ends" — the posture
+  `Previews::interrupted` already takes about a failed resume — and a tab that went dark every
+  time an agent recorded is the thing the ruling was against.
+- **A preview that arrives mid-recording.** Answered by the design above, with no code.
+- **A recording whose frames exceed `PREVIEW_MAX_FRAME_BYTES`.** Asked rather than assumed: **it
+  cannot fire on a frame this daemon would otherwise publish.** A recording's MJPG frames measure
+  90–220 kB at 1080p on this project's cameras and the largest mode the seed rig offers is
+  4096×2160 \[PF:26\] — ~4.4× the pixels, still an order of magnitude inside four mebibytes. What
+  *could* exceed it is a raw frame (1920×1080 YUYV is 4.0 MiB, 4096×2160 is 17 MiB), and the
+  paintability guard drops those first. The cap stays what it was: the bound that stops a driver
+  deciding this daemon's memory, not a thing a healthy take meets.
+- **A recording ending because its device failed.** The collector is handed the device's own
+  refusal and never a report (AGENTS rule 7, already N115's M9); the readers get the hand-back
+  like any other ending, and the fresh driver meets the same dead device and ends their streams
+  through `Ended::Refused` — the path this module already had. Neither audience receives the
+  other's answer.
+
+### The raw take, which is the edge item 10 did not name
+
+D7's fallback is real: `record` a `.y4m` and the stream is YUYV, and on a camera whose
+first-enumerated format is uncompressed \[PF:26\] that is what a default request negotiates. Those
+bytes cannot go into an `<img>` labelled `image/jpeg` — they are a *broken* image rather than a
+wrong one — so `Publisher::publish` drops them, and the drop is **counted**
+(`Previews::watch_unpaintable`) because nothing else moves: no frame is published, no reader falls
+behind, and the picture simply stops. Rubric rule 3 wants a number rather than a silence, and this
+is the one place the number is the whole of the evidence.
+
+The guard is ordered **ahead of** the byte cap on purpose: a 4K raw frame is both unpaintable and
+oversized, and counting it as oversized would send an operator to `PREVIEW_MAX_FRAME_BYTES` for a
+frame no cap would have helped.
+
+This is also the case that makes item 10's *second* option load-bearing after all. A frozen
+picture with a line beside it saying `a recording owns this camera — 3.2 s of 10.0 s` is a state
+an operator can read; the same picture with no line is indistinguishable from a hung daemon. The
+page deliberately says nothing about the *format*: "which pixel formats a browser can paint" is
+`PixelFormat::is_compressed` and it has one home a page cannot reach, so the client reports the
+fact it was told rather than deriving one it was not.
+
+### What it costs the web client, stated because a poll loop is a cost
+
+One `wch_record_status` per second per open tab, and each one is a live enumeration on the daemon
+(E2: an id is resolved against the machine every time). Two things bound it: the loop runs only
+while the page is showing a preview, and it stops when the socket does — `socketClosed` owns the
+one sentence that covers every stream on a dead connection. A second was chosen rather than
+`limits::CLIENT_RECORD_POLL_MS`'s 250 ms because the two loops answer different questions: that
+one bounds how late a *client* notices its own take finished, this one bounds how stale a
+sentence a human is reading may be.
+
+### What can go red
+
+- `crates/daemon/tests/preview.rs` — six over a real socket: the ruling itself (a tab that was
+  already watching keeps painting, `streams_started` says two), a tab that arrives mid-take, a
+  take that ends and gives the camera back on the same response, a device that failed mid-take,
+  a raw take counted and not shown, and a photo during a take refused (note **N118**).
+- `crates/daemon/src/preview.rs` — five unit tests over the state machine: the paintability
+  guard in both directions, the feed a take claims that a later reader joins with no
+  `Starting` witness, the invariant that a claimed feed is never withdrawn, the two answers a
+  hand-back has, and the shutdown check that stops a stopping daemon starting a stream.
+- `crates/daemon/tests/browser/client.spec.mjs` — one claim, 18 assertions, in a real browser:
+  the `<img>` paints a recording's own frames **on the request the page already had**, and
+  `#recording-status` says who owns the camera and for how long. The rung went from 15 claims and
+  120 assertions to 16 and 138.
+- Two `g6` rows in `scripts/gates/phase-criteria.tsv`, one for the ruling and one for its edges.
+
+### Twelve hand-applied mutants, and the three that found something
+
+Each was applied to the shipped code, run against the **whole workspace suite** with
+`--no-fail-fast` (so the count is every test that noticed rather than the first), and reverted.
+Notes **N112** and **N115** are the same exercise one and two sub-milestones earlier.
+
+| mutant | what it did | verdict |
+|---|---|---|
+| **M1** the recording never publishes (`show` deleted from the turn) | a take that owns the camera and shows its viewers nothing | **4 red — after the repair below** |
+| **M2** `hand_over` does not put its feed in the registry | a tab that arrives mid-take starts a second stream and is refused `EBUSY` by the kernel | **2 red** |
+| **M3** `hand_over` does not wait for the preview's driver to leave | two loops dequeuing from one stream: the take gets every other frame | **3 red** |
+| **M4** the take never hands the camera back | an open tab attached to a feed nothing will ever publish to again | **5 red**, one of them a nextest timeout — which is what a stranded reader looks like |
+| **M5** a claimed feed is withdrawn like any other | `record_start` parked for ever on a channel that was taken away | **3 red** |
+| **M6** the hand-back forbids a revive | the tab goes dark at the end of every take | **3 red** |
+| **M7** the paintability guard deleted | YUYV bytes served as `image/jpeg` | **2 red** |
+| **M8** `wch_photo` stops asking whether a take is running | note **N118**'s defect: a photo suspends a recording's stream | **1 red** |
+| **M9** `Recordings::withdraw` does not hand back | a refused `record_start` leaves a tab watching nothing | **0 red — and the finding is below** |
+| **M10** `pump` stops reading the feed's source | the preview's driver never leaves, so `hand_over` never returns | **6 red**, five of them timeouts |
+| **M11** the ending that may revive answers `Never` | — | **0 red — and the finding is below** |
+| **M12** the revive stops checking the stop token | a stopping daemon issues a `VIDIOC_STREAMON` | **1 red** |
+
+**M1 found a weakness in the tests written for it, which is the most useful thing a mutant can
+do.** Three of the six socket claims declared a take of 1 500 ms and then waited up to four
+`PREVIEW_FRAME_WAIT_MS` for a frame — so the take *ended* inside the wait, the hand-back put a
+driver back on the feed, and the preview's own frames satisfied every assertion about the
+recording's. The claims were true and were being met by the wrong mechanism. The repair is a
+named constant (`A_TAKE_LONGER_THAN_THIS_TEST`, 30 s — every take in that file is ended by a
+`record_stop`) plus an assertion that the take is *still running* at the moment the frames are
+counted. It is note **N112**'s M9 in another costume: an assertion about a loop's outcome is
+satisfied by every bound large enough, and the fix is to assert about the loop.
+
+**M9 found a missing test rather than a missing behaviour.** The hand-back on
+`Recordings::withdraw` — the path a `record_start` takes when its container, its destination or
+its actor is refused *after* it has stopped somebody's preview — was written and never driven.
+`crates/daemon/tests/preview.rs`'s
+`a_record_start_refused_after_it_took_the_camera_gives_the_preview_back` reaches it the way a
+caller does: `.avi` over a stream that negotiated YUYV is D7's pairing refusing the container
+after the negotiation, which is exactly the window where the preview is already down and the
+take does not exist.
+
+**M11 found an unconstrained call site, and the repair moved the decision.** "Which endings may
+be followed by a fresh driver" was a two-armed `match` inside `drive`, and flipping it to
+`Revive::Never` passed all 1 329 tests — because the window it serves (a reader arriving between
+a `STREAMOFF` and the removal that follows it) cannot be opened from outside on purpose. The
+answer is not a better integration test; it is `Ended::revive`, a total function over the six
+endings with an exhaustive walk over it. **A rule that cannot be reached by a suite can still be
+stated as a value the suite reads.**
+
+### Two flakes, and what repetition found that a single green run did not
+
+Running the workspace suite repeatedly — not the mutants, just the suite — found two assertions
+that were true most of the time for reasons that were not the claim.
+
+**A fault armed before the driver's first `DQBUF` is a fault the stop outruns.** The
+device-failure claim held its `DeviceGoneMidStream`, then called `record_stop`; one run in eight
+the take had not taken a turn yet, so it ended `Stopped` with a perfectly good report and the
+claim failed. The repair is to wait for the take to publish a frame *before* the camera is taken
+away, and then to await the **driver's own ending** (`Recordings::watch_finished`) instead of
+stopping it — a take that has ended is collected by `record_stop` either way (note N114's fourth
+decision), so the claim now asserts the ending it names.
+
+**And the same class one file away, pre-dating this work:**
+`crates/daemon/tests/mutating_verbs.rs`'s `a_recording_reaches_the_device_and_the_report_counts_
+what_the_file_holds` stops its take immediately after starting it, so on a loaded host — where
+the fake is synthesizing a 3840×2160 JPEG for the first turn — it collected an honest report of
+zero frames and failed its own `frames_written > 0`. It was seen twice in an afternoon's runs. The
+repair is a bounded poll of `record_status` until the take has a frame, which is D10's own
+progress mechanism (`webcam-handler-client`'s poll loop is the same call) rather than a wait
+invented for a test.
+
+Both are the same shape: **an assertion about what a driver produced, made without waiting for
+the driver.** Neither is a sleep away from being fixed, and neither would have been found by the
+green run that preceded it.
+
+**The honest limit of all twelve** is note **N112**'s and **N115**'s, unchanged: they are twelve
+mutations somebody thought of, and `.cargo/mutants.toml` still does not name
+`crates/daemon/src/preview.rs` or `crates/daemon/src/record.rs` — both shells rather than pure
+cores. Whether the floor's scope should grow to cover a daemon-side state machine is the phase
+review's decision and is recorded in N115 as such; this entry adds a second data point in favour
+of it, since two of the three findings here are in exactly that kind of code.
+
+**Amend this note if** a second client can ever attach to a recording (note N114's own amendment
+condition), or if a preview is ever wanted at a size a take is not recording at — which is not a
+longer cap but a different mechanism, because it needs two streams off one node and V4L2 has one.
+
+## N118 — A photo during a recording is `Busy`, because the suspend mechanism cannot tell whose stream it is stopping
+
+**Doc:** note **N83**, whose `engine::preview::while_suspended` is the mechanism; note **N111**,
+which made a recording the second thing that streams across commands; the "Expected usage" item
+10 (*"frame timing is the payload"*); design **D7**'s close-time rewrite to the measured mean
+frame interval; **D13**'s closed eighteen; AGENTS' error-vocabulary paragraph. Recorded
+2026-08-14, from P6c's second half.
+
+**Believed:** that N83's suspend/resume is a self-contained answer that needs no maintenance,
+because "the photo path knows only that *something* was streaming when its command began, and
+inside one actor there is exactly one thing that can be: a preview".
+
+**True:** that sentence stopped being true at P6c's *first* half, three commits before anybody
+looked. A take holds its stream for its whole duration, so a `wch_photo` on a camera that is
+recording reaches `while_suspended`, finds a stream, and **stops the recording's**. The function
+cannot tell the difference and should not try: `Camera::streaming` answers about the device, and
+a device does not know what a stream is for. Asking the daemon's registry from inside the engine
+is the guess N83 itself records somebody making twice and being wrong about twice.
+
+### Why it is a defect and not an inefficiency
+
+The frames inside the suspend window are frames the take never gets, and the **gap** in the
+driver's timestamps is what D7's close-time header rewrite spreads over the whole file as a
+slower mean interval. Item 10's sentence is exactly this: *"it must not make a dropped frame look
+like a slow transition"*. A recording's whole product is a measurement of time, and this is the
+one path in the build that could corrupt it without anything going red — the file is valid, the
+report is plausible, and the animation an agent is judging plays slow.
+
+Nothing was asking. Every existing test that takes a photo takes it on a camera with a preview or
+with nothing, which is the case N83 built for.
+
+### The answer, and the two that were rejected
+
+`daemon::server`'s `wch_photo` refuses a camera holding a running take with `Error::Busy` naming
+the node and carrying no holders — `Recordings::not_recording`, asked after the camera is
+resolved and before a destination is opened, so a refused photo leaves no file where none was.
+`Busy` means **retry** to an unattended reader and retrying is the action that succeeds: a take
+is bounded by its own duration. The vocabulary does not grow, which was N114's constraint too.
+
+Refused **at the daemon** rather than in the engine, because that is the layer that knows what a
+stream is *for*. `webcam-handler-cli` needs no line and cannot reach the case: it opens a camera
+per invocation, takes one photo and closes it.
+
+Two alternatives, and why neither:
+
+- **Let it happen.** It is the status quo and it is silent, which is the property that makes it
+  unacceptable rather than merely wrong.
+- **Serve the photo from the recording's own stream** — the same move the preview now makes. It
+  is the interesting one and it is a different sub-milestone: the photo's format, its settle
+  policy and its verbatim claim would all become the *take's*, so `PhotoReport` would be
+  describing a stream the caller did not ask for. A photo whose negotiated format is decided by
+  somebody else's recording is not the photo D5 promises.
+
+A camera whose `record_start` is still negotiating (`Slot::Starting`) is refused too, and for the
+same reason one step earlier: the stream is about to exist, and a photo that slipped between the
+reservation and the `VIDIOC_STREAMON` would be refused by the device a moment later anyway. A
+camera holding an **uncollected** take is not refused: nothing is streaming and the file is
+finished.
+
+### What can go red
+
+`crates/daemon/tests/preview.rs`'s
+`a_photo_during_a_take_is_told_to_retry_rather_than_stopping_the_takes_stream`, in both
+directions: the refusal carries D13's `Busy` code, the interruption count does **not** move and
+no second stream is started — and the same call answers a photograph once the take has been
+collected, so the refusal is about a running take rather than about photos.
+
+**Amend this note if** a photo is ever served from a running take's stream, which is the
+alternative above and would make this refusal a fallback rather than the answer.

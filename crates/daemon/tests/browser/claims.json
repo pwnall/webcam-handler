@@ -55,6 +55,11 @@
       "what": "the MJPEG <img> paints successive parts, keeps painting across a photo (N83), and the photo's report names its formats as MJPG-style fourccs rather than as four numbers (N109)"
     },
     {
+      "title": "the preview paints a recording's own frames and the page says who owns the camera",
+      "assertions": 18,
+      "what": "N117 — the ruling from a viewer's side: the <img> keeps painting a recording's own frames on the request it already had, and #recording-status says who owns the camera and for how long"
+    },
+    {
       "title": "the calibration view tracks a sweep it did not start",
       "assertions": 9,
       "what": "the calibration view paints a sweep started on another socket"

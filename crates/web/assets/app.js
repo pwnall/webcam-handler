@@ -52,6 +52,7 @@ import * as controls from "./controls.js";
 import * as calibration from "./calibration.js";
 import * as photo from "./photo.js";
 import * as preview from "./preview.js";
+import * as recording from "./recording.js";
 
 /** Everything the page is showing right now. */
 const state = {
@@ -60,6 +61,15 @@ const state = {
   camera: null,
   /** The live `<img>`, which `preview.watch` replaces on every camera switch. */
   frame: null,
+  /**
+   * The poll loop behind `#recording-status`, or `null` while nothing is being previewed.
+   *
+   * Held here for `state.frame`'s reason: it belongs to the camera on screen, so the camera
+   * switch that repoints the `<img>` has to end this too — a loop left asking about the
+   * previous camera is a page reporting a take nobody is watching, in a line beside a picture
+   * of something else.
+   */
+  recording: null,
   /**
    * Whether the socket this page was given is still usable.
    *
@@ -94,6 +104,9 @@ const nodes = {
   hints: byId("camera-hints"),
   previewFrame: byId("preview-frame"),
   previewStatus: byId("preview-status"),
+  // The recording line, whose one writer is recording.js — see index.html for why it is not
+  // the caption above.
+  recordingStatus: byId("recording-status"),
   takePhoto: byId("take-photo"),
   photoStatus: byId("photo-status"),
   photoFrame: byId("photo-frame"),
@@ -246,6 +259,13 @@ async function select(camera) {
   // page's story about them is not.
   if (state.socketOpen) {
     state.frame = preview.watch(state.frame, nodes.previewStatus, camera, state.token);
+    // Started beside the preview and ended with it, because the sentence is *about* the
+    // picture: since the owner's ruling of 2026-08-14 (note **N117**) a recording feeds this
+    // `<img>` its own frames, and a take D7 records raw feeds it nothing at all — so the one
+    // thing a viewer cannot work out for themselves is that a recording is what they are
+    // looking at, or waiting on.
+    state.recording?.stop();
+    state.recording = recording.watch(state.rpc, camera, nodes.recordingStatus);
   }
   refreshTakePhoto();
   nodes.photoFrame.removeAttribute("src");
@@ -387,6 +407,10 @@ function socketClosed() {
   state.socketOpen = false;
   say(nodes.connection, "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed", true);
   refreshTakePhoto();
+  // Before the preview is torn down and for the same reason: this line is written from calls on
+  // a socket that has ended, and the sentence above is the one that covers every one of them.
+  state.recording?.stop();
+  state.recording = null;
   // The preview is a *separate* HTTP request and does not end with the socket, so it is
   // ended here rather than left painting frames from a daemon this page can no longer ask
   // anything about.

@@ -521,17 +521,21 @@ impl Wchd {
     ) -> Wchd {
         let cameras = Arc::new(Cameras::with_idle_timeout(backend, idle_after_ms));
         let clock = MonotonicClock::new();
+        // Named rather than built inline, because the recordings registry takes a **clone** of
+        // it: a take owns its camera's frames for the length of it (note **N117**), so the two
+        // registries have to be looking at one map of feeds. A second `Previews::new` here would
+        // compile, and would leave `Previews::attach` starting a second stream on a camera a
+        // recording already holds.
+        let previews =
+            crate::preview::Previews::new(Arc::clone(&cameras), clock.clone(), shutdown.clone());
         Wchd(Arc::new(Inner {
-            previews: crate::preview::Previews::new(
-                Arc::clone(&cameras),
-                clock.clone(),
-                shutdown.clone(),
-            ),
             recordings: crate::record::Recordings::new(
                 Arc::clone(&cameras),
+                previews.clone(),
                 clock.clone(),
                 shutdown.clone(),
             ),
+            previews,
             cameras,
             store,
             sessions: tokio::sync::Mutex::new(lock),
@@ -583,6 +587,19 @@ impl Wchd {
     #[must_use]
     pub fn watch_preview_interruptions(&self) -> tokio::sync::watch::Receiver<u64> {
         self.0.previews.watch_interrupted()
+    }
+
+    /// How many frames a preview refused for being a picture a browser cannot paint, as
+    /// something to **await**.
+    ///
+    /// The fourth of the preview's counts, and the only one only a *recording* can move (note
+    /// **N117**): a preview negotiates a JPEG stream or is refused one, while a take records
+    /// what its caller asked for — and D7's raw fallback is a real answer. Those frames are
+    /// dropped rather than served as `image/jpeg`, and this is where "the picture stopped
+    /// moving" becomes a number instead of a silence.
+    #[must_use]
+    pub fn watch_unpaintable_preview_frames(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.previews.watch_unpaintable()
     }
 
     /// How many cameras this daemon is previewing right now.
@@ -1729,6 +1746,28 @@ impl WchRpcServer for Wchd {
         // 2. Which camera. Before the destination is opened rather than after, so a request
         //    naming a camera this host does not have leaves no file where none was.
         let info = self.resolve(camera).await?;
+        // 2a. **A camera that is recording is `Busy`, and this is the one refusal in this verb
+        //     that is about another client rather than about this request** (note **N118**).
+        //
+        //     Note N83's suspend/resume is what lets a photo interleave with a preview, and the
+        //     premise it rests on is `engine::preview`'s: inside one actor exactly one thing can
+        //     be streaming across commands, and that thing is a preview. P6c made that false —
+        //     a take streams for its whole duration — and `engine::photo::take` cannot tell the
+        //     two apart, because `Camera::streaming` answers about the *device* and the device
+        //     does not know what the stream is for. So a photo taken during a take would stop
+        //     the recording's stream, take its frame and start it again: frames the take never
+        //     gets, and a gap in the frame timestamps that D7's close-time rewrite turns into a
+        //     slower mean interval for the **whole** file. The notes' Expected usage item 10
+        //     forbids exactly that ("it must not make a dropped frame look like a slow
+        //     transition"), and a recording's whole product is the measurement it would spoil.
+        //
+        //     `Busy` because it means *retry* to an unattended reader and retrying is what
+        //     succeeds — a take is bounded by its own duration — and with no holders for
+        //     `crate::record`'s reason: the process holding that camera is this daemon.
+        //     Refused *here* rather than in the engine because this is the layer that knows
+        //     what a stream is for: `webcam-handler-cli` opens a camera per invocation and can
+        //     never reach the case at all.
+        self.0.recordings.not_recording(&info).await?;
         // 3. The destination, resolved from a name to a **descriptor** exactly once — which
         //    is note **N51**'s discharge: nothing a client does to the path afterwards can
         //    redirect these bytes, and no open on this path can wait. On the blocking pool,

@@ -43,6 +43,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use camino::Utf8Path;
 use daemon::http;
 use daemon::server::Wchd;
 use daemon::shutdown::Shutdown;
@@ -51,6 +52,7 @@ use fake::FakeBackend;
 use schema::backend::CameraBackend;
 use schema::camera::{CameraId, FrameInterval, FrameSize, FrameSizeInfo, PixelFormat};
 use schema::limits;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpSocket, TcpStream};
 
@@ -210,9 +212,25 @@ impl Preview {
     /// `a_capture_that_fails_mid_photo_still_leaves_the_preview_streaming` for why the fake's
     /// frame faults are the wrong instrument there).
     async fn photo(&self, settle: &str) -> serde_json::Value {
+        self.call(
+            "wch_photo",
+            &format!(
+                r#""request":{{"settle":{settle},"sink":{{"kind":"return_bytes","format":"jpeg"}}}}"#
+            ),
+        )
+        .await
+    }
+
+    /// One JSON-RPC call about this fixture's camera, as a client would make it.
+    ///
+    /// `params` is everything after the camera, spelled as JSON text rather than built from the
+    /// typed request: [`Preview::photo`]'s reason, which is that the subject is the document a
+    /// *browser* sends. A serde round trip through the Rust type would assert that this build
+    /// agrees with itself.
+    async fn call(&self, method: &str, params: &str) -> serde_json::Value {
         let methods = daemon::server::mount(self.wchd.clone()).expect("a second reader of T5");
         let request = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"wch_photo","params":{{"camera":"{camera}","request":{{"settle":{settle},"sink":{{"kind":"return_bytes","format":"jpeg"}}}}}}}}"#,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"camera":"{camera}",{params}}}}}"#,
             camera = self.camera.as_str()
         );
         let (answer, _subscriptions) = methods
@@ -221,7 +239,71 @@ impl Preview {
             .expect("the surface answered");
         serde_json::from_str(&answer.to_string()).expect("the T5 surface answers JSON")
     }
+
+    /// Start a recording of this fixture's camera into `path`.
+    ///
+    /// `format` is the pixel format to ask the device for, or `None` for whatever the ranking
+    /// picks — which on this fixture is MJPG, because \[PF:9\]'s shape survives the rewrite and
+    /// note **N85**'s re-ranking prefers the larger mode. The two callers that pass one are the
+    /// two that are *about* the format: a take a browser can paint and a take it cannot.
+    async fn record(&self, path: &Utf8Path, duration_ms: u64, format: Option<&str>) -> Value {
+        let stream = format.map_or_else(String::new, |format| {
+            format!(r#""stream":{{"pixel_format":"{format}"}},"#)
+        });
+        self.call(
+            "wch_record_start",
+            &format!(
+                r#""request":{{{stream}"duration_ms":{duration_ms},"sink":{{"kind":"server_path","path":"{path}"}}}}"#
+            ),
+        )
+        .await
+    }
+
+    /// Stop this fixture's camera's recording and collect it.
+    async fn stop_recording(&self) -> Value {
+        let methods = daemon::server::mount(self.wchd.clone()).expect("a second reader of T5");
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"wch_record_stop","params":{{"camera":"{camera}"}}}}"#,
+            camera = self.camera.as_str()
+        );
+        let (answer, _subscriptions) = methods
+            .raw_json_request(&request, 1)
+            .await
+            .expect("the surface answered");
+        serde_json::from_str(&answer.to_string()).expect("the T5 surface answers JSON")
+    }
+
+    /// Wait until this daemon has published a frame past `seen`, or say it did not.
+    ///
+    /// **The one instrument the recording claims are made with**, and it is a `watch` the daemon
+    /// writes rather than a duration: sampled *after* a `record_start` has answered, every
+    /// publication past it is one the take's own driver made, because the preview's driver has
+    /// left the device by then. A build in which a recording published nothing leaves this
+    /// number exactly where it was.
+    ///
+    /// Bounded rather than left to the runner, for
+    /// `a_photo_taken_during_a_preview_suspends_the_stream_and_the_preview_resumes`'s reason:
+    /// the difference between "this test failed" and "this run timed out" is a diagnosis.
+    async fn published_past(&self, seen: u64) -> bool {
+        let mut published = self.wchd.watch_preview_frames();
+        tokio::time::timeout(
+            Duration::from_millis(limits::PREVIEW_FRAME_WAIT_MS * 4),
+            published.wait_for(|count| *count > seen),
+        )
+        .await
+        .is_ok()
+    }
 }
+
+/// A recording duration no claim in this file waits out.
+///
+/// Every take below is ended by a `wch_record_stop`, so its declared duration exists only to be
+/// **longer than every wait beside it** — and that is a finding rather than a formality. With a
+/// take shorter than the four-turn timeouts these claims allow, the hand-back puts a driver back
+/// on the feed and the preview starts publishing again, so "the tab kept getting frames" is
+/// satisfied by a build in which the *recording* fed it nothing. Two of the mutants in note
+/// **N117** survived exactly that way before this constant existed.
+const A_TAKE_LONGER_THAN_THIS_TEST: u64 = 30_000;
 
 /// The settle policy every photo in this file uses unless it is about the deadline.
 ///
@@ -333,6 +415,16 @@ struct Stream {
     head: String,
     /// Whether the body is chunked, read off the head rather than assumed.
     chunked: bool,
+    /// Whether this response's **body** has ended, which is not the same question as whether
+    /// the connection has.
+    ///
+    /// HTTP/1.1 keeps a connection alive past a chunked body's terminating zero-length chunk,
+    /// so a reader that waited for end-of-file to learn that its preview had ended would wait
+    /// for ever — which is what the first draft of
+    /// `a_device_that_failed_mid_take_reaches_the_collector_and_never_the_readers_as_a_success`
+    /// did, and it is a distinction a browser makes and a hand-written client has to make for
+    /// itself. Set by [`Stream::decode`], read by [`Stream::fill`].
+    ended: bool,
 }
 
 impl Stream {
@@ -370,6 +462,7 @@ impl Stream {
             buffered: Vec::new(),
             head: String::new(),
             chunked: false,
+            ended: false,
         };
         stream.read_head().await;
         stream
@@ -475,13 +568,16 @@ impl Stream {
     /// test reads as "the response body ended".
     async fn fill(&mut self) -> usize {
         loop {
+            if self.ended {
+                return 0;
+            }
             let read = self.read().await;
             if read == 0 {
                 return 0;
             }
             let before = self.buffered.len();
             self.decode();
-            if self.buffered.len() > before {
+            if self.buffered.len() > before || self.ended {
                 return read;
             }
         }
@@ -527,6 +623,9 @@ impl Stream {
             self.raw.drain(..2);
             self.buffered.extend_from_slice(&chunk);
             if length == 0 {
+                // The terminator. The socket stays open — this daemon speaks keep-alive — so
+                // this flag is the only thing that says the body is over.
+                self.ended = true;
                 return;
             }
         }
@@ -1283,4 +1382,457 @@ async fn two_tabs_and_a_photo_between_them_are_still_one_streamer() {
     );
     assert_eq!(preview.wchd.previewed_cameras(), 1);
     assert_eq!(*preview.wchd.watch_preview_interruptions().borrow(), 1);
+}
+
+// ------------------------------------------------- P6c's second half: the recording feeds it
+//
+// The notes' Expected usage item 10 said P6 owed an answer to a recording and a preview
+// colliding, and named the two honest options. The owner ruled on 2026-08-14 (note **N117**)
+// for the expensive one: **while a recording runs it is the only streamer, and its frames feed
+// the preview too.** The six claims below are that ruling and its edges, over a real socket.
+
+#[tokio::test]
+async fn a_recording_feeds_the_preview_that_was_already_watching_and_never_opens_a_second_stream() {
+    // **The ruling itself**, from the side that can see it: a tab that was already watching
+    // keeps getting pictures on the *same* HTTP response while a take runs, and the camera is
+    // streamed exactly twice — once for the preview and once for the take.
+    //
+    // Four claims, and none implies the others:
+    //
+    //   1. the take really records — `frames_written` is non-zero, so the frames were not
+    //      diverted to the viewers instead of the container;
+    //   2. the preview really goes on — the daemon publishes past a count sampled *after*
+    //      `record_start` answered, which is past the moment the preview's own driver left;
+    //   3. those publications reach a reader — a part is read off the socket whose index is
+    //      past that sample, on the response opened before the take began;
+    //   4. exclusivity survives — two `STREAMON`s for the whole exchange. A build that let the
+    //      preview keep its own stream would answer three, and one that let `attach` start a
+    //      second would have been refused `Busy` by the fake, exactly as V4L2 refuses it.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("watched.avi");
+    let mut stream = preview.watching().await;
+    let before = stream.part().await;
+    assert!(before.is_jpeg());
+    assert_eq!(preview.backend.streams_started(), 1);
+
+    let started = preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, None)
+        .await;
+    assert!(
+        started.get("result").is_some(),
+        "the recording was refused: {refused}",
+        refused = refusal(&started)
+    );
+    // Sampled after the answer, so everything past it was published by the take's own driver.
+    let handed_over_at = *preview.wchd.watch_preview_frames().borrow();
+    assert_eq!(
+        preview.backend.streams_started(),
+        2,
+        "a recording that took a preview over started more than one stream"
+    );
+    assert_eq!(preview.wchd.previewed_cameras(), 1);
+    assert_eq!(preview.wchd.running_recordings(), 1);
+
+    // Claim 2, then claim 3 — the second is the first arriving at a socket, and a build that
+    // published into a channel nobody was subscribed to would satisfy neither.
+    assert!(
+        preview.published_past(handed_over_at).await,
+        "a recording published no frame to the preview it took over"
+    );
+    let during = loop {
+        let part = stream.part().await;
+        if part.index > handed_over_at {
+            break part;
+        }
+    };
+    assert!(during.is_jpeg(), "a part the recording fed is not a JPEG");
+    // **Asked after the frames, and it is what makes them the take's.** A hand-back puts a
+    // driver back on the feed, so every claim above is also satisfiable by a build that fed the
+    // viewers nothing and let the take end — which is what a hand-applied mutant did (note
+    // **N117**, M1). The take is still running, so what has been read came off its stream.
+    assert_eq!(preview.wchd.running_recordings(), 1, "the take ended early");
+
+    let report = preview.stop_recording().await;
+    let written = report
+        .pointer("/result/summary/frames_written")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| {
+            panic!(
+                "the take was refused: {refused}",
+                refused = refusal(&report)
+            )
+        });
+    assert!(
+        written > 0,
+        "the container took no frame, so the fan-out was fed instead of the muxer"
+    );
+    // Claim 4, over the whole exchange: the preview's own stream, the take's, and the resume
+    // the hand-back spawned. A build that started a second stream anywhere answers more.
+    // Sampled into a local **before** the await, and the reason is a deadlock rather than
+    // style: `watch::Receiver::borrow` hands back a `Ref` that holds the channel's read lock,
+    // and the thing that would take the write lock is `Publisher::publish` — on the camera's
+    // actor thread, inside a `DQBUF` command. A `Ref` alive across an `await` in this file
+    // therefore wedges the camera it is asking about, which is exactly how the first draft of
+    // this suite hung.
+    let stopped_at = *preview.wchd.watch_preview_frames().borrow();
+    assert!(
+        preview.published_past(stopped_at).await,
+        "the preview did not come back after the take"
+    );
+    assert_eq!(preview.backend.streams_started(), 3);
+    assert_eq!(preview.backend.opens(), 1, "a second descriptor was opened");
+}
+
+#[tokio::test]
+async fn a_preview_that_arrives_mid_recording_joins_the_take_rather_than_asking_for_a_stream() {
+    // The edge with the least code behind it and the most that could go wrong: a tab opened
+    // while a take is running. `Previews::attach` finds the feed the take created and takes its
+    // existing second-tab branch, so nothing asks whether a recording is running — and the
+    // proof that nothing does is the *stream count*, because a build that started one would
+    // have been refused `Busy` by the fake (which enforces one streamer per node exactly as
+    // V4L2 does) and this `watching()` would have failed instead of painting.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("joined.avi");
+
+    let started = preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, None)
+        .await;
+    assert!(
+        started.get("result").is_some(),
+        "the recording was refused: {refused}",
+        refused = refusal(&started)
+    );
+    assert_eq!(
+        preview.backend.streams_started(),
+        1,
+        "the take's own stream"
+    );
+
+    let mut stream = preview.watching().await;
+    assert_eq!(stream.status(), 200);
+    let part = stream.part().await;
+    assert!(part.is_jpeg(), "the tab that joined a take got no picture");
+    assert_eq!(preview.wchd.running_recordings(), 1, "the take ended early");
+    assert_eq!(
+        preview.backend.streams_started(),
+        1,
+        "attaching to a camera that was recording started a second stream"
+    );
+
+    let report = preview.stop_recording().await;
+    assert!(
+        report
+            .pointer("/result/summary/frames_written")
+            .and_then(Value::as_u64)
+            .is_some_and(|written| written > 0),
+        "the take that fed a tab recorded nothing: {refused}",
+        refused = refusal(&report)
+    );
+}
+
+#[tokio::test]
+async fn a_take_that_ends_gives_the_camera_back_and_the_tab_keeps_its_own_response() {
+    // The third edge, and the one where the wrong answer reads as working: when a take ends,
+    // the preview must either **resume its own stream** or **end**, and ending it would be a
+    // second home for "how a preview ends" (`Previews::interrupted`'s posture, §2.10) as well
+    // as a tab that goes dark every time an agent records. So the feed gets a driver again.
+    //
+    // What makes this more than "frames arrive" is the element identity of the *response*: the
+    // same `Stream` is read either side of the take, so the picture came back on the request
+    // the client already had rather than on one it would have had to open.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("given-back.avi");
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+
+    preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, None)
+        .await;
+    preview.stop_recording().await;
+
+    // The hand-back runs on the take's driver before the container is closed, and `record_stop`
+    // answers after the close — so by the time the call above returned, the feed had a driver
+    // again. What is awaited here is its first frame.
+    let resumed_at = *preview.wchd.watch_preview_frames().borrow();
+    assert!(
+        preview.published_past(resumed_at).await,
+        "the preview did not resume when the take ended"
+    );
+    let after = stream.part().await;
+    assert!(after.is_jpeg());
+    assert_eq!(
+        preview.wchd.previewed_cameras(),
+        1,
+        "the feed was withdrawn"
+    );
+    assert_eq!(preview.wchd.running_recordings(), 0);
+    assert_eq!(
+        preview.backend.streams_started(),
+        3,
+        "the preview's, the take's and the resume — no more and no fewer"
+    );
+}
+
+#[tokio::test]
+async fn a_device_that_failed_mid_take_reaches_the_collector_and_never_the_readers_as_a_success() {
+    // AGENTS rule 7 across the two consumers at once. A camera that vanishes mid-take has two
+    // audiences with different questions, and the answers must not be swapped:
+    //
+    //   * whoever collects the take is told the **device's own refusal**, never a report;
+    //   * whoever is watching gets their stream **ended**, because the resume meets the same
+    //     dead device — through `drive`'s existing refusal path, which is the one home for
+    //     "how a preview ends".
+    //
+    // A build whose hand-back invented a success for the readers — a feed left in the registry
+    // with nothing publishing into it — leaves the tab waiting forever on a camera that is
+    // gone, which is the shape of a preview that reads as working and is not.
+    //
+    // The fault is exact here in a way note **N83** says it is not during a preview: while a
+    // take runs, the take's driver is the only thing calling `next_frame`, so the queued
+    // `DeviceGoneMidStream` is consumed by it and by nothing else.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("vanished.avi");
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+
+    preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, None)
+        .await;
+    // The take is **provably turning** before the camera is taken away, which is not a nicety:
+    // a fault armed before the driver's first `DQBUF` is a fault the *stop* below outruns, and
+    // the take then ends `Stopped` with a perfectly good report — this test failed that way one
+    // run in eight before this line existed, which is the shape of an assertion that passes for
+    // the wrong reason most of the time.
+    let recording_at = *preview.wchd.watch_preview_frames().borrow();
+    assert!(
+        preview.published_past(recording_at).await,
+        "the take never reached the device, so there was nothing for a fault to interrupt"
+    );
+
+    // **Held rather than queued**, which is the fault menu's own distinction and the right one
+    // here: a queued fault fires once, so the camera would be back by the time the hand-back's
+    // fresh driver asked it for a frame, and this claim is about a device that is *gone*. A
+    // held fault is a condition, and "the camera did not come back" is a condition.
+    preview.backend.hold_fault(fake::Fault::DeviceGoneMidStream);
+
+    // Awaited rather than stopped: the take ends **on the device's own refusal**, which is the
+    // ending this claim is about, and a `record_stop` racing it would sometimes end it on the
+    // caller's word instead. `watch_finished_recordings` is the driver's own signal that it
+    // reached an ending (`crate::record::Recordings::watch_finished`), and the `record_stop`
+    // after it collects a take that is already over — which N114's fourth decision says is the
+    // ordinary case rather than a special one.
+    let mut finished = preview.wchd.watch_finished_recordings();
+    let ended = tokio::time::timeout(
+        Duration::from_millis(limits::PREVIEW_FRAME_WAIT_MS * 4),
+        finished.wait_for(|count| *count > 0),
+    )
+    .await
+    .is_ok();
+    assert!(
+        ended,
+        "a camera that vanished did not end the take it was in"
+    );
+
+    let collected = preview.stop_recording().await;
+    assert_eq!(
+        collected.pointer("/error/code").and_then(Value::as_i64),
+        Some(i64::from(api::codes::rpc_code(
+            schema::ErrorKind::DeviceGone
+        ))),
+        "a camera that vanished was collected as a recording: {collected}"
+    );
+
+    // And the readers' end of it: whatever was buffered arrives and then the response **ends**,
+    // rather than a tab left attached to a feed nothing will publish to again. Bounded, so a
+    // build that left it open fails here rather than hanging.
+    let mut reads = 0;
+    while stream.fill().await > 0 {
+        reads += 1;
+        assert!(reads < 4_096, "the tab outlived the camera");
+    }
+    let mut feeds = preview.wchd.watch_previewed_cameras();
+    let emptied = tokio::time::timeout(
+        Duration::from_millis(limits::PREVIEW_FRAME_WAIT_MS * 4),
+        feeds.wait_for(|live| *live == 0),
+    )
+    .await
+    .is_ok();
+    assert!(
+        emptied,
+        "a camera that vanished left a feed in the registry"
+    );
+}
+
+#[tokio::test]
+async fn a_take_a_browser_cannot_paint_shows_the_readers_nothing_and_says_how_much_nothing() {
+    // The edge the ruling does not reach, answered rather than left to be discovered. D7's raw
+    // fallback is a real answer — `record` a `.y4m` and the stream is YUYV — and those bytes in
+    // an `<img>` labelled `image/jpeg` are a *broken* image rather than a wrong one. So
+    // `Publisher::publish` drops them, and the drop is a **number** (rubric rule 3) because it
+    // is the only observable a frozen preview has: nothing is published, so the published count
+    // does not move and no reader falls behind.
+    //
+    // Both directions, because the guard has to be about the *format* rather than about
+    // recordings: the MJPG take in the claims above publishes, and this one does not.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("raw.y4m");
+    let mut stream = preview.watching().await;
+    let last = stream.part().await;
+    assert!(last.is_jpeg());
+
+    let started = preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, Some("YUYV"))
+        .await;
+    assert_eq!(
+        started.pointer("/result/take/negotiated/pixel_format"),
+        Some(&Value::String("YUYV".to_owned())),
+        "this take was meant to be one a browser cannot paint: {started}"
+    );
+    let handed_over_at = *preview.wchd.watch_preview_frames().borrow();
+
+    let mut unpaintable = preview.wchd.watch_unpaintable_preview_frames();
+    // `.is_ok()` on the spot, because `wait_for` answers a `Ref` that holds the channel's read
+    // lock and the next writer is `Publisher::publish` on the camera's actor thread — see
+    // `a_recording_feeds_the_preview_that_was_already_watching_and_never_opens_a_second_stream`
+    // for the hang that costs.
+    let dropped = tokio::time::timeout(
+        Duration::from_millis(limits::PREVIEW_FRAME_WAIT_MS * 4),
+        unpaintable.wait_for(|count| *count > 0),
+    )
+    .await
+    .is_ok();
+    assert!(dropped, "a YUYV take neither published nor counted a frame");
+    assert_eq!(
+        *preview.wchd.watch_preview_frames().borrow(),
+        handed_over_at,
+        "raw bytes were published into a route that serves image/jpeg"
+    );
+    assert_eq!(preview.wchd.running_recordings(), 1, "the take ended early");
+
+    // ... and when the take ends the picture comes back, so the drop is a pause rather than a
+    // way for a raw recording to kill a tab.
+    preview.stop_recording().await;
+    assert!(
+        preview.published_past(handed_over_at).await,
+        "the preview did not resume after a take it could not be fed from"
+    );
+    assert!(stream.part().await.is_jpeg());
+}
+
+#[tokio::test]
+async fn a_record_start_refused_after_it_took_the_camera_gives_the_preview_back() {
+    // **The path that is easy to build and easy to forget**, and a hand-applied mutant proved
+    // it: with the hand-back deleted from `Recordings::withdraw`, the whole workspace suite
+    // stayed green (note **N117**, mutant M9). A `record_start` claims the camera's frames
+    // *before* any device work — that is what stops two loops dequeuing from one stream — so
+    // every path out of it that is not a running take owes them back. There are three such paths
+    // and they all go through one function, which is why `Reserved` carries the claim rather
+    // than the handler holding it beside the slot.
+    //
+    // The refusal is reached the way a caller reaches it: `.avi` over a stream that negotiated
+    // YUYV is D7's pairing saying this container cannot carry these frames — refused **after**
+    // the negotiation, which is exactly the window where the preview has already been stopped
+    // and the take does not exist yet.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("mismatched.avi");
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+
+    let refused = preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, Some("YUYV"))
+        .await;
+    assert_eq!(
+        refused.pointer("/error/code").and_then(Value::as_i64),
+        Some(i64::from(api::codes::rpc_code(
+            schema::ErrorKind::FormatUnsupported
+        ))),
+        "this request was meant to be refused by D7's pairing: {refused}"
+    );
+    assert_eq!(
+        preview.wchd.running_recordings(),
+        0,
+        "a refused record_start left a take behind"
+    );
+
+    // The preview is back — on the same response, from the daemon's own count — and the camera
+    // is free for the next caller, which is the other half of "as this call found it".
+    let refused_at = *preview.wchd.watch_preview_frames().borrow();
+    assert!(
+        preview.published_past(refused_at).await,
+        "a refused recording left the tab watching a feed nothing publishes into"
+    );
+    assert!(stream.part().await.is_jpeg());
+    assert_eq!(preview.wchd.previewed_cameras(), 1);
+}
+
+#[tokio::test]
+async fn a_photo_during_a_take_is_told_to_retry_rather_than_stopping_the_takes_stream() {
+    // Note **N118**, at the one place this build could break the measurement a recording exists
+    // to carry. `engine::preview::while_suspended` stops whatever is streaming, takes a frame
+    // and starts it again; `Camera::streaming` cannot say what the stream is *for*; and P6c made
+    // a recording the second thing that streams across commands. A photo taken during a take
+    // would therefore cost the take those frames and put a gap in the driver's timestamps that
+    // D7's close-time rewrite spreads over the whole file — item 10's "a dropped frame must not
+    // look like a slow transition", from the inside.
+    //
+    // So it is refused, with the word that tells an unattended caller to try again, and the
+    // take is unharmed: it keeps recording and keeps feeding the tab. Both halves are asserted,
+    // because a build that refused *every* photo would satisfy the first on its own — which is
+    // what the last two lines are for.
+    let preview = Preview::start().await;
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("undisturbed.avi");
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+
+    preview
+        .record(&path, A_TAKE_LONGER_THAN_THIS_TEST, None)
+        .await;
+    // Turning before the photo, so the frame count at the end is a fact about a take that ran
+    // rather than a race with the driver's first `DQBUF` —
+    // `a_device_that_failed_mid_take_reaches_the_collector_and_never_the_readers_as_a_success`
+    // is where that flake was measured and what it costs.
+    let recording_at = *preview.wchd.watch_preview_frames().borrow();
+    assert!(
+        preview.published_past(recording_at).await,
+        "the take never reached the device"
+    );
+
+    let refused = preview.photo(default_settle()).await;
+    assert_eq!(
+        refused.pointer("/error/code").and_then(Value::as_i64),
+        Some(i64::from(api::codes::rpc_code(schema::ErrorKind::Busy))),
+        "a photo during a take was not told to retry: {refused}"
+    );
+    assert_eq!(
+        *preview.wchd.watch_preview_interruptions().borrow(),
+        0,
+        "the refused photo suspended a stream anyway"
+    );
+    assert_eq!(
+        preview.backend.streams_started(),
+        2,
+        "the refused photo started a stream of its own"
+    );
+
+    let report = preview.stop_recording().await;
+    assert!(
+        report
+            .pointer("/result/summary/frames_written")
+            .and_then(Value::as_u64)
+            .is_some_and(|written| written > 0),
+        "the take did not survive the refused photo: {refused}",
+        refused = refusal(&report)
+    );
+
+    // The other direction, so the refusal above is about a *running take* rather than about
+    // photos: with the take collected, the same call answers a photograph.
+    let taken = photograph(&preview.photo(default_settle()).await);
+    assert!(taken.bytes_match_the_delivery());
 }

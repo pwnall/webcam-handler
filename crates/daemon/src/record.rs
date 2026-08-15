@@ -22,17 +22,42 @@
 //! a `wch_record_stop`, a `wch_get` or a preview's own turn waits at most one
 //! `limits::FRAME_DEADLINE_MS` behind a recording rather than for the length of it.
 //!
-//! ## The frame is a value, and that is a place a second consumer joins
+//! ## The frame is a value, and that is where the second consumer joins
 //!
 //! `Live::absorb` takes the [`Frame`] `engine::record::turn` handed back and gives it to the
 //! muxer. It runs **on the camera's actor thread**, inside the same command that dequeued the
-//! frame, which is what makes the arrangement the notes' Expected usage item 10 asks for
-//! possible at all: a recording and a preview collide on one camera, V4L2 allows one streamer
-//! per node, and the owner's ruling is that the preview gets fed the recording's own frames.
-//! That fan-out is the *next* sub-milestone's and is deliberately not built here — but the
-//! frame is a named binding in a function that already runs where `crate::preview::Publisher`
-//! runs, rather than a value swallowed by a closure, so adding the second consumer is adding a
-//! line and not rearranging a loop.
+//! frame, which is what makes the notes' Expected usage item 10 answerable at all: a recording
+//! and a preview collide on one camera, V4L2 allows one streamer per node, and the owner ruled
+//! on 2026-08-14 (note **N117**) that **the preview is fed the recording's own frames**.
+//!
+//! So `Recordings::turn`'s closure hands each frame to the muxer and then to
+//! `crate::preview::Watchers::show`, in that order and on that thread. Three properties follow
+//! and none of them is an optimisation:
+//!
+//! - **The muxer reads it first**, because the recording is the product and the fan-out is what
+//!   the ruling adds to it. `absorb` takes a `&Frame`; `show` takes it by value. So the frame is
+//!   **moved** into the viewers' `Shot` after the container has copied what it needs, and the
+//!   second consumer costs no copy of the bytes at all.
+//! - **A frame the container refused is not shown.** `absorb`'s `?` is what decides it, and the
+//!   case is a take that is ending inside this same turn — a cap, or a disk. The viewers' next
+//!   event is the hand-back rather than a frame from a take that is over.
+//! - **There is no second fan-out and no second sink.** The `Publisher` is the preview's own, so
+//!   the byte cap and the paintability guard have one home (design §2.10). What this module owns
+//!   is *when* to publish; what may be published is `crate::preview`'s.
+//!
+//! ## Who holds the camera's stream, and the two calls that move it
+//!
+//! One streamer per node is the kernel's rule, so a take and a live preview cannot both pump the
+//! device — and two loops dequeuing from one stream would hand the recording every other frame,
+//! which item 10 forbids in as many words. [`Recordings::reserve`] therefore ends in
+//! `Previews::hand_over`, which claims the camera's feed and **waits** for any preview driver to
+//! leave; [`Reserved`] carries the resulting `Watchers` so the obligation to give it back travels
+//! in the type, through [`Recordings::withdraw`] on every refusal path and into `Live` on the
+//! one that succeeds. `drive` hands it back after the stream is stopped and before the
+//! container is closed.
+//!
+//! Both ends are `crate::preview`'s decisions, argued there: this module says *when* a recording
+//! owns a camera's frames, and that module says what owning them means.
 //!
 //! ## One take per camera, and what each of the three verbs does about it
 //!
@@ -143,6 +168,15 @@ struct Registry {
     clock: MonotonicClock,
     /// The daemon's one stop token, watched by every driver.
     shutdown: Shutdown,
+    /// The **same** fan-out `crate::server::Wchd` hands the web listener, not a second one.
+    ///
+    /// Held here because a take owns its camera's frames for the length of it (note **N117**),
+    /// and "which cameras have a fan-out" has to be one map: a recording that published into a
+    /// registry of its own would leave `Previews::attach` starting a second stream on a node
+    /// V4L2 allows one streamer on. The dependency runs one way — this module knows about
+    /// previews and that module knows nothing about recordings — which is what keeps the ruling
+    /// from becoming two answers to "who owns this camera's stream".
+    previews: crate::preview::Previews,
     /// One slot per camera, and the lock that makes "one" true.
     ///
     /// A `tokio::sync::Mutex` for `crate::preview`'s reason: the decision "does this camera
@@ -195,6 +229,14 @@ enum Slot {
 /// mutable field is an atomic or behind a `std::sync::Mutex` rather than owned by the loop.
 struct Live {
     camera: CameraId,
+    /// Whoever is watching this camera, and this take's claim on their fan-out.
+    ///
+    /// Held for the length of the take rather than looked up per frame, and that is the field
+    /// that makes the whole arrangement affordable: the lookup would be
+    /// `crate::preview`'s `tokio::sync::Mutex`, and the thread that has the frame in its hand is
+    /// the camera's **actor** thread, which has no runtime to await on. So the claim is taken
+    /// once, before the device work, and what runs per frame is a `watch::Sender` write.
+    watchers: crate::preview::Watchers,
     path: Utf8PathBuf,
     format: VideoFormat,
     negotiated: NegotiatedStream,
@@ -259,15 +301,18 @@ struct Finished {
     outcome: std::result::Result<RecordReport, Error>,
 }
 
-/// The witness that a caller holds this camera's recording slot.
+/// The witness that a caller holds this camera's recording slot **and its frames**.
 ///
 /// A value rather than a `bool` for `crate::preview::Starting`'s reason: the only way to get
 /// one is to be the call that reserved the slot, so the obligation to release it travels in
 /// the type rather than in a paragraph. It carries the camera so neither
-/// [`Recordings::withdraw`] nor [`Recordings::adopt`] has to be told which slot it is about.
+/// [`Recordings::withdraw`] nor [`Recordings::adopt`] has to be told which slot it is about,
+/// and since P6c's second half it carries the fan-out claim too — one value, two obligations,
+/// and the two functions that can consume it are the two that discharge both.
 #[derive(Debug)]
 pub struct Reserved {
-    camera: CameraId,
+    info: CameraInfo,
+    watchers: crate::preview::Watchers,
 }
 
 /// What one turn of a take's loop produced.
@@ -290,13 +335,20 @@ impl Recordings {
     ///
     /// Every argument is a value the composition root already made, and each is the daemon's
     /// **one** of that thing rather than a second — `crate::preview::Previews::new` takes the
-    /// identical three for the identical reason.
+    /// identical first three for the identical reason, and the fourth is *its* value rather
+    /// than one built here.
     #[must_use]
-    pub fn new(cameras: Arc<Cameras>, clock: MonotonicClock, shutdown: Shutdown) -> Recordings {
+    pub fn new(
+        cameras: Arc<Cameras>,
+        previews: crate::preview::Previews,
+        clock: MonotonicClock,
+        shutdown: Shutdown,
+    ) -> Recordings {
         Recordings(Arc::new(Registry {
             cameras,
             clock,
             shutdown,
+            previews,
             live: Mutex::new(BTreeMap::new()),
             running: watch::Sender::new(0),
             finished: watch::Sender::new(0),
@@ -338,11 +390,22 @@ impl Recordings {
         self.0.discarded.subscribe()
     }
 
-    /// Take this camera's recording slot, or refuse.
+    /// Take this camera's recording slot **and its frames**, or refuse.
     ///
     /// Called **before** anything device-shaped, so a second `record_start` is answered by this
     /// daemon rather than by the kernel's `EBUSY` after a file has been opened — see
-    /// `Slot::Starting`.
+    /// `Slot::Starting` — and so the preview driver has left the device before
+    /// `engine::record::start` asks it for a stream.
+    ///
+    /// The two claims are taken in that order and it matters: the slot is what makes this the
+    /// only `record_start` in flight for this camera, and the hand-over is what waits. Taking
+    /// the frames first would leave a second `record_start` waiting on a preview driver it was
+    /// about to be refused over.
+    ///
+    /// **The hand-over happens with the registry lock released**, and the two-block shape below
+    /// is the whole reason: `Previews::hand_over` waits for a `STREAMOFF`, and a wait under this
+    /// lock would be one camera's preview delaying every other camera's `record_status`. The
+    /// slot is `Slot::Starting` throughout, which is what makes that safe.
     ///
     /// # Errors
     ///
@@ -350,6 +413,15 @@ impl Recordings {
     /// another `record_start` is negotiating one. The module header argues why that variant
     /// and why its `holders` list is empty.
     pub async fn reserve(&self, info: &CameraInfo) -> Result<Reserved> {
+        self.claim(info).await?;
+        Ok(Reserved {
+            watchers: self.0.previews.hand_over(info).await,
+            info: info.clone(),
+        })
+    }
+
+    /// Put `Slot::Starting` in this camera's slot, or refuse.
+    async fn claim(&self, info: &CameraInfo) -> Result<()> {
         let mut live = self.0.live.lock().await;
         match live.get(&info.id) {
             Some(Slot::Starting | Slot::Running(_)) => {
@@ -374,26 +446,32 @@ impl Recordings {
             None => {}
         }
         live.insert(info.id.clone(), Slot::Starting);
-        Ok(Reserved {
-            camera: info.id.clone(),
-        })
+        Ok(())
     }
 
-    /// Give the slot back without a take in it.
+    /// Give the slot back without a take in it, and the camera's frames with it.
     ///
     /// The path out of a `record_start` whose negotiation, container pairing or header write
     /// was refused. Written explicitly on that path rather than as a `Drop` on [`Reserved`],
     /// because releasing it takes the registry lock and a `Drop` cannot `await` —
     /// `crate::preview::Previews::attach` makes the same call at the same moment for the same
     /// reason.
+    ///
+    /// **The hand-back is on this path too, and it is the half that is easy to forget**: a
+    /// `record_start` that stopped somebody's preview and was then refused its container would
+    /// otherwise leave a tab watching a feed nothing publishes into, for a take that never
+    /// existed. It is why [`Reserved`] carries the `Watchers` rather than `record_start`
+    /// holding them beside it — there are three refusal paths and each one would have had to
+    /// remember.
     pub async fn withdraw(&self, reserved: Reserved) {
+        reserved.watchers.hand_back().await;
         let mut live = self.0.live.lock().await;
         // Only if the slot is still the reservation this call is about: a `record_start` that
         // was refused after a *later* one had already taken the slot must not remove the
         // later one's take. `crate::preview::remove`'s `Arc::ptr_eq` makes the same check for
         // the same reason, one variant shape along.
-        if matches!(live.get(&reserved.camera), Some(Slot::Starting)) {
-            live.remove(&reserved.camera);
+        if matches!(live.get(&reserved.info.id), Some(Slot::Starting)) {
+            live.remove(&reserved.info.id);
         }
     }
 
@@ -433,7 +511,11 @@ impl Recordings {
         };
 
         let live = Arc::new(Live {
-            camera: reserved.camera.clone(),
+            camera: reserved.info.id.clone(),
+            // Moved out of the reservation and into the take: from here the obligation to give
+            // the camera's frames back belongs to `drive`, which is the only thing that knows
+            // when this take's stream has stopped.
+            watchers: reserved.watchers,
             path: path.to_owned(),
             format: opened.format,
             negotiated: opened.negotiated.clone(),
@@ -448,12 +530,12 @@ impl Recordings {
 
         let status = {
             let mut map = self.0.live.lock().await;
-            map.insert(reserved.camera.clone(), Slot::Running(Arc::clone(&live)));
+            map.insert(reserved.info.id.clone(), Slot::Running(Arc::clone(&live)));
             self.0.running.send_replace(count_running(&map));
             // Built under the lock so the answer a caller receives is the state the registry
             // is in, rather than one a driver may already have moved past.
             RecordStatus {
-                camera: reserved.camera,
+                camera: reserved.info.id,
                 take: Some(live.status(&self.0.clock)),
             }
         };
@@ -483,6 +565,39 @@ impl Recordings {
         RecordStatus {
             camera: camera.clone(),
             take,
+        }
+    }
+
+    /// Refuse if a take is running on this camera.
+    ///
+    /// The one question another verb asks this registry, and it is asked by `wch_photo` — whose
+    /// suspend/resume would otherwise take the *recording's* stream down and put a gap in the
+    /// one measurement a recording exists to carry (note **N118**; `crate::server`'s `photo` is
+    /// where the argument is written, beside the call).
+    ///
+    /// A camera whose `record_start` is still negotiating (`Slot::Starting`) is refused too,
+    /// and that is the same answer for the same reason: the stream is about to exist, and a
+    /// photo that slipped between the reservation and the `VIDIOC_STREAMON` would be refused by
+    /// the *device* a moment later anyway. A camera holding an uncollected take is **not**
+    /// refused — nothing is streaming, and the file is finished.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Busy`] naming the camera's node, with no holders — `Recordings::reserve`'s
+    /// refusal, arriving at the other verb that meets the same fact.
+    pub async fn not_recording(&self, info: &CameraInfo) -> Result<()> {
+        // The same lock every other answer here is read under, awaited rather than tried: a
+        // `try_lock` whose failure meant "no take" would be a refusal that depended on this
+        // daemon's scheduling, which is a test that cannot be made to go red both ways. Nothing
+        // holds this lock across device work — `reserve` releases it before the hand-over and
+        // `collect` awaits the driver outside it — so the wait is a `BTreeMap` lookup long.
+        let live = self.0.live.lock().await;
+        match live.get(&info.id) {
+            Some(Slot::Starting | Slot::Running(_)) => Err(Error::Busy {
+                path: crate::preview::node_of(info),
+                holders: Vec::new(),
+            }),
+            None | Some(Slot::Ended(_)) => Ok(()),
         }
     }
 
@@ -559,13 +674,21 @@ impl Recordings {
         let sink = Arc::clone(live);
         self.ask(actor, move |device| match engine::record::turn(device)? {
             engine::record::Turn::Idle => Ok(Step::Idle),
-            // **The frame, as a value.** This is the one place in the daemon where a
-            // recording's bytes exist, it runs on the camera's own thread with the device
-            // open, and it is where the preview fan-out joins: the same `frame` goes to
-            // `crate::preview::Previews`' watch channel before it reaches the muxer, which is
-            // the arrangement the owner ruled for when a recording and a preview collide.
-            // Nothing here consumes it in a way that would make that a second capture.
-            engine::record::Turn::Frame(frame) => sink.absorb(&frame),
+            // **The frame, as a value, and the two consumers of it.** This is the one place in
+            // the daemon where a recording's bytes exist, it runs on the camera's own thread
+            // with the device open, and it is where the preview fan-out joins — which is the
+            // owner's 2026-08-14 ruling in three lines (note **N117**).
+            //
+            // The muxer first, by reference; the viewers second, by **move**. So the ordering is
+            // the ownership: the container copies what it needs and the frame then *becomes* the
+            // viewers' `Shot` with no second copy of the bytes anywhere in this process. A frame
+            // `absorb` refused never reaches `show`, because the `?` is what a cap and a disk
+            // both come out of and the take is ending inside this turn either way.
+            engine::record::Turn::Frame(frame) => {
+                let step = sink.absorb(&frame)?;
+                sink.watchers.show(frame);
+                Ok(step)
+            }
         })
         .await
     }
@@ -719,6 +842,14 @@ async fn drive(recordings: Recordings, actor: Arc<CameraActor>, live: Arc<Live>)
     if let Err(err) = recordings.ask(&actor, engine::record::stop).await {
         tracing::debug!(%camera, error = %err, "the recording's stream could not be stopped");
     }
+
+    // The camera's frames, given back the moment the device is free and **before** the container
+    // is closed: a close seeks, writes an index and flushes, and the owner's tab should not wait
+    // for a disk to get its picture back. `crate::preview::Previews::release` is what decides
+    // whether that means a fresh preview driver or a feed nobody wants any more — including on
+    // the path this take failed on, where the resume meets the same dead device and ends the
+    // readers' streams through the mechanism that already exists for it.
+    live.watchers.hand_back().await;
 
     let (status, outcome) = close(&recordings, &live, ended).await;
 
@@ -900,13 +1031,22 @@ mod tests {
     use super::*;
 
     /// A registry with nothing driving it, for the assertions that are about the map.
+    ///
+    /// Over the **same** `Cameras` as its fan-out, which is the composition
+    /// `crate::server::Wchd::with_idle_timeout` builds: a reservation reaches
+    /// `Previews::hand_over`, so a fixture that handed the two registries different camera
+    /// registries would be testing an arrangement this daemon does not have.
     fn registry() -> Recordings {
+        let cameras = Arc::new(Cameras::new(Arc::new(
+            fake::FakeBackend::new(Vec::new()).expect("a backend replaying no cameras"),
+        )));
+        let clock = MonotonicClock::new();
+        let shutdown = Shutdown::new();
         Recordings::new(
-            Arc::new(Cameras::new(Arc::new(
-                fake::FakeBackend::new(Vec::new()).expect("a backend replaying no cameras"),
-            ))),
-            MonotonicClock::new(),
-            Shutdown::new(),
+            Arc::clone(&cameras),
+            crate::preview::Previews::new(cameras, clock.clone(), shutdown.clone()),
+            clock,
+            shutdown,
         )
     }
 
@@ -946,7 +1086,7 @@ mod tests {
     /// to a mid-take refusal through an actor would be a fixture for a decision that is three
     /// lines of `match`. `engine::record::Opened`'s fields are public for exactly this reason
     /// (its own doc says so), and `engine::record::OnDisk` is what a real take writes through.
-    fn live_take(path: &Utf8Path) -> Arc<Live> {
+    async fn live_take(recordings: &Recordings, path: &Utf8Path) -> Arc<Live> {
         let negotiated = a_take().negotiated;
         let opened = Opened {
             camera: camera().id,
@@ -971,6 +1111,10 @@ mod tests {
         .expect("a writable scratch path and a container that carries MJPG");
         Arc::new(Live {
             camera: opened.camera.clone(),
+            // A real claim on a real fan-out, taken the way `reserve` takes one. Nobody is
+            // watching it, which is what makes it cheap: `Watchers::show` is never reached from
+            // these tests, and `close` — the subject below — does not touch it.
+            watchers: recordings.0.previews.hand_over(&camera()).await,
             path: path.to_owned(),
             format: opened.format,
             negotiated: opened.negotiated.clone(),
@@ -1000,7 +1144,7 @@ mod tests {
         let recordings = registry();
         let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
         let path = scratch.base().join("vanished.avi");
-        let live = live_take(&path);
+        let live = live_take(&recordings, &path).await;
 
         let (status, outcome) = close(
             &recordings,
@@ -1025,7 +1169,7 @@ mod tests {
         // The other direction, so the arm above refuses a *device failure* rather than
         // refusing takes: a loop that ended cleanly is collected as a report, and the status
         // names the ending it reached with no refusal beside it.
-        let live = live_take(&scratch.base().join("clean.avi"));
+        let live = live_take(&recordings, &scratch.base().join("clean.avi")).await;
         let (status, outcome) = close(&recordings, &live, Ok(RecordingEnd::Duration)).await;
         let report = outcome.expect("a take that ended on its own duration is a recording");
         assert_eq!(report.ended, RecordingEnd::Duration);
@@ -1084,7 +1228,7 @@ mod tests {
             .reserve(&info)
             .await
             .expect("an uncollected take is not a running one");
-        assert_eq!(reserved.camera, info.id);
+        assert_eq!(reserved.info.id, info.id);
         assert_eq!(*discarded.borrow_and_update(), 1);
         assert!(
             recordings.status(&info.id).await.take.is_none(),
