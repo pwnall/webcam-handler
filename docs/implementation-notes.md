@@ -15365,3 +15365,75 @@ recorded here so it is made deliberately rather than discovered missing (the pos
 `crates/client/src/remote.rs`'s poll loop, which would replace this entry's evidence with
 better evidence — note **N112**'s closing paragraph and note **N101** both say what a hand
 pass is worth against a floor, and the answer has been "much less" twice.
+
+## N116 — A per-dependency `opt-level` cannot reach a generic the dependency asked us to instantiate, so the codec was compiled at ours
+
+**Found**, 2026-08-14, while pricing an unrelated flake: `webcam-handler-cli photo` over the
+fake took **5.2 s and exited 1** when `target/debug/webcam-handler-cli` had last been written
+by `cargo build`, and **0.9 s and exited 0** when the same binary had last been written by
+`cargo nextest run`. Not a slow build — a *failing* one, and therefore two gates that were red
+or green depending on a thing neither of them names.
+
+### The mechanism, because the manifest said the opposite
+
+`[profile.dev.package."*"] opt-level = 2` has sat in this workspace's root manifest since P0
+under the comment "dependencies get -O2, our code keeps fast rebuilds". For a crate that
+*calls* a dependency, that is true. For a crate that instantiates a dependency's **generic**,
+it is not, and nothing about the manifest says so: `image`'s `JpegEncoder::encode_image` is
+generic over the pixel type, so its code is monomorphised into `webcam-handler-imaging` and
+compiled with **this workspace's** `opt-level = 0`. The dependency's override applies to the
+dependency's own object code, and there is no object code to apply it to for a function whose
+body only exists once we name a type for it.
+
+Measured, one 1280x720 luma frame through `imaging::encode::jpeg`, which is a five-line
+wrapper around exactly that call:
+
+| `webcam-handler-imaging` at | one encode | `photo` over the fake (11 frames) |
+|---|---|---|
+| `opt-level = 0` (inherited) | ~470 ms | **5.22 s, exit 1** |
+| `opt-level = 1` | — | 1.92 s, exit 0 |
+| `opt-level = 2` | ~30 ms | 0.79 s, exit 0 |
+| `opt-level = 3` | ~30 ms | 0.83 s, exit 0 |
+
+The bisection that found it is worth recording because it refuted the obvious suspect first:
+`webcam-handler-fake` at `opt-level = 3` changed nothing (5.39 s), and the same photo over
+`chicony-ir` — a GREY-only profile, so the same synthesis with `pack_grey` instead of a JPEG
+encode — took **0.20 s** at `opt-level = 0`. The fake's scene generation was never the cost.
+Only `webcam-handler-imaging` moved the number.
+
+### Why it was a defect and not a preference
+
+`webcam-handler-fake` synthesises every frame through this encoder, `DEFAULT_SETTLE_SKIP_FRAMES`
+is 10 so a photo takes eleven frames, and eleven times 470 ms walks past
+`DEFAULT_SETTLE_DEADLINE_MS`. So the *product's* deadline fired against the *fixture's* speed
+and `photo` failed — which `scripts/gates/json-validates.sh` and `scripts/gates/cli-parity.sh`
+both drive.
+
+`just ci` never saw it, and the reason is the interesting half: `test` runs before `gates`,
+`[profile.test]` sets `opt-level = 1`, and both profiles write **the same path**. So the suite's
+verdict depended on which profile had last written `target/debug/webcam-handler-cli` — green in
+CI, red for a developer who ran `just gates` after a plain `cargo build`. That is note **N97**'s
+shape again (the gates walk the filesystem, not the repository): a predicate reading a build
+artifact inherits every question about who built it. AGENTS calls a gate "named, counted,
+**re-runnable**", and this one was re-runnable only sometimes.
+
+### The repair, and what it is not
+
+`[profile.dev.package.webcam-handler-imaging] opt-level = 3`, at the owner's instruction that a
+crate carrying image work be optimised at maximum unless there is a reason not to. It makes the
+dev and test profiles agree about this crate, so the artifact behaves the same whoever built it
+— the divergence is removed rather than the symptom hidden.
+
+It is explicitly **not** the repair that was first proposed, and the difference is only visible
+because of the measurement: the owner's instinct was to move synthetic image generation into a
+crate of its own and optimise that, which is a good idea for other reasons and would not have
+moved this number at all, because generation is 0.20 s and the encoder is in a product crate.
+A fixture's cost turned out to be a product path's cost, wearing a fixture's clothes.
+
+**Amend this note if** another crate is found instantiating a dependency's generic on a hot
+path — `zune-jpeg`'s decode and `imageproc`'s filters are the two candidates nobody has
+measured — since the rule generalises and the manifest's comment is still the thing that will
+mislead the next reader.
+
+**Retire it only if** `[profile.dev.package."*"]` learns to cover monomorphised code, which is
+a Cargo question and not ours.

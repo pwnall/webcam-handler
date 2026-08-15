@@ -189,5 +189,23 @@ opt-level = 0
 [profile.dev.package."*"]
 opt-level = 2
 
+# ...except that the line above does not do what it says for a crate whose job is calling a
+# codec, and `webcam-handler-imaging` is that crate. `image`'s `JpegEncoder::encode_image` is
+# generic over the pixel type, so it is **monomorphised into this crate** and compiled at
+# *our* opt-level rather than the dependency's — a per-dependency override cannot reach code
+# that is instantiated here. Measured on the attached-camera host, one 1280x720 luma frame
+# through `imaging::encode::jpeg`: 470 ms at 0, 30 ms at 2, no further gain at 3.
+#
+# That was not a slow build, it was a **red gate**. `webcam-handler-fake` synthesises each
+# frame through this encoder, the default settle takes eleven frames, and eleven times
+# 470 ms walks past `DEFAULT_SETTLE_DEADLINE_MS`, so `webcam-handler-cli photo` over the fake
+# *failed* — which `json-validates.sh` and `cli-parity.sh` both drive. It was invisible from
+# `just ci` because `test` runs before `gates` and `[profile.test]` left a faster binary at
+# the same path, so whether the suite passed depended on which profile last wrote
+# `target/debug/webcam-handler-cli`. Pinning this crate makes the two profiles agree, which
+# is the point: a gate must not be re-runnable only sometimes.
+[profile.dev.package.webcam-handler-imaging]
+opt-level = 3
+
 [profile.test]
 opt-level = 1
