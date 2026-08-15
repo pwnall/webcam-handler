@@ -96,26 +96,11 @@
         "code": -32020,
         "data": {
           "available": [
-            [
-              77,
-              74,
-              80,
-              71
-            ],
-            [
-              89,
-              85,
-              89,
-              86
-            ]
+            "MJPG",
+            "YUYV"
           ],
           "kind": "format_unsupported",
-          "requested": [
-            78,
-            86,
-            49,
-            50
-          ]
+          "requested": "NV12"
         },
         "message": "format NV12 is unavailable; this camera offers MJPG, YUYV"
       },
@@ -3133,16 +3118,10 @@
         "type": "object"
       },
       "PixelFormat": {
-        "description": "A pixel format, as its FourCC.",
-        "items": {
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "maxItems": 4,
-        "minItems": 4,
-        "type": "array"
+        "description": "A pixel format, as the four-character FourCC the driver enumerated: `MJPG`, `YUYV`, `GREY`, `NV12`, `JPEG`, or one this build has never heard of, which is carried rather than rejected. A byte that is not an ASCII graphic character is escaped as `\\xNN` with two lowercase hex digits, and a literal backslash as `\\\\`, so a FourCC that is not printable crosses the wire exactly and decodes back to the same four bytes.",
+        "maxLength": 16,
+        "minLength": 4,
+        "type": "string"
       },
       "ProbeSkip": {
         "description": "One control the empirical probe declined to toggle, and why.\n\nA named pair rather than a tuple for the reason\n[`crate::control::ControlWrite`] is one — it crosses the T5 wire inside\n[`crate::report::DiscoveryReport`] (D10), where an array of two strings is a shape a\nconsumer has to be told about out of band.\n\nThe `reason` is free text on purpose. A closed vocabulary here would turn a reason\nnobody anticipated into the nearest one that was, and the probe's list of what it\npassed over is exactly the place where \"we did not look\" must not be readable as \"we\nlooked and found nothing\" — §5's motor rule is one reason and a device that refused\nthe toggle is another, and both are discovered rather than designed.",

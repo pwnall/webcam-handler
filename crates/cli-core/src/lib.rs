@@ -621,8 +621,32 @@ pub struct StreamArgs {
     pub size: Option<SizeArg>,
 
     /// The pixel format to ask the device for, as a fourcc such as `MJPG`.
-    #[arg(long, value_name = "FOURCC")]
-    pub pixel_format: Option<String>,
+    #[arg(long, value_name = "FOURCC", value_parser = fourcc)]
+    pub pixel_format: Option<PixelFormat>,
+}
+
+/// `--pixel-format`, through the schema's own decoder (note **N109**).
+///
+/// The flag is parsed **here**, at the command line, rather than where the request is built,
+/// and that is a repair rather than a tidy-up. It used to be an `Option<String>` that
+/// [`StreamArgs::request`] ran through `and_then(PixelFormat::parse)`, so
+/// `--pixel-format MJP` — a typo, or a five-character name — produced `None`, which is
+/// the same value as *not passing the flag at all*: the camera then chose its own format
+/// under D5's ranking and the caller got a photo in a format it had not asked for, with
+/// nothing anywhere saying so. For AGENTS' primary consumer that is the worst shape a
+/// failure has, because the answer looks like a success. Now clap refuses it by name.
+///
+/// [`PixelFormat::parse`] is the decoder the wire uses, so a format the daemon would accept
+/// and one this flag accepts are the same set — which is the property that makes
+/// `webcam-handler-cli` and `webcam-handler-client` interchangeable on this flag rather than
+/// merely similar.
+fn fourcc(text: &str) -> std::result::Result<PixelFormat, String> {
+    PixelFormat::parse(text).ok_or_else(|| {
+        format!(
+            "{text:?} is not a fourcc; a fourcc is four characters, such as MJPG, with \\xNN \
+             for a byte that is not an ASCII graphic"
+        )
+    })
 }
 
 impl StreamArgs {
@@ -630,7 +654,7 @@ impl StreamArgs {
     #[must_use]
     pub fn request(&self) -> StreamRequest {
         StreamRequest {
-            pixel_format: self.pixel_format.as_deref().and_then(PixelFormat::parse),
+            pixel_format: self.pixel_format,
             width: self.size.map(|s| s.width),
             height: self.size.map(|s| s.height),
             interval: None,
@@ -2140,6 +2164,55 @@ mod tests {
             .expect("builds")
             .expect("a request");
         assert_eq!(request.settle, SettlePolicy::default());
+    }
+
+    #[test]
+    fn a_pixel_format_flag_that_names_no_format_is_refused_rather_than_ignored() {
+        // Note **N109**. `--pixel-format` used to be an `Option<String>` filtered through
+        // `and_then(PixelFormat::parse)`, so every spelling below produced `None` — which is
+        // indistinguishable from omitting the flag, and D5's ranking then chose a format the
+        // caller had not asked for while the answer reported success. An unattended agent
+        // has no way to notice that; a non-zero exit and a usage line is the whole repair.
+        for typo in ["MJP", "MJPGX", "\\x4d", "mjpg "] {
+            let refused = Cli::try_parse_from([
+                "webcam-handler-cli",
+                "photo",
+                "cam:x",
+                "-o",
+                "a.jpg",
+                "--pixel-format",
+                typo,
+            ]);
+            assert!(
+                refused.is_err(),
+                "--pixel-format {typo:?} was accepted and would have been silently dropped"
+            );
+        }
+        // The flag and the wire agree about what a format is called, which is the reason
+        // the decoder has one home: an unprintable fourcc is typable, and a padded kernel
+        // name copied out of `v4l2-ctl` parses as itself.
+        for (typed, expected) in [
+            ("MJPG", PixelFormat::MJPG),
+            ("\\x00\\x01AB", PixelFormat([0x00, 0x01, b'A', b'B'])),
+            ("Y16 ", PixelFormat(*b"Y16 ")),
+        ] {
+            let cli = Cli::try_parse_from([
+                "webcam-handler-cli",
+                "photo",
+                "cam:x",
+                "-o",
+                "a.jpg",
+                "--pixel-format",
+                typed,
+            ])
+            .expect("parses");
+            let request = cli
+                .command
+                .photo_request(camino::Utf8Path::new("/tmp"))
+                .expect("builds")
+                .expect("a request");
+            assert_eq!(request.stream.pixel_format, Some(expected), "{typed:?}");
+        }
     }
 
     #[test]

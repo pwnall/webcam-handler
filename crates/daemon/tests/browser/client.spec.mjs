@@ -402,6 +402,25 @@ test("the preview paints successive frames and keeps painting across a photo", a
     .poll(() => page.evaluate(() => document.getElementById("photo-frame").naturalWidth))
     .toBeGreaterThan(0);
   await expect(page.locator("#photo-report")).toContainText(/\d+ bytes, delivered as /);
+  // The 2026-08-14 ruling, from the only side that can see it (note **N109**): both places
+  // this report names a pixel format name it as four characters, because that is what
+  // `wch_photo` now puts on the wire. Red if `photo.js` still calls `Array.prototype.map` on
+  // what is now a string — `describe` would throw and the report would be empty — and red
+  // again if any client renders `89,85,89,86` at an operator.
+  //
+  // **YUYV 640×480, not the 160×120 MJPG the preview is streaming**, and that is D5's
+  // amendment rather than an accident: this fixture shrinks only the MJPG branch, so the
+  // largest mode left on the camera is the uncompressed one and note **N85**'s ranking
+  // picks it. The rendering sentence says `converted`, which is the same ruling's other
+  // half showing through — a photo off an uncompressed mode is not verbatim bytes.
+  await expect(page.locator("#photo-report")).toContainText(
+    "converted from YUYV and encoded as jpeg",
+  );
+  await expect(page.locator("#photo-report")).toContainText("negotiated YUYV 640×480");
+  // Anchored on the word before it, because the byte count in the same report is a number
+  // this page does not control and `89` on its own would be a flake waiting for an 89-byte
+  // frame. `negotiated 89` is what a page rendering the array shape would say.
+  await expect(page.locator("#photo-report")).not.toContainText("negotiated 89");
 
   await write(0);
   expect(await settledLuma(page)).toBeLessThan(bright);

@@ -104,7 +104,18 @@ function describe(taken) {
   const negotiated = taken.negotiated;
   const lines = [
     `${taken.width}×${taken.height} · ${renderingSentence(taken.rendering)}`,
-    `negotiated ${fourcc(negotiated.pixel_format)} ${negotiated.width}×${negotiated.height}` +
+    // `pixel_format` is the FourCC as its four characters — `MJPG`, not `[77,74,80,71]`
+    // (owner ruling, 2026-08-14; note **N109**). The daemon spells it with
+    // `schema::camera::PixelFormat`'s `Display`, escaping a byte that is not an ASCII
+    // graphic as `\xNN`, and this page renders what it is handed.
+    //
+    // It used to arrive as an array of four numbers, and this file decoded it with a rule
+    // of its own: a printable byte as its character, anything else as `·`. That was a
+    // *third* spelling of a FourCC, agreeing with neither the wire nor the Rust one, and it
+    // threw information away — two devices reporting different unprintable formats rendered
+    // as the same four dots. Deleting it is the point of the ruling reaching this file: the
+    // spelling has one home and a browser can no longer hold a second opinion about it.
+    `negotiated ${negotiated.pixel_format} ${negotiated.width}×${negotiated.height}` +
       ` at ${intervalLabel(negotiated.interval)}`,
     `${taken.frames_settled} frame(s) discarded while the sensor settled [PF:11]`,
     `${taken.delivery.byte_count} bytes, delivered as ${taken.delivery.kind}`,
@@ -119,29 +130,18 @@ function describe(taken) {
   return lines.map((line) => el("div", {}, line));
 }
 
-/** Which of D6's three paths produced these bytes. */
+/** Which of D6's three paths produced these bytes. `source` is a FourCC string — see above. */
 function renderingSentence(rendering) {
   switch (rendering.kind) {
     case "verbatim":
-      return `the camera's own ${fourcc(rendering.source)} bytes, untouched`;
+      return `the camera's own ${rendering.source} bytes, untouched`;
     case "decoded_and_encoded":
-      return `decoded from ${fourcc(rendering.source)} and re-encoded as ${rendering.target}`;
+      return `decoded from ${rendering.source} and re-encoded as ${rendering.target}`;
     case "converted_and_encoded":
-      return `converted from ${fourcc(rendering.source)} and encoded as ${rendering.target}`;
+      return `converted from ${rendering.source} and encoded as ${rendering.target}`;
     default:
       return `rendered by a path this page does not know: ${rendering.kind}`;
   }
-}
-
-/**
- * A `schema::camera::PixelFormat`, as the four characters it is.
- *
- * The DTO is a transparent newtype over `[u8; 4]`, so it crosses JSON as an array of four
- * numbers and every client renders the FourCC itself. `PixelFormat`'s `Display` does this in
- * Rust, and a browser cannot reach it — the same shape `ListHint::message` has.
- */
-function fourcc(format) {
-  return format.map((byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : "·")).join("");
 }
 
 /** A `schema::camera::FrameInterval`, as frames per second where it has one. */

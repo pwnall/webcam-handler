@@ -14760,3 +14760,196 @@ that compares whole buffers and still passes when two of them are exchanged.
 **Amend this note if** `imaging::decode`'s chroma orientation gets an assertion, which would
 close the half this entry leaves open and turn it into a finding with a date rather than an
 open task.
+
+## N109 — A FourCC crosses the wire as its four characters, and the escape it needed first was not the one the ruling described
+
+**The ruling (owner, 2026-08-14):** `schema::camera::PixelFormat` serializes as its FourCC
+string. `"available": ["MJPG","YUYV"]`, not `"available": [[77,74,80,71],[89,85,89,86]]`. It was
+put to the owner as a change whose blast radius is real but contained and cheapest now, since no
+external consumer exists yet, and they chose it over both *accept both shapes* and *leave it,
+record the finding*.
+
+**Doc:** design **D10** gains the sentence, beside the base64 sink rule it belongs with — the
+wire's encodings are D10's, and this is one. Nothing in `docs/` recorded the array shape as a
+decision, which is why this is a repair rather than a re-litigation of settled design: the type
+was `#[serde(transparent)]` over `[u8; 4]` and the array was serde's default for that, never
+anybody's choice.
+
+**Repo:** `schema::camera::PixelFormat` — the derives replaced by hand-written `Display`,
+`Debug`, `Serialize`, `Deserialize` and `JsonSchema`, and a rewritten `parse`;
+`limits::PROFILE_SCHEMA_VERSION` 1 → 2; the five committed profiles and
+`crates/testkit/fixtures/synthetic-basic.json` migrated; `cli_core`'s `--pixel-format` flag;
+`crates/web/assets/photo.js`; both artifacts under `schemas/`.
+
+### What the ruling is actually about, in one sentence
+
+`FormatUnsupported { requested, available }` is P6b's central refusal and the one AGENTS'
+primary consumer is *supposed to act on* — retry with a format the camera has. Until this
+change its `message` said `format NV12 is unavailable; this camera offers MJPG, YUYV` while the
+`data` beside it, the half a program parses, said `"available": [[77,74,80,71],[89,85,89,86]]`.
+Three renderings of one fact — the CLI's tables, the D13 message, the JSON — and the one the
+consumer that matters most reads was the unreadable one. The cost is the blast radius below and
+one incompatible document version; the alternative was an agent that has to know a FourCC is
+little-endian ASCII before it can retry.
+
+### The ambiguity the brief named does not exist, and the one that does is worse
+
+The brief for the ruling asked for a second repair on the way past, and it is the interesting
+half. `Display` has always escaped a byte the kernel had no business emitting — `b as char` when
+`b.is_ascii_graphic()`, `\xNN` otherwise, with the comment *"Formats are ASCII by kernel
+convention, but a driver is input"*. That instinct is right and AGENTS rule 6 requires it. The
+brief then said the escape was ambiguous: *"a device reporting the four literal bytes `\`, `x`,
+`4`, `d` renders as `\x4d`, which is byte-for-byte the same string as the escape this function
+emits for the single byte `0x4d` (`M`)"*.
+
+**That instance is wrong, and so is the general claim it stands for.** `0x4d` is an ASCII
+graphic, so the old function emits `M` for it and never `\x4d`. More than that: the old spelling
+is *injective over all four-byte values*, and the reason is a length identity nobody wrote down.
+Each byte contributes one character or four, so a spelling's length is `4 + 3k` where `k` is the
+number of escaped bytes — which means `k` is determined by the string, and two values that
+spelled the same would need the same number of escapes. Given that, the first escape of each
+must start at the same character offset: the first escape of a value with `k` escapes starts at
+character `i`, where `i` is its own index (everything before it is one character), so `i ≤ 3`;
+and the four characters of an escape are `\`, `x`, and two lowercase hex digits, none of which
+after the first is `\`. A second value whose first escape started later would need a `\` inside
+those four characters. There is none. Induction on the rest.
+
+A search agrees with the argument: over the exhaustive cross product of every byte whose
+spelling can interact with another's — `\`, `x`, both cases of every hex digit, four non-graphic
+bytes spanning the escape space, and one inert control — 707 281 values, **0 collisions**; over
+20 million seeded draws from the whole `[u8; 4]` space, **0 collisions**.
+
+**The pair was broken anyway, in the other direction, and worse.** `parse` accepted *any*
+four-character string, so it was not `Display`'s inverse at all: `Display` of
+`PixelFormat([0, 1, b'A', b'B'])` is `\x00\x01AB`, ten characters, which `parse` refused
+outright — while `parse("\x1f")` cheerfully returned the four literal bytes `\`, `x`, `1`, `f`.
+Nothing round-tripped except the ASCII names, and nothing said so. And the old spelling admits
+**no one-pass decoder at all**: reading left to right, a `\` is either a literal byte or the
+start of an escape, and telling them apart needs backtracking plus the four-byte total as a
+constraint. Over that same 707 281-value population, **92 625 values — 13% — cannot be read back
+by a decoder that does not backtrack**, the shortest example being `\x00\x00\x00\` where the
+trailing byte is a literal backslash with nothing after it.
+
+So the repair the brief asked for is the right one for a better reason than the one it gave.
+Escaping the escape — `0x5c` as `\\`, other graphics as themselves, everything else as `\xNN` —
+makes the code **prefix-free**, and prefix-free is what buys a decoder that is one pass, total,
+and free of any dependence on the width being four. That last clause is the part worth keeping:
+the old form's injectivity was an accident of `[u8; 4]`, invisible in the source, unstated in any
+test, and it would have evaporated the first time a FourCC was embedded in a longer string —
+which `error::format_formats` already does, joining them with `", "` into a D13 message.
+
+`Display`'s output changes for a backslash-bearing FourCC, from `\x4d` to `\\x4d`. That is the
+repair rather than a regression: the old rendering named a value it did not mean.
+
+**One home for the spelling.** `Display` is the encoder and `parse` is the decoder, and they are
+the only two: `Serialize` is `collect_str`, `Deserialize` is `parse`, `Debug` writes through
+`Display`, the `JsonSchema` description is written from the same table, and `--pixel-format`
+parses with `parse`. `every_four_byte_value_survives_the_wire_spelling_that_names_it` and
+`two_different_fourccs_cannot_share_one_spelling` hold the bijection over the same generated
+population the search used — generated rather than listed for note **N108**'s reason, that a list
+of cases somebody thought of cannot constrain the byte nobody thought of — and a g0 criterion row
+runs them beside the JSON claim that is red against the transparent newtype in both directions.
+
+**No `pattern` in the emitted schema, deliberately.** A regex for this grammar would be a second
+home for it (design §2.10), free to drift from `parse`, and a schema that accepted a string this
+build refuses is worse than one that says less. What the artifacts carry instead is
+`minLength: 4`, `maxLength: 16` — both derived from the grammar, four bytes at one character each
+and four escapes at four — and a `description` that spells the escapes out, because
+`schemas/webcam-handler-openrpc.json` is what an agent reads *instead of* this source.
+
+### The committed captures are migrated, and the equality is transcribed rather than claimed
+
+Five profiles in `corpus/profiles/`, and **two of the five devices are not attached to this
+host** (`dell-u3224kb`, `logitech-brio`), so re-capture was not available and fabricating one
+would have been the worst answer in the book. AGENTS makes a profile immutable and re-captured
+wholesale; a *schema migration* of a committed capture is a different act, and the whole
+difference is that it has to prove it changed the spelling and not the content.
+
+Three pieces of evidence, all mechanical:
+
+1. **The rewrite is derived.** Every four-integer `pixel_format` array is found by shape and
+   respelled through the same escape rule, in place on the text — so `git diff` is the claim.
+   Every changed line in all five files is one of two things: 11 `pixel_format` lines and 5
+   `schema_version` lines. Nothing else moved, in 71 deleted and 16 inserted lines.
+2. **The product reads the same profiles.** Each committed profile was replayed through the
+   shipped `webcam-handler-cli --backend fake` before the change and after it — `list`, `info`
+   and `controls`, which is the format tree with every size and interval and the whole control
+   vocabulary — and the two transcripts compared with pixel formats normalised to one spelling.
+   Byte-identical, sha256 for sha256:
+
+   | profile | before | after |
+   |---|---|---|
+   | chicony-ir | `77b22a55…0970d5` | `77b22a55…0970d5` |
+   | chicony-rgb | `1385ba86…8a9c2004` | `1385ba86…8a9c2004` |
+   | dell-u3224kb | `93cdbf17…3945662f` | `93cdbf17…3945662f` |
+   | logitech-brio | `4fb243f4…96f5cd32` | `4fb243f4…96f5cd32` |
+   | obsbot-tiny3 | `2b969353…ab5ceba6c` | `2b969353…ab5ceba6c` |
+
+3. **An independent side agrees on the spelling.** `crates/testkit/fixtures/synthetic-basic.json`
+   is not corpus — it is serialised *from* `fixtures::synthetic_basic()`, so it was regenerated
+   with `WCH_BLESS_FIXTURES=1` rather than rewritten. The tool's own serializer produced exactly
+   the lines the migration script produced for the captures, which is the migration checked
+   against the code it was migrating for.
+
+**The document version moves with the shape**, and that is the decision this section is really
+about. `PROFILE_SCHEMA_VERSION` was 1 and had never moved. Without the bump, a profile captured
+last week gets past `engine::profile::read`'s version probe and fails as
+`invalid type: sequence, expected a string at line 48 column 24` — a serde message about a byte
+offset, delivered to a consumer AGENTS says has no hands. With it, the same file is
+`SchemaVersionForeign { found: 1, supported: 2 }`, which names both numbers and implies the
+remedy. The session version does not move with it: nothing else this tool persists carries a
+`PixelFormat`, and `snapshot`/`session` were checked rather than assumed.
+
+`scripts/gates/corpus-floor.sh` needed nothing — its three claims are about a profile being
+loaded and replayed, not about what is in it — and the profiles' provenance blocks were left
+alone on purpose. Provenance records *the capture*: who ran it, against which kernel, with which
+tool version. A migration is not a capture, and writing today's date into `captured_at` would
+turn a true record of when the OBSBOT was probed into a false one. What records the migration is
+this note and the commit.
+
+### Two defects found on the way past, both repaired
+
+**`--pixel-format` silently ignored what it could not parse.** The flag was an `Option<String>`
+run through `and_then(PixelFormat::parse)` where it was consumed, so `--pixel-format MJP`
+produced `None` — the same value as not passing the flag at all. D5's ranking then chose a format
+the caller had not asked for and the answer reported success. For an unattended agent that is the
+worst shape a failure has: it looks like the thing working. It is now a clap `value_parser` over
+the schema's own decoder, so the set of formats the flag accepts and the set the wire accepts are
+the same set by construction.
+`a_pixel_format_flag_that_names_no_format_is_refused_rather_than_ignored` is both halves.
+
+**The web client had a third spelling of a FourCC.** `photo.js` decoded the array itself —
+printable bytes as characters, everything else as `·` — which agreed with neither the Rust
+spelling nor the wire, and lost information: two devices reporting different unprintable formats
+rendered as the same four dots. The page now renders the string the daemon sends and holds no
+opinion about it. The browser rung asserts it, because a browser behaviour verified only through
+the JSON the page consumes is not verified: the photo claim gains three assertions (16 → 19,
+120 across the rung) naming `converted from YUYV and encoded as jpeg` and
+`negotiated YUYV 640×480`, and refusing `negotiated 89`. It is red against a `photo.js` that
+still calls `Array.prototype.map` on what is now a string — `describe` throws and the report
+comes up empty — and red against any client that renders the numbers.
+
+### Mutants applied, and what each one proved
+
+Five, each built and watched failing over the whole workspace suite — 1271 tests — before the
+repair it justifies was trusted:
+
+| mutant | what it did | verdict |
+|---|---|---|
+| **M1** the pre-repair `Display`: the `\\` arm deleted, decoder unchanged | a backslash-bearing FourCC spells as if it were an escape | **4 red.** `every_four_byte_value_survives_the_wire_spelling_that_names_it`, `a_backslash_bearing_fourcc_doubles_its_backslashes…`, `a_pixel_format_crosses_json…`, `a_pixel_format_debugs…` |
+| **M2** `Serialize` back to the array — `self.0.serialize(serializer)` | the shape the ruling removed returns to the wire | **38 red**, across five crates: the two the ruling is about (`a_pixel_format_crosses_json…`, `a_format_unsupported_refusal_names_its_formats_readably…`), every daemon verb suite, the client, the fixture, and the browser rung |
+| **M3** `parse` returning `Some` without checking it filled four bytes | `MJP` becomes a format with a zero on the end | **5 red**, including `a_spelling_that_names_no_four_bytes_is_refused_rather_than_padded` and, one crate away, `a_pixel_format_flag_that_names_no_format_is_refused_rather_than_ignored` |
+| **M4** `photo.js` still calling `.map` on the format | the page's report throws and comes up empty | **the browser rung red**, on the claim that names the format |
+| **M5** `Display` rendering every non-graphic byte as `·` | the *web client's* old rule, ported into Rust: a lossy spelling | **7 red**, and it is the one that matters here — `two_different_fourccs_cannot_share_one_spelling` goes red under it and under nothing else, which is what makes the injectivity claim a test rather than a sentence |
+
+**M1 leaves `two_different_fourccs_cannot_share_one_spelling` green**, and that is the
+refutation above arriving from inside the suite rather than from an argument: the pre-repair
+spelling really was injective, so the test that would have caught the collision the brief
+described stays green against exactly that encoder. M5 exists because of it — a claim no mutant
+can turn red is a claim nobody has checked (AGENTS rule 2), and the lossy renderer is not a
+strawman: it is what `crates/web/assets/photo.js` was doing to these same four bytes until this
+change.
+
+**Amend this note if** a consumer outside this repository starts reading the wire, because the
+"cheapest now" half of the ruling's argument expires the day one does. Retire it only on the
+owner reversing the spelling — the bijection under it is arithmetic and does not expire.

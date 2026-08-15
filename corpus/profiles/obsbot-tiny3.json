@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "provenance": {
     "captured_at": "2026-08-13T18:34:09.371805456Z",
     "kernel": "7.0.0-29-generic",
@@ -44,12 +44,7 @@
     },
     "formats": [
       {
-        "pixel_format": [
-          77,
-          74,
-          80,
-          71
-        ],
+        "pixel_format": "MJPG",
         "description": "Motion-JPEG",
         "flags": 1,
         "sizes": [
@@ -291,12 +286,7 @@
         ]
       },
       {
-        "pixel_format": [
-          89,
-          85,
-          89,
-          86
-        ],
+        "pixel_format": "YUYV",
         "description": "YUYV 4:2:2",
         "flags": 0,
         "sizes": [

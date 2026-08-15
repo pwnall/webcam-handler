@@ -510,11 +510,67 @@ impl CameraInfo {
     }
 }
 
-/// A pixel format, as its FourCC.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(transparent)]
+/// A pixel format, as its FourCC — and on every wire this project has, **as the four
+/// characters rather than as four numbers** (owner ruling, 2026-08-14; note **N109**).
+///
+/// The four bytes are the kernel's, so the Rust value is `[u8; 4]` and stays that way: it is
+/// what `v4l2_fmtdesc::pixelformat` decodes to and what `VIDIOC_S_FMT` takes back. What the
+/// ruling settles is the *spelling* every consumer outside this process reads. The type used
+/// to be `#[serde(transparent)]` over the array, so an agent asking why its photo was refused
+/// was answered `{"available": [[77,74,80,71],[89,85,89,86]]}` while the CLI's table and the
+/// D13 message beside it said `MJPG, YUYV` — three renderings of one fact, and the one the
+/// primary consumer reads was the unreadable one. AGENTS' opening section makes that a defect
+/// rather than a cosmetic complaint: the agent has no hands, and `FormatUnsupported
+/// { requested, available }` is a refusal it is supposed to *act* on.
+///
+/// # The spelling, and the ambiguity it had to fix first
+///
+/// A FourCC is ASCII by kernel convention and a driver is input, so a byte that is not an
+/// ASCII graphic is carried rather than corrected (AGENTS rule 6) — it is escaped `\xNN`, as
+/// [`fmt::Display`] has always done. **That escape alone is not a wire encoding**, because it
+/// is not injective: a device reporting the four literal bytes `\`, `x`, `4`, `d` spelled
+/// `\x4d`, which is byte for byte what the same function emits for the single byte `0x4d`
+/// (`M`). Two values, one spelling, and a wire form that cannot round-trip is worse than the
+/// array it replaces. So the escape escapes itself:
+///
+/// | Byte | Spelling |
+/// |---|---|
+/// | `0x5c` (`\`) | `\\` |
+/// | ASCII graphic (`0x21`–`0x7e`), other than `\` | itself |
+/// | anything else — `0x00`, `0x20`, `0x7f`, `0xff` | `\xNN`, two lowercase hex digits |
+///
+/// This *changes* `Display`'s output for a backslash-bearing FourCC, from `\x4d` to `\\x4d`.
+/// That is the repair, not a regression: the old rendering named a value it did not mean.
+///
+/// # One home for it
+///
+/// The encoder is [`fmt::Display`] and the decoder is [`PixelFormat::parse`], and they are the
+/// only two. `Serialize` is `collect_str`, `Deserialize` is `parse`, the `JsonSchema`
+/// description below is written from the same table, and `cli_core`'s `--pixel-format` flag
+/// parses with [`PixelFormat::parse`] rather than spelling a FourCC itself — because a flag
+/// and a wire that disagreed about what a format is called is the same defect as the tables
+/// and the JSON disagreeing, one layer down. [`fmt::Debug`] goes through `Display` too, so a
+/// panic message, a `tracing` field and a test failure name the format the way a human reads
+/// it; the derived one printed the array, which is how that spelling reached a transcript in
+/// the notes.
+///
+/// The two are a **bijection over all 2^32 values**, and that is asserted rather than
+/// believed: `every_four_byte_value_survives_the_wire_spelling_that_names_it` round-trips a
+/// generated population including `0x00`, `0x5c`, `0x7f` and `0xff`, and
+/// `two_different_fourccs_cannot_share_one_spelling` is the injectivity half — it is red
+/// against exactly the pre-repair encoder.
+///
+/// # What it refuses
+///
+/// [`PixelFormat::parse`] answers `None` for anything that does not spell exactly four bytes:
+/// a three-character name, a fifth character, a `\` that begins no escape, `\x` without two
+/// hex digits, and any non-ASCII character (a `\xNN` escape is how a byte above `0x7f`
+/// travels — the raw byte is not valid UTF-8 to begin with). A raw space decodes to `0x20`
+/// even though the encoder always writes `\x20` for it, so a FourCC copied out of `v4l2-ctl`
+/// with its kernel padding (`Y16 `) still parses; the canonical spelling is still the escaped
+/// one, because a trailing space survives JSON but not a shell word, a table column or a
+/// reader's eye.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PixelFormat(
     /// The four characters, e.g. `MJPG`.
     pub [u8; 4],
@@ -544,15 +600,42 @@ impl PixelFormat {
         u32::from_le_bytes(self.0)
     }
 
-    /// Parse a four-character format name.
+    /// Decode a format name — **the one decoder**, and the inverse of [`fmt::Display`].
+    ///
+    /// Every caller that turns text into a format goes through here: `Deserialize` off the
+    /// JSON-RPC wire and out of a committed device profile, and `cli_core`'s
+    /// `--pixel-format` flag. The type's doc carries the grammar, the argument for the
+    /// escapes and the list of what this refuses; the short version is that it accepts what
+    /// `Display` writes, plus a raw space where `Display` writes `\x20`, and nothing else.
+    ///
+    /// `None` rather than a typed error, deliberately and for [`CameraId`]'s reason: the two
+    /// callers that must explain a refusal already have a vocabulary for it — serde says
+    /// `invalid_value` with the expectation this crate writes, clap says it with the usage
+    /// line — and a third error enum in between would be a spelling of "not a FourCC" that
+    /// neither of them prints.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        let bytes = s.as_bytes();
-        if bytes.len() == 4 {
-            Some(PixelFormat([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        } else {
-            None
+        let mut bytes = [0u8; 4];
+        // Filled through an iterator rather than an index: the fifth byte of a too-long
+        // spelling is refused by `next()` returning `None`, which is the same answer as
+        // every other refusal here rather than a bounds check somebody has to remember.
+        let mut sink = bytes.iter_mut();
+        let mut rest = s.as_bytes();
+        while let [first, tail @ ..] = rest {
+            let (byte, width) = match (*first, tail) {
+                (b'\\', [b'\\', ..]) => (b'\\', 2),
+                (b'\\', [b'x', high, low, ..]) => (hex_byte(*high, *low)?, 4),
+                // A backslash that begins no escape. Refused rather than taken literally,
+                // because taking it literally is the ambiguity this grammar exists to close.
+                (b'\\', _) => return None,
+                (other, _) => (other, 1),
+            };
+            *sink.next()? = byte;
+            rest = rest.get(width..)?;
         }
+        // Exactly four, so a three-character name is refused here rather than becoming a
+        // format with a zero byte on the end.
+        sink.next().is_none().then_some(PixelFormat(bytes))
     }
 
     /// Whether frames in this format are a compressed bitstream we pass through rather
@@ -563,18 +646,109 @@ impl PixelFormat {
     }
 }
 
+/// One `\xNN` payload, from its two hex digits.
+///
+/// Both cases accepted on input while [`fmt::Display`] only ever writes lowercase: a
+/// document written by hand is still a document this build must read, and accepting `\xFF`
+/// costs nothing that the round trip proves — the canonical spelling is what comes *out*.
+fn hex_byte(high: u8, low: u8) -> Option<u8> {
+    let value = char::from(high).to_digit(16)? * 16 + char::from(low).to_digit(16)?;
+    u8::try_from(value).ok()
+}
+
 impl fmt::Display for PixelFormat {
+    /// **The one encoder** — the type's doc carries the table and the argument.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for &b in &self.0 {
             // Formats are ASCII by kernel convention, but a driver is input: print the
-            // byte rather than assume it.
-            if b.is_ascii_graphic() {
-                write!(f, "{}", b as char)?;
-            } else {
-                write!(f, "\\x{b:02x}")?;
+            // byte rather than assume it. The backslash goes first because it is the
+            // escape's own character, and an escape that does not escape itself spells two
+            // different formats the same way (note **N109**).
+            match b {
+                b'\\' => f.write_str("\\\\")?,
+                graphic if graphic.is_ascii_graphic() => write!(f, "{}", char::from(graphic))?,
+                other => write!(f, "\\x{other:02x}")?,
             }
         }
         Ok(())
+    }
+}
+
+/// Through [`fmt::Display`], so a panic message and a `tracing` field name the format the
+/// way the wire and the CLI's tables do.
+///
+/// The derived one printed `PixelFormat([77, 74, 80, 71])`, which is the spelling the
+/// 2026-08-14 ruling removed from the wire — and it had already leaked out of a `Debug` into
+/// a mutation transcript in the notes, which is the evidence that a second spelling does not
+/// stay where it was put.
+impl fmt::Debug for PixelFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PixelFormat(\"{self}\")")
+    }
+}
+
+/// `collect_str`, so the wire form is literally [`fmt::Display`] rather than a copy of it.
+impl Serialize for PixelFormat {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+/// Through [`PixelFormat::parse`], for [`CameraId`]'s reason: a value that reaches a handler
+/// is one the decoder made, so the wire cannot carry a format the CLI would refuse to name.
+impl<'de> Deserialize<'de> for PixelFormat {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<PixelFormat, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        PixelFormat::parse(&raw).ok_or_else(|| {
+            serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&raw),
+                &"a four-character FourCC such as `MJPG`, with `\\\\` for a backslash and \
+                  `\\xNN` for a byte that is not an ASCII graphic",
+            )
+        })
+    }
+}
+
+/// Hand-written because the derived one publishes the *Rust* shape — an array of four
+/// integers with `minItems`/`maxItems` — and that shape is exactly what the 2026-08-14 ruling
+/// took off the wire.
+///
+/// The `description` is not decoration here. `schemas/webcam-handler-openrpc.json` is what an
+/// agent reads to learn this API without reading its source, and a bare `{"type": "string"}`
+/// would leave the escapes to be discovered from a value that happened to carry one. The
+/// bounds are derived from the grammar rather than guessed: four bytes at one character each
+/// is the shortest spelling, four `\xNN` escapes at four characters each is the longest. A
+/// `pattern` is deliberately **not** emitted — it would be a second home for the grammar
+/// (design §2.10), free to drift from [`PixelFormat::parse`], and a schema that accepted a
+/// string this build refuses is worse than one that says less.
+impl JsonSchema for PixelFormat {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "PixelFormat".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        concat!(module_path!(), "::PixelFormat").into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A pixel format, as the four-character FourCC the driver \
+                            enumerated: `MJPG`, `YUYV`, `GREY`, `NV12`, `JPEG`, or one this \
+                            build has never heard of, which is carried rather than \
+                            rejected. A byte that is not an ASCII graphic character is \
+                            escaped as `\\xNN` with two lowercase hex digits, and a literal \
+                            backslash as `\\\\`, so a FourCC that is not printable crosses \
+                            the wire exactly and decodes back to the same four bytes.",
+            "minLength": 4,
+            "maxLength": 16,
+        })
     }
 }
 
@@ -937,6 +1111,8 @@ pub struct FormatInfo {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn cards(names: &[&str]) -> Vec<String> {
@@ -1357,6 +1533,219 @@ mod tests {
         assert_eq!(PixelFormat::parse("YUY"), None);
         // A driver emitting a non-ASCII fourcc prints rather than panics.
         assert_eq!(PixelFormat([0, 1, b'A', b'B']).to_string(), "\\x00\\x01AB");
+    }
+
+    /// The population the bijection below is asserted over, and why it is this one.
+    ///
+    /// A list of the five formats this build names would prove nothing: they are four
+    /// ASCII letters each, which is the one case that was never in doubt. What has to be
+    /// covered is every byte whose *spelling* can interact with another byte's — the
+    /// escape's own two characters (`\` and `x`), every hex digit in both cases, and
+    /// non-graphic bytes spanning the escape space — so the population is the exhaustive
+    /// cross product of that alphabet (four positions, one value per combination), plus a
+    /// deterministic pseudo-random sweep of the whole `[u8; 4]` space so that no
+    /// interaction outside the alphabet goes unlooked-at.
+    ///
+    /// It is generated rather than typed for the reason note **N108** charges for: a
+    /// hand-written list is a list of the cases somebody already thought of, and the
+    /// spelling defect this repairs was in exactly the byte nobody thought of.
+    fn fourcc_population() -> Vec<PixelFormat> {
+        let mut alphabet: Vec<u8> = vec![b'\\', b'x', b'A', 0x00, 0x1f, 0x20, 0x7f, 0xff];
+        alphabet.extend(b"0123456789abcdefABCDEF");
+        alphabet.sort_unstable();
+        alphabet.dedup();
+
+        let mut out = Vec::new();
+        for &a in &alphabet {
+            for &b in &alphabet {
+                for &c in &alphabet {
+                    for &d in &alphabet {
+                        out.push(PixelFormat([a, b, c, d]));
+                    }
+                }
+            }
+        }
+
+        // xorshift64, seeded from a constant so a failure is reproducible: a population
+        // that differed run to run would make a red run unfixable and a green one a
+        // different claim each time.
+        let mut state: u64 = 0x243F_6A88_85A3_08D3;
+        for _ in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let low = u32::try_from(state & 0xFFFF_FFFF).expect("masked to 32 bits");
+            out.push(PixelFormat(low.to_le_bytes()));
+        }
+        out
+    }
+
+    #[test]
+    fn every_four_byte_value_survives_the_wire_spelling_that_names_it() {
+        // The round-trip law the 2026-08-14 ruling rests on: what a consumer reads back is
+        // the four bytes the driver enumerated, for *every* four bytes — not for the five
+        // this build happens to name. `PixelFormat::parse` is the decoder and
+        // `fmt::Display` the encoder, and this is the only place their inverse relationship
+        // is stated.
+        let population = fourcc_population();
+        assert!(
+            population.len() > 700_000,
+            "the population collapsed to {} values; a bijection asserted over a handful of \
+             ASCII names is the claim that was already true",
+            population.len()
+        );
+        for format in &population {
+            let spelled = format.to_string();
+            assert_eq!(
+                PixelFormat::parse(&spelled),
+                Some(*format),
+                "{format:?} spells {spelled:?}, which does not decode back to it"
+            );
+        }
+    }
+
+    #[test]
+    fn two_different_fourccs_cannot_share_one_spelling() {
+        // Injectivity, which is the half a round trip does not prove on its own: a decoder
+        // that returned the right answer for every string it was handed would still be
+        // useless if two formats produced the same string, because the ambiguity would be
+        // in what the *wire* carries rather than in what this build does with it.
+        let mut spellings: BTreeMap<String, PixelFormat> = BTreeMap::new();
+        for format in fourcc_population() {
+            if let Some(other) = spellings.insert(format.to_string(), format) {
+                assert_eq!(
+                    other,
+                    format,
+                    "{other:?} and {format:?} both spell {:?}",
+                    format.to_string()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_backslash_bearing_fourcc_doubles_its_backslashes_so_one_pass_decoding_is_possible() {
+        // The repair itself, stated as the two values it separates (note **N109**). Before
+        // it, `\` printed as itself, and a decoder reading left to right could not tell a
+        // literal backslash from the start of an escape without backtracking over the rest
+        // of the string — 13% of the alphabet population above could not be read back at
+        // all. This assertion is red against that encoder in both directions.
+        assert_eq!(PixelFormat(*b"\\x4d").to_string(), "\\\\x4d");
+        assert_eq!(PixelFormat::parse("\\\\x4d"), Some(PixelFormat(*b"\\x4d")));
+        assert_eq!(PixelFormat([b'\\'; 4]).to_string(), "\\\\\\\\\\\\\\\\");
+        // …and the four literal characters `\x4d` name no format at all now: they spell one
+        // byte, and a FourCC is four.
+        assert_eq!(PixelFormat::parse("\\x4d"), None);
+    }
+
+    #[test]
+    fn a_spelling_that_names_no_four_bytes_is_refused_rather_than_padded() {
+        // Every refusal the grammar has, named. A format short of four bytes must not
+        // become one with a zero on the end, and a fifth must not be dropped: both would
+        // hand a device a format nobody asked for.
+        for refused in [
+            "MJP",                // three
+            "MJPGX",              // five
+            "\\",                 // a backslash beginning no escape
+            "\\q",                // an escape this grammar does not have
+            "\\x",                // no hex digits
+            "\\x4",               // one hex digit
+            "\\xzz",              // two characters that are not hex digits
+            "MJP\u{00e9}",        // non-ASCII: a byte above 0x7f travels as `\xNN`
+            "",                   // nothing at all
+            "\\x00\\x00\\x00",    // three escapes
+            "\\x00\\x00\\x00\\x", // three escapes and a fragment
+        ] {
+            assert_eq!(
+                PixelFormat::parse(refused),
+                None,
+                "{refused:?} was accepted as a fourcc"
+            );
+        }
+        // A raw space is the one alias, because `v4l2-ctl` prints the kernel's padded names
+        // that way and a flag that refused `Y16 ` would be refusing a format the device has.
+        assert_eq!(PixelFormat::parse("Y16 "), Some(PixelFormat(*b"Y16 ")));
+        // …and it is an alias on input only: the canonical spelling escapes it, so a
+        // trailing space cannot be lost to a shell word or a table column.
+        assert_eq!(PixelFormat(*b"Y16 ").to_string(), "Y16\\x20");
+        // Both cases on the way in, one on the way out.
+        assert_eq!(
+            PixelFormat::parse("\\xFF\\xff\\xFF\\xff"),
+            Some(PixelFormat([0xFF; 4]))
+        );
+        assert_eq!(PixelFormat([0xFF; 4]).to_string(), "\\xff\\xff\\xff\\xff");
+    }
+
+    #[test]
+    fn a_pixel_format_crosses_json_as_its_fourcc_rather_than_as_four_numbers() {
+        // The owner's ruling of 2026-08-14, as the shape on the wire. This is the assertion
+        // that is red against the `#[serde(transparent)]` newtype the type used to be.
+        assert_eq!(
+            serde_json::to_string(&PixelFormat::MJPG).expect("serialize"),
+            "\"MJPG\""
+        );
+        assert_eq!(
+            serde_json::to_string(&[PixelFormat::MJPG, PixelFormat::YUYV]).expect("serialize"),
+            "[\"MJPG\",\"YUYV\"]"
+        );
+        assert_eq!(
+            serde_json::from_str::<PixelFormat>("\"YUYV\"").expect("deserialize"),
+            PixelFormat::YUYV
+        );
+        // A driver's unprintable fourcc crosses too, and comes back whole (AGENTS rule 6).
+        let odd = PixelFormat([0x00, 0x5c, 0x7f, 0xff]);
+        let json = serde_json::to_string(&odd).expect("serialize");
+        assert_eq!(json, "\"\\\\x00\\\\\\\\\\\\x7f\\\\xff\"");
+        assert_eq!(
+            serde_json::from_str::<PixelFormat>(&json).expect("deserialize"),
+            odd
+        );
+        // The old shape is refused rather than accepted alongside the new one: the owner
+        // chose one wire form over "accept both", and a build that quietly took the array
+        // back would make that choice unobservable.
+        let refused = serde_json::from_str::<PixelFormat>("[77,74,80,71]");
+        assert!(
+            refused.is_err(),
+            "the array form is still accepted: {refused:?}"
+        );
+        // And so is a string that names no four bytes, with the expectation spelled out
+        // rather than left as "invalid value".
+        let message = serde_json::from_str::<PixelFormat>("\"MJP\"")
+            .expect_err("three characters are not a fourcc")
+            .to_string();
+        assert!(message.contains("four-character FourCC"), "{message}");
+    }
+
+    #[test]
+    fn a_pixel_format_debugs_as_its_fourcc_so_a_panic_message_reads() {
+        // One home for the spelling (design §2.10): the derived `Debug` printed the array,
+        // which is how `[77, 74, 80, 71]` reached a mutation transcript in the notes long
+        // before it was noticed on the wire.
+        assert_eq!(format!("{:?}", PixelFormat::MJPG), "PixelFormat(\"MJPG\")");
+        assert_eq!(
+            format!("{:?}", PixelFormat([0x00, 0x5c, b'A', b'B'])),
+            "PixelFormat(\"\\x00\\\\AB\")"
+        );
+    }
+
+    #[test]
+    fn the_published_schema_for_a_fourcc_is_a_string_that_explains_its_escapes() {
+        // `schemas/webcam-handler-openrpc.json` is what an agent reads instead of this
+        // source, so the shape *and* the sentence that makes it usable are both the
+        // artifact's content — this is the claim `schema-artifacts-current.sh` backstops
+        // from the other side.
+        let schema = schemars::schema_for!(PixelFormat);
+        let value = schema.as_value();
+        assert_eq!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("string")
+        );
+        let description = value
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .expect("the description ships in the emitted document");
+        assert!(description.contains("\\xNN"), "{description}");
+        assert!(description.contains("\\\\"), "{description}");
     }
 
     #[test]

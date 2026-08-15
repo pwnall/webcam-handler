@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "provenance": {
     "captured_at": "1970-01-01T00:00:00Z",
     "kernel": "7.0.0-29-generic",
@@ -44,12 +44,7 @@
     },
     "formats": [
       {
-        "pixel_format": [
-          77,
-          74,
-          80,
-          71
-        ],
+        "pixel_format": "MJPG",
         "description": "Motion-JPEG",
         "flags": 1,
         "sizes": [
@@ -98,12 +93,7 @@
         ]
       },
       {
-        "pixel_format": [
-          89,
-          85,
-          89,
-          86
-        ],
+        "pixel_format": "YUYV",
         "description": "YUYV 4:2:2",
         "flags": 0,
         "sizes": [

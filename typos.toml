@@ -6,6 +6,15 @@ extend-exclude = [
     "docs/research/",
 ]
 
+[default]
+# An abbreviated sha256 in an evidence transcript. `1385ba86…8a9c2004` carries a `ba`, which
+# reads as a misspelt "by", and the two-character repair that would silence it is an edited
+# measurement — `Inh` below is in this file for the same reason. Matched by *shape* rather
+# than by listing the digests that exist today, so recording the next transcript costs no
+# config edit: two hex runs either side of the ellipsis this project abbreviates with, which
+# is a spelling no English word has.
+extend-ignore-re = ["[0-9a-f]{6,}…[0-9a-f]{6,}"]
+
 [default.extend-words]
 # V4L2 / UVC vocabulary that reads as a typo.
 GREY = "GREY"

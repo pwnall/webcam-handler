@@ -578,7 +578,10 @@ in `webcam-handler-schema`: `ReturnBytes { format }` (base64 in the JSON result)
 `webcam-handler-client`). Errors cross the wire as the structured registry (D13): `code` from a
 closed numeric range, `message` human, `data` typed. DTOs derive `schemars::JsonSchema`; the
 build emits a JSON Schema bundle + OpenRPC document as generated artifacts (documentation, not
-a second source of truth).
+a second source of truth). **A `PixelFormat` crosses the wire as its FourCC string** — `"MJPG"`,
+not `[77,74,80,71]` — with a byte that is not an ASCII graphic escaped `\xNN` and a backslash
+doubled, so the format an agent reads in `FormatUnsupported { available }` is the one the CLI's
+tables and the D13 messages name (owner ruling, 2026-08-14; note **N109**).
 
 **D11 — Transports and the security posture.** The Unix socket
 (`$XDG_RUNTIME_DIR/webcam-handler/wchd.sock`, directory 0700) is always served: filesystem

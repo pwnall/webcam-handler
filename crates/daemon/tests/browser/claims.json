@@ -51,8 +51,8 @@
     },
     {
       "title": "the preview paints successive frames and keeps painting across a photo",
-      "assertions": 16,
-      "what": "the MJPEG <img> paints successive parts, and keeps painting across a photo (N83)"
+      "assertions": 19,
+      "what": "the MJPEG <img> paints successive parts, keeps painting across a photo (N83), and the photo's report names its formats as MJPG-style fourccs rather than as four numbers (N109)"
     },
     {
       "title": "the calibration view tracks a sweep it did not start",

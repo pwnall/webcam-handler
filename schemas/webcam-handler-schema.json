@@ -2852,16 +2852,10 @@
       "type": "object"
     },
     "PixelFormat": {
-      "description": "A pixel format, as its FourCC.",
-      "items": {
-        "format": "uint8",
-        "maximum": 255,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "maxItems": 4,
-      "minItems": 4,
-      "type": "array"
+      "description": "A pixel format, as the four-character FourCC the driver enumerated: `MJPG`, `YUYV`, `GREY`, `NV12`, `JPEG`, or one this build has never heard of, which is carried rather than rejected. A byte that is not an ASCII graphic character is escaped as `\\xNN` with two lowercase hex digits, and a literal backslash as `\\\\`, so a FourCC that is not printable crosses the wire exactly and decodes back to the same four bytes.",
+      "maxLength": 16,
+      "minLength": 4,
+      "type": "string"
     },
     "ProfileInvariant": {
       "description": "The part of a profile that should not change unless the device or the kernel does.",

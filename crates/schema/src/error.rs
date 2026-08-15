@@ -603,6 +603,52 @@ mod tests {
     }
 
     #[test]
+    fn a_format_unsupported_refusal_names_its_formats_readably_in_json_and_not_only_in_prose() {
+        // The failure the owner's ruling of 2026-08-14 is *about* (note **N109**), asserted
+        // where it happens rather than where the type is defined. `FormatUnsupported` is
+        // P6b's central refusal and the one an agent is supposed to act on — retry with a
+        // format the camera has — and until this change the `message` said "format NV12 is
+        // unavailable; this camera offers MJPG, YUYV" while the `data` an unattended reader
+        // parses said `"available": [[77,74,80,71],[89,85,89,86]]`. Two renderings of one
+        // fact, and the machine-readable one was the unreadable one.
+        //
+        // Asserted over `Error::sample`, because that is the value the emitted OpenRPC
+        // document carries as this variant's example: an agent reading `schemas/` to learn
+        // the API sees exactly this JSON before it ever makes a call.
+        let json = serde_json::to_value(Error::sample(ErrorKind::FormatUnsupported))
+            .expect("the sample serializes");
+        assert_eq!(json["requested"], serde_json::json!("NV12"));
+        assert_eq!(json["available"], serde_json::json!(["MJPG", "YUYV"]));
+
+        // …and the two halves agree. The message is built by `format_formats`, which spells
+        // a format with `PixelFormat`'s `Display`, and the wire is built by its `Serialize`,
+        // which is the same function — so this asserts the property that keeps them from
+        // ever drifting rather than two constants that happen to match today.
+        let rendered = Error::sample(ErrorKind::FormatUnsupported).to_string();
+        for spelled in ["NV12", "MJPG", "YUYV"] {
+            assert!(rendered.contains(spelled), "{rendered}");
+            assert!(
+                serde_json::to_string(&json)
+                    .expect("re-serialize")
+                    .contains(spelled),
+                "the JSON dropped {spelled}"
+            );
+        }
+
+        // The empty case still says what it means, because a camera whose capture node
+        // enumerated nothing is a different problem from one that lacks the format asked
+        // for, and an empty array is where that distinction would quietly go.
+        let none_at_all = Error::FormatUnsupported {
+            requested: Some(PixelFormat::MJPG),
+            available: Vec::new(),
+        };
+        assert!(
+            none_at_all.to_string().contains("enumerated no formats"),
+            "{none_at_all}"
+        );
+    }
+
+    #[test]
     fn the_permission_hint_names_the_group() {
         // The hint lives in exactly one place (D13); this pins what it says, so a
         // rewrite that drops the actionable part fails here.

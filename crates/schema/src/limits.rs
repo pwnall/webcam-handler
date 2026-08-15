@@ -791,7 +791,21 @@ pub const PREVIEW_SUSPEND_MAX_MS: u64 = 10_000;
 const _: () = assert!(PREVIEW_SUSPEND_MAX_MS >= DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS);
 
 /// The device-profile document version (design T3).
-pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+///
+/// **2 since 2026-08-14**, when the owner's ruling moved a FourCC's wire form from an array
+/// of four numbers to the four characters (note **N109**). The number moves with the shape
+/// for [`SESSION_SCHEMA_VERSION`]'s reason, said out loud because this is the first time it
+/// has moved: a profile captured last week is a document this build genuinely cannot read,
+/// and without the bump `engine::profile::read` gets past its version probe and answers
+/// `invalid type: sequence, expected a string at line 48 column 24` — a serde message about
+/// a byte offset, to a consumer AGENTS says has no hands. With it, the same file is
+/// [`crate::Error::SchemaVersionForeign`] naming both versions, which is a refusal an agent
+/// can act on and an operator can fix by re-capturing.
+///
+/// The five committed profiles were migrated in the same commit; nothing else this tool
+/// writes carries a [`crate::camera::PixelFormat`], which is why the session version below
+/// did not move with it.
+pub const PROFILE_SCHEMA_VERSION: u32 = 2;
 
 /// Frames to discard before a photo, by default.
 ///
