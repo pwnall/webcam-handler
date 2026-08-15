@@ -134,6 +134,7 @@ fn bundle() -> Result<Value> {
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session, SessionList, SessionStatus, SweepRequest};
     use schema::snapshot::{RestoreReport, Snapshot};
+    use schema::video::{RecordReport, RecordRequest, RecordStatus};
 
     let mut generator = SchemaGenerator::new(SchemaSettings::draft2020_12());
     let mut roots: Vec<String> = Vec::new();
@@ -188,6 +189,14 @@ fn bundle() -> Result<Value> {
         let _schema = subscription.item.schema(&mut generator);
         roots.push(subscription.item.name().into_owned());
     }
+    // P6c's three documents: the request `record` sends, the report it answers with, and the
+    // status a client polls between them (D7, D10). `RecordingSummary`, `TakeStatus`,
+    // `VideoFormat`, `RecordingEnd`, `CapReached` and `IntervalSource` arrive as `$defs` by
+    // reachability rather than as roots, because a root is a document a `--json` verb emits or
+    // accepts and none of those is one on its own.
+    register::<RecordRequest>(&mut generator, &mut roots);
+    register::<RecordReport>(&mut generator, &mut roots);
+    register::<RecordStatus>(&mut generator, &mut roots);
     register::<DeviceProfile>(&mut generator, &mut roots);
     register::<Error>(&mut generator, &mut roots);
 

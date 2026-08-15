@@ -104,7 +104,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use imaging::video::{FrameOutcome, Recorder, RecordingCaps, RecordingParams};
+use imaging::video::{Recorder, RecordingCaps, RecordingParams};
 use schema::camera::CameraId;
 use schema::capture::{Frame, NegotiatedStream};
 use schema::error::{Error, Result};
@@ -115,6 +115,17 @@ use schema::vocabulary::closed_vocabulary;
 
 use crate::actor::OpenCamera;
 use crate::settle::{Clock, Millis};
+
+/// What [`Recording::write`] did with the frame it was handed — `imaging::video::FrameOutcome`
+/// under this module's name.
+///
+/// A re-export rather than a dependency edge. `webcam-handler-daemon` drives [`turn`] and
+/// [`Recording::write`] one frame at a time from a camera actor's thread (docs/7 P6c, note
+/// **N111**) and has to branch on this answer, and it links no `webcam-handler-imaging` — so
+/// the alternative is widening that crate's dependency list for the sake of *naming* a type it
+/// is already being handed. `imaging::avi` re-exports P6a's three vocabulary types for exactly
+/// this reason, and this is the same trade one crate up.
+pub use imaging::video::FrameOutcome;
 
 /// What `webcam-handler-schema::limits` says a recording may cost.
 ///
@@ -994,6 +1005,9 @@ mod tests {
             sink: Sink::ServerPath {
                 path: path.to_owned(),
             },
+            // D12's flag is the daemon's business: `webcam-handler-cli` opens its own camera
+            // per invocation, so the queue it would wait for is its own and always empty.
+            wait: false,
         }
     }
 
@@ -1136,6 +1150,7 @@ mod tests {
             sink: Sink::ReturnBytes {
                 format: PhotoFormat::Jpeg,
             },
+            wait: false,
         };
         let refusal = run(
             camera.as_mut(),

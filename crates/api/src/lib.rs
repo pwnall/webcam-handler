@@ -20,17 +20,11 @@
 //! is the alternative note N5 weighed and rejected when the tokio question came up.
 //!
 //! P4e-i makes it **one declaration and two generated traits**: `WchRpc` carries the
-//! nineteen calls and `WchEvents` the two subscriptions, both out of one `wire_surface!`
+//! twenty-two calls and `WchEvents` the two subscriptions, both out of one `wire_surface!`
 //! invocation below. [`wire`]'s header has the three measured facts that force the split
 //! and the argument that what D10 protects — one source — survives it; note **N57** is the
 //! entry. The daemon merges the two registrations into the one `Methods` value it serves
 //! (`daemon::server::mount`), so there is still exactly one registration path.
-//!
-//! ## What is not here yet
-//!
-//! `record_start`, `record_stop` and `record_status` join at P6 **with their tests**: D10
-//! completes there and G6 says so, and a method declared before anything can exercise it
-//! is a wire promise nothing keeps.
 //!
 //! ## Errors on the wire
 //!
@@ -103,6 +97,7 @@ use schema::report::{
 };
 use schema::session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::video::{RecordReport, RecordRequest, RecordStatus};
 
 use wire::wire_surface;
 
@@ -293,6 +288,120 @@ wire_surface! {
             camera: CameraId,
             request: PhotoRequest,
         ) -> Result<PhotoResponse, WireError>;
+
+        /// Start recording `camera` to a file on the host this daemon runs on (D7, D10).
+        ///
+        /// **The first of three, and the only one that takes a request.** A recording is not
+        /// one call, and cannot be: `crate::wire`'s surface is served by a daemon that gives
+        /// each open camera one thread taking one command at a time, so a take written as a
+        /// single method would make `wch_record_stop` undeliverable — the stop would queue
+        /// behind the recording it exists to stop, and only the take's own duration could ever
+        /// end it (note **N111**). So this method starts a take and returns as soon as the
+        /// container's header is on disk, and the take runs on a driver of the daemon's own.
+        ///
+        /// The answer is the take's first [`schema::video::RecordStatus`], which is what makes
+        /// the sequence usable by a caller that has not enumerated the camera: it names the
+        /// container the negotiation chose and the file the bytes are going to, both of which a
+        /// request that left the extension off (see
+        /// [`schema::video::RecordRequest::container`]) deliberately did not decide.
+        ///
+        /// **A recording is not returned as bytes.** [`schema::video::RecordRequest::sink`]
+        /// takes one of D10's two sink variants and refuses the other: a take at its own cap is
+        /// thirty-two times [`schema::limits::RPC_MAX_RESPONSE_BYTES`] before base64 grows it
+        /// by a third, so `ReturnBytes` names an answer this build cannot send (note **N110**).
+        /// The path is absolute for `wch_photo`'s reason — this daemon's working directory
+        /// under systemd is `/` — and `cli_core::Command::record_request` resolves a relative
+        /// `-o` against the *caller's* cwd before the request is sent (D10).
+        ///
+        /// # Errors
+        ///
+        /// As `wch_info`, plus:
+        /// [`schema::Error::IllegalTransition`] for a request this build will not honour at all
+        /// — a `ReturnBytes` sink, a relative path, an extension naming a container this build
+        /// does not write, or a duration past [`schema::limits::MAX_RECORDING_MS`], which is
+        /// refused rather than clamped because an agent whose take was quietly shortened cannot
+        /// tell that from a camera that stopped (note **N46** widened the variant, note
+        /// **N110**).
+        /// [`schema::Error::Busy`] when this camera is **already recording** — which means
+        /// *retry*, and is the honest advice: the take that is running is bounded by its own
+        /// duration. It is also what a camera whose one thread is held by something else
+        /// answers, unless the request set `wait` (D12).
+        /// [`schema::Error::FormatUnsupported`] when the container the path names cannot carry
+        /// what the device negotiated, naming what that container *would* have taken — D7's
+        /// "non-MJPG `record` requests get Y4M or `FormatUnsupported { available }`" arriving at
+        /// a caller who typed `.avi` over a GREY camera.
+        /// [`schema::Error::StorageIo`] from the destination, and the device's own answer for
+        /// anything it refused.
+        #[method(name = "record_start")]
+        async fn record_start(
+            &self,
+            camera: CameraId,
+            request: RecordRequest,
+        ) -> Result<RecordStatus, WireError>;
+
+        /// What `camera`'s recording is doing, or what its last one turned out to be.
+        ///
+        /// **D10's whole progress mechanism**: *"progress by polling `wch_record_status` — no
+        /// recording subscription in v1"*. A client polls this between `wch_record_start` and
+        /// `wch_record_stop` and stops when [`schema::video::RecordStatus::is_running`] answers
+        /// `false`; `schema::limits::CLIENT_RECORD_POLL_MS` is what
+        /// `webcam-handler-client` polls at.
+        ///
+        /// A camera holds **at most one** take, and this answers about that one: the take that
+        /// is running, or the one that has ended and not been collected by `wch_record_stop`.
+        /// A camera holding neither answers with no take at all, which is the same answer for a
+        /// camera that has never recorded and for one whose take has been collected — those are
+        /// one fact rather than two, because what a caller can do about either is start a
+        /// recording, and remembering the difference would be this daemon keeping something
+        /// about a camera after the caller asked for it to be handed over.
+        ///
+        /// **It is a read.** It opens no camera, takes no lock, and never changes what a later
+        /// `wch_record_stop` will answer — so a poll loop that ran twice as fast would cost the
+        /// take nothing. What it does cost is a live enumeration per call (E2: a camera id is
+        /// resolved against the machine every time), which is why the poll interval is a
+        /// bounded constant rather than as fast as a client can ask.
+        ///
+        /// # Errors
+        ///
+        /// As `wch_info`. A camera with no recording is **not** an error — that is the answer,
+        /// and a refusal there would make an agent unable to tell "nothing is recording" from
+        /// "this camera is gone" (AGENTS rule 7).
+        #[method(name = "record_status")]
+        async fn record_status(&self, camera: CameraId) -> Result<RecordStatus, WireError>;
+
+        /// End `camera`'s recording and hand over what it turned out to be (D7, D10).
+        ///
+        /// **Stop *and collect*, which is one verb because they are one question.** A take that
+        /// is running is asked to stop, its container is closed, and the finished
+        /// [`schema::video::RecordReport`] is the answer; a take that has already reached its
+        /// own bound — the ordinary case, since most takes end on their duration while the
+        /// caller is still polling — is simply handed over. Either way the camera's slot is
+        /// emptied, so the sequence `wch_record_start` → poll → `wch_record_stop` is total for
+        /// every ending a take can have, which is what AGENTS' handless primary consumer needs
+        /// of a verb that spans three calls.
+        ///
+        /// The stop is delivered within one `schema::limits::FRAME_DEADLINE_MS`, because the
+        /// driver issues one command per frame and is between commands for most of every turn
+        /// (note **N111** — that is the whole reason a recording is a chain of turns).
+        ///
+        /// **A take that failed is answered with the device's own refusal, not with a report.**
+        /// The container is still closed first, so docs/7 P6b's "every fault leaves a parseable
+        /// file" holds across the wire as it does in process; what the caller gets is the
+        /// `DeviceGone` or the `StorageIo` that ended it, because a refusal arriving as a
+        /// successful recording is the conversion AGENTS rule 7 forbids.
+        ///
+        /// # Errors
+        ///
+        /// As `wch_info`, plus [`schema::Error::IllegalTransition`] when this camera holds no
+        /// take at all — deliberately not a bland "nothing happened", because an unattended
+        /// caller has to be able to tell "my recording is over" from "my `wch_record_start`
+        /// never took", and those two are the same call's two answers.
+        /// [`schema::Error::Busy`] when a `wch_record_start` for this camera is still
+        /// negotiating, which means retry for the same reason it does there. Otherwise whatever
+        /// ended the take: the device's answer, or [`schema::Error::StorageIo`] naming the
+        /// file.
+        #[method(name = "record_stop")]
+        async fn record_stop(&self, camera: CameraId) -> Result<RecordReport, WireError>;
 
         /// One camera's full device profile (T3).
         ///
@@ -641,6 +750,19 @@ mod tests {
         ) -> Result<PhotoResponse, WireError> {
             Err(nothing("photo"))
         }
+        async fn record_start(
+            &self,
+            _camera: CameraId,
+            _request: RecordRequest,
+        ) -> Result<RecordStatus, WireError> {
+            Err(nothing("record_start"))
+        }
+        async fn record_status(&self, _camera: CameraId) -> Result<RecordStatus, WireError> {
+            Err(nothing("record_status"))
+        }
+        async fn record_stop(&self, _camera: CameraId) -> Result<RecordReport, WireError> {
+            Err(nothing("record_stop"))
+        }
         async fn profile_capture(
             &self,
             _camera: CameraId,
@@ -838,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn the_surface_registers_the_nineteen_methods_and_the_two_subscriptions_and_nothing_else() {
+    fn the_surface_registers_the_twenty_two_methods_and_the_two_subscriptions_and_nothing_else() {
         // Read off a real `RpcModule`, not off a list in this file: the macro's own
         // registration is the authority on what the wire carries, and a hand list here
         // would agree with itself forever (rubric rule 6).
@@ -856,25 +978,20 @@ mod tests {
             );
         }
 
-        // Twenty-three, and the arithmetic is note **N29**'s: nineteen calls, plus *four*
-        // names for two subscriptions, because a `#[subscription]` registers its
+        // Twenty-six since P6c, and the arithmetic is note **N29**'s: twenty-two calls, plus
+        // *four* names for two subscriptions, because a `#[subscription]` registers its
         // `unsubscribe` sibling as its own callback
         // (`rpc_module.rs::verify_and_register_unsubscribe`) and `method_names()` is
-        // `callbacks.keys()`. D10's own method count goes nineteen to twenty-one; the
-        // registered population goes nineteen to twenty-three, and those are two different
-        // numbers about two different things. It is derived from `SUBSCRIPTIONS` rather
-        // than written as `23`, so a third subscription moves it by two without anybody
-        // editing this line — and pinned below by name, which is what catches a rename.
+        // `callbacks.keys()`. D10's own method count and the registered population are two
+        // different numbers about two different things, which is why only one of them is
+        // arithmetic here. It is derived from `SUBSCRIPTIONS` rather than written as `26`, so
+        // a third subscription moves it by two without anybody editing this line — and pinned
+        // below by name, which is what catches a rename.
         assert_eq!(
             names.len(),
             METHODS.len() + 2 * SUBSCRIPTIONS.len(),
             "{names:?}"
         );
-        // The three that really are still absent. `record_*` join at P6 with their tests;
-        // there is nothing else left in D10's list.
-        for absent in ["wch_record_start", "wch_record_stop", "wch_record_status"] {
-            assert!(!names.contains(&absent), "{absent} landed early");
-        }
 
         // The spellings themselves — a *pin*, not a population, in the same tradition as
         // `fixtures/d13-rpc-codes.tsv`: a wire name is a compatibility contract in the way
@@ -903,6 +1020,9 @@ mod tests {
                 "wch_list",
                 "wch_photo",
                 "wch_profile_capture",
+                "wch_record_start",
+                "wch_record_status",
+                "wch_record_stop",
                 "wch_restore",
                 "wch_set",
                 "wch_snapshot",

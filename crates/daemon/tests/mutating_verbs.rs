@@ -57,6 +57,28 @@
 //!   synthetic frame from a committed profile, which is the only reason it is a note rather
 //!   than a refusal to use that wire.
 //!
+//! ## And what P6c's three add on top of both
+//!
+//! `record_start`, `record_status` and `record_stop` are one T4 verb and three wire methods,
+//! and what only a socket can ask about them is the **state between the calls**. So the
+//! claims here are about `daemon::record`'s registry rather than about a container — the
+//! muxer's own accounting is `webcam-handler-imaging`'s and the executor's is
+//! `webcam-handler-engine`'s, both over the same committed profiles:
+//!
+//! - **A recording reaches the device.** A take that never streamed writes a header and no
+//!   frames, which is indistinguishable from an honest zero-duration take unless somebody
+//!   counts — so the frames the report claims are compared against what the file holds,
+//!   through the strict reader `crates/imaging` wrote from the specification.
+//! - **A camera holds one take, and a second `record_start` is `Busy`** — which means *retry*
+//!   to an unattended reader, and retrying is the action that succeeds.
+//! - **`record_status` says "running" exactly while one is**, for a camera that never
+//!   recorded, one recording now, and one whose take has ended and not been collected.
+//! - **`record_stop` on a camera holding nothing is a refusal**, because an agent has to be
+//!   able to tell "my recording is over" from "my `record_start` never took".
+//! - **A request only a socket can build is refused before a camera opens** — `ReturnBytes`
+//!   (note **N110**), a relative path, an unwritable extension, a duration past the cap —
+//!   which `FakeBackend::opens()` is what makes assertable, exactly as it is for `photo`.
+//!
 //! ## What is deliberately not asserted here, and why it is absent
 //!
 //! **`PermissionDenied`** is EPERM, a kernel answer a backend replaying a document has no
@@ -96,6 +118,7 @@ use schema::pairing::AutomationPair;
 use schema::profile::DeviceProfile;
 use schema::report::{DiscoveryReport, TerminationReport, TerminationSignal, WriteReport};
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot};
+use schema::video::{RecordRequest, VideoFormat};
 
 use crate::fixture::{Ask, Fixture, camera, second_camera};
 use crate::wire::{Wire, refusal};
@@ -2679,4 +2702,415 @@ async fn four_verbs_that_want_the_device_meet_a_busy_one_without_signalling_anyt
 /// module's constant against `libc::SIGTERM`.
 const fn libc_sigterm() -> i32 {
     15
+}
+
+// ------------------------------------------------------------------ P6c's three
+
+/// A recording of `duration_ms` into `path`.
+///
+/// `Sink::ServerPath` and never `ReturnBytes`: note **N110** narrows this verb to one of
+/// D10's two sink variants, and the other one is a *refusal* this suite asserts rather than a
+/// shape it can drive.
+fn record_request(path: &Utf8Path, duration_ms: Option<u64>) -> RecordRequest {
+    RecordRequest {
+        stream: StreamRequest::default(),
+        duration_ms,
+        sink: Sink::ServerPath {
+            path: path.to_owned(),
+        },
+        // The default, and the shape every request written before D12's flag existed. The
+        // photo tests above are where the flag itself can go red.
+        wait: false,
+    }
+}
+
+#[tokio::test]
+async fn a_recording_reaches_the_device_and_the_report_counts_what_the_file_holds() {
+    // The claim a status document alone cannot make: that frames came **off the camera** and
+    // into a container. A build whose driver never issued a turn writes a header, closes it,
+    // and answers a report whose `frames_written` is zero — which is also what an honest
+    // zero-duration take answers, so the only discriminating assertion is a non-zero count on
+    // *both* sides: the daemon's report, and the file read back by
+    // `imaging::avi::read::read_stream`, which shares no code with the muxer that wrote it.
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("take.avi");
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+
+    let started = wire
+        .record_start(camera.clone(), record_request(&path, Some(400)))
+        .await
+        .expect("a camera with no take on it");
+    assert!(started.is_running(), "{started:?}");
+    let take = started.take.as_ref().expect("a started take carries one");
+    assert_eq!(take.path, path);
+    assert_eq!(take.format, VideoFormat::Avi, "an MJPG camera records AVI");
+    assert_eq!(
+        take.budget_ms, 400,
+        "the request's duration reached the take"
+    );
+    assert_eq!(take.negotiated.pixel_format, PixelFormat::MJPG);
+
+    let report = wire
+        .record_stop(camera.clone())
+        .await
+        .expect("the take this call started");
+    assert_eq!(report.path, path);
+    assert!(
+        report.summary.frames_written > 0,
+        "the recording never reached the device: {report:?}"
+    );
+
+    let bytes = std::fs::read(&path).expect("the file the daemon named");
+    let stream = imaging::avi::read::read_stream(&bytes)
+        .expect("a take the daemon closed is one the strict reader accepts");
+    assert_eq!(
+        u32::try_from(stream.frames.len()).expect("fewer frames than a u32"),
+        report.summary.frames_written,
+        "the report counted frames the file does not hold"
+    );
+    // And the slot is empty afterwards: `record_stop` collects, so a camera whose take has
+    // been handed over is a camera that can record again.
+    let after = wire
+        .record_status(camera)
+        .await
+        .expect("the camera resolves");
+    assert!(after.take.is_none(), "{after:?}");
+}
+
+#[tokio::test]
+async fn a_second_start_is_told_to_retry_and_the_status_tracks_the_one_take_a_camera_has() {
+    // Three states of one slot, in the order a caller meets them — and the refusal in the
+    // middle, which is the one an unattended agent acts on. `Busy` means *retry* (AGENTS),
+    // and retrying is exactly right here: the take that is running is bounded by its own
+    // duration. The `holders` list is empty on purpose — naming the pid would name this
+    // daemon and invite a client to kill the process it is talking to.
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+
+    // 1. Never recorded.
+    let idle = wire
+        .record_status(camera.clone())
+        .await
+        .expect("the camera resolves");
+    assert!(idle.take.is_none(), "{idle:?}");
+    assert!(!idle.is_running());
+    assert_eq!(idle.camera, camera, "a status names the camera it is about");
+
+    // 2. Recording. The take runs long enough that the assertions below are about a *live*
+    // one rather than about whatever the scheduler left behind — the stop ends it, so the
+    // duration is a ceiling and not a wait.
+    let path = scratch.base().join("take.avi");
+    wire.record_start(camera.clone(), record_request(&path, Some(30_000)))
+        .await
+        .expect("a free camera");
+    let running = wire
+        .record_status(camera.clone())
+        .await
+        .expect("the camera resolves");
+    assert!(running.is_running(), "{running:?}");
+
+    let (code, error) = refusal(
+        wire.record_start(
+            camera.clone(),
+            record_request(&scratch.base().join("second.avi"), Some(400)),
+        )
+        .await,
+    );
+    assert_eq!(code, rpc_code(ErrorKind::Busy));
+    assert_eq!(error.kind(), ErrorKind::Busy);
+    match &error {
+        Error::Busy { holders, .. } => assert!(holders.is_empty(), "{error:?}"),
+        other => panic!("wrong variant: {other:?}"),
+    }
+    // The refusal cost the second request nothing: no file where the second take would have
+    // gone, so a camera that is busy is a camera that leaves the filesystem alone.
+    assert!(
+        !scratch.base().join("second.avi").exists(),
+        "a refused recording created its destination"
+    );
+
+    // 3. Ended and not collected. `record_stop` ends the take, and the status *after* the
+    // collect is the first state again — those two are one answer because what a caller can
+    // do about either is start a recording.
+    let report = wire
+        .record_stop(camera.clone())
+        .await
+        .expect("the running take");
+    assert_eq!(
+        report.ended,
+        schema::video::RecordingEnd::Stopped,
+        "a take the caller ended reports that it was stopped"
+    );
+    let collected = wire
+        .record_status(camera.clone())
+        .await
+        .expect("the camera resolves");
+    assert!(collected.take.is_none(), "{collected:?}");
+
+    // And the camera records again, so the `Busy` above was a state rather than a latch.
+    wire.record_start(camera.clone(), record_request(&path, Some(0)))
+        .await
+        .expect("the slot came free");
+    wire.record_stop(camera).await.expect("the second take");
+}
+
+#[tokio::test]
+async fn a_stop_with_no_recording_is_refused_in_words_that_name_the_verb_that_makes_one() {
+    // Deliberately not a bland success: an unattended caller has to be able to tell "my
+    // recording is over" from "my `record_start` never took", and those are the same call's
+    // two answers. `IllegalTransition` is note **N46**'s variant — the request names
+    // something this build will not do — and the remedy is in the sentence because AGENTS'
+    // primary consumer has no hands to work it out with.
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+
+    let (code, error) = refusal(wire.record_stop(camera.clone()).await);
+    assert_eq!(code, rpc_code(ErrorKind::IllegalTransition));
+    assert_eq!(error.kind(), ErrorKind::IllegalTransition);
+    let rendered = error.to_string();
+    assert!(rendered.contains("record_start"), "{rendered}");
+    // Not the camera's fault and not the disk's: neither was asked (E3, AGENTS rule 7).
+    assert_ne!(error.kind(), ErrorKind::DeviceGone);
+    assert_ne!(error.kind(), ErrorKind::Busy);
+
+    // And the camera it named really is one this daemon has: a refusal about an unknown
+    // camera would be a different answer, and this assertion is what stops the arm above
+    // being satisfied by a fixture that could not resolve anything.
+    wire.record_status(camera)
+        .await
+        .expect("the camera resolves");
+}
+
+#[tokio::test]
+async fn a_recording_request_only_a_socket_can_build_is_refused_before_any_camera_is_opened() {
+    // `photo`'s claim at the verb that landed last, and the four shapes are the ones
+    // `cli_core::Command::record_request` refuses while parsing — so a socket is the only
+    // thing that can send them. The evidence that each is refused *early* is
+    // `FakeBackend::opens()`: a request this build was never going to honour must not cost
+    // anybody a descriptor, and on a machine with one webcam that is the difference between
+    // a typo and an interrupted call.
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+    assert_eq!(fixture.backend.opens(), 0, "the fixture opened a camera");
+
+    // 1. A recording asked for as bytes. Note **N110**: a take at its own cap is thirty-two
+    //    times `limits::RPC_MAX_RESPONSE_BYTES` before base64 grows it by a third, so this
+    //    variant names an answer this build cannot send — and the refusal has to carry the
+    //    remedy, because the alternative is an agent retrying the same request.
+    let mut asking = record_request(&scratch.base().join("take.avi"), Some(400));
+    asking.sink = Sink::ReturnBytes {
+        format: PhotoFormat::Jpeg,
+    };
+    let (code, error) = refusal(wire.record_start(camera.clone(), asking).await);
+    assert_eq!(code, rpc_code(ErrorKind::IllegalTransition));
+    assert!(
+        error.to_string().contains("absolute server path"),
+        "{error}"
+    );
+
+    // 2. A relative path. Under systemd this daemon's working directory is `/`, so resolving
+    //    it would write there as the daemon's uid. The directory named does not exist,
+    //    deliberately: a build that stopped refusing would then fail with `StorageIo` rather
+    //    than dropping a recording into whatever cwd the test runner happened to have.
+    let relative = "nowhere-a-daemon-should-write/take.avi";
+    let (code, error) = refusal(
+        wire.record_start(camera.clone(), record_request(relative.into(), Some(400)))
+            .await,
+    );
+    assert_eq!(code, rpc_code(ErrorKind::IllegalTransition));
+    assert!(error.to_string().contains(relative), "{error}");
+    assert!(
+        !camino::Utf8Path::new(relative).exists(),
+        "a relative sink was resolved somewhere after all"
+    );
+
+    // 3. An extension naming a container this build does not write — the `.webp` defect one
+    //    container along (debt D-1). Deliberately **not** `FormatUnsupported`: that variant is
+    //    the camera saying what it cannot offer, and `.mkv` is not the camera's fault (E3).
+    let mkv = scratch.base().join("take.mkv");
+    let (code, error) = refusal(
+        wire.record_start(camera.clone(), record_request(&mkv, Some(400)))
+            .await,
+    );
+    assert_eq!(code, rpc_code(ErrorKind::IllegalTransition));
+    assert_ne!(error.kind(), ErrorKind::FormatUnsupported);
+    for &container in VideoFormat::ALL {
+        assert!(error.to_string().contains(container.extension()), "{error}");
+    }
+    assert!(!mkv.exists(), "a refused recording created its destination");
+
+    // 4. A duration past the cap, refused rather than clamped: an agent that asked for five
+    //    minutes and silently received two cannot tell that from a camera that stopped.
+    let long = scratch.base().join("long.avi");
+    let (code, error) = refusal(
+        wire.record_start(
+            camera.clone(),
+            record_request(&long, Some(schema::limits::MAX_RECORDING_MS + 1)),
+        )
+        .await,
+    );
+    assert_eq!(code, rpc_code(ErrorKind::IllegalTransition));
+    assert!(
+        error
+            .to_string()
+            .contains(&schema::limits::MAX_RECORDING_MS.to_string()),
+        "{error}"
+    );
+    assert!(!long.exists());
+
+    // The whole point of the four: nothing above cost a descriptor, and the camera is still
+    // one this daemon can record.
+    assert_eq!(
+        fixture.backend.opens(),
+        0,
+        "a request nobody was going to honour opened a camera"
+    );
+    let path = scratch.base().join("served.avi");
+    wire.record_start(camera.clone(), record_request(&path, Some(0)))
+        .await
+        .expect("a request this build honours");
+    wire.record_stop(camera).await.expect("the take");
+    assert!(path.exists(), "a served recording wrote no file");
+}
+
+#[tokio::test]
+async fn a_polled_status_counts_the_frames_the_finished_report_counts() {
+    // The cross-check `schema::video::TakeStatus::frames_written` promises: a running take's
+    // count and the finished `RecordingSummary`'s are the same number, arrived at on two
+    // sides — the daemon counts what the container **accepted**, and the container counts
+    // what it wrote. A build that counted frames the muxer refused, or that stopped counting
+    // at all, would leave a progress mechanism that told an agent nothing was happening while
+    // a file grew.
+    //
+    // Nothing sleeps: `Wchd::watch_finished_recordings` is what says the driver put the take
+    // down, and "the take ended" is an event — a test that polled the registry for it would
+    // be a test with a sleep in it under another name (AGENTS).
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("counted.avi");
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+
+    let mut finished = fixture.wchd.watch_finished_recordings();
+    assert_eq!(
+        *finished.borrow_and_update(),
+        0,
+        "the fixture recorded already"
+    );
+    assert_eq!(fixture.wchd.running_recordings(), 0);
+
+    let started = wire
+        .record_start(camera.clone(), record_request(&path, Some(400)))
+        .await
+        .expect("a free camera");
+    assert_eq!(
+        started
+            .take
+            .as_ref()
+            .expect("a started take carries one")
+            .frames_written,
+        0,
+        "a take that has just written its header holds no frames"
+    );
+
+    // The take ends on its own duration, and this is where that becomes a fact rather than a
+    // guess about how long a driver takes.
+    finished
+        .changed()
+        .await
+        .expect("the daemon outlives its driver");
+    assert_eq!(*finished.borrow_and_update(), 1);
+
+    let polled = wire
+        .record_status(camera.clone())
+        .await
+        .expect("the camera resolves");
+    let take = polled.take.as_ref().expect("an uncollected take is here");
+    assert!(!polled.is_running(), "{polled:?}");
+    assert_eq!(take.ended, Some(schema::video::RecordingEnd::Duration));
+    assert_eq!(take.budget_ms, 400);
+    assert!(
+        take.elapsed_ms >= take.budget_ms,
+        "a take that ended on its duration ran for less than it: {take:?}"
+    );
+
+    let report = wire.record_stop(camera).await.expect("the ended take");
+    assert_eq!(
+        take.frames_written, report.summary.frames_written,
+        "the status and the summary counted different recordings"
+    );
+    assert!(report.summary.frames_written > 0, "{report:?}");
+    assert_eq!(fixture.wchd.running_recordings(), 0);
+}
+
+#[tokio::test]
+async fn a_recording_over_an_earlier_one_leaves_no_tail_of_the_take_it_replaced() {
+    // The daemon's file seam has an obligation `webcam-handler-cli`'s does not, and it is
+    // invisible without this test. `engine::record::OnDisk` truncates because
+    // `File::create` does; this daemon opens the destination **before** the camera and
+    // without `O_TRUNC` (note **N51**: the length must not move until nothing can still
+    // refuse), so the truncation has to happen at `Files::create`. Without it a short take
+    // written over a long one leaves the previous recording's tail past the end of the new
+    // file — bytes no reader of either container is looking for, in a file whose name says
+    // it is a recording.
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+    let path = scratch.base().join("reused.avi");
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+
+    // A long file at the destination, longer than any take this test makes.
+    std::fs::write(path.as_std_path(), vec![0x7f; 512 * 1024]).expect("a writable scratch dir");
+    let before = std::fs::metadata(path.as_std_path())
+        .expect("just written")
+        .len();
+
+    wire.record_start(camera.clone(), record_request(&path, Some(0)))
+        .await
+        .expect("a free camera");
+    let report = wire.record_stop(camera).await.expect("the take");
+
+    let bytes = std::fs::read(&path).expect("the file the daemon named");
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("a length this host can represent"),
+        report.summary.bytes_written,
+        "the file on disk is not the size the report claims"
+    );
+    assert!(
+        u64::try_from(bytes.len()).expect("a length this host can represent") < before,
+        "the recording left the file it replaced underneath it"
+    );
+    imaging::avi::read::read_stream(&bytes)
+        .expect("a header-only take is still a file the strict reader accepts");
 }

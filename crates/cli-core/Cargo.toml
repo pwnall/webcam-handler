@@ -19,6 +19,13 @@ workspace = true
 camino.workspace = true
 clap.workspace = true
 comfy-table.workspace = true
+# `record --duration 10s`, which is design §2.7's "humantime durations" arriving at the one
+# flag that is a duration a person reasons about (note **N113** carries the rule that decides
+# which flags take one and which stay integer milliseconds). The crate was pinned in
+# `[workspace.dependencies]` at design time and nothing depended on it until now, so adopting
+# it moves `Cargo.lock` and nothing else. MIT OR Apache-2.0, both already on cargo-deny's
+# allowlist; it pulls in no transitive package of its own.
+humantime.workspace = true
 # The sweep progress bar (T4: indicatif for sweeps). It draws to standard error and hides
 # itself when that is not a terminal, so a piped `--json` answer stays a document.
 indicatif.workspace = true

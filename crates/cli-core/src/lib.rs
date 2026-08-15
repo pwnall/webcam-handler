@@ -50,6 +50,7 @@ use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::video::{RecordReport, RecordRequest};
 use schema::vocabulary::closed_vocabulary;
 
 // The wire and the command line name the same session and the same selection, so they are one
@@ -599,6 +600,54 @@ pub enum Command {
         wait: bool,
     },
 
+    /// Record a video.
+    ///
+    /// **One verb, three wire calls.** `webcam-handler-cli` records in this process and
+    /// returns; `webcam-handler-client` starts the take, polls `record_status` and collects it
+    /// with `record_stop` — a state machine, exactly as `calibrate sweep` is one, and for the
+    /// identical reason. AGENTS' primary consumer has no hands, and *"a verb needing a call
+    /// sequence … is a defect for the consumer that matters most"*, so the sequence lives
+    /// behind the [`Executor`] seam and not on the command line.
+    Record {
+        /// Which camera.
+        #[command(flatten)]
+        camera: CameraArg,
+
+        /// Where to write it. The extension chooses the container: `.avi` or `.y4m`, and a
+        /// path with no extension lets the camera's negotiated format decide.
+        ///
+        /// **Required**, unlike `photo --out`, and the difference is note **N110**'s: a
+        /// recording's bytes go to a path and never back in the answer, because a take at its
+        /// own cap is thirty-two times the largest JSON-RPC body this daemon writes. There is
+        /// therefore no "standard output" spelling for a recording to compete with a `--json`
+        /// document, which is why `record` needs no counterpart to the `photo --json` rule
+        /// [`Cli::try_parse_checked_from`] enforces.
+        #[arg(long, short, value_name = "PATH", required = true)]
+        out: Utf8PathBuf,
+
+        /// How long to record, as a duration such as `10s`, `1500ms` or `1m30s`.
+        ///
+        /// `schema::limits::DEFAULT_RECORDING_MS` when omitted, and refused rather than
+        /// clamped past `schema::limits::MAX_RECORDING_MS` — an agent that asked for five
+        /// minutes and silently received two cannot tell that from a camera that stopped.
+        #[arg(long, value_name = "DURATION", value_parser = duration)]
+        duration: Option<u64>,
+
+        /// What to ask the device's format negotiation for.
+        #[command(flatten)]
+        stream: StreamArgs,
+
+        /// Wait for the camera rather than being refused while it is busy (D12).
+        ///
+        /// Inert under `webcam-handler-cli`, which opens its own camera per invocation, and
+        /// meaningful under `webcam-handler-client` — the same split `photo --wait` has. It
+        /// bounds only the **start**: once a take is running it owns the camera, and a
+        /// recording that had to re-queue per frame would be bounded by other clients rather
+        /// than by its own duration.
+        #[arg(long)]
+        wait: bool,
+    },
+
     /// Run a calibration session: sweep controls, score the samples, apply the result (D8).
     #[command(subcommand)]
     Calibrate(CalibrateCommand),
@@ -640,6 +689,40 @@ pub struct StreamArgs {
 /// and one this flag accepts are the same set — which is the property that makes
 /// `webcam-handler-cli` and `webcam-handler-client` interchangeable on this flag rather than
 /// merely similar.
+/// `--duration`, as milliseconds, through `humantime` (note **N113**).
+///
+/// **This project's first human-scale duration flag, and the rule it establishes is in the
+/// note.** Design §2.7 named "humantime durations" as a T4 argument type at design time and
+/// nothing had claimed it until `record`; the settle flags beside it (`--settle-for MS`,
+/// `--settle-deadline MS`) stay integer milliseconds, and the line between them is the scale a
+/// caller reasons at: a recording is seconds to minutes, where `10s` and `1m30s` are what a
+/// person and an agent both write, and a settle is a sub-second tolerance whose sibling is a
+/// *frame count* (`--skip-frames 3`) — spelling one of that pair as a duration string and the
+/// other as an integer would put two vocabularies on one pair of alternatives. The two never
+/// meet on one command line, because a recording carries no settle policy at all (note
+/// **N111**).
+///
+/// Parsed **here**, by clap, for `fourcc`'s reason and note **N109**'s: a value this cannot
+/// read is a usage error with an exit code of 2 and a message naming the flag, rather than
+/// `None` three layers down that reads exactly like not passing the flag at all.
+///
+/// The answer is milliseconds because that is what `schema::video::RecordRequest::duration_ms`
+/// carries and what `schema::limits` prices the cap in — converting once, at the edge, is what
+/// keeps `--duration 10s` and `{"duration_ms": 10000}` the same request. A duration too large
+/// for a `u64` of milliseconds is refused rather than saturated, because a saturating parse
+/// would turn a typo into the longest recording this build will refuse.
+fn duration(text: &str) -> std::result::Result<u64, String> {
+    let parsed = humantime::parse_duration(text).map_err(|error| {
+        format!(
+            "{text:?} is not a duration ({error}); write one as 10s, 1500ms or 1m30s, up to \
+             the {}s this build records",
+            schema::limits::MAX_RECORDING_MS / 1_000
+        )
+    })?;
+    u64::try_from(parsed.as_millis())
+        .map_err(|_| format!("{text:?} is longer than this build can express in milliseconds"))
+}
+
 fn fourcc(text: &str) -> std::result::Result<PixelFormat, String> {
     PixelFormat::parse(text).ok_or_else(|| {
         format!(
@@ -1117,6 +1200,63 @@ impl Command {
             wait: *wait,
         }))
     }
+
+    /// The recording request a `record` invocation describes, and where its file goes.
+    ///
+    /// [`Command::photo_request`]'s counterpart, and `cwd` is here for the identical reason:
+    /// D10 says a relative `-o` resolves against the **caller's** cwd, and for
+    /// `webcam-handler-client` the caller is on the other end of a socket. Resolving it here —
+    /// in the shared command surface, before the request is sent — is what makes
+    /// `webcam-handler-cli record -o take.avi` and `webcam-handler-client record -o take.avi`
+    /// name the same file. A daemon handed the relative path would resolve it against its own
+    /// working directory, which under systemd is `/`.
+    ///
+    /// The container check is made here too, and only its *timing* is local to this surface:
+    /// `-o take.mkv` is refused while a command line is being parsed, before anything opens a
+    /// camera, but the rule is [`schema::video::RecordRequest::container`]'s, beside the
+    /// variants it constrains, because `webcam-handler-daemon` links no `cli-core` and a
+    /// socket can build the same request (debt D-1, note **N46**). The answer it produces is
+    /// discarded and the error is not — exactly what [`Command::photo_request`] does with
+    /// `Sink::writable_format`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] naming the extension that was typed and the ones this
+    /// build writes. Deliberately not [`Error::FormatUnsupported`]: that variant is the
+    /// *camera* saying what it cannot offer (E3), and `.mkv` is not the camera's fault.
+    pub fn record_request(&self, cwd: &camino::Utf8Path) -> Result<Option<RecordRequest>> {
+        let Command::Record {
+            out,
+            duration,
+            stream,
+            wait,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+
+        let absolute = if out.is_absolute() {
+            out.clone()
+        } else {
+            cwd.join(out)
+        };
+        let request = RecordRequest {
+            stream: stream.request(),
+            duration_ms: *duration,
+            sink: Sink::ServerPath { path: absolute },
+            // D12's flag, carried verbatim rather than decided here: the surface says what was
+            // asked for, and whether asking means anything is the *executor's* answer (see
+            // `Command::photo_request`, which makes the same split).
+            wait: *wait,
+        };
+        // Asked, not repeated — and asked *before* the duration, because a caller who typed
+        // both a bad extension and a bad duration is better served by the one that is about
+        // the file they will be looking for.
+        request.container()?;
+        request.budget_ms()?;
+        Ok(Some(request))
+    }
 }
 
 /// `webcam-handler-cli profile …`
@@ -1221,6 +1361,30 @@ pub trait Executor {
     ///
     /// As [`Executor::info`], plus [`Error::SettleTimeout`] and whatever the sink says.
     fn photo(&mut self, camera: &CameraId, request: &PhotoRequest) -> Result<Photograph>;
+
+    /// Record one video, start to finish (D7, D10).
+    ///
+    /// **One method, however many wire calls it costs.** `webcam-handler-cli` holds the camera
+    /// and records in this process; `webcam-handler-client` starts a take, polls
+    /// `wch_record_status` and collects it with `wch_record_stop`, because D10 puts three
+    /// methods on the wire and says progress comes from polling. That asymmetry is the whole
+    /// reason this is a seam rather than a wire type: AGENTS' primary consumer has no hands,
+    /// and a verb whose *user* has to write the sequence is the defect that section names.
+    /// [`Executor::calibrate_sweep`] is the precedent, exactly — one T4 method over a
+    /// several-call state machine `webcam-handler-client` owns.
+    ///
+    /// It **blocks for the length of the take**, which is bounded by
+    /// `schema::limits::MAX_RECORDING_MS` and refused past it, so a caller that wants control
+    /// back sooner asks for a shorter recording rather than for a handle.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::info`], plus [`Error::IllegalTransition`] for a request this build will
+    /// not honour, [`Error::Busy`] when the camera is already recording or is held by
+    /// something else, [`Error::FormatUnsupported`] when the container the path names cannot
+    /// carry what the camera negotiated, [`Error::StorageIo`] from the file, and the device's
+    /// own answer for anything it refused.
+    fn record(&mut self, camera: &CameraId, request: &RecordRequest) -> Result<RecordReport>;
 
     /// One camera's full device profile (T3).
     ///
@@ -1427,6 +1591,15 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             let taken = executor.photo(&camera.id()?, &request)?;
             render::photo(&taken.report, taken.returned.as_deref(), cli.json, out)
         }
+        Command::Record { camera, .. } => {
+            let cwd = current_directory()?;
+            let request = cli
+                .command
+                .record_request(&cwd)?
+                .ok_or_else(unreachable_record)?;
+            let report = executor.record(&camera.id()?, &request)?;
+            render::record(&report, cli.json, out)
+        }
         Command::Calibrate(command) => calibrate(command, cli.json, executor, out),
         Command::Profile(ProfileCommand::Capture {
             camera,
@@ -1627,6 +1800,16 @@ fn unreachable_photo() -> Error {
     Error::IllegalTransition {
         from: "not_a_photo_command".to_owned(),
         op: "build a photo request".to_owned(),
+    }
+}
+
+/// [`unreachable_photo`]'s counterpart for the `record` arm, and it exists for the same
+/// reason: the match above has already established which command this is, and the arm keeps
+/// the dispatch free of an `unwrap` on a device-driven path.
+fn unreachable_record() -> Error {
+    Error::IllegalTransition {
+        from: "not_a_record_command".to_owned(),
+        op: "build a recording request".to_owned(),
     }
 }
 
@@ -2002,6 +2185,210 @@ mod tests {
         for &transform in Transform::ALL {
             assert!(text.contains(transform.as_str()), "{text}");
         }
+    }
+
+    #[test]
+    fn record_needs_a_path_and_that_is_why_it_needs_no_json_rule_of_its_own() {
+        // Two halves of one decision. **`-o` is required**, because a recording's bytes go to
+        // a path and never back in the answer (note **N110**) — so there is no "standard
+        // output" spelling for a recording. **Therefore `record --json` needs no counterpart
+        // to `photo`'s rule**: nothing is competing for standard output, so the document is
+        // the whole of it. The second half is asserted rather than assumed, because "the rule
+        // is unnecessary" is exactly the kind of claim that stops being true quietly.
+        let missing =
+            Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "record", "cam:x"])
+                .expect_err("record without -o must not parse");
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        // And with a path, `--json` parses — the arm `Cli::check` deliberately does not have.
+        let cli = Cli::try_parse_checked_from(
+            Program::Cli,
+            [
+                "webcam-handler-cli",
+                "--json",
+                "record",
+                "cam:x",
+                "-o",
+                "take.avi",
+            ],
+        )
+        .expect("record --json needs no path rule because -o is already required");
+        assert!(cli.json);
+        assert!(matches!(cli.command, Command::Record { .. }));
+    }
+
+    #[test]
+    fn a_duration_is_a_humantime_string_and_one_this_build_cannot_read_is_a_usage_error() {
+        // Note **N113**: `--duration` is this project's first human-scale duration flag, and
+        // the answer it produces is milliseconds because that is what the request carries.
+        // Parsed by clap so a typo is exit 2 with a message naming the flag, rather than
+        // `None` three layers down that reads exactly like not passing the flag (note N109's
+        // finding, at a different flag).
+        for (typed, expected) in [
+            ("10s", 10_000_u64),
+            ("1500ms", 1_500),
+            ("1m30s", 90_000),
+            ("0s", 0),
+        ] {
+            let cli = Cli::try_parse_from([
+                "webcam-handler-cli",
+                "record",
+                "cam:x",
+                "-o",
+                "take.avi",
+                "--duration",
+                typed,
+            ])
+            .unwrap_or_else(|error| panic!("{typed} should parse: {error}"));
+            let Command::Record { duration, .. } = &cli.command else {
+                panic!("expected record");
+            };
+            assert_eq!(*duration, Some(expected), "{typed}");
+        }
+
+        // The inverse arm, without which this test cannot discriminate: a bare integer is
+        // **not** a duration, which is the whole of what choosing humantime commits to — and
+        // the message says what to write instead, because AGENTS' primary consumer has no
+        // hands.
+        for bad in ["10", "soon", "10 fortnights"] {
+            let error = Cli::try_parse_from([
+                "webcam-handler-cli",
+                "record",
+                "cam:x",
+                "-o",
+                "take.avi",
+                "--duration",
+                bad,
+            ])
+            .expect_err("a value humantime cannot read must not parse");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{bad}"
+            );
+            assert!(error.to_string().contains("10s"), "{error}");
+        }
+
+        // And no duration at all is `None`, which `RecordRequest::budget_ms` turns into
+        // `limits::DEFAULT_RECORDING_MS` — the one home for that default.
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "record", "cam:x", "-o", "take.avi"])
+            .expect("parses");
+        let Command::Record { duration, .. } = &cli.command else {
+            panic!("expected record");
+        };
+        assert_eq!(*duration, None);
+    }
+
+    #[test]
+    fn a_relative_recording_path_is_resolved_against_the_callers_directory_before_it_is_sent() {
+        // D10's rule at the verb that landed last, and the assertion is the same one
+        // `photo`'s carries: the resolution happens **here**, in the shared surface, so
+        // `webcam-handler-cli record -o take.avi` and `webcam-handler-client record -o
+        // take.avi` name the same file. A daemon handed the relative path would resolve it
+        // against its own working directory, which under systemd is `/`.
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "record", "cam:x", "-o", "takes/a.avi"])
+                .expect("parses");
+        let request = cli
+            .command
+            .record_request(camino::Utf8Path::new("/home/someone"))
+            .expect("an absolute path this build writes")
+            .expect("a record command produces a request");
+        assert_eq!(
+            request.sink,
+            Sink::ServerPath {
+                path: "/home/someone/takes/a.avi".into()
+            }
+        );
+
+        // An absolute path is left alone, so the join above is a *resolution* rather than a
+        // prefix applied to everything.
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "record", "cam:x", "-o", "/tmp/a.avi"])
+                .expect("parses");
+        let request = cli
+            .command
+            .record_request(camino::Utf8Path::new("/home/someone"))
+            .expect("absolute")
+            .expect("a record command produces a request");
+        assert_eq!(
+            request.sink,
+            Sink::ServerPath {
+                path: "/tmp/a.avi".into()
+            }
+        );
+
+        // And a command that is not a `record` produces nothing rather than a wrong request —
+        // the arm `run`'s dispatch relies on, and the reason it has no `unwrap` on it.
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "list"]).expect("parses");
+        assert!(
+            cli.command
+                .record_request(camino::Utf8Path::new("/tmp"))
+                .expect("no request to refuse")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_container_this_build_cannot_write_is_refused_while_the_command_line_is_being_parsed() {
+        // The `.webp` defect one container along (debt D-1, note **N46**): `/tmp/take.mkv`
+        // filled with a Y4M is a file whose name lies about its contents. Refused **here**,
+        // before anything opens a camera — but by `RecordRequest::container`, which lives
+        // beside the variants it constrains, because `webcam-handler-daemon` links no
+        // `cli-core` and a socket can build the same request.
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "record", "cam:x", "-o", "/tmp/a.mkv"])
+                .expect("clap has no opinion about extensions");
+        let refused = cli
+            .command
+            .record_request(camino::Utf8Path::new("/tmp"))
+            .expect_err("this build writes no Matroska");
+        assert_eq!(refused.kind(), schema::ErrorKind::IllegalTransition);
+        let rendered = refused.to_string();
+        for &container in schema::video::VideoFormat::ALL {
+            assert!(rendered.contains(container.extension()), "{rendered}");
+        }
+
+        // Both writable extensions parse, and so does a path with none — the arm AGENTS'
+        // handless consumer depends on, since an agent that has not enumerated a camera
+        // cannot know whether to type `.avi` or `.y4m`.
+        for &container in schema::video::VideoFormat::ALL {
+            let path = format!("/tmp/a.{}", container.extension());
+            let cli = Cli::try_parse_from(["webcam-handler-cli", "record", "cam:x", "-o", &path])
+                .expect("parses");
+            cli.command
+                .record_request(camino::Utf8Path::new("/tmp"))
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+        }
+        let cli = Cli::try_parse_from(["webcam-handler-cli", "record", "cam:x", "-o", "/tmp/take"])
+            .expect("parses");
+        cli.command
+            .record_request(camino::Utf8Path::new("/tmp"))
+            .expect("a path with no extension lets the negotiated stream decide");
+
+        // And a duration past the cap is refused by the same call, which is what keeps
+        // `record --duration 500m` from costing a camera a stream (`budget_ms`, note N110's
+        // sibling refusal).
+        let cli = Cli::try_parse_from([
+            "webcam-handler-cli",
+            "record",
+            "cam:x",
+            "-o",
+            "/tmp/a.avi",
+            "--duration",
+            &format!("{}ms", schema::limits::MAX_RECORDING_MS + 1),
+        ])
+        .expect("clap has no opinion about the cap");
+        assert_eq!(
+            cli.command
+                .record_request(camino::Utf8Path::new("/tmp"))
+                .expect_err("a millisecond past the cap is past it")
+                .kind(),
+            schema::ErrorKind::IllegalTransition
+        );
     }
 
     #[test]

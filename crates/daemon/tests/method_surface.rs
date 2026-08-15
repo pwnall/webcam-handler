@@ -45,7 +45,7 @@
 //! ## Why it is one test
 //!
 //! `cargo-nextest` runs every test in its own process, so there is no cross-test
-//! aggregation: nineteen separate `#[test]`s recording into a process-global set would each
+//! aggregation: twenty-two separate `#[test]`s recording into a process-global set would each
 //! see one name. The whole surface is therefore driven by one test, twice — once per
 //! transport — and the per-verb *behaviour* lives in the sibling suites, which is where the
 //! depth is: `read_verbs.rs` for the six that read, `mutating_verbs.rs` for the ones that
@@ -76,7 +76,7 @@
 //! 4. **It cannot catch a rename.** The client and the server are two expansions of *one*
 //!    declaration, so a changed `#[method(name = …)]` moves both sides together and this
 //!    comparison stays green. That is `crates/api`'s pinned-spelling test's job
-//!    (`the_surface_registers_the_nineteen_methods_and_the_two_subscriptions_and_nothing_else`),
+//!    (`the_surface_registers_the_twenty_two_methods_and_the_two_subscriptions_and_nothing_else`),
 //!    and it is why that pin is a list on purpose.
 //! 5. **It cannot see a method on the trait that nothing registered**, because there is no
 //!    second registration path: `into_rpc()` is the one, D10 exists to keep it that way, and
@@ -124,6 +124,7 @@ use schema::session::{
     Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest, SweepSpec,
 };
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::video::{RecordReport, RecordRequest, RecordStatus};
 
 use crate::fixture::{Ask, Fixture, SESSION_TASK};
 use crate::wire::{Wire, refusal};
@@ -216,7 +217,7 @@ impl ClientT for Recording {
 
 /// One answer per method on the T5 surface, named the way the method is named.
 ///
-/// Nineteen fields, and every one of them is read by [`assert_every_answer_is_an_answer`] —
+/// Twenty-two fields, and every one is read by [`assert_every_answer_is_an_answer`] —
 /// which is not a convention this file keeps by discipline: an unread field is `dead_code`,
 /// and this workspace compiles warnings as errors, so an answer nobody looked at fails the
 /// build. That is the structural half of limit 1 in this file's header.
@@ -229,6 +230,12 @@ struct Surface {
     set: WriteReport,
     snapshot: Snapshot,
     photo: PhotoResponse,
+    /// The three P6c added, and the only trio in this walk where one call's answer is the
+    /// next call's precondition: a status is about a take a start made, and a stop collects
+    /// it. Driven in that order and nowhere else in this file.
+    record_start: RecordStatus,
+    record_status: RecordStatus,
+    record_stop: RecordReport,
     discover_pairs: DiscoveryReport,
     profile_capture: DeviceProfile,
     restore: RestoreReport,
@@ -265,6 +272,7 @@ async fn every_method<C: WchRpcClient + Sync>(
     client: &C,
     ask: &Ask,
     sweep: &SweepRequest,
+    recording: &camino::Utf8Path,
     named_for: &str,
 ) -> Surface {
     let camera = ask.camera.clone();
@@ -294,6 +302,25 @@ async fn every_method<C: WchRpcClient + Sync>(
         .photo(camera.clone(), a_photo())
         .await
         .expect("the fake synthesizes a frame");
+    // P6c's three, in the one order that works: a take, a question about it, and the
+    // collection that empties the camera's slot. The take asks for **no** duration at all —
+    // `duration_ms: Some(0)` records the container's header and no frames — because what a
+    // census needs is that the three answered as themselves, and a shorter take is a
+    // deterministic one: the driver ends on its budget before its first turn, so `record_stop`
+    // collects rather than waits. Depth is `mutating_verbs.rs`'s.
+    let record_start = client
+        .record_start(camera.clone(), a_recording(recording))
+        .await
+        .expect("a camera with no take on it");
+    let record_status = client
+        .record_status(camera.clone())
+        .await
+        .expect("the camera resolves");
+    let record_stop = client
+        .record_stop(camera.clone())
+        .await
+        .expect("the take this call started");
+
     let discover_pairs = client
         .discover_pairs(camera.clone())
         .await
@@ -380,6 +407,9 @@ async fn every_method<C: WchRpcClient + Sync>(
         set,
         snapshot,
         photo,
+        record_start,
+        record_status,
+        record_stop,
         discover_pairs,
         profile_capture,
         restore,
@@ -462,6 +492,31 @@ fn a_photo() -> PhotoRequest {
     }
 }
 
+/// A recording of nothing at all, into `path`.
+///
+/// `duration_ms: Some(0)` on purpose: a budget of zero writes the container's header and no
+/// frames (`engine::record::drive` checks the bound *before* each turn), so this take is over
+/// before it starts and the census never waits on a camera. That is exactly the shallowest
+/// call that produces a real answer — a negotiated stream, a chosen container and a file on
+/// disk — which is this walk's rule for every method in it.
+///
+/// A `ServerPath` and not a `ReturnBytes`, because a recording has no second variant: note
+/// **N110** narrows this verb to one of D10's two, and asking for the other is a refusal
+/// `mutating_verbs.rs` asserts rather than a shape this file could drive.
+fn a_recording(path: &camino::Utf8Path) -> RecordRequest {
+    RecordRequest {
+        stream: StreamRequest::default(),
+        duration_ms: Some(0),
+        sink: Sink::ServerPath {
+            path: path.to_owned(),
+        },
+        // The census drives one verb at a time against an idle camera, so there is never a
+        // queue to wait for; D12's flag is exercised where it can go red, in
+        // `mutating_verbs.rs`.
+        wait: false,
+    }
+}
+
 /// A sweep of `control` over the two ends of its declared range.
 ///
 /// Two samples rather than a full sweep: what a census needs is that the verb ran, recorded
@@ -483,7 +538,7 @@ fn a_short_sweep(controls: &[ControlDesc], control: &ControlSlug) -> SweepReques
 /// Every field of [`Surface`], read.
 ///
 /// Shallow on purpose and *complete* on purpose: one assertion per method, so the census
-/// cannot be satisfied by a surface that answered nineteen times with nothing in it. The
+/// cannot be satisfied by a surface that answered twenty-two times with nothing in it. The
 /// compiler enforces the completeness (see [`Surface`]); this function is where the
 /// enforcement is spent on something worth reading.
 fn assert_every_answer_is_an_answer(answers: &Surface, ask: &Ask, seen: &str) {
@@ -510,6 +565,30 @@ fn assert_every_answer_is_an_answer(answers: &Surface, ask: &Ask, seen: &str) {
             .as_ref()
             .is_some_and(|bytes| bytes.as_slice().get(..2) == Some(&[0xff, 0xd8][..])),
         "{seen}: a JPEG SOI survives base64"
+    );
+
+    // P6c's three, each read for the one thing only it can say. The status is the *same*
+    // take the start answered with — a build whose registry lost it between two calls would
+    // answer about a camera with no take at all — and the report is the file the start named,
+    // which is what says the bytes went where the request asked rather than somewhere this
+    // daemon chose.
+    let started = answers
+        .record_start
+        .take
+        .as_ref()
+        .unwrap_or_else(|| panic!("{seen}: a started take carries a take"));
+    let polled = answers
+        .record_status
+        .take
+        .as_ref()
+        .unwrap_or_else(|| panic!("{seen}: a take that has not been collected is still there"));
+    assert_eq!(started.path, polled.path, "{seen}");
+    assert_eq!(started.format, polled.format, "{seen}");
+    assert_eq!(answers.record_stop.path, started.path, "{seen}");
+    assert_eq!(answers.record_stop.format, started.format, "{seen}");
+    assert!(
+        answers.record_stop.path.exists(),
+        "{seen}: the recording named a file nothing wrote"
     );
 
     assert!(
@@ -578,7 +657,7 @@ fn assert_every_answer_is_an_answer(answers: &Surface, ask: &Ask, seen: &str) {
 ///
 /// Limit 6 in this file's header: a refusal records its method name as readily as an answer
 /// does, so a census over a fixture that had degraded into refusing everything would still
-/// count nineteen. These three are the cheapest proof that it has not — the same client
+/// count twenty-two. These three are the cheapest proof that it has not — the same client
 /// getting three *different* typed refusals for three different absences, which a stub
 /// cannot produce.
 async fn discriminating_refusals<C: WchRpcClient + Sync>(client: &C, ask: &Ask, named_for: &str) {
@@ -636,9 +715,16 @@ async fn every_method_the_daemon_registers_is_exercised_over_the_fake() {
     );
     let called: BTreeSet<String> = registered.difference(&subscribed).cloned().collect();
 
+    // Where the census's recordings go: a throw-away directory outside the repository, for
+    // AGENTS' reason — a frame may contain a person, and a test capture belongs in a
+    // gitignored scratch dir even when the frames in it are synthesised from a committed
+    // profile.
+    let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+
     for (named_for, transport) in fixture.wires() {
         let client = Recording::over(transport);
-        let answers = every_method(&client, &ask, &sweep, named_for).await;
+        let recording = scratch.base().join(format!("{named_for}.avi"));
+        let answers = every_method(&client, &ask, &sweep, &recording, named_for).await;
         assert_every_answer_is_an_answer(&answers, &ask, named_for);
         discriminating_refusals(&client, &ask, named_for).await;
 
@@ -667,13 +753,13 @@ async fn every_method_the_daemon_registers_is_exercised_over_the_fake() {
 
         // Not vacuous, and this is the assertion that says so rather than a loop that could
         // not have failed: two empty sets compare equal, so the count is only a count if the
-        // number is the one `crates/api` pins the trait at. Nineteen is the *call* surface;
+        // number is the one `crates/api` pins the trait at. Twenty-two is the *call* surface;
         // the four names beside it are two subscriptions' worth, which is note N29's
         // accounting ("P4e grows the registered population by four rather than two").
-        assert_eq!(called.len(), 19, "{named_for}: {called:?}");
+        assert_eq!(called.len(), 22, "{named_for}: {called:?}");
         assert_eq!(
             registered.len(),
-            19 + 2 * api::SUBSCRIPTIONS.len(),
+            22 + 2 * api::SUBSCRIPTIONS.len(),
             "{named_for}: {registered:?}"
         );
     }
@@ -685,7 +771,7 @@ async fn every_method_the_daemon_registers_is_exercised_over_the_fake() {
     let sessions = engine::lifecycle::list(&fixture.store, None).expect("the store walks");
     assert_eq!(sessions.sessions.len(), 4, "{sessions:?}");
 
-    // And the accept loop outlived all nineteen methods twice over: `stopped()` answers
+    // And the accept loop outlived all twenty-two methods twice over: `stopped()` answers
     // *why* it stopped, so `Ok` here is "because this test asked" rather than "because a
     // handler took the server down with it", which is a failure mode a census that only
     // read answers could not tell from success.

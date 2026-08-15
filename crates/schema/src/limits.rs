@@ -263,6 +263,47 @@ const _: () = assert!(CLIENT_SWEEP_DRAIN_MS > 0);
 // are, in `CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS`' tradition.
 const _: () = assert!(CLIENT_SWEEP_DRAIN_MS <= HOTPLUG_QUIET_MS);
 
+/// How often `webcam-handler-client record` asks the daemon whether the take is over.
+///
+/// **D10's whole progress mechanism, priced**: *"progress by polling `record_status` — no
+/// recording subscription in v1"*. A recording runs for seconds or minutes on a camera the
+/// client does not hold, so the one T4 `record` verb is three wire calls with a poll loop
+/// between the first and the last (`webcam-handler-client`'s `Remote::record`), and this is
+/// the interval that loop sleeps for.
+///
+/// A quarter of a second, and it is [`CLIENT_SWEEP_DRAIN_MS`]'s number for
+/// [`CLIENT_SWEEP_DRAIN_MS`]'s reason: it is the longest this tool pauses for something a
+/// person is waiting on. Two bounds meet here and both are real. Too *long* and a
+/// `record --duration 100ms` costs a quarter of a second of latency after the file is already
+/// closed — which is exactly what the parity gate drives, so the number is felt rather than
+/// theorised. Too *short* and each poll costs the daemon a live enumeration (E2: a camera id
+/// is resolved against the machine every time, on every verb), which is an `open` and a walk
+/// of ioctls per node — so a ten-millisecond poll would spend more of the daemon's time
+/// answering "is it done" than recording.
+///
+/// It is **not** derived from [`FRAME_DEADLINE_MS`], and that is worth saying because the two
+/// look related: a take's driver ends within one frame deadline of its bound, but the poll is
+/// not waiting for a frame — it is waiting for a *file to be closed*, which happens once, and
+/// polling faster than a frame arrives would not learn anything sooner.
+///
+/// Read by `webcam-handler-client`'s `Remote::record`, through `remote::RECORD_POLL_INTERVAL`
+/// — the one place the number becomes a `Duration` — and by `remote::record_polls`, which
+/// turns it and [`MAX_RECORDING_MS`] into the bound on how many times that loop may go round
+/// before it gives up on a daemon that never says the take is over.
+pub const CLIENT_RECORD_POLL_MS: u64 = 250;
+
+// The floor, mechanical rather than a matter of taste: a poll loop with no interval is a
+// busy loop against a daemon that answers each turn with an enumeration, which is this client
+// spending a camera's worth of ioctls to find out whether a file has been closed.
+const _: () = assert!(CLIENT_RECORD_POLL_MS > 0);
+
+// And the relation that makes the loop's own bound meaningful: `Remote::record_polls` divides
+// the longest take this build will make by this interval to get how many turns a loop may
+// take, and an interval longer than the whole recording would make that bound one — which is
+// a client that gives up on its second poll. Checked where both numbers are, in
+// `CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS`' tradition.
+const _: () = assert!(CLIENT_RECORD_POLL_MS < DEFAULT_RECORDING_MS);
+
 /// How many unwritten notifications one subscription may hold before the daemon drops.
 ///
 /// jsonrpsee's `message_buffer_capacity`, which P4b deliberately did not inherit: it turned

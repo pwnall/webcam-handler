@@ -30,6 +30,7 @@ use schema::session::{
     BlockedReason, ControlStatus, Session, SessionEvent, SessionList, SessionStatus,
 };
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot, UnrestorableReason};
+use schema::video::{IntervalSource, RecordReport, RecordingEnd};
 
 /// Where rendered output goes.
 ///
@@ -936,6 +937,156 @@ fn adjustment_text(adjustment: &Adjustment) -> String {
             negotiated.fps().unwrap_or(0.0)
         ),
     }
+}
+
+// ------------------------------------------------------------------ recording
+
+/// `record` — what the take turned out to be.
+///
+/// The `--json` half is [`RecordReport`] verbatim, which is the whole of this crate's `--json`
+/// contract; the human half is the table beside it. The two show the **same** facts, which is
+/// why every row below is a field of the document rather than something computed here — with
+/// one exception that proves the rule: the mean interval is
+/// [`schema::video::RecordingSummary::measured_interval_us`], the schema's own subtraction,
+/// so a `--json` consumer reaches the identical number by calling the identical function
+/// rather than by re-deriving `span / (frames - 1)` and getting `span / frames`.
+///
+/// **The rate rows are the payload rather than the metadata**, which is why there are two of
+/// them. The notes' Expected usage item 10 is blunt about what a recording is for — *"did this
+/// take 200 ms or 2 s"* — so a reader has to be able to tell a rate that was *observed* from
+/// one the camera was merely asked for, and `interval_source` is the field that says which
+/// this file's header field is. A Y4M take never reports `measured` (note **N106**), and the
+/// "measured" row beside it is what keeps that from costing the reader the measurement.
+///
+/// The path goes in the table and never on standard output as bytes: a recording is not
+/// returned as bytes at all (note **N110**), so unlike `photo` this renderer has no stream to
+/// share and no `--json` restriction to enforce.
+pub(crate) fn record(report: &RecordReport, as_json: bool, out: &mut Output) -> Result<()> {
+    if as_json {
+        return json(report, out);
+    }
+
+    let summary = &report.summary;
+    let mut table = table();
+    table.set_header(vec!["FIELD", "VALUE"]);
+    for (field, value) in [
+        ("camera", report.camera.to_string()),
+        ("started at", report.started_at.to_string()),
+        ("file", report.path.to_string()),
+        ("container", report.format.to_string()),
+        ("stream", stream_text(&report.negotiated)),
+        ("ended", ended_text(report.ended)),
+        ("frames", summary.frames_written.to_string()),
+        ("dropped", summary.dropped_frames.to_string()),
+        ("bytes", summary.bytes_written.to_string()),
+        ("wall clock", format!("{} ms", report.wall_clock_ms)),
+        ("declared rate", declared_rate_text(report)),
+        ("measured rate", measured_rate_text(report)),
+    ] {
+        table.add_row(vec![Cell::new(field), Cell::new(value)]);
+    }
+    out.line(Stream::Stdout, &table.to_string())?;
+
+    // The three notes an operator acts on, on standard error so the table stays the answer.
+    // Each names something the fields above state but do not interpret — which is the split
+    // this module's header describes: the renderer may explain a field and may not compute a
+    // fact the document does not carry.
+    if let Some(cap) = summary.cap_reached {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: the {} cap ended this recording before its duration was spent; the \
+                 file holds everything up to that point",
+                format!("{cap:?}").to_lowercase()
+            ),
+        )?;
+    }
+    if summary.dropped_frames > 0 {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: the driver's sequence numbers say {} frame(s) never arrived; a dropped \
+                 frame reads as a slow transition unless it is counted",
+                summary.dropped_frames
+            ),
+        )?;
+    }
+    if !report.negotiated.is_exact() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: the device adjusted the request: {}",
+                report
+                    .negotiated
+                    .adjustments
+                    .iter()
+                    .map(adjustment_text)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Why a recording stopped, as a phrase.
+///
+/// An exhaustive `match` over the closed vocabulary, so a sixth ending is a compile error here
+/// rather than a row that renders as `Debug` — which is `schema::video::RecordingEnd`'s own
+/// requirement of its consumers, and the reason it is a `closed_vocabulary!`.
+fn ended_text(ended: RecordingEnd) -> String {
+    match ended {
+        RecordingEnd::Duration => "the duration you asked for was spent".to_owned(),
+        RecordingEnd::Cap => "a size, frame or span cap refused a frame".to_owned(),
+        RecordingEnd::DeviceQuiet => "the camera stopped delivering frames".to_owned(),
+        RecordingEnd::Stopped => "you stopped it".to_owned(),
+        RecordingEnd::DeviceFailed => "the device refused mid-take".to_owned(),
+    }
+}
+
+/// The rate the finished file declares, and where that number came from.
+///
+/// The provenance is in the same cell as the number rather than in a column of its own,
+/// because the two are one fact: a declared interval whose source a reader has to look up in
+/// another row is a number they will read as measured.
+fn declared_rate_text(report: &RecordReport) -> String {
+    let interval = report.summary.declared_interval_us;
+    let source = match report.summary.interval_source {
+        IntervalSource::Measured => "measured across this take",
+        IntervalSource::Negotiated => "what the camera was asked for",
+        IntervalSource::Provisional => "a placeholder; nothing was measured or negotiated",
+    };
+    format!("{} ({source})", interval_text(interval))
+}
+
+/// The rate this take actually delivered, when it delivered enough frames to measure one.
+///
+/// `schema::video::RecordingSummary::measured_interval_us` and never an arithmetic of this
+/// file's own — the schema states the three refusals (fewer than two frames, a clock that ran
+/// backwards, a mean that truncates to zero) once, so a table and a `--json` consumer cannot
+/// disagree about what "measured nothing" is.
+fn measured_rate_text(report: &RecordReport) -> String {
+    report.summary.measured_interval_us().map_or_else(
+        || "not measured; this take spans too little to have a rate".to_owned(),
+        |mean| {
+            let interval = u32::try_from(mean).unwrap_or(u32::MAX);
+            interval_text(interval)
+        },
+    )
+}
+
+/// One frame interval, in microseconds and in frames per second.
+///
+/// Both, because they answer different questions: a caller comparing this take against
+/// `negotiated` wants the interval, and a person reading a table wants the rate. A zero
+/// interval is neither — it is a rate nobody can divide by — and says so rather than printing
+/// an infinity.
+fn interval_text(interval_us: u32) -> String {
+    if interval_us == 0 {
+        return "0 µs (no rate)".to_owned();
+    }
+    let fps = 1_000_000.0 / f64::from(interval_us);
+    format!("{interval_us} µs ({fps:.1} fps)")
 }
 
 // ------------------------------------------------------------------ calibration

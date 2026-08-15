@@ -375,6 +375,111 @@ fn a_photo_arrives_as_bytes_through_base64_and_as_a_file_on_the_daemons_disk() {
 }
 
 #[test]
+fn one_verb_over_three_wire_methods_records_a_file_where_the_caller_asked_for_it() {
+    // **The fourth thing that is not 1:1**, and the largest: T4 has one `record` verb and
+    // D10 puts three methods on the wire, so `webcam-handler-client` runs a state machine —
+    // `record_start`, a poll of `record_status`, then `record_stop`. AGENTS is why that is
+    // not three verbs: *"The primary consumer has no hands — a verb needing a call sequence …
+    // is a defect for the consumer that matters most."*
+    //
+    // Two claims only this suite can make, because both are about a **process** rather than a
+    // value:
+    //
+    // 1. **A relative `-o` is resolved on the caller's side.** The client is run from a
+    //    directory of its own and asks for `take.avi`; D10 says that means the caller's
+    //    directory, so the file has to appear *there* — and the daemon, whose working
+    //    directory is this test runner's, must not have resolved it against its own. A build
+    //    that sent the relative path would either write it beside the daemon or be refused
+    //    `IllegalTransition` by `RecordRequest::server_path`; both are visible here and
+    //    neither is a passing run.
+    // 2. **The poll loop really polled.** The report describes a *finished* take — a
+    //    container the daemon closed, with the frames the file holds — which a client that
+    //    stopped after `record_start` could not have.
+    let fixture = Fixture::new();
+    let _daemon = replaying(&fixture, REPLAYED);
+    let list = fixture.run(&["--json", "list"]).json();
+    let id = list["cameras"][0]["id"].as_str().expect("an id").to_owned();
+
+    // The caller's directory, and deliberately not the daemon's state directory: the two have
+    // to be different for the claim to mean anything.
+    let calling_from = fixture.runtime.base().join("caller");
+    std::fs::create_dir_all(calling_from.as_std_path()).expect("a writable scratch directory");
+
+    let output = wchc()
+        .env("XDG_RUNTIME_DIR", fixture.runtime.base().as_str())
+        .current_dir(calling_from.as_std_path())
+        .args([
+            "--json",
+            "record",
+            &id,
+            "-o",
+            "take.avi",
+            "--duration",
+            "400ms",
+        ])
+        .output()
+        .expect("webcam-handler-client runs");
+    assert!(
+        output.status.success(),
+        "webcam-handler-client record failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("--json emits one document");
+
+    let landed = calling_from.join("take.avi");
+    assert_eq!(
+        report["path"],
+        Value::String(landed.to_string()),
+        "the document names a path the caller cannot open: {report}"
+    );
+    assert!(
+        landed.exists(),
+        "a relative -o did not land in the directory the client was run from"
+    );
+    // Not vacuous: `take.avi` relative to *this* test process is not where it went, which is
+    // the only way to tell "resolved on the caller's side" from "resolved somewhere".
+    assert!(
+        !Utf8PathBuf::from("take.avi").exists(),
+        "the recording landed in the test runner's own directory"
+    );
+
+    // The take really finished: a container the daemon closed, and a frame count the file
+    // backs. A client that returned after `record_start` would have a report of a take that
+    // was still being written — which `record_stop` would happily have handed over, so the
+    // discriminating half is the *bytes*.
+    assert_eq!(report["format"], "avi", "{report}");
+    assert_eq!(report["ended"], "duration", "{report}");
+    let frames = report["summary"]["frames_written"]
+        .as_u64()
+        .expect("a frame count");
+    assert!(
+        frames > 0,
+        "the recording never reached the device: {report}"
+    );
+    let bytes = std::fs::read(&landed).expect("the file the client named");
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("a length this host can represent"),
+        report["summary"]["bytes_written"]
+            .as_u64()
+            .expect("a byte count"),
+        "the report's size and the file disagree, so the container was not closed"
+    );
+
+    // And the camera is free again — `record_stop` collects, so the slot is empty and a
+    // second `record` answers rather than meeting `Busy`.
+    let second = fixture.run(&[
+        "--json",
+        "record",
+        &id,
+        "-o",
+        fixture.state.root().join("second.avi").as_str(),
+        "--duration",
+        "100ms",
+    ]);
+    assert_eq!(second.code, 0, "{}", second.stderr);
+}
+
+#[test]
 fn a_profile_captured_over_the_wire_is_the_one_the_daemon_is_replaying() {
     // The second of the three that are not 1:1, and the whole of what it costs: T4 spells
     // this verb `capture_profile` and D10 spells the method `profile_capture`, because a

@@ -7,6 +7,7 @@
 //! | [`http`] | the opt-in TCP transport's posture: D11's bind × token matrix and the per-run bearer token (P5a) |
 //! | [`logging`] | design §2.6's `tracing` fmt layer, and the rule that no frame reaches it |
 //! | [`preview`] | the latest-frame `watch` fan-out behind the MJPEG route: one camera, one stream, N readers (D12, P5b) |
+//! | [`record`] | the takes this daemon is driving: one per camera, one actor command per frame, and what the three `record_*` verbs do about them (D7, D10, P6c) |
 //! | [`server`] | the server half of `webcam-handler-api`'s T5 surface (D10) |
 //! | [`shutdown`] | the order the daemon stops in, and the signal and supervisor seams (P4e-ii) |
 //! | [`state`] | D9's state-directory lock, held for the process's lifetime |
@@ -37,6 +38,7 @@ pub mod events;
 pub mod http;
 pub mod logging;
 pub mod preview;
+pub mod record;
 pub mod server;
 pub mod shutdown;
 pub mod state;

@@ -15128,3 +15128,240 @@ They are twelve mutations somebody thought of. `.cargo/mutants.toml` gained
 which is note **N101**'s precedent repeating: the first `cargo-mutants` run over the AVI muxer
 found eleven survivors, nine of them real gaps, none of which the author had thought of. This
 entry is what a hand pass is worth, not what the floor is.
+
+## N113 — A recording's duration is a humantime string, and the rule that says which flags take one
+
+**Doc:** design **§2.7**, which names *"humantime durations"* among the T4 argument types;
+`[workspace.dependencies]`, which pinned `humantime = "2.4.0"` at design time; AGENTS' *"a
+usage mistake must not be spelled like a device answer"*; note **N109**, the same class of
+finding at a neighbouring flag. Recorded 2026-08-14, from P6c.
+
+**Believed:** that the choice between `--duration 10s` and `--duration MS` is a matter of
+taste, and that consistency with the existing millisecond flags (`--settle-for`,
+`--settle-deadline`) settles it.
+
+**True:** it is not consistency with those flags that is at stake, because **`--duration` and
+the settle flags never appear on one command line**. `record` carries no settle policy at all
+— note **N111** records that decision and the reason: a recording's early frames are visible,
+so discarding them would move the recording's start away from where the caller put it. `photo`
+and `calibrate sweep` carry settle flags and take no duration. So a workspace with both
+spellings has no verb where a reader meets both, which removes the only concrete cost the
+"one spelling" argument had.
+
+**The pick: humantime, and a rule rather than a precedent.**
+
+> A flag whose value a caller reasons about **as a length of time** takes a humantime string.
+> A flag whose value is a **machine tolerance** — a count, or a bound in the tens or hundreds
+> of milliseconds that exists so a loop terminates — stays an integer count of milliseconds.
+
+`--duration` is the first kind: it runs from a tenth of a second to `MAX_RECORDING_MS`'s two
+minutes, and `10s`, `500ms` and `1m30s` are what a person and an agent both write. The settle
+flags are the second: `--settle-for` is one of a pair whose sibling is a **frame count**
+(`--skip-frames 3`), and spelling one of two alternatives as a duration string and the other
+as an integer would put two vocabularies on one pair.
+
+What the rule buys over "the first one wins" is that the next flag has an argument to be
+decided by. What it costs is stated: a reader who knows `--settle-for 250` and then types
+`--duration 250` gets a usage error rather than 250 milliseconds — which is exactly the
+failure `fourcc`'s repair chose in note **N109**, and for the same reason. A `--duration 250`
+that silently meant 250 *seconds*, or 250 milliseconds, or nothing, is the shape where the
+answer looks like a success; clap refuses it by name and the message says `10s, 1500ms or
+1m30s`.
+
+**Two mechanical consequences**, neither of them free and both cheaper than the alternative:
+
+- The value is parsed **by clap**, at the command line, and converted to milliseconds there.
+  So `--duration 10s` and `{"duration_ms": 10000}` are the same request, `schema::limits`
+  keeps pricing the cap in one unit, and `RecordRequest` gains no second spelling. A duration
+  too large for a `u64` of milliseconds is refused rather than saturated — a saturating parse
+  would turn a typo into the longest recording this build will refuse.
+- `humantime` was pinned in `[workspace.dependencies]` and depended on by nothing, so it was
+  **not in `Cargo.lock`**. Adopting it moves the lock and nothing else: MIT OR Apache-2.0,
+  both already on cargo-deny's allowlist, and it resolves with no transitive package of its
+  own. That clears design §2.8's bar, which the owner's ruling of 2026-08-09 says is not an
+  escalation.
+
+**Amend this note if** a verb appears that takes both a duration and a settle policy, at which
+point the two spellings would meet on one command line and the cost the rule is priced against
+becomes real.
+
+## N114 — One take per camera, and the four state answers D13's closed eighteen already had
+
+**Doc:** design **D10** (`record_start`/`record_status`/`record_stop`, *"progress by polling
+`record_status` — no recording subscription in v1"*), **D12**, **D13** — closed at eighteen
+variants; AGENTS' error vocabulary paragraph (*"`Busy` means retry, `DeviceGone` means stop
+and tell the human"*) and its *"the primary consumer has no hands"*; note **N46**, which
+widened `IllegalTransition` to *"the request names something this build will not do"*; note
+**N111**, which is why a recording is a chain of turns. Recorded 2026-08-14, from P6c.
+
+**Believed:** that three wire methods over one camera need a state machine, and that a state
+machine needs a vocabulary to describe its states with.
+
+**True:** it needs **one slot per camera** and four decisions, and every refusal those
+decisions need was already in D13. The vocabulary did not grow, which was the constraint
+(`daemon::server`'s header: *"the refusal vocabulary does not grow by a variant meaning 'too
+many waiters'"*), and this entry is the four decisions rather than the mechanism.
+
+### 1. A second `record_start` on a camera already recording is `Busy`
+
+`Busy` means **retry** to an unattended reader, and retrying is the action that succeeds: the
+take that is running is bounded by its own duration, so a caller that waits and asks again
+gets the camera. Every alternative reads worse to the consumer that matters. `IllegalTransition`
+would say "this build will not do that", which is false — it will, in a moment.
+`SessionConflict` is D8's word for a session slot and would be a second meaning for it.
+
+Its `holders` list is **empty**, and that is `engine::actor`'s decision arriving here rather
+than a new one: the process holding that camera is this daemon, and naming its pid would
+invite a client to `terminate_holder` the daemon it is talking to.
+
+The reservation is taken **before** any device work, which is what makes the refusal this
+daemon's rather than the kernel's: without it, two `record_start` calls arriving together both
+find an empty map, both reach `VIDIOC_STREAMON`, and the second is refused `EBUSY` — a
+refusal about the machine, arriving after a file has been opened.
+
+### 2. A `record_start` over a finished, uncollected take **discards** it, counted
+
+The alternative — refusing — was tried on paper and loses badly: one abandoned poll loop
+would wedge a camera until somebody called `record_stop` by hand, which is a state AGENTS'
+unattended primary consumer cannot get itself out of. Nothing the caller was promised is
+lost: the **file** is where it was asked for, whole and parseable. What is discarded is this
+daemon's copy of the accounting, and it moves `Recordings::watch_discarded` and writes one
+`tracing::warn!` naming the path, because rubric rule 3 wants a number rather than a silence.
+It is the number a healthy daemon leaves at zero.
+
+### 3. `record_stop` on a camera holding nothing is `IllegalTransition`, not a shrug
+
+This is the decision that was closest. A bland success — "there is nothing to stop, and that
+is fine" — has a real precedent in this workspace: `calibrate restore` run twice answers an
+empty report and a note, because *"there was nothing to put back"*. It loses here because the
+two verbs are asked different questions. A second `calibrate restore` is a caller repeating
+itself; a `record_stop` with no take is a caller who **believes it started one**, and the
+whole reason the sequence is three calls is that the caller cannot see the camera. An agent
+that cannot tell "my recording is over" from "my `record_start` never took" will collect a
+report it does not have.
+
+So the refusal is note **N46**'s variant — the request names a recording that does not exist
+— and it names `record_start` and `record_status` in its remedy, because AGENTS' primary
+consumer has no hands to work one out with.
+
+### 4. `record_stop` **collects**, and that is why the sequence is total
+
+Stop and collect are one verb because they are one question. A take that is still running is
+asked to stop, its container is closed and the finished `RecordReport` is the answer; a take
+that has already reached its own bound — the ordinary case, since most takes end on their
+duration while the caller is still polling — is simply handed over, and the slot is emptied
+either way. That makes `record_start` → poll → `record_stop` total for **every** ending a
+take can have, including the three it reaches on its own.
+
+Two consequences follow and both are deliberate. `record_status` answers "no take" for a
+camera that never recorded **and** for one whose take has been collected, because what a
+caller can do about either is identical and a daemon that distinguished them would be
+remembering something about a camera after the caller asked for it to be handed over. And a
+take that **failed** is collected as the device's own refusal rather than as a report — the
+container is closed first, so docs/7 P6b's "every fault leaves a parseable file" holds across
+the wire, but a `DeviceGone` arriving as a successful recording is the conversion AGENTS
+rule 7 forbids.
+
+### Shutdown, which is the fifth answer and needed no decision at all
+
+AGENTS: open MJPEG and WebSocket streams are *"cancelled, never awaited, on shutdown"*. A
+recording is the same class and is treated identically — the driver watches the daemon's stop
+token between turns and races it against each turn, so a cancellation ends the take within
+the frame being taken when it arrives. The ending is `RecordingEnd::Stopped`, the same one
+`record_stop` produces, because from the recording's side "the caller ended it" and "the
+daemon ended it" are one fact and a sixth ending would describe the *stopper* rather than the
+recording.
+
+What a recording adds over a preview is the obligation P6b built: the container is **closed**
+on the way out, so the file is one both of `imaging::avi::read`'s readers can open. That close
+runs on a blocking pool thread, and if the runtime dies first what is left is D7's recoverable
+`movi` prefix — which is the property that exists for exactly this case, and is why the close
+being best-effort is a bounded loss rather than a corrupt file. **This is the one answer in
+this entry with no test on it**, and it is recorded as an absence rather than left to be
+discovered: a suite that killed a daemon mid-take and re-read the file would be
+`crates/daemon/tests/signals.rs`'s shape applied to a recording, and it is not built.
+
+**Amend this note if** a recording ever becomes something a *second* client can attach to, at
+which point "one take per camera" stops being the same statement as "one owner per take" and
+the `Busy` in decision 1 becomes a question about who is asking.
+
+## N115 — Twelve hand-applied mutants over the recording wire, and what a hand pass is worth
+
+**Doc:** AGENTS' *"Construct the buggy implementation first and watch it fail — at workspace
+scope"* and rubric rule 2; note **N112**, the same exercise one sub-milestone earlier over the
+recording *executor*. Recorded 2026-08-14, from P6c.
+
+Each mutant was applied to the shipped code, run against the **whole workspace suite** with
+`--no-fail-fast` (so the count is every test that noticed rather than the first), and
+reverted. Ten of the twelve confirmed what was expected; the two that did not are the only
+reason this entry is worth its cost.
+
+| mutant | what it did | verdict |
+|---|---|---|
+| **M1** the frame never reaches the muxer (`Live::absorb` answers `Written` without writing) | a recording that never reaches the device, writing a header and closing it | **3 red**, and each on a *count*: a build that streamed nothing writes the same file as an honest zero-duration take, so only the frames-on-both-sides assertions discriminate |
+| **M2** `RecordStatus::is_running` as `take.is_some()` | a poll loop that never stops, on a take that has ended and is waiting to be collected | **3 red** |
+| **M3** the reservation never refuses | two drivers feeding one muxer on one camera | **3 red** |
+| **M4** `record_stop` on nothing answers `Busy` instead of `IllegalTransition` | an agent cannot tell "my recording is over" from "my `record_start` never took" | **2 red** |
+| **M5** the client's poll loop returns on its first answer | `record_stop` collects a recording that is still being written | **4 red**, one of them the integration suite comparing the file's length against the report's |
+| **M6** `record_request` sends the relative path unresolved | `-o take.avi` resolved against the daemon's cwd, which under systemd is `/` | **3 red**, one per root plus the socket |
+| **M7** the daemon's `Files::create` drops its `set_len(0)` | a short take over a long one leaves the previous recording's tail past the end of the new file | **1 red** |
+| **M8** `is_running` reads only `ended`, dropping the `failed` beside it | — | **0 red — and the finding is below** |
+| **M9** `close` prefers the container's answer to the device's refusal | a `DeviceGone` arriving as a successful recording | **0 red — and the finding is below** |
+| **M10** `record_stop` does not wait for the driver to install its result | a stop that answers before the container is closed | **5 red** |
+| **M11** `record_request` stops asking the request's own predicates | `-o take.mkv` reaches a camera and is refused three layers down | **1 red** |
+| **M12** the take's duration bound made unreachable | a recording bounded by nothing it asked for | **3 red** |
+
+### M8: the mutant found dead code, and the repair was the deletion
+
+`RecordStatus::is_running` asked two questions — *has it ended* and *did it fail* — and
+deleting the second changed no answer anywhere in 1 317 tests. The reason is not a missing
+test: **`failed` without `ended` is a state nothing produces**, because every way a take can
+stop fills the ending in first. A test asserting about it would be a test about an
+unrepresentable value.
+
+Writing the note found the doc that had made the redundancy look load-bearing. It claimed
+`failed` is `Some` *exactly when* `ended` is `DeviceFailed`, and that is false: a take that
+ran its whole duration and whose **container could not be closed** ends
+`RecordingEnd::Duration` — because that is what happened, and rewriting the ending because a
+flush refused would lose the one fact the vocabulary carries — and carries the disk's kind in
+`failed`. So the two fields really are independent, the *one* direction that holds is
+`failed ⇒ ended`, and the predicate only ever needed `ended`.
+
+The repair is therefore the deletion plus the corrected doc, and the surviving question is
+M2's — which is red three ways. **A guard that cannot change an answer reads as a second
+check and is worth less than nothing**, because the next reader budgets for it.
+
+### M9: the one place AGENTS rule 7 could have been broken, and nothing was asking
+
+A recording whose camera vanishes mid-take still gets its container **closed** — docs/7 P6b's
+"every fault leaves a parseable file", which holds across the wire exactly as it does in
+process — and that close *succeeds*. So `close` holds two answers at once, a device refusal
+and a finished report, and which it hands over is three lines of `match`. Preferring the
+report is precisely the conversion AGENTS rule 7 forbids: a `DeviceGone` arriving as a
+successful recording, on the verb whose whole product is a measurement.
+
+Nothing was asking, because every test that drives a *failure* through this daemon drives one
+the request predicates refuse before a camera opens, and the only suite that could reach a
+mid-take device failure would have to arm a fault on a running take through an actor. The
+repair is a **unit** test over `close` itself, which is affordable because
+`engine::record::Opened`'s fields were made public at P6b for this class of reason: a take
+with a real container under it can be built by hand, handed an `Err`, and asked what it
+collects. It asserts both directions and the file, because "the caller is told the take
+failed *and* handed a file it can open" is the whole of what makes the refusal affordable.
+
+### The honest limit of all twelve
+
+They are twelve mutations somebody thought of, and two of the twelve found something —
+which is a better hit rate than P6b's one in twelve and still nothing like a floor.
+`.cargo/mutants.toml` does **not** name `crates/daemon/src/record.rs` or
+`crates/client/src/remote.rs`, and this sub-milestone did not add them: both are shells rather
+than pure cores — a registry behind a `tokio::sync::Mutex` and a loop over a socket — and the
+floor's scope is "the planners, the state machine, settle, the store and metrics". Whether the
+scope should grow to cover a daemon-side state machine is a decision for the phase review,
+recorded here so it is made deliberately rather than discovered missing (the posture
+`.cargo/mutants.toml`'s own header takes about a file appearing "in neither list").
+
+**Amend this note if** the mutation floor is ever run over `crates/daemon/src/record.rs` and
+`crates/client/src/remote.rs`'s poll loop, which would replace this entry's evidence with
+better evidence — note **N112**'s closing paragraph and note **N101** both say what a hand
+pass is worth against a floor, and the answer has been "much less" twice.

@@ -130,6 +130,7 @@ use schema::report::{
 };
 use schema::session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::video::{RecordReport, RecordRequest, RecordStatus};
 use schema::{Error, limits};
 use tokio::sync::oneshot;
 
@@ -172,6 +173,9 @@ pub const ROUTED: &[&str] = &[
     "wch_list",
     "wch_photo",
     "wch_profile_capture",
+    "wch_record_start",
+    "wch_record_status",
+    "wch_record_stop",
     "wch_restore",
     "wch_set",
     "wch_snapshot",
@@ -375,6 +379,19 @@ struct Inner {
     /// deadline from the same timeline every other command does and ends on the same
     /// cancellation every subscription does.
     previews: crate::preview::Previews,
+    /// The takes this daemon is driving, one per camera (D7, D10; docs/7 P6c).
+    ///
+    /// Beside [`Inner::previews`] rather than inside it, and over the **same** three values
+    /// for the same three reasons: the registry, so a recording reaches a camera through the
+    /// actor every other verb reaches it through; the clock, so a take measures its own
+    /// duration against the timeline every command is stamped from; and the stop token, so a
+    /// running take ends on the cancellation every open stream ends on.
+    ///
+    /// Two registries and not one, because they answer different questions about one camera —
+    /// "who is watching" and "what is being written" — and the phase that fans one frame to
+    /// both (docs/7 P6c's next half) joins them at the *frame*, inside the actor command that
+    /// dequeued it, rather than by merging two maps whose lifecycles are unrelated.
+    recordings: crate::record::Recordings,
 }
 
 /// The permits a request that chose to wait for a place in a camera's queue has to hold.
@@ -510,6 +527,11 @@ impl Wchd {
                 clock.clone(),
                 shutdown.clone(),
             ),
+            recordings: crate::record::Recordings::new(
+                Arc::clone(&cameras),
+                clock.clone(),
+                shutdown.clone(),
+            ),
             cameras,
             store,
             sessions: tokio::sync::Mutex::new(lock),
@@ -581,6 +603,48 @@ impl Wchd {
     #[must_use]
     pub fn watch_previewed_cameras(&self) -> tokio::sync::watch::Receiver<usize> {
         self.0.previews.watch_feeds()
+    }
+
+    /// How many recordings this daemon is driving right now.
+    ///
+    /// [`Wchd::previewed_cameras`]' sibling on the other registry, and the lifecycle
+    /// observable for D10's three `record_*` verbs: one take per camera, however many clients
+    /// asked, and none once `wch_record_stop` has collected it.
+    #[must_use]
+    pub fn running_recordings(&self) -> usize {
+        self.0.recordings.running()
+    }
+
+    /// The same count, as something to **await**.
+    ///
+    /// [`Wchd::watch_subscribers`]' reason on the recording registry: "the driver started" and
+    /// "the driver put the take down" are events, and a test that polled for them would be a
+    /// test with a sleep in it (AGENTS).
+    #[must_use]
+    pub fn watch_running_recordings(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.0.recordings.watch_running()
+    }
+
+    /// How many takes have reached an ending, as something to **await**.
+    ///
+    /// The one observable that separates "the take ended" from "somebody collected it":
+    /// `wch_record_stop` empties the slot, so a suite watching only
+    /// [`Wchd::watch_running_recordings`] could not tell a driver that finished from one that
+    /// never ran at all.
+    #[must_use]
+    pub fn watch_finished_recordings(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.recordings.watch_finished()
+    }
+
+    /// How many finished takes a later `wch_record_start` discarded uncollected, as something
+    /// to **await**.
+    ///
+    /// `crate::record`'s header argues why discarding is the right answer to a caller that
+    /// abandoned its poll loop; this is the half that keeps it from being silent (rubric
+    /// rule 3), and it is the number a healthy daemon leaves at zero.
+    #[must_use]
+    pub fn watch_discarded_recordings(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.recordings.watch_discarded()
     }
 
     /// The daemon's stop token — [`crate::shutdown::Shutdown`].
@@ -1203,16 +1267,23 @@ fn addressable(sink: &Sink) -> schema::Result<()> {
 /// photo to, for [`addressable`]'s reason and in its words. [`Error::StorageIo`] for every
 /// other reason an open fails — a missing parent directory, a permission, a full disk —
 /// because those are the filesystem declining rather than the request being unhonourable.
-fn open_destination(path: &Utf8Path) -> schema::Result<std::fs::File> {
+///
+/// `writing` is the noun the refusal uses — `"photo"` or `"recording"`, its two callers.
+/// A parameter rather than two functions because the *rule* is one rule: `wch_record_start`
+/// has the identical obligation for the identical reason (a `mkfifo` and one call used to make
+/// the operator's webcam unusable until the daemon was restarted), and a second copy of an
+/// `O_NONBLOCK` open with an `fstat` behind it is exactly the second home design §2.10 forbids
+/// — the copy being the one that stops matching the day a flag moves.
+fn open_destination(path: &Utf8Path, writing: &str) -> schema::Result<std::fs::File> {
     use rustix::fs::{FileType, Mode, OFlags};
 
     let refuse = |what: &str| Error::IllegalTransition {
         from: format!("not_a_regular_file({path})"),
         op: format!(
-            "write a photo to {path}; that path names a {what} rather than a file, and this \
-             daemon writes photos only to regular files — opening a fifo would park the \
-             camera's thread until somebody read it, and a character device or /dev/stdout \
-             would put a frame somewhere frames may not go"
+            "write a {writing} to {path}; that path names a {what} rather than a file, and \
+             this daemon writes {writing}s only to regular files — opening a fifo would park \
+             the camera's thread until somebody read it, and a character device or \
+             /dev/stdout would put a frame somewhere frames may not go"
         ),
     };
 
@@ -1338,6 +1409,47 @@ impl engine::photo::Destination for OpenedAhead {
             });
         };
         engine::photo::write_to_open_file(file, path, bytes)
+    }
+}
+
+/// The one file a recording may write, opened before this daemon touched a camera.
+///
+/// [`OpenedAhead`]'s counterpart at the other seam, and it exists for the same reason: the
+/// engine's `engine::record::Files` lets `webcam-handler-cli` open a path when the recording
+/// starts, because a person typed it, and this daemon cannot — its `open(2)` would run on a
+/// camera actor's one thread (note **N51**, and [`open_destination`] for the two flags that
+/// make the open a refusal rather than a wait).
+///
+/// **The truncation is here, and it is not an implementation detail.** `engine::record::OnDisk`
+/// truncates because `std::fs::File::create` does, and this seam has to mean the same thing on
+/// both roots or a recording written over a longer file would leave the previous take's tail
+/// past the end of the new one — bytes no reader of either container is looking for, in a file
+/// whose name says it is a recording. It cannot happen at `open_destination`, which carries no
+/// `O_TRUNC` on purpose: the length must not move until nothing can still refuse the request,
+/// and `engine::record::Recording::begin` calls this at exactly that moment — after the
+/// request's own predicates, after the negotiation and after D7's container pairing.
+#[derive(Debug)]
+struct OpenedAheadFile(Option<std::fs::File>);
+
+impl engine::record::Files for OpenedAheadFile {
+    fn create(&mut self, path: &Utf8Path) -> schema::Result<Box<dyn engine::record::WriteSeek>> {
+        // `None` means this destination has already been handed over, which one recording
+        // cannot do twice — `Recording::begin` calls this once. Written rather than assumed
+        // away for AGENTS rule 6's reason: a build that called it twice must fail here rather
+        // than record into a descriptor nobody opened.
+        let Some(file) = self.0.take() else {
+            return Err(Error::StorageIo {
+                path: path.to_owned(),
+                errno: None,
+                message: "this recording's destination was already opened".to_owned(),
+            });
+        };
+        file.set_len(0).map_err(|err| Error::StorageIo {
+            path: path.to_owned(),
+            errno: err.raw_os_error(),
+            message: format!("the destination could not be truncated: {err}"),
+        })?;
+        Ok(Box::new(file))
     }
 }
 
@@ -1631,7 +1743,7 @@ impl WchRpcServer for Wchd {
         let destination = {
             let sink = request.sink.clone();
             self.offload(move |_| match &sink {
-                Sink::ServerPath { path } => open_destination(path).map(Some),
+                Sink::ServerPath { path } => open_destination(path, "photo").map(Some),
                 // Nothing is opened for a request that asked for its bytes back, which is
                 // why the destination is an `Option` rather than a second sink type.
                 Sink::ReturnBytes { .. } => Ok(None),
@@ -1676,6 +1788,140 @@ impl WchRpcServer for Wchd {
         // `Previews::interrupted`'s, which names a camera and a device refusal and never a
         // frame.
         Ok(photo_response(taken.outcome?)?)
+    }
+
+    // ------------------------------------------------------------------ P6c's three
+    //
+    // One verb on the command surface and three on the wire, and the arithmetic is
+    // `engine::record`'s: a take is a chain of turns because the camera's actor takes one
+    // command at a time, so the loop belongs to a driver and not to a method (note **N111**).
+    // Everything about *which* answers each of the three gives — and every refusal below — is
+    // argued in `crate::record`'s header, where the state lives; what is here is the routing.
+
+    async fn record_start(
+        &self,
+        camera: CameraId,
+        request: RecordRequest,
+    ) -> Result<RecordStatus, WireError> {
+        // Four steps before the camera is touched, in `wch_photo`'s order and for its reason:
+        // each one is the cheapest thing that can still refuse.
+        //
+        // 1. The request's own three predicates, which need neither a filesystem nor an
+        //    enumeration — a `ReturnBytes` sink (note **N110**), a relative path, an extension
+        //    naming a container this build does not write, a duration past the cap. They live
+        //    on `schema::video::RecordRequest` rather than here, beside the variants they
+        //    constrain, so a request a socket built meets them as surely as one a command line
+        //    built (note **N46**, debt D-1) — and `engine::record::start` asks them again, one
+        //    layer down, which is one rule asked twice rather than two rules.
+        //
+        //    Inline rather than through `Wchd::offload`, and the difference from `addressable`
+        //    one verb up is real: these are pure functions over a request that has already been
+        //    deserialized, with no syscall behind them, so a pool thread would buy nothing and
+        //    would put a hop between a malformed request and its refusal.
+        let path = request.server_path()?.to_owned();
+        let _container = request.container()?;
+        let _budget = request.budget_ms()?;
+        // 2. Which camera. Before the destination is opened rather than after, so a request
+        //    naming a camera this host does not have leaves no file where none was.
+        let info = self.resolve(camera).await?;
+        // 3. The camera's recording slot, taken **before** any device work — so a second
+        //    `record_start` is refused by this daemon with `Busy` (retry) rather than by the
+        //    kernel's `EBUSY` after a file has been opened, and so two starts arriving together
+        //    cannot both reach `VIDIOC_STREAMON`.
+        let reserved = self.0.recordings.reserve(&info).await?;
+        // 4. The destination, resolved from a name to a **descriptor** exactly once — note
+        //    **N51**'s discharge, and the same call `wch_photo` makes: no open on this path can
+        //    wait, and nothing a client does to the name afterwards can redirect these bytes.
+        //    On the blocking pool, because `open(2)` is fast until the path is on a hung mount.
+        let destination = {
+            let opening = path.clone();
+            match self
+                .offload(move |_| open_destination(&opening, "recording"))
+                .await
+            {
+                Ok(file) => file,
+                Err(err) => {
+                    // The slot goes back on every path out of here, or this camera would
+                    // refuse every later `record_start` with `Busy` for the life of the
+                    // process.
+                    self.0.recordings.withdraw(reserved).await;
+                    return Err(err.into());
+                }
+            }
+        };
+
+        // Now the device work: negotiate, pair the container against what was negotiated, and
+        // write the header — all inside **one** actor command, because a header written in a
+        // second command could arrive after something else had taken the stream. D12's `wait`
+        // flag chooses what a full command queue means, through the one entry point that owns
+        // the bounded pool of threads a waiting request parks (`Waiters`).
+        let now = schema::time::Stamp::now();
+        let clock = self.0.clock.clone();
+        let opening_path = path.clone();
+        let how = enqueueing(request.wait);
+        let begun = self
+            .on_resolved_camera_queueing(info.clone(), how, move |device| {
+                let opened = engine::record::start(&mut *device, &request)?;
+                let mut files = OpenedAheadFile(Some(destination));
+                match engine::record::Recording::begin(
+                    &opened,
+                    &opening_path,
+                    &mut files,
+                    &clock,
+                    now,
+                ) {
+                    Ok(recording) => Ok((opened, recording)),
+                    Err(refused) => {
+                        // Stopped before the refusal travels, for `engine::record::start`'s
+                        // reason: a camera left streaming for a recording that is not going to
+                        // happen is a camera the next `open` finds busy. The stop's own failure
+                        // is discarded because the caller is already holding the error that
+                        // matters.
+                        let _ = engine::record::stop(device);
+                        Err(refused)
+                    }
+                }
+            })
+            .await;
+        let (info, (opened, recording)) = match begun {
+            Ok(started) => started,
+            Err(err) => {
+                self.0.recordings.withdraw(reserved).await;
+                return Err(err.into());
+            }
+        };
+
+        // The take is real from here: the container's header is on disk, so a caller that
+        // never polls still has a file both of `imaging::avi::read`'s readers can open.
+        Ok(self
+            .0
+            .recordings
+            .adopt(reserved, &info, &opened, recording, &path, now)
+            .await?)
+    }
+
+    async fn record_status(&self, camera: CameraId) -> Result<RecordStatus, WireError> {
+        // A read, and the cheapest one on this surface: the resolution is the only work it
+        // does. It opens no camera and takes no lock the driver wants, so a poll loop running
+        // at `limits::CLIENT_RECORD_POLL_MS` costs the take nothing — which is the property
+        // that makes D10's "progress by polling" affordable at all.
+        //
+        // The enumeration is not skipped for a camera this daemon is already recording, and
+        // that is E2 rather than an oversight: a camera id is resolved against the machine
+        // every time, so a status asked about an id that has stopped resolving is answered
+        // about the machine as it is now rather than out of a map that remembers it.
+        let info = self.resolve(camera).await?;
+        Ok(self.0.recordings.status(&info.id).await)
+    }
+
+    async fn record_stop(&self, camera: CameraId) -> Result<RecordReport, WireError> {
+        // Stop *and* collect, which `crate::record`'s header argues is one verb because it is
+        // one question. Nothing here touches the camera: the driver owns the take and the
+        // stop is a flag it reads between turns, so a stop does not queue behind the recording
+        // it is ending — which is the whole reason a recording is a chain of turns (note
+        // **N111**).
+        let info = self.resolve(camera).await?;
+        Ok(self.0.recordings.collect(&info).await?)
     }
 
     // ------------------------------------------------------------ the most dangerous verb
@@ -2385,11 +2631,12 @@ mod tests {
              or a name here is not a T5 method"
         );
         // Not vacuous, and pinned at the number `crates/api` pins the *call* surface at:
-        // two empty sets compare equal and would say nothing. Nineteen is the trait's own
-        // count; the two subscriptions are a second population with a second pin
+        // two empty sets compare equal and would say nothing. Twenty-two is the trait's own
+        // count since P6c closed D10's list with `record_start`, `record_status` and
+        // `record_stop`; the two subscriptions are a second population with a second pin
         // (`routed_subscriptions`), because a subscription's second wire name comes from
         // jsonrpsee rather than from `#[method(name = …)]` (note N29's accounting).
-        assert_eq!(routed.len(), 19, "{routed:?}");
+        assert_eq!(routed.len(), 22, "{routed:?}");
 
         let subscribed: BTreeSet<&str> = routed_subscriptions().into_iter().collect();
         assert_eq!(
@@ -2605,7 +2852,7 @@ mod tests {
         // A directory. `EISDIR`, before anything is written.
         let directory = scratch.base().join("a-directory.jpg");
         std::fs::create_dir(&directory).expect("a writable scratch directory");
-        let refused = open_destination(&directory).expect_err("a directory is not a file");
+        let refused = open_destination(&directory, "photo").expect_err("a directory is not a file");
         assert_eq!(refused.kind(), ErrorKind::IllegalTransition);
         assert!(refused.to_string().contains("directory"), "{refused}");
 
@@ -2618,14 +2865,14 @@ mod tests {
             .status()
             .expect("mkfifo(1) runs");
         assert!(made.success(), "mkfifo {fifo}");
-        let refused = open_destination(&fifo).expect_err("a fifo is not a file");
+        let refused = open_destination(&fifo, "photo").expect_err("a fifo is not a file");
         assert_eq!(refused.kind(), ErrorKind::IllegalTransition);
         assert!(refused.to_string().contains("fifo"), "{refused}");
 
         // A missing parent directory is the *filesystem* declining, not the request being
         // unhonourable — a distinction E3 makes and a single refusal variant would lose.
         let nowhere = scratch.base().join("no-such-directory/shot.jpg");
-        let refused = open_destination(&nowhere).expect_err("there is no such directory");
+        let refused = open_destination(&nowhere, "photo").expect_err("there is no such directory");
         assert_eq!(refused.kind(), ErrorKind::StorageIo);
         assert!(refused.to_string().contains("shot.jpg"), "{refused}");
 
@@ -2634,11 +2881,11 @@ mod tests {
         // the bytes exist — so a capture that fails afterwards leaves an operator's photo
         // where it was rather than emptying it on the way to reporting the failure.
         let fresh = scratch.base().join("fresh.jpg");
-        drop(open_destination(&fresh).expect("a new regular file"));
+        drop(open_destination(&fresh, "photo").expect("a new regular file"));
         assert!(fresh.exists(), "{fresh}");
         let existing = scratch.base().join("existing.jpg");
         std::fs::write(&existing, b"an operator's photo").expect("a writable scratch directory");
-        drop(open_destination(&existing).expect("an existing regular file"));
+        drop(open_destination(&existing, "photo").expect("an existing regular file"));
         assert_eq!(
             std::fs::read(&existing).expect("still there"),
             b"an operator's photo",

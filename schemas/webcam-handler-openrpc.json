@@ -614,6 +614,26 @@
         ],
         "type": "object"
       },
+      "CapReached": {
+        "description": "Which bound ended the recording.\n\n`ALL` is generated from this definition, and the tests walk it: a cap that no\nrecording can reach is a bound that is not a bound, and a hand-written list of the\nthree would let one quietly stop being enforced (rubric rule 6). Since P6b the walk\nis two-dimensional — `CapReached::ALL` × [`VideoFormat::ALL`] — because the two\ncontainers count their own bytes and a cap enforced in one of them is not a cap.",
+        "oneOf": [
+          {
+            "const": "size",
+            "description": "The byte cap: `RecordingCaps::max_bytes` in `webcam-handler-imaging`.",
+            "type": "string"
+          },
+          {
+            "const": "frames",
+            "description": "The frame-count cap: `RecordingCaps::max_frames`.",
+            "type": "string"
+          },
+          {
+            "const": "span",
+            "description": "The wall-of-the-driver's-clock cap: `RecordingCaps::max_span`.",
+            "type": "string"
+          }
+        ]
+      },
       "ChosenBy": {
         "description": "Who a caller may claim to be when recording a chosen value (design D8).\n\nTwo spellings, and the third selector D8 names — `metric:<name>` — is deliberately\nnot among them: a metric is not something a caller can *claim* to be, it is\nsomething the tool computed and scored. On a command line clap's group enforced\nthat (`--metric` conflicts with `--by`); on the wire nothing would, so this\nvocabulary makes the lie unrepresentable instead of merely refusable.\n\nGenerated, so [`ChosenBy::selector`]'s exhaustive match forces a third claimant to\nbe *mapped* rather than quietly accepted, and `ALL` is the whole accepted\nvocabulary for both the flag parser and the wire.",
         "oneOf": [
@@ -2256,6 +2276,26 @@
           }
         ]
       },
+      "IntervalSource": {
+        "description": "Where the frame interval in the finished file came from.\n\nThe distinction D7's CFR carve-out exists to preserve, carried out of the muxer so\nthe caller never has to guess whether the number it is reading was observed.",
+        "oneOf": [
+          {
+            "const": "measured",
+            "description": "The mean of the delivered frame timestamps — the close-time rewrite happened.\n\n**AVI only.** A Y4M header is written before the first frame and cannot be\nrewritten in place, so a Y4M take never reports this; see the module doc and\nnote **N106**.",
+            "type": "string"
+          },
+          {
+            "const": "negotiated",
+            "description": "What the camera was asked for. For AVI: fewer than two frames arrived, or their\ntimestamps described no usable span, so nothing was measured. For Y4M: the\nnegotiation named an interval and the header declares it, which is as far as\nthat container goes.",
+            "type": "string"
+          },
+          {
+            "const": "provisional",
+            "description": "Neither: the negotiation named no interval and none was measured, so the header\ncarries `imaging::video::PROVISIONAL_INTERVAL_US`.",
+            "type": "string"
+          }
+        ]
+      },
       "KnownFlag": {
         "description": "The control flag bits this version names.\n\nFlags are carried as raw bits *plus* this decoded set, because the set grows:\n`HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support\nbehind PF:1 and older references do not list it [PF:12]. Bits outside this\nvocabulary survive in [`ControlFlags::unknown_bits`].",
         "oneOf": [
@@ -3474,6 +3514,205 @@
           }
         ]
       },
+      "RecordReport": {
+        "description": "What one recording turned out to be (design D7, D10).\n\n[`crate::capture::PhotoReport`]'s counterpart. Every field is a measurement of what\nhappened rather than a restatement of the request — `negotiated` is D5's \"requested is not\napplied\" for a stream that ran for seconds rather than for one frame, `format` is the\ncontainer the pairing chose, and `summary` is what the container itself counted.",
+        "properties": {
+          "camera": {
+            "$ref": "#/components/schemas/CameraId",
+            "description": "The camera that was recorded."
+          },
+          "ended": {
+            "$ref": "#/components/schemas/RecordingEnd",
+            "description": "Why it stopped."
+          },
+          "format": {
+            "$ref": "#/components/schemas/VideoFormat",
+            "description": "The container it is in.\n\nReported rather than assumed, because a request that named no extension let the\nnegotiated stream decide — so this is the answer to a question the caller may have\nleft open (see [`RecordRequest::container`])."
+          },
+          "negotiated": {
+            "$ref": "#/components/schemas/NegotiatedStream",
+            "description": "What the device agreed to deliver, with every difference from the request (D5)."
+          },
+          "path": {
+            "description": "The file that was written.",
+            "type": "string"
+          },
+          "started_at": {
+            "$ref": "#/components/schemas/Stamp",
+            "description": "When the recording started, on the wall clock.\n\nThe caller's [`Stamp`], as `PhotoReport::taken_at` is: the engine reads no clock\n(design §2.10), and the monotonic one this report's [`RecordReport::wall_clock_ms`]\ncomes from is a different question — conflating them is how an NTP step becomes a\nduration."
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RecordingSummary",
+            "description": "What the container counted."
+          },
+          "wall_clock_ms": {
+            "description": "How long the recording took on the engine's monotonic clock, in milliseconds.\n\n**Beside [`RecordingSummary::span_us`] rather than instead of it, because they are\ntwo measurements and the difference between them is a finding.** `span_us` is the last\nwritten frame's timestamp minus the first's, on the *driver's* clock and in\nmicroseconds; this is the engine's own elapsed time across the whole take, in\nmilliseconds. `webcam-handler-imaging` reads no clock of its own — its\n`RecordingCaps::max_span` doc says wall-clock time is the caller's question — and this\nengine is that caller.\n\nThree things make the two disagree, and a caller can tell them apart from the rest of\nthis document: a **driver clock that ran slow or fast** (the span is short or long\nagainst a wall clock that is not), **frames dropped before they reached us**\n([`RecordingSummary::dropped_frames`] is non-zero), and **time spent in our own loop**\n— the wall clock includes the header write, the settle-free start, the close-time\nindex and every turn that brought no frame, none of which are inside the span. The\nwall clock is therefore always the larger of the two for an honest take, and a span\nthat *exceeds* it is a driver clock this host does not share.\n\nMilliseconds rather than microseconds because that is the resolution the engine's\nclock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by\nmultiplying by a thousand would be three digits of precision nobody measured.\n\nThis pair is docs/7 **P6d**'s criterion — the declared-vs-wall-clock duration bound,\nmeasured on a real capture — which is why both live in the one document a `--json`\nconsumer already has.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "camera",
+          "started_at",
+          "path",
+          "format",
+          "negotiated",
+          "summary",
+          "wall_clock_ms",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "RecordRequest": {
+        "description": "Everything one recording needs (design D7, D10).\n\n[`crate::capture::PhotoRequest`]'s counterpart, and deliberately smaller than it. There is\nno `settle` field: the frames immediately after `STREAMON` are dark until AE converges\n[PF:11], and a *photo* discards them because one dark frame is the whole answer — a\nrecording's are visible in the file beside everything that follows, and discarding them\nwould move the recording's start away from where the caller put it. An agent filming a\ntransition asked for the moment it asked for. Note **N111** records the decision.\n\nThere is no `format` field either, and that is [`RecordRequest::container`]'s paragraph:\nthe sink path's extension names the container, exactly as it names a photo's encoding.",
+        "properties": {
+          "duration_ms": {
+            "description": "How long to record, in milliseconds. `None` is\n[`crate::limits::DEFAULT_RECORDING_MS`].\n\nRead through [`RecordRequest::budget_ms`], which is where the default and the cap\nlive; a caller that read this field directly would be reading a request rather than a\ndecision.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sink": {
+            "$ref": "#/components/schemas/Sink",
+            "description": "Where the file goes.\n\nA [`Sink::ServerPath`] and nothing else — see [`RecordRequest::server_path`] for the\nrefusal and note **N110** for why this verb narrows D10's two-variant DTO rather than\nchanging it."
+          },
+          "stream": {
+            "$ref": "#/components/schemas/StreamRequest",
+            "default": {
+              "buffer_count": 4
+            },
+            "description": "What to ask the device's format negotiation for.\n\nThe negotiated answer decides the container when the sink path named none, so this\nfield and [`RecordRequest::container`] are the two halves of one question — which is\nwhy [`VideoFormat::resolve`] takes both and refuses rather than picking a winner."
+          },
+          "wait": {
+            "default": false,
+            "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag, in the same shape and for the same reasons\n[`crate::capture::PhotoRequest::wait`] carries it — that field's doc is the argument\nand this one is not a second copy of it. What is worth saying twice is which *call* it\nbounds: a recording is a chain of turns (note **N111**), and only the **first** of them\nnegotiates a stream on a camera somebody else may be holding. So this flag decides how\n`record_start` meets a busy camera and nothing else — the turns that follow are issued\nby a driver that already owns the take, and a recording that had to re-queue per frame\nwould be a recording bounded by other clients rather than by its own duration.\n\n`#[serde(default)]` for [`crate::capture::PhotoRequest::wait`]'s reason: `false` is the\nbehaviour every caller written before this field existed already meets, and a default\nthat turned a prompt [`Error::Busy`] into ten seconds of latency would change requests\nnobody rewrote.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sink"
+        ],
+        "type": "object"
+      },
+      "RecordStatus": {
+        "description": "What one camera's recording is doing (design D10; docs/7 P6c).\n\n**The answer to `record_status`, and D10's whole progress mechanism**: *\"progress by\npolling `record_status` — no recording subscription in v1\"*. A recording runs for seconds\nor minutes on a camera the caller does not hold, so the only thing a caller can do between\n`record_start` and `record_stop` is ask; this is the shape of the asking.\n\nIt is a **struct with an optional take** rather than a three-armed enum, and the shape is\nthe claim: a camera has at most one take, so \"is there one\" and \"what is it doing\" are one\nquestion with one answer and [`RecordStatus::is_running`] is the one predicate every\nconsumer branches on. A client's poll loop, `webcam-handler-cli`'s renderer and the\ndaemon's own refusals all read that one function, which is what stops three copies of \"has\nit finished?\" from disagreeing about a take whose driver has stopped but whose container is\nstill closing.",
+        "properties": {
+          "camera": {
+            "$ref": "#/components/schemas/CameraId",
+            "description": "The camera this is about, resolved (D1) rather than echoed back."
+          },
+          "take": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TakeStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The take this camera holds, or `None` when it holds none.\n\n`None` is a camera that has never recorded **and** a camera whose take has been\ncollected by `record_stop`. Those are deliberately one answer rather than two: what a\ncaller can do about either is identical — start a recording — and a vocabulary that\ndistinguished them would be this daemon remembering something about a camera after the\ncaller asked for it to be forgotten."
+          }
+        },
+        "required": [
+          "camera"
+        ],
+        "type": "object"
+      },
+      "RecordingEnd": {
+        "description": "Why a recording stopped.\n\n[`RecordingSummary::cap_reached`] answers a narrower question — *which bound the\ncontainer refused a frame at* — and it is `None` for every recording that ended for\none of the other four reasons below. An agent reading only that field cannot tell a\ntake that ran its whole duration from one whose camera went silent after two frames,\nand those are different findings about the device under test: the first is a\nrecording, the second is a defect. So the ending is carried as its own closed\nvocabulary, walked by\n`engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —\nbecause an ending nothing can produce is a word in a report rather than an answer.",
+        "oneOf": [
+          {
+            "const": "duration",
+            "description": "The wall-clock budget the request asked for was spent.\n\nThe ordinary ending, and the one [`RecordRequest::budget_ms`] names. Measured on\nthe engine's own monotonic clock rather than on the driver's frame timestamps —\nsee [`RecordReport::wall_clock_ms`] for why a recording is bounded by both.",
+            "type": "string"
+          },
+          {
+            "const": "cap",
+            "description": "One of the bounds `engine::record::caps` assembles out of\n[`crate::limits`] refused a frame.\n\n[`RecordingSummary::cap_reached`] names which one; it is `Some` exactly when the\nending is this.",
+            "type": "string"
+          },
+          {
+            "const": "device_quiet",
+            "description": "The device stopped delivering.\n\n[`crate::limits::RECORDING_MAX_EMPTY_TURNS`] consecutive turns brought no frame,\nwhich is the bound that covers the case the duration cannot: a driver answering\npromptly and delivering nothing, on a clock that is not moving. AGENTS rule 7 is\nwhy it is an *ending* rather than an error — the recording it produced is real\nand its frames are the device's own; what is being reported is that there were no\nmore of them.",
+            "type": "string"
+          },
+          {
+            "const": "stopped",
+            "description": "The caller ended it.\n\nWhat `record_stop` produces (docs/7 P6c): a recording driven one turn at a time\nstops when its caller says so, and nothing about the device or the bounds is\ninvolved.",
+            "type": "string"
+          },
+          {
+            "const": "device_failed",
+            "description": "The device refused mid-take, and the caller is holding that refusal.\n\nThe container is still closed — a recording that left a half-written file because\nthe camera was unplugged would fail docs/7 P6b's \"every fault leaves a parseable\nfile\" — so this ending exists to say that the file is finished and the take is\nnot. `engine::record::run` produces it and then answers with the *device's* own\nerror rather than with the report, because a `DeviceGone` that arrived as a\nsuccessful recording would be exactly the conversion AGENTS rule 7 forbids.",
+            "type": "string"
+          }
+        ]
+      },
+      "RecordingSummary": {
+        "description": "What a finished recording turned out to be.\n\nEvery field is a *measurement* of the file that was written, not a restatement of what\nwas asked for — which is the point of returning it at all. `declared_interval_us` is the\nnumber now in the file's own rate field(s), and `interval_source` says whether it is a\nfinding or a placeholder.\n\nNamed for the recording rather than for AVI since P6b: the fields are the same fields\nP6a's `AviSummary` had, and every one of them is a claim a Y4M take can make too.",
+        "properties": {
+          "bytes_written": {
+            "description": "The size of the finished file, every trailer the container writes at close included.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cap_reached": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapReached"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bound that ended the recording, if one did."
+          },
+          "declared_interval_us": {
+            "description": "The frame interval the finished file declares.\n\nFor AVI that is `avih.dwMicroSecPerFrame` and `strh.dwScale`/`dwRate`, which\n`imaging::avi::write::AviWriter::finish` rewrites together so a reader finding them\ndisagreeing has caught a defect. For Y4M it is the header's `F` ratio, written before\nthe first frame and never revised.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dropped_frames": {
+            "description": "Frames the driver's `sequence` numbers say never arrived.\n\nA `u64` because the gaps accumulate: each one may be as large as a `u32`, and a\nrecording may hold as many gaps as it holds frames. Reporting it is what stops a\ndropped frame from reading as a slow transition (Expected usage item 10).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "frames_written": {
+            "description": "How many frames the file holds.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "interval_source": {
+            "$ref": "#/components/schemas/IntervalSource",
+            "description": "Whether that interval was measured, negotiated or provisional.\n\n**A Y4M take never answers [`IntervalSource::Measured`]**, and that is a property of\nthe container rather than of the recording: see the module doc."
+          },
+          "span_us": {
+            "description": "The last written frame's timestamp minus the first's, when that is a duration.\n\n`None` when fewer than two frames were written, and when the driver's clock ran\nbackwards across the take — a negative span is not a duration, and reporting it as\nzero would claim a measurement nobody made.\n\nCarried by **both** containers, which is what keeps the Y4M header's un-rewritable\nrate from costing the caller the measurement: `span_us / (frames_written - 1)` is the\nmean, computed by whoever wants it out of two numbers that were observed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "frames_written",
+          "bytes_written",
+          "declared_interval_us",
+          "interval_source",
+          "dropped_frames"
+        ],
+        "type": "object"
+      },
       "RestoreOutcome": {
         "description": "One control's restore outcome.",
         "oneOf": [
@@ -4283,6 +4522,77 @@
           }
         ]
       },
+      "TakeStatus": {
+        "description": "One take, while it runs and after it ends (design D7, D10).\n\nEvery field is a *measurement*, in [`RecordingSummary`]'s tradition, and the two are not\nthe same document: this one exists while the container is still open, so it carries what\ncan be known mid-take and nothing that cannot. `frames_written` is here and\n`bytes_written` is not — the container's byte count includes trailers written at close\n(`imaging::avi::write::AviWriter::finish` writes the whole `idx1` there), so a running\ntake's file size is not the recording's size and reporting it as one would be a number\nthat changes meaning when the take ends.\n\nThe finished take's full accounting is [`RecordReport`], which `record_stop` answers with.",
+        "properties": {
+          "budget_ms": {
+            "description": "How long it may run, from [`RecordRequest::budget_ms`].\n\nBeside [`TakeStatus::elapsed_ms`] so a caller can draw a bar without holding the\nrequest it sent — AGENTS' primary consumer has no hands, and a progress mechanism that\nneeds the client to remember what it asked for is one a restarted client cannot use.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "description": "How long it has run, on the daemon's monotonic clock.\n\nMonotonic rather than `Stamp::now() - started_at`, because those are two clocks and\nsubtracting one from the other is how an NTP step becomes a duration\n([`RecordReport::wall_clock_ms`] argues the same pair).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ended": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecordingEnd"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it stopped — `None` while it is still running."
+          },
+          "failed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The D13 discriminant of the refusal that ended it, when one did.\n\nA **kind and not the error**, for `schema::progress::CalibrationProgress`'s reason one\nstream along: a status document is read by a poller that wants to know whether to stop\npolling, and the error itself belongs to the caller that asked for the take — which is\n`record_stop`, and which answers with the device's own [`Error`] unchanged. Putting the\nwhole error here as well would give one refusal two homes and let a client act on the\ncopy that is easier to reach rather than on the one the verb returned.\n\n**It does not follow [`TakeStatus::ended`], and the two are separate fields because of\nthat rather than in spite of it.** A take the *device* refused ends\n[`RecordingEnd::DeviceFailed`] and carries the device's kind here. A take that ran its\nduration and whose **container could not be closed** ends\n[`RecordingEnd::Duration`] — because that is what happened, and rewriting the ending\nbecause a flush refused would lose the one fact the vocabulary carries — and carries\nthe disk's kind here. An ending is a fact about the recording and a refusal is a fact\nabout the whatever refused; AGENTS rule 7 is the line between them, and folding one\ninto the other is the collapse it forbids.\n\nWhat is always true is the other direction: `failed` is `Some` only for a take that has\n**ended**, because nothing fills it in until [`TakeStatus::ended`] does."
+          },
+          "format": {
+            "$ref": "#/components/schemas/VideoFormat",
+            "description": "The container, decided by [`VideoFormat::resolve`] when the take started.\n\nReported from the first status onwards because a request that named no extension left\nit to the negotiated stream, and an agent that has not enumerated the camera learns\nhere which file it is about to have (see [`RecordRequest::container`])."
+          },
+          "frames_written": {
+            "description": "How many frames the container has accepted so far.\n\nFrames *written*, not frames delivered: a frame a cap refused is not in the file, and a\ncount that included it would tell an agent its recording holds a frame it can never\nread. It ends equal to [`RecordingSummary::frames_written`], which is a cross-check a\ntest can make rather than a coincidence.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "negotiated": {
+            "$ref": "#/components/schemas/NegotiatedStream",
+            "description": "What the device agreed to deliver, with every difference from the request (D5)."
+          },
+          "path": {
+            "description": "The file it is being written to.",
+            "type": "string"
+          },
+          "started_at": {
+            "$ref": "#/components/schemas/Stamp",
+            "description": "When it started, on the wall clock."
+          }
+        },
+        "required": [
+          "path",
+          "format",
+          "negotiated",
+          "started_at",
+          "budget_ms",
+          "elapsed_ms",
+          "frames_written"
+        ],
+        "type": "object"
+      },
       "TerminationReport": {
         "description": "What `terminate_holder` answers when it did signal something (design §5, D10, D13).\n\nKilling a process that holds the camera names its target, so the answer names the\ntarget back. Every field is here because signalling is a *request* and the doctrine\nthat requested is not applied (E4) does not stop at the device: the process may ignore\n`SIGTERM`, may take longer than the re-check, or may have exited between the diagnosis\nand the signal.\n\n[`crate::Error::HolderGone`] is the refusal for a pid that was not holding the node\nwhen we looked. This is the answer for every case where a signal was actually sent —\nincluding the one where it changed nothing, which `still_held` says out loud rather\nthan leaving the caller to re-run `info` and guess.",
         "properties": {
@@ -4524,6 +4834,21 @@
           "product"
         ],
         "type": "object"
+      },
+      "VideoFormat": {
+        "description": "The container a recording lands in (design D7).\n\nTwo, and they are not alternatives a caller picks on taste: each one carries a\ndisjoint set of pixel formats, so the container is decided by what the device\nnegotiated. See [`VideoFormat::carries`] for the law and [`VideoFormat::resolve`] for\nthe decision every caller makes with it.\n\nThe serde spelling, [`VideoFormat::as_str`] and [`VideoFormat::extension`] are the\nsame three strings for the same reason `PhotoFormat`'s are: a `--format y4m`\nargument, a `\"format\":\"y4m\"` field and a `.y4m` filename must name one thing.",
+        "oneOf": [
+          {
+            "const": "avi",
+            "description": "RIFF/AVI carrying MJPEG frames verbatim — D7's L0 container, and the product\n(E6): the camera's own bitstream reaches the file untouched.",
+            "type": "string"
+          },
+          {
+            "const": "y4m",
+            "description": "YUV4MPEG2 carrying raw planes — D7's raw fallback, \"enormous but exact\".",
+            "type": "string"
+          }
+        ]
       },
       "WriteReport": {
         "description": "What `set` answers (design D3/E4).\n\nA list rather than a single [`Applied`], because a guarded write is more than one\nwrite: switching an automation partner off is a change to the camera the caller is\nentitled to see, and hiding it would make `--guarded` a verb whose side effects are\nundocumented at the moment they happen.",
@@ -5402,6 +5727,247 @@
         }
       },
       "summary": "Take one photo (D5, D6, D10)."
+    },
+    {
+      "description": "Start recording `camera` to a file on the host this daemon runs on (D7, D10).\n\n**The first of three, and the only one that takes a request.** A recording is not\none call, and cannot be: `crate::wire`'s surface is served by a daemon that gives\neach open camera one thread taking one command at a time, so a take written as a\nsingle method would make `wch_record_stop` undeliverable — the stop would queue\nbehind the recording it exists to stop, and only the take's own duration could ever\nend it (note **N111**). So this method starts a take and returns as soon as the\ncontainer's header is on disk, and the take runs on a driver of the daemon's own.\n\nThe answer is the take's first [`schema::video::RecordStatus`], which is what makes\nthe sequence usable by a caller that has not enumerated the camera: it names the\ncontainer the negotiation chose and the file the bytes are going to, both of which a\nrequest that left the extension off (see\n[`schema::video::RecordRequest::container`]) deliberately did not decide.\n\n**A recording is not returned as bytes.** [`schema::video::RecordRequest::sink`]\ntakes one of D10's two sink variants and refuses the other: a take at its own cap is\nthirty-two times [`schema::limits::RPC_MAX_RESPONSE_BYTES`] before base64 grows it\nby a third, so `ReturnBytes` names an answer this build cannot send (note **N110**).\nThe path is absolute for `wch_photo`'s reason — this daemon's working directory\nunder systemd is `/` — and `cli_core::Command::record_request` resolves a relative\n`-o` against the *caller's* cwd before the request is sent (D10).\n\n# Errors\n\nAs `wch_info`, plus:\n`illegal_transition` for a request this build will not honour at all\n— a `ReturnBytes` sink, a relative path, an extension naming a container this build\ndoes not write, or a duration past [`schema::limits::MAX_RECORDING_MS`], which is\nrefused rather than clamped because an agent whose take was quietly shortened cannot\ntell that from a camera that stopped (note **N46** widened the variant, note\n**N110**).\n`busy` when this camera is **already recording** — which means\n*retry*, and is the honest advice: the take that is running is bounded by its own\nduration. It is also what a camera whose one thread is held by something else\nanswers, unless the request set `wait` (D12).\n`format_unsupported` when the container the path names cannot carry\nwhat the device negotiated, naming what that container *would* have taken — D7's\n\"non-MJPG `record` requests get Y4M or `FormatUnsupported { available }`\" arriving at\na caller who typed `.avi` over a GREY camera.\n`storage_io` from the destination, and the device's own answer for\nanything it refused.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/device_gone"
+        },
+        {
+          "$ref": "#/components/errors/busy"
+        },
+        {
+          "$ref": "#/components/errors/permission_denied"
+        },
+        {
+          "$ref": "#/components/errors/camera_unknown"
+        },
+        {
+          "$ref": "#/components/errors/camera_ambiguous"
+        },
+        {
+          "$ref": "#/components/errors/control_unknown"
+        },
+        {
+          "$ref": "#/components/errors/control_read_only"
+        },
+        {
+          "$ref": "#/components/errors/control_inactive"
+        },
+        {
+          "$ref": "#/components/errors/format_unsupported"
+        },
+        {
+          "$ref": "#/components/errors/settle_timeout"
+        },
+        {
+          "$ref": "#/components/errors/fingerprint_mismatch"
+        },
+        {
+          "$ref": "#/components/errors/session_conflict"
+        },
+        {
+          "$ref": "#/components/errors/illegal_transition"
+        },
+        {
+          "$ref": "#/components/errors/schema_version_foreign"
+        },
+        {
+          "$ref": "#/components/errors/store_locked"
+        },
+        {
+          "$ref": "#/components/errors/holder_gone"
+        },
+        {
+          "$ref": "#/components/errors/device_io"
+        },
+        {
+          "$ref": "#/components/errors/storage_io"
+        }
+      ],
+      "name": "wch_record_start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "camera",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/CameraId"
+          }
+        },
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RecordRequest"
+          }
+        }
+      ],
+      "result": {
+        "name": "RecordStatus",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/RecordStatus"
+        }
+      },
+      "summary": "Start recording `camera` to a file on the host this daemon runs on (D7, D10)."
+    },
+    {
+      "description": "What `camera`'s recording is doing, or what its last one turned out to be.\n\n**D10's whole progress mechanism**: *\"progress by polling `wch_record_status` — no\nrecording subscription in v1\"*. A client polls this between `wch_record_start` and\n`wch_record_stop` and stops when [`schema::video::RecordStatus::is_running`] answers\n`false`; `schema::limits::CLIENT_RECORD_POLL_MS` is what\n`webcam-handler-client` polls at.\n\nA camera holds **at most one** take, and this answers about that one: the take that\nis running, or the one that has ended and not been collected by `wch_record_stop`.\nA camera holding neither answers with no take at all, which is the same answer for a\ncamera that has never recorded and for one whose take has been collected — those are\none fact rather than two, because what a caller can do about either is start a\nrecording, and remembering the difference would be this daemon keeping something\nabout a camera after the caller asked for it to be handed over.\n\n**It is a read.** It opens no camera, takes no lock, and never changes what a later\n`wch_record_stop` will answer — so a poll loop that ran twice as fast would cost the\ntake nothing. What it does cost is a live enumeration per call (E2: a camera id is\nresolved against the machine every time), which is why the poll interval is a\nbounded constant rather than as fast as a client can ask.\n\n# Errors\n\nAs `wch_info`. A camera with no recording is **not** an error — that is the answer,\nand a refusal there would make an agent unable to tell \"nothing is recording\" from\n\"this camera is gone\" (AGENTS rule 7).",
+      "errors": [
+        {
+          "$ref": "#/components/errors/device_gone"
+        },
+        {
+          "$ref": "#/components/errors/busy"
+        },
+        {
+          "$ref": "#/components/errors/permission_denied"
+        },
+        {
+          "$ref": "#/components/errors/camera_unknown"
+        },
+        {
+          "$ref": "#/components/errors/camera_ambiguous"
+        },
+        {
+          "$ref": "#/components/errors/control_unknown"
+        },
+        {
+          "$ref": "#/components/errors/control_read_only"
+        },
+        {
+          "$ref": "#/components/errors/control_inactive"
+        },
+        {
+          "$ref": "#/components/errors/format_unsupported"
+        },
+        {
+          "$ref": "#/components/errors/settle_timeout"
+        },
+        {
+          "$ref": "#/components/errors/fingerprint_mismatch"
+        },
+        {
+          "$ref": "#/components/errors/session_conflict"
+        },
+        {
+          "$ref": "#/components/errors/illegal_transition"
+        },
+        {
+          "$ref": "#/components/errors/schema_version_foreign"
+        },
+        {
+          "$ref": "#/components/errors/store_locked"
+        },
+        {
+          "$ref": "#/components/errors/holder_gone"
+        },
+        {
+          "$ref": "#/components/errors/device_io"
+        },
+        {
+          "$ref": "#/components/errors/storage_io"
+        }
+      ],
+      "name": "wch_record_status",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "camera",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/CameraId"
+          }
+        }
+      ],
+      "result": {
+        "name": "RecordStatus",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/RecordStatus"
+        }
+      },
+      "summary": "What `camera`'s recording is doing, or what its last one turned out to be."
+    },
+    {
+      "description": "End `camera`'s recording and hand over what it turned out to be (D7, D10).\n\n**Stop *and collect*, which is one verb because they are one question.** A take that\nis running is asked to stop, its container is closed, and the finished\n[`schema::video::RecordReport`] is the answer; a take that has already reached its\nown bound — the ordinary case, since most takes end on their duration while the\ncaller is still polling — is simply handed over. Either way the camera's slot is\nemptied, so the sequence `wch_record_start` → poll → `wch_record_stop` is total for\nevery ending a take can have, which is what AGENTS' handless primary consumer needs\nof a verb that spans three calls.\n\nThe stop is delivered within one `schema::limits::FRAME_DEADLINE_MS`, because the\ndriver issues one command per frame and is between commands for most of every turn\n(note **N111** — that is the whole reason a recording is a chain of turns).\n\n**A take that failed is answered with the device's own refusal, not with a report.**\nThe container is still closed first, so docs/7 P6b's \"every fault leaves a parseable\nfile\" holds across the wire as it does in process; what the caller gets is the\n`DeviceGone` or the `StorageIo` that ended it, because a refusal arriving as a\nsuccessful recording is the conversion AGENTS rule 7 forbids.\n\n# Errors\n\nAs `wch_info`, plus `illegal_transition` when this camera holds no\ntake at all — deliberately not a bland \"nothing happened\", because an unattended\ncaller has to be able to tell \"my recording is over\" from \"my `wch_record_start`\nnever took\", and those two are the same call's two answers.\n`busy` when a `wch_record_start` for this camera is still\nnegotiating, which means retry for the same reason it does there. Otherwise whatever\nended the take: the device's answer, or `storage_io` naming the\nfile.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/device_gone"
+        },
+        {
+          "$ref": "#/components/errors/busy"
+        },
+        {
+          "$ref": "#/components/errors/permission_denied"
+        },
+        {
+          "$ref": "#/components/errors/camera_unknown"
+        },
+        {
+          "$ref": "#/components/errors/camera_ambiguous"
+        },
+        {
+          "$ref": "#/components/errors/control_unknown"
+        },
+        {
+          "$ref": "#/components/errors/control_read_only"
+        },
+        {
+          "$ref": "#/components/errors/control_inactive"
+        },
+        {
+          "$ref": "#/components/errors/format_unsupported"
+        },
+        {
+          "$ref": "#/components/errors/settle_timeout"
+        },
+        {
+          "$ref": "#/components/errors/fingerprint_mismatch"
+        },
+        {
+          "$ref": "#/components/errors/session_conflict"
+        },
+        {
+          "$ref": "#/components/errors/illegal_transition"
+        },
+        {
+          "$ref": "#/components/errors/schema_version_foreign"
+        },
+        {
+          "$ref": "#/components/errors/store_locked"
+        },
+        {
+          "$ref": "#/components/errors/holder_gone"
+        },
+        {
+          "$ref": "#/components/errors/device_io"
+        },
+        {
+          "$ref": "#/components/errors/storage_io"
+        }
+      ],
+      "name": "wch_record_stop",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "camera",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/CameraId"
+          }
+        }
+      ],
+      "result": {
+        "name": "RecordReport",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/RecordReport"
+        }
+      },
+      "summary": "End `camera`'s recording and hand over what it turned out to be (D7, D10)."
     },
     {
       "description": "One camera's full device profile (T3).\n\n`capturer` is provenance: a profile records who took it, because a transcription\nand a probe are different claims about a device (E1, E2).\n\n# Errors\n\nAs `wch_info`.",

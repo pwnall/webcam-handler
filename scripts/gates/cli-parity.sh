@@ -104,9 +104,27 @@ root="$(gate_root)"
 
 # ------------------------------------------------------------------ the table
 #
-# `<camera>`, `<control>`, `<value>`, `<snapshot>`, `<photo>` and `<session>` are substituted
-# from the corpus and from documents earlier rows produce; nothing below is transcribed. See
-# the header for the buckets and for why the order matters.
+# `<camera>`, `<control>`, `<value>`, `<snapshot>`, `<photo>`, `<recording>` and `<session>`
+# are substituted from the corpus and from documents earlier rows produce; nothing below is
+# transcribed. See the header for the buckets and for why the order matters.
+#
+# `record` is `device` for `photo`'s reason and one more of its own. The shared one: it drives
+# the camera, and `webcam-handler-cli` and `webcam-handler-daemon` each replay the profile into
+# a device state of their own, so a comparison would drive two devices and read back two
+# answers about two of them. Its own: a `RecordReport` carries `wall_clock_ms` and a
+# `RecordingSummary` measured on the driver's own frame timestamps, so two runs of one take
+# differ by construction in numbers that are the point of the verb — the `stamped` bucket
+# exists for a document that differs in *one* field, and this one differs in five. What the
+# exemption still buys is the check that bucket carries: `webcam-handler-client` has to
+# **answer** it, over the wire, which for this verb means all three of `record_start`,
+# `record_status` and `record_stop` really ran against a daemon (D10's method list closes at
+# P6c, docs/7).
+#
+# `--duration 100ms` because the gate is a gate and not a recording: the take ends on its own
+# duration before the client's first poll interval, so the row costs one poll rather than a
+# camera-second. The container is `.avi`, which the first sorted profile with a writable
+# integer control negotiates as MJPG — a GREY-only camera would be refused `FormatUnsupported`
+# by D7's pairing, which is `crates/cli/tests/record.rs`'s claim rather than this gate's.
 verbs=(
     "list|compared|list"
     "info|compared|info <camera>"
@@ -116,6 +134,7 @@ verbs=(
     "set|device|set <camera> <control>=<value>"
     "restore|device|restore <camera> <snapshot>"
     "photo|device|photo <camera> -o <photo>"
+    "record|device|record <camera> -o <recording> --duration 100ms"
     "profile-capture|device|profile capture <camera>"
     "calibrate-start|session|calibrate start <camera> --task gate --goal gate-run"
     "calibrate-plan|session|calibrate plan <camera> --task gate <control>"
@@ -396,6 +415,7 @@ expand() {
     argv="${argv//<control>/$control}"
     argv="${argv//<value>/$value}"
     argv="${argv//<photo>/$scratch/shot.jpg}"
+    argv="${argv//<recording>/$scratch/take.avi}"
     argv="${argv//<snapshot>/$scratch/snapshot.json}"
     argv="${argv//<session>/$session}"
     printf '%s\n' "$argv"

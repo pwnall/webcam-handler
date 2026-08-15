@@ -191,6 +191,21 @@ fn request_timeout(command: &Command) -> Duration {
         Command::Calibrate(cli_core::CalibrateCommand::Sweep { .. }) => {
             Duration::from_millis(limits::CLIENT_SWEEP_REQUEST_TIMEOUT_MS)
         }
+        // **`record` takes the ordinary budget, and this arm exists to say that it was
+        // chosen.** The invocation runs for as long as the take does — up to
+        // [`limits::MAX_RECORDING_MS`] — and none of the calls it makes does: `record_start`
+        // returns once the container's header is on disk, `record_status` is a read, and
+        // `record_stop` waits for the driver's current turn and the close. What runs long is
+        // the **loop between them** (`remote::poll_until_ended`), and jsonrpsee's timeout
+        // bounds a request rather than a verb.
+        //
+        // The trap this arm defuses is a coincidence: `CLIENT_REQUEST_TIMEOUT_MS` and
+        // `MAX_RECORDING_MS` are both 120 000 today, so a reader raising the recording cap
+        // would find a number that looks like it has to move with it. It does not, and a
+        // budget derived from the cap would be the sweep's mistake in miniature — a client
+        // that could not tell an unresponsive daemon from a long recording, on the verb whose
+        // whole point is measuring how long something took.
+        Command::Record { .. } => Duration::from_millis(limits::CLIENT_REQUEST_TIMEOUT_MS),
         _ => Duration::from_millis(limits::CLIENT_REQUEST_TIMEOUT_MS),
     }
 }
@@ -304,6 +319,16 @@ mod tests {
             ["webcam-handler-client", "photo", "cam:x", "--wait"].as_slice(),
             [
                 "webcam-handler-client",
+                "record",
+                "cam:x",
+                "-o",
+                "/tmp/take.avi",
+                "--duration",
+                "2m",
+            ]
+            .as_slice(),
+            [
+                "webcam-handler-client",
                 "calibrate",
                 "status",
                 "cam:x",
@@ -322,6 +347,32 @@ mod tests {
         assert_ne!(
             limits::CLIENT_SWEEP_REQUEST_TIMEOUT_MS,
             limits::CLIENT_REQUEST_TIMEOUT_MS
+        );
+
+        // **`record` is in that list on purpose and the property is not an equality.** Its
+        // *invocation* may run for `limits::MAX_RECORDING_MS` and none of its three calls does
+        // — jsonrpsee's timeout bounds a request, not a verb — so the budget it needs is the
+        // one that outlasts the longest single call in the sequence: a `record_start` that
+        // waited for the camera, plus the frame a `record_stop` waits behind. Asserted against
+        // *that* arithmetic rather than against the constant the code names, because a test
+        // comparing a value to the constant that produced it agrees with itself forever.
+        let record = parse(&[
+            "webcam-handler-client",
+            "record",
+            "cam:x",
+            "-o",
+            "/tmp/take.avi",
+        ]);
+        assert!(
+            request_timeout(&record.command)
+                > Duration::from_millis(limits::CAMERA_ENQUEUE_WAIT_MS + limits::FRAME_DEADLINE_MS),
+            "a record call could time out on a daemon that was about to answer it"
+        );
+        assert!(
+            request_timeout(&record.command)
+                < Duration::from_millis(limits::CLIENT_SWEEP_REQUEST_TIMEOUT_MS),
+            "record took the sweep's hour; a client that cannot tell a dead daemon from a \
+             long recording is the failure this budget exists to prevent"
         );
     }
 }

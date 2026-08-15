@@ -36,5 +36,11 @@ webcam-handler-v4l2.workspace = true
 # than trusting the magic bytes.
 image.workspace = true
 kamadak-exif.workspace = true
+# The recording suite re-parses the AVI the binary just wrote with `imaging::avi::read` —
+# the strict reader P6a wrote from the RIFF/AVI specification before the muxer existed and
+# which shares no code with it (docs/7 P6a: "an independent re-parse path that is **not** the
+# writer's code"). A hand-rolled chunk walk in this file would be a third parser to keep
+# current, and one that agrees with whatever it was written against.
+webcam-handler-imaging.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

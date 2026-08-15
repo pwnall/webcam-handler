@@ -65,6 +65,7 @@ use schema::progress::ProgressEvent;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{Session, SessionList, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
+use schema::video::{RecordReport, RecordRequest, RecordStatus};
 use uuid::Uuid;
 
 use crate::PROGRAM;
@@ -182,6 +183,28 @@ fn refusal(socket: &Utf8Path, error: &ClientError) -> Error {
         path: socket.to_owned(),
         errno: None,
         message: format!("the daemon did not answer: {error}"),
+    }
+}
+
+/// One camera's `wch_record_status`, as the seam [`poll_until_ended`] drives.
+///
+/// The whole of the shipped implementation, and it is deliberately three fields and one call:
+/// everything a poll loop *decides* is in the loop, so what is left here is naming the camera
+/// and typing the refusal. `Subscription<ProgressEvent>`'s `ProgressSource` impl one verb
+/// along is the same shape for the same reason.
+struct Polling<'client> {
+    /// The socket, so a transport failure names it — [`refusal`]'s argument.
+    socket: Utf8PathBuf,
+    client: &'client Client,
+    camera: CameraId,
+}
+
+impl RecordSource for Polling<'_> {
+    async fn status(&self) -> Result<RecordStatus> {
+        self.client
+            .record_status(self.camera.clone())
+            .await
+            .map_err(|error| refusal(&self.socket, &error))
     }
 }
 
@@ -392,6 +415,100 @@ impl ProgressSource for Subscription<ProgressEvent> {
             None => Arrival::Ended,
         }
     }
+}
+
+/// How long `record` waits between two `wch_record_status` calls.
+///
+/// [`limits::CLIENT_RECORD_POLL_MS`] as a [`std::time::Duration`], written once so that
+/// changing the number changes what a test asserts rather than only what a binary does —
+/// `SWEEP_DRAIN_BUDGET`'s reason, and note **N70**'s finding F2 is why that reason is stated
+/// rather than assumed.
+const RECORD_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(limits::CLIENT_RECORD_POLL_MS);
+
+/// How many times `record` asks whether the take is over before it gives up.
+///
+/// Derived from the two constants rather than written down, so "how long a client will wait
+/// for a recording" and "how long a recording may run" cannot disagree —
+/// `daemon::server::recheck_walks` is the same shape one crate along and note rubric B11 is
+/// why a stated number wants something that can go red when the arithmetic moves under it.
+///
+/// One poll immediately, then one after each interval: the longest take this build will make
+/// is [`limits::MAX_RECORDING_MS`], so that many intervals buys the whole of it and the `+ 1`
+/// is the poll before the first wait. The bound exists for the case the loop cannot otherwise
+/// end — a daemon that answers `record_status` for ever without the take ever ending, which is
+/// a daemon whose driver task has died — and reaching it is a refusal rather than a hang,
+/// because AGENTS bounds everything and "wait until it happens" is the shape a wedged client
+/// takes when nobody is left to notice.
+const fn record_polls() -> u64 {
+    limits::MAX_RECORDING_MS / limits::CLIENT_RECORD_POLL_MS + 1
+}
+
+/// Where a recording's status comes from — the seam D10's polling is driven through.
+///
+/// A trait for [`ProgressSource`]'s reason, one verb along: what is worth testing about
+/// [`poll_until_ended`] is **when it stops**, and that is a property of the loop rather than of
+/// a socket. A test scripts the answers, hands the loop a zero interval, and asserts how many
+/// times it asked — which is the only observable that can tell a loop that waited for the take
+/// from one that returned on its first answer and left a client collecting a recording that
+/// was still being written.
+///
+/// It is also what keeps the shipped path honest about the rule AGENTS states for tests:
+/// nothing here sleeps to *synchronize*. The product's interval is a real wait, and every test
+/// of this loop passes `Duration::ZERO`, so no test in this workspace is waiting on a clock to
+/// find out whether the code works.
+trait RecordSource {
+    /// Ask once.
+    async fn status(&self) -> Result<RecordStatus>;
+}
+
+/// How a poll loop ended — one variant per way out of [`poll_until_ended`], so each has a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Polled {
+    /// The daemon says the take is over. The ordinary ending, and the only one that means the
+    /// `record_stop` about to follow is collecting a finished recording.
+    Ended,
+    /// [`record_polls`] answers went by and every one of them said the take was still running.
+    Bounded,
+}
+
+/// Ask the daemon whether the take is over, until it is.
+///
+/// **The middle of the one T4 `record` verb**, and the reason that verb is a state machine
+/// here and a single engine call in `webcam-handler-cli`: D10 puts three methods on the wire
+/// and says *"progress by polling `record_status` — no recording subscription in v1"*. A free
+/// function, generic over the seam, for `sweep_and_watch`'s reason — the *stopping condition*
+/// is the subject, and a socket is not.
+///
+/// The predicate is [`RecordStatus::is_running`] and never a comparison written here: the
+/// schema states once what "still running" is — a take with neither an ending nor a refusal —
+/// so the client's loop, the daemon's registry and `webcam-handler-cli`'s renderer cannot
+/// disagree about a take whose driver has stopped but whose container is still closing.
+///
+/// **The first ask happens before the first wait**, which is not a micro-optimisation: a
+/// `record --duration 100ms` is over before a client could sleep once, and a loop that slept
+/// first would put a quarter of a second between a finished file and the answer about it.
+///
+/// # Errors
+///
+/// Whatever `wch_record_status` refused with, unchanged and immediately — a camera that has
+/// gone (`DeviceGone`) is not a reason to keep asking, and polling through a refusal would
+/// turn one honest failure into `record_polls()` of them.
+async fn poll_until_ended<S: RecordSource>(
+    source: &S,
+    interval: std::time::Duration,
+) -> Result<Polled> {
+    for _ in 0..record_polls() {
+        if !source.status().await?.is_running() {
+            return Ok(Polled::Ended);
+        }
+        // `interval` and not a constant, so every test below drives this loop at
+        // `Duration::ZERO` and no test in this workspace waits on a clock to find out whether
+        // the loop works (AGENTS: no sleep as synchronization). The shipped interval is a real
+        // wait and is the *product's*, which is a different thing.
+        tokio::time::sleep(interval).await;
+    }
+    Ok(Polled::Bounded)
 }
 
 /// The tail's budget, in the one place both the shipped path and the tests that are about it
@@ -668,6 +785,89 @@ impl Executor for Remote {
         Ok(Photograph {
             report: response.report,
             returned: response.bytes.map(api::Base64Bytes::into_inner),
+        })
+    }
+
+    /// The recording, which is a state machine rather than an adapter — the second of the two.
+    ///
+    /// D10 puts **three** methods on the wire (`wch_record_start`, `wch_record_status`,
+    /// `wch_record_stop`) and T4 has **one** verb, and the gap between those two numbers is
+    /// this function. AGENTS is explicit about why the verb may not be three: *"The primary
+    /// consumer has no hands — a verb needing a call sequence … is a defect for the consumer
+    /// that matters most."* [`Remote::calibrate_sweep`] is the precedent and this is the same
+    /// trade — a sequence the client owns, so that a caller owns one call.
+    ///
+    /// Three steps, and each is the answer to a question the previous one leaves open:
+    ///
+    /// 1. **Start.** `wch_record_start` returns as soon as the container's header is on disk,
+    ///    which is what makes the other two reachable at all: a take is a chain of turns
+    ///    because the daemon's camera actor takes one command at a time, so a method that ran
+    ///    the whole recording would make the stop undeliverable behind it (note **N111**).
+    ///    Its answer is the take's first status, which names the container the *negotiation*
+    ///    chose — a fact a caller who typed `-o take` with no extension deliberately left open.
+    /// 2. **Poll**, at [`limits::CLIENT_RECORD_POLL_MS`], until
+    ///    [`RecordStatus::is_running`] says the take is over. That predicate is the schema's,
+    ///    not this file's, so a take whose driver has stopped and whose container is still
+    ///    closing means one thing to the daemon's registry, to this loop and to
+    ///    `webcam-handler-cli`'s renderer. `poll_until_ended` is where it happens, as a free
+    ///    function over a seam, because *when the loop stops* is the thing worth a test and a
+    ///    socket is not.
+    /// 3. **Stop**, which is also **collect**: `wch_record_stop` ends a take that is still
+    ///    running and hands over one that has already finished, either way emptying the
+    ///    camera's slot. So this sequence is total for every ending a take can have —
+    ///    including the two it reaches on its own, its duration and a cap, which is what the
+    ///    ordinary recording does while this loop is still polling.
+    ///
+    /// **The stop runs even when the poll loop gave up**, and that is the one ordering worth
+    /// stating: a client that returned on its own bound without collecting would leave a take
+    /// in the daemon's slot and the camera refusing the next `record_start` with `Busy` until
+    /// something collected it. The refusal a caller sees is then the *stop's* — the daemon's
+    /// own words about a take it could not finish — rather than a sentence this client
+    /// invented about a timer.
+    ///
+    /// # Errors
+    ///
+    /// The start's, typed, when the take never began — including [`Error::Busy`] for a camera
+    /// already recording, which means retry. The status verb's, unchanged, when a poll is
+    /// refused: a camera that has gone is not a reason to keep asking. Otherwise the stop's,
+    /// which is the take's own outcome — a `RecordReport` for a recording that happened, and
+    /// the device's or the disk's refusal for one that did not (AGENTS rule 7: a `DeviceGone`
+    /// arriving as a successful recording is the conversion that is forbidden).
+    fn record(&mut self, camera: &CameraId, request: &RecordRequest) -> Result<RecordReport> {
+        let Remote {
+            socket,
+            runtime,
+            client,
+        } = &*self;
+
+        runtime.block_on(async {
+            // Step 1. Its answer is dropped rather than rendered: the *report* is what this
+            // verb answers with, and `cli_core::render::record` shows the same facts once the
+            // take is over. What the call buys is the refusal — a camera already recording, a
+            // container that cannot carry the stream, a destination this daemon will not write
+            // — arriving before anything waits.
+            let _started = client
+                .record_start(camera.clone(), request.clone())
+                .await
+                .map_err(|error| refusal(socket, &error))?;
+
+            // Step 2. A refusal here is returned rather than swallowed, and the take is left
+            // in the daemon's slot: the camera is recording, `record_stop` is how it is
+            // collected, and a client that could not ask about it cannot honestly finish it
+            // either.
+            let polling = Polling {
+                socket: socket.clone(),
+                client,
+                camera: camera.clone(),
+            };
+            let _ended = poll_until_ended(&polling, RECORD_POLL_INTERVAL).await?;
+
+            // Step 3, on every path out of step 2 that answered at all — see this method's
+            // doc for why the bound is not an early return.
+            client
+                .record_stop(camera.clone())
+                .await
+                .map_err(|error| refusal(socket, &error))
         })
     }
 
@@ -1018,6 +1218,180 @@ mod tests {
         /// Nothing, ever. The daemon has this sweep's terminal event and never sends it,
         /// which is the case the bound exists for and the one N65 is right about.
         Silence,
+    }
+
+    /// A `record_status` source that answers from a script, counting what it was asked.
+    ///
+    /// [`Scripted`]'s sibling at the other seam, and the counter is the point in the same way:
+    /// what `poll_until_ended` can get wrong is **when it stops**, and the only observable for
+    /// that is how many times it asked. A loop that returned on its first answer writes the
+    /// identical `RecordReport` afterwards, because `record_stop` collects a take whether or
+    /// not it is finished — so a test that only read the report could not tell the two apart.
+    #[derive(Debug)]
+    struct Statuses {
+        script: std::cell::RefCell<std::collections::VecDeque<Result<RecordStatus>>>,
+        /// What the source answers once the script runs out. `None` means it never does,
+        /// which is the daemon whose driver died — the case [`record_polls`] bounds.
+        after: Option<RecordStatus>,
+        asked: std::cell::Cell<usize>,
+    }
+
+    impl Statuses {
+        fn of(script: impl IntoIterator<Item = Result<RecordStatus>>) -> Statuses {
+            Statuses {
+                script: std::cell::RefCell::new(script.into_iter().collect()),
+                after: None,
+                asked: std::cell::Cell::new(0),
+            }
+        }
+
+        /// Answer `status` for ever once the script is spent.
+        fn then(mut self, status: RecordStatus) -> Statuses {
+            self.after = Some(status);
+            self
+        }
+    }
+
+    impl RecordSource for Statuses {
+        async fn status(&self) -> Result<RecordStatus> {
+            self.asked.set(self.asked.get() + 1);
+            match self.script.borrow_mut().pop_front() {
+                Some(answer) => answer,
+                None => match &self.after {
+                    Some(status) => Ok(status.clone()),
+                    None => panic!("the loop asked more often than the script allows"),
+                },
+            }
+        }
+    }
+
+    /// A take that is running, on `camera`.
+    fn a_running_status() -> RecordStatus {
+        RecordStatus {
+            camera: CameraId::parse("cam:test").expect("a literal id"),
+            take: Some(schema::video::TakeStatus {
+                path: "/tmp/take.avi".into(),
+                format: schema::video::VideoFormat::Avi,
+                negotiated: schema::capture::NegotiatedStream {
+                    pixel_format: schema::camera::PixelFormat::MJPG,
+                    width: 64,
+                    height: 48,
+                    bytes_per_line: 0,
+                    size_image: 4096,
+                    interval: schema::camera::FrameInterval::Discrete {
+                        numerator: 1,
+                        denominator: 30,
+                    },
+                    adjustments: Vec::new(),
+                },
+                started_at: Stamp::epoch(),
+                budget_ms: limits::DEFAULT_RECORDING_MS,
+                elapsed_ms: 0,
+                frames_written: 0,
+                ended: None,
+                failed: None,
+            }),
+        }
+    }
+
+    /// The same take, ended.
+    fn an_ended_status() -> RecordStatus {
+        let mut status = a_running_status();
+        if let Some(take) = status.take.as_mut() {
+            take.ended = Some(schema::video::RecordingEnd::Duration);
+        }
+        status
+    }
+
+    #[tokio::test]
+    async fn the_poll_loop_asks_until_the_daemon_says_the_take_is_over() {
+        // D10's progress mechanism, as the only thing about it that can be wrong: **when it
+        // stops**. Three answers, three asks, and the third is the one that ends it — a build
+        // that returned after the first would collect a recording that was still being
+        // written, and `record_stop` would happily hand it over.
+        //
+        // `Duration::ZERO`, so nothing in this suite waits on a clock to find out whether the
+        // loop works (AGENTS). The product's interval is a real wait and is a different thing.
+        let source = Statuses::of([
+            Ok(a_running_status()),
+            Ok(a_running_status()),
+            Ok(an_ended_status()),
+        ]);
+        assert_eq!(
+            poll_until_ended(&source, std::time::Duration::ZERO)
+                .await
+                .expect("the daemon answered every time"),
+            Polled::Ended
+        );
+        assert_eq!(
+            source.asked.get(),
+            3,
+            "the loop stopped at the wrong answer"
+        );
+
+        // The other direction: a take that is already over when the first poll lands costs
+        // exactly one ask and no wait at all. That is the ordinary `record --duration 100ms`,
+        // and a loop that slept before its first question would put a quarter of a second
+        // between a finished file and the answer about it.
+        let over = Statuses::of([Ok(an_ended_status())]);
+        assert_eq!(
+            poll_until_ended(&over, std::time::Duration::ZERO)
+                .await
+                .expect("answered"),
+            Polled::Ended
+        );
+        assert_eq!(over.asked.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_never_says_the_take_is_over_is_given_up_on_rather_than_waited_for() {
+        // AGENTS bounds everything, and "wait until it happens" is the shape a wedged client
+        // takes when nobody is left to notice. The bound is `record_polls()`, derived from
+        // `limits::MAX_RECORDING_MS` and `limits::CLIENT_RECORD_POLL_MS` rather than written
+        // down — so the assertion is against the derivation and moves with either constant.
+        let stuck = Statuses::of([]).then(a_running_status());
+        assert_eq!(
+            poll_until_ended(&stuck, std::time::Duration::ZERO)
+                .await
+                .expect("a running take is not a refusal"),
+            Polled::Bounded
+        );
+        assert_eq!(
+            u64::try_from(stuck.asked.get()).expect("a count this host can represent"),
+            record_polls(),
+            "the loop asked a number of times nothing derives"
+        );
+
+        // The bound is a bound rather than a latch: it buys the whole of the longest take
+        // this build will make, which is what stops it firing on an honest recording.
+        assert!(
+            record_polls() * limits::CLIENT_RECORD_POLL_MS >= limits::MAX_RECORDING_MS,
+            "the client gives up before the longest recording this build allows can end"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_poll_ends_the_loop_rather_than_being_asked_again() {
+        // A camera that has gone is not a reason to keep asking: polling through a refusal
+        // would turn one honest failure into `record_polls()` of them, and the refusal a
+        // caller reads would be the last one rather than the first. Asserted on the ask count,
+        // because the returned error alone is the same for both shapes.
+        let gone = Statuses::of([
+            Ok(a_running_status()),
+            Err(Error::DeviceGone {
+                path: "/dev/video0".into(),
+            }),
+        ])
+        .then(a_running_status());
+        let refused = poll_until_ended(&gone, std::time::Duration::ZERO)
+            .await
+            .expect_err("the camera went away");
+        assert_eq!(refused.kind(), schema::ErrorKind::DeviceGone);
+        assert_eq!(
+            gone.asked.get(),
+            2,
+            "the loop kept asking a camera that is gone"
+        );
     }
 
     /// A progress stream that answers from a script, counting what it was asked.

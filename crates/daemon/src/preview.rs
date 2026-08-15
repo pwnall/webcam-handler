@@ -659,7 +659,12 @@ fn remove(live: &mut BTreeMap<CameraId, Arc<Feed>>, feed: &Arc<Feed>) {
 /// A camera with no capture node cannot be previewed at all, so this path is reached only by a
 /// refusal that has to name *something*; naming the camera beats inventing a device node.
 /// `engine::actor::CameraActor::spawn` makes the same choice for the same reason.
-fn node_of(info: &CameraInfo) -> camino::Utf8PathBuf {
+///
+/// `pub(crate)` since P6c, for `crate::record`'s two `Busy` refusals: "which path does a
+/// refusal about this camera name" is one question, and a second copy of the fallback would
+/// let a `record_start` and a `preview` name different things about one device (design
+/// §2.10).
+pub(crate) fn node_of(info: &CameraInfo) -> camino::Utf8PathBuf {
     info.capture_node().map_or_else(
         || camino::Utf8PathBuf::from(info.id.as_str()),
         |node| node.path.clone(),

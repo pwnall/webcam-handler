@@ -219,5 +219,11 @@ tokio-util = { workspace = true, features = ["compat"] }
 # advancing a paused clock is how a test talks about a deadline without waiting for one —
 # the same doctrine `engine::settle`'s stepped clock states, applied to the runtime's own.
 tokio = { workspace = true, features = ["io-util", "test-util"] }
+# `tests/mutating_verbs.rs` re-parses the AVI a `record_stop` closed with
+# `imaging::avi::read` — the strict reader P6a wrote from the RIFF/AVI specification before
+# the muxer existed, which shares no code with it (docs/7 P6a's "independent re-parse path").
+# A dev edge only: the daemon's *product* code names no imaging type, and the one it is
+# handed per frame reaches it through `engine::record`'s re-export for exactly that reason.
+webcam-handler-imaging.workspace = true
 webcam-handler-testkit.workspace = true
 

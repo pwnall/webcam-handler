@@ -39,6 +39,7 @@ use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{Session, SessionList, SessionStatus};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::time::Stamp;
+use schema::video::{RecordReport, RecordRequest};
 
 /// Which root this is.
 ///
@@ -260,6 +261,37 @@ impl Executor for InProcess {
             report: taken.report,
             returned: taken.returned,
         })
+    }
+
+    /// Record one video, holding the camera for the whole take.
+    ///
+    /// `engine::record::run` and nothing else — the whole verb is one engine call, exactly as
+    /// `photo` is, because a second assembly in a composition root is the defect T4 and T5
+    /// exist to prevent. It is the *only* caller of that function in this workspace, and its
+    /// own doc says why: it holds the device from `STREAMON` to `STREAMOFF`, which
+    /// `webcam-handler-daemon` cannot do — a take written as one long command would make
+    /// `record_stop` undeliverable behind the recording it was trying to stop (note **N111**).
+    /// This process has no actor and one verb, so holding the camera is correct here and only
+    /// here.
+    ///
+    /// `engine::record::OnDisk` is the file seam's real implementation and the one a person
+    /// gets: `-o` names a path somebody typed, `File::create` truncates it, and Ctrl-C exists.
+    /// The daemon's is the other one (design §2.10 — one rule, two callers, and the difference
+    /// is stated rather than assumed), because its `open(2)` would run on a camera actor's one
+    /// thread (note **N51**).
+    fn record(&mut self, requested: &CameraId, request: &RecordRequest) -> Result<RecordReport> {
+        let (_, mut camera) = self.open(requested)?;
+        engine::record::run(
+            camera.as_mut(),
+            request,
+            &mut engine::record::OnDisk,
+            // Two clocks, because they measure different things: the monotonic one bounds the
+            // take's duration and the wall one stamps the report. Conflating them is how an
+            // NTP step becomes a duration, which is `engine::photo::take`'s argument at the
+            // same seam.
+            &engine::settle::MonotonicClock::new(),
+            Stamp::now(),
+        )
     }
 
     fn calibrate_start(

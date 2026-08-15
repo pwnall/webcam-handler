@@ -83,6 +83,7 @@ verbs=(
     "snapshot|Snapshot|snapshot <camera>"
     "restore|RestoreReport|restore <camera> <snapshot>"
     "photo|PhotoReport|photo <camera> -o <photo>"
+    "record|RecordReport|record <camera> -o <recording> --duration 100ms"
     "calibrate-start|Session|calibrate start <camera> --task gate --goal gate-run"
     "calibrate-plan|Session|calibrate plan <camera> --task gate <control>"
     "calibrate-sweep|Session|calibrate sweep <camera> --task gate <control> --values <value> --skip-frames 0"
@@ -166,6 +167,7 @@ for row in "${verbs[@]}"; do
     argv="${argv//<control>/$control}"
     argv="${argv//<value>/$value}"
     argv="${argv//<photo>/$scratch/shot.jpg}"
+    argv="${argv//<recording>/$scratch/take.avi}"
     if [[ "$argv" == *"<snapshot>"* ]]; then
         # `restore` needs a document, and the only honest source of one is `snapshot`
         # itself: a hand-written fixture would validate a shape nothing produces.

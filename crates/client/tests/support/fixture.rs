@@ -79,7 +79,16 @@ fn wchd() -> Command {
 
 /// A private pair of XDG directories and, when a test asks for one, a daemon in them.
 pub(crate) struct Fixture {
-    runtime: TempRuntimeDir,
+    /// The `$XDG_RUNTIME_DIR` both processes resolve the socket from.
+    ///
+    /// `pub(crate)` rather than an accessor, for the reason `crates/daemon/tests/support/
+    /// wchd.rs`'s field of the same name is: an accessor would be an item one includer does
+    /// not call, which is a `dead_code` failure in that binary (note **N49**), while the
+    /// field itself is already read here by [`Fixture::wchc`] and [`Fixture::spawn`]. What
+    /// reaches for it from outside is `wchc.rs`'s relative-path claim, which has to run the
+    /// client from a **directory of its own** — D10 resolves `-o` against the caller's cwd,
+    /// so a test that could not choose one could not ask the question.
+    pub(crate) runtime: TempRuntimeDir,
     /// The daemon's `$XDG_STATE_HOME`.
     ///
     /// `pub(crate)` rather than an accessor because both includers write a file into it — a

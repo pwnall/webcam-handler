@@ -80,6 +80,22 @@
 //!   less and an agent whose recording was quietly shortened cannot tell that from a camera
 //!   that stopped.
 //!
+//! ## A take is also a thing you ask about while it runs (P6c)
+//!
+//! [`RecordReport`] is what a *finished* take turned out to be, and it is the only answer a
+//! caller that holds the camera ever needs — `webcam-handler-cli record` blocks and gets one.
+//! A caller on the other end of a socket does not hold the camera: D10 puts three methods on
+//! the wire and says *"progress by polling `record_status` — no recording subscription in
+//! v1"*, so there has to be a document that describes a take **that has not finished**.
+//! [`RecordStatus`] is it, and [`TakeStatus`] is what it carries.
+//!
+//! The two documents are not one type with optional fields, and the split is the container's
+//! own: a summary counts bytes that do not exist until the container is closed
+//! ([`TakeStatus::frames_written`] says which number is honest mid-take and which is not), and
+//! a report names an ending that a running take does not have. What they share is asserted
+//! rather than assumed — a finished take's `frames_written` and its
+//! [`RecordingSummary::frames_written`] are the same number, counted on two sides.
+//!
 //! ## The answer carries two clocks, because P6d subtracts one from the other
 //!
 //! [`RecordReport`] holds [`RecordingSummary::span_us`] — measured on the *driver's* frame
@@ -483,6 +499,23 @@ pub struct RecordRequest {
     /// refusal and note **N110** for why this verb narrows D10's two-variant DTO rather than
     /// changing it.
     pub sink: Sink,
+    /// Whether a request that finds the camera's command queue full waits for its turn.
+    ///
+    /// D12's flag, in the same shape and for the same reasons
+    /// [`crate::capture::PhotoRequest::wait`] carries it — that field's doc is the argument
+    /// and this one is not a second copy of it. What is worth saying twice is which *call* it
+    /// bounds: a recording is a chain of turns (note **N111**), and only the **first** of them
+    /// negotiates a stream on a camera somebody else may be holding. So this flag decides how
+    /// `record_start` meets a busy camera and nothing else — the turns that follow are issued
+    /// by a driver that already owns the take, and a recording that had to re-queue per frame
+    /// would be a recording bounded by other clients rather than by its own duration.
+    ///
+    /// `#[serde(default)]` for [`crate::capture::PhotoRequest::wait`]'s reason: `false` is the
+    /// behaviour every caller written before this field existed already meets, and a default
+    /// that turned a prompt [`Error::Busy`] into ten seconds of latency would change requests
+    /// nobody rewrote.
+    #[serde(default)]
+    pub wait: bool,
 }
 
 impl RecordRequest {
@@ -659,6 +692,128 @@ pub struct RecordReport {
     pub wall_clock_ms: u64,
     /// Why it stopped.
     pub ended: RecordingEnd,
+}
+
+/// What one camera's recording is doing (design D10; docs/7 P6c).
+///
+/// **The answer to `record_status`, and D10's whole progress mechanism**: *"progress by
+/// polling `record_status` — no recording subscription in v1"*. A recording runs for seconds
+/// or minutes on a camera the caller does not hold, so the only thing a caller can do between
+/// `record_start` and `record_stop` is ask; this is the shape of the asking.
+///
+/// It is a **struct with an optional take** rather than a three-armed enum, and the shape is
+/// the claim: a camera has at most one take, so "is there one" and "what is it doing" are one
+/// question with one answer and [`RecordStatus::is_running`] is the one predicate every
+/// consumer branches on. A client's poll loop, `webcam-handler-cli`'s renderer and the
+/// daemon's own refusals all read that one function, which is what stops three copies of "has
+/// it finished?" from disagreeing about a take whose driver has stopped but whose container is
+/// still closing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RecordStatus {
+    /// The camera this is about, resolved (D1) rather than echoed back.
+    pub camera: CameraId,
+    /// The take this camera holds, or `None` when it holds none.
+    ///
+    /// `None` is a camera that has never recorded **and** a camera whose take has been
+    /// collected by `record_stop`. Those are deliberately one answer rather than two: what a
+    /// caller can do about either is identical — start a recording — and a vocabulary that
+    /// distinguished them would be this daemon remembering something about a camera after the
+    /// caller asked for it to be forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<TakeStatus>,
+}
+
+impl RecordStatus {
+    /// Whether a recording is running on this camera right now.
+    ///
+    /// **The one predicate**, for the module-level reason above. A take that has reached an
+    /// ending is not running even though it is still here to be collected, which is exactly
+    /// the distinction a polling client needs: it stops polling when this answers `false` and
+    /// calls `record_stop` to collect what the answer is about.
+    ///
+    /// [`TakeStatus::ended`] alone, and the [`TakeStatus::failed`] beside it is deliberately
+    /// **not** asked. Every way a take can stop fills the ending in — a refusal is
+    /// [`RecordingEnd::DeviceFailed`], and a take whose *container* refused keeps whichever
+    /// ending its loop reached — so a `failed` without an `ended` is a state nothing produces,
+    /// and a second condition that cannot change an answer is dead code wearing a guard. That
+    /// is not a deduction: it is what a hand-applied mutant found by deleting the condition and
+    /// watching the whole workspace stay green (note **N115**, mutant M8), and the repair is
+    /// the deletion rather than a test about a state that cannot exist.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.take.as_ref().is_some_and(|take| take.ended.is_none())
+    }
+}
+
+/// One take, while it runs and after it ends (design D7, D10).
+///
+/// Every field is a *measurement*, in [`RecordingSummary`]'s tradition, and the two are not
+/// the same document: this one exists while the container is still open, so it carries what
+/// can be known mid-take and nothing that cannot. `frames_written` is here and
+/// `bytes_written` is not — the container's byte count includes trailers written at close
+/// (`imaging::avi::write::AviWriter::finish` writes the whole `idx1` there), so a running
+/// take's file size is not the recording's size and reporting it as one would be a number
+/// that changes meaning when the take ends.
+///
+/// The finished take's full accounting is [`RecordReport`], which `record_stop` answers with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TakeStatus {
+    /// The file it is being written to.
+    #[schemars(with = "String")]
+    pub path: Utf8PathBuf,
+    /// The container, decided by [`VideoFormat::resolve`] when the take started.
+    ///
+    /// Reported from the first status onwards because a request that named no extension left
+    /// it to the negotiated stream, and an agent that has not enumerated the camera learns
+    /// here which file it is about to have (see [`RecordRequest::container`]).
+    pub format: VideoFormat,
+    /// What the device agreed to deliver, with every difference from the request (D5).
+    pub negotiated: NegotiatedStream,
+    /// When it started, on the wall clock.
+    pub started_at: Stamp,
+    /// How long it may run, from [`RecordRequest::budget_ms`].
+    ///
+    /// Beside [`TakeStatus::elapsed_ms`] so a caller can draw a bar without holding the
+    /// request it sent — AGENTS' primary consumer has no hands, and a progress mechanism that
+    /// needs the client to remember what it asked for is one a restarted client cannot use.
+    pub budget_ms: u64,
+    /// How long it has run, on the daemon's monotonic clock.
+    ///
+    /// Monotonic rather than `Stamp::now() - started_at`, because those are two clocks and
+    /// subtracting one from the other is how an NTP step becomes a duration
+    /// ([`RecordReport::wall_clock_ms`] argues the same pair).
+    pub elapsed_ms: u64,
+    /// How many frames the container has accepted so far.
+    ///
+    /// Frames *written*, not frames delivered: a frame a cap refused is not in the file, and a
+    /// count that included it would tell an agent its recording holds a frame it can never
+    /// read. It ends equal to [`RecordingSummary::frames_written`], which is a cross-check a
+    /// test can make rather than a coincidence.
+    pub frames_written: u32,
+    /// Why it stopped — `None` while it is still running.
+    pub ended: Option<RecordingEnd>,
+    /// The D13 discriminant of the refusal that ended it, when one did.
+    ///
+    /// A **kind and not the error**, for `schema::progress::CalibrationProgress`'s reason one
+    /// stream along: a status document is read by a poller that wants to know whether to stop
+    /// polling, and the error itself belongs to the caller that asked for the take — which is
+    /// `record_stop`, and which answers with the device's own [`Error`] unchanged. Putting the
+    /// whole error here as well would give one refusal two homes and let a client act on the
+    /// copy that is easier to reach rather than on the one the verb returned.
+    ///
+    /// **It does not follow [`TakeStatus::ended`], and the two are separate fields because of
+    /// that rather than in spite of it.** A take the *device* refused ends
+    /// [`RecordingEnd::DeviceFailed`] and carries the device's kind here. A take that ran its
+    /// duration and whose **container could not be closed** ends
+    /// [`RecordingEnd::Duration`] — because that is what happened, and rewriting the ending
+    /// because a flush refused would lose the one fact the vocabulary carries — and carries
+    /// the disk's kind here. An ending is a fact about the recording and a refusal is a fact
+    /// about the whatever refused; AGENTS rule 7 is the line between them, and folding one
+    /// into the other is the collapse it forbids.
+    ///
+    /// What is always true is the other direction: `failed` is `Some` only for a take that has
+    /// **ended**, because nothing fills it in until [`TakeStatus::ended`] does.
+    pub failed: Option<crate::error::ErrorKind>,
 }
 
 #[cfg(test)]
@@ -847,6 +1002,7 @@ mod tests {
             stream: StreamRequest::default(),
             duration_ms: None,
             sink: Sink::ServerPath { path: path.into() },
+            wait: false,
         }
     }
 
@@ -862,6 +1018,7 @@ mod tests {
             sink: Sink::ReturnBytes {
                 format: crate::capture::PhotoFormat::Jpeg,
             },
+            wait: false,
         }
         .server_path()
         .expect_err("a recording does not come back in the answer");
@@ -988,6 +1145,148 @@ mod tests {
                 .collect::<String>();
             assert_eq!(rendered, format!("\"{expected}\""), "{ended:?}");
         }
+    }
+
+    /// A take of `path`, running, with nothing measured yet.
+    fn running_take(path: &str) -> TakeStatus {
+        TakeStatus {
+            path: path.into(),
+            format: VideoFormat::Avi,
+            negotiated: NegotiatedStream {
+                pixel_format: PixelFormat::MJPG,
+                width: 64,
+                height: 48,
+                bytes_per_line: 0,
+                size_image: 4096,
+                interval: crate::camera::FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30,
+                },
+                adjustments: Vec::new(),
+            },
+            started_at: Stamp::epoch(),
+            budget_ms: limits::DEFAULT_RECORDING_MS,
+            elapsed_ms: 0,
+            frames_written: 0,
+            ended: None,
+            failed: None,
+        }
+    }
+
+    #[test]
+    fn a_camera_is_recording_exactly_while_its_take_has_not_reached_an_ending() {
+        // The one predicate a polling client branches on (D10: "progress by polling
+        // `record_status`"), in all four of its states — because a build that answered
+        // `true` for a finished take would make a client poll for ever, and one that
+        // answered `false` for a running take would make it collect a recording that is
+        // still being written.
+        let camera = CameraId::parse("cam:test").expect("a literal id");
+        let idle = RecordStatus {
+            camera: camera.clone(),
+            take: None,
+        };
+        assert!(!idle.is_running(), "a camera with no take is not recording");
+
+        let running = RecordStatus {
+            camera: camera.clone(),
+            take: Some(running_take("/tmp/take.avi")),
+        };
+        assert!(running.is_running());
+
+        let ended = RecordStatus {
+            camera: camera.clone(),
+            take: Some(TakeStatus {
+                ended: Some(RecordingEnd::Duration),
+                ..running_take("/tmp/take.avi")
+            }),
+        };
+        assert!(
+            !ended.is_running(),
+            "a take that ended is not still running"
+        );
+
+        // A take the device refused, and one whose *container* refused after an ordinary
+        // ending. Both stop the poll loop, and they are two arms rather than one because the
+        // two fill `ended` in differently — `DeviceFailed` for the first, whatever the loop
+        // reached for the second — which is the asymmetry `TakeStatus::failed`'s own doc
+        // argues and the reason `is_running` reads only `ended`.
+        let refused = RecordStatus {
+            camera: camera.clone(),
+            take: Some(TakeStatus {
+                ended: Some(RecordingEnd::DeviceFailed),
+                failed: Some(crate::error::ErrorKind::DeviceGone),
+                ..running_take("/tmp/take.avi")
+            }),
+        };
+        assert!(!refused.is_running());
+
+        let unclosable = RecordStatus {
+            camera,
+            take: Some(TakeStatus {
+                ended: Some(RecordingEnd::Duration),
+                failed: Some(crate::error::ErrorKind::StorageIo),
+                ..running_take("/tmp/take.avi")
+            }),
+        };
+        assert!(!unclosable.is_running());
+    }
+
+    #[test]
+    fn a_status_round_trips_through_json_and_a_camera_with_no_take_omits_the_field() {
+        // The wire shape of the document a poll loop reads, asserted rather than assumed:
+        // `schemas/` is what a `--json` consumer validates against, and the *absence* of
+        // `take` is what tells a hand-written client that this camera holds nothing —
+        // a `"take":null` would be a third thing for it to handle.
+        let camera = CameraId::parse("cam:test").expect("a literal id");
+        let idle = RecordStatus {
+            camera: camera.clone(),
+            take: None,
+        };
+        let json = serde_json::to_string(&idle).expect("serialize");
+        assert!(!json.contains("take"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<RecordStatus>(&json).expect("deserialize"),
+            idle
+        );
+
+        let running = RecordStatus {
+            camera,
+            take: Some(TakeStatus {
+                frames_written: 7,
+                elapsed_ms: 233,
+                ..running_take("/tmp/take.avi")
+            }),
+        };
+        let json = serde_json::to_string(&running).expect("serialize");
+        assert!(json.contains("\"frames_written\":7"), "{json}");
+        assert!(json.contains("\"format\":\"avi\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<RecordStatus>(&json).expect("deserialize"),
+            running
+        );
+    }
+
+    #[test]
+    fn a_request_that_did_not_ask_to_wait_still_parses_from_a_document_written_before_the_flag() {
+        // D12's flag, `#[serde(default)]` for `PhotoRequest::wait`'s reason: a request
+        // written before the field existed still parses and still means what it meant.
+        // Asserted rather than trusted, because `#[serde(default)]` removed from one field
+        // is a change nothing else in this workspace would notice.
+        let older = r#"{"sink":{"kind":"server_path","path":"/tmp/take.avi"}}"#;
+        let parsed: RecordRequest = serde_json::from_str(older).expect("deserialize");
+        assert!(!parsed.wait, "the default is a prompt refusal, not a wait");
+        assert_eq!(parsed.sink, to_path("/tmp/take.avi").sink);
+
+        let waiting = RecordRequest {
+            wait: true,
+            ..to_path("/tmp/take.avi")
+        };
+        let json = serde_json::to_string(&waiting).expect("serialize");
+        assert!(json.contains("\"wait\":true"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<RecordRequest>(&json).expect("deserialize"),
+            waiting
+        );
     }
 
     #[test]
