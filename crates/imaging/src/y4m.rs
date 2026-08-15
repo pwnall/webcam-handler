@@ -30,38 +30,45 @@
 //! no `A` pixel-aspect field, because V4L2 does not tell us the pixel aspect and `A1:1` would
 //! be a claim rather than a reading (AGENTS rule 6 — represent the unknown, never correct it).
 //!
-//! ## The rate asymmetry, which is real and is not smoothed over
+//! ## The rate, which is measured at close since P6d because an oracle said it could be
 //!
 //! [`crate::avi::write::AviWriter::finish`] rewrites AVI's header rate to the **measured**
 //! mean interval, because D7's CFR carve-out asks for it and because AVI's rate lives in
-//! fixed-width binary fields that `finish` can seek back to and overwrite.
+//! fixed-width binary fields that `finish` can seek back to and overwrite. **This container now
+//! does the same thing**, and both go through the one law in `crate::video::declared_interval`.
 //!
-//! **A Y4M header cannot be rewritten that way.** It is one line of variable-width text,
-//! written before the first frame, and `F1000000:33333` is one byte shorter than
-//! `F1000000:133333` — so patching a measured mean into it means either rewriting the whole
-//! file or padding the ratio to a fixed width and hoping every parser accepts the padding.
-//! Whether a padded `F` field is legal across the parsers that matter here is **`declared`**
-//! in this repository's sense: the format description permits decimal digits and says nothing
-//! about leading zeros, no parser in this project's dependency set has been driven with one,
-//! and no measurement has been taken. What would make it `measured` is the ffprobe/mpv oracle
+//! It did not, until P6d, and the reason is worth keeping because it is what a measurement
+//! replaced. A Y4M header is one line of **text**, written before the first frame, and
+//! `F1000000:33333` is one byte shorter than `F1000000:133333` — so patching a measured mean
+//! into it means either rewriting the whole file (gigabytes, for this container) or padding the
+//! denominator to a fixed width. Note **N106** marked that padding `declared` in this
+//! repository's sense and named exactly what would make it `measured`: *"the ffprobe/mpv oracle
 //! rung docs/7 P6d is about to build — a third party that has never read our code, handed a
-//! file whose `F` field is zero-padded, answering whether it reads the rate we meant.
+//! file whose `F` field is zero-padded, answering whether it reads the rate we meant."*
 //!
-//! Until then this container declares the **negotiated** (or provisional) interval and its
-//! [`RecordingSummary::interval_source`] is [`IntervalSource::Negotiated`] or
-//! [`IntervalSource::Provisional`] and **never** [`IntervalSource::Measured`]. A Y4M take that
-//! claimed `Measured` would be exactly the defect item 10 names — *"a recording that silently
-//! reports nominal fps while delivering something else is answering the agent's question
-//! wrongly"* — with the lie moved from the header into the label on the header.
+//! That measurement was taken on 2026-08-15 (evidence **E17**) and both third parties read the
+//! padded field as the rate it names: `F1000000:0000050000` is `20/1` to `ffprobe` and 20 fps to
+//! `mpv`, `F1000000:0000033333` is `1000000/33333` and 30.0003 fps, and neither differs from the
+//! unpadded spelling of the same ratio. So the denominator is zero-padded to
+//! `RATE_DENOMINATOR_DIGITS` — wide enough for every `u32` interval, which is what makes it
+//! *fixed*-width rather than usually-wide-enough — the file's length never moves, and
+//! [`Y4mWriter::finish`] patches the digits in place exactly as the AVI muxer patches its two
+//! binary homes. [`RecordingSummary::interval_source`] is [`IntervalSource::Measured`] when a
+//! mean was measured, and note **N106**'s amendment records what changed.
 //!
-//! What the caller loses is smaller than it looks, and that is deliberate rather than lucky:
-//! [`RecordingSummary::span_us`] and [`RecordingSummary::frames_written`] carry the
-//! measurement whichever container was used, and
-//! [`RecordingSummary::measured_interval_us`] is the subtraction. So an agent asking "did this
-//! take 200 ms or 2 s" is answered from observed numbers in both containers; what differs is
-//! only whether the *file itself*, handed to a player with no summary beside it, plays back at
-//! the rate it was captured at. Note **N106** records the whole of this, including what would
-//! retire it.
+//! **The header a crash leaves is still honest**, which is why the padding is written at
+//! [`Y4mWriter::begin`] with the negotiated interval in it rather than left blank for the close
+//! to fill: a take that dies before `finish` leaves a file declaring what the camera was asked
+//! for, labelled `Negotiated` by nothing that survives — and a reader with no summary beside it
+//! gets a plausible rate rather than `F1000000:0000000000`, which is a division by zero to every
+//! parser.
+//!
+//! The measurement is carried whichever way that goes: [`RecordingSummary::span_us`] and
+//! [`RecordingSummary::frames_written`] are observations in both containers and
+//! [`RecordingSummary::measured_interval_us`] is the subtraction, so an agent asking "did this
+//! take 200 ms or 2 s" was answered from observed numbers even while the header could not be.
+//! What P6d added is the *file alone*, handed to a player with no summary beside it, playing
+//! back at the rate it was captured at.
 //!
 //! ## A driver is untrusted input, on this side of the boundary too
 //!
@@ -82,10 +89,12 @@
 //! Y4M needs no recovery path because it has no structure to recover: the header is complete
 //! before the first frame and every frame is self-delimiting, so a file cut anywhere is a
 //! valid file of however many whole frames precede the cut. That is the same promise D7 makes
-//! for AVI's `movi` stream, arrived at for free. The one obligation left is not to *lie* about
-//! it, which is why a sink that refuses a write poisons this writer: after a partial
-//! `write_all` this module no longer knows the file's length, so it refuses every later call
-//! and names the last length it was sure of.
+//! for AVI's `movi` stream, arrived at for free, and the close-time rate patch does not spend
+//! it: the only byte range `finish` revises is `RATE_DENOMINATOR_DIGITS` digits that already
+//! held a legal rate. The one obligation left is not to *lie* about it, which is why a sink
+//! that refuses a write poisons this writer: after a partial `write_all` this module no longer
+//! knows the file's length, so it refuses every later call and names the last length it was
+//! sure of.
 //!
 //! ## Why the `y4m` crate is not linked here
 //!
@@ -105,7 +114,7 @@
 //! format names only, and [`Y4mWriter`]'s `Debug` is hand-written for the reason
 //! `schema::capture::Frame`'s is — a derived one would print the plane buffers.
 
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 
 use schema::camera::PixelFormat;
 use schema::capture::Frame;
@@ -145,22 +154,44 @@ const FRAME_HEADER_BYTES: u64 = 6;
 /// "enormous but exact" does not round its own metadata to look tidy.
 const MICROS_PER_SECOND: u32 = 1_000_000;
 
+/// How many decimal digits the `F` ratio's denominator is padded to, for the life of the file.
+///
+/// **Ten, because [`Y4mParams::negotiated_interval_us`] is a `u32` and `u32::MAX` is
+/// 4 294 967 295** — so every interval this writer can be handed fits, and the field is
+/// *fixed*-width rather than usually-wide-enough. A width chosen for the intervals a webcam
+/// actually offers would be a width some later device walks past, and the close-time patch
+/// would then have to move the rest of the file: the whole point of the padding is that
+/// [`Y4mWriter::finish`] rewrites digits and never lengths.
+///
+/// Zero-padding a decimal field is what note **N106** marked `declared` and P6d's oracle rung
+/// measured (evidence **E17**): `ffprobe` 8.0.1 and `mpv` 0.41.0 both read
+/// `F1000000:0000050000` as exactly the rate `F1000000:50000` names. The format description
+/// permits decimal digits and says nothing about leading zeros either way, which is why this
+/// needed a measurement rather than a reading.
+const RATE_DENOMINATOR_DIGITS: usize = 10;
+
 /// The smallest header this writer can emit, and therefore the smallest `max_bytes` a Y4M
 /// recording can be given.
 ///
-/// 35 bytes: `YUV4MPEG2 W2 H2 F1000000:1 Ip C420\n`, which is the magic (10) plus the
-/// shortest legal extent fields (`W2 H2`, 5 with its separators), the shortest rate this
-/// writer can express (`F1000000:1`, 10, since the numerator is fixed), the interlacing tag
-/// (` Ip`, 3), the shortest colorspace tag (` C420`, 5) and the terminator. A cap below it
-/// could never be honoured — the file would be over budget before a frame arrived — and
-/// refusing at [`Y4mWriter::begin`] is the difference between a caller learning that
-/// immediately and learning it from a file that broke its own rule.
+/// 44 bytes: `YUV4MPEG2 W2 H2 F1000000:0000000001 Ip C420\n`, which is the magic (10) plus the
+/// shortest legal extent fields (`W2 H2`, 5 with its separators), the rate this writer emits
+/// (`F1000000:` and `RATE_DENOMINATOR_DIGITS` digits, 19, since both the numerator and the
+/// denominator's width are fixed), the interlacing tag (` Ip`, 3), the shortest colorspace tag
+/// (` C420`, 5) and the terminator. A cap below it could never be honoured — the file would be
+/// over budget before a frame arrived — and refusing at [`Y4mWriter::begin`] is the difference
+/// between a caller learning that immediately and learning it from a file that broke its own
+/// rule.
 ///
-/// It is a *floor*, not the header's actual length: a real geometry and a real interval make
-/// the header longer, and a cap between this and that is caught by the size cap the moment
-/// the header lands. `the_smallest_header_this_writer_emits_is_the_documented_floor` is what
-/// keeps the number and the builder from drifting apart.
-pub const MIN_RECORDING_BYTES: u64 = 35;
+/// It was 35 before P6d, when the denominator was written unpadded and the shortest rate this
+/// writer could express was `F1000000:1`. The nine bytes are what a header that can be revised
+/// at close costs, paid once per file.
+///
+/// It is a *floor*, not the header's actual length: a real geometry makes the header longer,
+/// and a cap between this and that is caught by the size cap the moment the header lands. Since
+/// the rate field is fixed-width, the *interval* no longer moves it at all.
+/// `the_smallest_header_this_writer_emits_is_the_documented_floor` is what keeps the number and
+/// the builder from drifting apart.
+pub const MIN_RECORDING_BYTES: u64 = 44;
 
 // --- The refusal vocabulary ----------------------------------------------------------
 //
@@ -291,16 +322,34 @@ pub struct Y4mParams {
 
 /// A Y4M recording in progress.
 ///
-/// `W` is only `Write`: this container is written forward and never revised, which is the
-/// whole of the rate asymmetry in the module doc. [`crate::video::Recorder`] carries a `Seek`
-/// bound anyway because its other arm needs one.
-pub struct Y4mWriter<W: Write> {
+/// `W` is `Write + Seek` since P6d, for exactly one call: [`Y4mWriter::finish`] seeks back to
+/// the header's fixed-width rate field and patches the measured mean into it. Everything else
+/// this container does is forward-only, which is why the seek costs the recording nothing —
+/// and [`crate::video::Recorder`] carried the bound already, because its other arm rewrites six
+/// fields the same way.
+pub struct Y4mWriter<W: Write + Seek> {
     sink: W,
     layout: Layout,
     caps: RecordingCaps,
-    /// The interval the header declares, for the whole life of the file.
+    /// Where the sink's cursor was when the header was written.
+    ///
+    /// The rate patch seeks to an absolute position, and a caller may hand in a sink that is
+    /// already part-way through a file — `crate::avi::write::AviWriter` keeps the same field
+    /// for the same reason. A writer that assumed zero would patch somebody else's bytes.
+    origin: u64,
+    /// Where the `F` ratio's denominator starts, as an offset from [`Self::origin`].
+    ///
+    /// Produced by [`header_bytes`] rather than re-derived here: an offset computed twice is
+    /// two answers that agree until somebody adds a header field, and what a wrong one writes
+    /// is ten digits into the middle of `W`/`H` or of the colorspace tag.
+    denominator_at: u64,
+    /// The interval the header declares.
+    ///
+    /// The negotiated (or provisional) number from `begin` until [`Y4mWriter::finish`] patches
+    /// the measured mean over it — so the file a crashed take leaves declares what the camera
+    /// was asked for rather than nothing.
     declared_interval_us: u32,
-    /// Where that number came from. Never [`IntervalSource::Measured`] — see the module doc.
+    /// Where that number came from.
     interval_source: IntervalSource,
     planes: Planes,
     /// How many bytes of file this writer is *sure* are on the sink.
@@ -314,7 +363,7 @@ pub struct Y4mWriter<W: Write> {
     sink_failed: bool,
 }
 
-impl<W: Write> std::fmt::Debug for Y4mWriter<W> {
+impl<W: Write + Seek> std::fmt::Debug for Y4mWriter<W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // A frame may contain a person (rubric A12), and both the sink and the plane buffers
         // hold one — so neither is printable here.
@@ -328,7 +377,7 @@ impl<W: Write> std::fmt::Debug for Y4mWriter<W> {
     }
 }
 
-impl<W: Write> Y4mWriter<W> {
+impl<W: Write + Seek> Y4mWriter<W> {
     /// Open a recording: validate the parameters, then write the whole header line.
     ///
     /// When this returns, the file on the sink is already a valid Y4M of zero frames — which
@@ -367,18 +416,35 @@ impl<W: Write> Y4mWriter<W> {
                 format!("{ZERO_INTERVAL} is not a frame rate"),
             ));
         }
-        // The interval is never revised, so where it came from is decided here rather than at
-        // close — which is the asymmetry with AVI stated as one line of code.
+        // What the header says *until* `finish` measures something. A take that never reaches
+        // its close leaves this number in the file, which is why it is the negotiated one and
+        // not a zero waiting to be filled in.
         let (declared_interval_us, interval_source) = match params.negotiated_interval_us {
             Some(interval) => (interval, IntervalSource::Negotiated),
             None => (PROVISIONAL_INTERVAL_US, IntervalSource::Provisional),
         };
 
         let header = header_bytes(layout, declared_interval_us);
-        let bytes_written = u64::try_from(header.len()).map_err(|_| {
+        let bytes_written = u64::try_from(header.bytes.len()).map_err(|_| {
             imaging_failure(BEGIN_OP, format!("the header {NOT_ADDRESSABLE} in a u64"))
         })?;
-        sink.write_all(&header)
+        let denominator_at = u64::try_from(header.denominator_at).map_err(|_| {
+            imaging_failure(
+                BEGIN_OP,
+                format!("the header's rate field offset {NOT_ADDRESSABLE} in a u64"),
+            )
+        })?;
+        // Asked *before* the header lands, because `Seek::stream_position` on a sink that has
+        // already been written to would report the end of what we just wrote. A sink that
+        // cannot say where it is cannot be patched at close, and learning that here costs the
+        // caller nothing; learning it at `finish` would cost it the whole recording.
+        let origin = sink.stream_position().map_err(|err| {
+            imaging_failure(
+                BEGIN_OP,
+                format!("the sink could not say where the header would start: {err}"),
+            )
+        })?;
+        sink.write_all(&header.bytes)
             .map_err(|err| imaging_failure(BEGIN_OP, format!("{SINK_FAILED} 0 bytes: {err}")))?;
 
         // A header longer than the whole budget is the size cap reached at frame zero rather
@@ -392,6 +458,8 @@ impl<W: Write> Y4mWriter<W> {
             sink,
             layout,
             caps: params.caps,
+            origin,
+            denominator_at,
             declared_interval_us,
             interval_source,
             planes: Planes::default(),
@@ -457,34 +525,86 @@ impl<W: Write> Y4mWriter<W> {
         Ok(FrameOutcome::Written)
     }
 
-    /// Flush the sink and report what the recording turned out to be.
+    /// Patch the header's rate to what this take measured, flush the sink, and report what the
+    /// recording turned out to be.
     ///
-    /// There is nothing to patch — the header was final before the first frame — so this is
-    /// the whole of closing a Y4M file. The flush is not a formality: a caller writing through
-    /// a `BufWriter` has bytes that are not on the disk yet, and `crate::avi::write`'s close
-    /// flushes for the same reason, so a [`crate::video::Recorder`] must not have one arm that
-    /// does and one that does not.
+    /// D7's CFR carve-out, arriving at this container at P6d. The decision is
+    /// `crate::video::declared_interval`'s and not this method's, so the two muxers cannot
+    /// disagree about when a mean counts as measured; what is this method's is where the digits
+    /// go. The patch is unconditional — the same digits are rewritten when nothing was measured
+    /// — because a branch that skipped it would be a second opinion about whether the header
+    /// and the summary agree, and the two are one claim.
+    ///
+    /// The file's **length does not move**: `RATE_DENOMINATOR_DIGITS` digits are overwritten
+    /// with `RATE_DENOMINATOR_DIGITS` digits, which is the whole reason the field is padded.
+    /// The sink is left at the end of the file rather than in the middle of the header, for
+    /// `crate::avi::write::AviWriter::finish`'s reason: a caller holding another handle to it
+    /// finds what it expects.
+    ///
+    /// The flush is not a formality: a caller writing through a `BufWriter` has bytes that are
+    /// not on the disk yet, and `crate::avi::write`'s close flushes for the same reason, so a
+    /// [`crate::video::Recorder`] must not have one arm that does and one that does not.
     ///
     /// # Errors
     ///
-    /// [`schema::Error::DeviceIo`] when the sink refuses the flush, or when it had already
-    /// failed — in which case the message names the length of the prefix that is still a
-    /// readable file.
+    /// [`schema::Error::DeviceIo`] when the sink refuses the seek, the patch or the flush, or
+    /// when it had already failed — in which case the message names the length of the prefix
+    /// that is still a readable file.
     pub fn finish(mut self) -> Result<RecordingSummary> {
         self.check_sink(FINISH_OP)?;
+        let (declared_interval_us, interval_source, span_us) = crate::video::declared_interval(
+            self.first_timestamp_us,
+            self.last_timestamp_us,
+            self.frames_written,
+            self.negotiated_interval_us(),
+        );
+        self.patch_rate(declared_interval_us)?;
         if let Err(err) = self.sink.flush() {
             return Err(self.poison(FINISH_OP, &err));
         }
-        let span_us = self.span_us();
         Ok(RecordingSummary {
             frames_written: self.frames_written,
             bytes_written: self.bytes_written,
-            declared_interval_us: self.declared_interval_us,
-            interval_source: self.interval_source,
+            declared_interval_us,
+            interval_source,
             dropped_frames: self.dropped_frames,
             span_us,
             cap_reached: self.cap_reached,
         })
+    }
+
+    /// What the *negotiation* named, recovered from what `begin` decided.
+    ///
+    /// `begin` keeps the resolved pair rather than the caller's `Option`, because the header it
+    /// wrote needed a number; this turns it back into the question
+    /// `crate::video::declared_interval` asks. A `Provisional` header means the negotiation
+    /// named nothing, and saying so is what keeps a take that measured nothing from reporting
+    /// [`IntervalSource::Negotiated`] over a placeholder.
+    fn negotiated_interval_us(&self) -> Option<u32> {
+        match self.interval_source {
+            IntervalSource::Provisional => None,
+            IntervalSource::Negotiated | IntervalSource::Measured => {
+                Some(self.declared_interval_us)
+            }
+        }
+    }
+
+    /// Overwrite the header's rate denominator in place.
+    fn patch_rate(&mut self, interval_us: u32) -> Result<()> {
+        let digits = denominator_digits(interval_us);
+        let at = self.origin.saturating_add(self.denominator_at);
+        if let Err(err) = self.sink.seek(SeekFrom::Start(at)) {
+            return Err(self.poison(FINISH_OP, &err));
+        }
+        if let Err(err) = self.sink.write_all(digits.as_bytes()) {
+            return Err(self.poison(FINISH_OP, &err));
+        }
+        // Back to the end, so the sink is where a caller left it rather than inside the header.
+        let end = self.origin.saturating_add(self.bytes_written);
+        if let Err(err) = self.sink.seek(SeekFrom::Start(end)) {
+            return Err(self.poison(FINISH_OP, &err));
+        }
+        Ok(())
     }
 
     /// Refill [`Planes`] from this frame, refusing anything the stream did not agree to.
@@ -610,21 +730,6 @@ impl<W: Write> Y4mWriter<W> {
                 .saturating_add(u64::from(gap.saturating_sub(1)));
         }
         self.last_sequence = Some(sequence);
-    }
-
-    /// The last written frame's timestamp minus the first's, when that is a duration.
-    ///
-    /// `None` for fewer than two frames and for a clock that ran backwards, which is the same
-    /// rule `crate::avi::write::AviWriter::declared_interval` applies — and it is what keeps
-    /// the measurement available to a caller whose header could not carry it.
-    fn span_us(&self) -> Option<u64> {
-        match self.first_timestamp_us {
-            Some(first) if self.frames_written >= 2 => self
-                .last_timestamp_us
-                .checked_sub(first)
-                .and_then(|delta| u64::try_from(delta).ok()),
-            _ => None,
-        }
     }
 
     fn put_marker(&mut self) -> Result<()> {
@@ -755,33 +860,60 @@ fn layout(width: u32, height: u32, pixel_format: PixelFormat) -> Result<Layout> 
     })
 }
 
-/// The whole header line, as bytes.
+/// A header line and the one offset inside it that [`Y4mWriter::finish`] revises.
+///
+/// Two fields rather than a `Vec<u8>` and a second function that re-derives the offset: the
+/// bytes and the position are produced by the same expression, so a header field added in front
+/// of the rate moves both at once. An offset computed twice is what writes ten digits into the
+/// middle of `W64`.
+struct Header {
+    bytes: Vec<u8>,
+    /// Where the `F` ratio's denominator starts, counted from the first byte of the header.
+    denominator_at: usize,
+}
+
+/// The `F` ratio's denominator, zero-padded to `RATE_DENOMINATOR_DIGITS`.
+///
+/// One home for the spelling, because the header writes it and the close-time patch overwrites
+/// it, and a patch that formatted the number differently from the header would corrupt exactly
+/// the field it was revising.
+fn denominator_digits(interval_us: u32) -> String {
+    format!("{interval_us:0width$}", width = RATE_DENOMINATOR_DIGITS)
+}
+
+/// The whole header line, and where its rate field sits.
 ///
 /// `YUV4MPEG2 W<w> H<h> F<num>:<den> Ip C<tag>\n`, and every field in it is something this
 /// build actually knows:
 ///
 /// - `W`/`H` are the negotiated extent.
-/// - `F` is the declared interval, as the reciprocal ratio [`MICROS_PER_SECOND`] argues for.
+/// - `F` is the declared interval, as the reciprocal ratio [`MICROS_PER_SECOND`] argues for,
+///   with the denominator zero-padded to `RATE_DENOMINATOR_DIGITS` so that close can revise
+///   it without moving a byte after it.
 /// - `Ip` is progressive. Webcams deliver progressive frames and V4L2's `field` for a capture
 ///   buffer says so; stating it keeps a player from guessing interlaced from the geometry.
 /// - `C` is the colorspace, and nothing else. There is deliberately **no** `A` pixel-aspect
 ///   field: V4L2 does not report a pixel aspect, the format's own default for a missing `A` is
 ///   "unknown", and writing `A1:1` would turn an absence into an assertion.
-fn header_bytes(layout: Layout, interval_us: u32) -> Vec<u8> {
+fn header_bytes(layout: Layout, interval_us: u32) -> Header {
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(
         format!(
-            "W{} H{} F{}:{} Ip C{}\n",
-            layout.width,
-            layout.height,
-            MICROS_PER_SECOND,
-            interval_us,
-            layout.planar.tag()
+            "W{} H{} F{}:",
+            layout.width, layout.height, MICROS_PER_SECOND
         )
         .as_bytes(),
     );
-    out
+    // Read off the buffer rather than added up from the field widths above, so the two cannot
+    // disagree about how long `W64 H48 F1000000:` is.
+    let denominator_at = out.len();
+    out.extend_from_slice(denominator_digits(interval_us).as_bytes());
+    out.extend_from_slice(format!(" Ip C{}\n", layout.planar.tag()).as_bytes());
+    Header {
+        bytes: out,
+        denominator_at,
+    }
 }
 
 /// GREY to a mono plane: drop each row's stride padding and keep every sample.
@@ -929,6 +1061,7 @@ fn overflowed(width: usize, height: usize) -> schema::error::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::io::Cursor;
     use std::time::Duration;
 
@@ -1213,17 +1346,57 @@ mod tests {
     #[test]
     fn the_smallest_header_this_writer_emits_is_the_documented_floor() {
         // `MIN_RECORDING_BYTES` is a literal, and a literal that drifted from the builder
-        // would let `begin` accept a cap the header cannot fit under. 2x2 C420 at a
-        // one-microsecond interval is the shortest header this writer can produce: the magic
-        // and the fixed `F` numerator are constant, and every other field is at its minimum.
+        // would let `begin` accept a cap the header cannot fit under. 2x2 C420 is the shortest
+        // header this writer can produce: the magic, the fixed `F` numerator and the padded
+        // denominator's width are all constant, and every other field is at its minimum.
         let smallest = layout(2, 2, PixelFormat::NV12).expect("2x2 NV12 is a legal extent");
         let header = header_bytes(smallest, 1);
         assert_eq!(
-            u64::try_from(header.len()).expect("fits"),
+            u64::try_from(header.bytes.len()).expect("fits"),
             MIN_RECORDING_BYTES,
-            "the header is {header:?}"
+            "the header is {:?}",
+            header.bytes
         );
-        assert_eq!(header, b"YUV4MPEG2 W2 H2 F1000000:1 Ip C420\n");
+        assert_eq!(
+            header.bytes,
+            b"YUV4MPEG2 W2 H2 F1000000:0000000001 Ip C420\n"
+        );
+    }
+
+    #[test]
+    fn the_rate_field_is_fixed_width_and_the_close_patch_is_aimed_at_it() {
+        // Two claims that hold the close-time rewrite up, and each one is a way it could be
+        // wrong while every round trip stayed green.
+        //
+        // **Fixed width**: the header's length must not depend on the interval, or `finish`
+        // would have to move every byte after the rate. The four intervals below are 1, 5, 8
+        // and 10 digits unpadded — including `u32::MAX`, which is the number
+        // `RATE_DENOMINATOR_DIGITS` is sized for.
+        let extent = layout(64, 48, PixelFormat::GREY).expect("legal");
+        let mut lengths = BTreeSet::new();
+        for interval in [1, 33_333, 66_666_666, u32::MAX] {
+            let header = header_bytes(extent, interval);
+            lengths.insert(header.bytes.len());
+            // **Aimed at it**: the offset must name the denominator's own digits, not the
+            // numerator, not the `W`/`H` in front of it and not the ` Ip` behind it. A patch
+            // one byte out writes into `:` or into a space and produces a file no parser
+            // reads — which the round trips would catch, and an offset that is *inside* the
+            // ten digits but not at their start would not.
+            let at = header.denominator_at;
+            assert_eq!(
+                &header.bytes[at..at + RATE_DENOMINATOR_DIGITS],
+                denominator_digits(interval).as_bytes(),
+                "the offset does not name the denominator of {:?}",
+                String::from_utf8_lossy(&header.bytes)
+            );
+            assert_eq!(header.bytes.get(at - 1), Some(&b':'));
+            assert_eq!(header.bytes.get(at + RATE_DENOMINATOR_DIGITS), Some(&b' '));
+        }
+        assert_eq!(
+            lengths.len(),
+            1,
+            "the header's length moved with the interval: {lengths:?}"
+        );
     }
 
     #[test]
@@ -1265,15 +1438,15 @@ mod tests {
             assert_eq!(parsed.interlacing.as_deref(), Some("p"), "{tag}");
             assert_eq!(
                 parsed.rate,
-                (1_000_000, u64::from(NEGOTIATED_US)),
-                "{tag}: the denominator is the interval in microseconds"
+                (1_000_000, 50_000),
+                "{tag}: the denominator is the mean interval in microseconds, patched at close"
             );
             assert_eq!(
                 parsed.fields,
                 vec![
                     "W64".to_owned(),
                     "H48".to_owned(),
-                    "F1000000:66666".to_owned(),
+                    "F1000000:0000050000".to_owned(),
                     "Ip".to_owned(),
                     format!("C{tag}"),
                 ],
@@ -1380,37 +1553,65 @@ mod tests {
     }
 
     #[test]
-    fn a_y4m_take_never_claims_a_measured_interval_however_much_it_measured() {
-        // The asymmetry note **N106** records. Two frames 50 000 µs apart is a mean any
-        // reader could compute, and the header still declares the negotiated 66 666 — because
-        // the header was written before the first frame and this container cannot revise it.
-        // The measurement is not lost: it is in `span_us` and `frames_written`.
+    fn the_close_rewrites_the_header_to_the_mean_this_take_measured() {
+        // What note **N106**'s amendment bought, asserted at the container that gained it. Two
+        // frames 50 000 µs apart is a mean, the negotiated interval was 66 666, and **the file
+        // itself** — read through the parser that was not told our layout — carries 50 000.
+        //
+        // Three assertions and not one, because the rewrite has three ways to be half done: a
+        // summary that reports the mean over a header that still says 66 666 (which is the lie
+        // N106 refused to tell before the patch existed), a header patched while the label still
+        // says `Negotiated`, and a patch that moved the file's length.
         let frames = [
             raw_frame(PixelFormat::GREY, 0, 0),
             raw_frame(PixelFormat::GREY, 1, 50_000),
         ];
         let (file, _, summary) = record(params(PixelFormat::GREY, generous_caps()), &frames);
-        assert_eq!(summary.interval_source, IntervalSource::Negotiated);
-        assert_eq!(summary.declared_interval_us, NEGOTIATED_US);
+        assert_eq!(summary.interval_source, IntervalSource::Measured);
+        assert_eq!(summary.declared_interval_us, 50_000);
         assert_eq!(summary.span_us, Some(50_000));
         assert_eq!(summary.measured_interval_us(), Some(50_000));
         assert_ne!(
-            summary.declared_interval_us,
-            u32::try_from(summary.measured_interval_us().expect("measured")).expect("fits"),
-            "this test is only meaningful while the two numbers differ"
+            summary.declared_interval_us, NEGOTIATED_US,
+            "the header still declares what the camera was asked for"
         );
-        // And the file agrees with the summary rather than with the measurement.
         let parsed = parse_y4m(&file).expect("parses");
-        assert_eq!(parsed.rate, (1_000_000, u64::from(NEGOTIATED_US)));
+        assert_eq!(parsed.rate, (1_000_000, 50_000));
+        assert_eq!(
+            summary.bytes_written,
+            u64::try_from(file.len()).expect("fits"),
+            "the patch moved the file's length"
+        );
+        // The patched digits are the padded spelling and nothing else: a rewrite that wrote
+        // `50000` over the first five digits would leave `50000` followed by the tail of the
+        // old number, which parses as some other rate entirely.
+        assert!(
+            file.starts_with(b"YUV4MPEG2 W64 H48 F1000000:0000050000 Ip Cmono\n"),
+            "{:?}",
+            String::from_utf8_lossy(&file[..48.min(file.len())])
+        );
+
+        // A take that measured nothing leaves the negotiated number where `begin` put it — the
+        // patch rewrites the same digits rather than skipping, so this is the arm that says the
+        // rewrite is not unconditionally `Measured`.
+        let (file, _, summary) = record(params(PixelFormat::GREY, generous_caps()), &frames[..1]);
+        assert_eq!(summary.interval_source, IntervalSource::Negotiated);
+        assert_eq!(summary.declared_interval_us, NEGOTIATED_US);
+        assert_eq!(
+            parse_y4m(&file).expect("parses").rate,
+            (1_000_000, u64::from(NEGOTIATED_US))
+        );
 
         // A negotiation that named nothing is `Provisional`, and the placeholder is what the
-        // header carries — labelled, never dressed up as a finding.
+        // header carries — labelled, never dressed up as a finding. It is the arm that catches
+        // a close which recovered the negotiated interval out of `declared_interval_us` without
+        // remembering that there had not been one.
         let (file, _, summary) = record(
             Y4mParams {
                 negotiated_interval_us: None,
                 ..params(PixelFormat::GREY, generous_caps())
             },
-            &frames,
+            &frames[..1],
         );
         assert_eq!(summary.interval_source, IntervalSource::Provisional);
         assert_eq!(summary.declared_interval_us, PROVISIONAL_INTERVAL_US);
@@ -1418,6 +1619,35 @@ mod tests {
             parse_y4m(&file).expect("parses").rate,
             (1_000_000, u64::from(PROVISIONAL_INTERVAL_US))
         );
+    }
+
+    #[test]
+    fn a_recording_written_into_the_middle_of_a_sink_patches_its_own_header() {
+        // `origin`, which nothing else in this suite exercises: every other test hands in a
+        // fresh `Cursor` at position zero, where a writer that patched at an absolute offset of
+        // `denominator_at` would be indistinguishable from one that patched at
+        // `origin + denominator_at`. `crate::avi::write` keeps the same field, and the daemon
+        // hands both containers a `File` it opened — a sink whose position is zero today and is
+        // nobody's promise.
+        let mut file = Cursor::new(Vec::new());
+        let preamble = b"................";
+        file.write_all(preamble).expect("preamble");
+        let mut writer =
+            Y4mWriter::begin(&mut file, params(PixelFormat::GREY, generous_caps())).expect("begin");
+        for frame in [
+            raw_frame(PixelFormat::GREY, 0, 0),
+            raw_frame(PixelFormat::GREY, 1, 50_000),
+        ] {
+            writer.write_frame(&frame).expect("write_frame");
+        }
+        let summary = writer.finish().expect("finish");
+        assert_eq!(summary.declared_interval_us, 50_000);
+
+        let bytes = file.into_inner();
+        assert!(bytes.starts_with(preamble), "the preamble was overwritten");
+        let parsed = parse_y4m(&bytes[preamble.len()..]).expect("parses");
+        assert_eq!(parsed.rate, (1_000_000, 50_000));
+        assert_eq!(parsed.frames.len(), 2);
     }
 
     #[test]
@@ -1641,6 +1871,7 @@ mod tests {
             layout(WIDTH, HEIGHT, PixelFormat::GREY).expect("legal"),
             NEGOTIATED_US,
         )
+        .bytes
         .len();
         let caps = RecordingCaps {
             max_bytes: u64::try_from(header_len).expect("fits") - 1,
@@ -1711,6 +1942,7 @@ mod tests {
         // length it is guessing.
         struct ShortSink {
             budget: usize,
+            at: u64,
         }
         impl Write for ShortSink {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -1722,15 +1954,33 @@ mod tests {
                 }
                 let taken = buf.len().min(self.budget);
                 self.budget -= taken;
+                self.at = self.at.saturating_add(u64::try_from(taken).expect("fits"));
                 Ok(taken)
             }
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
         }
+        // A cursor that seeks freely and a sink that cannot write: the two faults are kept
+        // apart deliberately, because this test is about what a **write** failure does and a
+        // seek that also refused would let the writer be poisoned by the wrong call.
+        impl Seek for ShortSink {
+            fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+                self.at = match to {
+                    SeekFrom::Start(at) => at,
+                    SeekFrom::Current(delta) | SeekFrom::End(delta) => {
+                        self.at.saturating_add_signed(delta)
+                    }
+                };
+                Ok(self.at)
+            }
+        }
 
         let mut writer = Y4mWriter::begin(
-            ShortSink { budget: 4096 },
+            ShortSink {
+                budget: 4096,
+                at: 0,
+            },
             params(PixelFormat::GREY, generous_caps()),
         )
         .expect("the header fits in the budget");
@@ -1773,9 +2023,11 @@ mod tests {
 
     /// The two frames every frozen fixture holds: sequences 0 and 1, 50 000 µs apart.
     ///
-    /// The gap between the timestamps is what makes the fixture able to say something about
-    /// the rate asymmetry: 50 000 µs is a measurable mean and the header still declares
-    /// 66 666, so a Y4M sink that grew a close-time rewrite would move these bytes.
+    /// The gap between the timestamps is what makes the fixture able to say something about the
+    /// rate at all: 50 000 µs is a measurable mean against a negotiated 66 666, so these bytes
+    /// pin the close-time rewrite as well as the layout — a sink that stopped patching, or that
+    /// patched the negotiated number back in, moves them. The same gap was here before P6d for
+    /// the opposite reason: it pinned a header that *declined* to be rewritten.
     fn fixture_frames(pixel_format: PixelFormat) -> Vec<Frame> {
         vec![
             raw_frame(pixel_format, 0, 0),
@@ -1850,9 +2102,10 @@ mod tests {
             }
             assert_eq!(
                 parsed.rate,
-                (1_000_000, u64::from(NEGOTIATED_US)),
-                "{name}: the frozen header declares the negotiated interval, never a measured \
-                 mean — the asymmetry note N106 records"
+                (1_000_000, 50_000),
+                "{name}: the frozen header declares the **measured** mean, patched over the \
+                 negotiated {NEGOTIATED_US} at close — which is what note N106's amendment \
+                 bought and what these bytes are the record of"
             );
         }
     }

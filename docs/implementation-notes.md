@@ -14636,6 +14636,68 @@ covers, at which point the Y4M sink can patch its header at close exactly as the
 does, `IntervalSource::Measured` becomes reachable in both containers, and the per-container
 arm in that test collapses to one branch.
 
+### Amendment, 2026-08-15 (P6d): the condition above was met, and this is what it cost
+
+**The entry is not retired and not rewritten.** Everything above it is the record of a decision
+taken with a measurement missing, and it was the right decision with that measurement missing —
+AGENTS' rule is that an entry is retired only on empirical disproof, and what was disproved is
+the *ground*, not the reasoning. What follows is the measurement and the change it bought.
+
+`testkit::oracle` was built (docs/7 P6d) and asked the question this note named. Evidence
+**E17** carries the transcripts; the answer, on `ffprobe` 8.0.1 and `mpv` 0.41.0:
+
+| header | `ffprobe` `r_frame_rate` | `mpv` |
+|---|---|---|
+| `F1000000:66666` (as shipped) | `500000/33333` | 15.0002 fps |
+| `F1000000:0066666` | `500000/33333` | 15.0002 fps |
+| `F1000000:0000066666` | `500000/33333` | 15.0002 fps |
+| `F1000000:0000050000` | `20/1` | 20 fps |
+| `F1000000:0000033333` | `1000000/33333` | 30.0003 fps |
+
+**A zero-padded denominator is read as exactly the rate it names, and is indistinguishable from
+the unpadded spelling of the same ratio.** The two programs are not independent about this and
+the harness's own header says why — they link one FFmpeg build — so what this table is, honestly,
+is *one* parser answering twice and a player confirming the file plays. That is a smaller claim
+than "every parser accepts padding" and it is the claim this project needs: these two are what
+the notes' Expected usage item 10 has an agent reaching for.
+
+So the padding is taken:
+
+- `imaging::y4m::RATE_DENOMINATOR_DIGITS` is **ten**, because the interval is a `u32` and
+  `u32::MAX` is ten digits. A width chosen for the intervals a webcam offers would be a width
+  some later device walks past, and the close-time patch would then have to move the rest of the
+  file — the whole point is that `finish` rewrites digits and never lengths.
+- `Y4mWriter` gained a `Seek` bound, an `origin` and a `denominator_at`, and `finish` patches the
+  digits in place. `MIN_RECORDING_BYTES` went 35 → 44: nine bytes per file, paid once, for a
+  header that can be revised.
+- The header still carries the **negotiated** interval from `begin` until the close, deliberately.
+  A crashed take then leaves a file declaring what the camera was asked for rather than
+  `F1000000:0000000000`, which is a division by zero to every parser.
+- `IntervalSource::Measured` is reachable in both containers, and the per-container arm this note
+  predicted would collapse did collapse: `only_the_avi_container_ever_reports_a_measured_interval`
+  is now `every_container_declares_the_mean_it_measured_and_says_so`, a walk over
+  `VideoFormat::ALL` with **one** branch. Its sibling
+  `a_take_that_measured_nothing_declares_what_it_was_asked_for_in_either_container` is new and is
+  what stops the one branch being satisfiable by a container that answers `Measured`
+  unconditionally.
+- The decision moved to `imaging::video::declared_interval`. It was `AviWriter`'s private method
+  for two phases and could be: there was nothing to share it with. Two containers obeying one law
+  is what AGENTS' "one home per law" is about, and the asymmetry was what had been paying for the
+  second copy.
+
+**The frozen fixtures moved**, which is the one time an oracle has changed what a fixture holds
+rather than only confirming it. `crates/imaging/fixtures/y4m/two-frame-64x48-c422.y4m` is 12 341
+→ 12 346 bytes and `-mono.y4m` is 6 198 → 6 203, and their headers went from
+`F1000000:66666` to `F1000000:0000050000` — the **measured** mean of the two timestamps 50 000 µs
+apart, where before they pinned a header that pointedly declined to carry it. Both provenance
+sidecars and `crates/imaging/fixtures/README.md` were rewritten to say so, because a fixture that
+moves without an explanation is a format that drifted.
+
+What has **not** changed is the part of this note that was never about the header:
+`RecordingSummary::span_us` and `frames_written` were measurements in both containers throughout,
+and `measured_interval_us` was the subtraction. What P6d bought is the *file*, handed to a player
+with no summary beside it, playing at the rate it was captured at.
+
 ## N107 — The `y4m` crate expresses the format and not the sink, so P6b writes 51 lines instead of linking 175
 
 **Doc:** design **§2.8**'s dependency registry (`y4m = "0.8.0"`, pinned for this module) and
@@ -15783,3 +15845,396 @@ collected, so the refusal is about a running take rather than about photos.
 
 **Amend this note if** a photo is ever served from a running take's stream, which is the
 alternative above and would make this refusal a fallback rather than the answer.
+
+## N119 — Two oracles, one FFmpeg build: what each is *for*, and why the exit code is not the answer
+
+**Doc:** docs/7 **P6d** ("the ffprobe/mpv oracle harness over fake-generated AVI"); docs/9's
+"Oracle rung accounting" row; AGENTS rule 3 ("every auto-skipping rung (vivid, hardware,
+oracles) reports a named, counted skip — never silence"); rubric rule 6. Recorded 2026-08-15,
+from P6d.
+
+**Believed** — reasonably, and it is what the plan's own wording invites — that `ffprobe` and
+`mpv` are two opinions about a file, and that a rung which ran both over a recording and found
+both content had corroborated the muxer.
+
+**Measured, on the P6d host, three things that each move the design.**
+
+### 1. `mpv` is not a second opinion, and treating it as one is a defect this repository already has a gate against
+
+`mpv` 0.41.0 links the **same FFmpeg build** `ffprobe` 8.0.1 does — libavcodec 62.11.100,
+libavformat 62.3.100. A demux the two agree about is one library agreeing with itself. That is
+precisely the error `scripts/gates/avi-reparse-is-independent.sh` exists to prevent, arriving
+from outside the workspace instead of from inside it: P6a's whole argument for that predicate is
+that two readers sharing a constant agree by construction and a test cannot see it.
+
+So each oracle is given **one** job and neither may stand in for the other:
+
+- **`ffprobe` reads the container.** The demux, the frame records, the declared rate —
+  `OracleArm::Demux`, `Frames` and `Rate` are all readings of one JSON document.
+- **`mpv` answers end-to-end playability, and nothing else.** `OracleArm::Playback` is a boolean.
+
+`OracleArm::oracle()` is a total function from arm to oracle, so a claim can never be satisfied by
+whichever of the two happened to be installed, and
+`every_arm_belongs_to_exactly_one_oracle_and_every_oracle_has_an_arm` holds it.
+
+**Playability is not redundant, and that is measured too.** An AVI header list with zero frames
+behind it — which is the shape a take that died in its first turn leaves — is **accepted by
+`ffprobe`** (exit 0, and it reports `nb_frames: "2"` straight out of `avih.dwTotalFrames`) and
+**refused by `mpv`** (exit 2, nothing to play). Two programs, one library, two genuinely
+different questions.
+
+### 2. `ffprobe`'s exit code is not a validity oracle
+
+Every damaged file tried exits **0**: a recording cut mid-frame, the header-only AVI above, a
+`movi` prefix a poisoned sink left with its size fields still zero. Exit **1** means only that
+libavformat could not open the input at all — a missing path (`No such file or directory`) or
+bytes that probe as nothing (`Invalid data found when processing input`) — and **127** is the
+shell reporting a binary that is not there.
+
+The three answers separate cleanly, which is what makes the harness's shape possible:
+
+| exit | meaning | the harness |
+|---|---|---|
+| 127 / spawn `NotFound` | the oracle is not installed | a named, counted decline |
+| 1 | libavformat refused the file | a failure, with the diagnostic's first line |
+| 0 | libavformat accepted the file | **judged on the JSON** |
+
+A harness that checked the exit status would be green over a recording holding no frames. That is
+vacuous, and vacuous is the one thing this project's rungs may not be (docs/8 Part C).
+
+### 3. Which JSON fields, and why not the obvious ones
+
+- **`nb_frames` is a header claim, not a count.** For AVI it is `avih.dwTotalFrames` verbatim, and
+  a file cut mid-frame still reports it in full. It is *checked* — a header that outruns its
+  container is a real finding — but it is never the count.
+- **`nb_read_frames` over-counts**, because a truncated JPEG still decodes: `overread 8` is a
+  diagnostic, not an error, and the frame is emitted.
+- **`pkt_size` is the only field a short frame shows up in.** The measurement: a three-frame AVI
+  cut inside its last payload keeps `nb_frames`, keeps `nb_read_frames`, lists every frame, and
+  reports the last one at a fraction of its length. `Expectation::with_payload_bytes` exists for
+  exactly that, and `a_frame_cut_in_half_fails_even_though_every_count_still_agrees` asserts the
+  other direction as well — the same file with the payload lengths *withheld* is green, which is
+  what makes the sentence a measurement rather than a hope.
+
+A second measurement decided how far a cut may go: **a JPEG truncated to under about half its
+length stops decoding at all**, at which point libavformat emits no frame record and the *count*
+goes wrong instead. So that test takes an eighth, and finds the offset by searching the finished
+file for the frame's own bytes rather than by an arithmetic that would stop being the middle of a
+frame the day the fixture's JPEG changed size.
+
+### 4. `-v error`, and the trap that is not one
+
+`crates/imaging/fixtures/avi/two-frame-64x48.avi` makes ffmpeg print `[mjpeg] EOI missing,
+emulating` at `-v warning`. **Both frames end with `FFD9`.** The marker is present; this is an
+ffmpeg quirk on a 409-byte quality-15 JPEG, and a harness that read `-v warning` as a finding
+would have failed the fixture the muxer is pinned to on its first run. `-v error` is silent over
+our healthy files, which is the level used — and this paragraph exists so the next reader does not
+spend an afternoon looking for a missing marker that is there.
+
+### What the rung can never say
+
+Our containers are **CFR by construction**: an AVI's `strh` carries one rational for the whole
+stream and a Y4M header carries one `F` ratio, so `ffprobe`'s `pts` values are 0, 1, 2, … in a
+time base that is the *mean*, whatever the camera did between frames. An oracle validates the mean
+and can never see per-frame jitter. That limitation is D7's CFR carve-out and it is stated in
+`testkit::oracle`'s own header, so a reader of a green run does not take more from it than it
+says: per-frame timing lives in `RecordingSummary::span_us` and `dropped_frames`, measured on the
+driver's clock.
+
+### What can go red
+
+`testkit::oracle`'s nine arms, and the three that are this note's own findings:
+`a_file_libavformat_cannot_open_at_all_is_a_failure_and_not_a_decline`,
+`a_file_with_no_frames_in_it_fails_however_many_its_header_claims` and
+`a_frame_cut_in_half_fails_even_though_every_count_still_agrees`.
+
+**Amend this note if** a second oracle appears that does *not* link FFmpeg — GStreamer's
+`gst-discoverer`, a browser's demuxer — at which point corroboration becomes available and the
+one-arm-one-oracle rule becomes a thing to reconsider rather than a rule.
+
+## N120 — A constant-rate file declares one frame period more than its frames span, so the duration bound is two-sided
+
+**Doc:** docs/7 **P6d** ("the declared-vs-wall-clock duration bound measured on the real capture
+… the D7/§3.3 CFR limitation, bounded rather than wished away"); design **D7**'s CFR carve-out;
+`schema::video::RecordReport::wall_clock_ms`. Recorded 2026-08-15, from P6d's R3 run.
+
+**Believed**, and written into the first version of the R3 arm as a single assertion: that a
+recording's file describes *less* time than the take took, because `RecordReport::wall_clock_ms`
+includes the header write, the stream start, the close-time index and every empty turn, none of
+which are inside the frames. The arm asserted `declared_ms <= wall_ms`.
+
+**It went red on the first real run, on a camera that was working perfectly:**
+
+```
+cam:integrated-camera-integrated-c: the file declares 1102 ms of video and the engine's clock
+says the take took 1016 ms; a declared duration past the wall clock is a driver clock this host
+does not share
+```
+
+**True:** a constant-rate container's declared duration is `frames × interval`, and libavformat
+agrees — the frozen two-frame fixture reports `duration_ts: 2` in a time base that *is* the
+interval, and `duration: 0.100000` for two frames 50 000 µs apart. But the interval is the mean
+of `frames - 1` **gaps**. So the file declares exactly one frame period more video than the
+driver's timestamps span, because **the last frame is shown for an interval that no gap between
+timestamps can contain.**
+
+On the Chicony RGB that period is 122 ms (2592×1944 at about 8 fps) and the take's own overhead
+was 37 ms, so the file legitimately outran the wall clock by 86 ms. The assertion was wrong; the
+camera was not.
+
+### The bound as it is now stated, and which halves are exact
+
+Three numbers from three sources, which is also what stops the criterion being two numbers the
+same code computed:
+
+- **span** — the driver's first-to-last frame timestamp, in `RecordingSummary::span_us`;
+- **wall** — the engine's own monotonic clock across the take, in `RecordReport::wall_clock_ms`;
+- **measured** — this test's `Instant`, bracketing the whole call from outside.
+
+Two **exact** orderings, both asserted strictly: `span < wall < measured`. The smallest margin
+measured on either was 37 ms, and neither can be zero for a real take — a sensor takes time to
+deliver its first frame after `STREAMON`, and `run` opens a file and closes a container inside
+the call this test times.
+
+Then the criterion itself, two-sided:
+
+- **above**: the file may declare at most **one frame period** more than the wall clock. Derived,
+  not chosen — it is the arithmetic above, and it fires as a bound rather than as an equality
+  because a take with overhead larger than one period lands on the other side.
+- **below**: the wall clock may run at most `MAX_WALL_CLOCK_OVERHANG_MS` = 640 ms past the file's
+  declared duration. **Measured** (E17), twice the largest of the three-run table in that
+  constant's own doc, and loose for a reason that is written down rather than apologised for: on
+  real hardware the dominant component is `VIDIOC_STREAMON` to the first frame, and a 4K sensor
+  spends 300 ms there. Tightening it until it flakes would trade the two exact orderings above
+  for a number that fails on somebody else's desk.
+
+### What can go red
+
+`crates/backends/v4l2/tests/hardware.rs`'s
+`hw_a_short_recording_from_every_attached_camera_is_read_back_by_two_third_parties`, which
+asserts all four. A hand-applied mutant that computed `wall_clock_ms` from `summary.span_us`
+instead of from the clock — the shape "the bound asserted against a number the code also
+computes" takes — is caught by the **strict** `span < wall`, and by nothing else in the arm.
+
+**Amend this note if** a variable-frame-rate container lands (D7's L1 remux, or the WebM question
+N103 records), at which point "the declared duration" stops being one multiplication and this
+bound has to be re-derived rather than reused.
+
+## N121 — A test that invents a missing tool must not print the sentence the accounting counts
+
+**Doc:** AGENTS rule 3 (named, counted skips); docs/8 Part C ("skip == pass, in any costume");
+docs/7 P6d. Recorded 2026-08-15, from P6d.
+
+**Watched happening**, on the first run of `scripts/rung-oracles.sh` on a machine with **both**
+oracles installed:
+
+```
+rung-oracles: SKIPPED — the rung declined, 4 time(s), each naming what was missing …
+rung-oracles:   SKIP oracles: ffprobe is not on this host …
+```
+
+Neither sentence was true. The four lines came from
+`every_host_the_fault_menu_names_declines_by_name_rather_than_passing`, the arm that drives
+`ScriptedTools` — a fabricated host with an oracle taken away, which exists precisely *because*
+this machine has both and the decline path could not otherwise be exercised at all. The arm
+called `OracleReport::print()` on its fabricated report, the line went into the run log, and the
+runner's `grep` cannot tell an invented absence from a real one.
+
+**The defect class is not "a test printed too much".** It is that a rung's accounting is a text
+channel with no sender authentication: anything that emits the sentence is believed, and the one
+thing guaranteed to emit it is the test written to prove the sentence is right. A fabricated
+decline is strictly worse than a missing one, because it converts a run that asked every question
+into a transcript saying it asked none — and the phase gate records the transcript.
+
+**The repair** splits producing the sentence from emitting it: `OracleReport::decline_lines`
+returns the lines, `run_line` returns the other shape, and `print` is the two of them going to
+standard output. The fabricated-host arm asserts the lines instead of printing them — and asserts
+more than printing would have shown, since it can check that each names its oracle, what went
+unasked and the remedy.
+
+**The general shape, for the next rung that grows an accounting channel:** a decline is *data*
+first and a line second. A test that needs to inspect one asks for the value; only the code path
+that is genuinely declining is allowed to write it out.
+
+### What can go red
+
+`every_host_the_fault_menu_names_declines_by_name_rather_than_passing` asserts the line contents
+without emitting them, and `scripts/gates/oracle-rung-accounting.sh`'s
+`fail_case_a_decline_reported_as_a_run` holds the accounting's other direction. What neither can
+catch is a *future* test calling `print()` on a fabricated report — that is review's, and this
+note is the record of what it costs.
+
+## E17 — P6d's oracle rung and the R3 recording, at four real cameras, 2026-08-15
+
+E15 and E16 are the shape this follows: a dated run against something this project does not
+control, recorded once and not amended. It carries three things docs/7 **P6d** asks for — the
+oracle harness's first run, a short real recording on each attached camera with the
+declared-vs-wall-clock duration bound measured on it, and the measurement note **N106** named as
+the thing that would retire its own ground.
+
+### The fixture
+
+**Host:** the P4/P5/P6 workstation, kernel `7.0.0-29-generic` (x86_64), on the tree at `ca7fc89`
+plus this sub-milestone's working tree.
+
+**Oracles:** `ffprobe` version `8.0.1-3ubuntu2` · `mpv` `v0.41.0`. **They link the same FFmpeg
+build** — libavcodec 62.11.100, libavformat 62.3.100 — which is the measurement note **N119** is
+built on and the reason `mpv` claims playability here and never corroborates a demux.
+
+**Attached: four logical cameras.** The Logitech BRIO of E15 is off the bus and the Dell monitor
+webcam is back, which the rung says out loud rather than leaving to be noticed:
+
+```
+SKIP (partial): 1 committed profile(s) match no camera attached to this host, so this arm did
+not check them against a device: logitech-brio
+```
+
+That line is `report_unchecked_profiles`, added after 2026-08-11 when a transcript read as full
+coverage while two profiles went unmentioned. Four of five committed profiles were compared
+against a device on this run; `logitech-brio` was not, and nothing here is evidence about it.
+
+### 1. A zero-padded `F` denominator is read as the rate it names — the measurement N106 asked for
+
+The committed mono fixture's payload with five different header lines, each handed to both
+programs:
+
+| header | `ffprobe` `r_frame_rate` | `mpv` |
+|---|---|---|
+| `F1000000:66666` (as shipped before P6d) | `500000/33333` | 15.0002 fps |
+| `F1000000:0066666` | `500000/33333` | 15.0002 fps |
+| `F1000000:0000066666` | `500000/33333` | 15.0002 fps |
+| `F1000000:0000050000` | `20/1` | 20 fps |
+| `F1000000:0000033333` | `1000000/33333` | 30.0003 fps |
+
+Padding is invisible to both, and the rate read back is exactly the ratio written. N106's
+amendment records what that bought: a fixed-width denominator, a close-time patch, and
+`IntervalSource::Measured` reachable in both containers.
+
+### 2. R3 — a one-second take from every attached camera, oracle-validated
+
+`just smoke-hw`, **20 of 20 tests run, 20 passed**, 23 named partial declines, census complete.
+The two new arms' transcript, verbatim:
+
+```
+cam:integrated-camera-integrated-c: avi 2592x1944 — 9 frame(s), 1184664 bytes, declared 122499
+  us/frame (Measured); file duration 1102 ms, driver span 979 ms, engine wall clock 1016 ms,
+  this test measured 1191 ms; declared-vs-wall +86/-0 ms against a 122 ms frame period;
+  1 dropped, ended Duration
+cam:integrated-camera-integrated-i: y4m 640x360 — 15 frame(s), 3456139 bytes, declared 73429
+  us/frame (Measured); file duration 1101 ms, driver span 1028 ms, engine wall clock 1065 ms,
+  this test measured 1106 ms; declared-vs-wall +36/-0 ms against a 73 ms frame period;
+  1 dropped, ended Duration
+cam:obsbot-tiny-3-obsbot-tiny-3-st: avi 3840x2160 — 21 frame(s), 2996698 bytes, declared 33820
+  us/frame (Measured); file duration 710 ms, driver span 676 ms, engine wall clock 1012 ms,
+  this test measured 1113 ms; declared-vs-wall +0/-302 ms against a 33 ms frame period;
+  0 dropped, ended Duration
+cam:dell-u3224kb-a-4k-webcam: avi 3840x2160 — 10 frame(s), 5664920 bytes, declared 84443
+  us/frame (Measured); file duration 844 ms, driver span 759 ms, engine wall clock 1024 ms,
+  this test measured 2383 ms; declared-vs-wall +0/-180 ms against a 84 ms frame period;
+  0 dropped, ended Duration
+cam:integrated-camera-integrated-i: offers [PixelFormat("GREY")] and nothing AVI carries, so
+  every take from it is Y4M
+cam:integrated-camera-integrated-i: a .avi sink over a Some(PixelFormat("GREY")) stream is
+  refused naming [PixelFormat("MJPG"), PixelFormat("JPEG")], and no file was left behind
+oracles: 4 container claim(s) about …/take-3-4-1-0 checked by ffprobe and mpv
+oracles: 4 container claim(s) about …/take-3-4-1-2 checked by ffprobe and mpv
+oracles: 4 container claim(s) about …/take-3-1-1-0 checked by ffprobe and mpv
+oracles: 4 container claim(s) about …/take-2-3-4-1-1-1-0 checked by ffprobe and mpv
+```
+
+**Every take reported `IntervalSource::Measured`, including the Y4M one** — which is the whole of
+what P6d changed, arriving on the sensor that has no other container.
+
+**The duration bound, per camera.** Three consecutive runs; the numbers moved by at most 15 ms:
+
+| camera | container | frames | mean interval | file duration | driver span | engine wall clock | declared − wall |
+|---|---|---|---|---|---|---|---|
+| Chicony RGB | AVI 2592×1944 | 9 | 122 499 µs | 1102 ms | 979 ms | 1016 ms | **+86 ms** |
+| Chicony IR | Y4M 640×360 | 15 | 73 429 µs | 1101 ms | 1028 ms | 1065 ms | **+36 ms** |
+| Dell U3224KB | AVI 3840×2160 | 10 | 84 443 µs | 844 ms | 759 ms | 1024 ms | **−180 ms** |
+| OBSBOT Tiny 3 | AVI 3840×2160 | 21 | 33 820 µs | 710 ms | 676 ms | 1012 ms | **−302 ms** |
+
+Two cameras' files declare **more** video than the take took, which is note **N120**: a
+constant-rate container declares `frames × interval` while the interval is the mean of
+`frames − 1` gaps, so the last frame is shown for a period no gap can contain. The bound is
+therefore two-sided — at most one frame period above (86 ms against 122; 36 against 73), at most
+`MAX_WALL_CLOCK_OVERHANG_MS` = 640 ms below (largest measured: 302) — and the *exact* claims are
+the two strict orderings `driver span < engine wall clock < this test's own Instant`, whose
+smallest measured margins are 36 ms and 41 ms.
+
+The overhang tracks the sensor rather than the code: the two 4K cameras spend 180–300 ms between
+`VIDIOC_STREAMON` and their first frame, and the two slower ones swallow their own start-up
+inside one frame period.
+
+### 3. The oracles' own words, on real captures
+
+`webcam-handler-cli record cam:obsbot-tiny-3-obsbot-tiny-3-st -o …/take.avi --duration 1s --json`
+answered `frames_written: 21`, `bytes_written: 2996620`, `declared_interval_us: 33835`,
+`interval_source: "measured"`, `span_us: 676702`, `wall_clock_ms: 1021`. `ffprobe` over the same
+file:
+
+```json
+{ "streams": [ { "codec_name": "mjpeg", "width": 3840, "height": 2160,
+                 "r_frame_rate": "200000/6767", "nb_frames": "21", "nb_read_frames": "21" } ],
+  "format": { "nb_streams": 1, "format_name": "avi" } }
+```
+
+`200000/6767` is `1000000/33835` reduced — the declared interval exactly, which is why the rate
+arm compares rationals and never spellings. `mpv` exited 0.
+
+The same verb at the IR sensor answered `format: "y4m"`, `frames_written: 15`,
+`declared_interval_us: 73440`, `interval_source: "measured"`, `span_us: 1028167`,
+`wall_clock_ms: 1064`, and:
+
+```json
+{ "streams": [ { "codec_name": "rawvideo", "width": 640, "height": 360,
+                 "r_frame_rate": "6250/459", "nb_read_frames": "15" } ],
+  "format": { "nb_streams": 1, "format_name": "yuv4mpegpipe" } }
+```
+
+`6250/459` is `1000000/73440` reduced. **The file's first 46 bytes** —
+`YUV4MPEG2 W640 H360 F1000000:0000073440 Ip C` and the start of `Cmono` — are the padded
+denominator carrying a
+measured mean off a real sensor, which is the sentence this whole sub-milestone is about. Note
+that `nb_frames` is **absent** for Y4M and present for AVI: the harness therefore counts the
+`frames` array and treats `nb_frames` as a second number when there is one (N119).
+
+`mpv` exited 0 on both.
+
+### 4. R2 — the raw container through the real ioctl layer
+
+`just rung-vivid-managed`, **9 of 9 tests run, 9 passed, 0 skips**:
+
+```
+cam:vivid: recorded YUYV 3840x2160 to Y4M — 4 frame(s), 66355274 bytes, declared 199856 us/frame
+  (Measured)
+oracles: 4 container claim(s) about …/vivid-vivid-0 checked by ffprobe and mpv
+```
+
+66 MB for four frames, which is D7's "enormous but exact" arriving as a number.
+
+### 5. Two defects this run found in the work that produced it
+
+Both are recorded as notes rather than fixed silently, because each is a class rather than a typo.
+
+- **N120** — the R3 duration bound as first written asserted `declared ≤ wall` and went red on a
+  camera that was working: `the file declares 1102 ms of video and the engine's clock says the
+  take took 1016 ms`. The assertion was wrong, not the camera. The vivid arm found the same thing
+  independently on its own first run.
+- **N121** — the fabricated-host arm called `OracleReport::print()`, so
+  `scripts/rung-oracles.sh` reported `SKIPPED — the rung declined, 4 time(s)` on a machine with
+  both oracles installed. A test written to prove a decline is right is the one thing guaranteed
+  to emit the sentence the accounting counts.
+
+### 6. What this run does not say
+
+The rung validates the **mean** interval and can never see per-frame jitter: both containers are
+CFR by construction, so `ffprobe`'s presentation timestamps are frame indices in a time base that
+*is* the mean. Per-frame timing lives in `RecordingSummary::span_us` and `dropped_frames`,
+measured on the driver's own clock — and this run recorded a dropped frame on each Chicony,
+which is that mechanism working rather than a fault.
+
+Two of the takes above negotiated 4K and one negotiated 2592×1944, which is D5's format ranking
+(note **N85**) choosing the largest mode rather than anything this rung asked for. A recording at
+a smaller mode would deliver more frames per second and is a different measurement; nothing here
+is evidence about it.

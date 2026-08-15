@@ -10,6 +10,7 @@
 //! | [`corpus`] | loading the committed device profiles (§3.2) |
 //! | [`fixtures`] | the hand-authored minimal-repro profile that keeps P0 hermetic |
 //! | [`images`] | synthetic image fixtures — a re-export surface over the imaging crate's generators |
+//! | [`oracle`] | the container oracles: `ffprobe` and `mpv` over a file this workspace wrote (docs/7 P6d) |
 //!
 //! Dev-only is a property, not a convention: this crate may grow tooling dependencies
 //! that must never reach a shipped binary, so the gate asserts nothing depends on it
@@ -23,5 +24,7 @@ pub mod battery;
 pub mod corpus;
 pub mod fixtures;
 pub mod images;
+pub mod oracle;
 
 pub use battery::{ArmOutcome, BatteryArm, BatteryReport};
+pub use oracle::{Expectation, Oracle, OracleArm, OracleReport};

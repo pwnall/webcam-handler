@@ -57,6 +57,18 @@
 //! — and once any cap is reached the recording is over: a later, smaller frame is refused
 //! too, because a recording with a hole in the middle answers the "how long did this take"
 //! question wrongly.
+//!
+//! ## One rate law, since P6d, because both containers can now honour it
+//!
+//! `declared_interval` is D7's CFR carve-out — *"the header's rate is the negotiated frame
+//! interval, rewritten at close to the measured mean interval"* — as one function both muxers
+//! call. It did not live here before P6d and could not have: a Y4M header was variable-width
+//! text, so that container declined the rewrite and note **N106** recorded the asymmetry. The
+//! oracle rung measured what N106 said would retire it (a zero-padded `F` ratio is read
+//! correctly by both `ffprobe` and `mpv`), the Y4M header's rate field became fixed-width, and
+//! the two containers stopped differing on the one question they had ever differed on. A law
+//! two callers obey belongs in one place (AGENTS' "one home per law"), and the asymmetry that
+//! justified two copies of it is gone.
 
 use std::io::{Seek, Write};
 use std::time::Duration;
@@ -65,7 +77,7 @@ use schema::camera::PixelFormat;
 use schema::capture::Frame;
 use schema::error::Result;
 use schema::limits;
-use schema::video::{CapReached, RecordingSummary, VideoFormat};
+use schema::video::{CapReached, IntervalSource, RecordingSummary, VideoFormat};
 
 use crate::avi::AviParams;
 use crate::avi::write::{AviWriter, MAX_RECORDING_BYTES as AVI_MAX_RECORDING_BYTES};
@@ -100,6 +112,61 @@ const _: () = assert!(limits::MAX_RECORDING_BYTES <= AVI_MAX_RECORDING_BYTES);
 /// P6b because both containers declare it and a second copy of a placeholder is a second
 /// placeholder. `crate::avi::write` re-exports it, so P6a's spelling still resolves.
 pub const PROVISIONAL_INTERVAL_US: u32 = 33_333;
+
+/// The interval a finished file declares, where that number came from, and the span behind it.
+///
+/// **D7's CFR carve-out, once**, called by both muxers at close. Three answers rather than one
+/// because they are three different claims about the same header field, and
+/// [`schema::video::IntervalSource`] exists so a caller never has to guess which it is holding:
+///
+/// - a **mean** was measured across the delivered frame timestamps
+///   ([`IntervalSource::Measured`]);
+/// - nothing could be measured and the negotiation had named a number
+///   ([`IntervalSource::Negotiated`]);
+/// - neither, so the header carries [`PROVISIONAL_INTERVAL_US`] and says so
+///   ([`IntervalSource::Provisional`]).
+///
+/// Three things make a take measure nothing, and each of them returns `None` for the span
+/// rather than zero, because reporting zero would claim a measurement nobody made: **fewer
+/// than two frames** span no interval at all, a **driver clock that ran backwards** spans
+/// nothing that is a duration, and a **mean that truncates to zero** — more frames than
+/// microseconds — has stopped being an interval. The last one matters to a file rather than to
+/// arithmetic: a zero rate is meaningless to every player, and AVI would have to zero
+/// `strh.dwScale` to keep its two homes agreeing.
+///
+/// [`schema::video::RecordingSummary::measured_interval_us`] answers the neighbouring question
+/// — the mean a *caller* computes out of the two observed numbers — and applies the same three
+/// refusals; its own doc says so. This one additionally decides what the **header** says, which
+/// is why it also carries the negotiated fallback that a caller's subtraction has no business
+/// knowing about.
+pub(crate) fn declared_interval(
+    first_timestamp_us: Option<i64>,
+    last_timestamp_us: i64,
+    frames_written: u32,
+    negotiated_interval_us: Option<u32>,
+) -> (u32, IntervalSource, Option<u64>) {
+    let span_us = match first_timestamp_us {
+        Some(first) if frames_written >= 2 => last_timestamp_us
+            .checked_sub(first)
+            .and_then(|delta| u64::try_from(delta).ok()),
+        _ => None,
+    };
+    let intervals = u64::from(frames_written.saturating_sub(1));
+    let measured = span_us
+        .filter(|span| *span > 0)
+        .and_then(|span| span.checked_div(intervals))
+        .filter(|mean| *mean > 0)
+        .and_then(|mean| u32::try_from(mean).ok());
+    match (measured, negotiated_interval_us) {
+        (Some(mean), _) => (mean, IntervalSource::Measured, span_us),
+        (None, Some(negotiated)) => (negotiated, IntervalSource::Negotiated, span_us),
+        (None, None) => (
+            PROVISIONAL_INTERVAL_US,
+            IntervalSource::Provisional,
+            span_us,
+        ),
+    }
+}
 
 /// What a recording is allowed to cost.
 ///
@@ -516,10 +583,19 @@ mod tests {
     }
 
     #[test]
-    fn only_the_avi_container_ever_reports_a_measured_interval() {
-        // The asymmetry note **N106** records, asserted rather than described. Both takes
-        // deliver two frames 50 000 µs apart against a negotiated 66 666, so both *have* a
-        // mean to report and only one of them is allowed to declare it.
+    fn every_container_declares_the_mean_it_measured_and_says_so() {
+        // D7's CFR carve-out over `VideoFormat::ALL`, and **one branch** since P6d — which is
+        // the shape note **N106**'s amendment predicted for the day the Y4M header could be
+        // rewritten. It was a two-armed `match` for two phases: AVI declared the measured mean
+        // and Y4M declared the negotiated interval, because a variable-width text header had
+        // nothing to patch. It is written as a walk rather than as two tests so that a third
+        // container has to answer the question rather than inherit an answer, and so that a
+        // container which quietly stopped rewriting its header goes red here.
+        //
+        // Every take delivers two frames 50 000 µs apart against a negotiated 66 666, so each
+        // one *has* a mean and each one's declared interval is distinguishable from what it was
+        // asked for. `NEGOTIATED_US` is asserted absent for that reason: a container that
+        // ignored its own measurement would declare 66 666 and satisfy every other line here.
         for &container in VideoFormat::ALL {
             let format = representative(container);
             let frames = [frame(format, 0, 0), frame(format, 1, 50_000)];
@@ -528,22 +604,65 @@ mod tests {
             assert_eq!(
                 summary.measured_interval_us(),
                 Some(50_000),
-                "{container} must carry the measurement whatever its header can declare"
+                "{container} must carry the measurement as well as declare it"
             );
-            match container {
-                VideoFormat::Avi => {
-                    assert_eq!(summary.interval_source, IntervalSource::Measured);
-                    assert_eq!(summary.declared_interval_us, 50_000);
-                }
-                VideoFormat::Y4m => {
-                    assert_eq!(
-                        summary.interval_source,
-                        IntervalSource::Negotiated,
-                        "a Y4M header is written before the first frame and cannot be revised"
-                    );
-                    assert_eq!(summary.declared_interval_us, NEGOTIATED_US);
-                }
-            }
+            assert_eq!(
+                summary.interval_source,
+                IntervalSource::Measured,
+                "{container} measured a mean and did not say so"
+            );
+            assert_eq!(summary.declared_interval_us, 50_000, "{container}");
+            assert_ne!(
+                summary.declared_interval_us, NEGOTIATED_US,
+                "{container} declared what it was asked for rather than what it saw"
+            );
+        }
+    }
+
+    #[test]
+    fn a_take_that_measured_nothing_declares_what_it_was_asked_for_in_either_container() {
+        // The other half of the same law, and the one that keeps the assertion above from being
+        // satisfiable by a container that answers `Measured` unconditionally. A single frame
+        // spans no interval, so there is nothing to measure and nothing for either close to
+        // patch in — and the label says `Negotiated` rather than dressing 66 666 up as a
+        // finding (`schema::video::IntervalSource`'s whole reason for existing).
+        for &container in VideoFormat::ALL {
+            let format = representative(container);
+            let (_, _, summary) = record(container, generous_caps(), &[frame(format, 0, 0)]);
+            assert_eq!(summary.span_us, None, "{container}");
+            assert_eq!(summary.measured_interval_us(), None, "{container}");
+            assert_eq!(
+                summary.interval_source,
+                IntervalSource::Negotiated,
+                "{container} claimed a measurement over one frame"
+            );
+            assert_eq!(summary.declared_interval_us, NEGOTIATED_US, "{container}");
+
+            // And a negotiation that named nothing is `Provisional` in both, so the placeholder
+            // is never mistakable for either of the other two answers.
+            let mut file = Vec::new();
+            let mut recorder = Recorder::begin(
+                container,
+                Cursor::new(&mut file),
+                RecordingParams {
+                    negotiated_interval_us: None,
+                    ..params(container, generous_caps())
+                },
+            )
+            .expect("begin");
+            recorder
+                .write_frame(&frame(format, 0, 0))
+                .expect("write_frame");
+            let summary = recorder.finish().expect("finish");
+            assert_eq!(
+                summary.interval_source,
+                IntervalSource::Provisional,
+                "{container}"
+            );
+            assert_eq!(
+                summary.declared_interval_us, PROVISIONAL_INTERVAL_US,
+                "{container}"
+            );
         }
     }
 

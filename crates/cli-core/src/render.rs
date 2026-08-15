@@ -955,8 +955,10 @@ fn adjustment_text(adjustment: &Adjustment) -> String {
 /// them. The notes' Expected usage item 10 is blunt about what a recording is for — *"did this
 /// take 200 ms or 2 s"* — so a reader has to be able to tell a rate that was *observed* from
 /// one the camera was merely asked for, and `interval_source` is the field that says which
-/// this file's header field is. A Y4M take never reports `measured` (note **N106**), and the
-/// "measured" row beside it is what keeps that from costing the reader the measurement.
+/// this file's header field is. Either container may report `measured` since P6d — note
+/// **N106**'s amendment, and the oracle that settled it — but a take of one frame measures
+/// nothing in either, so the "measured" row beside it is still what keeps a `negotiated` header
+/// from costing the reader the measurement.
 ///
 /// The path goes in the table and never on standard output as bytes: a recording is not
 /// returned as bytes at all (note **N110**), so unlike `photo` this renderer has no stream to

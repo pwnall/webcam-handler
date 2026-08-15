@@ -44,17 +44,22 @@
 //! asked"* — so a caller must be able to tell a rate that was observed from one the camera
 //! was asked for.
 //!
-//! **The two containers answer it differently, and the difference is real.** AVI's header
-//! rate lives in fixed-width binary fields, so D7's CFR carve-out rewrites it at close to the
-//! measured mean and the summary says [`IntervalSource::Measured`]. Y4M's header is
-//! variable-width text written *before* the first frame, so the same rewrite would need a
-//! fixed-width padded `F` ratio whose legality across parsers this project has not measured —
-//! a Y4M take therefore declares the negotiated (or provisional) interval and its
-//! `interval_source` is **never** `Measured`. Note **N106** records the asymmetry, what makes
-//! the parser claim `measured` rather than `declared`, and why the summary is still enough:
-//! [`RecordingSummary::span_us`] and [`RecordingSummary::frames_written`] carry the
-//! measurement whichever container was used, so the mean is the caller's subtraction rather
-//! than a number it has to take on trust.
+//! **Both containers answer it the same way since P6d, and they did not before.** AVI's header
+//! rate lives in fixed-width binary fields, so D7's CFR carve-out has always rewritten it at
+//! close to the measured mean. Y4M's header is variable-width text written *before* the first
+//! frame, so the same rewrite needed a fixed-width padded `F` ratio — and whether a padded
+//! ratio is read correctly by the parsers that matter was **unmeasured**, so note **N106**
+//! recorded the asymmetry and named the measurement that would end it. P6d's oracle rung took
+//! it (evidence **E17**): `ffprobe` and `mpv` both read `F1000000:0000050000` as exactly the
+//! rate it names. The Y4M denominator is now zero-padded to a fixed width and patched at close,
+//! so **either container may answer [`IntervalSource::Measured`]** and the vocabulary means the
+//! same thing in both.
+//!
+//! What has not changed is that the summary is enough on its own:
+//! [`RecordingSummary::span_us`] and [`RecordingSummary::frames_written`] carry the measurement
+//! whichever container was used, so the mean is the caller's subtraction rather than a number it
+//! has to take on trust. What P6d added is the *file*, handed to a player with no summary beside
+//! it, playing at the rate it was captured at.
 //!
 //! ## The request, and the three questions it answers about itself
 //!
@@ -148,14 +153,14 @@ closed_vocabulary! {
     pub enum IntervalSource {
         /// The mean of the delivered frame timestamps — the close-time rewrite happened.
         ///
-        /// **AVI only.** A Y4M header is written before the first frame and cannot be
-        /// rewritten in place, so a Y4M take never reports this; see the module doc and
-        /// note **N106**.
+        /// **Either container**, since P6d. It was AVI's alone for two phases, because a Y4M
+        /// header is written before the first frame and its rate field was variable-width text;
+        /// note **N106** and its amendment record what the padded field cost and what measured
+        /// it (evidence **E17**).
         Measured,
-        /// What the camera was asked for. For AVI: fewer than two frames arrived, or their
-        /// timestamps described no usable span, so nothing was measured. For Y4M: the
-        /// negotiation named an interval and the header declares it, which is as far as
-        /// that container goes.
+        /// What the camera was asked for: fewer than two frames arrived, or their timestamps
+        /// described no usable span, so nothing was measured and the header kept the number the
+        /// negotiation named.
         Negotiated,
         /// Neither: the negotiation named no interval and none was measured, so the header
         /// carries `imaging::video::PROVISIONAL_INTERVAL_US`.
@@ -182,13 +187,14 @@ pub struct RecordingSummary {
     ///
     /// For AVI that is `avih.dwMicroSecPerFrame` and `strh.dwScale`/`dwRate`, which
     /// `imaging::avi::write::AviWriter::finish` rewrites together so a reader finding them
-    /// disagreeing has caught a defect. For Y4M it is the header's `F` ratio, written before
-    /// the first frame and never revised.
+    /// disagreeing has caught a defect. For Y4M it is the header's `F` ratio, whose denominator
+    /// is zero-padded to a fixed width so that `imaging::y4m::Y4mWriter::finish` can rewrite it
+    /// in place without moving a byte after it.
     pub declared_interval_us: u32,
     /// Whether that interval was measured, negotiated or provisional.
     ///
-    /// **A Y4M take never answers [`IntervalSource::Measured`]**, and that is a property of
-    /// the container rather than of the recording: see the module doc.
+    /// The same three answers in both containers since P6d; see the module doc for what used to
+    /// make Y4M the exception and what ended it.
     pub interval_source: IntervalSource,
     /// Frames the driver's `sequence` numbers say never arrived.
     ///
@@ -202,9 +208,12 @@ pub struct RecordingSummary {
     /// backwards across the take — a negative span is not a duration, and reporting it as
     /// zero would claim a measurement nobody made.
     ///
-    /// Carried by **both** containers, which is what keeps the Y4M header's un-rewritable
-    /// rate from costing the caller the measurement: `span_us / (frames_written - 1)` is the
-    /// mean, computed by whoever wants it out of two numbers that were observed.
+    /// Carried by **both** containers: `span_us / (frames_written - 1)` is the mean, computed by
+    /// whoever wants it out of two numbers that were observed. That is why the Y4M header's
+    /// un-rewritable rate cost the caller nothing for the two phases it lasted, and it is still
+    /// the number to read — a header declares `frames_written × declared_interval_us`, one frame
+    /// period more than this, because a constant-rate container shows its last frame for an
+    /// interval no gap between timestamps can contain (note **N120**).
     pub span_us: Option<u64>,
     /// The bound that ended the recording, if one did.
     pub cap_reached: Option<CapReached>,
@@ -219,12 +228,15 @@ impl RecordingSummary {
     ///
     /// `None` for a take that spans nothing: fewer than two frames measure no interval, a
     /// clock that ran backwards leaves no span, and a mean that truncates to zero is not an
-    /// interval any more — the same three refusals `AviWriter::finish` applies before it
-    /// declares [`IntervalSource::Measured`], stated once so the two cannot disagree.
+    /// interval any more — the same three refusals `imaging::video::declared_interval` applies
+    /// before either container declares [`IntervalSource::Measured`], stated once so the two
+    /// cannot disagree.
     ///
-    /// It is deliberately **not** the same question as [`Self::declared_interval_us`]: for a
-    /// Y4M take the two differ by design, and a caller comparing them is reading exactly the
-    /// asymmetry the module doc describes.
+    /// It is deliberately **not** the same question as [`Self::declared_interval_us`]: that is
+    /// what the *file's own header* says, and a take whose `interval_source` is
+    /// [`IntervalSource::Negotiated`] or [`IntervalSource::Provisional`] has a header that
+    /// carries a number this method did not produce. The two agree exactly when the close had
+    /// something to measure.
     #[must_use]
     pub fn measured_interval_us(&self) -> Option<u64> {
         let intervals = u64::from(self.frames_written.checked_sub(1)?);
@@ -681,6 +693,15 @@ pub struct RecordReport {
     /// index and every turn that brought no frame, none of which are inside the span. The
     /// wall clock is therefore always the larger of the two for an honest take, and a span
     /// that *exceeds* it is a driver clock this host does not share.
+    ///
+    /// **The file's own declared duration is a third number and it is not the span.** A
+    /// constant-rate container declares `frames_written × declared_interval_us`, while the
+    /// interval is the mean of `frames_written - 1` gaps — so a healthy take's file legitimately
+    /// claims **one frame period more** video than this wall clock, and a comparison written the
+    /// obvious way goes red on a camera that is working (note **N120**; measured at 1102 ms
+    /// declared against 1016 ms of wall clock on a 8 fps take). The bound docs/7 P6d asks for is
+    /// therefore two-sided: at most one frame period above, and `MAX_WALL_CLOCK_OVERHANG_MS`
+    /// below, with `crates/backends/v4l2/tests/hardware.rs` carrying the measurement.
     ///
     /// Milliseconds rather than microseconds because that is the resolution the engine's
     /// clock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by

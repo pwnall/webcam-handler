@@ -661,34 +661,20 @@ impl<W: Write + Seek> AviWriter<W> {
     }
 
     /// The interval the header will declare, where it came from, and the span behind it.
+    ///
+    /// Forwarded to `crate::video::declared_interval` since P6d, where the arithmetic and its
+    /// three refusals now live for both containers. It was this method's own until then, and it
+    /// could be: a Y4M header could not be rewritten at close, so there was nothing to share it
+    /// with (note **N106**, now amended). The forwarder stays rather than the call being
+    /// inlined into `finish`, so a reader of this muxer still meets "the interval the header
+    /// will declare" where the header is written.
     fn declared_interval(&self) -> (u32, IntervalSource, Option<u64>) {
-        let span_us = match self.first_timestamp_us {
-            Some(first) if self.frames_written >= 2 => self
-                .last_timestamp_us
-                .checked_sub(first)
-                .and_then(|delta| u64::try_from(delta).ok()),
-            // Fewer than two frames span nothing, and a clock that ran backwards spans
-            // nothing that is a duration. Both are `None` rather than zero: reporting zero
-            // would claim a measurement nobody made.
-            _ => None,
-        };
-        let intervals = u64::from(self.frames_written.saturating_sub(1));
-        let measured = span_us
-            .filter(|span| *span > 0)
-            .and_then(|span| span.checked_div(intervals))
-            // A mean that truncates to zero — more frames than microseconds — is not an
-            // interval any more, and a zero rate is meaningless to every player.
-            .filter(|mean| *mean > 0)
-            .and_then(|mean| u32::try_from(mean).ok());
-        match (measured, self.negotiated_interval_us) {
-            (Some(mean), _) => (mean, IntervalSource::Measured, span_us),
-            (None, Some(negotiated)) => (negotiated, IntervalSource::Negotiated, span_us),
-            (None, None) => (
-                PROVISIONAL_INTERVAL_US,
-                IntervalSource::Provisional,
-                span_us,
-            ),
-        }
+        crate::video::declared_interval(
+            self.first_timestamp_us,
+            self.last_timestamp_us,
+            self.frames_written,
+            self.negotiated_interval_us,
+        )
     }
 
     /// `avih.dwMaxBytesPerSec`: the whole file over the duration it declares.

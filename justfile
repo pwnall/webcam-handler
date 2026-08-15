@@ -187,6 +187,17 @@ rung-web-install:
     # fetch some other browser, which is the whole failure the pin exists to prevent.
     node node_modules/@playwright/test/cli.js install chromium
 
+# Like `rung-web` and unlike the two below it, this suite is not `#[ignore]`d: its
+# fake-generated half belongs on every push (design §3.1 names R0, R1, R1-web, R2 and R3 and no
+# oracle letter, so this rung has a name and no letter), and `just ci`'s `test` step already runs
+# it. This recipe is the *accounting* — it runs the same selection and ends on a named verdict,
+# RAN or SKIPPED, which is what `just gate-g6` records. The real-camera half is part of R3 and
+# runs under `just smoke-hw`.
+#
+# The container oracles — ffprobe and mpv over files this workspace wrote.
+rung-oracles:
+    ./scripts/rung-oracles.sh
+
 # Runs where the module is loadable; reports a named, counted skip elsewhere.
 #
 # R2 — the vivid virtual-driver rung.

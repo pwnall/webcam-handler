@@ -36,8 +36,10 @@ first:
   and `the_parser_refuses_the_ways_this_writer_could_be_wrong` asserts them before it is
   trusted with a round trip. The `y4m` crate's decoder would **not** have served: it ships in
   the same file as the encoder it would have been checking (note **N107**).
-- The ffprobe/mpv oracle rung P6d adds — a third party that has never read our code, over
-  files our muxers produced.
+- `testkit::oracle` — the ffprobe/mpv rung P6d added: a third party that has never read our
+  code, handed files our muxers produced. It is what measured the padded `F` denominator these
+  two files now carry (note **N106**'s amendment, evidence **E17**), which is the one time an
+  oracle has changed what a fixture holds rather than only confirming it.
 
 ## Provenance — `avi/two-frame-64x48.avi`
 
@@ -57,13 +59,13 @@ first:
 
 | Field | Value |
 |---|---|
-| Generated | 2026-08-14 |
+| Generated | 2026-08-15 (re-generated: the header's rate field became fixed-width and is now patched at close — see below) |
 | Nature | **Synthetic**. Generated samples, written by this workspace; no camera, no capture |
 | Generator | `imaging::y4m::Y4mWriter` over two frames from `imaging::y4m::tests::raw_frame` |
 | Samples | Every sample is a function of its own position: `luma(x, y) = (7x + 13y) % 251`, `cb(x, y) = 64 + (3x + 5y) % 61`, `cr(x, y) = 160 + (11x + 2y) % 61`. Three primes, three disjoint value ranges — so a plane shifted by a row, a column, or swapped with its sibling is a plane full of wrong numbers rather than one that happens to match |
 | Streams | 64×48 `YUYV` → `C422`, and 64×48 `GREY` → `Cmono` |
-| Interval | `negotiated_interval_us = 66_666` (15 fps), declared as `F1000000:66666`. Deliberately **not** the 33 333 µs placeholder, so a sink that dropped the negotiated number could not match these bytes |
-| Timestamps | 0 µs and 50 000 µs, sequences 0 and 1 — a measurable mean of 50 000 µs that the header still does not carry, which is the rate asymmetry (note **N106**) frozen into a file |
+| Interval | `negotiated_interval_us = 66_666` (15 fps), written at `begin` as `F1000000:0000066666` and **patched at close** to the measured mean `F1000000:0000050000`. Deliberately **not** the 33 333 µs placeholder, so a sink that dropped the negotiated number could not match these bytes; and deliberately not equal to the mean, so a sink that stopped patching could not either |
+| Timestamps | 0 µs and 50 000 µs, sequences 0 and 1 — a measurable mean of 50 000 µs, which since P6d is what the header carries. It used to be what the header pointedly did **not** carry, and the same two timestamps pinned that (note **N106** and its amendment) |
 | Caps | `max_bytes = 1 MiB`, `max_frames = 64`, `max_span = 60 s` — none of them reached |
 | Byte order | None. Every sample is one byte and every header field is decimal text, which is one of the few things Y4M makes simpler than RIFF |
 
@@ -83,8 +85,8 @@ change replaces the file wholesale and updates the table above with what moved a
 
 | File | Pins |
 |---|---|
-| `y4m/two-frame-64x48-c422.y4m` | 12 341 bytes: the header line `YUV4MPEG2 W64 H48 F1000000:66666 Ip C422`, with **no `A` field** because V4L2 does not report a pixel aspect and `A1:1` would be a claim; a six-byte `FRAME\n` with no parameters before each frame; and the three planes in Y, Cb, Cr order at 3072/1536/1536 bytes, de-interleaved from packed `Y0 Cb Y1 Cr` without averaging a sample |
-| `y4m/two-frame-64x48-mono.y4m` | 6 198 bytes: the same header shape with `Cmono`, and one 3072-byte luma plane per frame followed by **nothing** — the two empty chroma planes a `Cmono` reader must not be offered |
+| `y4m/two-frame-64x48-c422.y4m` | 12 346 bytes: the header line `YUV4MPEG2 W64 H48 F1000000:0000050000 Ip C422`, whose denominator is zero-padded to ten digits so `finish` can patch it in place, and with **no `A` field** because V4L2 does not report a pixel aspect and `A1:1` would be a claim; a six-byte `FRAME\n` with no parameters before each frame; and the three planes in Y, Cb, Cr order at 3072/1536/1536 bytes, de-interleaved from packed `Y0 Cb Y1 Cr` without averaging a sample |
+| `y4m/two-frame-64x48-mono.y4m` | 6 203 bytes: the same header shape with `Cmono`, and one 3072-byte luma plane per frame followed by **nothing** — the two empty chroma planes a `Cmono` reader must not be offered |
 | `avi/two-frame-64x48.avi` | 1852 bytes of finished AVI: the 224-byte header list complete before the first frame, `avih`/`strh`/`strf` at the offsets `finish` seeks to, an odd frame followed by a zero pad byte that its own size field and its `idx1` entry both exclude, an `idx1` of two `AVIIF_KEYFRAME` entries at `movi`-relative offsets 4 and 422, `AVIF_HASINDEX` set, and the **measured** 50 000 µs interval in both `avih.dwMicroSecPerFrame` and `strh.dwScale` (D7's CFR carve-out, close-time rewrite) |
 
 ## Privacy

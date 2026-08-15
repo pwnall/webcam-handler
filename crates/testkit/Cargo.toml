@@ -36,3 +36,12 @@ serde_json.workspace = true
 webcam-handler-engine.workspace = true
 webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true
+
+# The oracle harness's own arms write real files, because both oracles are separate processes
+# that take a path — so unlike the muxers this module cannot be exercised against an in-memory
+# sink. The directory comes from `engine::paths::scratch_dir`, which is where a temporary file
+# has its one home since the 2026-08-12 ruling (note **N84**) and which hands back a
+# `tempfile::TempDir`; this edge is what lets the type be named. A `tempfile::tempdir()` call of
+# this crate's own would be the thing `scripts/gates/scratch-has-one-home.sh` bans.
+[dev-dependencies]
+tempfile.workspace = true

@@ -12,9 +12,9 @@
 # one and the README states why.
 
 generated-by = "imaging::y4m::Y4mWriter over two synthetic YUYV frames from imaging::y4m::tests"
-generated-on = "2026-08-14"
+generated-on = "2026-08-15"
 nature = "synthetic"
 camera = "none — no capture, no device, no frame off a sensor (design §5, AGENTS 'Hardware and privacy')"
 frames = "two 64x48 YUYV frames whose every sample is a function of its own position: luma(x,y) = (7x + 13y) % 251, cb(x,y) = 64 + (3x + 5y) % 61, cr(x,y) = 160 + (11x + 2y) % 61; sequences 0 and 1, timestamps 0 and 50000 us"
-stream = "64x48 YUYV -> C422, negotiated interval 66666 us, declared as F1000000:66666 and never rewritten"
+stream = "64x48 YUYV -> C422, negotiated interval 66666 us, written as F1000000:0000066666 at begin and patched at close to the measured mean F1000000:0000050000 (D7's CFR carve-out; note N106's amendment, evidence E17)"
 asserted-by = "imaging::y4m::tests::the_frozen_fixtures_are_still_the_files_the_y4m_sink_emits, which re-generates every sample and compares it against the planes it reads back out of these bytes through a parser derived from the format description"

@@ -133,7 +133,13 @@ pub enum ArmOutcome {
 
 impl ArmOutcome {
     /// A skip carrying `reason`.
-    fn skipped(reason: impl Into<String>) -> ArmOutcome {
+    ///
+    /// Public since P6d, because [`crate::oracle`] reports in this vocabulary rather than
+    /// inventing a second one: "the arm ran" and "the arm could not, and here is why" are the
+    /// same two answers whether the subject is a backend or a container oracle, and a suite
+    /// with two words for them is a suite whose skips have to be counted twice.
+    #[must_use]
+    pub fn skipped(reason: impl Into<String>) -> ArmOutcome {
         ArmOutcome::Skipped {
             reason: reason.into(),
         }

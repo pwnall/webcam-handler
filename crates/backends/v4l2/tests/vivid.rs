@@ -769,3 +769,210 @@ fn sweep_span(desc: &schema::ControlDesc) -> Option<Vec<i64>> {
         .all(|value| desc.range.contains(*value))
         .then_some(values)
 }
+
+/// How long the R2 recording arm's take runs, on the engine's own monotonic clock.
+///
+/// Shorter than R3's second because vivid generates its frames rather than waiting for a
+/// sensor: what this arm is about is the ioctl path under the Y4M sink, and half a second of a
+/// virtual driver is tens of frames.
+const VIVID_RECORDING_MS: u64 = 500;
+
+#[test]
+#[ignore = "R2: needs the vivid kernel module loaded; run with `just rung-vivid`"]
+fn vivid_a_raw_recording_reaches_the_y4m_sink_through_the_real_ioctl_path() {
+    // **The Y4M sink's only real-driver test that does not need a GREY camera on the desk.**
+    //
+    // D7's raw fallback carries YUYV, NV12 and GREY, and every other exercise of it in this
+    // workspace is either synthetic samples (`imaging::y4m`'s own suite), a profile the fake
+    // replays (`engine::record`, `webcam-handler-cli record`), or the Chicony IR sensor on the
+    // R3 rung — which is one attached device on one desk. vivid offers raw formats and reaches
+    // the sink through `S_FMT`, `mmap` and `DQBUF` against a real kernel, so this is where the
+    // de-strided plane copy and the close-time rate patch meet a driver on a machine with no
+    // camera at all. That is exactly the hole R2 exists to narrow.
+    //
+    // What it does **not** prove is device quirks: vivid's timestamps are as regular as its
+    // frames, so the mean this take measures is a fact about a virtual driver (this file's
+    // header makes the same point about menus and clamping).
+    let Some((backend, cameras)) = vivid_cameras() else {
+        return;
+    };
+
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
+    let mut recorded = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            continue;
+        }
+        // The raw format is asked for **by name**, and it has to be: `StreamRequest::default()`
+        // ranks formats (note **N85**) and vivid offers compressed ones, so a default request
+        // would send this arm down the AVI path and prove nothing about the sink it is named
+        // for. The format is chosen from what the device enumerates rather than from a literal
+        // — the device is the only authority on itself (AGENTS rule 4).
+        let camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let formats = camera
+            .formats()
+            .unwrap_or_else(|error| panic!("{}: formats() failed: {error}", info.id));
+        let raw = formats
+            .iter()
+            .map(|entry| entry.pixel_format)
+            .find(|format| schema::video::VideoFormat::Y4m.carries_format(*format));
+        drop(camera);
+        let Some(raw) = raw else {
+            println!(
+                "SKIP (partial): {} enumerates no format the Y4M sink carries, so this kernel's \
+                 vivid cannot exercise the raw container",
+                info.id
+            );
+            continue;
+        };
+
+        // No extension, so `VideoFormat::resolve` answers from the negotiated stream — the same
+        // path AGENTS' handless consumer takes, and the one that would land an AVI here if the
+        // pairing were wrong.
+        // Everything that could read as an extension is taken out of the stem, and it has to
+        // be: vivid's bus path is `vivid.0`, whose `.0` is read by `RecordRequest::container`
+        // as a container this build does not write — which it refused, by name, on the first
+        // run of this arm. `Ok(None)` and therefore "let the negotiated stream decide" is only
+        // reached by a path with **no** extension at all.
+        let stem: String = info
+            .fingerprint
+            .bus_path
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let path = camino::Utf8PathBuf::from_path_buf(scratch.path().join(format!("vivid-{stem}")))
+            .expect("a utf-8 scratch dir");
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be reopened: {error}", info.id));
+        let report = engine::record::run(
+            camera.as_mut(),
+            &schema::video::RecordRequest {
+                stream: StreamRequest {
+                    pixel_format: Some(raw),
+                    ..StreamRequest::default()
+                },
+                duration_ms: Some(VIVID_RECORDING_MS),
+                sink: schema::capture::Sink::ServerPath { path: path.clone() },
+                wait: false,
+            },
+            &mut engine::record::OnDisk,
+            &engine::settle::MonotonicClock::new(),
+            schema::time::Stamp::now(),
+        )
+        .unwrap_or_else(|error| panic!("{}: recording {raw} failed: {error}", info.id));
+
+        assert_eq!(
+            report.format,
+            schema::video::VideoFormat::Y4m,
+            "{}: a {raw} stream landed in {:?}",
+            info.id,
+            report.format
+        );
+        assert!(
+            report.summary.frames_written >= 2,
+            "{}: {} frame(s) in {VIVID_RECORDING_MS} ms",
+            info.id,
+            report.summary.frames_written
+        );
+
+        let bytes = std::fs::read(path.as_std_path()).expect("the file the report named exists");
+        assert!(
+            bytes.starts_with(b"YUV4MPEG2 "),
+            "{}: the file does not open with the Y4M magic",
+            info.id
+        );
+        assert_eq!(
+            u64::try_from(bytes.len()).expect("fits"),
+            report.summary.bytes_written,
+            "{}: the file's own length is not the one the summary reported",
+            info.id
+        );
+        assert_eq!(
+            bytes
+                .windows(6)
+                .filter(|window| *window == b"FRAME\n")
+                .count(),
+            usize::try_from(report.summary.frames_written).expect("fits"),
+            "{}: the file's frame markers disagree with the summary",
+            info.id
+        );
+
+        // The close-time rate patch, over a driver's own timestamps: a take of several frames
+        // measures a mean, and the header carries it (note **N106**'s amendment).
+        assert_eq!(
+            report.summary.interval_source,
+            schema::video::IntervalSource::Measured,
+            "{}: a take of {} frames declared an interval it did not measure",
+            info.id,
+            report.summary.frames_written
+        );
+        // The **span**, not the declared duration, is what the wall clock brackets — note
+        // **N120**, which this arm found for the second time on its first run: a constant-rate
+        // file declares `frames x interval` while the interval is the mean of `frames - 1`
+        // gaps, so the file legitimately claims one frame period more than the driver's
+        // timestamps span. R3 measures the two-sided bound on real cameras; here the exact
+        // ordering is enough, because vivid's timings are a fact about a virtual driver.
+        let span_ms = report
+            .summary
+            .span_us
+            .expect("a take of two frames spans something")
+            / 1_000;
+        assert!(
+            span_ms <= report.wall_clock_ms,
+            "{}: the driver's frames span {span_ms} ms inside a take the engine timed at {} ms",
+            info.id,
+            report.wall_clock_ms
+        );
+
+        // And the oracles, where this host has them. A vivid frame is a generated test pattern
+        // and contains nobody, but the same rule is kept anyway: no payload is read here, only
+        // the header, the markers and the lengths.
+        let missing: Vec<testkit::oracle::Oracle> = testkit::oracle::Oracle::ALL
+            .iter()
+            .copied()
+            .filter(|oracle| {
+                use testkit::oracle::Tools;
+                testkit::oracle::OnPath.locate(*oracle).is_none()
+            })
+            .collect();
+        if missing.is_empty() {
+            let expected = testkit::oracle::Expectation::for_take(
+                report.format,
+                report.negotiated.width,
+                report.negotiated.height,
+                &report.summary,
+            );
+            let found = testkit::oracle::validate(&path, &expected);
+            found.print();
+            assert!(found.is_green(), "{}: {found}", info.id);
+        } else {
+            for oracle in &missing {
+                println!(
+                    "SKIP (partial): {oracle} is not on this host, so nothing here says {}; \
+                     remedy: {}",
+                    oracle.answers(),
+                    oracle.install_hint()
+                );
+            }
+        }
+
+        recorded += 1;
+        println!(
+            "{}: recorded {raw} {}x{} to Y4M — {} frame(s), {} bytes, declared {} us/frame ({:?})",
+            info.id,
+            report.negotiated.width,
+            report.negotiated.height,
+            report.summary.frames_written,
+            report.summary.bytes_written,
+            report.summary.declared_interval_us,
+            report.summary.interval_source
+        );
+    }
+
+    if recorded == 0 {
+        println!("SKIP: no vivid camera on this host could carry a raw recording");
+    }
+}

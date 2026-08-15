@@ -1413,6 +1413,512 @@ fn hw_a_photo_decodes_at_the_negotiated_size_and_an_mjpg_one_is_the_cameras_own_
     }
 }
 
+// ------------------------------------------------- P6: recording, and the oracles that read it
+
+/// How long each R3 take runs, on the engine's own monotonic clock.
+///
+/// One second, and the number is a trade with two sides. Shorter and a 30 fps camera delivers
+/// too few frames for a mean to mean anything — the whole point of these arms is
+/// `IntervalSource::Measured`, which needs at least two. Longer and `just smoke-hw` grows by a
+/// second per attached camera for nothing: the *jitter* an oracle cannot see (see
+/// `testkit::oracle`'s scope limit) is the only thing a longer take would add, and it would add
+/// it to a number nothing reads.
+const RECORDING_MS: u64 = 1_000;
+
+/// How far past its own declared duration a take's wall clock may run before this rung calls it
+/// a finding, in milliseconds.
+///
+/// **Measured, not chosen** (evidence **E17**). Three consecutive runs over the four cameras on
+/// the P6d desk, one-second takes, gap between the engine's wall clock and the duration the
+/// finished file declares:
+///
+/// | camera | negotiated | overhang, three runs |
+/// |---|---|---|
+/// | Chicony RGB | AVI 2592x1944, 8 fps | 0, 0, 0 ms |
+/// | Chicony IR | Y4M 640x360, 13 fps | 0, 0, 0 ms |
+/// | Dell U3224KB | AVI 3840x2160, 12 fps | 125, 180, 181 ms |
+/// | OBSBOT Tiny 3 | AVI 3840x2160, 30 fps | 316, 302, 315 ms |
+///
+/// The gap is not a defect and cannot be tightened away. `RecordReport::wall_clock_ms`'s own doc
+/// names its three components, and on real hardware one of them dominates: **`VIDIOC_STREAMON`
+/// to the first frame**. A 4K sensor negotiates, allocates and spins up before it delivers
+/// anything, and none of that time is inside the span the file describes — which is exactly why
+/// the two cameras that reach the *other* side of the bound are the two slow ones, whose frame
+/// period is long enough to swallow their own start-up. The header write, the close-time `idx1`
+/// and every turn that brought no frame are the rest.
+///
+/// 640 ms is twice the largest gap measured, rounded up: room for a colder start on a loaded
+/// machine, and no room for a take that spent half a second doing nothing. The bound is loose
+/// for a stated reason rather than tightened until it flakes — the *exact* claims are the two
+/// orderings beside it (the span inside the wall clock, the wall clock inside this test's own
+/// reading), and a number that failed on somebody else's desk would cost those their run.
+const MAX_WALL_CLOCK_OVERHANG_MS: u64 = 640;
+
+/// A filename stem for `info`, with everything that could read as an extension taken out.
+///
+/// A recording's container is read off the sink path's extension, and `RecordRequest::container`
+/// answers `Ok(None)` only when there is **no** extension at all — which is the arm these tests
+/// want, because a bus path like `3-4:1.0` ends in `.0` and would be refused as a container this
+/// build does not write. The negotiated stream decides instead, which is also the path AGENTS'
+/// handless primary consumer takes.
+fn take_stem(info: &schema::camera::CameraInfo) -> String {
+    let cleaned: String = info
+        .fingerprint
+        .bus_path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    format!("take-{cleaned}")
+}
+
+/// Record one take from `info` and hand back the report and the wall time **this test** measured.
+///
+/// Two clocks and not one, and that is the whole of what makes the duration bound below an
+/// assertion rather than a tautology. `RecordReport::wall_clock_ms` is the *engine's* reading of
+/// its own elapsed time; the `Instant` here is this test's reading of the same call. A build that
+/// computed the bound's two sides from one source would satisfy any comparison between them, and
+/// bracketing the call from outside is what stops that.
+fn record_take(
+    backend: &V4l2Backend,
+    info: &schema::camera::CameraInfo,
+    path: &Utf8Path,
+) -> Option<(schema::video::RecordReport, Duration)> {
+    let mut camera = match backend.open(&info.id) {
+        Ok(camera) => camera,
+        Err(error) => {
+            println!("SKIP (partial): {} could not be opened: {error}", info.id);
+            return None;
+        }
+    };
+    let request = schema::video::RecordRequest {
+        stream: StreamRequest::default(),
+        duration_ms: Some(RECORDING_MS),
+        sink: schema::capture::Sink::ServerPath {
+            path: path.to_owned(),
+        },
+        // One camera, one take, one thread: nothing is queued in front of this for D12's flag
+        // to choose about.
+        wait: false,
+    };
+    let started = Instant::now();
+    let outcome = engine::record::run(
+        camera.as_mut(),
+        &request,
+        &mut engine::record::OnDisk,
+        &engine::settle::MonotonicClock::new(),
+        schema::time::Stamp::now(),
+    );
+    let elapsed = started.elapsed();
+    match outcome {
+        Ok(report) => Some((report, elapsed)),
+        // E3: a camera somebody else is streaming has not told us it cannot record.
+        Err(error @ (schema::Error::Busy { .. } | schema::Error::PermissionDenied { .. })) => {
+            println!("SKIP (partial): {} could not be recorded: {error}", info.id);
+            None
+        }
+        Err(error) => panic!("{}: the recording failed: {error}", info.id),
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_short_recording_from_every_attached_camera_is_read_back_by_two_third_parties() {
+    // **docs/7 P6d's R3**: a short real recording on each attached camera, oracle-validated, with
+    // the declared-vs-wall-clock duration bound measured on the real capture.
+    //
+    // What is new here and cannot be got anywhere else in this repository is that the *whole*
+    // chain is real: a UVC driver's own timestamps, a stream this engine negotiated, a container
+    // D7's pairing chose from what the device actually offered, and a mean interval measured
+    // across frames a sensor delivered rather than across numbers a fixture typed. Everything
+    // else that reads these files was written here (`imaging::avi::read`, `imaging::y4m`'s
+    // parser); `ffprobe` and `mpv` have never seen our code.
+    //
+    // Nothing is asserted about content and nothing is printed from a payload: **a frame may
+    // contain a person** and on this rung it will (rubric A12). The files go to
+    // `engine::paths::scratch_dir` under `target/wch-scratch` (note **N84**), which is
+    // gitignored and dropped with the arm.
+    //
+    // The format negotiation is **not** restored, and that is the suite's existing decision
+    // rather than a new one: `hw_a_stream_negotiates_…` and `hw_a_stream_honours_a_size_…` both
+    // leave the device at whatever they last set, because `S_FMT` state is per-open in V4L2 and
+    // the next opener negotiates its own. What this arm touches and would have to put back — a
+    // control — it never writes.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+    report_unchecked_profiles(&cameras);
+    let missing = oracles_missing();
+
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
+    let mut recorded = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            println!(
+                "SKIP (partial): {} has no capture node, so it is listed but not recordable",
+                info.id
+            );
+            continue;
+        }
+        let path = Utf8PathBuf::from_path_buf(scratch.path().join(take_stem(info)))
+            .expect("a utf-8 scratch dir");
+        let Some((report, measured)) = record_take(&backend, info, &path) else {
+            continue;
+        };
+
+        // Non-vacuity first: a take of one frame measures no interval, so every claim below
+        // would be about a file with nothing in it.
+        assert!(
+            report.summary.frames_written >= 2,
+            "{}: {} frame(s) in {RECORDING_MS} ms is not a recording anything can be said about",
+            info.id,
+            report.summary.frames_written
+        );
+        assert_eq!(
+            report.summary.interval_source,
+            schema::video::IntervalSource::Measured,
+            "{}: a take of {} frames declared an interval it did not measure",
+            info.id,
+            report.summary.frames_written
+        );
+
+        // The file is the length the report says it is, before anything else reads it — the
+        // cheapest check that the bytes and the answer describe one object.
+        let bytes = std::fs::read(path.as_std_path()).unwrap_or_else(|error| {
+            panic!(
+                "{}: the file the report named is unreadable: {error}",
+                info.id
+            )
+        });
+        assert_eq!(
+            u64::try_from(bytes.len()).expect("fits"),
+            report.summary.bytes_written,
+            "{}: the file's own length is not the one the summary reported",
+            info.id
+        );
+
+        // ---- the duration bound, which is docs/7 P6d's criterion
+        //
+        // Three numbers from three sources, and the ordering between them is the claim:
+        //
+        //   declared   n x the interval the *file's own header* carries, which is the mean of
+        //              the **driver's** frame timestamps;
+        //   wall       the **engine's** monotonic clock across the take;
+        //   measured   **this test's** `Instant`, bracketing the whole call.
+        //
+        // `RecordReport::wall_clock_ms`'s doc states the first ordering and says what a
+        // violation of it would mean: "the wall clock is therefore always the larger of the two
+        // for an honest take, and a span that exceeds it is a driver clock this host does not
+        // share." That is D7's CFR limitation *bounded* rather than wished away — the file
+        // cannot describe the time outside its own frames, and this is how much of it there is.
+        let interval_ms = u64::from(report.summary.declared_interval_us) / 1_000;
+        let declared_ms = u64::from(report.summary.declared_interval_us)
+            * u64::from(report.summary.frames_written)
+            / 1_000;
+        let span_ms = report
+            .summary
+            .span_us
+            .expect("a take of two frames spans something")
+            / 1_000;
+        let wall_ms = report.wall_clock_ms;
+        let measured_ms = u64::try_from(measured.as_millis()).expect("a take is not that long");
+
+        // The exact ordering, and the one `RecordReport::wall_clock_ms`'s own doc states: the
+        // span is the driver's first-to-last frame timestamp and the wall clock brackets it on
+        // both sides, so "the wall clock is therefore always the larger of the two for an honest
+        // take, and a span that exceeds it is a driver clock this host does not share".
+        //
+        // **Strictly**, and that is the assertion doing the work rather than a tidier spelling.
+        // Neither margin can be zero for a real take — a sensor takes time to deliver its first
+        // frame after `STREAMON`, and `engine::record::run` opens a file and closes a container
+        // inside the call this test brackets — and the smallest either has measured on this desk
+        // is 36 ms. A hand-applied mutant that answered `wall_clock_ms` out of
+        // `RecordingSummary::span_us` is the shape "the bound asserted against a number the code
+        // also computes" takes, and **this** is the line that kills it: every other claim below
+        // is satisfied by two readings of one clock.
+        assert!(
+            span_ms < wall_ms,
+            "{}: the driver's frames span {span_ms} ms and the engine timed the take at \
+             {wall_ms} ms; a wall clock that does not strictly contain the span is not a second \
+             measurement of it",
+            info.id
+        );
+        assert!(
+            wall_ms < measured_ms,
+            "{}: the engine timed its own take at {wall_ms} ms inside a call this test timed at \
+             {measured_ms} ms",
+            info.id
+        );
+
+        // ---- and now the criterion itself, which is **two-sided**, and the upper side was a
+        // finding rather than an expectation (note **N120**).
+        //
+        // A CFR container's declared duration is `frames x interval` — libavformat says so: the
+        // frozen two-frame fixture reports `duration_ts: 2` in a time base of the interval — but
+        // the interval is the mean of `frames - 1` gaps. So **the file legitimately declares one
+        // frame period more video than the driver's timestamps span**, because the last frame is
+        // shown for an interval that no gap can contain. The first version of this arm asserted
+        // `declared <= wall` and went red on the Chicony RGB at 1102 ms declared against 1016 ms
+        // of wall clock, which is not a defect and is not a driver clock this host does not
+        // share: it is one frame period of a 30 fps camera plus a take whose overhead happened to
+        // be smaller than that.
+        let overshoot_ms = declared_ms.saturating_sub(wall_ms);
+        let overhang_ms = wall_ms.saturating_sub(declared_ms);
+        assert!(
+            overshoot_ms <= interval_ms,
+            "{}: the file declares {declared_ms} ms of video against {wall_ms} ms of wall clock, \
+             which is {overshoot_ms} ms more than one {interval_ms} ms frame period can account \
+             for",
+            info.id
+        );
+        assert!(
+            overhang_ms <= MAX_WALL_CLOCK_OVERHANG_MS,
+            "{}: {overhang_ms} ms of this take is outside the duration its file declares, past \
+             the {MAX_WALL_CLOCK_OVERHANG_MS} ms this rung measured; the components are named in \
+             MAX_WALL_CLOCK_OVERHANG_MS's own doc and the dominant one is STREAMON to first frame",
+            info.id
+        );
+
+        println!(
+            "{}: {} {}x{} — {} frame(s), {} bytes, declared {} us/frame ({:?}); file duration \
+             {declared_ms} ms, driver span {span_ms} ms, engine wall clock {wall_ms} ms, this \
+             test measured {measured_ms} ms; declared-vs-wall +{overshoot_ms}/-{overhang_ms} ms \
+             against a {interval_ms} ms frame period; {} dropped, ended {:?}",
+            info.id,
+            report.format,
+            report.negotiated.width,
+            report.negotiated.height,
+            report.summary.frames_written,
+            report.summary.bytes_written,
+            report.summary.declared_interval_us,
+            report.summary.interval_source,
+            report.summary.dropped_frames,
+            report.ended
+        );
+
+        // ---- the oracles
+        if missing.is_empty() {
+            let expected = testkit::oracle::Expectation::for_take(
+                report.format,
+                report.negotiated.width,
+                report.negotiated.height,
+                &report.summary,
+            );
+            let found = testkit::oracle::validate(&path, &expected);
+            found.print();
+            assert!(found.is_green(), "{}: {found}", info.id);
+        }
+        recorded += 1;
+    }
+
+    if recorded == 0 {
+        println!("SKIP: no attached camera could be recorded");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_grey_only_sensor_records_y4m_and_the_avi_it_cannot_fill_is_refused_for_a_real_reason() {
+    // D7's MJPG-only muxer policy against a device that **really** cannot do MJPG, which is a
+    // different claim from the one `imaging::video`'s pairing walk and the fake's replay of
+    // `corpus/profiles/chicony-ir.json` already make. Those hold the law over a vocabulary and
+    // over a recorded profile; this holds it over a sensor that is enumerating GREY and nothing
+    // else, right now, through the real ioctl layer.
+    //
+    // It is also the only place the **Y4M path meets real hardware**: every other recording arm
+    // in this repository runs over a camera that offers MJPG, so the raw planes, the de-strided
+    // copy and the close-time rate patch would otherwise be exercised only against generated
+    // samples. The Chicony IR sensor is GREY-only, so *every* take from it is Y4M — and the
+    // notes' Expected usage item 10 says frame timing is the payload, which is exactly the thing
+    // the padded `F` field now carries (note **N106**'s amendment).
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+    let missing = oracles_missing();
+
+    // Live enumeration decides which camera this is, never a committed profile and never a node
+    // path: the device is the only authority on itself (AGENTS rule 4), and `/dev/videoN` is
+    // probe-order bookkeeping \[PF:22\].
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
+    let mut checked = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            continue;
+        }
+        let camera = match backend.open(&info.id) {
+            Ok(camera) => camera,
+            Err(error) => {
+                println!("SKIP (partial): {} could not be opened: {error}", info.id);
+                continue;
+            }
+        };
+        let formats = camera
+            .formats()
+            .unwrap_or_else(|error| panic!("{}: formats() failed: {error}", info.id));
+        let offered: Vec<schema::camera::PixelFormat> =
+            formats.iter().map(|entry| entry.pixel_format).collect();
+        if offered
+            .iter()
+            .any(|format| schema::video::VideoFormat::Avi.carries_format(*format))
+        {
+            continue;
+        }
+        drop(camera);
+        println!(
+            "{}: offers {:?} and nothing AVI carries, so every take from it is Y4M",
+            info.id, offered
+        );
+
+        // 1. A path with no extension at all, answered from the negotiated stream. The arm
+        //    AGENTS' handless consumer depends on: an agent that has not enumerated this camera
+        //    cannot know to type `.y4m`.
+        let unnamed = Utf8PathBuf::from_path_buf(scratch.path().join(take_stem(info)))
+            .expect("a utf-8 scratch dir");
+        let Some((report, _)) = record_take(&backend, info, &unnamed) else {
+            continue;
+        };
+        assert_eq!(
+            report.format,
+            schema::video::VideoFormat::Y4m,
+            "{}: a GREY camera's take landed in {:?}",
+            info.id,
+            report.format
+        );
+        assert!(
+            !report.negotiated.pixel_format.is_compressed(),
+            "{}: negotiated {} on a camera that offers no compressed format",
+            info.id,
+            report.negotiated.pixel_format
+        );
+        assert!(
+            report.summary.frames_written >= 2,
+            "{}: {} raw frame(s)",
+            info.id,
+            report.summary.frames_written
+        );
+
+        // The file is a Y4M by its own magic and its own `FRAME` markers, counted against the
+        // summary rather than the summary being taken on trust. No sample is read: the count is
+        // over a six-byte marker and the planes are never touched (rubric A12).
+        let bytes = std::fs::read(unnamed.as_std_path()).expect("the file exists");
+        assert!(
+            bytes.starts_with(b"YUV4MPEG2 "),
+            "{}: the file does not open with the Y4M magic",
+            info.id
+        );
+        assert_eq!(
+            bytes.windows(6).filter(|w| *w == b"FRAME\n").count(),
+            usize::try_from(report.summary.frames_written).expect("fits"),
+            "{}: the file's frame markers disagree with the summary",
+            info.id
+        );
+
+        // 2. And `.avi` asked for by name: refused, naming what AVI *would* have taken, arriving
+        //    after the negotiation because the refusal is about it, and leaving no file behind.
+        //    Never a quiet redirect to the other container — a caller who typed `.avi` and
+        //    received a Y4M has been answered a question it did not ask.
+        let wrong =
+            Utf8PathBuf::from_path_buf(scratch.path().join(format!("{}.avi", take_stem(info))))
+                .expect("a utf-8 scratch dir");
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be reopened: {error}", info.id));
+        let refusal = engine::record::run(
+            camera.as_mut(),
+            &schema::video::RecordRequest {
+                stream: StreamRequest::default(),
+                duration_ms: Some(RECORDING_MS),
+                sink: schema::capture::Sink::ServerPath {
+                    path: wrong.clone(),
+                },
+                wait: false,
+            },
+            &mut engine::record::OnDisk,
+            &engine::settle::MonotonicClock::new(),
+            schema::time::Stamp::now(),
+        )
+        .expect_err("AVI carries no raw format");
+        let schema::Error::FormatUnsupported {
+            requested,
+            available,
+        } = &refusal
+        else {
+            panic!(
+                "{}: a .avi sink was refused with {refusal} rather than FormatUnsupported — \
+                    'this camera cannot' and 'this container cannot' are different findings \
+                    (AGENTS rule 7)",
+                info.id
+            );
+        };
+        assert!(
+            !available.is_empty(),
+            "{}: the refusal named nothing AVI carries",
+            info.id
+        );
+        assert!(
+            !wrong.exists(),
+            "{}: a refused recording left a file at {wrong}",
+            info.id
+        );
+        println!(
+            "{}: a .avi sink over a {requested:?} stream is refused naming {available:?}, and no \
+             file was left behind",
+            info.id
+        );
+
+        if missing.is_empty() {
+            let expected = testkit::oracle::Expectation::for_take(
+                report.format,
+                report.negotiated.width,
+                report.negotiated.height,
+                &report.summary,
+            );
+            let found = testkit::oracle::validate(&unnamed, &expected);
+            found.print();
+            assert!(found.is_green(), "{}: {found}", info.id);
+        }
+        checked += 1;
+    }
+
+    if checked == 0 {
+        println!(
+            "SKIP: no camera attached to this host is GREY-only, so nothing here proved the raw \
+             container or the MJPG-only refusal against a device rather than against a profile"
+        );
+    }
+}
+
+/// The oracles this host does not have, printing one named, counted decline for each.
+///
+/// The same accounting `crates/engine/tests/oracles.rs` prints for the fake-generated half, in
+/// the shape `scripts/smoke-hw.sh`'s census greps for: a line beginning `SKIP`. It is a decline
+/// about the **host** and not about the camera, which is why the recording arms above still run
+/// every other claim when it fires — a machine with cameras and no `ffprobe` still proves that
+/// the take happened, that its file is the length it says, and that the duration bound holds.
+fn oracles_missing() -> Vec<testkit::oracle::Oracle> {
+    use testkit::oracle::{Oracle, OracleArm, OracleReport, Tools};
+
+    let missing: Vec<Oracle> = Oracle::ALL
+        .iter()
+        .copied()
+        .filter(|oracle| testkit::oracle::OnPath.locate(*oracle).is_none())
+        .collect();
+    for oracle in &missing {
+        let arms: Vec<&str> = OracleReport::arms_of(*oracle)
+            .into_iter()
+            .map(OracleArm::as_str)
+            .collect();
+        println!(
+            "SKIP (partial): {oracle} is not on this host, so {} claim(s) about every take this \
+             arm recorded went unasked — {} — and nothing here says {}; remedy: {}",
+            arms.len(),
+            arms.join(", "),
+            oracle.answers(),
+            oracle.install_hint()
+        );
+    }
+    missing
+}
+
 // ---------------------------------------------------------------- P3: calibration (D8)
 
 /// A session on a scratch store, started the way the product starts one: create, then probe

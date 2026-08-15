@@ -42,10 +42,13 @@
 //! the driver's `sequence` is a frame that never arrived, and reporting it is what stops a
 //! dropped frame from reading as a slow transition.
 //!
-//! **This is the container that can do the rewrite, and it is the only one.** A Y4M header
-//! is variable-width text written before the first frame, so [`crate::y4m`] declares the
-//! negotiated interval and never reports [`IntervalSource::Measured`]; the asymmetry is
-//! argued where a reader meets it, in that module's header and in note **N106**.
+//! **This was the container that could do the rewrite, and for two phases it was the only
+//! one.** A Y4M header is variable-width text written before the first frame, so [`crate::y4m`]
+//! declared the negotiated interval and never reported [`IntervalSource::Measured`]. P6d's
+//! oracle rung measured what note **N106** said would end that — a zero-padded `F` denominator
+//! is read as the rate it names by `ffprobe` and by `mpv` (evidence **E17**) — so that
+//! container patches its header at close too, and the decision both of them make now lives once
+//! in `crate::video::declared_interval`.
 //!
 //! ## What this module owns, and what moved out of it at P6b
 //!

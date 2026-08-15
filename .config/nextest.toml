@@ -76,6 +76,28 @@ slow-timeout = { period = "300s", terminate-after = 4 }
 # The suite is **not** in the `exclusive-device` group and must not be: it drives the fake
 # backend over a loopback socket and opens no `/dev/video*`, so serialising it with the
 # hardware rungs would be a claim about contention that does not exist.
+# ## Why the oracle rung's output is shown for the same reason
+#
+# `crates/engine/tests/oracles.rs` is the container-oracle rung (docs/7 P6d), and like the browser
+# rung it is **not** `#[ignore]`d and **does** auto-skip: a host with no `ffprobe` and no `mpv`
+# cannot ask either of them anything. AGENTS rule 3 names this rung explicitly — "every
+# auto-skipping rung (vivid, hardware, oracles) reports a named, counted skip — never silence" —
+# and nextest hides a passing test's output, so without this line the decline would be printed
+# into a void.
+#
+# It is **not** in the `exclusive-device` group and must not be: it records over the fake backend
+# and opens no `/dev/video*`, so serialising it with the hardware rungs would be a claim about
+# contention that does not exist. The oracles it shells out to read a finished file and touch no
+# device either.
+#
+# `testkit`'s own `oracle::` arms decline the same way and are **not** named here, deliberately:
+# they share a binary with the conformance battery, and `success-output = "final"` on that binary
+# would print several hundred passing unit tests' output on every run. `scripts/rung-oracles.sh`
+# passes the flag on its own command line instead, which is where those declines are read.
+[[profile.default.overrides]]
+filter = 'binary(oracles)'
+success-output = "final"
+
 [[profile.default.overrides]]
 filter = 'binary(web_browser)'
 success-output = "final"

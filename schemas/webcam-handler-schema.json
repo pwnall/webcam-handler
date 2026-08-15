@@ -2039,12 +2039,12 @@
       "oneOf": [
         {
           "const": "measured",
-          "description": "The mean of the delivered frame timestamps — the close-time rewrite happened.\n\n**AVI only.** A Y4M header is written before the first frame and cannot be\nrewritten in place, so a Y4M take never reports this; see the module doc and\nnote **N106**.",
+          "description": "The mean of the delivered frame timestamps — the close-time rewrite happened.\n\n**Either container**, since P6d. It was AVI's alone for two phases, because a Y4M\nheader is written before the first frame and its rate field was variable-width text;\nnote **N106** and its amendment record what the padded field cost and what measured\nit (evidence **E17**).",
           "type": "string"
         },
         {
           "const": "negotiated",
-          "description": "What the camera was asked for. For AVI: fewer than two frames arrived, or their\ntimestamps described no usable span, so nothing was measured. For Y4M: the\nnegotiation named an interval and the header declares it, which is as far as\nthat container goes.",
+          "description": "What the camera was asked for: fewer than two frames arrived, or their timestamps\ndescribed no usable span, so nothing was measured and the header kept the number the\nnegotiation named.",
           "type": "string"
         },
         {
@@ -3262,7 +3262,7 @@
           "description": "What the container counted."
         },
         "wall_clock_ms": {
-          "description": "How long the recording took on the engine's monotonic clock, in milliseconds.\n\n**Beside [`RecordingSummary::span_us`] rather than instead of it, because they are\ntwo measurements and the difference between them is a finding.** `span_us` is the last\nwritten frame's timestamp minus the first's, on the *driver's* clock and in\nmicroseconds; this is the engine's own elapsed time across the whole take, in\nmilliseconds. `webcam-handler-imaging` reads no clock of its own — its\n`RecordingCaps::max_span` doc says wall-clock time is the caller's question — and this\nengine is that caller.\n\nThree things make the two disagree, and a caller can tell them apart from the rest of\nthis document: a **driver clock that ran slow or fast** (the span is short or long\nagainst a wall clock that is not), **frames dropped before they reached us**\n([`RecordingSummary::dropped_frames`] is non-zero), and **time spent in our own loop**\n— the wall clock includes the header write, the settle-free start, the close-time\nindex and every turn that brought no frame, none of which are inside the span. The\nwall clock is therefore always the larger of the two for an honest take, and a span\nthat *exceeds* it is a driver clock this host does not share.\n\nMilliseconds rather than microseconds because that is the resolution the engine's\nclock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by\nmultiplying by a thousand would be three digits of precision nobody measured.\n\nThis pair is docs/7 **P6d**'s criterion — the declared-vs-wall-clock duration bound,\nmeasured on a real capture — which is why both live in the one document a `--json`\nconsumer already has.",
+          "description": "How long the recording took on the engine's monotonic clock, in milliseconds.\n\n**Beside [`RecordingSummary::span_us`] rather than instead of it, because they are\ntwo measurements and the difference between them is a finding.** `span_us` is the last\nwritten frame's timestamp minus the first's, on the *driver's* clock and in\nmicroseconds; this is the engine's own elapsed time across the whole take, in\nmilliseconds. `webcam-handler-imaging` reads no clock of its own — its\n`RecordingCaps::max_span` doc says wall-clock time is the caller's question — and this\nengine is that caller.\n\nThree things make the two disagree, and a caller can tell them apart from the rest of\nthis document: a **driver clock that ran slow or fast** (the span is short or long\nagainst a wall clock that is not), **frames dropped before they reached us**\n([`RecordingSummary::dropped_frames`] is non-zero), and **time spent in our own loop**\n— the wall clock includes the header write, the settle-free start, the close-time\nindex and every turn that brought no frame, none of which are inside the span. The\nwall clock is therefore always the larger of the two for an honest take, and a span\nthat *exceeds* it is a driver clock this host does not share.\n\n**The file's own declared duration is a third number and it is not the span.** A\nconstant-rate container declares `frames_written × declared_interval_us`, while the\ninterval is the mean of `frames_written - 1` gaps — so a healthy take's file legitimately\nclaims **one frame period more** video than this wall clock, and a comparison written the\nobvious way goes red on a camera that is working (note **N120**; measured at 1102 ms\ndeclared against 1016 ms of wall clock on a 8 fps take). The bound docs/7 P6d asks for is\ntherefore two-sided: at most one frame period above, and `MAX_WALL_CLOCK_OVERHANG_MS`\nbelow, with `crates/backends/v4l2/tests/hardware.rs` carrying the measurement.\n\nMilliseconds rather than microseconds because that is the resolution the engine's\nclock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by\nmultiplying by a thousand would be three digits of precision nobody measured.\n\nThis pair is docs/7 **P6d**'s criterion — the declared-vs-wall-clock duration bound,\nmeasured on a real capture — which is why both live in the one document a `--json`\nconsumer already has.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -3389,7 +3389,7 @@
           "description": "The bound that ended the recording, if one did."
         },
         "declared_interval_us": {
-          "description": "The frame interval the finished file declares.\n\nFor AVI that is `avih.dwMicroSecPerFrame` and `strh.dwScale`/`dwRate`, which\n`imaging::avi::write::AviWriter::finish` rewrites together so a reader finding them\ndisagreeing has caught a defect. For Y4M it is the header's `F` ratio, written before\nthe first frame and never revised.",
+          "description": "The frame interval the finished file declares.\n\nFor AVI that is `avih.dwMicroSecPerFrame` and `strh.dwScale`/`dwRate`, which\n`imaging::avi::write::AviWriter::finish` rewrites together so a reader finding them\ndisagreeing has caught a defect. For Y4M it is the header's `F` ratio, whose denominator\nis zero-padded to a fixed width so that `imaging::y4m::Y4mWriter::finish` can rewrite it\nin place without moving a byte after it.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -3408,10 +3408,10 @@
         },
         "interval_source": {
           "$ref": "#/$defs/IntervalSource",
-          "description": "Whether that interval was measured, negotiated or provisional.\n\n**A Y4M take never answers [`IntervalSource::Measured`]**, and that is a property of\nthe container rather than of the recording: see the module doc."
+          "description": "Whether that interval was measured, negotiated or provisional.\n\nThe same three answers in both containers since P6d; see the module doc for what used to\nmake Y4M the exception and what ended it."
         },
         "span_us": {
-          "description": "The last written frame's timestamp minus the first's, when that is a duration.\n\n`None` when fewer than two frames were written, and when the driver's clock ran\nbackwards across the take — a negative span is not a duration, and reporting it as\nzero would claim a measurement nobody made.\n\nCarried by **both** containers, which is what keeps the Y4M header's un-rewritable\nrate from costing the caller the measurement: `span_us / (frames_written - 1)` is the\nmean, computed by whoever wants it out of two numbers that were observed.",
+          "description": "The last written frame's timestamp minus the first's, when that is a duration.\n\n`None` when fewer than two frames were written, and when the driver's clock ran\nbackwards across the take — a negative span is not a duration, and reporting it as\nzero would claim a measurement nobody made.\n\nCarried by **both** containers: `span_us / (frames_written - 1)` is the mean, computed by\nwhoever wants it out of two numbers that were observed. That is why the Y4M header's\nun-rewritable rate cost the caller nothing for the two phases it lasted, and it is still\nthe number to read — a header declares `frames_written × declared_interval_us`, one frame\nperiod more than this, because a constant-rate container shows its last frame for an\ninterval no gap between timestamps can contain (note **N120**).",
           "format": "uint64",
           "minimum": 0,
           "type": [
