@@ -9,6 +9,12 @@
 //! `--json` is the schema document and nothing else — no envelope, no timestamp, no tool
 //! version. Adding one would make every consumer unwrap before validating, and the
 //! committed bundle would stop describing what we actually emit.
+//!
+//! **A failure is a different document, not a wrapper around an answer** (owner ruling,
+//! 2026-08-15; note **N127**). [`failure`] prints [`schema::error::Failure`] through the same
+//! emitter every answer goes through, so the rule above is unchanged in both directions: a
+//! `--json` invocation still prints exactly one `webcam-handler-schema` type verbatim, and
+//! which type it is says whether the verb answered.
 
 use std::io::Write as _;
 
@@ -180,6 +186,27 @@ fn json<T: serde::Serialize>(value: &T, out: &mut Output) -> Result<()> {
         message: format!("could not serialize the answer: {error}"),
     })?;
     out.line(Stream::Stdout, &text)
+}
+
+/// The failure document, on standard output, through the one `--json` emitter.
+///
+/// **Through [`json`] and never a `to_string_pretty` of its own**, which is the whole of what
+/// this function contributes: `scripts/gates/cli-parity.sh`'s fork case seeds its defect into
+/// that emitter and builds both binaries, so a refusal document rendered beside it rather than
+/// through it would be the one `--json` answer in this workspace that a fork could not reach.
+/// One emitter, one place a byte can go wrong.
+///
+/// Standard output, because that is the `--json` channel: note **N124** measured that a caller
+/// redirecting stdout lost the failure entirely, and putting the repair on standard error would
+/// be the same defect wearing a different costume. The human line on standard error is
+/// unchanged and is `crate::report_failure`'s other half.
+///
+/// # Errors
+///
+/// As [`Output::line`] — a closed pipe is a real outcome, and a caller that piped a refusal
+/// into `head` must not panic on it.
+pub(crate) fn failure(document: &schema::error::Failure, out: &mut Output) -> Result<()> {
+    json(document, out)
 }
 
 fn table() -> Table {
@@ -1579,7 +1606,7 @@ pub(crate) fn profile(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
@@ -1596,11 +1623,16 @@ mod tests {
     use super::*;
 
     /// A writer a test can read back.
+    ///
+    /// `pub(crate)` so `crate::tests` can assert what `crate::report_failure` puts on each of
+    /// the two streams: that function is this module's emitter plus the process's other
+    /// channel, and a second buffer written beside this one would be two answers to "what did
+    /// the program print" in the two places most likely to disagree.
     #[derive(Clone, Default)]
-    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    pub(crate) struct Buffer(Arc<Mutex<Vec<u8>>>);
 
     impl Buffer {
-        fn text(&self) -> String {
+        pub(crate) fn text(&self) -> String {
             String::from_utf8_lossy(&self.0.lock().expect("the buffer lock").clone()).into_owned()
         }
     }

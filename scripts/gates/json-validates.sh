@@ -30,6 +30,24 @@
 # against the same authority from opposite ends — this one against `--help`, that one against
 # the clap tree — so neither can quietly shrink.
 #
+# ## The failure document is a `--json` answer too (owner ruling, 2026-08-15; note **N127**)
+#
+# A `--json` invocation that fails prints `schema::error::Failure` on standard output, so
+# "`--json` emits schema DTOs verbatim" is now a claim about failing runs as well and this
+# predicate makes it one: two refusals are driven, each validated against `#/$defs/Failure` by
+# the same jq the answers go through. Note **N124** measured the behaviour this replaced —
+# nothing at all on standard output, `--json` or not — so a gate that only ever drove verbs
+# that answer would have been green throughout the defect's whole life.
+#
+# **And the marker is checked from both sides.** A failure is told from an answer by one
+# property name, `schema::error::FAILURE_MARKER`, which this gate reads out of the tree rather
+# than transcribing — `cli-parity.sh` reads D9's lock advice the same way, for the same reason:
+# a gate carrying its own copy keeps looking for a marker the product has stopped emitting.
+# Every answering verb above is required *not* to carry it, and every refusal below is required
+# to. `webcam-handler-xtask`'s
+# `no_document_a_verb_answers_with_can_be_mistaken_for_the_failure_document` asks the same
+# question of the committed *shapes*; this asks it of the bytes a binary printed.
+#
 # **The binary comes from the real checkout, the bundle and the corpus from the tree under
 # test.** That asymmetry is deliberate and it is the seam the selftest drives: building
 # `webcam-handler-cli` inside each of the selftest's scratch copies would cost a full compile
@@ -69,6 +87,52 @@ if [[ ! -f "$bundle" ]]; then
     gate_fail "no schema bundle at ${bundle#"$root"/}; 'just generate' writes it"
     gate_finish
 fi
+
+# The property name that tells a failure document from an answer, read out of the crate that
+# owns it. See the header for why this is derived rather than written here.
+marker="$(sed -n 's/^pub const FAILURE_MARKER: &str = "\([^"]*\)".*/\1/p' \
+    "$root/crates/schema/src/error.rs" | head -n1)"
+if [[ -z "$marker" ]]; then
+    gate_fail "webcam-handler-schema no longer declares FAILURE_MARKER; this gate reads the name that distinguishes a --json failure from a --json answer out of the tree rather than repeating it, and cannot check a marker it cannot spell"
+    gate_finish
+fi
+gate_note "a --json failure is marked by the '$marker' property"
+
+# Every D13 kind's wire spelling, from the table `crates/api` pins its codes against — which is
+# generated from `ErrorKind::ALL` and checked against it in both directions by that crate's own
+# tests. A refusal naming a kind outside this set is a document describing a registry this
+# build does not have.
+mapfile -t d13_kinds < <(awk -F'\t' '/^#/ { next } NF >= 2 { print $1 }' \
+    "$root/crates/api/fixtures/d13-rpc-codes.tsv")
+if ((${#d13_kinds[@]} == 0)); then
+    gate_fail "could not read the D13 kind spellings out of crates/api/fixtures/d13-rpc-codes.tsv; a refusal's discriminant would then be checked against nothing"
+    gate_finish
+fi
+
+# One document against one `$defs` entry. The bundle keeps every type under `$defs`, so
+# validation is: does the document match `#/$defs/<name>`? Without a JSON Schema validator in
+# the offline toolchain, the checkable core is enforced directly — every required property
+# present, and no property the schema does not declare. That catches the
+# envelope-and-timestamp defect this gate exists for; types, formats, nested shapes and array
+# element schemas go unchecked, and docs/9's recorded-limits section says so.
+#
+# A function since P6f, because the failure rows below validate exactly as the answers do and a
+# second copy of this jq would be a second opinion about what "matches the bundle" means.
+validates_against() {
+    local document="$1" def="$2"
+    jq -e --slurpfile doc <(printf '%s' "$document") '
+        .["$defs"][$ARGS.named.d] as $schema
+        | ($doc[0]) as $value
+        | if $schema == null then false
+          else
+            (($schema.required // []) | all(. as $k | ($value | has($k))))
+            and
+            (if ($schema.properties // null) == null then true
+             else ($value | keys) | all(. as $k | ($schema.properties | has($k)))
+             end)
+          end
+    ' --arg d "$def" "$bundle" >/dev/null 2>&1
+}
 
 # Every verb and the `$defs` name its answer must validate against. Three tokens are
 # substituted into the argv: `<camera>` anywhere in the line, `<control>` with a writable
@@ -231,25 +295,17 @@ for row in "${verbs[@]}"; do
         continue
     fi
 
-    # The bundle keeps every type under `$defs`, so validation is: does the document match
-    # `#/$defs/<name>`? Without a JSON Schema validator in the offline toolchain, the
-    # checkable core is enforced directly — every required property present, and no
-    # property the schema does not declare. That catches the envelope-and-timestamp defect
-    # this gate exists for; types, formats, nested shapes and array element schemas go
-    # unchecked, and docs/9's recorded-limits section says so.
-    if ! jq -e --slurpfile doc <(printf '%s' "$output") --arg def "$name" '
-        .["$defs"][$ARGS.named.d] as $schema
-        | ($doc[0]) as $value
-        | if $schema == null then false
-          else
-            (($schema.required // []) | all(. as $k | ($value | has($k))))
-            and
-            (if ($schema.properties // null) == null then true
-             else ($value | keys) | all(. as $k | ($schema.properties | has($k)))
-             end)
-          end
-    ' --arg d "$def" "$bundle" >/dev/null 2>&1; then
+    if ! validates_against "$output" "$def"; then
         gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/$def in the committed bundle"
+        continue
+    fi
+
+    # An answer must not wear the failure marker. A caller following the generated agent guide
+    # branches on it before parsing anything else, so a verb whose answer carried it would be
+    # read as a refusal on every successful run — which is the one direction of this ruling
+    # nothing else here could notice.
+    if printf '%s' "$output" | jq -e --arg m "$marker" 'type == "object" and has($m)' >/dev/null 2>&1; then
+        gate_fail "webcam-handler-cli --json $argv answered with a document carrying '$marker', which is what tells an unattended caller that a verb refused"
         continue
     fi
     # Counted here, at the end, and not on entry: a row that failed to answer or failed
@@ -259,8 +315,102 @@ for row in "${verbs[@]}"; do
     gate_note "$name → #/\$defs/$def"
 done
 
-gate_checked "$checked" "--json verb answers validated against the committed bundle"
+gate_checked "$checked" "--json verb answers validated against the committed bundle, each required not to carry the '$marker' marker"
 gate_require_nonzero "$checked" "--json verb answers"
+
+# ------------------------------------------------------------------ the refusals
+#
+# Two failures, chosen because they differ in the two ways that matter: one carries nothing
+# beyond what the caller asked for and one carries the payload an agent acts on. A gate that
+# drove only the first would pass a build whose document dropped every field it did not
+# understand, which is the defect the owner's ruling is *about* — `available` is the retry.
+refusals=(
+    "camera-unknown|info cam:nothing-answers-to-this"
+    "format-unsupported|photo <camera> -o <photo> --pixel-format NV12"
+)
+
+refused=0
+declare -A refusal_codes=()
+for row in "${refusals[@]}"; do
+    IFS='|' read -r name argv <<<"$row"
+    argv="${argv//<camera>/cam:$camera_id}"
+    argv="${argv//<photo>/$scratch/refused.jpg}"
+
+    status=0
+    # shellcheck disable=SC2086
+    output="$("$binary" --backend fake --profile "$profile" --json $argv 2>/dev/null)" || status=$?
+    if ((status == 0)); then
+        gate_fail "webcam-handler-cli --json $argv answered instead of refusing; this row exists to produce a failure and a fixture that stopped producing one would validate a document nobody met"
+        continue
+    fi
+    # Not clap's, which would mean the command line was rejected before the camera was ever
+    # asked — a usage error validated as a device refusal is this gate checking the wrong thing.
+    if ((status == 2)); then
+        gate_fail "webcam-handler-cli --json $argv was refused by clap (exit 2), so no D13 failure was produced to validate"
+        continue
+    fi
+
+    if ! printf '%s' "$output" | jq -e . >/dev/null 2>&1; then
+        gate_fail "webcam-handler-cli --json $argv printed no parseable document on standard output; a caller that redirected stdout would have lost the failure entirely (note N124)"
+        continue
+    fi
+    if ! validates_against "$output" Failure; then
+        gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/Failure in the committed bundle"
+        continue
+    fi
+    if ! printf '%s' "$output" | jq -e --arg m "$marker" '.[$m] == true' >/dev/null 2>&1; then
+        gate_fail "webcam-handler-cli --json $argv printed a document that does not mark itself '$marker'; a caller cannot tell it from an answer"
+        continue
+    fi
+
+    kind="$(printf '%s' "$output" | jq -r '.error.kind // empty')"
+    if [[ -z "$kind" ]]; then
+        gate_fail "webcam-handler-cli --json $argv printed a failure document with no discriminant; the whole of D13 is that busy and device_gone are told apart"
+        continue
+    fi
+    known=0
+    for spelling in "${d13_kinds[@]}"; do
+        if [[ "$kind" == "$spelling" ]]; then known=1; fi
+    done
+    if ((known == 0)); then
+        gate_fail "webcam-handler-cli --json $argv refused with kind '$kind', which is not one the D13 registry has"
+        continue
+    fi
+
+    if [[ -n "${refusal_codes[$kind]:-}" && "${refusal_codes[$kind]}" != "$status" ]]; then
+        gate_fail "'$kind' left exit $status here and ${refusal_codes[$kind]} elsewhere in this run"
+        continue
+    fi
+    refusal_codes["$kind"]="$status"
+    refused=$((refused + 1))
+    gate_note "$name → #/\$defs/Failure, kind '$kind', exit $status"
+done
+
+# The payload, on the row that exists for it. `available` is what an agent retries with, and a
+# document that named the refusal and dropped the list would leave it parsing the English
+# sentence beside it — which is the state note **N124** measured.
+formats="$("$binary" --backend fake --profile "$profile" --json \
+    photo "cam:$camera_id" -o "$scratch/refused.jpg" --pixel-format NV12 2>/dev/null |
+    jq -r '[.error.available[]? | select(type == "string")] | length' 2>/dev/null || true)"
+if [[ -z "$formats" ]] || ((formats == 0)); then
+    gate_fail "the format refusal carries no readable 'available' formats; that list is the retry an unattended caller makes, and a refusal without it is the English sentence wearing braces"
+fi
+gate_checked "$formats" "format(s) the format_unsupported refusal names as readable FourCCs for the caller to retry with"
+gate_require_nonzero "$formats" "formats in the refusal payload"
+
+# The redundant channel: distinct codes for distinct kinds. Compared against each other rather
+# than against numbers written here — `cli_core::exit_code` is the one home of the mapping, and
+# a gate that transcribed it would be a second table.
+if ((${#refusal_codes[@]} > 0)); then
+    # Guarded, because `printf '%s\n'` with no arguments prints one empty line and would
+    # report a phantom collision on a run where every row above had already failed.
+    distinct="$(printf '%s\n' "${refusal_codes[@]}" | sort -u | wc -l | tr -d ' ')"
+    if ((distinct != ${#refusal_codes[@]})); then
+        gate_fail "${#refusal_codes[@]} refusal kind(s) left only $distinct distinct exit code(s); the codes are the document's redundant half and two kinds sharing one is the collapse D13 exists to prevent"
+    fi
+fi
+gate_checked "$refused" "--json refusal(s) validated against #/\$defs/Failure, each marked '$marker', naming a D13 kind, and exiting a code of its own"
+gate_require_nonzero "$refused" "--json refusals"
 
 # Every verb the CLI offers must have a row above. Derived from `--help`, so a verb added
 # without a row is a failure rather than a quiet omission — and derived at **both levels**,

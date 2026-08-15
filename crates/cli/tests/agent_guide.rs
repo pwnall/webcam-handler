@@ -315,18 +315,16 @@ fn every_example_the_guide_shows_runs_and_answers() {
 }
 
 #[test]
-fn a_failing_verb_prints_no_document_and_no_discriminant_which_is_what_the_guide_says() {
-    // **The guide had to be honest about something this surface does not offer**, and this
-    // pins it (note **N124**). `cli_core::exit_code`'s doc comment used to say a caller who
-    // wants to branch on *which* failure it met "reads `--json`, where the whole typed error
-    // is". It is not: on failure both roots write one `Display` line to standard error and
-    // exit 1, and standard output is empty — the D13 discriminant AGENTS says is read
-    // unsupervised (*"`Busy` means retry, `DeviceGone` means stop and tell the human"*) never
-    // reaches a command-line caller as a value.
+fn a_failing_verb_prints_the_document_the_guide_shows_and_exits_the_code_it_lists() {
+    // **What N124 found and the owner's ruling of 2026-08-15 repaired** (note **N127**),
+    // asserted against the *manual* rather than only against the binary — which is this
+    // suite's whole subject. Until this change the guide said "A failure prints no document"
+    // and a test here pinned that sentence; the sentence and the pin moved together, because
+    // a manual that is wrong in the safer direction is still wrong for a reader with no hands.
     //
-    // So the guide says so, and this test is why that sentence can be trusted: a build that
-    // starts emitting a failure document turns it red, and the guide must then be rewritten
-    // rather than quietly becoming wrong in the safer direction.
+    // Three claims, and the guide makes all three: the document is on standard output, the
+    // human line is still on standard error, and the exit code is the one the failure table
+    // gives that kind.
     let bench = Bench::new();
     let output = Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"))
         .args([
@@ -341,26 +339,42 @@ fn a_failing_verb_prints_no_document_and_no_discriminant_which_is_what_the_guide
         .output()
         .expect("webcam-handler-cli runs");
 
-    assert_eq!(output.status.code(), Some(1), "a typed refusal exits 1");
-    assert!(
-        output.stdout.is_empty(),
-        "a failed --json verb printed {} byte(s) on standard output",
-        output.stdout.len()
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document: schema::error::Failure = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+        panic!("a failed --json verb must print the guide's failure document: {error}\n{stdout}")
+    });
+    assert!(document.failed());
+    assert_eq!(document.kind(), schema::ErrorKind::CameraUnknown);
+
+    // The code, from the table the guide prints — and the table is generated from
+    // `cli_core::exit_code`, so this compares the shipped binary against the shipped mapping
+    // rather than against a number written here.
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(cli_core::exit_code(&document.error))),
+        "the exit code is not the one the guide's failure table lists"
     );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.starts_with("webcam-handler-cli: "),
         "the failure line names the program that met it: {stderr}"
     );
-    // The discriminant is what an unattended caller would want and what it does not get: the
-    // line carries the rendered sentence, not `camera_unknown`.
+    assert!(stderr.contains(&document.message), "{stderr}");
+
+    // And the guide teaches exactly this. The marker first, because it is what a reader
+    // branches on before parsing anything else; then the discriminant it just met, spelled
+    // the way the failure table spells it.
     assert!(
-        !stderr.contains("camera_unknown"),
-        "the failure line now carries the D13 discriminant; the guide's section on failures \
-         says it does not, and one of the two has to change: {stderr}"
+        GUIDE.contains(&format!("| `{}` |", schema::error::FAILURE_MARKER)),
+        "the guide no longer tells a reader which field says a verb refused"
     );
     assert!(
-        GUIDE.contains("**A failure prints no document.**"),
-        "the guide no longer says what this test pins"
+        GUIDE.contains("| `camera_unknown` |"),
+        "the guide no longer lists the failure this run met"
+    );
+    assert!(
+        !GUIDE.contains("A failure prints no document."),
+        "the guide still says a failure prints no document, and this run just printed one"
     );
 }

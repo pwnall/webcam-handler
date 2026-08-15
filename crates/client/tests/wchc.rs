@@ -38,6 +38,7 @@
 //! daemon that cannot serve says why and exits, closing the pipe. A sweep's progress is
 //! asserted from the events themselves. There is no duration anywhere in this file.
 
+use std::process::Command;
 use std::sync::Mutex;
 
 use camino::Utf8PathBuf;
@@ -56,6 +57,39 @@ use fixture::{Daemon, Fixture, wchc};
 
 fn repo_root() -> Utf8PathBuf {
     Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The exit code a D13 refusal of this kind leaves behind.
+///
+/// From `cli_core::exit_code` — the one home of the mapping (note **N127**) — rather than from
+/// a literal, so a code that moves moves here too and a test cannot come to assert a number the
+/// shipped binaries stopped using.
+fn refusal_code(kind: schema::ErrorKind) -> i32 {
+    i32::from(cli_core::exit_code(&schema::Error::sample(kind)))
+}
+
+/// The `webcam-handler-cli` binary beside `webcam-handler-client`.
+///
+/// A sibling lookup for `fixture::wchd`'s reason — `CARGO_BIN_EXE_*` exists only for the
+/// package that declares the binary — and it lives here rather than in `support/fixture.rs`
+/// because only this suite has a use for it: the hardware suite includes that module too, and
+/// an item one includer never calls is a `dead_code` failure in its binary (note **N49**).
+///
+/// One test drives it, and its subject is the claim P4f's parity gate makes about answers,
+/// extended to refusals: the *same failure* has to produce the *same document* from both roots.
+fn wch() -> Command {
+    let beside = Utf8PathBuf::from(env!("CARGO_BIN_EXE_webcam-handler-client"));
+    let wch = beside
+        .parent()
+        .expect("the test binary's directory")
+        .join("webcam-handler-cli");
+    assert!(
+        wch.exists(),
+        "webcam-handler-cli is not beside webcam-handler-client at {wch}; this test compares \
+         the two roots' refusals, so build the workspace (`cargo nextest run --workspace`, \
+         which is what `just ci` runs) rather than this package alone"
+    );
+    Command::new(wch)
 }
 
 /// The camera every test here replays unless it says otherwise.
@@ -104,7 +138,17 @@ fn a_socket_nothing_is_listening_on_is_refused_by_name_and_leaves_code_one() {
     let fixture = Fixture::new();
     let ran = fixture.run(&["list"]);
 
-    assert_eq!(ran.code, 1, "{}", ran.stderr);
+    // `storage_io`'s own exit code, from the shipped mapping. Since the owner's ruling of
+    // 2026-08-15 (note **N127**) each D13 kind leaves a code of its own, so "no daemon is
+    // there" is distinguishable from "the camera is busy" by a script with no JSON parser —
+    // and the number is read out of `cli_core::exit_code` rather than written here, because a
+    // literal in a test is a second table nobody regenerates.
+    assert_eq!(
+        ran.code,
+        refusal_code(schema::ErrorKind::StorageIo),
+        "{}",
+        ran.stderr
+    );
     assert!(
         ran.stderr.starts_with("webcam-handler-client: "),
         "the line names the program that met the error: {}",
@@ -128,7 +172,11 @@ fn no_runtime_directory_at_all_is_a_different_refusal_from_no_daemon() {
     let output = command.output().expect("webcam-handler-client runs");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert_eq!(
+        output.status.code(),
+        Some(refusal_code(schema::ErrorKind::StorageIo)),
+        "{stderr}"
+    );
     assert!(stderr.contains("XDG_RUNTIME_DIR"), "{stderr}");
     // And not the *other* refusal: this one never got as far as a socket to name.
     assert!(
@@ -149,7 +197,14 @@ fn the_flags_a_client_cannot_honour_are_refused_before_the_socket_is_touched() {
         ["--profile", "p.json", "list"].as_slice(),
     ] {
         let ran = fixture.run(args);
-        assert_eq!(ran.code, 1, "{args:?}: {}", ran.stderr);
+        // `illegal_transition`, which is the variant this refusal has always been
+        // (`client::refused`) and is now visible as a code as well as a sentence.
+        assert_eq!(
+            ran.code,
+            refusal_code(schema::ErrorKind::IllegalTransition),
+            "{args:?}: {}",
+            ran.stderr
+        );
         assert!(
             ran.stderr.starts_with("webcam-handler-client: "),
             "{}",
@@ -238,7 +293,12 @@ fn the_read_verbs_answer_the_camera_the_daemon_is_replaying() {
     assert_eq!(brightness["slug"], Value::String("brightness".to_owned()));
 
     let missing = fixture.run(&["--json", "get", &id, "warp_drive"]);
-    assert_eq!(missing.code, 1, "{}", missing.stderr);
+    assert_eq!(
+        missing.code,
+        refusal_code(schema::ErrorKind::ControlUnknown),
+        "{}",
+        missing.stderr
+    );
     // Rendered by `schema::Error`'s own `Display`, from a value `api::codes::typed`
     // reconstructed — not from transport prose. That identity is the whole of the parity
     // claim, and this is the smallest place it can be seen.
@@ -736,7 +796,12 @@ fn the_calibration_arc_runs_end_to_end_over_the_socket() {
     // `apply` needs `--partial` while the queue still holds work, which is D8's gate and
     // not this client's: the refusal crossed the wire and came back typed.
     let refused = fixture.run(&["--json", "calibrate", "apply", &id, "--task", "legibility"]);
-    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert_eq!(
+        refused.code,
+        refusal_code(schema::ErrorKind::IllegalTransition),
+        "{}",
+        refused.stderr
+    );
     assert!(
         refused.stderr.starts_with("webcam-handler-client: "),
         "{}",
@@ -786,4 +851,113 @@ fn the_calibration_arc_runs_end_to_end_over_the_socket() {
         1,
         "{sessions}"
     );
+}
+
+#[test]
+fn a_refusal_that_crossed_the_wire_is_the_document_webcam_handler_cli_prints_locally() {
+    // **The strictest form of the parity claim, and the one P4f's gate could not make.** It
+    // compares the two roots' `--json` *answers* byte for byte; this compares their
+    // *refusals*, which is the harder half — `webcam-handler-cli` builds a `schema::Error` in
+    // this process, while `webcam-handler-client` receives an `ErrorObject` and rebuilds one
+    // with `api::codes::typed`, so a document that matched would be a value that survived a
+    // serialization, a JSON-RPC code, a transport and a reconstruction unchanged.
+    //
+    // Both are pointed at the same committed profile — the daemon replays it, and
+    // `webcam-handler-cli` replays it in its own process — so the two refusals are about one
+    // device. Since the owner's ruling of 2026-08-15 (note **N127**) both roots produce the
+    // document through one function (`cli_core::report_failure`), which is what makes this an
+    // assertion about a *wall* rather than about two renderers that happen to agree today:
+    // what could still differ is the value, and the value is what crossed the socket.
+    //
+    // `scripts/gates/cli-parity.sh` makes the same comparison over the shipped three from
+    // outside the workspace. This one is here because it runs on every push without a gate
+    // run, and because it can say which field disagreed.
+    let fixture = Fixture::new();
+    let _daemon = replaying(&fixture, REPLAYED);
+    let profile = profile(REPLAYED);
+
+    let id = {
+        let listed = fixture.run(&["--json", "list"]).json();
+        listed["cameras"][0]["id"]
+            .as_str()
+            .expect("the replayed profile enumerates a camera")
+            .to_owned()
+    };
+
+    // Three refusals with three shapes of payload: none at all beyond what was asked for, a
+    // suggestion list the engine computed, and the format list an agent retries with. A
+    // comparison over one of them would pass for a client that dropped every payload it did
+    // not understand.
+    let refusals: Vec<Vec<String>> = vec![
+        vec![
+            "--json".to_owned(),
+            "info".to_owned(),
+            "cam:nothing-answers-to-this".to_owned(),
+        ],
+        vec![
+            "--json".to_owned(),
+            "get".to_owned(),
+            id.clone(),
+            "warp_drive".to_owned(),
+        ],
+        vec![
+            "--json".to_owned(),
+            "photo".to_owned(),
+            id.clone(),
+            "-o".to_owned(),
+            fixture.state.root().join("refused.jpg").as_str().to_owned(),
+            "--pixel-format".to_owned(),
+            "NV12".to_owned(),
+        ],
+    ];
+
+    let mut compared = 0;
+    for argv in &refusals {
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let theirs = fixture.run(&borrowed);
+
+        let locally = wch()
+            .args(["--backend", "fake", "--profile", profile.as_str()])
+            .args(&borrowed)
+            .output()
+            .expect("webcam-handler-cli runs");
+        let mine = String::from_utf8_lossy(&locally.stdout).into_owned();
+
+        // Both must *refuse*. Without this the comparison has a hole big enough to drive a
+        // fixture through: two programs that both answered would agree on a document and be
+        // reported as parity for a claim about failures.
+        assert_ne!(theirs.code, 0, "{argv:?}: {}", theirs.stderr);
+        assert_ne!(locally.status.code(), Some(0), "{argv:?}: {mine}");
+
+        let received: schema::error::Failure = serde_json::from_slice(&theirs.stdout)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{argv:?}: webcam-handler-client printed no failure document ({error}): {}",
+                    String::from_utf8_lossy(&theirs.stdout)
+                )
+            });
+        assert!(received.failed());
+
+        assert_eq!(
+            String::from_utf8_lossy(&theirs.stdout),
+            mine,
+            "{argv:?}: the two roots do not agree about a refusal; T4 says a verb exists once \
+             and D13 says the registry does too"
+        );
+        // The redundant channel agrees as well, which a byte comparison of standard output
+        // cannot see: a client that printed the right document and exited 1 for everything
+        // would pass the line above.
+        assert_eq!(
+            theirs.code,
+            locally.status.code().expect("webcam-handler-cli exited"),
+            "{argv:?}: the two roots exit differently on one refusal"
+        );
+        assert_eq!(theirs.code, refusal_code(received.kind()), "{argv:?}");
+        compared += 1;
+    }
+    assert_eq!(compared, refusals.len());
+
+    // Not vacuous in the other direction either: the three refusals are three *different*
+    // ones, so the comparison above is over three documents rather than one repeated.
+    assert!(refusals.len() > 2, "{} refusal(s) compared", refusals.len());
 }

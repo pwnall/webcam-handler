@@ -676,6 +676,25 @@ until the round-trip, rendering, and RPC-code walks all know it. JSON-RPC error 
 map 1:1 from this registry in `webcam-handler-api`;
 the CLI renders the same variants; nobody stringly-matches.
 
+**Amended (owner ruling, 2026-08-15): the registry reaches a command line as a document, and
+each kind has an exit code of its own.** Writing P6e's agent guide measured that it did
+neither (note **N124**): a failing `--json` verb printed nothing on standard output and
+`cli_core::exit_code` answered 1 for all eighteen kinds, so the discrimination this registry
+exists to provide — *`Busy` means retry, `DeviceGone` means stop and tell the human* — was
+available on the wire and nowhere else. The ruling is that **the JSON is the mechanism and it
+must be self-contained**, with exit codes as redundancy beside it. Three things follow, none
+of which changes a variant or a wire code. A `--json` invocation that fails prints
+`schema::error::Failure` — `{failed, error, message}`, where `error` is this registry's own
+serde output and therefore byte-identical to the `data` object D10 already sends, nested rather
+than flattened because `DeviceIo` and `StorageIo` carry a `message` of their own. Both
+composition roots emit it through one function, so the same failure produces the same bytes
+from `webcam-handler-cli` and `webcam-handler-client`, which `scripts/gates/cli-parity.sh` now
+compares. And `cli_core::exit_code` is an exhaustive match over `ErrorKind` giving each kind a
+distinct code in a declared contiguous block, `10 ..= 27` — `api::codes`' arrangement one
+channel along, including its two refusals: never an ordinal derivation, and 0, 1 and 2 left to
+the process. Notes **N127** and **N128** record the shape, the alternatives turned down and
+what can go red.
+
 ### 2.3 The backend contract (T1–T3)
 
 **T1 — `CameraBackend`.** The pluggability seam the owner asked for:
@@ -897,6 +916,14 @@ them — reading clap's `ValueSource` rather than the value, since `--backend` c
 let a script pointed at real cameras believe it was replaying a profile; forking the surface is
 what T4 forbids. `scripts/gates/cli-parity.sh` compares the two roots' `--json` on every read
 verb and buckets the rest with a reason apiece.
+
+**And a fourth, from P6f: `--json` emits a schema DTO verbatim on a failing run too.** D13's
+amendment above carries the ruling; what it means *here* is that "no envelope, no timestamp, no
+tool version" is unchanged and now covers both outcomes — a `--json` invocation prints exactly
+one `webcam-handler-schema` type, and which type it is says whether the verb answered. The
+failure document is `schema::error::Failure`, it is a root of the committed bundle, and it goes
+out through the same emitter every answer does, so the parity gate's fork case reaches it.
+Success documents did not move.
 
 **The web client.** Vanilla ES modules, no build step, no npm, no CDN (assets embed;
 external fetches would violate both the offline posture and the license inventory): a

@@ -6,8 +6,9 @@
 //! reason the vocabulary is closed.
 //!
 //! Everything the user sees comes from `webcam-handler-cli-core`. This file contributes
-//! the executor and the process's edges: argument parsing, exit code, and turning a typed
-//! error into a line on standard error.
+//! the executor and the process's edges: argument parsing, and handing a typed failure to the
+//! shared surface's `cli_core::report_failure`, which owns the `--json` failure document, the
+//! line on standard error and the exit code (note **N127**).
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -21,9 +22,7 @@
 
 use std::process::ExitCode;
 
-use cli_core::{
-    Cli, Executor, Output, Photograph, Program, Selection, SessionRef, Stream, SweepWatcher,
-};
+use cli_core::{Cli, Executor, Output, Photograph, Program, Selection, SessionRef, SweepWatcher};
 use engine::calibrate::{SweepContext, SweepRequest};
 use engine::lifecycle::{self, SessionSpec};
 use engine::store::SessionStore;
@@ -56,11 +55,16 @@ fn main() -> ExitCode {
     match run(&cli, &mut out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            // The typed error, rendered once. `--json` consumers get the same information
-            // as the document they asked for, so a failure there is still a parse failure
-            // for them — which is correct: there is no answer.
-            let _ = out.line(Stream::Stderr, &PROGRAM.error_line(&error));
-            ExitCode::from(cli_core::exit_code(&error))
+            // The whole failure edge in one call, and the call is the shared surface's
+            // (`cli_core::report_failure`, note **N127**): the typed refusal reaches standard
+            // output as a `schema::error::Failure` under `--json` and standard error as the
+            // one line a person reads, and the code beside it is D13's own. Written here
+            // rather than in `run` because these are process concerns; written *there* rather
+            // than here because `webcam-handler-client` has to produce the identical bytes,
+            // which is what `scripts/gates/cli-parity.sh` now compares.
+            ExitCode::from(cli_core::report_failure(
+                PROGRAM, &error, cli.json, &mut out,
+            ))
         }
     }
 }

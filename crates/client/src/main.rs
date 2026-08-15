@@ -19,7 +19,7 @@
 
 use std::process::ExitCode;
 
-use cli_core::{Cli, Output, Stream};
+use cli_core::{Cli, Output};
 use client::PROGRAM;
 
 fn main() -> ExitCode {
@@ -29,12 +29,16 @@ fn main() -> ExitCode {
     match client::run(&cli, &schema::paths::SystemEnv, &mut out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            // The typed error, rendered once, through the same `Display` `webcam-handler-cli`
-            // renders it with — including the ones that arrived over the wire, which
-            // `api::codes::typed` turned back into `schema::Error` values rather than into
-            // transport prose. That identity is what the parity gate compares.
-            let _ = out.line(Stream::Stderr, &PROGRAM.error_line(&error));
-            ExitCode::from(cli_core::exit_code(&error))
+            // The typed error, reported once, through the *same function*
+            // `webcam-handler-cli`'s root calls (`cli_core::report_failure`, note **N127**) —
+            // including the errors that arrived over the wire, which `api::codes::typed` turned
+            // back into `schema::Error` values rather than into transport prose. So the
+            // `--json` failure document, the line on standard error and the exit code are the
+            // same three answers from both roots because they are produced by one piece of
+            // code, and the parity gate compares them byte for byte rather than trusting that.
+            ExitCode::from(cli_core::report_failure(
+                PROGRAM, &error, cli.json, &mut out,
+            ))
         }
     }
 }

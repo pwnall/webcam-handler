@@ -457,6 +457,143 @@ impl Error {
     }
 }
 
+/// The field name that marks a `--json` document as a failure rather than an answer.
+///
+/// One string, because three readers have to agree on it and only one of them is Rust:
+/// [`Failure`]'s own field below, `webcam-handler-xtask`'s walk over every document a verb
+/// answers with — which asserts that none of them declares a property by this name, so a
+/// success document can never be mistaken for a refusal — and
+/// `scripts/gates/json-validates.sh`, which reads this constant out of the tree and looks for
+/// it in the documents the shipped binary actually prints. A gate that transcribed the name
+/// would keep looking for a marker the product had stopped emitting, which is the shape of
+/// defect docs/9's derived-population rule exists to stop.
+pub const FAILURE_MARKER: &str = "failed";
+
+/// A failed `--json` invocation, as the document standard output carries (owner ruling,
+/// 2026-08-15; note **N127**).
+///
+/// **Why this exists.** AGENTS' opening section says the error vocabulary is read
+/// unsupervised — *"`Busy` means retry, `DeviceGone` means stop and tell the human,
+/// `PermissionDenied` means a setup problem — collapsing them makes the agent guess"* — and
+/// note **N124** measured that the discriminant reached no command-line caller at all: both
+/// roots printed one `Display` sentence to standard error, exited 1 for every one of the
+/// eighteen kinds, and left standard output empty. The owner's ruling is that **the JSON is
+/// the mechanism and it must be self-contained**, with distinct exit codes as redundancy
+/// beside it ([`crate::error`]'s consumers reach those through `cli_core::exit_code`).
+///
+/// **Three fields, and each answers a different question a reader has:**
+///
+/// | Field | Answers |
+/// |---|---|
+/// | [`FAILURE_MARKER`] (`failed`) | *is this a failure?* — before anything else is parsed |
+/// | `error` | *which failure, and with what?* — the D13 value in the registry's own serde spelling, payload included |
+/// | `message` | *what would a human have been told?* — [`Error`]'s own `Display`, the same sentence standard error carries |
+///
+/// **The error is nested rather than flattened, and that is a defect avoided rather than a
+/// preference.** Two variants of the registry — [`Error::DeviceIo`] and [`Error::StorageIo`]
+/// — carry a `message` field of their own, so flattening the payload beside this document's
+/// `message` would put two different strings under one key and let serde pick. Nesting also
+/// makes the payload exactly what the wire's `data` object is (design D10), so a client
+/// author reading `schemas/webcam-handler-openrpc.json` and an agent reading a command line's
+/// standard output are looking at the same bytes.
+///
+/// **What is deliberately not here is the JSON-RPC code.** That number is a fact about the
+/// wire (D10), `webcam-handler-cli-core` links no `webcam-handler-api` — the dependency wall
+/// `scripts/gates/dependency-walls.sh` calls "pure", which jsonrpsee's tokio edge would
+/// break — and the command line's own numeric redundancy is the exit code. Two numeric
+/// registries in one document would be two things a caller could branch on and one of them
+/// would be the wrong one.
+///
+/// **This is not an envelope.** `--json` still emits one `webcam-handler-schema` type
+/// verbatim; a failure emits a *different* type from an answer, which is why the success
+/// documents did not move and why `cli_core::render`'s "no envelope, no timestamp, no tool
+/// version" rule is untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Failure {
+    /// Always `true`, and the reader's first question answered without parsing anything else.
+    ///
+    /// Private, with [`Failure::new`] as the only constructor, because it is a constant of the
+    /// shape rather than data: a `Failure` somebody could build with `failed: false` would be
+    /// a refusal document announcing that nothing was refused.
+    ///
+    /// Refused on the way *in* as well — `refuse_a_document_that_says_it_did_not_fail` below is
+    /// the deserializer — so a consumer deserializing into this type cannot end up holding one
+    /// either, which is the half a constructor alone cannot give: the bytes arrive from
+    /// somewhere else.
+    #[serde(deserialize_with = "refuse_a_document_that_says_it_did_not_fail")]
+    failed: bool,
+
+    /// The typed error, serialized exactly as the wire's `data` object is.
+    ///
+    /// The discriminant is its `kind` tag in the registry's own snake_case spelling, and every
+    /// actionable field the variant carries is beside it — the `available` formats of a
+    /// [`Error::FormatUnsupported`], the `holders` of a [`Error::Busy`], the `path` of a
+    /// [`Error::StorageIo`]. Those payloads are the entire reason the variants carry data, and
+    /// a document that dropped them would be the English sentence again wearing braces.
+    pub error: Error,
+
+    /// What a person watching a terminal was told, without the program's name in front of it.
+    ///
+    /// [`Error`]'s own `Display` and never a second rendering (design §2.10) — the same string
+    /// the wire's `message` carries and the same one `Program::error_line` prefixes on standard
+    /// error, so the two channels cannot come to describe one failure differently.
+    pub message: String,
+}
+
+impl Failure {
+    /// The document for one error.
+    ///
+    /// The only constructor, so `message` is derived from `error` rather than passed beside it:
+    /// a caller that could supply both could supply a sentence describing a different failure,
+    /// and the whole claim this document makes is that its three fields are three views of one
+    /// value.
+    #[must_use]
+    pub fn new(error: Error) -> Failure {
+        Failure {
+            failed: true,
+            message: error.to_string(),
+            error,
+        }
+    }
+
+    /// Whether this document says a verb failed — which it always does.
+    ///
+    /// An accessor rather than a public field for the reason the field's own doc gives, and it
+    /// exists so a consumer that deserialized one can still read the marker it branched on.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        self.failed
+    }
+
+    /// The discriminant, for a caller that has the document and wants the value.
+    #[must_use]
+    pub fn kind(&self) -> ErrorKind {
+        self.error.kind()
+    }
+}
+
+/// Refuse a `failed` that is not `true`.
+///
+/// The marker is what tells a reader this document is a refusal, so a `false` here is a
+/// document that contradicts the only thing it exists to say. Deserialization refuses rather
+/// than normalizing, because normalizing would make `{"failed": false}` parse into a value
+/// claiming the opposite of what was written.
+fn refuse_a_document_that_says_it_did_not_fail<'de, D>(
+    deserializer: D,
+) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if bool::deserialize(deserializer)? {
+        Ok(true)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "a failure document is marked `\"{FAILURE_MARKER}\": true`; one marked false is \
+             not a failure document"
+        )))
+    }
+}
+
 /// The result type every fallible operation in this workspace returns.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -786,6 +923,108 @@ mod tests {
                 format!("\"{}\"", protocol.as_str())
             );
         }
+    }
+
+    #[test]
+    fn every_kind_reaches_a_failure_document_marked_failed_and_carrying_its_own_discriminant() {
+        // The owner's ruling of 2026-08-15 in one walk (note **N127**): *"reading the document
+        // alone must tell a caller that this is a failure and which failure it is"*. The
+        // population is `ErrorKind::ALL`, generated from the vocabulary macro, so a nineteenth
+        // variant joins this without anybody remembering it.
+        for &kind in ErrorKind::ALL {
+            let error = Error::sample(kind);
+            let document = Failure::new(error.clone());
+            assert!(document.failed(), "{kind:?} is not marked as a failure");
+            assert_eq!(document.kind(), kind);
+
+            let json = serde_json::to_value(&document).expect("a failure document serializes");
+            // The marker, by the constant the gate and the emitter's walk both read.
+            assert_eq!(json[FAILURE_MARKER], serde_json::json!(true), "{kind:?}");
+            // The discriminant, in the registry's own serde spelling — the same string the
+            // wire's `data` object carries and `api::rpc_code`'s fixture pins its code
+            // against. Derived from the kind rather than transcribed, so this cannot pin a
+            // spelling the registry does not use.
+            let wire_name = serde_json::to_value(kind).expect("a kind names itself");
+            assert_eq!(json["error"]["kind"], wire_name, "{kind:?}");
+            // The message is the error's own `Display` and not a second rendering (§2.10).
+            assert_eq!(
+                json["message"],
+                serde_json::json!(error.to_string()),
+                "{kind:?}"
+            );
+
+            // And it survives the trip back, which is what makes it a document a consumer can
+            // hold rather than bytes it can only grep.
+            let back: Failure = serde_json::from_value(json).expect("a failure document parses");
+            assert_eq!(back, document, "{kind:?} changed on the way through");
+        }
+    }
+
+    #[test]
+    fn the_payload_a_variant_carries_reaches_the_document_and_is_not_flattened_over_its_message() {
+        // **The case the ruling is about.** `FormatUnsupported` is what an unattended caller
+        // retries on — ask for a format the camera has — and a document that carried only the
+        // sentence would leave it parsing English to find the list. `available` is beside the
+        // discriminant, as readable FourCCs since the owner's ruling of 2026-08-14 (note
+        // **N109**).
+        let document = Failure::new(Error::sample(ErrorKind::FormatUnsupported));
+        let json = serde_json::to_value(&document).expect("serialize");
+        assert_eq!(json["error"]["requested"], serde_json::json!("NV12"));
+        assert_eq!(
+            json["error"]["available"],
+            serde_json::json!(["MJPG", "YUYV"])
+        );
+
+        // The nesting, and the collision it avoids rather than a preference: two variants
+        // carry a `message` of their own, so a flattened payload would put the device's
+        // sentence and this document's sentence under one key and let serde pick which
+        // survived. Asserted on `StorageIo`, whose own message is deliberately unlike the
+        // rendered one.
+        let storage = Failure::new(Error::StorageIo {
+            path: "/state".into(),
+            errno: Some(28),
+            message: "No space left on device".to_owned(),
+        });
+        let json = serde_json::to_value(&storage).expect("serialize");
+        assert_eq!(
+            json["error"]["message"],
+            serde_json::json!("No space left on device")
+        );
+        assert_eq!(
+            json["message"],
+            serde_json::json!("/state: No space left on device")
+        );
+        assert_ne!(json["error"]["message"], json["message"]);
+        // The path, which is what a caller acts on: this is not the camera's fault and the
+        // remedy is somewhere on a filesystem.
+        assert_eq!(json["error"]["path"], serde_json::json!("/state"));
+        assert_eq!(json["error"]["errno"], serde_json::json!(28));
+    }
+
+    #[test]
+    fn a_document_that_says_it_did_not_fail_is_refused_rather_than_read_as_a_failure() {
+        // The marker is the whole of "unambiguously a failure", so a document contradicting it
+        // must not parse into a value claiming the opposite of what was written. Both
+        // directions: the shipped shape parses, and the same bytes with the marker turned over
+        // do not.
+        let real = serde_json::to_string(&Failure::new(Error::sample(ErrorKind::Busy)))
+            .expect("serialize");
+        serde_json::from_str::<Failure>(&real).expect("the shipped shape parses");
+
+        let lying = real.replace(
+            &format!("\"{FAILURE_MARKER}\":true"),
+            &format!("\"{FAILURE_MARKER}\":false"),
+        );
+        assert_ne!(lying, real, "the seed did not apply: {real}");
+        let refused =
+            serde_json::from_str::<Failure>(&lying).expect_err("a false marker is refused");
+        assert!(refused.to_string().contains(FAILURE_MARKER), "{refused}");
+
+        // And a document with no marker at all is not one either — which is what stops an
+        // answer that happens to carry `error` and `message` being read as a refusal.
+        let unmarked = real.replace(&format!("\"{FAILURE_MARKER}\":true,"), "");
+        assert_ne!(unmarked, real, "the seed did not apply: {real}");
+        assert!(serde_json::from_str::<Failure>(&unmarked).is_err());
     }
 
     #[test]

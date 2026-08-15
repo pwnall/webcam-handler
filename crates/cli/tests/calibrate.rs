@@ -173,6 +173,24 @@ impl Wch {
         ran
     }
 
+    /// Refuse, and be the refusal this call meant.
+    ///
+    /// Since the owner's ruling of 2026-08-15 (note **N127**) each D13 kind leaves an exit code
+    /// of its own, so "it refused" and "it refused for *this* reason" are two different claims
+    /// and the second one is now cheap. The expected code is read out of the shipped mapping
+    /// rather than written as a number here: `cli_core::exit_code` is the one home, and a
+    /// literal in a test would be a second table nobody regenerates.
+    fn refuses_with(&self, args: &[&str], kind: schema::ErrorKind) -> Ran {
+        let ran = self.refuses(args);
+        assert_eq!(
+            ran.code,
+            i32::from(cli_core::exit_code(&schema::Error::sample(kind))),
+            "webcam-handler-cli {args:?} was expected to refuse with {kind:?}: {}",
+            ran.stderr
+        );
+        ran
+    }
+
     /// The directory of the one session in the tree.
     fn only_session_dir(&self) -> Utf8PathBuf {
         let list = self.json(&["calibrate", "list"]);
@@ -698,8 +716,13 @@ fn apply_refuses_a_camera_that_is_not_the_sessions_naming_the_fields_that_differ
         .as_str()
         .expect("a session id")
         .to_owned();
-    let refused = wch.refuses(&["calibrate", "apply", "cam:obsbot", "--session", &id]);
-    assert_eq!(refused.code, 1, "a device refusal, not a usage error");
+    // A device refusal and not a usage error, named: the exit code says which of the
+    // eighteen it is (note **N127**), so this asserts the reason rather than only that
+    // something went wrong.
+    let refused = wch.refuses_with(
+        &["calibrate", "apply", "cam:obsbot", "--session", &id],
+        schema::ErrorKind::FingerprintMismatch,
+    );
 
     // The named fields are the ones that actually differ between the two cameras, read
     // from the enumeration rather than transcribed.
@@ -795,8 +818,10 @@ fn apply_needs_partial_while_work_is_queued_and_then_writes_exactly_what_was_cal
         "sharpness",
     ]);
 
-    let refused = wch.refuses(&["calibrate", "apply", "cam:integrated", "--task", task]);
-    assert_eq!(refused.code, 1);
+    let refused = wch.refuses_with(
+        &["calibrate", "apply", "cam:integrated", "--task", task],
+        schema::ErrorKind::IllegalTransition,
+    );
     assert!(
         refused.stderr.contains("unsettled(1 pending)"),
         "the refusal must say what is pending: {}",
@@ -1033,12 +1058,7 @@ fn a_mutating_calibrate_verb_refuses_a_session_that_belongs_to_another_camera() 
         vec!["calibrate", "apply", "cam:obsbot", "--session", &id],
     ];
     for args in &foreign {
-        let refused = wch.refuses(args);
-        assert_eq!(
-            refused.code, 1,
-            "{args:?} was a usage error rather than a device refusal: {}",
-            refused.stderr
-        );
+        let refused = wch.refuses_with(args, schema::ErrorKind::FingerprintMismatch);
         for field in &differing {
             assert!(
                 refused.stderr.contains(field),
@@ -1128,7 +1148,12 @@ fn a_task_nobody_started_is_refused_rather_than_invented() {
         "--task",
         "a task nobody started",
     ]);
-    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.code,
+        i32::from(cli_core::exit_code(&schema::Error::sample(
+            schema::ErrorKind::IllegalTransition
+        )))
+    );
     assert!(
         refused.stderr.contains("no_session"),
         "the refusal must say what was not found: {}",
@@ -1406,8 +1431,10 @@ fn a_second_session_for_one_camera_and_task_is_refused_naming_the_one_that_is_op
     let scratch = Scratch::new();
     let wch = calibrated_session(&scratch);
     let task = "read text from the DUT display";
-    let refused = wch.refuses(&["calibrate", "start", "cam:integrated", "--task", task]);
-    assert_eq!(refused.code, 1);
+    let refused = wch.refuses_with(
+        &["calibrate", "start", "cam:integrated", "--task", task],
+        schema::ErrorKind::SessionConflict,
+    );
     let id = wch.json(&["calibrate", "list"])["sessions"][0]["id"]
         .as_str()
         .expect("an id")
@@ -1536,10 +1563,17 @@ fn a_wch_meeting_a_daemons_lock_is_sent_to_wchc_and_its_read_verbs_still_answer(
         "{}",
         refused.stderr
     );
-    // One exit code for every D13 error (`cli_core::exit_code`); "a daemon has the lock" is
-    // not a new one, and a script that started branching on 3 here would be reading a
-    // channel this project does not offer.
-    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    // The exit code says which of the eighteen this was (note **N127**): `store_locked` has
+    // one of its own, so a script can tell "a daemon has the state directory" from "the camera
+    // is busy" without reading the sentence. Read out of `cli_core::exit_code`, the one home.
+    assert_eq!(
+        refused.code,
+        i32::from(cli_core::exit_code(&schema::Error::sample(
+            schema::ErrorKind::StoreLocked
+        ))),
+        "{}",
+        refused.stderr
+    );
 
     // Reading is not a state write. This is the half that makes a daemon's lifetime hold
     // liveable for whoever is sitting at the machine, and it is stated as law on

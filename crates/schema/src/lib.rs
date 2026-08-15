@@ -20,7 +20,7 @@
 //! | [`metrics`] | the metric names sessions persist (D8) |
 //! | [`profile`] | the captured device profile (T3) |
 //! | [`backend`] | the `CameraBackend`/`Camera` traits and `BackendKind` (T1/T2) |
-//! | [`error`] | the closed error registry (D13) |
+//! | [`error`] | the closed error registry (D13), and [`error::Failure`] — the document a `--json` refusal prints (note **N127**) |
 //! | [`limits`] | every cap and deadline, and D9's path layout (rubric A14) |
 //! | [`paths`] | the runtime directory the daemon's socket lives in, and the [`paths::Env`] seam (D11/T6) |
 //! | [`slug`] | the pinned slug transform (D2) |
@@ -68,7 +68,7 @@ pub use capture::{
 pub use control::{
     Applied, ControlDesc, ControlId, ControlSlug, ControlValue, ControlWrite, WriteWarning,
 };
-pub use error::{BackendError, Error, ErrorKind, Result};
+pub use error::{BackendError, Error, ErrorKind, Failure, Result};
 pub use profile::DeviceProfile;
 pub use report::{
     CameraDetail, CameraList, ControlReport, DiscoveryReport, ListHint, TerminationReport,

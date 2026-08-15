@@ -143,7 +143,7 @@ fn bundle() -> Result<Value> {
         StreamRequest, Transform,
     };
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
-    use schema::error::Error;
+    use schema::error::{Error, Failure};
     use schema::profile::DeviceProfile;
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session, SessionList, SessionStatus, SweepRequest};
@@ -213,6 +213,12 @@ fn bundle() -> Result<Value> {
     register::<RecordStatus>(&mut generator, &mut roots);
     register::<DeviceProfile>(&mut generator, &mut roots);
     register::<Error>(&mut generator, &mut roots);
+    // P6f's failure document, and a root by the strictest reading of the paragraph above: it
+    // is the one thing a `--json` verb prints that is not the verb's answer (owner ruling,
+    // 2026-08-15; note **N127**). A consumer validating our output meets it on exactly the
+    // runs it most needs to parse, so leaving it to arrive as a `$def` by reachability from
+    // `Error` would name the payload in the bundle and not the document carrying it.
+    register::<Failure>(&mut generator, &mut roots);
 
     roots.sort();
     roots.dedup();
@@ -791,6 +797,86 @@ mod tests {
             );
             assert_eq!(emitted["data"]["kind"], json!(name), "{name}");
         }
+    }
+
+    #[test]
+    fn no_document_a_verb_answers_with_can_be_mistaken_for_the_failure_document() {
+        // **The half of the owner's 2026-08-15 ruling that has to be *checked* rather than
+        // observed** (note **N127**): "no success document may be mistakable for it". A
+        // failure is told apart from an answer by one property name —
+        // `schema::error::FAILURE_MARKER` — and that discrimination is worth nothing unless
+        // no answer can carry it.
+        //
+        // Both populations are walked and neither is a hand list. The verbs come from
+        // `crates/cli-core/json-contracts.tsv`, which since P6e is the one home of the
+        // verb-to-document mapping (note **N122**), and the shapes come from the bundle this
+        // emitter has just produced — so a field added to a `--json` answer is judged here on
+        // the day it lands, without anybody remembering that this rule exists.
+        //
+        // This is the emitter's business rather than `webcam-handler-cli-core`'s because the
+        // question is about the *shapes*, and the shapes are `schemars`' answer about the Rust
+        // types. `scripts/gates/json-validates.sh` asks the same question of the documents the
+        // shipped binary actually prints, which is the other end of it.
+        let marker = schema::error::FAILURE_MARKER;
+        let bundle = bundle().expect("the bundle is emitted");
+        let definitions = bundle["$defs"].as_object().expect("$defs is an object");
+
+        let mut inspected = 0;
+        for contract in cli_core::contracts::json_contracts() {
+            let schema = definitions.get(contract.document).unwrap_or_else(|| {
+                panic!(
+                    "{} answers with {}, which the bundle does not define",
+                    contract.verb, contract.document
+                )
+            });
+            // `properties` is what serde will emit for a struct, so a document type that does
+            // not declare the marker cannot print it. A type with no `properties` at all is
+            // not an object and cannot carry a named field either.
+            if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+                assert!(
+                    !properties.contains_key(marker),
+                    "`{}` answers with {}, which declares a `{marker}` property — a caller \
+                     branching on the failure marker would read a successful answer as a \
+                     refusal",
+                    contract.verb,
+                    contract.document
+                );
+            }
+            inspected += 1;
+        }
+        assert!(inspected > 10, "{inspected} contract(s) inspected");
+
+        // Not vacuous, and the reason the walk above means anything: the failure document
+        // *is* in the bundle, it *does* declare the marker, and it requires it — so the
+        // property being checked is one that exists rather than one nobody emits.
+        let failure = definitions
+            .get("Failure")
+            .expect("the failure document is a bundle type");
+        assert!(
+            failure["properties"]
+                .as_object()
+                .expect("Failure is an object")
+                .contains_key(marker),
+            "the failure document no longer declares `{marker}`"
+        );
+        for required in [marker, "error", "message"] {
+            assert!(
+                failure["required"]
+                    .as_array()
+                    .expect("Failure requires fields")
+                    .contains(&json!(required)),
+                "the failure document no longer requires `{required}`; a consumer cannot \
+                 branch on a field that may be absent"
+            );
+        }
+        assert!(
+            bundle["x-roots"]
+                .as_array()
+                .expect("x-roots is an array")
+                .contains(&json!("Failure")),
+            "the failure document is defined and is not a root; it is what `--json` prints on \
+             every failing run"
+        );
     }
 
     #[test]

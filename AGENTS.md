@@ -257,6 +257,13 @@ green and the notes current, and the phase review gets its own session.
   `no_text_this_surface_prints_carries_a_rustdoc_link` is what keeps it out. And the guide is
   written for an unattended agent: imperative, exact, and free of this repository's argument.
   The reasoning belongs in `xtask/src/guide.rs`, never in the document it emits.
+- **A failing `--json` run prints a document too** (owner ruling, 2026-08-15; notes **N127**,
+  **N128**): `schema::error::Failure` on standard output — the D13 kind in the registry's own
+  serde spelling, the variant's payload, and the message — with the one human line on standard
+  error unchanged beside it, and an exit code per kind from `cli_core::exit_code`. Both roots
+  emit it through `cli_core::report_failure`, so a refusal is one value rendered once. No
+  answer may carry `schema::error::FAILURE_MARKER`, and success documents are still bare DTOs:
+  a `--json` run prints exactly one schema type, and which type says whether it answered.
 - `--json` output round-trips against the committed schemas;
   `webcam-handler-cli`/`webcam-handler-client` parity holds — which since P4f is
   `./scripts/gates/cli-parity.sh` rather than an aspiration: it compares the two roots byte for

@@ -45,7 +45,7 @@ use schema::capture::{
     PhotoFormat, PhotoRequest, SettlePolicy, SettleSpec, Sink, StreamRequest, Transform,
 };
 use schema::control::{ControlDesc, ControlSlug, ControlWrite};
-use schema::error::{Error, Result};
+use schema::error::{Error, ErrorKind, Result};
 use schema::metrics::MetricName;
 use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
@@ -1827,45 +1827,130 @@ fn unreachable_record() -> Error {
     }
 }
 
-/// The exit code a failure leaves behind.
+/// Report a failure on the process's two streams, and answer with the code to exit.
 ///
-/// **One code for every D13 error**, not eighteen. Shell exit codes are a one-bit channel,
-/// and mapping a growing registry onto small integers invites a script to treat `2` as
-/// meaningful and then break when a nineteenth variant lands.
+/// **One home for the whole failure edge** (owner ruling, 2026-08-15; note **N127**). Both
+/// composition roots call exactly this — `webcam-handler-cli` with an error its engine
+/// produced, `webcam-handler-client` with one `api::codes::typed` rebuilt from the wire — so
+/// "the same failure produces the same document from both roots" is true by construction and
+/// `scripts/gates/cli-parity.sh` is left proving it end to end rather than hoping. A `format!`
+/// in each `main` is the second copy design §2.10 is about, and this is the seam where two
+/// roots would otherwise drift the furthest: nobody reads a refusal path twice.
 ///
-/// ## What this used to say, and why the correction matters (note **N124**)
+/// Two channels, two readers, and neither is asked to parse the other's:
 ///
-/// It said a caller wanting to branch on *which* thing went wrong "reads `--json`, where the
-/// whole typed error is". **That is not true of either root and never was.** A failing verb
-/// prints no document: [`run`] returns the typed error unrendered, both `main`s write
-/// `Program::error_line` — one `Display` sentence — to standard error, and standard output
-/// stays empty. The discriminant AGENTS says is read unsupervised (*"`Busy` means retry,
-/// `DeviceGone` means stop and tell the human, `PermissionDenied` means a setup problem —
-/// collapsing them makes the agent guess"*) is therefore not something a command-line caller
-/// receives as a value at all; it crosses the **wire** (D13's `data` object, design D10) and
-/// stops at the two programs that render it.
+/// - **Standard output carries [`schema::error::Failure`] when `as_json`** — the ruling's
+///   mechanism. Reading that document alone tells a caller that this is a failure, which
+///   failure it is in the registry's own spelling, and the payload it needs to act:
+///   `FormatUnsupported`'s `available`, `Busy`'s `holders`, `StorageIo`'s `path`. Note
+///   **N124** measured what came before — nothing at all on standard output, `--json` or not
+///   — so a caller that redirected stdout lost the failure completely.
+/// - **Standard error carries [`Program::error_line`], unchanged**, because a person watching
+///   a terminal is the other reader and this ruling takes nothing from them.
 ///
-/// The sentence was found by writing P6e's agent guide against this surface, which is what a
-/// manual is for. Nothing here changes: what the two roots do is a decision D10 and D13 make
-/// together, and inventing a failure document in a doc comment's footnote is not how this
-/// project would take it. `a_failing_verb_prints_no_document_and_no_discriminant_which_is_
-/// what_the_guide_says` pins the behaviour the guide now describes, so a build that starts
-/// emitting one goes red here rather than leaving the manual quietly wrong.
+/// The two are one value rendered twice: `Failure::new` derives its `message` from the same
+/// `Display` the line uses, so there is no second rendering to drift (design §2.10).
 ///
-/// The process therefore has three outcomes, and only the first two come from here:
+/// Writing the document is best-effort in exactly the way the line already was. A refusal
+/// whose *cause* was a closed standard output cannot be printed on it, and turning that into a
+/// panic — or into a different exit code — would replace the failure the caller asked about
+/// with one about the pipe.
+#[must_use]
+pub fn report_failure(program: Program, error: &Error, as_json: bool, out: &mut Output) -> u8 {
+    if as_json {
+        let _ = render::failure(&schema::error::Failure::new(error.clone()), out);
+    }
+    let _ = out.line(Stream::Stderr, &program.error_line(error));
+    exit_code(error)
+}
+
+/// The closed range every D13 exit code comes from.
+///
+/// Eighteen codes, contiguous, `10 ..= 27` — `api::codes::D13_CODES`'s shape one channel
+/// along, and for its reason: "eighteen codes, no holes" is a property a walk can check, and a
+/// block with a gap in it is a block nobody can describe.
+///
+/// **It starts at 10 because the three small codes are the process's own and stay that way.**
+/// `0` is an answer, `2` is clap's usage refusal, and `1` is deliberately left **unassigned**:
+/// a caller that meets 1 has met something other than a typed D13 refusal — a wrapper, a
+/// harness, a shell's own generic failure — and the gap is what lets them tell. Above the
+/// block, the numbers a caller does not own: `<sysexits.h>` gives 64–78 standard meanings,
+/// a POSIX shell answers 126 for "found and not executable" and 127 for "not found", and
+/// 128 + N is a process killed by signal N. `the_declared_range_collides_with_nothing_the_
+/// shell_or_the_process_already_owns` asserts every one of those rather than trusting this
+/// paragraph, exactly as `codes.rs` asserts D13's wire block against jsonrpsee's reserved
+/// constants.
+pub const D13_EXIT_CODES: std::ops::RangeInclusive<u8> = 10..=27;
+
+/// The exit code a failure leaves behind — **redundancy, not the mechanism**.
+///
+/// [`report_failure`]'s document is what a caller branches on: it is self-contained, it
+/// carries the payload, and it survives being written down. This is the second, coarser
+/// channel beside it, for the caller that has a shell and not a JSON parser. **Nobody should
+/// ever "simplify" the document away on the ground that the code carries the same
+/// information — it does not.** A number cannot name the formats a camera does offer, and an
+/// exit status is one byte a pipeline is free to lose.
+///
+/// ## What this used to say, and what replaced it (notes **N124**, **N127**)
+///
+/// It returned `1` for all eighteen kinds and argued for that: shell exit codes are a
+/// one-bit channel, and "a caller who wants to branch on *which* thing went wrong reads
+/// `--json`, where the whole typed error is". The second half was false — N124 measured that
+/// `--json` carried no failure document at all — and the owner's ruling of 2026-08-15 settled
+/// both halves at once: *"Let's extend the JSON output to convey errors. Exit codes are
+/// numerical, so they're not a self-contained way to communicate errors. Distinct exit codes
+/// are nice-to-have, as a redundant mechanism."* So the document exists and these codes are
+/// distinct, and the old argument is gone rather than kept beside its replacement.
+///
+/// The process now has three shapes of outcome:
 ///
 /// | Code | Meaning |
 /// |---|---|
 /// | 0 | the verb answered |
-/// | 1 | a typed [`Error`] — the camera, the device, or the filesystem said no |
 /// | 2 | clap's own: the command line was not a command line |
+/// | [`D13_EXIT_CODES`] | a typed [`Error`] — which one is the code, and the whole of it is the `--json` document |
 ///
-/// 2 is clap's convention and is left to it deliberately. "You typed it wrong" and "the
-/// camera is busy" are different kinds of failure, and a script that retries the second
-/// should not retry the first.
+/// 2 stays clap's and 1 stays unclaimed; [`D13_EXIT_CODES`]'s doc argues both.
+///
+/// ## Every arm is a literal, and the match is over the kind
+///
+/// Both decisions are `api::codes::rpc_code`'s, taken again here because the same two traps
+/// are here. The match is over [`ErrorKind`] rather than over [`Error`], which is
+/// `#[non_exhaustive]` and would therefore need a wildcard arm in this crate — and a wildcard
+/// is exactly what would let a nineteenth variant reach a caller wearing somebody else's
+/// code. And every arm is an explicit number rather than `BASE + kind as u8`, because an
+/// ordinal derivation renumbers every code below an inserted variant while every test here
+/// stays green: the walk still finds eighteen distinct codes in range, and a script that
+/// retried on `Busy` starts retrying on something else.
+///
+/// **The committed pin is `docs/agent-guide.md`.** The generated failure table prints this
+/// code per kind, so changing one moves a committed file and
+/// `scripts/gates/agent-guide-current.sh` goes red until somebody regenerates it — which is
+/// the same arrangement `crates/api/fixtures/d13-rpc-codes.tsv` gives the wire codes, reusing
+/// a file that has to exist anyway.
 #[must_use]
-pub fn exit_code(_error: &Error) -> u8 {
-    1
+pub fn exit_code(error: &Error) -> u8 {
+    match error.kind() {
+        ErrorKind::DeviceGone => 10,
+        ErrorKind::Busy => 11,
+        ErrorKind::PermissionDenied => 12,
+        ErrorKind::CameraUnknown => 13,
+        ErrorKind::CameraAmbiguous => 14,
+        ErrorKind::ControlUnknown => 15,
+        ErrorKind::ControlReadOnly => 16,
+        ErrorKind::ControlInactive => 17,
+        ErrorKind::FormatUnsupported => 18,
+        ErrorKind::SettleTimeout => 19,
+        ErrorKind::FingerprintMismatch => 20,
+        ErrorKind::SessionConflict => 21,
+        ErrorKind::IllegalTransition => 22,
+        ErrorKind::SchemaVersionForeign => 23,
+        ErrorKind::StoreLocked => 24,
+        ErrorKind::HolderGone => 25,
+        ErrorKind::DeviceIo => 26,
+        // The highest code in the block, which is `D13_EXIT_CODES.end()`.
+        ErrorKind::StorageIo => 27,
+    }
 }
 
 #[cfg(test)]
@@ -3292,14 +3377,131 @@ mod tests {
     }
 
     #[test]
-    fn every_error_kind_leaves_the_same_nonzero_exit_code_distinct_from_claps() {
-        for &kind in schema::error::ErrorKind::ALL {
+    fn every_kind_has_a_distinct_exit_code_inside_the_declared_range() {
+        // The redundancy the owner's ruling of 2026-08-15 asks for (note **N127**), walked
+        // over `ErrorKind::ALL` — generated by the vocabulary macro, so this cannot shrink
+        // when a variant is added, while the exhaustive match in `exit_code` is what stops a
+        // variant being added without a code at all.
+        let mut seen: std::collections::BTreeMap<u8, ErrorKind> = std::collections::BTreeMap::new();
+        for &kind in ErrorKind::ALL {
             let code = exit_code(&Error::sample(kind));
-            assert_ne!(code, 0, "{kind:?} would look like success");
-            // Distinct from clap's usage code: "you typed it wrong" and "the camera is
-            // busy" must not be the same answer to a script deciding whether to retry.
-            assert_ne!(code, 2, "{kind:?} collides with clap's usage exit code");
-            assert_eq!(code, 1, "{kind:?} differs from the other kinds");
+            assert!(
+                D13_EXIT_CODES.contains(&code),
+                "{kind:?} exits {code}, outside {D13_EXIT_CODES:?}"
+            );
+            // Distinctness is also the assertion that would notice a wildcard arm: the
+            // compiler cannot tell `_ => 27` from eighteen literals, but two kinds sharing a
+            // code is exactly what a catch-all produces — and two kinds sharing a code is the
+            // collapse AGENTS' opening section names, since `busy` and `device_gone` want
+            // opposite responses.
+            if let Some(other) = seen.insert(code, kind) {
+                panic!("{kind:?} and {other:?} both exit {code}");
+            }
         }
+        assert_eq!(seen.len(), ErrorKind::ALL.len());
+
+        // The range is exactly as wide as the registry: no holes, nothing reserved that
+        // nobody uses. Written in `u16` because the arithmetic would otherwise be a `u8`
+        // subtraction one variant away from wrapping.
+        let span = u16::from(*D13_EXIT_CODES.end()) - u16::from(*D13_EXIT_CODES.start()) + 1;
+        assert_eq!(
+            usize::from(span),
+            ErrorKind::ALL.len(),
+            "{D13_EXIT_CODES:?} has holes in it"
+        );
+    }
+
+    #[test]
+    fn the_declared_range_collides_with_nothing_the_shell_or_the_process_already_owns() {
+        // The half `codes.rs` spends on jsonrpsee's reserved constants, one channel along. A
+        // D13 code colliding with one of these would make an infrastructure failure
+        // indistinguishable from a camera answer — E3's "availability is not capability" lost
+        // at the process boundary — so each band is asserted rather than assumed.
+        //
+        // 0 is an answer and 2 is clap's; 1 is left unassigned on purpose, so a caller that
+        // meets it knows it met something other than a typed refusal. 64–78 is
+        // `<sysexits.h>`'s standard block, which many tools do use; 126 is a POSIX shell's
+        // "found and not executable" and 127 its "not found"; 128 + N is a process killed by
+        // signal N, which is every code from 129 up and the reason nothing here goes near the
+        // top of the byte.
+        for reserved in [0u8, 1, 2] {
+            assert!(
+                !D13_EXIT_CODES.contains(&reserved),
+                "{reserved} is the process's own and D13 claims it too: {D13_EXIT_CODES:?}"
+            );
+        }
+        for sysexit in 64u8..=78 {
+            assert!(!D13_EXIT_CODES.contains(&sysexit), "{sysexit} is sysexits'");
+        }
+        for shell in 126u8..=127 {
+            assert!(!D13_EXIT_CODES.contains(&shell), "{shell} is the shell's");
+        }
+        assert!(
+            *D13_EXIT_CODES.end() < 128,
+            "{D13_EXIT_CODES:?} reaches the band a signal death reports in"
+        );
+
+        // Not vacuous: the block is inhabited, and by every kind.
+        assert_eq!(
+            ErrorKind::ALL
+                .iter()
+                .filter(|&&kind| D13_EXIT_CODES.contains(&exit_code(&Error::sample(kind))))
+                .count(),
+            ErrorKind::ALL.len()
+        );
+    }
+
+    #[test]
+    fn a_failing_verb_answers_with_the_failure_document_on_standard_output_and_the_line_on_error() {
+        // The shape of the ruling, at the seam both roots share. Asserted here as well as in
+        // the two subprocess suites because this is the function they call: a root that
+        // stopped calling it would fail there, and a change to what it emits fails here.
+        let error = Error::FormatUnsupported {
+            requested: Some(PixelFormat::NV12),
+            available: vec![PixelFormat::MJPG, PixelFormat::YUYV],
+        };
+        for &program in Program::ALL {
+            let stdout = render::tests::Buffer::default();
+            let stderr = render::tests::Buffer::default();
+            let mut out = Output::to_buffers(Box::new(stdout.clone()), Box::new(stderr.clone()));
+
+            let code = report_failure(program, &error, true, &mut out);
+            assert_eq!(code, exit_code(&error));
+
+            let document: schema::error::Failure =
+                serde_json::from_str(&stdout.text()).expect("standard output carries a document");
+            assert!(document.failed());
+            assert_eq!(document.kind(), schema::ErrorKind::FormatUnsupported);
+            assert_eq!(document.error, error);
+            // The payload an agent retries on, reachable as a value rather than as prose.
+            let Error::FormatUnsupported { available, .. } = &document.error else {
+                panic!("the document changed shape");
+            };
+            assert_eq!(available, &[PixelFormat::MJPG, PixelFormat::YUYV]);
+
+            // The human's half, unchanged and still naming which binary refused.
+            assert_eq!(stderr.text(), format!("{}\n", program.error_line(&error)));
+            assert!(document.message.ends_with("MJPG, YUYV"), "{document:?}");
+            assert!(stderr.text().contains(&document.message));
+        }
+    }
+
+    #[test]
+    fn without_json_a_failure_still_prints_nothing_on_standard_output() {
+        // The other direction, and the one that keeps `--json` a *mode*: a person running the
+        // verb without it gets the sentence they always got, and a shell doing
+        // `webcam-handler-cli photo cam:x > shot.jpg` does not find a JSON document where the
+        // image should have been.
+        let error = Error::sample(schema::ErrorKind::Busy);
+        let stdout = render::tests::Buffer::default();
+        let stderr = render::tests::Buffer::default();
+        let mut out = Output::to_buffers(Box::new(stdout.clone()), Box::new(stderr.clone()));
+
+        assert_eq!(
+            report_failure(Program::Cli, &error, false, &mut out),
+            exit_code(&error)
+        );
+        assert!(stdout.text().is_empty(), "{}", stdout.text());
+        assert!(stderr.text().contains("busy"), "{}", stderr.text());
     }
 }

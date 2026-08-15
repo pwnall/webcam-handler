@@ -49,7 +49,7 @@
 use std::fmt::Write as _;
 
 use anyhow::{Result, bail};
-use schema::error::{Error, ErrorKind};
+use schema::error::{Error, ErrorKind, Failure};
 
 use crate::{error_component_name, unescape_doc_brackets};
 
@@ -214,8 +214,8 @@ pub(crate) fn guide() -> Result<String> {
         Section {
             title: "Failures, and what to do about each one".to_owned(),
             provenance: Provenance::Derived(
-                "the D13 error registry in `webcam-handler-schema` — every failure, its code \
-                 and its message; the `Do` column is written prose",
+                "the D13 error registry in `webcam-handler-schema` — every failure, its exit \
+                 code, its JSON-RPC code and its message; the `Do` column is written prose",
             ),
             body: errors()?,
         },
@@ -373,10 +373,14 @@ fn global_options(root: &clap::Command) -> String {
         }
         let _ = writeln!(out, "{}", option_row(arg));
     }
-    out.push_str(
-        "\nExit codes: **0** the verb answered, **1** a typed failure (the section on \
-         failures lists them), **2** the command line was not a command line. A script that \
-         retries on 1 must not retry on 2.\n",
+    let _ = write!(
+        out,
+        "\nExit codes: **0** the verb answered, **{}–{}** a typed failure — one code per \
+         failure, listed in the section on failures — and **2** the command line was not a \
+         command line. Code **1** is not used. Read the `--json` document rather than the \
+         code alone: the code says which failure, the document says what to do about it.\n",
+        cli_core::D13_EXIT_CODES.start(),
+        cli_core::D13_EXIT_CODES.end(),
     );
     out
 }
@@ -734,14 +738,47 @@ fn json_contracts() -> Result<String> {
          `profile capture` exist to produce one. Both take `-o <PATH>`, and print to standard \
          output when you leave it out.\n\n\
          `photo --json` requires `-o <PHOTO>`: with no path the photo's bytes are standard \
-         output, and the document cannot share it.\n\n\
-         **A failure prints no document.** The typed failure goes to standard error as one \
-         line beginning with the program's name, and the process exits 1. Both programs \
-         render it that way, so the discriminant in the next section's first column is not \
-         something a command line hands you — read the line, or speak JSON-RPC to the daemon \
-         directly, where the same failure arrives as a code and a typed `data` object.\n",
+         output, and the document cannot share it.\n\n",
     );
+    out.push_str(&failure_document());
     Ok(out)
+}
+
+/// What a failing `--json` run prints, and how to branch on it.
+///
+/// **The example is serialized rather than typed**, from `Error::sample` — the registry's own
+/// walkable population, the same value the OpenRPC document carries as this variant's `data`.
+/// A hand-written block here would be the shape a reader trusts and the one nothing checks; a
+/// generated one moves when the document moves, and `agent-guide-current.sh` refuses the
+/// committed file until it does.
+///
+/// `FormatUnsupported` is the variant shown because it is the one an unattended caller acts on
+/// most directly: `available` is the retry, and it is exactly what the old behaviour — one
+/// English sentence on standard error, note **N124** — made the reader parse prose to find.
+fn failure_document() -> String {
+    let sample = Failure::new(Error::sample(ErrorKind::FormatUnsupported));
+    let rendered = serde_json::to_string_pretty(&sample).unwrap_or_else(|_| "{}".to_owned());
+    format!(
+        "**A failure answers too.** When a verb refuses, `--json` prints one document on \
+         standard output — this one, and never a verb's own answer:\n\n\
+         ```json\n{rendered}\n```\n\n\
+         Branch on it:\n\n\
+         | Read | To find out |\n|---|---|\n\
+         | `{marker}` | that the verb refused. It is `true` in every failure document and no \
+         answer carries the field. |\n\
+         | `error.kind` | which refusal. The words are the first column of the next section. |\n\
+         | the rest of `error` | what to do about it: `available` here, `holders` for `busy`, \
+         `path` for `storage_io`. |\n\
+         | `message` | the same sentence a person would have read. |\n\n\
+         The same line also goes to standard error, prefixed with the program's name, and the \
+         process exits with the code the next section gives that failure. **The document is \
+         what to act on**; the exit code is a second, coarser copy of `error.kind` for a \
+         caller with no JSON parser. Without `--json` there is no document — standard error \
+         and the exit code are the whole answer.\n\n\
+         Through the daemon over JSON-RPC the same failure arrives as an error object whose \
+         `data` is the `error` field above, byte for byte.\n",
+        marker = schema::error::FAILURE_MARKER,
+    )
 }
 
 /// What an agent should do about each D13 variant.
@@ -866,18 +903,23 @@ fn disposition(kind: ErrorKind) -> (&'static str, &'static str) {
 /// The D13 table: every variant, its wire code, an example message and what to do.
 fn errors() -> Result<String> {
     let mut out = String::from(
-        "A failed verb writes one line to standard error and exits 1. The line begins with \
-         the program's name and continues with the message below, filled in with what the \
-         device said. Every failure this tool can produce is in this table — there are \
-         eighteen, they are a closed set, and they are kept apart on purpose: `busy` and \
-         `device_gone` want opposite responses from you.\n\n",
+        "A failed verb writes one line to standard error, prints the failure document under \
+         `--json` (previous section), and exits with the code in the `Exit` column. Every \
+         failure this tool can produce is in this table — there are eighteen, they are a \
+         closed set, and they are kept apart on purpose: `busy` and `device_gone` want \
+         opposite responses from you.\n\n",
     );
-    out.push_str("| Failure | Do | What it means |\n|---|---|---|\n");
+    out.push_str("| Failure | Exit | Do | What it means |\n|---|---|---|---|\n");
     let mut rows = 0;
     for &kind in ErrorKind::ALL {
         let name = error_component_name(kind)?;
         let (verb, meaning) = disposition(kind);
-        let _ = writeln!(out, "| `{name}` | **{verb}** | {} |", cell(meaning));
+        let _ = writeln!(
+            out,
+            "| `{name}` | `{}` | **{verb}** | {} |",
+            cli_core::exit_code(&Error::sample(kind)),
+            cell(meaning)
+        );
         rows += 1;
     }
     if rows != ErrorKind::ALL.len() {
@@ -1209,26 +1251,75 @@ mod tests {
     }
 
     #[test]
-    fn every_d13_variant_reaches_the_failure_table_with_the_code_the_registry_gives_it() {
+    fn every_d13_variant_reaches_the_failure_table_with_both_codes_the_registry_gives_it() {
         // `ErrorKind::ALL` is generated by the vocabulary macro and `disposition` is an
         // exhaustive match over it, so a nineteenth variant stops this build before it can
         // reach a reader undocumented. This is the other half: that every variant the
-        // registry has actually reaches the *rendered* table, with the code `api::rpc_code`
-        // gives it — a renderer that dropped a row would compile perfectly.
+        // registry has actually reaches the *rendered* tables, with both of the numbers a
+        // caller may meet — a renderer that dropped a row would compile perfectly.
+        //
+        // **The exit column is why this document is where the exit codes are pinned** (note
+        // **N127**). A wire code has `crates/api/fixtures/d13-rpc-codes.tsv`; an exit code has
+        // this table, because the guide is regenerated and diffed by
+        // `scripts/gates/agent-guide-current.sh` on every run — so changing one is a committed
+        // diff a human reads rather than a constant that moved under a script.
         let document = emitted();
         assert_eq!(ErrorKind::ALL.len(), 18, "the D13 registry changed size");
         for &kind in ErrorKind::ALL {
             let name = error_component_name(kind).expect("a kind names itself");
             let (verb, _) = disposition(kind);
+            let exit = cli_core::exit_code(&Error::sample(kind));
             assert!(
-                document.contains(&format!("| `{name}` | **{verb}** |")),
-                "{name} has no row in the failure table"
+                document.contains(&format!("| `{name}` | `{exit}` | **{verb}** |")),
+                "{name} has no row in the failure table carrying its exit code and disposition"
             );
             assert!(
                 document.contains(&format!("| `{name}` | `{}` |", api::rpc_code(kind))),
-                "{name} does not carry the code the registry gives it"
+                "{name} does not carry the JSON-RPC code the registry gives it"
             );
         }
+
+        // The band the options table announces is the band the rows use. Two statements of
+        // one fact in one document is how a reader ends up trusting the wrong one.
+        assert!(
+            document.contains(&format!(
+                "**{}–{}** a typed failure",
+                cli_core::D13_EXIT_CODES.start(),
+                cli_core::D13_EXIT_CODES.end()
+            )),
+            "the options table no longer announces the exit-code band the failure table uses"
+        );
+    }
+
+    #[test]
+    fn the_guide_shows_the_failure_document_the_binaries_actually_emit() {
+        // **The manual and the product, checked against each other** (note **N127**). The
+        // shape is serialized here from `Error::sample`, so this asserts that what was
+        // serialized reached the page and that the page teaches the marker a caller branches
+        // on — the sentence a reader acts on before parsing anything else.
+        //
+        // The other end of the same claim is `crates/cli/tests/failure_document.rs`, which
+        // runs the shipped binary and compares its standard output against this block. Two
+        // ends, because a generator that emitted a plausible document nothing prints would
+        // satisfy this one alone.
+        let document = emitted();
+        let sample = Failure::new(Error::sample(ErrorKind::FormatUnsupported));
+        let rendered = serde_json::to_string_pretty(&sample).expect("the sample serializes");
+        assert!(
+            document.contains(&rendered),
+            "the guide no longer shows the failure document it is generated from:\n{rendered}"
+        );
+        assert!(
+            document.contains(&format!("| `{}` |", schema::error::FAILURE_MARKER)),
+            "the guide does not tell a reader which field says a verb refused"
+        );
+        // And it no longer says the opposite. This sentence was true until this change and
+        // was pinned by a test of its own; a guide carrying both would be a manual arguing
+        // with itself.
+        assert!(
+            !document.contains("A failure prints no document."),
+            "the guide still claims a failure prints no document"
+        );
     }
 
     #[test]

@@ -141,3 +141,69 @@ fail_case_a_verb_stops_answering() {
     done
     WCH_GATE_ROOT="$tree" "$GATE"
 }
+
+# ------------------------------------------------------------------ the failure document
+#
+# The rows added by the owner's ruling of 2026-08-15 (note **N127**). Both seams they use are
+# in the *tree* — the bundle and the marker constant — so both arms below drive the real
+# binary, the real corpus and the real predicate, which is the shape rubric rule 6 asks for.
+
+# The schema side of the claim: a bundle with no `Failure` in it is a bundle a failure document
+# cannot be validated against. This is the arm that would go red if somebody deleted the type's
+# registration from `webcam-handler-xtask` and regenerated — the `--json` answers would all
+# still validate and the refusals would stop being checked at all.
+fail_case_the_bundle_does_not_define_the_failure_document() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    jq 'del(.["$defs"].Failure)' \
+        "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
+    mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
+    gate_red_because "does not match #/\$defs/Failure" \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The failure document with its payload removed. `available` is what an unattended caller
+# retries with, and a document that named the refusal and dropped the list would be the English
+# sentence wearing braces — which is exactly the state note **N124** measured and this ruling
+# repaired. Seeded in the *schema*, because the emitted document is the binary's and the binary
+# comes from the real checkout: with `available` gone from `$defs/Failure`'s reachable `Error`,
+# the document carries a property the bundle does not declare and the same jq that catches an
+# envelope catches this.
+fail_case_the_failure_document_carries_a_payload_the_bundle_does_not_declare() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    jq 'del(.["$defs"].Failure.properties.error)' \
+        "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
+    mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
+    gate_red_because "does not match #/\$defs/Failure" \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The other direction, and the one that keeps "unambiguously a failure" a checked claim: an
+# answer wearing the marker a caller branches on. Seeded through the constant this gate reads
+# out of the tree rather than by rebuilding a binary that emits one — point the predicate at
+# `cameras`, which `list` really does answer with, and the first answering row is a successful
+# verb carrying the marker that says a verb refused.
+fail_case_an_answering_verb_carries_the_marker_that_says_a_verb_refused() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed -i 's/^pub const FAILURE_MARKER: &str = "failed";$/pub const FAILURE_MARKER: \&str = "cameras";/' \
+        "$tree/crates/schema/src/error.rs"
+    if ! grep -q 'FAILURE_MARKER: &str = "cameras"' "$tree/crates/schema/src/error.rs"; then
+        printf 'selftest: the marker was not re-pointed\n' >&2
+        return 0
+    fi
+    gate_red_because 'answered with a document carrying' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# And the constant has to be *there*: a gate that could not spell the marker would silently
+# stop checking both halves of the claim, which is note N10's family — a predicate green while
+# examining less than it says.
+fail_case_the_tree_no_longer_declares_the_failure_marker() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed -i '/^pub const FAILURE_MARKER: &str =/d' "$tree/crates/schema/src/error.rs"
+    gate_red_because 'no longer declares FAILURE_MARKER' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}

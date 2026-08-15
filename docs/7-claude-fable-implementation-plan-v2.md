@@ -932,9 +932,10 @@ to a user**, so a rustdoc link in one reaches them as brackets around an identif
 open — `photo --help` did exactly that until the guide put the line in front of somebody (note
 **N123**) — and **the D13 discriminant does not reach a command-line caller** at all, so the
 manual had to say so rather than teach a field that is not there (note **N124**). No failure
-document was invented to close the second; that is a design change with an owner.
+document was invented to close the second; that is a design change with an owner — **and the
+owner took it the same day**, which is P6f below.
 
-**G6 close: all criteria rows counted — 35.** The seven added at this sub-milestone are the ones
+**G6 close: all criteria rows counted — 35** (36 since P6f added the failure-document row)**.** The seven added at this sub-milestone are the ones
 every earlier phase gate carries and `g6` did not: clippy, cargo-deny, `run-all.sh`,
 `selftest.sh`, `no-frame-bytes-in-repo.sh`, `privileged-helper.sh`, and the helper's own package.
 That hole is the one P5a named in advance rather than leaving to be rediscovered ("g5 has no
@@ -953,6 +954,26 @@ compares the blessed copy's capabilities for **equality** rather than presence, 
 nobody was looking for: a root-capable binary that the N90 rename had orphaned in `.wch-bin/`,
 still carrying the deleted verb, that every name-keyed check looked straight past (note
 **N126**).
+
+### P6f — The `--json` failure document (owner ruling, 2026-08-15)
+
+**Not commissioned by this plan.** P6e's second finding (note **N124**) was recorded and left
+to the owner: `--json` printed no document on failure and `cli_core::exit_code` answered 1 for
+all eighteen kinds, so the D13 discriminant reached no command-line caller. The owner ruled the
+same day — *"Let's extend the JSON output to convey errors. Exit codes are numerical, so they're
+not a self-contained way to communicate errors. Distinct exit codes are nice-to-have, as a
+redundant mechanism."*
+
+**Lands:** `schema::error::Failure` — `{failed, error, message}`, the D13 value nested rather
+than flattened — emitted on standard output through the same `cli_core::render::json` every
+answer goes through, from the same `cli_core::report_failure` both composition roots call; the
+human line on standard error unchanged; `cli_core::exit_code` an exhaustive match giving each
+kind a distinct code in `10 ..= 27`; the guide's failure table gaining an `Exit` column and a
+generated shape for the document, which is also where the exit codes are pinned;
+`json-validates.sh` validating emitted refusals against `#/$defs/Failure` and requiring no
+answer to wear the marker; `cli-parity.sh` comparing three refusals from both roots byte for
+byte with their exit codes. Notes **N127** and **N128**; D13 and §2.7 amended; docs/9's two gate
+rows and one new landed row.
 
 ## Post-plan triggers (recorded, uncommissioned)
 

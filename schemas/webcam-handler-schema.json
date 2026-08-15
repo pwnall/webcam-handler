@@ -1703,6 +1703,29 @@
         }
       ]
     },
+    "Failure": {
+      "description": "A failed `--json` invocation, as the document standard output carries (owner ruling,\n2026-08-15; note **N127**).\n\n**Why this exists.** AGENTS' opening section says the error vocabulary is read\nunsupervised — *\"`Busy` means retry, `DeviceGone` means stop and tell the human,\n`PermissionDenied` means a setup problem — collapsing them makes the agent guess\"* — and\nnote **N124** measured that the discriminant reached no command-line caller at all: both\nroots printed one `Display` sentence to standard error, exited 1 for every one of the\neighteen kinds, and left standard output empty. The owner's ruling is that **the JSON is\nthe mechanism and it must be self-contained**, with distinct exit codes as redundancy\nbeside it ([`crate::error`]'s consumers reach those through `cli_core::exit_code`).\n\n**Three fields, and each answers a different question a reader has:**\n\n| Field | Answers |\n|---|---|\n| [`FAILURE_MARKER`] (`failed`) | *is this a failure?* — before anything else is parsed |\n| `error` | *which failure, and with what?* — the D13 value in the registry's own serde spelling, payload included |\n| `message` | *what would a human have been told?* — [`Error`]'s own `Display`, the same sentence standard error carries |\n\n**The error is nested rather than flattened, and that is a defect avoided rather than a\npreference.** Two variants of the registry — [`Error::DeviceIo`] and [`Error::StorageIo`]\n— carry a `message` field of their own, so flattening the payload beside this document's\n`message` would put two different strings under one key and let serde pick. Nesting also\nmakes the payload exactly what the wire's `data` object is (design D10), so a client\nauthor reading `schemas/webcam-handler-openrpc.json` and an agent reading a command line's\nstandard output are looking at the same bytes.\n\n**What is deliberately not here is the JSON-RPC code.** That number is a fact about the\nwire (D10), `webcam-handler-cli-core` links no `webcam-handler-api` — the dependency wall\n`scripts/gates/dependency-walls.sh` calls \"pure\", which jsonrpsee's tokio edge would\nbreak — and the command line's own numeric redundancy is the exit code. Two numeric\nregistries in one document would be two things a caller could branch on and one of them\nwould be the wrong one.\n\n**This is not an envelope.** `--json` still emits one `webcam-handler-schema` type\nverbatim; a failure emits a *different* type from an answer, which is why the success\ndocuments did not move and why `cli_core::render`'s \"no envelope, no timestamp, no tool\nversion\" rule is untouched.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Error",
+          "description": "The typed error, serialized exactly as the wire's `data` object is.\n\nThe discriminant is its `kind` tag in the registry's own snake_case spelling, and every\nactionable field the variant carries is beside it — the `available` formats of a\n[`Error::FormatUnsupported`], the `holders` of a [`Error::Busy`], the `path` of a\n[`Error::StorageIo`]. Those payloads are the entire reason the variants carry data, and\na document that dropped them would be the English sentence again wearing braces."
+        },
+        "failed": {
+          "description": "Always `true`, and the reader's first question answered without parsing anything else.\n\nPrivate, with [`Failure::new`] as the only constructor, because it is a constant of the\nshape rather than data: a `Failure` somebody could build with `failed: false` would be\na refusal document announcing that nothing was refused.\n\nRefused on the way *in* as well — `refuse_a_document_that_says_it_did_not_fail` below is\nthe deserializer — so a consumer deserializing into this type cannot end up holding one\neither, which is the half a constructor alone cannot give: the bytes arrive from\nsomewhere else.",
+          "type": "boolean"
+        },
+        "message": {
+          "description": "What a person watching a terminal was told, without the program's name in front of it.\n\n[`Error`]'s own `Display` and never a second rendering (design §2.10) — the same string\nthe wire's `message` carries and the same one `Program::error_line` prefixes on standard\nerror, so the two channels cannot come to describe one failure differently.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "failed",
+        "error",
+        "message"
+      ],
+      "type": "object"
+    },
     "FormatInfo": {
       "description": "One pixel format and everything available in it.\n\nNesting is load-bearing: the OBSBOT offers MJPG well past where YUYV stops on the same\ncable — 3840×2160 against 640×480 when PF:9 measured it, 1920×1440 against 640×480\ntoday — so a flat size list would be a lie [PF:9]. The numbers moved because the\ndevice stopped advertising its 4K mode and the corpus was re-captured [PF:23]; the\ngap they illustrate is what the nesting is for, and that did not.",
       "properties": {
@@ -4588,6 +4611,7 @@
     "ControlValue",
     "DeviceProfile",
     "Error",
+    "Failure",
     "FormatInfo",
     "HotplugEvent",
     "LogEntry",

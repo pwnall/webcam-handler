@@ -73,7 +73,7 @@ These are declared once and accepted by every verb, before or after it.
 | `--backend` | `<KIND>` | `v4l2` | Which backend to drive |
 | `--profile` | `<PATH>` | — | Device profiles for the fake backend to replay. Repeatable |
 
-Exit codes: **0** the verb answered, **1** a typed failure (the section on failures lists them), **2** the command line was not a command line. A script that retries on 1 must not retry on 2.
+Exit codes: **0** the verb answered, **10–27** a typed failure — one code per failure, listed in the section on failures — and **2** the command line was not a command line. Code **1** is not used. Read the `--json` document rather than the code alone: the code says which failure, the document says what to do about it.
 
 ## The verbs
 
@@ -483,34 +483,62 @@ Two verbs write a document whether or not you pass `--json`: `snapshot` and `pro
 
 `photo --json` requires `-o <PHOTO>`: with no path the photo's bytes are standard output, and the document cannot share it.
 
-**A failure prints no document.** The typed failure goes to standard error as one line beginning with the program's name, and the process exits 1. Both programs render it that way, so the discriminant in the next section's first column is not something a command line hands you — read the line, or speak JSON-RPC to the daemon directly, where the same failure arrives as a code and a typed `data` object.
+**A failure answers too.** When a verb refuses, `--json` prints one document on standard output — this one, and never a verb's own answer:
+
+```json
+{
+  "failed": true,
+  "error": {
+    "kind": "format_unsupported",
+    "requested": "NV12",
+    "available": [
+      "MJPG",
+      "YUYV"
+    ]
+  },
+  "message": "format NV12 is unavailable; this camera offers MJPG, YUYV"
+}
+```
+
+Branch on it:
+
+| Read | To find out |
+|---|---|
+| `failed` | that the verb refused. It is `true` in every failure document and no answer carries the field. |
+| `error.kind` | which refusal. The words are the first column of the next section. |
+| the rest of `error` | what to do about it: `available` here, `holders` for `busy`, `path` for `storage_io`. |
+| `message` | the same sentence a person would have read. |
+
+The same line also goes to standard error, prefixed with the program's name, and the process exits with the code the next section gives that failure. **The document is what to act on**; the exit code is a second, coarser copy of `error.kind` for a caller with no JSON parser. Without `--json` there is no document — standard error and the exit code are the whole answer.
+
+Through the daemon over JSON-RPC the same failure arrives as an error object whose `data` is the `error` field above, byte for byte.
 
 ## Failures, and what to do about each one
 
-*Generated from the D13 error registry in `webcam-handler-schema` — every failure, its code and its message; the `Do` column is written prose. Do not edit; regenerate.*
+*Generated from the D13 error registry in `webcam-handler-schema` — every failure, its exit code, its JSON-RPC code and its message; the `Do` column is written prose. Do not edit; regenerate.*
 
-A failed verb writes one line to standard error and exits 1. The line begins with the program's name and continues with the message below, filled in with what the device said. Every failure this tool can produce is in this table — there are eighteen, they are a closed set, and they are kept apart on purpose: `busy` and `device_gone` want opposite responses from you.
+A failed verb writes one line to standard error, prints the failure document under `--json` (previous section), and exits with the code in the `Exit` column. Every failure this tool can produce is in this table — there are eighteen, they are a closed set, and they are kept apart on purpose: `busy` and `device_gone` want opposite responses from you.
 
-| Failure | Do | What it means |
-|---|---|---|
-| `device_gone` | **stop** | The camera is gone — unplugged, or its driver unbound. Nothing you can do will bring it back. Stop and tell the human. |
-| `busy` | **retry** | Another process is streaming from the camera. Retry; under `webcam-handler-client`, `--wait` asks the daemon to queue you instead of refusing. The holders it could see are in the message. |
-| `permission_denied` | **fix the setup** | The device node is there and this user may not open it. The message carries the remedy — usually joining the `video` group and logging back in. Retrying changes nothing. |
-| `camera_unknown` | **fix the request** | No camera answers to that id. Run `list` and use an id it printed; ids come from what the device says about itself, not from `/dev/video0`. |
-| `camera_ambiguous` | **fix the request** | The prefix matched several cameras. The message names them; use a longer prefix or a whole id. |
-| `control_unknown` | **fix the request** | This camera has no such control. The message carries the closest slugs it does have, and `controls <CAMERA>` lists all of them. |
-| `control_read_only` | **do not retry** | The device says this control cannot be written — `privacy` on a camera with a hardware shutter, for instance. This is the camera's answer about itself, not a temporary state. |
-| `control_inactive` | **change the plan** | An automation control currently owns this one, and the message names the automation. Write without `--no-guard` and the write turns it off first; or turn it off yourself and write again. |
-| `format_unsupported` | **fix the request** | The camera cannot deliver what was asked for, and `available` lists what it can. Two ways to meet it: a `--size` or `--pixel-format` this device does not offer — ask for one it does, or leave the flag out and let the camera choose; or a recording container that cannot carry what this camera produces — a `.avi` needs MJPEG frames, so a camera that delivers raw ones records to `.y4m`. |
-| `settle_timeout` | **retry once, then stop** | The camera did not deliver enough frames inside the settle deadline. Retry with a longer `--settle-deadline` or fewer `--skip-frames`. If it repeats, the device is not delivering and that is worth telling the human. |
-| `fingerprint_mismatch` | **stop** | The snapshot or session you named was recorded against a different camera, and the message names the fields that differ. Do not apply it here — the values would mean something else on this device. |
-| `session_conflict` | **change the plan** | This camera and task already have an open calibration session. Use it — `calibrate status` says where it got to — or start one under a different task name. |
-| `illegal_transition` | **fix the request** | The verb does not apply in the state the session or the request is in — selecting a value for a control that never swept, an output extension this build does not write. `calibrate status` says what state a session is in; the message says what was refused. |
-| `schema_version_foreign` | **stop** | A different build of this tool wrote the document. Do not edit it into shape; run the build that wrote it, or start a new session. |
-| `store_locked` | **read the message, then retry or switch** | Something else holds the state directory. The message says which protocol: a lock held for a process's lifetime is a running daemon, so use `webcam-handler-client` rather than waiting; a lock held for one operation will be free shortly, so retry. |
-| `holder_gone` | **retry** | The process that was holding the camera has exited since it was named. Ask again. |
-| `device_io` | **retry once, then stop** | The driver refused an operation, and the message names the operation and the `errno`. One retry is reasonable; a repeat is a fact about this device and belongs in front of the human. |
-| `storage_io` | **fix the setup** | The filesystem refused — no such directory, no room, no permission. The message names the path. This is not the camera's fault and retrying the capture will not help. |
+| Failure | Exit | Do | What it means |
+|---|---|---|---|
+| `device_gone` | `10` | **stop** | The camera is gone — unplugged, or its driver unbound. Nothing you can do will bring it back. Stop and tell the human. |
+| `busy` | `11` | **retry** | Another process is streaming from the camera. Retry; under `webcam-handler-client`, `--wait` asks the daemon to queue you instead of refusing. The holders it could see are in the message. |
+| `permission_denied` | `12` | **fix the setup** | The device node is there and this user may not open it. The message carries the remedy — usually joining the `video` group and logging back in. Retrying changes nothing. |
+| `camera_unknown` | `13` | **fix the request** | No camera answers to that id. Run `list` and use an id it printed; ids come from what the device says about itself, not from `/dev/video0`. |
+| `camera_ambiguous` | `14` | **fix the request** | The prefix matched several cameras. The message names them; use a longer prefix or a whole id. |
+| `control_unknown` | `15` | **fix the request** | This camera has no such control. The message carries the closest slugs it does have, and `controls <CAMERA>` lists all of them. |
+| `control_read_only` | `16` | **do not retry** | The device says this control cannot be written — `privacy` on a camera with a hardware shutter, for instance. This is the camera's answer about itself, not a temporary state. |
+| `control_inactive` | `17` | **change the plan** | An automation control currently owns this one, and the message names the automation. Write without `--no-guard` and the write turns it off first; or turn it off yourself and write again. |
+| `format_unsupported` | `18` | **fix the request** | The camera cannot deliver what was asked for, and `available` lists what it can. Two ways to meet it: a `--size` or `--pixel-format` this device does not offer — ask for one it does, or leave the flag out and let the camera choose; or a recording container that cannot carry what this camera produces — a `.avi` needs MJPEG frames, so a camera that delivers raw ones records to `.y4m`. |
+| `settle_timeout` | `19` | **retry once, then stop** | The camera did not deliver enough frames inside the settle deadline. Retry with a longer `--settle-deadline` or fewer `--skip-frames`. If it repeats, the device is not delivering and that is worth telling the human. |
+| `fingerprint_mismatch` | `20` | **stop** | The snapshot or session you named was recorded against a different camera, and the message names the fields that differ. Do not apply it here — the values would mean something else on this device. |
+| `session_conflict` | `21` | **change the plan** | This camera and task already have an open calibration session. Use it — `calibrate status` says where it got to — or start one under a different task name. |
+| `illegal_transition` | `22` | **fix the request** | The verb does not apply in the state the session or the request is in — selecting a value for a control that never swept, an output extension this build does not write. `calibrate status` says what state a session is in; the message says what was refused. |
+| `schema_version_foreign` | `23` | **stop** | A different build of this tool wrote the document. Do not edit it into shape; run the build that wrote it, or start a new session. |
+| `store_locked` | `24` | **read the message, then retry or switch** | Something else holds the state directory. The message says which protocol: a lock held for a process's lifetime is a running daemon, so use `webcam-handler-client` rather than waiting; a lock held for one operation will be free shortly, so retry. |
+| `holder_gone` | `25` | **retry** | The process that was holding the camera has exited since it was named. Ask again. |
+| `device_io` | `26` | **retry once, then stop** | The driver refused an operation, and the message names the operation and the `errno`. One retry is reasonable; a repeat is a fact about this device and belongs in front of the human. |
+| `storage_io` | `27` | **fix the setup** | The filesystem refused — no such directory, no room, no permission. The message names the path. This is not the camera's fault and retrying the capture will not help. |
 
 Through the daemon the same failures arrive as JSON-RPC errors, with a code per kind and the typed error as `data`. The whole registry is in `schemas/webcam-handler-openrpc.json` under `components/errors`; the codes and one example message each are here:
 

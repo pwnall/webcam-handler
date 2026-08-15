@@ -224,3 +224,96 @@ STUB
     chmod +x "$stub"
     gate_red_because 'webcam-handler-client --json list exited' env "WCH_GATE_WCHD=$stub" "$GATE"
 }
+
+# ------------------------------------------------------------------ the refusals
+#
+# The rows the owner's ruling of 2026-08-15 added (note **N127**). Their subject is the same
+# one this file has throughout — two running programs agreeing — moved onto the path where they
+# had the most room to disagree, because `webcam-handler-cli` builds a `schema::Error` in its
+# own process and `webcam-handler-client` rebuilds one out of a JSON-RPC error object.
+
+# **The defect the ruling repaired, restored in one program.** This stand-in is the real
+# `webcam-handler-client` for everything that answers and throws its standard output away when
+# it refuses — which is exactly what both roots did until this change, and what note **N124**
+# measured: a caller that redirected standard output lost the failure entirely. Every compared
+# and exempt row still passes through it untouched, so what goes red is precisely the refusal
+# comparison.
+fail_case_a_client_that_prints_no_document_when_it_refuses() {
+    local stub wchc
+    wchc="$(git rev-parse --show-toplevel)/target/debug/webcam-handler-client"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchc.XXXXXXXX")"
+    cat >"$stub" <<STUB
+#!/usr/bin/env bash
+# The spill file sits beside this stub, which mktemp already put under the one scratch root
+# -- a bare mktemp here would land outside it, which scratch-has-one-home.sh refuses. The
+# comment carries no backtick and no dollar sign on purpose: this heredoc is unquoted, so
+# both would be expanded while the stub is written rather than after (measured, 2026-08-15
+# -- the first spelling substituted a command and an unset TMPDIR, wrote a truncated stub,
+# and turned this arm red for a reason it is not about).
+set -uo pipefail
+answer="\$0.out"
+status=0
+"$wchc" "\$@" >"\$answer" || status=\$?
+if ((status == 0)); then cat "\$answer"; fi
+rm -f "\$answer"
+exit "\$status"
+STUB
+    chmod +x "$stub"
+    gate_red_because 'do not agree on the' env "WCH_GATE_WCHC=$stub" "$GATE"
+}
+
+# The other program in the pair, and the arm that keeps the comparison symmetric: a
+# `webcam-handler-cli` that refuses with a document the client does not print. Seeded as a
+# stand-in that appends a byte to a refusal's standard output — the smallest disagreement
+# there is, and the one a `diff` of two large documents is easiest to be careless about.
+fail_case_the_direct_cli_refuses_with_bytes_the_client_does_not_send() {
+    local stub wch
+    wch="$(git rev-parse --show-toplevel)/target/debug/webcam-handler-cli"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wch.XXXXXXXX")"
+    cat >"$stub" <<STUB
+#!/usr/bin/env bash
+# Beside this stub, for the reason the one above gives.
+set -uo pipefail
+answer="\$0.out"
+status=0
+"$wch" "\$@" >"\$answer" || status=\$?
+cat "\$answer"
+if ((status != 0)); then printf ' '; fi
+rm -f "\$answer"
+exit "\$status"
+STUB
+    chmod +x "$stub"
+    gate_red_because 'do not agree on the' env "WCH_GATE_WCH=$stub" "$GATE"
+}
+
+# The redundant half, on its own. This client prints the *right* document and exits 1 for every
+# refusal — the behaviour `cli_core::exit_code` had until this ruling — so the byte comparison
+# above is satisfied and only the code check can notice. Without this arm a build that dropped
+# the exit-code mapping would pass a gate whose report says it compared the codes.
+fail_case_a_client_that_prints_the_document_and_exits_one_for_every_refusal() {
+    local stub wchc
+    wchc="$(git rev-parse --show-toplevel)/target/debug/webcam-handler-client"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchc.XXXXXXXX")"
+    cat >"$stub" <<STUB
+#!/usr/bin/env bash
+set -uo pipefail
+status=0
+"$wchc" "\$@" || status=\$?
+if ((status != 0)); then exit 1; fi
+exit 0
+STUB
+    chmod +x "$stub"
+    gate_red_because 'the codes are the document' env "WCH_GATE_WCHC=$stub" "$GATE"
+}
+
+# The fixture's own half: a refusal row that stops being a refusal. A row whose argv the device
+# answers, or whose argv clap refuses, compares two documents that say nothing about D13 — and
+# the second is the quieter of the two, because two empty standard outputs and two exit 2s
+# compare equal.
+fail_case_a_refusal_row_that_names_a_camera_the_device_actually_has() {
+    local mutant
+    mutant="$(_mutated_predicate \
+        's|^    "camera-unknown\|info cam:nothing-answers-to-this"$|    "camera-unknown\|info <camera>"|' \
+        '"camera-unknown|info <camera>"' '"camera-unknown|info cam:nothing-answers-to-this"')"
+    gate_red_because 'answered rather than refusing' bash "$mutant"
+}

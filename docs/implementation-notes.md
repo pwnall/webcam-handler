@@ -16448,6 +16448,34 @@ guide still carries the sentence it pins — so a build that starts emitting a f
 turns it red, and the manual has to be rewritten rather than quietly becoming wrong in the safer
 direction.
 
+### Amendment, 2026-08-15 (P6f): the owner decided, and the gap is closed
+
+**The entry is not retired and not rewritten.** Everything above it is the record of a gap
+found and correctly *not* repaired by a documentation sub-milestone: the paragraph headed
+"What was done, and what was deliberately not" says the change "is a design change with an
+owner, not a repair a documentation sub-milestone performs on its way past", and that reading
+was right. What follows is the owner's decision and what it cost.
+
+The owner ruled the same day, verbatim: *"Let's extend the JSON output to convey errors. Exit
+codes are numerical, so they're not a self-contained way to communicate errors. Distinct exit
+codes are nice-to-have, as a redundant mechanism."* So both halves of this entry moved at once
+— the document exists and it is the mechanism, and the eighteen exit codes became eighteen
+numbers rather than one. Note **N127** carries the shape, note **N128** the codes.
+
+Two sentences above are now false and are left standing because they are the record of what
+was true when this was written. *"A failing verb prints no document"* described every build
+through P6e. And the test named in "What can go red" is gone by that name: it was replaced,
+not deleted, by `a_failing_verb_prints_the_document_the_guide_shows_and_exits_the_code_it_lists`
+in the same file — the same three channels asserted with the opposite expectation, plus the
+guide sentence it pins, which also moved. That replacement is the note's own prediction
+executing: *"a build that starts emitting a failure document turns it red, and the manual has
+to be rewritten rather than quietly becoming wrong in the safer direction"*. It turned red, and
+the manual was rewritten in the same commit.
+
+**What this entry keeps** is the finding itself, which is still the reason the repair exists:
+the discriminant AGENTS says is read unsupervised did not reach a command-line caller, nothing
+in the workspace could go red on that, and it took writing the manual to notice.
+
 ## N125 — The G6 reckoning: three questions, three answers, and a capability nothing ever spent
 
 **Doc:** note **N8**'s owner ruling of 2026-08-08 ("reconsider the granted powers when the plan
@@ -16712,3 +16740,210 @@ transcribing a filename since P0 while looking like it was checking a directory.
 **Retires when:** nothing retires it. If `.wch-bin/` is ever removed — question 3 of N8's
 reckoning answering "no" at some later revision, taking `crates/priv/` with it — claim 6 loses its
 subject and this entry becomes history rather than law.
+
+## N127 — A `--json` failure is a document of its own, and the marker that says so is checked against every answer
+
+**Doc:** AGENTS "Who runs this, and why" (*"the error vocabulary is read unsupervised … collapsing
+them makes the agent guess"*); design **D10** (`code`/`message`/`data`), **D13** (the closed
+registry), §2.7 (`--json` emits schema DTOs verbatim); note **N124**, whose gap this closes.
+Recorded 2026-08-15, from P6f. **Owner ruling, 2026-08-15**, verbatim: *"Let's extend the JSON
+output to convey errors. Exit codes are numerical, so they're not a self-contained way to
+communicate errors. Distinct exit codes are nice-to-have, as a redundant mechanism."*
+
+Note **N124** measured the gap: `--json` carried no document on failure, both roots printed one
+`Display` line to standard error, and `cli_core::exit_code` answered 1 for all eighteen kinds. An
+unattended caller could not tell `Busy` from `DeviceGone` from `PermissionDenied` without parsing
+an English sentence, which is exactly the discrimination AGENTS' opening section says the
+vocabulary exists to provide. The ruling settles the mechanism: **the JSON**, and it must be
+self-contained.
+
+### The document
+
+`schema::error::Failure`, in `crates/schema/src/error.rs` beside the registry it is about:
+
+```json
+{
+  "failed": true,
+  "error": {
+    "kind": "format_unsupported",
+    "requested": "NV12",
+    "available": ["MJPG", "YUYV"]
+  },
+  "message": "format NV12 is unavailable; this camera offers MJPG, YUYV"
+}
+```
+
+Three fields, each answering a different question a reader has before it can act: `failed` says
+*this is a refusal*, `error` says *which one, and with what*, `message` says *what a human would
+have been told*. The second is the whole point — the D13 variants carry payloads precisely so a
+caller can act on them, and `FormatUnsupported`'s `available` is the retry.
+
+### Four decisions, and the alternative each one turned down
+
+**The error is nested rather than flattened.** Two variants of the registry — `DeviceIo` and
+`StorageIo` — carry a `message` field of their own, so a flattened payload beside this document's
+`message` would put two different strings under one key and let serde pick which survived. That
+is a collision rather than a preference, and it is asserted:
+`the_payload_a_variant_carries_reaches_the_document_and_is_not_flattened_over_its_message` builds
+a `StorageIo` whose own message differs from the rendered one and requires both to be present and
+different. Nesting also makes the payload byte-identical to the wire's `data` object (D10), so a
+client author reading the OpenRPC document and an agent reading standard output are looking at the
+same bytes.
+
+**The spelling lives in `webcam-handler-schema` and nowhere else.** `Error` already derives
+`Serialize` — the wire has relied on it since P4a, `api::codes` sends it as an `ErrorObject`'s
+`data` — so the discriminant and the payload are the registry's *own* serde output rather than a
+second account of it. Nothing in `cli_core` re-spells a kind. Two walls decided the crate:
+`webcam-handler-cli-core` is on `dependency-walls.sh`'s **pure** list and `webcam-handler-api`'s
+`#[rpc]` expansion cannot exist without jsonrpsee's tokio edge, so a `cli-core → api` dependency
+would have turned the shared command surface into a crate that links a runtime; and
+`webcam-handler-client` links no engine (T6), so the type had to be reachable from a crate both
+roots already have. `webcam-handler-schema` is that crate, and it is also where D13 says the
+registry lives.
+
+**The JSON-RPC code is deliberately absent.** It is a fact about the wire (D10); the command
+line's own numeric redundancy is the exit code (note **N128**). Two numeric registries in one
+document would be two things a caller could branch on, and one of them would be the wrong one for
+whichever transport it was on.
+
+**Standard output, not standard error.** That is the `--json` channel, and N124's defect was
+precisely that a caller redirecting standard output lost the failure. Putting the repair on
+standard error would have been the same defect in a different costume. The human line on standard
+error is unchanged, because a person watching a terminal is the other reader and this ruling takes
+nothing from them — and the two are one value rendered twice, since `Failure::new` derives its
+`message` from the same `Display` the line uses.
+
+### This is not an envelope, and that mattered
+
+`cli_core::render`'s header says `--json` is "the schema document and nothing else — no envelope,
+no timestamp, no tool version", and `cli-parity.cases.sh` seeds its fork case by editing exactly
+the line that emits it. Nothing about a success document moved. A `--json` invocation still prints
+one `webcam-handler-schema` type verbatim; **which type** now says whether the verb answered. The
+failure document goes out through `render::json` — the same emitter — rather than beside it, so the
+fork case reaches it too and there is one place a byte can go wrong.
+
+### One home for the failure edge
+
+`cli_core::report_failure(program, error, as_json, out) -> u8` does all three things and both
+composition roots call exactly it. That is what makes "the same failure produces the same document
+from both roots" true by construction rather than by coincidence: `webcam-handler-cli` hands it an
+error its engine produced and `webcam-handler-client` hands it one `api::codes::typed` rebuilt from
+an `ErrorObject`, and everything downstream of that is one function. A `format!` in each `main` was
+the shape it had before, and the failure path is the seam two roots drift furthest apart on,
+because nobody reads it twice.
+
+### The marker, and why it is a constant
+
+*"No success document may be mistakable for it"* has to be a **checked** claim, so the property
+name is `schema::error::FAILURE_MARKER` with three readers and no transcription:
+
+| Reader | What it does with it |
+|---|---|
+| `schema::error::Failure` | the field itself, and the schema bundle's `Failure.properties` |
+| `webcam-handler-xtask` | walks every row of `crates/cli-core/json-contracts.tsv` against the bundle's `$defs` and fails on a document type that declares it |
+| `scripts/gates/json-validates.sh` | reads it out of the tree and requires every emitted answer *not* to carry it and every emitted refusal to carry it as `true` |
+
+The two ends are the shapes and the bytes: the emitter's walk is about what `schemars` says the
+Rust types are, and the gate is about what the shipped binary actually printed. Deserialization
+refuses a marker that is not `true`, so a consumer parsing into `Failure` cannot end up holding a
+document that says it did not fail — the half a constructor alone cannot give, because the bytes
+arrive from somewhere else.
+
+### What can go red
+
+| Claim | What fails |
+|---|---|
+| a failure emits a document at all | `a_failing_verb_answers_on_standard_output_with_the_failure_and_its_discriminant` (`crates/cli/tests/failure_document.rs`); `json-validates.sh`'s refusal rows |
+| the payload survives | `the_format_refusal_names_what_the_camera_does_offer_and_not_only_in_prose`; the gate's `available` count, which is `gate_require_nonzero` |
+| the two roots agree | `a_refusal_that_crossed_the_wire_is_the_document_webcam_handler_cli_prints_locally` (`crates/client/tests/wchc.rs`), against a real daemon; `cli-parity.sh`'s three refusal rows, byte for byte |
+| no answer wears the marker | `no_document_a_verb_answers_with_can_be_mistaken_for_the_failure_document` (xtask, over the shapes); `no_verb_that_answers_carries_the_marker_a_caller_branches_on` (over five emitted answers); the gate's per-answer check |
+| the manual says what the binaries do | `the_guide_shows_the_failure_document_the_binaries_actually_emit` (xtask) and `a_failing_verb_prints_the_document_the_guide_shows_and_exits_the_code_it_lists` (`crates/cli/tests/agent_guide.rs`) |
+
+The gate selftests carry the inverse arms: `cases/cli-parity.cases.sh` gains a
+`webcam-handler-client` stand-in that throws its standard output away when it refuses — which is
+literally the pre-ruling behaviour, restored in one program — and a `webcam-handler-cli` stand-in
+that appends one byte to a refusal. `cases/json-validates.cases.sh` gains a bundle with no
+`Failure` in it, a `Failure` whose `error` property is gone, and a tree whose `FAILURE_MARKER`
+points at `cameras`, which `list` really does answer with.
+
+**Retire this note if** the failure document ever stops being a schema type — which would mean
+`--json` had acquired a rendering that is not a DTO, and §2.7 would have to move first.
+
+## N128 — Eighteen exit codes, one unassigned, and the guide is where they are pinned
+
+**Doc:** the owner's ruling of 2026-08-15 (note **N127** quotes it in full — *"Distinct exit codes
+are nice-to-have, as a redundant mechanism"*); design **D13**; `api::codes`' `D13_CODES`, whose
+shape this copies. Recorded 2026-08-15, from P6f.
+
+`cli_core::exit_code` returned `1` for every one of the eighteen kinds and its doc comment argued
+for that on the ground that "a caller who wants to branch on *which* thing went wrong reads
+`--json`, where the whole typed error is" — the sentence note **N124** measured to be false. With
+N127's document in place the argument's premise is true for the first time, and the ruling makes
+the codes distinct anyway, as the second and coarser channel. The old argument is **replaced**
+rather than kept beside its successor: a doc comment carrying both would be a reader's choice of
+which to believe.
+
+### The block
+
+`D13_EXIT_CODES` is `10 ..= 27`: eighteen codes, contiguous, one per kind in the registry's
+declaration order, every arm an explicit literal.
+
+**It starts at 10 because the three small codes are the process's own.** `0` is an answer, `2` is
+clap's usage refusal, and `1` is deliberately **unassigned** — a caller that meets 1 has met
+something that is not a typed D13 refusal, and the gap is what lets them tell. Above the block sit
+numbers a caller does not own either: `<sysexits.h>`'s 64–78, a POSIX shell's 126 ("found and not
+executable") and 127 ("not found"), and 128 + N for a process killed by signal N.
+`the_declared_range_collides_with_nothing_the_shell_or_the_process_already_owns` asserts every one
+of those bands rather than trusting the paragraph, which is what `api::codes` does with jsonrpsee's
+reserved constants one channel along.
+
+### Two traps borrowed from `api::codes::rpc_code`, because they are both here too
+
+**The match is over `ErrorKind` and not over `Error`.** `Error` is `#[non_exhaustive]`, which binds
+downstream crates, so a match on it inside `webcam-handler-cli-core` would need a wildcard arm —
+and a wildcard is what lets a nineteenth variant reach a caller wearing somebody else's code.
+`ErrorKind` carries no such attribute, so the compiler refuses a build whose registry has grown
+until the new variant has a code.
+
+**Every arm is a literal, not `BASE + kind as u8`.** An ordinal derivation renumbers every code
+below an inserted variant while every test here stays green — the walk still finds eighteen
+distinct codes in range — and a script that retried on `busy` would start retrying on something
+else. `codes.rs` states this about the wire; it is the same defect with a smaller blast radius, and
+it is worth the eighteen lines.
+
+### The pin is `docs/agent-guide.md`, and that is reuse rather than thrift
+
+A wire code has `crates/api/fixtures/d13-rpc-codes.tsv`, because "a deployed client already knows
+the old value" needs a diff a human reads. An exit code needs the same and now has it without a
+second fixture: the generated failure table carries an `Exit` column per kind, so changing a code
+moves a committed file and `scripts/gates/agent-guide-current.sh` goes red until somebody
+regenerates. The guide had to gain that column anyway — a manual that lists eighteen failures and
+one exit code would be teaching the thing this ruling removed.
+
+### What the tests stopped asserting, and what they say instead
+
+Eleven existing tests asserted `code == 1` on a refusal. None of them was about the number: each
+was distinguishing "a device refusal" from "a usage error", which is the claim
+`cli_core::exit_code`'s old table made available. They now assert the code of the kind they mean,
+read out of `cli_core::exit_code(&Error::sample(kind))` rather than written as a literal — so they
+are *stronger* than they were (each now pins which of the eighteen it met) and they still cannot
+transcribe a number the shipped mapping does not use. `crates/cli/tests/calibrate.rs` grew a
+`refuses_with(argv, kind)` helper for the six of them that share a shape.
+
+### What can go red
+
+`every_kind_has_a_distinct_exit_code_inside_the_declared_range` (`cli_core`), which is the walk
+that would notice a wildcard arm: the compiler cannot tell `_ => 27` from eighteen literals, but
+two kinds sharing a code is exactly what a catch-all produces.
+`two_different_failures_leave_two_different_exit_codes` (`crates/cli/tests/failure_document.rs`)
+asserts the same at the process boundary over the three kinds a command line can actually produce,
+with the inverse arm beside it — clap still exits 2 and an answering verb still exits 0. Both gates
+compare codes across kinds without transcribing any of them, and
+`cases/cli-parity.cases.sh`'s `fail_case_a_client_that_prints_the_document_and_exits_one_for_every_refusal`
+is the arm for the redundancy alone: that stand-in prints the *right* document, so only the code
+check can notice it.
+
+**Retire this note if** the owner ever rules the other way — that one exit code is enough because
+the document is the mechanism. That is a live reading of the ruling's own words ("nice-to-have"),
+and what would make it right is evidence that nobody reads the codes; what makes it wrong today is
+that a shell script is a caller this project has.

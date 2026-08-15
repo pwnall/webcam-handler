@@ -46,6 +46,25 @@
 # into `device` would pass, because the only checkable consequence of "it mutates the camera"
 # is the double drive that exemption exists to avoid performing. Review carries that one.
 #
+# ## The refusals are compared too, and that is a strictly stronger claim (note **N127**)
+#
+# Since the owner's ruling of 2026-08-15 a failing `--json` invocation prints
+# `schema::error::Failure` on standard output, so the two roots now have something to agree
+# about when a verb *does not* answer — and the refusal path is where they had the most room to
+# diverge. `webcam-handler-cli` builds a `schema::Error` in its own process; `webcam-handler
+# -client` receives a JSON-RPC `ErrorObject` and rebuilds one with `api::codes::typed`. A
+# byte-identical document therefore says the value survived a serialization, a numeric code, a
+# socket and a reconstruction unchanged, which no comparison of successful answers can say.
+#
+# Three rows, in a table of their own below the verb table, and the exit codes are compared
+# beside the bytes: a client that printed the right document and exited the same number for
+# every failure would satisfy a `diff` of standard output alone.
+#
+# **They run last**, after every bucket. Nothing they read changes under a write — a camera's
+# format list and its control vocabulary are the same after `set` as before — and running them
+# first would put a different failure message in front of the fork case in
+# `cases/cli-parity.cases.sh`, which asserts the one this gate reports for a forked *answer*.
+#
 # ## Why the two argv differ in their global flags, and why the answers are still comparable
 #
 # `webcam-handler-cli` is handed `--backend fake --profile <profile>` and
@@ -150,6 +169,33 @@ verbs=(
 # a fall-through is precisely how a verb gets silently exempted: one typo and an `else` that
 # means "skip" excuses a row nobody notices.
 buckets=(compared session device stamped)
+
+# The refusals, compared byte for byte — see the header. Each names a camera or a control or a
+# format the replayed device does not have, so the failure is the *device's* answer and not
+# clap's: a usage error would be exit 2 from both roots, would print no document, and would
+# compare equal while saying nothing about D13 at all. The predicate refuses a 2 for that
+# reason.
+#
+# Three shapes of payload, because a comparison over one would pass a client that dropped every
+# field it did not understand: `camera_unknown` carries only what was asked for,
+# `control_unknown` carries a suggestion list the engine computed, and `format_unsupported`
+# carries the formats an agent retries with.
+#
+# These verbs are in the `device` and `compared` buckets above and that is not a contradiction:
+# a refusal drives no camera to a new state. `photo` is given a path under this gate's own
+# scratch directory rather than a fictional one, so the refusal under test is about the format
+# rather than about a directory that cannot be created.
+# **Named `refusal_rows` and not `refusals`**, which is taken: the counter below the verb loop
+# has been called that since P4f, and a `refusals=()` here quietly became `refusals=6` when the
+# session bucket incremented it — the array's first row survived as the number 6, was expanded
+# as a row, and produced a clap usage error this predicate reported as a fixture fault. Caught
+# by that refusal rather than by review, which is the whole argument for making a usage error a
+# failure of this section instead of something it tolerates.
+refusal_rows=(
+    "camera-unknown|info cam:nothing-answers-to-this"
+    "control-unknown|get <camera> warp_drive"
+    "format-unsupported|photo <camera> -o <refused> --pixel-format NV12"
+)
 
 # ------------------------------------------------------------------ the corpus
 #
@@ -418,6 +464,7 @@ expand() {
     argv="${argv//<recording>/$scratch/take.avi}"
     argv="${argv//<snapshot>/$scratch/snapshot.json}"
     argv="${argv//<session>/$session}"
+    argv="${argv//<refused>/$scratch/refused.jpg}"
     printf '%s\n' "$argv"
 }
 
@@ -540,6 +587,79 @@ for row in "${verbs[@]}"; do
         ;;
     esac
 done
+
+# ------------------------------------------------------------------ the refusals
+#
+# See the header. Last, deliberately, and each row asserts three things: both roots refuse,
+# both print the same document byte for byte, and both leave the same exit code.
+
+refusals_compared=0
+declare -A refusal_codes=()
+for row in "${refusal_rows[@]}"; do
+    IFS='|' read -r name argv <<<"$row"
+    argv="$(expand "$argv")"
+    if [[ "$argv" == *"<"* ]]; then
+        gate_fail "refusal row '$name' still carries an unsubstituted token after expansion ($argv)"
+        continue
+    fi
+
+    wch_status=0
+    # shellcheck disable=SC2086
+    mine="$("$wch" --backend fake --profile "$profile" --json $argv 2>"$scratch/wch.err")" || wch_status=$?
+    wchc_status=0
+    # shellcheck disable=SC2086
+    theirs="$("$wchc" --json $argv 2>"$scratch/wchc.err")" || wchc_status=$?
+
+    # Both must *refuse*, and neither may be refused by clap. Without this the comparison has
+    # the hole its answering twin has, inverted: two programs that both answered would agree on
+    # a document and be reported as parity for a claim about failures, and a usage error would
+    # compare two empty standard outputs.
+    if ((wch_status == 0 || wchc_status == 0)); then
+        gate_fail "'${name}' answered rather than refusing from at least one root (webcam-handler-cli $wch_status, webcam-handler-client $wchc_status); this row exists to produce a D13 failure and a fixture that stopped producing one compares nothing"
+        continue
+    fi
+    if ((wch_status == 2 || wchc_status == 2)); then
+        gate_fail "'${name}' was refused by clap rather than by the device (webcam-handler-cli $wch_status, webcam-handler-client $wchc_status); a usage error prints no document and would be compared as though it were a camera answer"
+        continue
+    fi
+
+    kind="$(printf '%s' "$mine" | jq -r '.error.kind // empty' 2>/dev/null || true)"
+    if [[ -z "$kind" ]]; then
+        gate_fail "webcam-handler-cli --json $argv printed no failure document carrying a discriminant; a caller that redirected standard output would have lost the refusal entirely (note N124)"
+        continue
+    fi
+    if [[ "$mine" != "$theirs" ]]; then
+        gate_fail "webcam-handler-cli and webcam-handler-client do not agree on the '$kind' refusal from '${name}'; D13 says the registry has one home and the two roots render the same value"
+        diff <(printf '%s\n' "$mine") <(printf '%s\n' "$theirs") | head -n 20 | sed 's/^/        /' >&2
+        continue
+    fi
+    if ((wch_status != wchc_status)); then
+        gate_fail "'${name}' left exit $wch_status from webcam-handler-cli and $wchc_status from webcam-handler-client; the codes are the document's redundant half and a caller with no JSON parser reads only them"
+        continue
+    fi
+    if [[ -n "${refusal_codes[$kind]:-}" && "${refusal_codes[$kind]}" != "$wch_status" ]]; then
+        gate_fail "'$kind' left exit $wch_status here and ${refusal_codes[$kind]} elsewhere in this run"
+        continue
+    fi
+    refusal_codes["$kind"]="$wch_status"
+    refusals_compared=$((refusals_compared + 1))
+    gate_note "$name → byte-identical '$kind' failure document from both roots, both exiting $wch_status"
+done
+
+# Distinct kinds must leave distinct codes, compared against each other rather than against
+# numbers written here: `cli_core::exit_code` is the one home of that mapping and a gate that
+# transcribed it would be a second table nobody regenerates.
+if ((${#refusal_codes[@]} > 0)); then
+    # Guarded, because `printf '%s\n'` with no arguments prints one empty line and would
+    # report a phantom collision on a run where every row above had already failed.
+    distinct="$(printf '%s\n' "${refusal_codes[@]}" | sort -u | wc -l | tr -d ' ')"
+    if ((distinct != ${#refusal_codes[@]})); then
+        gate_fail "${#refusal_codes[@]} refusal kind(s) left only $distinct distinct exit code(s); two kinds sharing one is the collapse AGENTS' opening section names — busy and device_gone want opposite responses"
+    fi
+fi
+
+gate_checked "$refusals_compared" "refusal(s) compared byte for byte from both roots, exit codes included, each a D13 failure rather than a usage error"
+gate_require_nonzero "$refusals_compared" "compared refusals"
 
 # The read verbs still answering is the fixture's own load-bearing property, so it is reported
 # rather than implied: `webcam-handler-cli` read a state directory the daemon had locked.
