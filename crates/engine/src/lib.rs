@@ -30,6 +30,7 @@
 //! | [`capture`] | start, settle, one frame, stop — with the stop on every exit (D5) |
 //! | [`preview`] | the other capture shape: one frame per command off a stream that stays running (D12, §2.6) |
 //! | [`photo`] | the photo assembly and the file sinks (D6, D10) |
+//! | [`record`] | the third capture shape: a stream that runs for a duration into a container, in turns the actor can interleave (D7, D10) |
 //! | [`discover`] | empirical pair discovery, by toggling and diffing INACTIVE (D3, PF:3) |
 //! | [`store`] | the session directory, atomic state writes, and the one fd-lock (D9) |
 #![forbid(unsafe_code)]
@@ -49,6 +50,7 @@ pub mod photo;
 pub mod preview;
 pub mod profile;
 pub mod progress;
+pub mod record;
 pub mod resolve;
 pub mod session;
 pub mod settle;

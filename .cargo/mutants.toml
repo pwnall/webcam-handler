@@ -231,6 +231,29 @@
 # **N107**, **N108** record what they were and what one of them found), but eight
 # hand-chosen mutants is not a floor — the whole point of this job is the mutations nobody
 # thought of.
+# ## What P6b's engine half widened, and the qualification it inherits (2026-08-14)
+#
+# `crates/engine/src/record.rs` — the recording executor: the turn-based device half, the
+# `Recording` sink half, the loop built from both, and the `Files` seam a full disk is
+# scripted at. It takes an `OpenCamera` and a `&mut dyn Files` rather than values, which
+# would normally put it with `engine`'s shell; what makes it decidable is the argument
+# `engine::preview` came in on at P5e and `avi/write.rs` came in on at P6a — its whole suite
+# drives a `ScriptedCamera`, the fake replaying two committed profiles, and a scriptable
+# `SinkFault` menu over real files in a scratch directory, so "the loop stops asking the
+# device once a cap refuses a frame", "a duration past the cap is refused rather than
+# clamped" and "a sink failure becomes `StorageIo` naming the path" are claims a mutant can
+# break and a test can catch with no rig and no camera.
+#
+# `crates/schema/src/video.rs` stays **out**, on the ordinary `crates/schema` exclusion and
+# not on a new argument, exactly as P6b's first half left it: `RecordRequest`'s three
+# predicates are folds, and the walk that drives both directions of each of them
+# (`schema::video`'s own suite, and `engine::record`'s) is what holds them.
+#
+# **The floor has not been run against `record.rs`.** P6b's engine half added the line and
+# stopped there, exactly as its imaging half did one commit earlier; the twelve mutants it
+# applied by hand were all killed and one of them found a real gap (note **N112**), but
+# twelve hand-chosen mutants is not a floor — the whole point of this job is the mutations
+# nobody thought of.
 examine_globs = [
     "crates/api/src/codes.rs",
     "crates/api/src/photo.rs",
@@ -241,6 +264,7 @@ examine_globs = [
     "crates/daemon/src/http/token.rs",
     "crates/engine/src/pairing.rs",
     "crates/engine/src/preview.rs",
+    "crates/engine/src/record.rs",
     "crates/engine/src/session.rs",
     "crates/engine/src/settle.rs",
     "crates/engine/src/store.rs",

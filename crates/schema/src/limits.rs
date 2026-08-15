@@ -858,11 +858,9 @@ pub const DEFAULT_BUFFER_COUNT: u32 = 4;
 /// It is a *default*, not a bound: a caller that names a duration gets it, up to
 /// [`MAX_RECORDING_MS`].
 ///
-/// **No product reader yet.** The recording executor P6b's second half lands is what turns
-/// this into a `RecordingCaps`, and until then the only things holding it are the relations
-/// asserted below. That is recorded rather than hidden, because rubric A8 says a constant
-/// nobody reads is a defect and the honest state of this one is "read by the arithmetic and
-/// not yet by the product".
+/// Read by [`crate::video::RecordRequest::budget_ms`], which is the one place a request with
+/// no `duration_ms` becomes a number — so `webcam-handler-cli record` with no flag and
+/// `webcam-handler-daemon`'s `record_start` cannot answer "how long" differently.
 pub const DEFAULT_RECORDING_MS: u64 = 10_000;
 
 /// The longest recording this build will make, in milliseconds.
@@ -890,7 +888,9 @@ pub const DEFAULT_RECORDING_MS: u64 = 10_000;
 /// fallback "enormous but exact", and a caller that wants two minutes of it is asking for
 /// something this tool does not do.
 ///
-/// **No product reader yet**, for [`DEFAULT_RECORDING_MS`]'s reason.
+/// Read by [`crate::video::RecordRequest::budget_ms`], which **refuses** a longer duration
+/// rather than clamping it: an agent told the cap can ask again inside it, and an agent whose
+/// recording was quietly shortened cannot tell that from a camera that stopped.
 pub const MAX_RECORDING_MS: u64 = 120_000;
 
 /// The largest recording file this build will write, in bytes.
@@ -916,7 +916,11 @@ pub const MAX_RECORDING_MS: u64 = 120_000;
 /// disk and what `RecordingCaps::max_bytes` is compared against.
 ///
 /// Read by `imaging::video`'s ceiling assertion, which is what keeps it under the AVI
-/// container's own limit at compile time.
+/// container's own limit at compile time; by `engine::record::caps`, which is where it
+/// becomes a `RecordingCaps` a muxer enforces; and by
+/// [`crate::video::RecordRequest::server_path`], whose refusal names it — a recording two
+/// orders of magnitude past [`RPC_MAX_RESPONSE_BYTES`] is why that verb takes a path and not
+/// a byte sink (note **N110**).
 pub const MAX_RECORDING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// The most frames one recording may hold.
@@ -933,7 +937,8 @@ pub const MAX_RECORDING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// so a recording at this cap holds 128 kB of index and writes 256 kB of `idx1` — small,
 /// finite, and stated here so the number is a decision rather than a round one.
 ///
-/// **No product reader yet**, for [`DEFAULT_RECORDING_MS`]'s reason.
+/// Read by `engine::record::caps`, which is the one place all three of these become the
+/// `RecordingCaps` a muxer enforces.
 pub const MAX_RECORDING_FRAMES: u32 = 16_384;
 
 // The three relations the paragraphs above argue, checked where all four numbers are —
@@ -950,6 +955,43 @@ pub const MAX_RECORDING_FRAMES: u32 = 16_384;
 const _: () = assert!(DEFAULT_RECORDING_MS > 0 && DEFAULT_RECORDING_MS < MAX_RECORDING_MS);
 const _: () = assert!(MAX_RECORDING_FRAMES as u64 > MAX_RECORDING_MS / 1_000 * 120);
 const _: () = assert!(MAX_RECORDING_BYTES > DEFAULT_RECORDING_MS * 24_000);
+
+/// How many consecutive frameless turns end a recording.
+///
+/// [`PREVIEW_MAX_EMPTY_TURNS`]' argument at the other capture shape, and it is the same
+/// argument because it is the same failure: the deadline is the real bound and this covers
+/// the case the deadline cannot, which is a device that keeps answering promptly and never
+/// delivers. For a recording the deadline is the caller's own duration, and the case it
+/// cannot cover is a clock that is not advancing — a test's `SteppedClock` today, a wedged
+/// monotonic clock in the field. `engine::capture`'s [`MAX_SETTLE_ROUNDS`] is where this
+/// project first wrote that sentence down.
+///
+/// **A separate constant from the preview's rather than a shared one**, because the two
+/// bound different things even where they agree on the number: the preview's turn waits
+/// [`PREVIEW_FRAME_WAIT_MS`] and a recording's waits [`FRAME_DEADLINE_MS`], so eight turns is
+/// eight seconds of silence there and sixteen here. A shared constant would have made one of
+/// those two sentences a coincidence.
+///
+/// Eight, priced so it never fires on an honest recording that its own duration would have
+/// ended: sixteen seconds of silence is longer than [`DEFAULT_RECORDING_MS`], so the default
+/// take is always ended by its budget and never by this. What it does end is a *long* take —
+/// two minutes is the cap — whose camera stopped after ten seconds, which would otherwise
+/// spend another hundred and ten seconds recording nothing before saying so. The recording
+/// that results is real, its frames are the device's own, and
+/// [`crate::video::RecordingEnd::DeviceQuiet`] is what says there were no more of them
+/// (AGENTS rule 7 — the camera did not deliver is not the camera cannot).
+///
+/// Read by `engine::record::drive`, which is the only loop that counts them.
+pub const RECORDING_MAX_EMPTY_TURNS: u32 = 8;
+
+// The relation the paragraph above argues, checked where all three numbers are —
+// `CAMERA_IDLE_SWEEP_MS`' tradition. A silence budget shorter than the default recording
+// would make this backstop the thing that ends the ordinary take, and a zero one would end
+// every recording on its first slow frame.
+const _: () = assert!(
+    RECORDING_MAX_EMPTY_TURNS > 0
+        && RECORDING_MAX_EMPTY_TURNS as u64 * FRAME_DEADLINE_MS > DEFAULT_RECORDING_MS
+);
 
 /// The most processes a `Busy` refusal names.
 ///

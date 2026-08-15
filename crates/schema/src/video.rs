@@ -55,14 +55,51 @@
 //! [`RecordingSummary::span_us`] and [`RecordingSummary::frames_written`] carry the
 //! measurement whichever container was used, so the mean is the caller's subtraction rather
 //! than a number it has to take on trust.
+//!
+//! ## The request, and the three questions it answers about itself
+//!
+//! [`RecordRequest`] is what a caller hands `webcam-handler-engine::record`, and its three
+//! predicates — [`RecordRequest::server_path`], [`RecordRequest::container`] and
+//! [`RecordRequest::budget_ms`] — are the shape [`crate::capture::Sink::writable_format`]
+//! already has one verb along, and for its reason: **the rule lives beside the variants it
+//! constrains, so a request built by a socket meets it as surely as one built by a command
+//! line.** `webcam-handler-daemon` links no `cli-core`, so a rule enforced while parsing a
+//! command line is a rule the wire does not have (debt D-1, note **N46**).
+//!
+//! Each of the three refuses rather than repairs, and each is
+//! [`Error::IllegalTransition`] — the variant note **N46** widened to mean *"the request
+//! names something this build will not do"*:
+//!
+//! - **a recording's bytes go to a path, never back in the answer** ([`RecordRequest::
+//!   server_path`], note **N110**);
+//! - **the path's extension names the container**, and one this build does not write is
+//!   refused rather than filled with something else under a name that lies about it
+//!   ([`RecordRequest::container`] — the `.webp` defect, one container along);
+//! - **a duration past [`crate::limits::MAX_RECORDING_MS`] is refused rather than clamped**
+//!   ([`RecordRequest::budget_ms`]), because an agent that asked for too much can ask for
+//!   less and an agent whose recording was quietly shortened cannot tell that from a camera
+//!   that stopped.
+//!
+//! ## The answer carries two clocks, because P6d subtracts one from the other
+//!
+//! [`RecordReport`] holds [`RecordingSummary::span_us`] — measured on the *driver's* frame
+//! timestamps — beside [`RecordReport::wall_clock_ms`], measured on the engine's own
+//! monotonic clock. That pair is docs/7 **P6d**'s declared-vs-wall-clock duration bound
+//! ("the D7/§3.3 CFR limitation, bounded rather than wished away"), so the two numbers live
+//! in one document rather than being recovered from a log; [`RecordReport::wall_clock_ms`]'s
+//! own doc says what a difference between them means.
 
 use std::fmt;
 
+use camino::{Utf8Path, Utf8PathBuf};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::camera::PixelFormat;
+use crate::camera::{CameraId, PixelFormat};
+use crate::capture::{NegotiatedStream, Sink, StreamRequest};
 use crate::error::{Error, Result};
+use crate::limits;
+use crate::time::Stamp;
 use crate::vocabulary::closed_vocabulary;
 
 closed_vocabulary! {
@@ -358,6 +395,272 @@ impl fmt::Display for VideoFormat {
     }
 }
 
+closed_vocabulary! {
+    /// Why a recording stopped.
+    ///
+    /// [`RecordingSummary::cap_reached`] answers a narrower question — *which bound the
+    /// container refused a frame at* — and it is `None` for every recording that ended for
+    /// one of the other four reasons below. An agent reading only that field cannot tell a
+    /// take that ran its whole duration from one whose camera went silent after two frames,
+    /// and those are different findings about the device under test: the first is a
+    /// recording, the second is a defect. So the ending is carried as its own closed
+    /// vocabulary, walked by
+    /// `engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —
+    /// because an ending nothing can produce is a word in a report rather than an answer.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RecordingEnd {
+        /// The wall-clock budget the request asked for was spent.
+        ///
+        /// The ordinary ending, and the one [`RecordRequest::budget_ms`] names. Measured on
+        /// the engine's own monotonic clock rather than on the driver's frame timestamps —
+        /// see [`RecordReport::wall_clock_ms`] for why a recording is bounded by both.
+        Duration,
+        /// One of the bounds `engine::record::caps` assembles out of
+        /// [`crate::limits`] refused a frame.
+        ///
+        /// [`RecordingSummary::cap_reached`] names which one; it is `Some` exactly when the
+        /// ending is this.
+        Cap,
+        /// The device stopped delivering.
+        ///
+        /// [`crate::limits::RECORDING_MAX_EMPTY_TURNS`] consecutive turns brought no frame,
+        /// which is the bound that covers the case the duration cannot: a driver answering
+        /// promptly and delivering nothing, on a clock that is not moving. AGENTS rule 7 is
+        /// why it is an *ending* rather than an error — the recording it produced is real
+        /// and its frames are the device's own; what is being reported is that there were no
+        /// more of them.
+        DeviceQuiet,
+        /// The caller ended it.
+        ///
+        /// What `record_stop` produces (docs/7 P6c): a recording driven one turn at a time
+        /// stops when its caller says so, and nothing about the device or the bounds is
+        /// involved.
+        Stopped,
+        /// The device refused mid-take, and the caller is holding that refusal.
+        ///
+        /// The container is still closed — a recording that left a half-written file because
+        /// the camera was unplugged would fail docs/7 P6b's "every fault leaves a parseable
+        /// file" — so this ending exists to say that the file is finished and the take is
+        /// not. `engine::record::run` produces it and then answers with the *device's* own
+        /// error rather than with the report, because a `DeviceGone` that arrived as a
+        /// successful recording would be exactly the conversion AGENTS rule 7 forbids.
+        DeviceFailed,
+    }
+}
+
+/// Everything one recording needs (design D7, D10).
+///
+/// [`crate::capture::PhotoRequest`]'s counterpart, and deliberately smaller than it. There is
+/// no `settle` field: the frames immediately after `STREAMON` are dark until AE converges
+/// \[PF:11\], and a *photo* discards them because one dark frame is the whole answer — a
+/// recording's are visible in the file beside everything that follows, and discarding them
+/// would move the recording's start away from where the caller put it. An agent filming a
+/// transition asked for the moment it asked for. Note **N111** records the decision.
+///
+/// There is no `format` field either, and that is [`RecordRequest::container`]'s paragraph:
+/// the sink path's extension names the container, exactly as it names a photo's encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RecordRequest {
+    /// What to ask the device's format negotiation for.
+    ///
+    /// The negotiated answer decides the container when the sink path named none, so this
+    /// field and [`RecordRequest::container`] are the two halves of one question — which is
+    /// why [`VideoFormat::resolve`] takes both and refuses rather than picking a winner.
+    #[serde(default)]
+    pub stream: StreamRequest,
+    /// How long to record, in milliseconds. `None` is
+    /// [`crate::limits::DEFAULT_RECORDING_MS`].
+    ///
+    /// Read through [`RecordRequest::budget_ms`], which is where the default and the cap
+    /// live; a caller that read this field directly would be reading a request rather than a
+    /// decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Where the file goes.
+    ///
+    /// A [`Sink::ServerPath`] and nothing else — see [`RecordRequest::server_path`] for the
+    /// refusal and note **N110** for why this verb narrows D10's two-variant DTO rather than
+    /// changing it.
+    pub sink: Sink,
+}
+
+impl RecordRequest {
+    /// The path this recording is written to, or a refusal naming why there has to be one.
+    ///
+    /// **A recording is not returned as bytes** (note **N110**). D10 says binary results
+    /// cross the wire via a two-variant sink DTO, and this verb uses one of the two: a
+    /// recording is bounded by [`crate::limits::MAX_RECORDING_BYTES`], which is two orders of
+    /// magnitude past [`crate::limits::RPC_MAX_RESPONSE_BYTES`] before base64 adds a third,
+    /// so [`Sink::ReturnBytes`] names an answer this build cannot send. The refusal says so
+    /// and names the remedy, because AGENTS' primary consumer has no hands to work it out
+    /// with.
+    ///
+    /// The second half is [`Sink::is_addressable`]'s rule, asked here rather than only at the
+    /// daemon: a relative path from a socket would be resolved against the daemon's own
+    /// working directory, which under systemd is `/`. One rule asked twice is not two rules
+    /// (note **N46**).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] for a [`Sink::ReturnBytes`] sink and for a relative
+    /// [`Sink::ServerPath`].
+    pub fn server_path(&self) -> Result<&Utf8Path> {
+        match &self.sink {
+            Sink::ReturnBytes { .. } => Err(Error::IllegalTransition {
+                from: "a recording asked for as bytes in the answer".to_owned(),
+                op: format!(
+                    "return a recording of up to {} bytes in a JSON-RPC result bounded at {} \
+                     before base64 grows it by a third; name an absolute server path instead",
+                    limits::MAX_RECORDING_BYTES,
+                    limits::RPC_MAX_RESPONSE_BYTES
+                ),
+            }),
+            Sink::ServerPath { path } if !path.is_absolute() => Err(Error::IllegalTransition {
+                from: format!("a relative recording path ({path})"),
+                op: "write a recording to a path this engine cannot resolve; send an absolute \
+                     one, resolved against the caller's own working directory"
+                    .to_owned(),
+            }),
+            Sink::ServerPath { path } => Ok(path.as_path()),
+        }
+    }
+
+    /// The container the *request* names, read off the sink path's extension.
+    ///
+    /// `Ok(None)` when the path carries no extension at all, which means the negotiated
+    /// stream decides ([`VideoFormat::resolve`]'s `None` arm). That case is the one AGENTS'
+    /// primary consumer needs: an agent that has not enumerated a camera's formats does not
+    /// know whether it is about to get MJPG or GREY, and a verb where you must know that to
+    /// name the file is a verb needing a call sequence. `record -o /tmp/take` records
+    /// whatever the camera gives and the report says which container it was.
+    ///
+    /// An extension this build does **not** write is a refusal rather than a container
+    /// chosen behind the caller's back, and it is the same defect
+    /// [`Sink::writable_format`] refuses one verb along: `/tmp/take.mkv` filled with a Y4M
+    /// would be a file whose name lies about its contents (debt D-1, note **N46**).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] naming the extension that was typed and the ones this
+    /// build writes, derived from [`VideoFormat::ALL`] rather than transcribed. Deliberately
+    /// **not** [`Error::FormatUnsupported`]: that variant is the *camera* saying what it
+    /// cannot offer (E3), and `.mkv` is not the camera's fault. Plus whatever
+    /// [`RecordRequest::server_path`] refuses, since a sink with no path has no extension to
+    /// read.
+    pub fn container(&self) -> Result<Option<VideoFormat>> {
+        let path = self.server_path()?;
+        match path.extension() {
+            None => Ok(None),
+            Some(extension) => VideoFormat::from_extension(extension)
+                .map(Some)
+                .ok_or_else(|| Error::IllegalTransition {
+                    from: format!("unwritable_extension({extension})"),
+                    op: format!(
+                        "record to {path}; this build writes {}",
+                        VideoFormat::ALL
+                            .iter()
+                            .map(|format| format!(".{}", format.extension()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }),
+        }
+    }
+
+    /// How long this recording may run, in milliseconds.
+    ///
+    /// The one home for [`crate::limits::DEFAULT_RECORDING_MS`] and
+    /// [`crate::limits::MAX_RECORDING_MS`], so `webcam-handler-cli` and
+    /// `webcam-handler-daemon` cannot answer "how long is a recording with no `--duration`"
+    /// differently.
+    ///
+    /// **A duration past the cap is refused, never clamped.** The two answers are
+    /// indistinguishable to the consumer that matters: an agent that asked for five minutes
+    /// and silently received two cannot tell that from a camera that stopped after two, and
+    /// the whole point of a recording is to be measured. An agent that is *told* the cap can
+    /// ask again for something inside it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IllegalTransition`] naming both the duration asked for and the cap.
+    pub fn budget_ms(&self) -> Result<u64> {
+        match self.duration_ms {
+            None => Ok(limits::DEFAULT_RECORDING_MS),
+            Some(asked) if asked > limits::MAX_RECORDING_MS => Err(Error::IllegalTransition {
+                from: format!("a {asked} ms recording"),
+                op: format!(
+                    "record for longer than the {} ms this build will; ask for a duration at \
+                     or under it",
+                    limits::MAX_RECORDING_MS
+                ),
+            }),
+            Some(asked) => Ok(asked),
+        }
+    }
+}
+
+/// What one recording turned out to be (design D7, D10).
+///
+/// [`crate::capture::PhotoReport`]'s counterpart. Every field is a measurement of what
+/// happened rather than a restatement of the request — `negotiated` is D5's "requested is not
+/// applied" for a stream that ran for seconds rather than for one frame, `format` is the
+/// container the pairing chose, and `summary` is what the container itself counted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RecordReport {
+    /// The camera that was recorded.
+    pub camera: CameraId,
+    /// When the recording started, on the wall clock.
+    ///
+    /// The caller's [`Stamp`], as `PhotoReport::taken_at` is: the engine reads no clock
+    /// (design §2.10), and the monotonic one this report's [`RecordReport::wall_clock_ms`]
+    /// comes from is a different question — conflating them is how an NTP step becomes a
+    /// duration.
+    pub started_at: Stamp,
+    /// The file that was written.
+    #[schemars(with = "String")]
+    pub path: Utf8PathBuf,
+    /// The container it is in.
+    ///
+    /// Reported rather than assumed, because a request that named no extension let the
+    /// negotiated stream decide — so this is the answer to a question the caller may have
+    /// left open (see [`RecordRequest::container`]).
+    pub format: VideoFormat,
+    /// What the device agreed to deliver, with every difference from the request (D5).
+    pub negotiated: NegotiatedStream,
+    /// What the container counted.
+    pub summary: RecordingSummary,
+    /// How long the recording took on the engine's monotonic clock, in milliseconds.
+    ///
+    /// **Beside [`RecordingSummary::span_us`] rather than instead of it, because they are
+    /// two measurements and the difference between them is a finding.** `span_us` is the last
+    /// written frame's timestamp minus the first's, on the *driver's* clock and in
+    /// microseconds; this is the engine's own elapsed time across the whole take, in
+    /// milliseconds. `webcam-handler-imaging` reads no clock of its own — its
+    /// `RecordingCaps::max_span` doc says wall-clock time is the caller's question — and this
+    /// engine is that caller.
+    ///
+    /// Three things make the two disagree, and a caller can tell them apart from the rest of
+    /// this document: a **driver clock that ran slow or fast** (the span is short or long
+    /// against a wall clock that is not), **frames dropped before they reached us**
+    /// ([`RecordingSummary::dropped_frames`] is non-zero), and **time spent in our own loop**
+    /// — the wall clock includes the header write, the settle-free start, the close-time
+    /// index and every turn that brought no frame, none of which are inside the span. The
+    /// wall clock is therefore always the larger of the two for an honest take, and a span
+    /// that *exceeds* it is a driver clock this host does not share.
+    ///
+    /// Milliseconds rather than microseconds because that is the resolution the engine's
+    /// clock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by
+    /// multiplying by a thousand would be three digits of precision nobody measured.
+    ///
+    /// This pair is docs/7 **P6d**'s criterion — the declared-vs-wall-clock duration bound,
+    /// measured on a real capture — which is why both live in the one document a `--json`
+    /// consumer already has.
+    pub wall_clock_ms: u64,
+    /// Why it stopped.
+    pub ended: RecordingEnd,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +839,155 @@ mod tests {
             None,
             "a mean that truncates to zero is not an interval any more"
         );
+    }
+
+    /// A request to `path`, with no duration named.
+    fn to_path(path: &str) -> RecordRequest {
+        RecordRequest {
+            stream: StreamRequest::default(),
+            duration_ms: None,
+            sink: Sink::ServerPath { path: path.into() },
+        }
+    }
+
+    #[test]
+    fn a_recording_asked_for_as_bytes_is_refused_naming_the_bound_and_the_remedy() {
+        // Note **N110**: D10's sink DTO has two variants and this verb takes one of them.
+        // The refusal has to carry both halves an unattended caller acts on — why the answer
+        // cannot come back inline, and what to send instead — because the alternative is an
+        // agent retrying the same request.
+        let refusal = RecordRequest {
+            stream: StreamRequest::default(),
+            duration_ms: None,
+            sink: Sink::ReturnBytes {
+                format: crate::capture::PhotoFormat::Jpeg,
+            },
+        }
+        .server_path()
+        .expect_err("a recording does not come back in the answer");
+        assert_eq!(refusal.kind(), crate::error::ErrorKind::IllegalTransition);
+        let rendered = refusal.to_string();
+        assert!(
+            rendered.contains(&limits::MAX_RECORDING_BYTES.to_string()),
+            "the refusal must name the bound it is about: {rendered}"
+        );
+        assert!(
+            rendered.contains("absolute server path"),
+            "the refusal must name the remedy: {rendered}"
+        );
+
+        // A relative path is the other half of the same question (note N46), and an absolute
+        // one is served — so the arm above refuses a *shape* rather than refusing sinks.
+        assert!(to_path("take.avi").server_path().is_err());
+        assert_eq!(
+            to_path("/tmp/take.avi").server_path().expect("absolute"),
+            Utf8Path::new("/tmp/take.avi")
+        );
+    }
+
+    #[test]
+    fn the_sink_paths_extension_names_the_container_and_one_this_build_cannot_write_is_refused() {
+        // The `.webp` defect one container along (debt D-1, note N46): a `/tmp/take.mkv`
+        // filled with a Y4M is a file whose name lies about its contents, and a *reader* of
+        // that file has no way to find out. Both directions, and the no-extension arm, which
+        // is the one AGENTS' handless consumer depends on.
+        for &container in VideoFormat::ALL {
+            let path = format!("/tmp/take.{}", container.extension());
+            assert_eq!(
+                to_path(&path).container().expect("a writable extension"),
+                Some(container)
+            );
+        }
+        assert_eq!(
+            to_path("/tmp/take").container().expect("no extension"),
+            None,
+            "a path with no extension lets the negotiated stream decide"
+        );
+
+        let refusal = to_path("/tmp/take.mkv")
+            .container()
+            .expect_err("this build writes no Matroska");
+        let rendered = refusal.to_string();
+        for &container in VideoFormat::ALL {
+            assert!(
+                rendered.contains(&format!(".{}", container.extension())),
+                "the refusal must name what this build does write: {rendered}"
+            );
+        }
+        assert!(rendered.contains("mkv"), "{rendered}");
+    }
+
+    #[test]
+    fn a_duration_past_the_cap_is_refused_rather_than_clamped_and_the_default_is_the_limits_one() {
+        // The clamp that is not taken, and why: an agent that asked for five minutes and
+        // silently received two cannot tell that from a camera that stopped after two, and
+        // the recording exists to be measured. Both directions, and the boundary itself,
+        // because a refusal at the cap rather than past it is a different bound.
+        assert_eq!(
+            to_path("/tmp/take.avi").budget_ms().expect("the default"),
+            limits::DEFAULT_RECORDING_MS
+        );
+
+        let at_the_cap = RecordRequest {
+            duration_ms: Some(limits::MAX_RECORDING_MS),
+            ..to_path("/tmp/take.avi")
+        };
+        assert_eq!(
+            at_the_cap
+                .budget_ms()
+                .expect("a duration at the cap is inside it"),
+            limits::MAX_RECORDING_MS
+        );
+
+        let past_it = RecordRequest {
+            duration_ms: Some(limits::MAX_RECORDING_MS + 1),
+            ..to_path("/tmp/take.avi")
+        };
+        let rendered = past_it
+            .budget_ms()
+            .expect_err("a millisecond past the cap is past it")
+            .to_string();
+        assert!(
+            rendered.contains(&limits::MAX_RECORDING_MS.to_string()),
+            "an agent that is not told the cap cannot ask again inside it: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_request_and_a_report_round_trip_through_json_with_their_vocabulary_spelled_out() {
+        // The wire shape of the two documents `record` carries, asserted rather than
+        // assumed: `schemas/` is what a `--json` consumer validates against, so the spelling
+        // of the ending vocabulary inside a report is a contract.
+        let request = RecordRequest {
+            duration_ms: Some(2_000),
+            ..to_path("/tmp/take.avi")
+        };
+        let json = serde_json::to_string(&request).expect("serialize");
+        let back: RecordRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, request);
+        // A request that named no duration omits the field rather than sending a null, which
+        // is what `skip_serializing_if` is for and what a hand-written client will send.
+        let bare = serde_json::to_string(&to_path("/tmp/take.avi")).expect("serialize");
+        assert!(!bare.contains("duration_ms"), "{bare}");
+        let back: RecordRequest = serde_json::from_str(&bare).expect("deserialize");
+        assert_eq!(back.duration_ms, None);
+
+        for &ended in RecordingEnd::ALL {
+            let rendered = serde_json::to_string(&ended).expect("serialize");
+            let expected = format!("{ended:?}")
+                .chars()
+                .enumerate()
+                .flat_map(|(index, ch)| {
+                    let mut out = Vec::new();
+                    if ch.is_uppercase() && index > 0 {
+                        out.push('_');
+                    }
+                    out.extend(ch.to_lowercase());
+                    out
+                })
+                .collect::<String>();
+            assert_eq!(rendered, format!("\"{expected}\""), "{ended:?}");
+        }
     }
 
     #[test]

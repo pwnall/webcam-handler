@@ -14953,3 +14953,178 @@ change.
 **Amend this note if** a consumer outside this repository starts reading the wire, because the
 "cheapest now" half of the ruling's argument expires the day one does. Retire it only on the
 owner reversing the spelling — the bijection under it is arithmetic and does not expire.
+
+## N110 — A recording's bytes go to a path, and narrowing one verb to one sink variant is cheaper than changing the DTO
+
+**Doc:** design **D10** — *"Binary results (photo/record) cross the wire via a two-variant sink
+DTO in `webcam-handler-schema`: `ReturnBytes { format }` (base64 in the JSON result) or
+`ServerPath { path }`"* — and **D7**'s bounded recording; `schema::limits::MAX_RECORDING_BYTES`
+and `RPC_MAX_RESPONSE_BYTES`; note **N46**, which widened `Error::IllegalTransition` to mean
+"the request names something this build will not do". Recorded 2026-08-14, from P6b.
+
+**Believed:** that `record` takes the same [`Sink`] a photo does, both variants, because D10
+names photo and record in one breath and the DTO is one type.
+
+**True:** the sentence is about the *DTO*, and one of its two variants cannot carry a
+recording. The arithmetic is not close:
+
+| | bytes |
+|---|---|
+| `limits::RPC_MAX_RESPONSE_BYTES` — the largest JSON-RPC body this daemon writes | 67 108 864 |
+| `limits::MAX_RECORDING_BYTES` — the largest recording this build will make | 2 147 483 648 |
+| … the same recording base64-encoded, which is what would actually be sent | ~2 863 311 531 |
+
+So a recording at its own cap is **thirty-two times** the response bound before the encoding,
+and forty-three times it after. Even the *default* take — `DEFAULT_RECORDING_MS`, ten seconds,
+which at the fastest compressed stream measured here is about 240 MB — is four times the bound
+on its own and five and a third times it encoded. `ReturnBytes` is therefore not a variant that
+usually works and occasionally does not; it is one that works for no recording this build will
+produce.
+
+**The pick: `RecordRequest::server_path` refuses `ReturnBytes` with
+`Error::IllegalTransition`,** naming the two numbers and the remedy ("name an absolute server
+path instead"). The alternatives and why each lost:
+
+| Candidate | Why it lost |
+|---|---|
+| **Refuse, on the type (chosen)** | The rule lives beside the variants it constrains, so a request a socket built meets it as surely as one a command line built — which is the whole of debt D-1's lesson (note **N46**): `webcam-handler-daemon` links no `cli-core`. The refusal is `IllegalTransition` for N46's reason too, and it is one refusal with one spelling wherever a `record` request comes from. |
+| A third sink variant, or a `record`-only sink DTO | A design change to a shape D10 states in one sentence, made by an implementation sub-milestone, to express something the existing two variants already express — one of them is the answer and the other is not. |
+| Serve it up to some threshold | The threshold would be a fourth recording constant with no honest value, and the *failure* would arrive after the camera had run: a caller would learn its ten-second take was too large to send only once the ten seconds were spent, and the file would have been written and then discarded. |
+| Accept and truncate | The defect `budget_ms` refuses in the other direction — an agent cannot tell a truncated answer from a camera that stopped. |
+
+**What is deliberately *not* changed.** `schema::capture::Sink` keeps both variants and every
+word of its documentation; `photo` keeps using both; D10's sentence stays true of the DTO. This
+narrows one **verb** to one variant, which is a statement about `record` rather than about the
+type — and it is stated on `RecordRequest`, not on `Sink`, so the type does not grow a rule
+that is false for its other caller.
+
+**The cost, stated rather than left to a reviewer.** An agent that wants a recording must be
+able to write to the machine the daemon runs on, and for the deployment AGENTS describes — a
+harness driving a daemon on the host whose cameras point at the device under test — that is the
+ordinary case rather than a restriction. A genuinely remote consumer would need something this
+project does not have anyway: D10's answer for large binary results is a path, and there is no
+chunked transfer on this surface.
+
+**Amend this note if** a streaming transfer joins the wire surface (docs/7 has none), at which
+point a recording could be sent without being buffered and the arithmetic above stops being the
+argument.
+
+## N111 — A recording is a chain of turns because the actor takes one command at a time, and it does not settle first
+
+**Doc:** design **§2.1** (one blocking thread and one command channel per open camera),
+**D12**, **D7**; `engine::preview`'s header, which argues the same shape for the same reason;
+\[PF:11\] (frames after `STREAMON` are dark until AE converges) and `engine::capture`'s settle
+loop. Recorded 2026-08-14, from P6b. **Two structural decisions, recorded because neither is
+visible from the code that results from it.**
+
+### The loop belongs to the caller, and the reason is `record_stop`
+
+`engine::actor` runs one command at a time per camera, in arrival order. A recording written as
+one long command — `start_stream`, loop until the duration is up, `stop_stream` — is therefore
+not merely high-latency: **`record_stop` becomes undeliverable**, because the stop queues behind
+the recording it exists to stop and the only thing that can end the take is the take's own
+duration. docs/7 P6c puts `record_start/stop/status` on the wire; the obvious shape deletes the
+middle one.
+
+So `engine::record` owns `start`, `turn` and `stop`, and the *loop* is the caller's —
+`daemon::preview`'s `drive`/`pump` is the arrangement P6c will wrap around it, and
+`engine::preview` took the identical decision at P5b for the identical reason. `engine::record::
+drive` exists for the caller that has no actor (`webcam-handler-cli` opens the camera in
+process), and it holds the device for the whole take, which is why the daemon must not use it.
+
+The cost is one command-queue round trip per frame — a `try_send`, a thread wake and a channel
+send — against a `DQBUF` and a JPEG. `engine::preview`'s header priced it at P5b and the answer
+has not changed.
+
+**The second half is the two-part split**, and it is what makes P6c possible at all: the device
+half returns a `Frame` and the sink half (`Recording`) takes one and never touches a device.
+Nothing couples them. A `turn` that published straight into a recorder would make "record and
+preview the same camera" a second `STREAMON` on a node V4L2 allows one streamer on — which is to
+say impossible — and P6c's whole job is to hand one frame to both.
+
+### A recording does not settle, and a photo does
+
+`engine::capture::grab` discards `DEFAULT_SETTLE_SKIP_FRAMES` frames before it takes one,
+because the frames immediately after `STREAMON` are dark and miscoloured \[PF:11\] and one dark
+frame is the whole of a photo. `RecordRequest` carries **no settle policy at all**, and that is
+a decision rather than an omission:
+
+- a recording's early frames are *visible*, beside everything that follows, so nothing is
+  hidden by keeping them — a viewer sees the sensor converge, which is what happened;
+- discarding them **moves the recording's start**, silently, by a third of a second at the
+  default skip and 30 fps. An agent filming a transition asked for the moment it asked for, and
+  the notes' Expected usage item 10 is blunt about what the recording is for: *"did this take
+  200 ms or 2 s"* is the question, so the answer must not begin later than the caller said;
+- the caller has a remedy that costs nothing and is already built: take a photo first, which
+  settles, and then record.
+
+**Amend this note if** a consumer appears that wants a warm sensor at frame zero more than it
+wants an exact start — at which point the field is `settle: Option<SettlePolicy>` and the
+default stays `None`, because the argument above is about what a *missing* policy should mean.
+
+### One thing this note leaves undone, on purpose
+
+Design **§2.9**'s seams table has four rows — the backend, the session store, the clock, the
+RPC transport — and P6b's engine half adds a fifth: `engine::record::Files`, real
+implementation `OnDisk`, double `ScriptedFiles`, fault menu `SinkFault` (create refused,
+writes refused past a budget, seek refused, flush refused). The seam is built and walked
+exhaustively; the *table* is not updated, because docs/6 is a design document and its §2.9 is
+not this sub-milestone's to edit. It is written down here so the row is added deliberately
+rather than discovered missing — the same posture `.cargo/mutants.toml`'s header takes about
+a file appearing "in neither list".
+
+## N112 — Twelve hand-applied mutants over the recording executor, and the one that found the silence budget was any positive number
+
+**Doc:** AGENTS' "Writing tests" — *"Construct the buggy implementation first and watch it
+fail — at workspace scope"* — and rubric rule 2; rubric **A8**, a constant nobody reads is a
+defect. Recorded 2026-08-14, from P6b's engine half. **Recorded because eleven of the twelve
+confirmed what was expected and the twelfth did not, which is the only reason the exercise is
+worth its cost.**
+
+Each was applied to the shipped code, run against the **whole workspace suite** (1291 tests,
+`--no-fail-fast`, so the count below is every test that noticed rather than the first), and
+reverted.
+
+| mutant | what it did | verdict |
+|---|---|---|
+| **M1** `drive`'s duration bound as `>` instead of `>=` | the take runs one turn past its budget | **2 red**, both on exact frame counts — which is what the self-stepping clock fixture buys: the count is arithmetic rather than approximate |
+| **M2** a cap reported as `RecordingEnd::Duration` | "your recording is as long as you allowed" reads as "your camera stopped" | **2 red**, the cap walk and the ending walk |
+| **M3** `start` resolving the container from `None`, ignoring the path | `.avi` over a GREY camera silently produces a Y4M | **2 red** |
+| **M4** a sink failure keeping the muxer's `DeviceIo` | a full disk arrives as a device fault, so an unattended reader goes and looks at the camera | **2 red**, including the `/dev/full` errno row |
+| **M5** a device failure abandoning the container instead of closing it | an unplugged camera leaves an unindexed file | **1 red** |
+| **M6** `caps()`'s frame cap as `u32::MAX` | a `limits` constant stops being read | **1 red** |
+| **M7** the file created before the request is refused | a refused recording truncates an operator's earlier one | **3 red** |
+| **M8** a spent frame deadline as an error rather than `Turn::Idle` | a slow camera reads as a broken one (AGENTS rule 7) | **3 red** |
+| **M9** the silence budget as `1` rather than `limits::RECORDING_MAX_EMPTY_TURNS` | the bound is any positive number | **1 red — and only after the repair below** |
+| **M10** `budget_ms` clamping instead of refusing | a five-minute request silently becomes two | **2 red**, one in each crate |
+| **M11** an unwritable extension resolving to the negotiated container | `/tmp/take.mkv` fills with a Y4M | **2 red**, one in each crate |
+| **M12** `wall_clock_ms` as a constant zero | P6d's duration bound has nothing to subtract | **1 red** |
+
+### M9 is the finding, and it is rubric A8 one step subtler
+
+`RECORDING_MAX_EMPTY_TURNS` had a reader — `engine::record::drive` counts against it, and the
+suite drove a camera that stopped delivering and asserted the recording ended with
+`RecordingEnd::DeviceQuiet` and its three frames intact. That looks like a constant under
+test. **It is not.** The idle counter resets on every frame, so with three frames scripted the
+recording ends after the first idle turn whatever the bound is: `1`, `8` and `10_000` all
+produce the same ending, the same frame count and the same file. The constant was read and
+unconstrained, which is the same defect as a constant nobody reads wearing a reader.
+
+What makes it visible is counting what the **device was asked**: three frames, then exactly
+`RECORDING_MAX_EMPTY_TURNS` turns that brought nothing, so the assertion is
+`asked == 3 + limits::RECORDING_MAX_EMPTY_TURNS`. That is the same instrument
+`a_recording_stops_asking_the_device_the_moment_a_cap_refuses_a_frame` already needed for a
+different reason — the muxer's refusal is sticky, so a take that kept streaming after its cap
+writes a byte-identical file and only the call count differs — and the pattern generalises:
+**a bound on how many times a loop may go round is only constrained by a test that counts the
+turns.** An assertion on the loop's *outcome* is satisfied by every bound that is large enough.
+
+The repair is one assertion and it was watched failing under M9 before it was trusted.
+
+### The honest limit of all twelve
+
+They are twelve mutations somebody thought of. `.cargo/mutants.toml` gained
+`crates/engine/src/record.rs` in the same commit and **the floor has not been run over it**,
+which is note **N101**'s precedent repeating: the first `cargo-mutants` run over the AVI muxer
+found eleven survivors, nine of them real gaps, none of which the author had thought of. This
+entry is what a hand pass is worth, not what the floor is.
