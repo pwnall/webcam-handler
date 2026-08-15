@@ -34,6 +34,7 @@
     )
 )]
 
+pub mod contracts;
 mod render;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -566,9 +567,16 @@ pub enum Command {
         #[command(flatten)]
         camera: CameraArg,
 
+        // The cross-reference a Rust reader wants is `Cli::try_parse_checked_from`, and it
+        // is a line comment rather than an intra-doc link because **clap prints the doc
+        // comment below to a user** — every paragraph of it, under `--help`. Rustdoc renders
+        // a bracketed path as a link; clap renders it as brackets around an identifier the
+        // reader cannot open, which is what `webcam-handler-cli photo --help` did until
+        // P6e's guide put the line in front of somebody (note **N123**).
         /// Where to write it. The extension chooses the encoding; standard output when
-        /// omitted, which `--json` therefore does not allow — see
-        /// [`Cli::try_parse_checked_from`], which enforces it.
+        /// omitted, which `--json` therefore does not allow: a photo's bytes and a JSON
+        /// document cannot share one stream, so that combination is refused while the
+        /// command line is being parsed, before any camera is opened.
         #[arg(long, short, value_name = "PATH")]
         out: Option<Utf8PathBuf>,
 
@@ -592,10 +600,12 @@ pub enum Command {
         /// Wait for the camera rather than being refused while it is busy (D12).
         ///
         /// Inert under `webcam-handler-cli`, which opens its own camera per invocation and
-        /// runs one verb: the queue it would be waiting for is its own and always empty. It is
-        /// meaningful under `webcam-handler-client`, where the daemon serves every client from
-        /// one thread per camera — see [`Command::photo_request`], which is where the flag
-        /// became reachable.
+        /// runs one verb: the queue it would be waiting for is its own and always empty. It
+        /// is meaningful under `webcam-handler-client`, where the daemon serves every client
+        /// from one thread per camera.
+        // `Command::photo_request` is where the flag became reachable, and that citation is a
+        // line comment for the reason the one on `photo --out` is: clap prints the paragraph
+        // above to a user (note **N123**).
         #[arg(long)]
         wait: bool,
     },
@@ -606,8 +616,10 @@ pub enum Command {
     /// returns; `webcam-handler-client` starts the take, polls `record_status` and collects it
     /// with `record_stop` — a state machine, exactly as `calibrate sweep` is one, and for the
     /// identical reason. AGENTS' primary consumer has no hands, and *"a verb needing a call
-    /// sequence … is a defect for the consumer that matters most"*, so the sequence lives
-    /// behind the [`Executor`] seam and not on the command line.
+    /// sequence … is a defect for the consumer that matters most"*, so this verb performs
+    /// the sequence rather than asking a caller to write it.
+    // The seam it lives behind is `Executor`, and the citation is a line comment because clap
+    // prints the paragraph above to a user (note **N123**).
     Record {
         /// Which camera.
         #[command(flatten)]
@@ -620,8 +632,10 @@ pub enum Command {
         /// recording's bytes go to a path and never back in the answer, because a take at its
         /// own cap is thirty-two times the largest JSON-RPC body this daemon writes. There is
         /// therefore no "standard output" spelling for a recording to compete with a `--json`
-        /// document, which is why `record` needs no counterpart to the `photo --json` rule
-        /// [`Cli::try_parse_checked_from`] enforces.
+        /// document, which is why `record` needs no counterpart to the rule that refuses
+        /// `photo --json` without a path.
+        // That rule is `Cli::try_parse_checked_from`'s, cited in a line comment because clap
+        // prints the paragraphs above to a user (note **N123**).
         #[arg(long, short, value_name = "PATH", required = true)]
         out: Utf8PathBuf,
 
@@ -1815,10 +1829,28 @@ fn unreachable_record() -> Error {
 
 /// The exit code a failure leaves behind.
 ///
-/// **One code for every D13 error**, not eighteen. A caller who wants to branch on *which*
-/// thing went wrong reads `--json`, where the whole typed error is; shell exit codes are a
-/// one-bit channel, and mapping a growing registry onto small integers invites a script to
-/// treat `2` as meaningful and then break when a nineteenth variant lands.
+/// **One code for every D13 error**, not eighteen. Shell exit codes are a one-bit channel,
+/// and mapping a growing registry onto small integers invites a script to treat `2` as
+/// meaningful and then break when a nineteenth variant lands.
+///
+/// ## What this used to say, and why the correction matters (note **N124**)
+///
+/// It said a caller wanting to branch on *which* thing went wrong "reads `--json`, where the
+/// whole typed error is". **That is not true of either root and never was.** A failing verb
+/// prints no document: [`run`] returns the typed error unrendered, both `main`s write
+/// `Program::error_line` — one `Display` sentence — to standard error, and standard output
+/// stays empty. The discriminant AGENTS says is read unsupervised (*"`Busy` means retry,
+/// `DeviceGone` means stop and tell the human, `PermissionDenied` means a setup problem —
+/// collapsing them makes the agent guess"*) is therefore not something a command-line caller
+/// receives as a value at all; it crosses the **wire** (D13's `data` object, design D10) and
+/// stops at the two programs that render it.
+///
+/// The sentence was found by writing P6e's agent guide against this surface, which is what a
+/// manual is for. Nothing here changes: what the two roots do is a decision D10 and D13 make
+/// together, and inventing a failure document in a doc comment's footnote is not how this
+/// project would take it. `a_failing_verb_prints_no_document_and_no_discriminant_which_is_
+/// what_the_guide_says` pins the behaviour the guide now describes, so a build that starts
+/// emitting one goes red here rather than leaving the manual quietly wrong.
 ///
 /// The process therefore has three outcomes, and only the first two come from here:
 ///

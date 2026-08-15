@@ -26,9 +26,20 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 camino.workspace = true
+# The agent guide walks the command tree it documents, so it names `clap::Command` and
+# `clap::Arg` in its own signatures. No parser is built here: the tree comes from
+# `webcam-handler-cli-core`, which owns it (T4).
+clap.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 # The wire surface, for the OpenRPC document: the method inventory and the D13 code
 # registry are read from the crate that owns them, never transcribed here.
 webcam-handler-api.workspace = true
+# The one command surface (T4), for the agent usage guide (docs/7 P6e): the verb vocabulary,
+# every flag and every `--json` contract are read out of the crate that declares them, so the
+# guide cannot describe a verb this build does not have. This edge crosses no wall —
+# `webcam-handler-cli-core` is one of design §2.8's *pure* crates and links no backend, no
+# engine and no runtime, which is what `scripts/gates/dependency-walls.sh` asserts about it
+# and what makes it safe for a build-side tool to depend on.
+webcam-handler-cli-core.workspace = true
 webcam-handler-schema.workspace = true

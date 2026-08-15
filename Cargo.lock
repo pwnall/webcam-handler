@@ -2784,9 +2784,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "camino",
+ "clap",
  "schemars",
  "serde_json",
  "webcam-handler-api",
+ "webcam-handler-cli-core",
  "webcam-handler-schema",
 ]
 

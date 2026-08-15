@@ -1,0 +1,42 @@
+# The `--json` contract of the one command surface (T4): which schema document each verb
+# answers with. Tab-separated, one row per verb:
+#
+#   verb      the verb, as the dash-joined path a walk of the clap tree reaches it by
+#             (`calibrate sweep` is `calibrate-sweep`)
+#   document  the type it emits, as `schemas/webcam-handler-schema.json` keys it under `$defs`
+#
+# **Three readers, which is why this is a file and not a table inside one of them.**
+# `cli_core::contracts` parses it, and `every_verb_the_command_surface_offers_has_a_json_row`
+# proves it names exactly the verbs the clap tree offers — in both directions, so a verb added
+# without a row and a row naming a verb that was renamed are each a red test at workspace
+# scope. `webcam-handler-xtask` prints it into the agent usage guide, which is how the guide
+# tells an agent which document to expect without anybody retyping the mapping.
+# `scripts/gates/json-validates.sh` runs each verb over the fake backend and validates the
+# answer against the `$defs` entry named here.
+#
+# Until docs/7 P6e this mapping lived in the gate alone, as the one thing that predicate
+# writes down rather than derives; the guide would have been its second hand-written copy,
+# which is exactly the drift P6e exists to prevent (note **N122**).
+#
+# A `$defs` name that no longer exists in the bundle fails `json-validates.sh`; a verb with
+# no row here fails `cli_core`'s test *and* the gate's `--help` walk.
+#
+# verb	document
+list	CameraList
+info	CameraDetail
+controls	ControlReport
+get	ControlDesc
+set	WriteReport
+snapshot	Snapshot
+restore	RestoreReport
+photo	PhotoReport
+record	RecordReport
+calibrate-start	Session
+calibrate-plan	Session
+calibrate-sweep	Session
+calibrate-status	SessionStatus
+calibrate-select	Session
+calibrate-apply	WriteReport
+calibrate-restore	RestoreReport
+calibrate-list	SessionList
+profile-capture	DeviceProfile

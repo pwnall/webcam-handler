@@ -16238,3 +16238,182 @@ Two of the takes above negotiated 4K and one negotiated 2592×1944, which is D5'
 (note **N85**) choosing the largest mode rather than anything this rung asked for. A recording at
 a smaller mode would deliver more frames per second and is a different measurement; nothing here
 is evidence about it.
+
+## N122 — The verb-to-document mapping had one home and it was a gate; the guide would have been its second
+
+**Doc:** design §2.10 (one home per law), §2.7 (`--json` emits a schema DTO verbatim); docs/7
+P6e; docs/9's agent-guide row. Recorded 2026-08-15, from P6e.
+
+**The generation approach's first bill, and it came due before a line of the guide was written.**
+docs/7 P6e asks the agent guide to carry "the `--json` contracts (which verb answers which
+schema type)". That mapping existed in exactly one place — the `verbs=()` array in
+`scripts/gates/json-validates.sh` — and that script's own header said so in the tone of somebody
+who had thought about it:
+
+> The verb-to-type mapping below is the one thing here that is written down rather than derived:
+> a Rust trait does not reify its methods, and nothing in the bundle records which verb returns
+> which type. It is kept honest by the count — every verb the CLI's help lists must appear, and a
+> verb added without a row fails.
+
+A guide that printed the same eighteen rows would have been the **second** hand-written copy of a
+law that had honestly declared itself unable to be derived. The two would agree on the day they
+were written and disagree the first time a verb's answer type changed, and the failure mode is
+one-directional in the worst way: the gate would still validate against its own table and stay
+green, while the manual taught a document shape the tool no longer emits. AGENTS' primary
+consumer parses what the manual says.
+
+### Where it went, and why not into Rust
+
+`crates/cli-core/json-contracts.tsv`, beside the surface it is a fact about, with three readers:
+
+| Reader | What it does with it |
+|---|---|
+| `cli_core::contracts` | parses it; its tests compare the rows against the clap tree in **both** directions |
+| `webcam-handler-xtask` | prints it into the guide's contract table and beside each verb |
+| `scripts/gates/json-validates.sh` | runs each verb over the fake and validates against the named `$defs` entry |
+
+A `const` array in `cli-core` would have been the natural Rust shape and was rejected on the
+count: only one of the three readers is Rust, and the other two would have had to parse it —
+`json-validates.sh` with a `sed` over Rust syntax. A tab-separated file is the one shape all
+three read without either side parsing the other's language, which is the argument
+`scripts/gates/phase-criteria.tsv` already carries for its two readers.
+
+**What the move bought beyond removing the copy** is that the mapping is now *complete* by
+construction rather than by the gate's count.
+`every_verb_the_command_surface_offers_has_a_json_row` and
+`no_row_of_the_contract_table_names_a_verb_the_surface_does_not_offer` walk `verbs()` — the clap
+tree — against the table, so a verb added without a row and a row left behind by a rename are
+each a red test at workspace scope rather than a gate finding on a machine that ran the gate.
+
+**What stayed in the gate** is the *argv* per verb: how to make each one answer, cheaply, over a
+replayed device. That is the gate's business and nobody else's — `--skip-frames 0` on the sweep
+row buys a fast predicate and would be bad advice in a manual — and the two tables are now
+checked against the same authority from opposite ends, the gate's against `--help` and the
+table's against the tree.
+
+### What can go red
+
+The two `cli_core::contracts` tests above; `json-validates.sh`'s new refusal for a verb the
+table does not name, seeded in `cases/json-validates.cases.sh` by deleting a row from the table
+in a scratch tree — which is a better arm than the one beside it, because the buggy input is now
+data and the arm no longer has to doctor the predicate to build one. A second copy of the table
+anywhere in the tree is refused as well: the gate finds it by name rather than by path, and two
+answers to one question is the defect this note is about.
+
+## N123 — clap prints doc comments to a user, so a rustdoc link in one is a shipped defect
+
+**Doc:** AGENTS "Docs and dependencies" (docs state each fact once, for the reader they are for);
+docs/8 Part A; docs/7 P6e. Recorded 2026-08-15, from P6e. **Two findings, one mechanism.**
+
+Writing a manual against a real surface is the act that finds the surface's lies — N92 found a
+lying screen the same way. P6e found two, and both were in text this project *ships*.
+
+### Finding one: `webcam-handler-cli photo --help` printed a rustdoc link
+
+Verbatim, from the binary built at `e290279` — P6d's close, and the tree this sub-milestone
+started from. The doc comment it comes from is older than that commit; the transcript names the
+tree it was taken on rather than the one the defect was introduced on, which is the only one of
+the two this run measured:
+
+```
+  -o, --out <PATH>
+          Where to write it. The extension chooses the encoding; standard output when omitted,
+          which `--json` therefore does not allow — see [`Cli::try_parse_checked_from`], which
+          enforces it
+```
+
+`[`Cli::try_parse_checked_from`]` is rustdoc's intra-doc link syntax. Rustdoc resolves it into a
+link; **clap does not resolve anything** — it takes the doc comment as text — so what reaches a
+person, or an unattended agent reading `--help` to find out what a flag does, is brackets around
+an identifier that exists in this crate's source and nowhere on their machine. Four strings were
+affected: `photo --out`'s help, `photo --wait`'s and `record --out`'s long help, and `record`'s
+long about. Three of the four were in a *second* paragraph, which matters because clap prints the
+first paragraph for `-h` and the whole comment for `--help`: a rule that checked only the short
+help would have left half of every doc comment free to carry links.
+
+**The repair keeps both readers.** The user-facing sentence loses the link and says the thing in
+words; the cross-reference a Rust reader wants becomes an ordinary `//` line comment above the
+field, where rustdoc will not linkify it and clap will not print it. What was *not* done is
+splitting the text with `#[arg(help = …)]`, which would have made every one of these strings
+exist twice — the second copy design §2.10 is about, bought to solve a formatting problem.
+
+### Finding two: the `control_inactive` refusal named a flag no binary has
+
+```
+control white_balance_temperature is inactive: disable white_balance_automatic first, or use `--guarded`
+```
+
+`--guarded` is design D3's spelling and was never the command surface's. The shipped verb guards
+by **default** and `--no-guard` opts out, so an unattended caller doing exactly what the refusal
+said typed a flag clap refuses and got exit code 2 — a usage error, from the registry whose whole
+purpose is telling that caller what to do next. It had been in the shipped `Display`, in the
+committed OpenRPC document's sample message, and in this project's own design map, since the
+error was written.
+
+**The repair names no flag at all.** This message crosses the wire as a D13 `message` (design
+D10), where the reader is a client author with no command line, so naming a CLI flag was the
+wider mistake and swapping one spelling for another would have kept it: it now says *"or write
+with the automation guard on"*, which is true of both surfaces. The committed OpenRPC document
+moved with it, which is `schema-artifacts-current.sh` doing its job.
+
+### What can go red
+
+Both live in `cli_core::contracts`' tests, which is the one place that can see the command
+surface and the error registry at once:
+
+- `no_text_this_surface_prints_carries_a_rustdoc_link` walks every command and argument in the
+  tree, both help strings each, and fails on `[``. The ban is on the *link syntax* and not on
+  naming a Rust item — `record`'s help may say `record_status`, because that is a wire method a
+  client author calls; it may not say ``[`Executor`]``, because that is an instruction to a
+  documentation tool that is not running. Measured red on the shipped four, green after.
+- `a_refusal_names_the_guard_and_never_a_flag_that_does_not_exist` renders all eighteen D13
+  samples, extracts every `--flag` token and requires each to be a long option the tree actually
+  has. Both populations are walked, so a flag *renamed in the surface* turns it red exactly as a
+  flag *invented in a message* does. Measured red on the shipped message, green after.
+
+Neither could have been written in `webcam-handler-schema`: the schema crate cannot see a command
+line, and "is this a flag?" is a question about the tree.
+
+## N124 — The D13 discriminant does not reach a command-line caller, and the guide had to say so
+
+**Doc:** AGENTS "Who runs this, and why" (*"the error vocabulary is read unsupervised"*); design
+D10, D13; docs/7 P6e. Recorded 2026-08-15, from P6e. **A finding, not a repair.**
+
+AGENTS names the requirement in one sentence: *"`Busy` means retry, `DeviceGone` means stop and
+tell the human, `PermissionDenied` means a setup problem — collapsing them makes the agent
+guess."* P6e's guide has a section per that sentence, and writing it raised the question the
+section could not avoid: **how does the caller read which one it got?**
+
+It cannot. On failure both roots do the same thing — `cli_core::run` returns the typed error
+unrendered, `main` writes `Program::error_line(&error)` to standard error, and
+`cli_core::exit_code` answers 1 for all eighteen. Standard output is empty, `--json` or not. The
+discriminant is a value on the **wire** (D13's `data` object, an RPC code per kind, both in the
+committed OpenRPC document) and it stops at the two programs that render it into a sentence.
+
+**A doc comment said otherwise.** `cli_core::exit_code`'s own text argued for one exit code on
+the ground that "a caller who wants to branch on *which* thing went wrong reads `--json`, where
+the whole typed error is". That is not true of either root and never was; the surrounding
+argument for one exit code is untouched and correct.
+
+### What was done, and what was deliberately not
+
+The guide says what is true: a failure prints no document, the line on standard error is the
+answer, and a caller that needs the discriminant as a value speaks JSON-RPC to the daemon. The
+doc comment is corrected and carries this note's number.
+
+**No failure document was invented.** What the two roots emit on failure is a decision D10 and
+D13 make together, and adding a `--json` error envelope would change the contract of every verb,
+move both committed artifacts and give `webcam-handler-cli` an answer shape nothing else in the
+workspace has. That is a design change with an owner, not a repair a documentation sub-milestone
+performs on its way past. It is recorded here so the next person reads a finding rather than
+rediscovering it.
+
+### What can go red
+
+`a_failing_verb_prints_no_document_and_no_discriminant_which_is_what_the_guide_says`
+(`crates/cli/tests/agent_guide.rs`) drives the shipped binary at a camera that does not exist and
+asserts all four halves: exit 1, empty standard output under `--json`, a standard-error line
+beginning with the program's name, and the absence of the discriminant in it. It also asserts the
+guide still carries the sentence it pins — so a build that starts emitting a failure document
+turns it red, and the manual has to be rewritten rather than quietly becoming wrong in the safer
+direction.

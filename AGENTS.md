@@ -239,6 +239,16 @@ green and the notes current, and the phase review gets its own session.
   sentence — moves a committed file, and `schema-artifacts-current.sh` goes red until
   `just generate` is run and the result committed. The gate is the backstop and it works;
   this line exists so the trap costs a command rather than a CI cycle.
+- **Since P6e the same is true of `webcam-handler-cli-core`.** `docs/agent-guide.md` — the
+  manual the primary consumer reads — is emitted from the clap tree, so a verb, a flag, an
+  `#[arg]` help line or a row of `crates/cli-core/json-contracts.tsv` is an input to a
+  committed file, and `agent-guide-current.sh` goes red until `just generate` is run. Two
+  rules follow. clap prints those doc comments **to a user**, so a rustdoc link in one reaches
+  them as brackets around an identifier they cannot open — `photo --help` did exactly that
+  until the guide put the line in front of somebody (note **N123**), and
+  `no_text_this_surface_prints_carries_a_rustdoc_link` is what keeps it out. And the guide is
+  written for an unattended agent: imperative, exact, and free of this repository's argument.
+  The reasoning belongs in `xtask/src/guide.rs`, never in the document it emits.
 - `--json` output round-trips against the committed schemas;
   `webcam-handler-cli`/`webcam-handler-client` parity holds — which since P4f is
   `./scripts/gates/cli-parity.sh` rather than an aspiration: it compares the two roots byte for

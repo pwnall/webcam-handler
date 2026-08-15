@@ -14,10 +14,21 @@
 # The committed corpus supplies the devices; `webcam-handler-cli --backend fake --profile …`
 # replays them.
 #
-# The verb-to-type mapping below is the one thing here that is written down rather than
-# derived: a Rust trait does not reify its methods, and nothing in the bundle records
-# which verb returns which type. It is kept honest by the count — every verb the CLI's
-# help lists must appear, and a verb added without a row fails.
+# **The verb-to-type mapping is no longer written down here.** It used to be the one thing
+# this predicate transcribed — a Rust trait does not reify its methods, and nothing in the
+# bundle records which verb returns which type — and docs/7 P6e is what moved it: the
+# generated agent guide teaches the same mapping to an unattended caller, and a second
+# hand-written copy of it is precisely the drift that sub-milestone exists to prevent (note
+# **N122**). It lives in `crates/cli-core/json-contracts.tsv` now, beside the surface it is a
+# fact about, with three readers: `cli_core::contracts` (whose tests prove the rows and the
+# clap tree name the same verbs, in both directions), `webcam-handler-xtask` (which prints it
+# into the guide), and this gate.
+#
+# What stays here is the *argv* per verb — how to make each one answer, cheaply, over a
+# replayed device. That is this gate's business and nobody else's: `--skip-frames 0` on the
+# sweep row buys a fast gate and would be bad advice in a manual. The two tables are checked
+# against the same authority from opposite ends — this one against `--help`, that one against
+# the clap tree — so neither can quietly shrink.
 #
 # **The binary comes from the real checkout, the bundle and the corpus from the tree under
 # test.** That asymmetry is deliberate and it is the seam the selftest drives: building
@@ -75,25 +86,46 @@ fi
 # sweep takes one value with the settle disabled, because this gate is about the shape of
 # the answer and a ten-frame settle per sample would buy nothing.
 verbs=(
-    "list|CameraList|list"
-    "info|CameraDetail|info <camera>"
-    "controls|ControlReport|controls <camera>"
-    "get|ControlDesc|get <camera> <control>"
-    "set|WriteReport|set <camera> <control>=<value>"
-    "snapshot|Snapshot|snapshot <camera>"
-    "restore|RestoreReport|restore <camera> <snapshot>"
-    "photo|PhotoReport|photo <camera> -o <photo>"
-    "record|RecordReport|record <camera> -o <recording> --duration 100ms"
-    "calibrate-start|Session|calibrate start <camera> --task gate --goal gate-run"
-    "calibrate-plan|Session|calibrate plan <camera> --task gate <control>"
-    "calibrate-sweep|Session|calibrate sweep <camera> --task gate <control> --values <value> --skip-frames 0"
-    "calibrate-status|SessionStatus|calibrate status <camera> --task gate"
-    "calibrate-select|Session|calibrate select <camera> --task gate <control> --metric sharpness"
-    "calibrate-apply|WriteReport|calibrate apply <camera> --task gate"
-    "calibrate-restore|RestoreReport|calibrate restore <camera> --task gate"
-    "calibrate-list|SessionList|calibrate list <camera>"
-    "profile-capture|DeviceProfile|profile capture <camera>"
+    "list|list"
+    "info|info <camera>"
+    "controls|controls <camera>"
+    "get|get <camera> <control>"
+    "set|set <camera> <control>=<value>"
+    "snapshot|snapshot <camera>"
+    "restore|restore <camera> <snapshot>"
+    "photo|photo <camera> -o <photo>"
+    "record|record <camera> -o <recording> --duration 100ms"
+    "calibrate-start|calibrate start <camera> --task gate --goal gate-run"
+    "calibrate-plan|calibrate plan <camera> --task gate <control>"
+    "calibrate-sweep|calibrate sweep <camera> --task gate <control> --values <value> --skip-frames 0"
+    "calibrate-status|calibrate status <camera> --task gate"
+    "calibrate-select|calibrate select <camera> --task gate <control> --metric sharpness"
+    "calibrate-apply|calibrate apply <camera> --task gate"
+    "calibrate-restore|calibrate restore <camera> --task gate"
+    "calibrate-list|calibrate list <camera>"
+    "profile-capture|profile capture <camera>"
 )
+
+# The one home of "which verb answers with which document", found by name rather than by
+# path: a table this gate had to be edited to follow would be a table that can move out from
+# under it silently. `gate_find` prunes `target`, `.git`, `vendor` and `node_modules`, so the
+# search is over this repository's own sources.
+mapfile -t contract_tables < <(gate_find "$root" -name 'json-contracts.tsv' | tr '\0' '\n' | sort)
+if ((${#contract_tables[@]} != 1)); then
+    gate_fail "found ${#contract_tables[@]} json-contracts.tsv files under the tree; the verb-to-document mapping has exactly one home (design §2.10) and this gate reads it rather than repeating it"
+    gate_finish
+fi
+contracts="${contract_tables[0]}"
+gate_note "reading the --json contracts from ${contracts#"$root"/}"
+
+# The document a verb answers with, or the empty string for a verb the table does not name.
+json_contract() {
+    awk -F'\t' -v verb="$1" '
+        /^#/ { next }
+        NF < 2 { next }
+        $1 == verb { print $2; exit }
+    ' "$contracts"
+}
 
 # Sorted, so the gate examines the same profile on every run and in every scratch copy —
 # `find` has no defined order, and a gate whose subject varies run to run is a gate whose
@@ -161,7 +193,13 @@ fi
 
 checked=0
 for row in "${verbs[@]}"; do
-    IFS='|' read -r name def argv <<<"$row"
+    IFS='|' read -r name argv <<<"$row"
+
+    def="$(json_contract "$name")"
+    if [[ -z "$def" ]]; then
+        gate_fail "${contracts#"$root"/} names no document for '$name'; a verb with no \`--json\` contract is one the agent guide cannot teach and this gate cannot validate"
+        continue
+    fi
 
     argv="${argv//<camera>/cam:$camera_id}"
     argv="${argv//<control>/$control}"

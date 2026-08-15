@@ -99,6 +99,37 @@ fail_case_a_calibrate_subverb_loses_its_validation_row() {
     bash "$mutant"
 }
 
+# The other half of the completeness claim, and since docs/7 P6e it has a seam in the *tree*
+# rather than only in the predicate: the verb-to-document mapping moved to
+# `crates/cli-core/json-contracts.tsv`, which three readers share (note **N122**). A row
+# deleted there is a verb this gate can no longer validate and the agent guide can no longer
+# teach — so it must be a failure here, and not a row this predicate quietly skips.
+#
+# Seeded in a scratch tree rather than in the predicate, which is what the arm above has to
+# do and this one does not: the table is data now, so the buggy input can be built without
+# doctoring the checker (rule 2's "construct the buggy implementation" in its stronger form).
+fail_case_a_verb_loses_its_json_contract() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    grep -v '^controls	' "$tree/crates/cli-core/json-contracts.tsv" \
+        >"$tree/crates/cli-core/json-contracts.tsv.seeded"
+    mv "$tree/crates/cli-core/json-contracts.tsv.seeded" \
+        "$tree/crates/cli-core/json-contracts.tsv"
+    gate_red_because 'names no document for' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# And the direction that makes the *lookup* meaningful: two tables is two answers, so a second
+# copy of the mapping anywhere in the tree is refused rather than silently preferred by
+# whichever `sort` happened to reach first.
+fail_case_the_contract_table_has_a_second_home() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cp "$tree/crates/cli-core/json-contracts.tsv" "$tree/schemas/json-contracts.tsv"
+    gate_red_because 'exactly one home' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
 fail_case_a_verb_stops_answering() {
     local tree
     tree="$(gate_scratch_tree)"

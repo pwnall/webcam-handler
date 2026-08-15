@@ -7,16 +7,23 @@
 //! committed copy cannot drift from the types it documents. Nothing in this workspace
 //! reads either file back.
 //!
-//! Two artifacts, two audiences (design D10):
+//! Three artifacts, three audiences (design D10, docs/7 P6e):
 //!
-//! | File | Describes |
-//! |---|---|
-//! | [`BUNDLE`] | the DTOs, for a consumer validating `--json`, a session file or a profile |
-//! | [`OPENRPC`] | the daemon's method surface, for a consumer speaking JSON-RPC to it |
+//! | File | Describes | For |
+//! |---|---|---|
+//! | [`BUNDLE`] | the DTOs | a consumer validating `--json`, a session file or a profile |
+//! | [`OPENRPC`] | the daemon's method surface | a consumer speaking JSON-RPC to it |
+//! | [`guide::GUIDE_PATH`] | the command surface, in prose | an agent driving the CLI unattended |
 //!
-//! `generate` writes them; `generate --out DIR` writes them somewhere else, which is how
-//! the gate compares without touching the tree.
+//! `generate` writes them; `generate --out DIR` writes the same tree under `DIR` — every
+//! path relative to it exactly as it is relative to the repository root — which is how the
+//! two freshness gates compare without touching the tree. **The root, not one directory**,
+//! since P6e put a generated file outside `schemas/`: an `--out` that meant "where the
+//! schemas go" could not relocate the guide, and a gate that had to regenerate in place
+//! would be a gate that writes to the thing it is judging.
 #![forbid(unsafe_code)]
+
+mod guide;
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -51,19 +58,26 @@ fn run() -> Result<()> {
                     other => bail!("unknown argument {other:?}"),
                 }
             }
-            let root = repo_root()?;
-            let out = out.unwrap_or_else(|| root.join(ARTIFACT_DIR));
+            let out = match out {
+                Some(out) => out,
+                None => repo_root()?,
+            };
             generate(&out)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: xtask generate [--out DIR]");
+            println!("usage: xtask generate [--out DIR]   (DIR stands in for the repo root)");
             Ok(())
         }
         other => bail!("unknown command {other:?}; try `xtask help`"),
     }
 }
 
-/// Where generated artifacts live, relative to the repository root.
+/// Where the generated JSON artifacts live, relative to the repository root.
+///
+/// Read out of this line by `scripts/gates/schema-artifacts-current.sh`, which names no
+/// directory of its own for the same reason it names no filename. `guide::GUIDE_PATH` is the
+/// other declaration of the same kind, read the same way by
+/// `scripts/gates/agent-guide-current.sh`.
 const ARTIFACT_DIR: &str = "schemas";
 
 /// The bundle's filename.
@@ -538,11 +552,29 @@ fn write_artifact(out_dir: &Utf8Path, name: &str, value: Value) -> Result<()> {
     Ok(())
 }
 
-fn generate(out_dir: &Utf8Path) -> Result<()> {
-    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {out_dir}"))?;
+/// Write one generated file whose bytes are already text.
+///
+/// The guide's path carries a directory, which the JSON artifacts' names do not, so the
+/// parent is created here rather than once for the whole run: `root` is the repository root
+/// or a scratch stand-in for it, and a stand-in has nothing under it yet.
+fn write_text(root: &Utf8Path, relative: &str, text: &str) -> Result<()> {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {parent}"))?;
+    }
+    std::fs::write(&path, text).with_context(|| format!("writing {path}"))?;
+    println!("wrote {path}");
+    Ok(())
+}
 
-    write_artifact(out_dir, BUNDLE, bundle()?)?;
-    write_artifact(out_dir, OPENRPC, openrpc()?)?;
+/// Write every generated artifact under `root`, at the path each is committed at.
+fn generate(root: &Utf8Path) -> Result<()> {
+    let artifacts = root.join(ARTIFACT_DIR);
+    std::fs::create_dir_all(&artifacts).with_context(|| format!("creating {artifacts}"))?;
+
+    write_artifact(&artifacts, BUNDLE, bundle()?)?;
+    write_artifact(&artifacts, OPENRPC, openrpc()?)?;
+    write_text(root, guide::GUIDE_PATH, &guide::guide()?)?;
     Ok(())
 }
 

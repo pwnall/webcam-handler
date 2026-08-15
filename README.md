@@ -8,8 +8,10 @@ Everything happens in-process. No `v4l2-ctl`, no `ffmpeg`, no external binaries 
 runtime — the tool links Rust libraries and talks to the kernel itself.
 
 **Status: under construction.** The architecture is settled (`docs/6`) and the work is
-phase-gated (`docs/7`): P0–P4 are closed, P5 (the web client) is closing, and P6 (video
-recording) is not written yet. Everything below works today; `record` is what is missing.
+phase-gated (`docs/7`): P0–P5 are closed and P6 (video recording) is closing. `record` is
+here — an AVI muxer and a Y4M sink written in-process, duration and size caps, the three
+wire methods, and one verb on both command-line roots. Everything below works today; what
+is left in P6 is the phase's own closing work rather than a feature.
 
 ## Deliverables
 
@@ -70,7 +72,12 @@ all use the same camera; without it they take turns and lose.
 webcam-handler-daemon &                      # owns the cameras, serves a Unix socket
 webcam-handler-client list                   # every camera, with a stable id per camera
 webcam-handler-client photo cam:my-camera -o shot.jpg
+webcam-handler-client record cam:my-camera -o clip.avi --duration 10s
 ```
+
+`record` writes the camera's own MJPEG frames into an AVI, or raw frames into a `.y4m` —
+the extension chooses, and the report says how many frames the file holds and what interval
+they arrived at.
 
 `webcam-handler-cli` is the same command surface with no daemon behind it — it opens the
 device itself. Reach for it for a one-shot on a machine where nothing else wants the camera,
@@ -82,6 +89,13 @@ and between plug events — the id does not.
 
 Add `--json` to any command to get the machine-readable form instead of a table; the shape is
 committed under `schemas/` and validated in CI.
+
+**If the thing driving this is a program rather than a person, point it at
+[`docs/agent-guide.md`](docs/agent-guide.md).** That is the same surface written for an
+unattended caller — every verb, every flag, which document each `--json` answers with, what
+each failure means and what to do about it — and it is generated from the command surface, so
+it cannot describe a flag this build does not have. The rest of this section is the human
+tour.
 
 ### Your user needs access to the camera
 

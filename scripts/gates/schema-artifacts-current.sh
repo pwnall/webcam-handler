@@ -88,9 +88,16 @@ if ((emit_status != 0)); then
     gate_finish
 fi
 
+# `--out DIR` stands in for the *repository root* since docs/7 P6e put a generated file
+# outside `$artifact_dir` (the agent usage guide, at xtask's own `GUIDE_PATH`). So the
+# emitted copies of the files this predicate is about are one directory down, at the path
+# each is committed at — which is what keeps the comparison below a comparison of like with
+# like without this script learning a second directory's name.
+regenerated_dir="$regenerated/$artifact_dir"
+
 compared=0
 while IFS= read -r -d '' produced; do
-    name="${produced#"$regenerated"/}"
+    name="${produced#"$regenerated_dir"/}"
     compared=$((compared + 1))
     if [[ ! -f "$committed_dir/$name" ]]; then
         gate_fail "$artifact_dir/$name is emitted but not committed; run \`just generate\`"
@@ -100,11 +107,11 @@ while IFS= read -r -d '' produced; do
         gate_fail "$artifact_dir/$name is stale — it does not match what the types emit; run \`just generate\`"
         diff -u "$committed_dir/$name" "$produced" | head -n 40 | sed 's/^/  | /' || true
     fi
-done < <(gate_find "$regenerated")
+done < <(gate_find "$regenerated_dir")
 
 while IFS= read -r -d '' committed; do
     name="${committed#"$committed_dir"/}"
-    if [[ ! -f "$regenerated/$name" ]]; then
+    if [[ ! -f "$regenerated_dir/$name" ]]; then
         gate_fail "$artifact_dir/$name is committed but nothing emits it; a generated file with no generator is a hand-edited one"
     fi
 done < <(gate_find "$committed_dir")

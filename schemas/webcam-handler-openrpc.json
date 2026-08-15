@@ -42,7 +42,7 @@
           "control": "white_balance_temperature",
           "kind": "control_inactive"
         },
-        "message": "control white_balance_temperature is inactive: disable white_balance_automatic first, or use `--guarded`"
+        "message": "control white_balance_temperature is inactive: disable white_balance_automatic first, or write with the automation guard on"
       },
       "control_read_only": {
         "code": -32018,

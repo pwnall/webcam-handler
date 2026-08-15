@@ -147,12 +147,14 @@ _emitter_without_the_openrpc_document() {
     local root script
     root="$(gate_root)"
     script="$(mktemp "$(gate_scratch_root)/wch-emitter.XXXXXXXX")"
+    # `--out` stands in for the repository root since P6e, so the emitted OpenRPC document is
+    # under `schemas/` in the stand-in's output exactly as it is in the tree.
     cat >"$script" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 cargo run --locked --offline --quiet --manifest-path "$root/Cargo.toml" \\
     -p webcam-handler-xtask -- generate --out "\$1" >/dev/null
-rm -f "\$1/webcam-handler-openrpc.json"
+rm -f "\$1/schemas/webcam-handler-openrpc.json"
 SH
     chmod +x "$script"
     printf '%s\n' "$script"

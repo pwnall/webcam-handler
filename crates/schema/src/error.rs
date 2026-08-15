@@ -528,9 +528,23 @@ fn format_suggestions(slugs: &[ControlSlug]) -> String {
     }
 }
 
+/// The half of an inactive-control refusal that says what to do about it.
+///
+/// **The advice named a flag no binary has**, and writing P6e's agent guide is what put the
+/// sentence in front of somebody (note **N123**): it said *"or use `--guarded`"*, which is
+/// design D3's spelling and was never the command surface's. The shipped verb guards by
+/// default and `--no-guard` opts out, so an unattended caller following this message typed a
+/// flag clap refuses and got exit 2 — the failure this project spends a whole error registry
+/// avoiding, wearing the registry's own words.
+///
+/// The repair says what is true of **both** surfaces rather than swapping one flag name for
+/// another: this message crosses the wire as a D13 `message` (design D10), where the reader
+/// is a client author with no command line at all, so naming any flag here was the wider
+/// mistake. `a_refusal_names_the_guard_and_never_a_flag_that_does_not_exist` is what stops it
+/// coming back.
 fn format_automation(automation: &Option<ControlSlug>) -> String {
     match automation {
-        Some(a) => format!(": disable {a} first, or use `--guarded`"),
+        Some(a) => format!(": disable {a} first, or write with the automation guard on"),
         None => " and no automation partner was discovered for it".to_owned(),
     }
 }
