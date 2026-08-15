@@ -8,10 +8,12 @@ Everything happens in-process. No `v4l2-ctl`, no `ffmpeg`, no external binaries 
 runtime — the tool links Rust libraries and talks to the kernel itself.
 
 **Status: under construction.** The architecture is settled (`docs/6`) and the work is
-phase-gated (`docs/7`): P0–P5 are closed and P6 (video recording) is closing. `record` is
-here — an AVI muxer and a Y4M sink written in-process, duration and size caps, the three
-wire methods, and one verb on both command-line roots. Everything below works today; what
-is left in P6 is the phase's own closing work rather than a feature.
+phase-gated (`docs/7`): P0–P5 are closed, and P6 (video recording) has landed everything it
+commissioned — its gate `G6` holds as 35 named, counted, re-runnable criteria. `record` is
+here: an AVI muxer and a Y4M sink written in-process, duration and size caps, the three wire
+methods, one verb on both command-line roots, and a preview that is fed the recording's own
+frames. `docs/agent-guide.md` is generated from the command surface it teaches. What remains
+of P6 is its adversarial review, which docs/7 gives a session of its own — not a feature.
 
 ## Deliverables
 
@@ -57,8 +59,8 @@ versions this project tests against rather than whatever resolves today.
 The binary is named after its crate, so the directory and the program differ on the same
 line — `crates/daemon` builds `webcam-handler-daemon`. That is deliberate (note **N90**).
 
-**`webcam-handler-priv` is dev-only and root-equivalent.** It exists to load kernel modules
-for one test rung, it is not part of using a camera, and it does nothing until it is
+**`webcam-handler-priv` is dev-only and root-equivalent.** It exists to load two named kernel
+modules for two test rungs, it is not part of using a camera, and it does nothing until it is
 deliberately granted capabilities. Skip it unless you are working on this project.
 
 ## Using it
@@ -321,11 +323,20 @@ just rung-vivid-managed             # load, run, unload
 
 `just bless` is idempotent and re-verifies rather than trusting its own stamp: an rsync or a
 backup-restore strips a file's capabilities, and reporting "already blessed" over a copy that
-is effectively un-capped would be skip-reads-as-pass wearing a filesystem. **Never `modprobe`
-by hand** — `scripts/rung-vivid.sh` refuses to load a kernel module on your behalf, and
-`just rung-vivid-managed` is the supported path, loading through the helper and unloading in
-a trap. The helper itself is root-equivalent and dev-only; note **N8** is the argument for
-its existing at all, and docs/7 P6e is where it gets narrowed or deleted.
+is effectively un-capped would be skip-reads-as-pass wearing a filesystem. It also insists the
+blessed copy carry **exactly** the capabilities the binary asks for, neither more nor fewer, so
+a grant that grew out of band re-blesses back down instead of being waved through (note
+**N125**). **Never `modprobe` by hand** — `scripts/rung-vivid.sh` refuses to load a kernel
+module on your behalf, and `just rung-vivid-managed` is the supported path, loading through the
+helper and unloading in a trap.
+
+The helper itself is root-equivalent and dev-only; note **N8** is the argument for its existing
+at all. **P6e executed the narrowing N8 scheduled for G6** (note **N125**): the blessing is
+`cap_sys_module+ep` — `CAP_NET_ADMIN` was measured never to have been needed \[PF:21\] — and the
+verb that ran an arbitrary program with those capabilities is deleted, because nothing in this
+workspace had ever invoked it. What is left is a closed vocabulary of six verbs — `doctor`,
+`vivid up|down|status`, `uvcvideo cycle|status` — over two compile-time module names. That is a smaller blast radius and not a small tool: loading a kernel
+module is arbitrary code in ring 0, so the `0700` file mode is still the boundary.
 
 Without the module, `just rung-vivid` prints a named, counted skip that distinguishes the two
 cases it can tell apart — installed but not loaded, versus not available on this host — and

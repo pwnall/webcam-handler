@@ -1,17 +1,15 @@
 //! `webcam-handler-priv` — the privileged helper.
 //!
-//! A blessed copy of this binary carries `cap_sys_module` and `cap_net_admin`, which lets
-//! the development loop load `vivid` (the R2 rung), cycle `uvcvideo` to make a real camera
-//! vanish, and run a test process that can bind the uevent netlink socket — none of which
-//! is otherwise possible without a human typing a sudo password.
+//! A blessed copy of this binary carries `cap_sys_module`, which lets the development loop
+//! load `vivid` (the R2 rung) and cycle `uvcvideo` to make a real camera vanish — neither of
+//! which is otherwise possible without a human typing a sudo password.
 //!
 //! # The security boundary, stated plainly
 //!
-//! **`webcam-handler-priv exec` runs any program with `CAP_SYS_MODULE`, and `CAP_SYS_MODULE`
-//! is root.** A process that can load a kernel module can do anything a kernel can do. So this
-//! binary is not "a tool with some extra permissions" — a blessed copy is a root escalation
-//! for whoever can execute it, and the *only* things standing between it and the rest of the
-//! machine are:
+//! **`CAP_SYS_MODULE` is root.** A process that can load a kernel module can do anything a
+//! kernel can do, so a blessed copy is still a root escalation for whoever can execute it,
+//! and this is still not "a tool with some extra permissions". Three things stand between it
+//! and the rest of the machine, and the first is the boundary:
 //!
 //! 1. **The file mode.** `just bless` chmods the blessed copy `0700` *before* it calls
 //!    `setcap`, so only its owner can run it. This is the boundary, not a nicety.
@@ -21,9 +19,26 @@
 //! 3. **Who has an account on the machine.** Nothing here defends against a second
 //!    logged-in user who is also the owner.
 //!
-//! That is a smaller boundary than a closed verb vocabulary would have given, and it was
-//! chosen deliberately (note N8): the exec wrapper is what lets a *test process* hold
-//! `CAP_NET_ADMIN`, which no amount of verb design can do from outside.
+//! # What a blessed copy will and will not do for whoever runs it (note N125)
+//!
+//! Until P6e there was a fourth sentence here, and it said that this binary would run **any
+//! program** with `CAP_SYS_MODULE` — `webcam-handler-priv exec /bin/sh` was a root shell, and
+//! note N8 records the owner choosing that shape over a closed verb vocabulary on one
+//! argument: only a wrapper can put a capability inside a *test process*. G6 was the recorded
+//! trigger to check whether that argument had ever been spent, and the answer was no: nothing
+//! in this workspace ever invoked `exec`, the hotplug rung that was supposed to need it runs
+//! unprivileged \[PF:21\], and the verb is gone.
+//!
+//! So the blast radius is now the verb list and nothing wider: **two modules, named at
+//! compile time, loaded and unloaded.** The capabilities this binary holds reach exactly one
+//! other program — `/usr/sbin/modprobe`, with an argument list this crate writes — and there
+//! is no path from a caller's argv to a program name. That is a claim a check can hold rather
+//! than a risk somebody accepted, which is what `no_verb_hands_this_binarys_capabilities_to_a_program_the_caller_names`
+//! and `scripts/gates/privileged-helper.sh`'s fifth claim are for.
+//!
+//! What it still cannot defend against is unchanged and is worth keeping in front of a
+//! reader: `modprobe vivid` is a kernel module load, and a kernel module load is arbitrary
+//! code in ring 0. Narrowing the verbs narrowed *who can ask*, never *what a yes costs*.
 //!
 //! # Getting a blessed copy
 //!
@@ -47,8 +62,7 @@
 mod caps;
 mod modules;
 
-use std::os::unix::process::CommandExt as _;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
@@ -68,17 +82,6 @@ enum Verb {
         /// Print only the `setcap` argument, so the justfile has one home for it.
         #[arg(long)]
         setcap_argument: bool,
-    },
-
-    /// Run a program with the capabilities, via the ambient set.
-    ///
-    /// Shaped for `cargo nextest`'s target-runner: point it at
-    /// `[".wch-bin/webcam-handler-priv", "exec"]` and the test binary arrives as the first
-    /// argument.
-    Exec {
-        /// The program, and everything to pass it.
-        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
-        argv: Vec<String>,
     },
 
     /// The `vivid` virtual capture driver (design §3.1's R2 rung).
@@ -143,7 +146,6 @@ fn main() -> ExitCode {
 fn run(cli: &Cli) -> Result<(), String> {
     match &cli.command {
         Verb::Doctor { setcap_argument } => doctor(*setcap_argument),
-        Verb::Exec { argv } => exec(argv),
         Verb::Vivid(verb) => vivid(verb),
         Verb::Uvcvideo(verb) => uvcvideo(verb),
     }
@@ -235,24 +237,6 @@ fn render_set(items: &[&str]) -> String {
     } else {
         items.join(", ")
     }
-}
-
-/// `exec` — raise the capabilities into the ambient set, then become the target.
-///
-/// `exec` rather than spawn-and-wait: the child replaces us, so it keeps our pid, our
-/// stdio, and our signal disposition. A wrapper that forked would have to forward signals
-/// correctly to avoid leaving a test binary running after a Ctrl-C, and the simplest way
-/// to get that right is not to fork.
-fn exec(argv: &[String]) -> Result<(), String> {
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| "exec needs a program to run".to_owned())?;
-
-    caps::raise_ambient().map_err(|error| error.to_string())?;
-
-    // `Command::exec` returns only on failure — on success this process is gone.
-    let error = Command::new(program).args(args).exec();
-    Err(format!("could not exec {program}: {error}"))
 }
 
 fn vivid(verb: &VividVerb) -> Result<(), String> {
@@ -396,30 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn exec_takes_everything_after_it_verbatim_including_flags() {
-        // The target-runner contract: nextest appends the test binary and its arguments,
-        // and those routinely start with `-`. A parser that ate them would silently run
-        // the test with the wrong arguments.
-        let cli = Cli::try_parse_from([
-            "webcam-handler-priv",
-            "exec",
-            "/path/to/test-binary",
-            "--exact",
-            "--nocapture",
-        ])
-        .expect("parses");
-        let Verb::Exec { argv } = cli.command else {
-            panic!("expected exec");
-        };
-        assert_eq!(argv, vec!["/path/to/test-binary", "--exact", "--nocapture"]);
-    }
-
-    #[test]
-    fn exec_with_no_program_is_refused_by_the_parser() {
-        assert!(Cli::try_parse_from(["webcam-handler-priv", "exec"]).is_err());
-    }
-
-    #[test]
     fn the_device_count_is_range_checked_at_the_parser() {
         // A device count is device-facing input even here: `n_devs=0` loads a driver with
         // no nodes, and a large one floods /dev.
@@ -450,18 +410,123 @@ mod tests {
         assert!(!force, "forcing past a live camera must never be a default");
     }
 
+    /// Every command in the tree, root included, depth-first, **built**.
+    ///
+    /// Derived from clap rather than listed, for `phase-criteria.tsv`'s reason: a verb added
+    /// to the enum joins this population without anybody remembering to register it, and a
+    /// population somebody maintains by hand is the one that stops covering the verb that
+    /// mattered.
+    ///
+    /// `build()` before the walk, and it is load-bearing rather than tidy: an unbuilt
+    /// `Command` answers `None` to `get_num_args` for every argument, because the arity is
+    /// derived from the action during the build. **The direction that costs is the green
+    /// one**, which was measured rather than assumed (note **N125**, mutant M4): the arity
+    /// assertion below spells its refusal `is_some_and`, so an unknown arity fails rather
+    /// than passing, and dropping this line turns the *shipped* tree red on `doctor`'s
+    /// `--setcap-argument` flag. A claim that cannot be evaluated is not a claim that holds,
+    /// and that is the only reading of `None` this test will accept.
+    fn every_command() -> Vec<clap::Command> {
+        fn walk(command: &clap::Command, out: &mut Vec<clap::Command>) {
+            out.push(command.clone());
+            for sub in command.get_subcommands() {
+                walk(sub, out);
+            }
+        }
+        let mut root = Cli::command();
+        root.build();
+        let mut all = Vec::new();
+        walk(&root, &mut all);
+        all
+    }
+
     #[test]
-    fn there_is_no_verb_that_takes_a_module_name() {
-        // The one property that survives choosing the exec wrapper: `exec` already grants
-        // root, so a `modprobe <anything>` verb would add no privilege — but it would add
-        // a *second*, quieter way to reach it, and one that reads like a safe utility in
-        // a shell history. The module verbs name their module at compile time.
-        let rendered = format!("{:?}", Cli::command().render_long_help());
-        for forbidden in ["--module", "<MODULE>", "modprobe"] {
+    fn no_verb_hands_this_binarys_capabilities_to_a_program_the_caller_names() {
+        // **The claim the P6e narrowing bought, and the defect class it exists to catch: an
+        // `exec` verb coming back.** Note N8 recorded the owner choosing a generic wrapper
+        // over a closed verb vocabulary, so until P6e this property was *false by design* and
+        // nothing could assert it. The G6 reckoning measured the argument that bought the
+        // wrapper — "only a wrapper can put a capability inside a test process" — found that
+        // nothing had ever spent it, and deleted the verb (note **N125**). What was an
+        // accepted risk is now a checkable sentence, so it is checked.
+        //
+        // Structural rather than by name, because "no verb called `exec`" is a rule somebody
+        // satisfies with a verb called `run`. A wrapper needs two things from its parser and
+        // cannot work without either: an **unbounded** list of values, and tolerance for
+        // values that begin with `-` (a test binary arrives with `--exact --nocapture`). So
+        // those two are what this refuses, at every depth and in each of the spellings clap
+        // has for them — the setting on a command, the same setting on an argument, and the
+        // arity that survives when neither is written down.
+        let commands = every_command();
+        assert!(
+            commands.len() >= 4,
+            "the walk found {} command(s); the tree has a root, `doctor`, and two module \
+             verbs with subcommands under each, so a population this small is a walk that \
+             stopped rather than a tree that shrank",
+            commands.len()
+        );
+        let mut arguments = 0;
+        for command in &commands {
+            let name = command.get_name();
             assert!(
-                !rendered.contains(forbidden),
-                "the help surface exposes {forbidden}"
+                !command.is_trailing_var_arg_set(),
+                "`{name}` collects trailing arguments verbatim, which is the shape a program \
+                 runner needs"
             );
+            for arg in command.get_arguments() {
+                arguments += 1;
+                let id = arg.get_id();
+                assert!(
+                    !arg.is_allow_hyphen_values_set(),
+                    "`{name}`'s `{id}` accepts values beginning with `-`, so a caller can \
+                     pass another program's flags through it"
+                );
+                assert!(
+                    !arg.is_trailing_var_arg_set(),
+                    "`{name}`'s `{id}` is a trailing var-arg — an argv, whatever it is called"
+                );
+                let bound = arg.get_num_args().map(|range| range.max_values());
+                assert!(
+                    bound.is_some_and(|max| max <= 1),
+                    "`{name}`'s `{id}` takes an unbounded number of values ({bound:?}); every \
+                     argument this binary accepts is a flag or one bounded value"
+                );
+            }
+        }
+        assert!(
+            arguments >= 4,
+            "only {arguments} argument(s) examined; the claim is about arguments, so a walk \
+             that found none would be green having checked nothing"
+        );
+    }
+
+    #[test]
+    fn there_is_no_verb_that_takes_a_module_name_or_a_path() {
+        // The other half, and the older one: a `modprobe <anything>` verb would add no
+        // privilege over `vivid up` — it is the same capability — but it would add a
+        // *second*, quieter way to reach it, one that reads like a safe utility in a shell
+        // history. The module verbs name their module at compile time. Since P6e the same
+        // sentence covers program names and paths, because the verb that took one is gone
+        // and its absence is a property worth pinning by name as well as by shape.
+        //
+        // Every command's own long help, not just the root's: the root lists its
+        // subcommands' one-line abouts and nothing of their arguments, so a `--module` flag
+        // three levels down is invisible to a check that reads one page.
+        for mut command in every_command() {
+            let name = command.get_name().to_owned();
+            let rendered = format!("{:?}", command.render_long_help());
+            for forbidden in [
+                "--module",
+                "<MODULE>",
+                "modprobe",
+                "<PROGRAM>",
+                "<ARGV>",
+                "--exec",
+            ] {
+                assert!(
+                    !rendered.contains(forbidden),
+                    "`{name}`'s help surface exposes {forbidden}"
+                );
+            }
         }
     }
 
@@ -479,16 +544,16 @@ mod tests {
         if caps::Held::read().is_ok_and(|h| h.can_act()) {
             return;
         }
-        // Every privileged verb, not just `exec`: they all delegate to a subprocess, so
-        // they all need the same thing, and the one that checked a weaker precondition
-        // was the one that failed against a real kernel.
+        // Every privileged verb: they all delegate to a subprocess, so they all need the
+        // same thing, and the one that checked a weaker precondition was the one that failed
+        // against a real kernel. Since P6e that is the whole list rather than three of four
+        // — the fourth was `exec`, and note **N125** records that its refusal is the only
+        // part of it anybody ever exercised.
         let error = vivid(&VividVerb::Up { devices: 1 }).expect_err("unblessed cannot load");
         assert!(error.contains("just bless"), "{error}");
         let error = vivid(&VividVerb::Down).expect_err("unblessed cannot unload");
         assert!(error.contains("just bless"), "{error}");
         let error = uvcvideo(&UvcVerb::Cycle { force: true }).expect_err("unblessed cannot cycle");
-        assert!(error.contains("just bless"), "{error}");
-        let error = exec(&["/bin/true".to_owned()]).expect_err("unblessed cannot delegate");
         assert!(error.contains("just bless"), "{error}");
     }
 }

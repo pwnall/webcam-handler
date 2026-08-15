@@ -586,8 +586,9 @@ docs/1–5 anticipates a privileged helper, because nothing in the *product* nee
 
 **Repo:** `crates/priv/` builds `wch-priv`, a binary that a one-time `just bless` grants
 `cap_sys_module,cap_net_admin+eip`. It loads and unloads `vivid`, cycles `uvcvideo`, and —
-via `wch-priv exec` — runs an arbitrary program with those capabilities in its ambient set.
-It shells out to `/usr/sbin/modprobe`.
+~~via `wch-priv exec` — runs an arbitrary program with those capabilities in its ambient
+set~~ **(deleted at P6e — see the retirement below and note N125)**. It shells out to
+`/usr/sbin/modprobe`.
 
 **Why it exists:** three things the project needs are impossible without privilege, and
 each of them was, until now, gated on a human typing a sudo password:
@@ -730,6 +731,35 @@ Three consequences, and only the first two are P4d's:
    uses it, and PF:21 says what would have to change for that to stop being true.
 
 **Absorbed (2026-08-08):** docs/6 §2.13 summarizes this entry and docs/7 P6e carries the G6 reckoning; this entry remains the full record, and the owner rulings live here.
+
+### Retired at P6e, 2026-08-15 — the condition was met, and this is what it cost
+
+The retirement clause above names its own mechanism, so the retirement follows it: **questions 1
+and 2 have narrowed the grant to what the finished project measurably uses.** Question 3 was
+answered *yes* — `just rung-vivid-managed` and the R3 hotplug arm still load modules on demand —
+so `crates/priv/`, `just bless` and `privileged-helper.sh` do not delete together. They narrow.
+`CAP_NET_ADMIN` is gone from the blessing, the `exec` verb is deleted, and the closed verb
+vocabulary that was offered and declined at P0 is what the helper now is. Note **N125** carries
+the reckoning: the three answers with the evidence behind each, what deferring rather than
+guessing actually bought, and what the narrowed shape can no longer do. Note **N126** carries the
+thing the reckoning found on the machine while it was executing.
+
+**What retires is the deferral, not the entry.** Everything above stays live law: the argument
+for why a root-equivalent binary is acceptable in this workspace at all, the three-part security
+boundary, the `env_clear` reasoning, the deliberate duplication with `holders.rs`, and the
+standing instruction to **amend this note before adding a verb that takes a module name, a path
+or a program from its caller**. That instruction is now stronger rather than weaker, because
+until P6e it guarded a second route to a privilege the binary already handed out on request, and
+it now guards the only route there is (N125).
+
+**What the deferral was worth, stated where the ruling was made.** It cost four phases of a
+capability nobody spent and a root shell nobody typed, on one machine, with a file mode and a
+`.gitignore` around it. It bought a narrowing argued from what P2–P6 actually did —
+PF:21's transcripts, P4d's unprivileged hotplug arm, and a walk of every invocation in the
+workspace — instead of from a guess made at P0 by somebody who had not yet written the code that
+would or would not need it. The owner's sentence for this was "the cost of guessing the boundary
+early is guessing it wrong twice", and the record shows it guessed wrong once as it was: the
+prediction in the table above.
 
 ---
 
@@ -16417,3 +16447,268 @@ beginning with the program's name, and the absence of the discriminant in it. It
 guide still carries the sentence it pins — so a build that starts emitting a failure document
 turns it red, and the manual has to be rewritten rather than quietly becoming wrong in the safer
 direction.
+
+## N125 — The G6 reckoning: three questions, three answers, and a capability nothing ever spent
+
+**Doc:** note **N8**'s owner ruling of 2026-08-08 ("reconsider the granted powers when the plan
+closes"), its retirement clause, docs/6 §2.13 and docs/7 **P6e** — *"the N8 ruling executes …
+this is a plan step, not a memory"*. Recorded 2026-08-15, from P6e. **This entry is the
+reckoning's own record: the three questions with the evidence behind each answer, what the
+narrowing deleted and what it deliberately kept, and what the narrowed helper can no longer do.**
+
+N8 accepted a root-equivalent dev binary with a grant broader than its demonstrated need, for the
+duration of the plan, with G6 named as the revisit. The entry's closing sentence is the reason
+this one exists: *"a broad grant with a named revisit is a different thing from a broad grant
+nobody revisits, and the difference is entirely whether it was written down"*. So the revisit was
+**executed** rather than re-derived — the questions were N8's, the evidence was gathered, and the
+answers below are what the plan actually did rather than what P0 predicted it would.
+
+### Question 1 — which capabilities were actually spent?
+
+**Answered: `CAP_SYS_MODULE` was, `CAP_NET_ADMIN` never.** This was already a fact rather than a
+condition — P4d measured it and \[PF:21\] carries the transcripts: `socket(AF_NETLINK, SOCK_DGRAM,
+NETLINK_KOBJECT_UEVENT)` and `bind(nl_pid=0, nl_groups=1)` both succeed on kernel
+`7.0.0-29-generic` from a process whose effective capability set is empty, and the same process
+received all fifty-six packets of a `uvcvideo` cycle. `lib/kobject_uevent.c` registers the
+protocol `NL_CFG_F_NONROOT_RECV`, which exempts group membership from the check the P0 prediction
+assumed.
+
+Re-verified here rather than taken on the note's word, because a reckoning that trusts its own
+paperwork is a reckoning: nothing in `crates/backends/v4l2/src/sys/uevent.rs` asks for a
+capability, its own test asserts the *absence* of `CAP_NET_ADMIN` before it asserts the bind, and
+no recipe or suite runs anything under a wrapper that could have supplied one. The capability was
+granted on a prediction in P0, was live on this machine for five phases, and was spent zero times.
+
+`modprobe` still needs `CAP_SYS_MODULE`, which is question 3's answer arriving early.
+
+**The one thing that could bring `CAP_NET_ADMIN` back is `SO_RCVBUFFORCE`**, which genuinely
+requires it and which nothing in this project uses. PF:21 says what would have to change; adding
+it is an amendment to this note and to N8, not a convenience.
+
+### Question 2 — did `exec` ever do more than delegate to a test process?
+
+**Answered: `webcam-handler-priv exec` was invoked by nothing, ever.** The verb that defeated the
+closed-verb-vocabulary design at P0 was never once used for the thing that defeated it.
+
+The evidence is a walk of every occurrence of the string outside `crates/priv/` itself, over the
+whole tree minus `target/` and `docs/historical/`:
+
+| where | what it is |
+|---|---|
+| `crates/backends/v4l2/tests/hardware.rs` ×3 | **strings in human-facing recovery messages** — "uvcvideo is not loaded, this loads it", and twice "the cameras did not come back, recover with". Printed at an operator, never executed |
+| `scripts/gates/privileged-helper.sh` | the gate's own header reasoning *about* the exec-wrapper shape |
+| `docs/`, `crates/priv/src/*.rs` | prose and doc comments arguing about the verb |
+
+And nothing else. There is no `[target.*.runner]` in this workspace — there is no `.cargo/config.toml` at all, only `.cargo/mutants.toml` — no justfile recipe naming it, and no test spawning it. The verbs
+that *are* invoked are `vivid up` / `vivid down` (the `rung-vivid-managed` recipe), and `doctor` /
+`uvcvideo status` / `uvcvideo cycle` (the R3 hotplug arm), all of them closed.
+
+P4d had already recorded the mechanism: **the hotplug rung runs unprivileged and spawns the helper
+as a subprocess** (N8's own amendment, item 2), which is the exact shape the wrapper was supposed
+to be necessary for. The argument that bought `exec` — "only a wrapper can put a capability inside
+a *test process*" — is true, and no test process in this workspace ever needed a capability.
+
+### Question 3 — does the loop still need to load modules unattended?
+
+**Answered: it needs to load them, and never unattended.** So `crates/priv/`, `just bless` and
+`privileged-helper.sh` do **not** delete together, which is the branch N8 kept open. Module
+loading happens in exactly two places and both are somebody typing a command: `just
+rung-vivid-managed` (load, run R2, unload in a trap) and the R3 hotplug arm under `just smoke-hw`.
+`just ci` is `fmt-check lint test doc deny hygiene gates` and not one of those seven loads
+anything — the vivid rung `just ci` reaches is `scripts/rung-vivid.sh`, which by design refuses to
+load a module on anybody's behalf and reports a named, counted skip instead.
+
+So the answer is **narrow**, not delete.
+
+### What landed
+
+- **`CAP_NET_ADMIN` is gone.** `caps::BLESSING` is `cap_sys_module+ep` and `caps::REQUIRED` is a
+  table of one. `just bless` reads the string out of the binary, so the recipe needed no edit for
+  the narrowing itself — which is what "one home per law" (design §2.10) is worth on the day a law
+  changes.
+- **The `exec` verb is deleted**, with its clap arm, its `CommandExt` import, its two parser
+  tests, and the sentence in every doc that described the shape.
+- **The closed verb vocabulary is what the helper now is**: `doctor`, `vivid up|down|status`,
+  `uvcvideo cycle|status`. Two module names, both compile-time constants.
+- **`caps::raise_ambient` stays, and checking that before deleting it is the reason this list has
+  four items rather than three.** Its header argues that *every* privileged verb needs the ambient
+  raise and not just the delegating one, and the header is right: nothing in this crate loads a
+  module itself, `vivid up` and `uvcvideo cycle` both spawn `/usr/sbin/modprobe`, and a subprocess
+  receives the ambient set or nothing. A narrowing that had followed the obvious thread — "the
+  capability-raising path existed for `exec`, so it goes with `exec`" — would have left both module
+  verbs failing with `EPERM` against a `getcap` that looked perfect, which is the *exact* defect
+  N8's "corrected once already" section records happening the first time.
+
+### What the narrowed shape cannot do that the old one could
+
+Stated plainly, because a narrowing is a capability removal and the removed capability should be
+findable by whoever next wants it:
+
+1. **It cannot put a capability inside a test process.** If a suite ever needs one — the only
+   named candidate is `SO_RCVBUFFORCE` — no verb design can supply it, and the answer is to bring
+   the wrapper back deliberately, amending N8 and this note, rather than to discover the gap and
+   reach for a quick `exec`.
+2. **It cannot serve as `cargo nextest`'s target-runner.** The deleted verb's doc comment was
+   shaped for exactly that (`[".wch-bin/webcam-handler-priv", "exec"]`), and no such configuration
+   was ever written.
+3. **It cannot load an arbitrary module, or run `modprobe` with arguments a caller chose.** It
+   could not before either — that was always the closed half — but the route through `exec` made
+   the restriction decorative, and it is now the only route there is.
+
+**What it still cannot defend against is unchanged**, and the crate docs say so where a reader
+meets it: `modprobe vivid` is a kernel module load and a kernel module load is arbitrary code in
+ring 0. Narrowing the verbs narrowed **who can ask**, never **what a yes costs**. The security
+boundary is still the `0700` file mode, still the gitignored path outside `target/`, and still
+"who has an account on this machine".
+
+### What can go red (AGENTS rule 1, applied to a deletion)
+
+A deletion is a defect class like any other — it comes back. Two homes, because there are two
+defects: the *code* growing a wrapper again, and the *machine* carrying a grant the code no longer
+asks for. Neither can see the other's half.
+
+- **`no_verb_hands_this_binarys_capabilities_to_a_program_the_caller_names`** walks the clap tree
+  at every depth and refuses the two things a program runner cannot work without: an unbounded
+  value list, and tolerance for values beginning with `-`. Structural rather than by name, because
+  "no verb called `exec`" is a rule somebody satisfies with a verb called `run`.
+- **`there_is_no_verb_that_takes_a_module_name_or_a_path`** is the older claim widened: it now
+  renders *every* command's long help rather than only the root's, because the root lists its
+  subcommands' one-line abouts and nothing of their arguments.
+- **`scripts/gates/privileged-helper.sh` claims 5 and 6**, which are the two the narrowing bought
+  and the reason its header lost a paragraph it had carried since P0. Claim 5 holds the same
+  sentence over the *source text*, which is where a second route that never reached clap at all —
+  read `std::env::args()`, call `.exec()` — would be. Claim 6 compares what a blessed copy on disk
+  actually carries against the blessing the tree declares, which is a fact no test can see. Its
+  seam is `$WCH_GATE_GETCAP`, because setting a capability needs root and a case file cannot seed
+  the violation on a real file.
+- **`just bless` compares for equality where it used to compare for presence.** The old check
+  asked whether each wanted capability was there, which every superset satisfies, so a copy
+  carrying more than the binary asks for was reported "already blessed" and skipped. That is
+  skip-reads-as-pass wearing a filesystem, and it is how the narrowing would have been undone on
+  disk by anything that ran one `setcap`.
+
+**Five mutants, each applied to the shipped code, run against the whole workspace suite with
+`--no-fail-fast`, and reverted.**
+
+| mutant | what it is | verdict |
+|---|---|---|
+| **M1** the `exec` verb put back, as the whole diff that would land | the P0 shape returning under review as "restoring a convenience" | **2 red** |
+| **M2** M1 without `allow_hyphen_values` | the narrowest wrapper that still works — a runner for programs whose arguments happen not to start with `-` | **2 red** |
+| **M3** the shipped tree with `every_command`'s `build()` dropped | the walk reading an unbuilt tree, where clap answers `None` to every arity question | **1 red, on the shipped tree** — and this is the arm worth its cost, below |
+| **M4** `cap_net_admin` restored in **both** `BLESSING` and `REQUIRED` | privilege nobody argued for, agreeing with itself | **1 red** |
+| **M5** `cap_net_admin` restored in `BLESSING` alone | `setcap` granting what the runtime never checks for | **2 red** |
+
+**M3 is the one that changed a line.** The doc comment written beside `build()` claimed that an
+unbuilt tree would report *no* unbounded arguments and pass vacuously — the ordinary way this kind
+of helper goes wrong. It is false, and the mutant said so: the arity assertion spells its refusal
+`is_some_and`, so an unknown arity fails rather than passes, and dropping the build turns the
+**shipped** tree red on `doctor`'s `--setcap-argument` flag. `build()` is load-bearing in the
+green direction, not the red one, and a claim that cannot be evaluated is not a claim that holds.
+The comment now says what was measured.
+
+M4 against M5 is the reason the pinning test exists at all: the pre-existing
+`the_blessing_string_and_the_required_table_name_the_same_capabilities` is a property that **both
+spellings widening together satisfies**, and M4 is exactly that shape. It would have been green
+through the whole of the grant this reckoning removed.
+
+### What it cost to defer rather than guess, measured
+
+N8's ruling traded a broad grant for better evidence, and the trade can now be priced. It cost
+four phases of a capability nobody spent, and a root shell nobody typed, on one machine, behind a
+file mode. It bought a narrowing argued from PF:21's transcripts, P4d's unprivileged hotplug arm
+and a walk of every invocation in the tree — rather than from a judgement made at P0 by somebody
+who had not yet written the code that would decide it. That judgement was made once anyway, in
+the row predicting `CAP_NET_ADMIN`, and it was **wrong**. Which is the ruling's own argument
+arriving as evidence: guessing the boundary early guesses it wrong.
+
+The residual cost is the one thing a deferral cannot avoid and this entry should not soften: for
+five phases this machine had a binary that would hand `CAP_SYS_MODULE` to any program its owner
+named, and the only thing that made that acceptable was that the owner is the only account on it.
+Note **N126** is what that residual looked like when it was finally swept up.
+
+**Retires when:** nothing retires it. It is the record of a decision procedure that ran to
+completion, and the amendment trigger is N8's: **amend this note and N8 before adding a verb that
+takes a module name, a path or a program from its caller, or a capability to the blessing.**
+
+## N126 — A rename left a root-capable binary behind, and every check was looking at the name it expected
+
+**Doc:** note **N90** (the 2026-08-13 ruling that every binary is named after its package), note
+**N8**, AGENTS' *"its boundary is the `0700` file mode, checked every `just ci`"*. Recorded
+2026-08-15, from P6e — **found while executing the narrowing, which is the only reason it was
+found at all.**
+
+**The finding.** `.wch-bin/` held **two** root-capable binaries:
+
+```
+$ getcap -r .wch-bin
+.wch-bin/webcam-handler-priv cap_net_admin,cap_sys_module=ep
+.wch-bin/wch-priv            cap_net_admin,cap_sys_module=ep
+
+$ ls -l .wch-bin
+-rwx------+ 1 pwnall pwnall 19461376 Aug  8 15:03 wch-priv
+-rwx------+ 1 pwnall pwnall 19533496 Aug 13 18:21 webcam-handler-priv
+
+$ .wch-bin/wch-priv exec /bin/echo "so does the orphan the rename left"
+so does the orphan the rename left
+```
+
+`wch-priv` is the pre-N90 helper, blessed on 2026-08-08 and orphaned by the rename five days
+later. It still carries both capabilities, it is still mode 0700, and — the part that matters —
+**it still carries the `exec` verb that P6e had just deleted**. A narrowing that had landed
+without noticing it would have shipped a paragraph: the narrowed binary beside a working bypass of
+it, in the same directory, owned by the same user, with the same capabilities.
+
+**Why nothing saw it, and the answer is the same word three times: the name.** `just bless` writes
+`{{priv_bin}}` and blesses `{{priv_bin}}`; `privileged-helper.sh`'s mode claim `stat`s
+`$blessed_dir/webcam-handler-priv`; the R3 hotplug arm resolves `.wch-bin/webcam-handler-priv`.
+Every one of them was looking straight at the right file. None of them was looking at the
+*directory*, and a capability-carrying file is dangerous by virtue of what it carries, not by
+virtue of what it is called.
+
+**It was known and shrugged at.** The justfile comment beside `priv_bin` said, in as many words,
+that "a tree blessed before that rename has a stale `.wch-bin/wch-priv` that `just bless` will not
+overwrite and `privileged-helper.sh` will no longer look at". That sentence is accurate, was
+written the day the rename landed, and describes a root-capable orphan as a curiosity about
+tooling. **The gap between noticing something and treating it as a defect is this note.** The
+rename was a naming ruling; nobody was thinking about capabilities while executing it, and the
+comment records exactly that — a true observation filed under the wrong heading.
+
+**What can go red.** `privileged-helper.sh` claim 6 walks the whole of `.wch-bin/` with `getcap
+-r` and makes two claims over the result rather than one: every capability-carrying file there is
+the blessed helper, **and** the helper carries exactly the blessing the tree declares. Both are
+facts about a developer's filesystem rather than about the code, which is why no test can hold
+them and why they belong in a gate. `fail_case_a_second_capability_carrying_file_sits_beside_the_helper`
+is a transcript of the listing above, driven through the `$WCH_GATE_GETCAP` seam because setting a
+capability needs the very privilege this gate exists to contain.
+
+**What was done.** Both stale copies were deleted, along with the `.blessed` stamp — `wch-priv`
+because nothing has referenced that name since N90, and `webcam-handler-priv` because the copy
+sitting there was a **pre-narrowing binary**: `exec` verb, `cap_net_admin`, blessed against a tree
+that had stopped asking for either. Leaving it would have made P6e's narrowing true of the source
+and false of the only machine that has ever run it. The owner restores a narrowed one with `just
+bless` (one sudo), and `privileged-helper.sh` reports a named, counted skip in the meantime rather
+than a pass — there is nothing to check the capabilities of, and it says so.
+
+**Removing them found one more thing, which is the argument for doing it rather than filing
+it.** With no blessed copy on the machine, `just rung-vivid-managed` answers
+`.wch-bin/webcam-handler-priv: No such file or directory`, exit 127 — a bare shell error from a
+recipe whose actual requirement is one sudo command, and the message every fresh clone gets on
+its first try. Nobody had met it because this machine had been blessed since P0. It now
+**refuses** by name, prices the refusal (`cap_sys_module`, and nothing can grant itself that),
+and points at both `just bless` and `just rung-vivid` — the arm that legitimately declines. It
+refuses rather than skipping because a caller who typed `-managed` asked for the module to be
+loaded, and answering zero would be AGENTS rule 3's skip-that-reads-as-pass. The recovery
+strings in `crates/backends/v4l2/tests/hardware.rs` name `sudo modprobe uvcvideo` for the same
+reason and with the same precedent: `scripts/rung-vivid.sh` has always said `sudo modprobe
+vivid`, because a recovery path is not the loop, and a password prompt there costs none of what
+the blessing exists to buy.
+
+**The general shape, worth more than the instance.** A check keyed on the *name* of a dangerous
+thing goes quiet the moment the thing is renamed, and a rename is precisely when nobody is
+thinking about what the thing does. This suite's standing answer is to derive populations by
+walking rather than by transcribing (docs/9's second structural rule), and claim 2 had been
+transcribing a filename since P0 while looking like it was checking a directory.
+
+**Retires when:** nothing retires it. If `.wch-bin/` is ever removed — question 3 of N8's
+reckoning answering "no" at some later revision, taking `crates/priv/` with it — claim 6 loses its
+subject and this entry becomes history rather than law.

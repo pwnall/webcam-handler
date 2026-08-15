@@ -4,7 +4,66 @@
 # binary that grants root, so a gate that could not see a widened mode would be checking
 # nothing that counts.
 #
+# ## The seam three of these arms drive, and why they need one
+#
+# Claim 6 is about what a file on a developer's disk actually *carries*, and a case file cannot
+# seed that violation the way the others seed theirs: setting a capability needs `CAP_SETFCAP`,
+# which is root, so an arm that wanted a real over-blessed file would have to be run by the very
+# privilege this gate exists to contain. So the predicate offers one documented seam —
+#
+#   $WCH_GATE_GETCAP   a `getcap`-shaped program to read the blessed directory with
+#
+# — and `pass_case` leaves it unset, which reads the real xattrs with the real tool: the arm
+# rubric rule 6 requires [S:N10]. `_stub_getcap` writes a program that prints a *recorded*
+# listing in getcap's own format, which is the same shape `oracle-rung-accounting.sh`'s runner
+# seam takes and for the same reason.
+#
+# The three recorded listings are not invented. Two of them were read off this machine on
+# 2026-08-15, while P6e's narrowing was landing (note **N125**, note **N126**): the blessed
+# helper still carried the pre-narrowing `cap_net_admin,cap_sys_module` after `caps.rs` had
+# stopped asking for it, and a `wch-priv` orphaned by the N90 rename was sitting beside it,
+# mode 0700 and root-capable, carrying the `exec` verb the narrowing had just deleted. Both
+# arms below are transcripts of a real defect rather than a shape somebody imagined.
+#
 # shellcheck shell=bash
+
+# Write a `getcap`-shaped program that prints the recorded listing in "$@" instead of reading
+# any xattr, and echo its path.
+#
+# Each argument is one line as `getcap -r` renders it, minus the directory prefix — the stub
+# reads that off the directory it is asked about, so a listing stays correct in a scratch tree
+# whose path nobody wrote down.
+_stub_getcap() {
+    local tree="$1" stub line
+    shift
+    stub="$tree/.wch-getcap-stub"
+    {
+        printf '#!/usr/bin/env bash\n'
+        # SC2016 twice: `$2` and `$dir` are variables in the script being *written*, not in
+        # this one, and the single quotes are what stops them expanding here. The stub reads
+        # the directory out of its own arguments for the reason `_stub_runner` gives about
+        # being *told* rather than working it out — a stub handed the answer is evidence
+        # about the handing.
+        # shellcheck disable=SC2016
+        printf 'dir="${2:-}"\n'
+        for line in "$@"; do
+            # shellcheck disable=SC2016
+            printf 'printf "%%s\\n" "$dir/%s"\n' "$line"
+        done
+    } >"$stub"
+    chmod +x "$stub"
+    printf '%s\n' "$stub"
+}
+
+# A scratch tree with a plausible blessed copy in it: mode 0700, owner-only, present.
+_tree_with_a_blessed_copy() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    mkdir -p "$tree/.wch-bin"
+    printf '#!/bin/false\n' >"$tree/.wch-bin/webcam-handler-priv"
+    chmod 0700 "$tree/.wch-bin/webcam-handler-priv"
+    printf '%s\n' "$tree"
+}
 
 pass_case() {
     "$GATE"
@@ -69,4 +128,97 @@ fail_case_the_helper_left_the_workspace() {
     # reports PASS over a helper that is no longer there is the worst kind of green.
     jq 'del(.packages[] | select(.name == "webcam-handler-priv"))' "$md" >"$md.seeded"
     WCH_GATE_METADATA="$md.seeded" "$GATE"
+}
+
+# ------------------------------------------------------------------ claim 5
+
+fail_case_a_verb_takes_a_program_its_caller_names() {
+    local tree fragment
+    tree="$(gate_scratch_tree)"
+    fragment="$tree/.wch-exec-fragment"
+    # **Written as the diff that would actually land**, which is the whole `exec` verb note N8
+    # accepted and note N125 deleted, pasted back into the enum it used to live in. An arm that
+    # seeded the bare word `exec` would be evidence about a grep rather than about the verb.
+    cat >"$fragment" <<'RUST'
+    /// Run a program with the capabilities, via the ambient set.
+    Exec {
+        /// The program, and everything to pass it.
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<String>,
+    },
+RUST
+    sed -i -e "/^enum Verb {\$/r $fragment" "$tree/crates/priv/src/main.rs"
+    gate_red_because 'trailing_var_arg' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_the_helper_reaches_for_the_std_exec_trait() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # The other route to the same place, and the one clap cannot see: a verb that never declares
+    # an argv, reads `std::env::args()` itself and replaces this process with whatever it found.
+    # `main.rs`'s own test walks the command tree and would be perfectly green on it.
+    sed -i 's/^mod caps;$/mod caps;\nuse std::os::unix::process::CommandExt as _;/' \
+        "$tree/crates/priv/src/main.rs"
+    gate_red_because 'CommandExt' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_the_helper_has_no_source_left() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # Non-vacuity for claim 5, charged the way `avi-reparse-is-independent.sh` charges it: every
+    # spelling the walk refuses is absent from a directory with nothing in it, so a walk that
+    # found no files would report the strongest possible green over the emptiest possible tree.
+    rm -f "$tree"/crates/priv/src/*.rs
+    gate_red_because 'examined zero source files' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# ------------------------------------------------------------------ claim 6
+
+pass_case_a_blessed_copy_carrying_exactly_the_declared_grant_is_allowed() {
+    local tree stub
+    tree="$(_tree_with_a_blessed_copy)"
+    stub="$(_stub_getcap "$tree" "webcam-handler-priv cap_sys_module=ep")"
+    # The green arm claim 6 needs, and it does more than balance the two red ones: the listing
+    # is written out here by hand while the expectation comes out of `caps.rs`, so widening the
+    # source without widening this line turns *this* arm red. A grant cannot grow quietly on
+    # either side of the comparison.
+    env "WCH_GATE_ROOT=$tree" "WCH_GATE_GETCAP=$stub" "$GATE"
+}
+
+fail_case_the_blessed_copy_carries_more_than_the_tree_declares() {
+    local tree stub
+    tree="$(_tree_with_a_blessed_copy)"
+    # Read off this machine on 2026-08-15: the copy blessed before P6e, against a tree that had
+    # stopped asking for `cap_net_admin`. `just bless` used to call this "already blessed",
+    # because its check asked whether each wanted capability was present and every superset
+    # satisfies that. A narrowing nothing enforces is a paragraph.
+    stub="$(_stub_getcap "$tree" "webcam-handler-priv cap_net_admin,cap_sys_module=ep")"
+    gate_red_because 'a grant wider than the code asks for' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_GETCAP=$stub" "$GATE"
+}
+
+fail_case_a_second_capability_carrying_file_sits_beside_the_helper() {
+    local tree stub
+    tree="$(_tree_with_a_blessed_copy)"
+    # Also read off this machine, and the worse of the two (note N126): the `wch-priv` the N90
+    # rename orphaned. The correctly blessed helper is in the listing beside it, which is the
+    # point — every name-shaped check in this suite was looking straight at the right file while
+    # a root-capable binary carrying the deleted `exec` verb sat next to it for two days.
+    stub="$(_stub_getcap "$tree" \
+        "webcam-handler-priv cap_sys_module=ep" \
+        "wch-priv cap_net_admin,cap_sys_module=ep")"
+    gate_red_because 'is not the blessed helper' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_GETCAP=$stub" "$GATE"
+}
+
+fail_case_the_blessing_is_declared_in_two_places() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # One home for the capability list, asserted. The failure this closes is the ordinary one:
+    # somebody narrows the constant the justfile reads and leaves a second copy behind for the
+    # gate to read, and the two answers disagree about what "blessed" means with nothing saying
+    # so. A gate that took the first match would have picked a side silently.
+    printf '\npub(crate) const BLESSING_OLD: &str = "cap_sys_module,cap_net_admin+ep";\n' \
+        >>"$tree/crates/priv/src/modules.rs"
+    gate_red_because 'has one home or it has none' env "WCH_GATE_ROOT=$tree" "$GATE"
 }

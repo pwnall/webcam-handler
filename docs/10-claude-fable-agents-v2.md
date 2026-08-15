@@ -215,11 +215,19 @@ green and the notes current, and the phase review gets its own session.
   motors run by default (owner ruling, 2026-08-08; `WCH_NO_MOTION=1` opts out); in the
   *product* a plan that would move motors still says so first (`--allow-motion` —
   design §5 carries the split).
-- `webcam-handler-priv` (dev-only, root-equivalent — design §2.13, note N8): its boundary is
-  the `0700` file mode, checked every `just ci`. Never widen its verbs to take caller-supplied
-  module names or paths without amending N8; it refuses to unload `uvcvideo` while any
-  `/dev/video*` is open — design tests around that, don't fight it. The narrowing reckoning is
-  G6's (docs/7 P6e).
+- `webcam-handler-priv` (dev-only, root-equivalent — design §2.13, notes N8 and **N125**): its
+  boundary is the `0700` file mode, checked every `just ci`. It refuses to unload `uvcvideo`
+  while any `/dev/video*` is open — design tests around that, don't fight it. **G6 executed the
+  N8 reckoning (P6e):** `CAP_NET_ADMIN` was measured never to have been spent \[PF:21\] and is
+  gone, the `exec` verb was invoked by nothing and is deleted, and the blessing is
+  `cap_sys_module+ep` over a closed verb vocabulary — two module names, both compile-time
+  constants. So "never widen its verbs to take caller-supplied module names, paths **or
+  programs**, and never add a capability, without amending N8 and N125" is now the only route
+  in rather than the quiet second one, and two checks hold it: the helper's own
+  `no_verb_hands_this_binarys_capabilities_to_a_program_the_caller_names`, and
+  `privileged-helper.sh`, which since P6e also compares what a blessed copy on disk *carries*
+  against what the tree declares and refuses any other capability-carrying file in `.wch-bin/`
+  (note **N126** — a rename left one there for two days).
 
 ## Done means
 

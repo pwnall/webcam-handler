@@ -3,8 +3,11 @@
 //! ## How a capability reaches a child, and the trap on the way
 //!
 //! File capabilities do **not** cross `exec`. A blessed binary runs privileged and
-//! anything it spawns gets nothing, which would make [`super::exec`] a wrapper that grants
-//! exactly zero privilege — the most dangerous kind of tool: one that looks like it works.
+//! anything it spawns gets nothing — and *everything privileged here is spawned*, because
+//! nothing in this crate loads a module itself: [`super::vivid`] and [`super::uvcvideo`]
+//! run `/usr/sbin/modprobe`, which is an `exec` like any other. A build that skipped the
+//! raise below would be the most dangerous kind of tool: one that looks like it works,
+//! with `getcap` agreeing.
 //!
 //! Four sets are involved:
 //!
@@ -44,24 +47,29 @@ use caps::{CapSet, Capability};
 ///
 /// One home: the justfile reads this string out of `webcam-handler-priv doctor
 /// --setcap-argument` rather than repeating it, so the bless and the runtime check cannot
-/// disagree about what "blessed" means.
-pub(crate) const BLESSING: &str = "cap_sys_module,cap_net_admin+ep";
+/// disagree about what "blessed" means. `scripts/gates/privileged-helper.sh` reads it out
+/// of *this line* and compares it with what a blessed copy actually carries, which is the
+/// half neither the recipe nor a test can see (note **N125**).
+pub(crate) const BLESSING: &str = "cap_sys_module+ep";
 
 /// Every capability this helper needs, with what each one is for.
 ///
-/// A closed table. The security boundary is the file mode on the blessed copy (see the
-/// crate docs), not this list — but the list is what `doctor` reports and what the
-/// justfile blesses, so it stays the single place either is written down.
-pub(crate) const REQUIRED: &[(Capability, &str)] = &[
-    (
-        Capability::CAP_SYS_MODULE,
-        "load and unload vivid (the R2 rung) and cycle uvcvideo",
-    ),
-    (
-        Capability::CAP_NET_ADMIN,
-        "bind the NETLINK_KOBJECT_UEVENT socket the P4 hotplug watch needs",
-    ),
-];
+/// A closed table, and since P6e a table of **one**. The security boundary is the file mode
+/// on the blessed copy (see the crate docs), not this list — but the list is what `doctor`
+/// reports and what the justfile blesses, so it stays the single place either is written
+/// down, and `the_blessing_is_cap_sys_module_and_nothing_else` is what goes red if it
+/// widens again.
+///
+/// `CAP_NET_ADMIN` was here until P6e, granted at P0 on a *prediction* that binding
+/// `NETLINK_KOBJECT_UEVENT` would need it. P4d measured the prediction and disproved it —
+/// the socket binds and delivers to a process with an empty capability set \[PF:21\] — so
+/// the grant was one nothing ever spent, which is the easiest kind of privilege to remove
+/// and the easiest to forget. Note **N8**'s G6 reckoning removed it; note **N125** records
+/// what it would take to bring it back (`SO_RCVBUFFORCE`, which nothing here uses).
+pub(crate) const REQUIRED: &[(Capability, &str)] = &[(
+    Capability::CAP_SYS_MODULE,
+    "load and unload vivid (the R2 rung) and cycle uvcvideo",
+)];
 
 /// What the process is actually holding right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,12 +142,17 @@ fn missing(held: &BTreeSet<String>) -> Vec<&'static str> {
 
 /// Raise every required capability into the ambient set, so a child process carries them.
 ///
-/// **Every privileged verb needs this, not just `exec`.** Nothing in this crate loads a
-/// module itself: `vivid up` and `uvcvideo cycle` spawn `/usr/sbin/modprobe`, and a
+/// **Every privileged verb needs this**, and that sentence is why deleting the `exec` verb
+/// at P6e did not delete this function with it (note **N125**). Nothing in this crate loads
+/// a module itself: `vivid up` and `uvcvideo cycle` spawn `/usr/sbin/modprobe`, and a
 /// subprocess is an `exec` like any other — `pP' = (X & fP) | (X & pI & fI) | pA`, and
 /// with no file capabilities on `modprobe` the first two terms are empty. The child gets
-/// the ambient set or it gets nothing. Calling this only from `exec` left every module
-/// verb failing with `EPERM` while `getcap` and `doctor` both looked correct.
+/// the ambient set or it gets nothing. When the raise lived only in the delegating verb,
+/// every module verb failed with `EPERM` while `getcap` and `doctor` both looked correct.
+///
+/// What *is* gone is the ability to point the delegation at a program the caller names:
+/// the ambient set this raises now only ever reaches `/usr/sbin/modprobe`, spawned by
+/// [`super::vivid`] or [`super::uvcvideo`] with a module name fixed at compile time.
 ///
 /// # Errors
 ///
@@ -270,6 +283,40 @@ mod tests {
             .map(|(cap, _)| cap.to_string().to_lowercase())
             .collect();
         assert_eq!(blessed, required);
+    }
+
+    #[test]
+    fn the_blessing_is_cap_sys_module_and_nothing_else() {
+        // **The narrowing, pinned.** The test above proves the two spellings agree with
+        // each other, which is a property both of them widening together satisfies — it
+        // would have stayed green through the whole of the grant this note's reckoning
+        // removed. This one is about the *content*, and it is the thing that goes red when
+        // a capability is added back "in case", which is exactly how `CAP_NET_ADMIN` was
+        // granted at P0 and how it survived four phases nobody spending it (notes N8,
+        // **N125**; the measurement that removed it is \[PF:21\]).
+        //
+        // A closed list rather than a rule, because there is no rule to write: whether a
+        // capability is needed is a question about what this crate's verbs do, and the only
+        // honest form of it is a human deciding once and leaving the argument behind. So a
+        // future need for a second capability fails here, and the cost of that failure is
+        // reading N8's three questions and amending N125 — which is the whole point.
+        assert_eq!(
+            REQUIRED.len(),
+            1,
+            "the grant widened; N8's reckoning narrowed it to one capability and N125 says \
+             what it would take to add another"
+        );
+        assert_eq!(
+            REQUIRED
+                .iter()
+                .map(|(cap, _)| cap.to_string())
+                .collect::<Vec<_>>(),
+            vec!["CAP_SYS_MODULE"],
+            "the one capability this helper spends is the one `modprobe` needs"
+        );
+        // …and the string the justfile blesses with, because the two are separate
+        // spellings and a gate reads this one off the source line.
+        assert_eq!(BLESSING, "cap_sys_module+ep");
     }
 
     #[test]

@@ -83,8 +83,12 @@ gate-g6:
 #
 # The directory keeps its short name: `.wch-bin` is a scratch location, and note N90's
 # ruling is about the names of binaries and crates. What lives inside it is the renamed
-# helper, which is why a tree blessed before that rename has a stale `.wch-bin/wch-priv`
-# that `just bless` will not overwrite and `privileged-helper.sh` will no longer look at.
+# helper — and a tree blessed before that rename kept a stale `.wch-bin/wch-priv` that this
+# recipe will not overwrite and that `privileged-helper.sh` did not look at. That was left as
+# a curiosity when the rename landed and it was not one: the stale copy is root-capable, still
+# mode 0700, and still carries the `exec` verb P6e deleted, so the narrowing would have had a
+# working bypass sitting beside it. `privileged-helper.sh`'s sixth claim now walks the whole
+# directory rather than the one name it expects (note **N126**).
 priv_bin := ".wch-bin/webcam-handler-priv"
 
 # Idempotent: the stamp records the freshly-built binary's sha256, and the bless is
@@ -113,18 +117,33 @@ bless:
     h="$(sha256sum "$built" | cut -d' ' -f1)"
     caps_now="$(getcap "$stable" 2>/dev/null || true)"
     mode_now="$(stat -c %a "$stable" 2>/dev/null || true)"
-    # Every capability the binary asks for, plus the flag set, read out of `getcap` —
-    # derived from the blessing rather than transcribed here, so the two cannot disagree
-    # about what "already blessed" means. `getcap` prints `=ep` where setcap took `+ep`.
-    caps_ok=1
-    for want in ${want_caps//,/ }; do
-        [[ "$caps_now" == *"$want"* ]] || caps_ok=0
-    done
-    [[ "$caps_now" == *"=$want_flags" ]] || caps_ok=0
+    # **Exactly** the capabilities the binary asks for, and the flag set — both read out of
+    # `getcap` and derived from the blessing rather than transcribed here, so the two cannot
+    # disagree about what "already blessed" means. `getcap` prints `<path> cap_a,cap_b=ep`
+    # where setcap took `+ep`, so the capability list is the last field and the flags follow
+    # its `=`; both lists are sorted before comparison because getcap orders by capability
+    # number and the source orders by argument.
+    #
+    # **"Exactly" is P6e's word** (note N125). The old test asked whether each wanted
+    # capability was *present*, which every superset satisfies — so a copy carrying more than
+    # the binary asks for was reported as "already blessed" and skipped, and the narrowing
+    # this recipe now grants would have been undone on disk by anything that ran one `setcap`.
+    # A grant nobody argued for is the whole class N8 exists about, and a skip that reads as
+    # pass is how it would have survived. A wider grant now re-blesses down to the narrow one.
+    caps_ok=0
+    if [[ -n "$caps_now" ]]; then
+        carried="${caps_now##* }"
+        carried_caps="$(tr ',' '\n' <<<"${carried%%=*}" | sort | paste -sd, -)"
+        carried_flags="${carried##*=}"
+        want_sorted="$(tr ',' '\n' <<<"$want_caps" | sort | paste -sd, -)"
+        if [[ "$carried_caps" == "$want_sorted" && "$carried_flags" == "$want_flags" ]]; then
+            caps_ok=1
+        fi
+    fi
 
     if [[ -f "$stamp" && -f "$stable" && "$(cat "$stamp")" == "$h" \
           && "$mode_now" == "700" && "$caps_ok" == "1" ]]; then
-        echo "bless: $stable already blessed (sha256 unchanged, caps +$want_flags, mode 0700); skipping setcap"
+        echo "bless: $stable already blessed (sha256 unchanged, caps exactly $want_caps+$want_flags, mode 0700); skipping setcap"
         exit 0
     fi
 
@@ -211,6 +230,25 @@ rung-vivid:
 rung-vivid-managed:
     #!/usr/bin/env bash
     set -euo pipefail
+    # The precondition, named rather than left to the shell. Until P6e this machine had always
+    # had a blessed copy, so nobody had met what this recipe says without one: `.wch-bin/webcam-handler-priv:
+    # No such file or directory`, exit 127, from a recipe whose actual requirement is one sudo
+    # command. A fresh clone meets it on the first try. Found by removing the stale blessed
+    # copies the narrowing reckoning turned up (note **N126**), which is the sort of thing only
+    # a state change finds.
+    #
+    # It **refuses** rather than skipping, and the difference is the whole of AGENTS rule 3: a
+    # caller who typed `-managed` asked for the module to be loaded, so answering zero would be
+    # a skip that reads as a pass. `just rung-vivid` is the arm that legitimately declines — it
+    # runs the same suite against whatever is already loaded and reports a named, counted skip
+    # when that is nothing.
+    if [[ ! -x "{{priv_bin}}" ]]; then
+        echo "rung-vivid-managed: REFUSED — no blessed helper at {{priv_bin}}, so this recipe cannot load vivid" >&2
+        echo "  loading a kernel module needs cap_sys_module, and nothing here can grant itself that" >&2
+        echo "  remedy: \`just bless\` (needs sudo, once), then \`just priv-doctor\` to confirm" >&2
+        echo "  or: \`just rung-vivid\`, which runs the same suite without loading anything and says so by name" >&2
+        exit 1
+    fi
     {{priv_bin}} vivid up --devices 1
     trap '{{priv_bin}} vivid down || true' EXIT
     ./scripts/rung-vivid.sh

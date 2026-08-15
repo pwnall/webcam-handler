@@ -90,9 +90,10 @@ exist because of it.
   whole `uvcvideo` cycle — 56 packets, `ENOBUFS` never raised, measured three times. Both
   halves are separate claims and both were taken; the R3 arm (E9) is the second one running
   through this workspace's own socket rather than a probe. N8's row carries the amendment.
-  **P4d does not re-bless**: the narrowing is still G6's (P6e), which now has a fact to
+  **P4d does not re-bless**: the narrowing is G6's (P6e), which now has a fact to
   execute on instead of a prediction — `cap_sys_module` is untouched, because `modprobe`
-  still needs it.
+  still needs it. **P6e executed it on 2026-08-15** and this is the fact it executed on
+  (note **N125**).
 - ~~D12's `wait` flag — "a second capture request queues or is refused with `Busy` per its
   `wait` flag" — is **re-deferred from P4c to P4e**, three changes wearing one name (N42).~~
   **Discharged at P4e-i**, and the three changes were one mechanism (note **N56**): a
@@ -260,8 +261,11 @@ exist because of it.
   bad `--task` produces — the status verb's rather than the sweep's — and `cli-parity.sh`
   compares exactly that against `webcam-handler-cli`. What is lost is a bar's accuracy, on a
   daemon running two sweeps at once. Nothing schedules it.
-- The `webcam-handler-priv` powers are broader than demonstrated need, time-boxed to the plan;
-  P6e executes the narrowing ruling (N8).
+- ~~The `webcam-handler-priv` powers are broader than demonstrated need, time-boxed to the plan;
+  P6e executes the narrowing ruling (N8).~~ **Discharged 2026-08-15** (note **N125**): the three
+  questions answered with the plan's own evidence, `CAP_NET_ADMIN` and the `exec` verb removed,
+  the closed verb vocabulary kept. The powers are now the demonstrated need, and two checks go
+  red if that stops being true.
 - ~~The mutation floor is commissioned before G4 (docs/9's recorded schedule); P3f.~~
   **Discharged 2026-08-09**: `just mutants` over the six pure cores, its survivors triaged,
   and the schedule mechanised as the `g4` row of `phase-criteria.tsv` rather than left as
@@ -829,6 +833,16 @@ path that is not the writer's code.
 the muxer never emits a size field that disagrees with bytes written, proven by
 re-parsing our own output.
 
+**Landed as planned, and the re-parse earned its cost immediately.** `imaging::avi::read` was
+written from the RIFF/AVI specification *before* the muxer, by a reader that did not know it, and
+it found **eleven** things the writer had wrong (notes **N99**–**N101**) — which is the whole
+argument for "an independent re-parse path that is not the writer's code" arriving as a number
+rather than as a principle. What a test could not hold went to a gate:
+`avi-reparse-is-independent.sh`, because the claim `avi.rs`'s module doc makes — the two sides
+"share **no** code, not a constant, not a FourCC, not a helper" — is about `use` statements and
+where files sit, and a test sees values. A shared `FOURCC_MOVI` factored into a third module
+would leave every test in this workspace green and the property gone.
+
 ### P6b — `record` in the engine and CLI
 
 **Lands:** the Y4M sink (mono and 4:2:x are both in the Y4M vocabulary); the record executor
@@ -839,6 +853,17 @@ non-MJPG requests get Y4M or `FormatUnsupported { available }`.
 **Proves / gate rows:** cap-enforcement tests (duration, size, disk-full); CLI
 subprocess tests; every fault leaves a parseable file.
 
+**Landed in three commits rather than one**, which is the sizing rule working rather than
+slipping: the Y4M sink and its fixtures; the FourCC's wire spelling (note **N109** — the
+ambiguity turned out not to be in the brief); then the engine's record executor with `Files`,
+the caps and the refusal (**N110**–**N112**). Two findings are worth carrying forward. `y4m` was
+read and **declined on its merits** rather than on its licence — it expresses the format and not
+the sink, so P6b writes 51 lines instead of linking 175 (note **N107**), and AGENTS' "adopting a
+crate that clears the bar is not an escalation" cuts both ways. And a **neutral-chroma fixture
+cannot tell Cb from Cr**: a swapped-plane mutant passed all 1261 tests (note **N108**), which is
+this phase's clearest instance of a fixture that agrees with any implementation. The same
+blindness exists in `imaging::decode` and P6b deliberately did not repair it there.
+
 ### P6c — The wire completes
 
 **Lands:** `record_start/stop/status` on the T5 trait (D10 is now complete), daemon
@@ -847,6 +872,26 @@ subscription in v1.
 
 **Proves / gate rows:** the method-count walk green over the now-complete trait (its
 population grows by three); the parity population learns `record_status`.
+
+**Landed in two halves with a repair wedged between them, and neither the split nor the repair
+was planned.** The first half is what this section commissioned: `record_start/stop/status` on
+the T5 trait, the daemon's registry, the client's poll loop, and the finding that the one place
+AGENTS rule 7 could break had nothing asking about it (**N113**–**N115**). The second half is
+**not in the text above at all**: a recording and a live preview are two readers of one device
+stream, and a camera has one. `daemon::preview` is fed the recording's own frames, and a photo
+during a recording is `Busy` because the suspend mechanism cannot tell whose stream it is
+stopping (notes **N117**, **N118**). That is D10 completing at the *device* rather than at the
+trait, and it is recorded here because a reader of the plan would otherwise look for it in P5b.
+
+**The split was forced by a gate, and by the one that reads a build artifact.** Between the two
+halves, `cli-parity.sh` and `json-validates.sh` went red on `photo` over the fake — 5.2 s against
+a settle deadline — and the cause was a per-dependency `opt-level` that cannot reach a generic
+the dependency asked *us* to instantiate, so the JPEG encoder was compiled at ours (note
+**N116**). `just ci` never saw it: `test` runs before `gates`, `[profile.test]` sets `opt-level =
+1`, and both profiles write the same path, so the verdict depended on who had last built the
+binary. A criterion AGENTS calls "re-runnable" was re-runnable only sometimes. It landed as its
+own commit before P6c's second half, because a phase whose gates disagree with themselves cannot
+close and a repair buried inside a feature commit is one nobody can revert.
 
 ### P6d — Oracles and the R3 recording
 
@@ -859,6 +904,17 @@ limitation, bounded rather than wished away).
 **Proves / gate rows:** oracle validation green-or-named-skip; the duration-bound
 criterion; evidence entry.
 
+**Landed and executed** (evidence **E17**, four real cameras). Three things came back different
+from the commission. The two oracles link **one FFmpeg build**, so `mpv` claims playability and
+never corroborates a demux — note **N119** says what each is *for* and why the exit code is not
+the answer, which is the whole reason `oracle-rung-accounting.sh` exists as a predicate rather
+than as a `|| true`. The duration bound landed **two-sided**: a constant-rate file declares
+`frames × interval` while the interval is the mean of `frames - 1` gaps, so a healthy take's file
+legitimately claims one frame period more video than the wall clock — 1102 ms against 1016 ms on
+a working camera (note **N120**). And a test that invents a missing tool must not print the
+sentence the accounting counts (**N121**), which is the rung's own vocabulary leaking into a
+fixture.
+
 ### P6e — The agent guide, G6 close, and the helper reckoning
 
 **Lands:** the xtask-generated agent usage guide from the T4 command core (so it cannot
@@ -868,15 +924,35 @@ sequences;
 `vendor/v4l2-webcam-skill/` gains its deprecation pointer; guide examples smoke-checked
 against the built binaries, regeneration diffs clean in CI (docs/9 row).
 
-**G6 close:** all criteria rows counted; **then, in its own session,** the adversarial
+**Landed**, and the guide found two defects in text this project *ships* rather than in the
+code that emits it. `docs/agent-guide.md` is walked out of the clap tree, `crates/cli-core/json-contracts.tsv`
+and `ErrorKind::ALL`, with the verb-to-document mapping kept at one home rather than gaining the
+guide as a second hand-written copy (note **N122**). The two findings: **clap prints doc comments
+to a user**, so a rustdoc link in one reaches them as brackets around an identifier they cannot
+open — `photo --help` did exactly that until the guide put the line in front of somebody (note
+**N123**) — and **the D13 discriminant does not reach a command-line caller** at all, so the
+manual had to say so rather than teach a field that is not there (note **N124**). No failure
+document was invented to close the second; that is a design change with an owner.
+
+**G6 close: all criteria rows counted — 35.** The seven added at this sub-milestone are the ones
+every earlier phase gate carries and `g6` did not: clippy, cargo-deny, `run-all.sh`,
+`selftest.sh`, `no-frame-bytes-in-repo.sh`, `privileged-helper.sh`, and the helper's own package.
+That hole is the one P5a named in advance rather than leaving to be rediscovered ("g5 has no
+`run-all.sh`, `selftest.sh`, clippy or cargo-deny row"), and naming it in advance is what made it
+a checklist item here instead of a review finding. **Then, in its own session,** the adversarial
 review; fixes; evidence entry; reconciliation.
 
-**Then the N8 ruling executes** (the owner's recorded trigger): answer the three questions with
-the plan's evidence — which capabilities were actually spent (P4d's measurement decides
-`CAP_NET_ADMIN`), whether `exec` ever did more than delegate to a test process, whether
-anything routine still loads modules unattended — and narrow or delete `webcam-handler-priv`,
-`just bless`, and `privileged-helper.sh` accordingly, recording the outcome in the notes. This
-is a plan step, not a memory.
+**The N8 ruling executed** (the owner's recorded trigger), 2026-08-15 — note **N125** carries the
+reckoning and N8 is retired against its own clause. The three answers: `CAP_NET_ADMIN` was spent
+**never** \[PF:21\] and is dropped; `exec` was invoked by **nothing** — every occurrence outside
+`crates/priv/` is a string in a human-facing recovery message or prose about the shape — so the
+closed verb vocabulary declined at P0 costs nothing and is what the helper now is; module loading
+is still needed but only **on demand**, so the crate narrows rather than deletes. `just bless` now
+compares the blessed copy's capabilities for **equality** rather than presence, and
+`privileged-helper.sh` gained the two claims the narrowing bought. Executing it found one thing
+nobody was looking for: a root-capable binary that the N90 rename had orphaned in `.wch-bin/`,
+still carrying the deleted verb, that every name-keyed check looked straight past (note
+**N126**).
 
 ## Post-plan triggers (recorded, uncommissioned)
 
@@ -891,7 +967,7 @@ is a plan step, not a memory.
 | Audio | a license-clean path appears | §8.2 |
 | Re-run N5's jsonrpsee measurement | any jsonrpsee bump — delete the api tokio exemption if the original wall becomes satisfiable | §2.8, note N5 |
 | Re-check PF:16 against `little_exif` | any little_exif bump — the splice likely stays (it keeps a device-byte parse under our rules), but the *reason* changes from fix to defense | D6, PF:16 |
-| Narrow or delete `webcam-handler-priv` | **P6e executes this**; the row stays here until it does | §2.13, note N8 |
+| ~~Narrow or delete `webcam-handler-priv`~~ | **Executed at P6e, 2026-08-15** (note **N125**): narrowed, not deleted — `CAP_NET_ADMIN` dropped, the `exec` verb deleted, the closed verb vocabulary kept, because question 3 answered *yes* (module loading is still needed, on demand). N8 retires against its own clause; what remains live in it is the standing instruction to amend before widening | §2.13, notes N8, N125, N126 |
 | WebM as a second recording output | **the owner has asked the next design revision to look at it** (2026-08-14, note N103), so this row is an input rather than a wait: the trigger is the revision itself. It is not a container swap — WebM carries only VP8/VP9/AV1, so it buys OpenAI ingestion at the price of an encode, which E6 and the notes' usage item 10 forbid becoming the *measurement* path. Matroska `V_MJPEG` remuxes but no major vendor ingests it, which sharpens §7's rejection rather than reversing it. N103 carries the trade-off, marks the API-support landscape `declared`, and says what would make it `measured` | §7, D7 L0/L2, E6, note N103 |
 
 ## Risks to the plan

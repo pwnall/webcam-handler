@@ -7,13 +7,15 @@
 # `phase-criteria.tsv`, one row each; this file is the runner, not the list.
 #
 # A phase with no rows fails, and that is a feature: a gate passing because it was asked
-# to check nothing is the defect class this whole suite exists to prevent. `just gate-g6`
-# reports exactly that today, which is the truth about it — criteria accrete row by row, in
-# the commit that lands the thing each row proves. `g5` left that state at P5a, with the
-# ten rows the TCP listener and the token gate earned, and has grown with every
-# sub-milestone since — how many it holds now is the table's to report and not this
-# header's; it is not closed, and the rows P5e owes it are named in docs/7 §P5a rather than
-# left for its close to rediscover.
+# to check nothing is the defect class this whole suite exists to prevent. Criteria accrete
+# row by row, in the commit that lands the thing each row proves, so every phase spends some
+# time in that state and says so out loud while it is there — `g5` left it at P5a with the
+# ten rows the TCP listener and the token gate earned, and `g6` left it at P6a with one.
+# **Since P6e every phase g0–g6 has rows**, so the empty-phase branch below now guards a
+# *future* gate rather than describing a current one, which is the only honest reason to
+# keep it. How many rows each phase holds is the table's to report and not this header's:
+# a count written here is a count that stops being true in the next commit that lands a
+# criterion, which is note N10's family wearing a comment.
 #
 # ## A criterion has three answers, and this runner keeps them apart
 #

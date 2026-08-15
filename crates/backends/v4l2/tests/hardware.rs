@@ -3180,9 +3180,16 @@ fn no_camera_holders(helper: &Utf8Path) -> bool {
         return false;
     };
     if report["loaded"] != serde_json::Value::Bool(true) {
+        // The remedy names `sudo` rather than the helper, and that is P6e's narrowing arriving
+        // in an operator message (note **N125**). The helper's verbs are a closed vocabulary —
+        // it *cycles* `uvcvideo`, which is an unload followed by a load, and there is no
+        // "load it" verb because nothing in the loop ever needed one. The verb that could have
+        // run `modprobe` for a caller was `exec`, and it is gone. So the honest instruction is
+        // the one a human at a terminal can always run: this is a recovery path rather than
+        // the loop, and a password prompt here costs none of what the blessing exists to buy.
         println!(
             "SKIP: uvcvideo is not loaded on this host, so there is no driver to cycle \
-             (`{helper} exec /usr/sbin/modprobe uvcvideo` loads it)"
+             (`sudo modprobe uvcvideo` loads it; `{helper} uvcvideo status` confirms)"
         );
         return false;
     }
@@ -3689,12 +3696,14 @@ fn hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_rea
     // "Leave the camera as you found it" (AGENTS rule 8) covers the driver too, and this
     // is the assertion that keeps a bad cycle from leaving the desk dark quietly. The
     // recovery is named in the message rather than attempted here: `cycle` has already
-    // run its own reload, so a second one is not more likely to work, and reaching for a
-    // root-equivalent `exec` inside a test is a bigger hammer than this arm is allowed.
+    // run its own reload, so a second one is not more likely to work, and a test that went
+    // looking for more privilege after a privileged operation failed is a bigger hammer than
+    // this arm is allowed. Since P6e the helper has no verb that could load a driver on a
+    // caller's behalf anyway (note **N125**), so the remedy is the one a human has: `sudo`.
     let after = backend.enumerate().unwrap_or_else(|error| {
         panic!(
             "the cameras did not come back after a uvcvideo cycle ({error}). Recover with \
-             `{helper} exec /usr/sbin/modprobe uvcvideo`, then `{helper} uvcvideo status`"
+             `sudo modprobe uvcvideo`, then `{helper} uvcvideo status`"
         )
     });
     let after_cameras: BTreeSet<String> = after
@@ -3703,8 +3712,8 @@ fn hw_hotplug_a_uvcvideo_cycle_arrives_as_removals_then_arrivals_through_the_rea
         .collect();
     assert_eq!(
         after_cameras, before_cameras,
-        "the cycle did not put every camera back. Recover with `{helper} exec \
-         /usr/sbin/modprobe uvcvideo`, then `{helper} uvcvideo status`"
+        "the cycle did not put every camera back. Recover with `sudo modprobe uvcvideo`, \
+         then `{helper} uvcvideo status`"
     );
     println!(
         "after: {} camera(s) back on the same {} bus path(s)",

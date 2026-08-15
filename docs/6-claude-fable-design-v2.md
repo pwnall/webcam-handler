@@ -1227,9 +1227,10 @@ loading `vivid` (the R2 rung had never executed for want of it — notes E1/E2),
 `uvcvideo` (a soldered-down laptop camera cannot be unplugged, and P4's hotplug evidence needs
 a camera to disappear), and binding the P4 uevent socket (`NETLINK_KOBJECT_UEVENT`, *predicted*
 to need `CAP_NET_ADMIN` — a prediction P4d measured and **disproved**, §8 item 10 and PF:21;
-the grant survives until G6 narrows it, and the hotplug rung spends none of it). `crates/priv/`
-builds `webcam-handler-priv`, blessed once by `just bless` with
-`cap_sys_module,cap_net_admin+ep`. The load-bearing facts:
+~~the grant survives until G6 narrows it~~, and the hotplug rung spends none of it).
+`crates/priv/` builds `webcam-handler-priv`, blessed once by `just bless` with
+~~`cap_sys_module,cap_net_admin+ep`~~ **`cap_sys_module+ep` since P6e executed the narrowing
+(note N125)**. The load-bearing facts:
 
 - **It never ships.** It is a dependency of no product crate (gate-asserted,
   `privileged-helper.sh`), and its `modprobe` subprocess is a *development* dependency in
@@ -1238,20 +1239,27 @@ builds `webcam-handler-priv`, blessed once by `just bless` with
 - **The security boundary is the file mode, not a capability design.** The owner chose the
   generic `exec` wrapper over a closed verb vocabulary — only a wrapper can put a capability
   inside a *test process* — accepting the stated consequence that `webcam-handler-priv --
-  /bin/sh` is a root shell. The blessed copy is mode `0700` in gitignored `.wch-bin/` (outside
-  `target/`, which cargo rewrites and file capabilities do not survive), and
-  `privileged-helper.sh` re-checks the mode on every `just ci`.
+  /bin/sh` is a root shell. **P6e measured that argument and found it never spent** — nothing in
+  this workspace ever invoked the verb — so the wrapper is deleted and the closed vocabulary is
+  what the helper is (note **N125**). The file mode remains the boundary, because
+  `CAP_SYS_MODULE` is still root: the blessed copy is mode `0700` in gitignored `.wch-bin/`
+  (outside `target/`, which cargo rewrites and file capabilities do not survive), and
+  `privileged-helper.sh` re-checks the mode on every `just ci` — and, since P6e, what every
+  capability-carrying file in that directory actually carries (note **N126**).
 - **It refuses to unload `uvcvideo` while any process holds a `/dev/video*` open.** That
   interlock also bounds what tests may do with it: real-hardware device-loss evidence
   runs with cameras closed (hotplug add/remove), and mid-stream loss stays a scripted
   fake fault (§3.3 item 9).
-- **The granted powers are broader than the demonstrated need — deliberately, and
-  time-boxed.** The owner's ruling accepts the breadth on this machine for the duration
-  of the plan. **The trigger to narrow or delete is G6** (docs/7 carries it as a
-  post-plan row): which capabilities were actually spent, whether `exec` ever did more
-  than delegate to a test process, whether anything routine still loads modules
-  unattended. A broad grant with a named revisit is a different thing from a broad grant
-  nobody revisits.
+- ~~**The granted powers are broader than the demonstrated need — deliberately, and
+  time-boxed.**~~ **Executed at G6, 2026-08-15 (docs/7 P6e, note N125).** The owner's ruling
+  accepted the breadth on this machine for the duration of the plan, against three questions.
+  The answers: `CAP_NET_ADMIN` was spent **never** and is dropped; `exec` was invoked by
+  **nothing**, so the closed verb vocabulary that was offered and declined at P0 costs nothing
+  and is what the helper now is; module loading is still needed but only **on demand** (`just
+  rung-vivid-managed`, the R3 hotplug arm — `just ci` loads nothing), so the crate narrows
+  rather than deletes. A broad grant with a named revisit is a different thing from a broad
+  grant nobody revisits, and the difference was worth what it cost: the one judgement P0 made
+  in advance is the one PF:21 disproved.
 
 ## 3. Test architecture
 
@@ -1435,8 +1443,11 @@ motors, and the user's privacy:
   `include_dir` fallback named.
 - **A root-equivalent development binary lives in the workspace** (`webcam-handler-priv`,
   §2.13). Its boundary is a file mode, not a capability design — accepted and time-boxed by
-  owner ruling (N8). The residual risk is the revisit being forgotten, which is why the G6
-  trigger is written into docs/7's post-plan table rather than into anyone's memory.
+  owner ruling (N8). ~~The residual risk is the revisit being forgotten~~ — **the revisit ran
+  at G6 and the risk did not materialise** (P6e, note N125): writing the trigger into docs/7's
+  post-plan table rather than into anyone's memory is what made a plan step out of it. The
+  residual that *did* materialise was smaller and different in kind, and it is note **N126**:
+  a stale blessed copy left behind by a rename, which every name-keyed check looked past.
 
 ## 7. Considered and not adopted
 
@@ -1530,6 +1541,7 @@ Recorded with reasons so they are not re-derived:
     measured. The R3 hotplug arm (note E9) then ran the same path through this
     workspace's own socket. So the capability was never spent on the receive path and the
     G6 helper-narrowing (§2.13, docs/7 P6e) can drop it, leaving `cap_sys_module`, which
-    `modprobe` still needs. **P4d records the truth and does not re-bless** — the trigger
-    to narrow is still G6. The one way it could come back is `SO_RCVBUFFORCE`, which does
-    need the capability and which nothing here reaches for.
+    `modprobe` still needs. **P4d records the truth and does not re-bless** — ~~the trigger
+    to narrow is still G6~~ **and P6e dropped it, 2026-08-15 (note N125)**. The one way it
+    could come back is `SO_RCVBUFFORCE`, which does need the capability and which nothing here
+    reaches for.
