@@ -3481,7 +3481,14 @@ mod tests {
 
             // The human's half, unchanged and still naming which binary refused.
             assert_eq!(stderr.text(), format!("{}\n", program.error_line(&error)));
-            assert!(document.message.ends_with("MJPG, YUYV"), "{document:?}");
+            // The message names them too, so the person reading stderr and the program
+            // reading stdout learn the same thing. Containment rather than a suffix since
+            // note **N129**: that sentence stopped ending in the list when it stopped
+            // claiming the list was the camera's, and an assertion pinned to the last
+            // words of a message is pinned to its phrasing rather than to its content.
+            for named in ["MJPG", "YUYV"] {
+                assert!(document.message.contains(named), "{document:?}");
+            }
             assert!(stderr.text().contains(&document.message));
         }
     }

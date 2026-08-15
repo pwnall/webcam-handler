@@ -102,7 +102,7 @@
           "kind": "format_unsupported",
           "requested": "NV12"
         },
-        "message": "format NV12 is unavailable; this camera offers MJPG, YUYV"
+        "message": "format NV12 is unavailable; MJPG, YUYV would be accepted"
       },
       "holder_gone": {
         "code": -32027,
@@ -1585,10 +1585,10 @@
             "type": "object"
           },
           {
-            "description": "The requested pixel format is not one this camera offers.",
+            "description": "The requested pixel format is not one that would be accepted here.\n\n**Whose list `available` is depends on who refused, and the message must not\nguess.** It said \"this camera offers …\" until 2026-08-15, which is true of D6's\nsource-format refusal and false of the other two callers: `engine::preview`\nanswers with the format the negotiation actually produced, and D7's record path\nanswers with what the *container* would have carried. Measured at the Chicony IR\nsensor, which offers GREY and nothing else — a `record -o x.avi` refusal read\n\"format GREY is unavailable; this camera offers MJPG, JPEG\", naming two formats\nthat camera has never had. An unattended caller obeying it would retry\n`--pixel-format MJPG` against a device with no MJPG, which is the defect the D13\nregistry exists to prevent rather than commit (note **N129**).\n\nThe variant itself is right where it is: design D7 names\n`FormatUnsupported { available }` for the container case in so many words, so this\nis a rendering repair and not a re-litigation of which refusal applies. The\nsentence now says only what is true of every caller — these are the formats that\n*would* be accepted — and which lever to pull is the guide's `Do` column, where a\ncontainer mismatch is answered by changing the container rather than the format.",
             "properties": {
               "available": {
-                "description": "What the camera does offer.",
+                "description": "What would be accepted — the camera's formats, the negotiated one, or the\ncontainer's, according to which of the three callers refused.",
                 "items": {
                   "$ref": "#/components/schemas/PixelFormat"
                 },

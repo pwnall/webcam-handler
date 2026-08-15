@@ -16947,3 +16947,66 @@ check can notice it.
 the document is the mechanism. That is a live reading of the ruling's own words ("nice-to-have"),
 and what would make it right is evidence that nobody reads the codes; what makes it wrong today is
 that a shell script is a caller this project has.
+
+## N129 — A refusal named two formats the camera has never had, and the sentence was the only thing wrong
+
+**Found**, 2026-08-15, by pointing the new failure document at a real sensor. Asking the
+Chicony IR camera — which enumerates `GREY` and nothing else — to record an AVI:
+
+```
+$ webcam-handler-cli --json record cam:integrated-camera-integrated-i -o x.avi --duration 1s
+{
+  "failed": true,
+  "error": { "kind": "format_unsupported", "requested": "GREY",
+             "available": [ "MJPG", "JPEG" ] },
+  "message": "format GREY is unavailable; this camera offers MJPG, JPEG"
+}
+```
+
+The refusal is correct, the payload is correct, and the sentence is false. `available` here is
+the **container's** list — what an AVI would have carried — because D7 puts
+`FormatUnsupported { available }` on the record path in so many words, and
+`imaging::video::Recorder::begin` answers with what that container would have taken. The
+message attributed it to the device.
+
+### Why a wording bug is worth a note
+
+Because of who reads it. AGENTS' opening section says the primary consumer has no hands and
+that "every variant carries what the caller needs to act", and `format_unsupported`'s whole
+disposition in `docs/agent-guide.md` is *fix the request and retry*. An unattended caller
+doing exactly as told retries `--pixel-format MJPG` against a camera with no MJPG, meets the
+same refusal, and has been sent in a circle by the registry that exists to stop it guessing.
+That is note **N123**'s defect one variant along — `control_inactive` told callers to "use
+`--guarded`", a flag the surface has never had — and it is the third time this phase that a
+message shipped an instruction the product could not honour. The pattern is worth naming:
+**a D13 message is not prose beside the payload, it is the part of the payload a caller reads
+first**, and it goes stale exactly where a variant grew a second caller.
+
+Which is what happened here. The sentence was written for D6's source-format refusal, where
+`available` really is the device's answer. The variant has since acquired two more callers and
+neither of them means that: `engine::preview::start` answers with the format the negotiation
+produced, and D7's record path answers with the container's. Two of three callers were
+mis-described, and the count had been two for the whole of P5.
+
+### The repair, and what was deliberately not repaired
+
+The message now says `"format {} is unavailable; {} would be accepted"` — true of all three
+callers, and it names no owner for the list. **The variant stays where D7 put it**: the design
+is settled and prescribes it here by name, so this is a rendering repair, not a re-litigation
+of which refusal applies to a container mismatch. Which lever to pull — a different format for
+a device refusal, a different *container* for this one — is the guide's `Do` column, which
+already carried the container case correctly ("a `.avi` needs MJPEG frames, so a camera that
+delivers raw ones records to `.y4m`").
+
+`a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had` is the arm, and
+it is written to fail on the *claim* rather than on the wording: it asks the binary what the
+camera enumerates, asks it again for the refusal, and refuses a message that attributes the
+list to the device. Watched red against the shipped sentence, quoting it —
+`the refusal tells a caller the camera offers ["GREY"], which it does not` — and green
+against the repair. It is driven through the shipped binary over a committed profile, because
+the defect is only visible when the payload and the device disagree, and a hand-built `Error`
+value cannot disagree with anything.
+
+**Amend this note if** a fourth caller acquires the variant, since the sentence is now neutral
+but the *guide's* disposition column still has to say which lever each caller's reader should
+pull, and that column is a `match` on the kind rather than on the caller.

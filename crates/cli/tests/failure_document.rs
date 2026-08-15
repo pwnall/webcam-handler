@@ -41,10 +41,16 @@ const PROFILE: &str = "chicony-rgb";
 /// quietly turning this suite into a test of a successful photograph.
 const ABSENT_FORMAT: &str = "NV12";
 
-fn profile() -> Utf8PathBuf {
+/// A committed profile by name, asserted present.
+///
+/// Takes the name since P6f: one arm needs a camera offering no compressed format at all,
+/// which [`PROFILE`] is not. The `exists` check stays here rather than at the two call sites
+/// because a corpus file that has moved should fail as itself, not as a backend that
+/// enumerated nothing.
+fn profile(name: &str) -> Utf8PathBuf {
     let path = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpus/profiles")
-        .join(format!("{PROFILE}.json"));
+        .join(format!("{name}.json"));
     assert!(path.exists(), "the corpus is missing {path}");
     path
 }
@@ -74,7 +80,16 @@ impl Ran {
 }
 
 fn run(args: &[&str]) -> Ran {
-    let profile = profile();
+    run_replaying(PROFILE, args)
+}
+
+/// The same, over a named profile.
+///
+/// Exists because one refusal in this file has to come from a camera that offers *no*
+/// compressed format at all, and `chicony-rgb` offers MJPG — see
+/// `a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had`.
+fn run_replaying(name: &str, args: &[&str]) -> Ran {
+    let profile = profile(name);
     let output = Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"))
         .args(["--backend", "fake", "--profile", profile.as_str()])
         .args(args)
@@ -358,5 +373,92 @@ fn a_failure_without_json_leaves_standard_output_untouched() {
         Some(i32::from(cli_core::exit_code(&Error::CameraUnknown {
             requested: "cam:nothing-answers-to-this".to_owned(),
         })))
+    );
+}
+
+/// The refusal a GREY-only camera meets when a caller asks it for an AVI, and the sentence
+/// it must not say.
+///
+/// **Measured at the Chicony IR sensor on 2026-08-15** (note **N129**), which enumerates
+/// `GREY` and nothing else. Asking it to record `.avi` is refused, correctly and by design
+/// — D7 puts `FormatUnsupported { available }` on the container path in so many words — but
+/// the refusal read *"format GREY is unavailable; this camera offers MJPG, JPEG"*, naming
+/// two formats that camera has never had. `available` there is the **container's** list, not
+/// the device's, and the sentence attributed it to the device.
+///
+/// That is not a cosmetic slip. The whole point of this variant carrying a payload is that
+/// an unattended caller acts on it (AGENTS: "every variant carries what the caller needs to
+/// act"), and a caller acting on that sentence retries `--pixel-format MJPG` against a
+/// device with no MJPG — a refusal instructing an agent to do something impossible, which is
+/// the same defect note **N123** found in `control_inactive`'s "use `--guarded`". A registry
+/// that does that is worse than one that says nothing.
+///
+/// So this asserts the *falsifiable* half rather than the wording: every format the message
+/// names is checked against what the camera actually enumerates, and the message may not
+/// claim the list is the camera's while naming something absent from it. It goes red against
+/// the sentence that shipped and stays green for the D6 refusal, where the list really is the
+/// device's.
+#[test]
+fn a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had() {
+    const GREY_ONLY: &str = "chicony-ir";
+
+    let listed = run_replaying(GREY_ONLY, &["--json", "list"]);
+    assert_eq!(listed.code, Some(0), "{}", listed.stderr);
+    let document: Value = serde_json::from_str(&listed.stdout).expect("a camera list");
+    let camera = document["cameras"][0]["id"]
+        .as_str()
+        .expect("the replayed camera has an id")
+        .to_owned();
+
+    let detail = run_replaying(GREY_ONLY, &["--json", "info", &camera]);
+    assert_eq!(detail.code, Some(0), "{}", detail.stderr);
+    let detail: Value = serde_json::from_str(&detail.stdout).expect("a camera detail");
+    let offered: Vec<String> = detail["formats"]
+        .as_array()
+        .expect("a format tree")
+        .iter()
+        .map(|format| {
+            format["pixel_format"]
+                .as_str()
+                .expect("a FourCC string")
+                .to_owned()
+        })
+        .collect();
+    // The premise, asserted rather than assumed: a re-capture that taught this sensor MJPG
+    // would turn the arm below into a test of a successful recording, silently.
+    assert_eq!(
+        offered,
+        vec!["GREY".to_owned()],
+        "{GREY_ONLY} is the grey-only profile this arm needs"
+    );
+
+    let scratch = scratch();
+    let out =
+        Utf8PathBuf::from_path_buf(scratch.path().join("take.avi")).expect("a UTF-8 scratch path");
+    let refused = run_replaying(
+        GREY_ONLY,
+        &[
+            "--json",
+            "record",
+            &camera,
+            "-o",
+            out.as_str(),
+            "--duration",
+            "200ms",
+        ],
+    );
+
+    let failure = refused.refusal();
+    let message = &failure.message;
+    // The container's list, which is the correct payload and the wrong thing to attribute.
+    assert!(
+        message.contains("MJPG"),
+        "the refusal stopped naming what would be accepted: {message}"
+    );
+    // The claim itself. Any phrasing that says these belong to the device is false here, and
+    // the substring is the one that shipped.
+    assert!(
+        !message.contains("this camera offers"),
+        "the refusal tells a caller the camera offers {offered:?}, which it does not: {message}"
     );
 }

@@ -223,12 +223,31 @@ pub enum Error {
         automation: Option<ControlSlug>,
     },
 
-    /// The requested pixel format is not one this camera offers.
-    #[error("format {} is unavailable; this camera offers {}", format_requested(.requested), format_formats(.available))]
+    /// The requested pixel format is not one that would be accepted here.
+    ///
+    /// **Whose list `available` is depends on who refused, and the message must not
+    /// guess.** It said "this camera offers …" until 2026-08-15, which is true of D6's
+    /// source-format refusal and false of the other two callers: `engine::preview`
+    /// answers with the format the negotiation actually produced, and D7's record path
+    /// answers with what the *container* would have carried. Measured at the Chicony IR
+    /// sensor, which offers GREY and nothing else — a `record -o x.avi` refusal read
+    /// "format GREY is unavailable; this camera offers MJPG, JPEG", naming two formats
+    /// that camera has never had. An unattended caller obeying it would retry
+    /// `--pixel-format MJPG` against a device with no MJPG, which is the defect the D13
+    /// registry exists to prevent rather than commit (note **N129**).
+    ///
+    /// The variant itself is right where it is: design D7 names
+    /// `FormatUnsupported { available }` for the container case in so many words, so this
+    /// is a rendering repair and not a re-litigation of which refusal applies. The
+    /// sentence now says only what is true of every caller — these are the formats that
+    /// *would* be accepted — and which lever to pull is the guide's `Do` column, where a
+    /// container mismatch is answered by changing the container rather than the format.
+    #[error("format {} is unavailable; {} would be accepted", format_requested(.requested), format_formats(.available))]
     FormatUnsupported {
         /// What was asked for, when the caller named something.
         requested: Option<PixelFormat>,
-        /// What the camera does offer.
+        /// What would be accepted — the camera's formats, the negotiated one, or the
+        /// container's, according to which of the three callers refused.
         available: Vec<PixelFormat>,
     },
 

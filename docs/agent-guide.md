@@ -496,7 +496,7 @@ Two verbs write a document whether or not you pass `--json`: `snapshot` and `pro
       "YUYV"
     ]
   },
-  "message": "format NV12 is unavailable; this camera offers MJPG, YUYV"
+  "message": "format NV12 is unavailable; MJPG, YUYV would be accepted"
 }
 ```
 
@@ -552,7 +552,7 @@ Through the daemon the same failures arrive as JSON-RPC errors, with a code per 
 | `control_unknown` | `-32017` | no control named "brightnes"; did you mean brightness? |
 | `control_read_only` | `-32018` | control privacy is read-only on this device |
 | `control_inactive` | `-32019` | control white_balance_temperature is inactive: disable white_balance_automatic first, or write with the automation guard on |
-| `format_unsupported` | `-32020` | format NV12 is unavailable; this camera offers MJPG, YUYV |
+| `format_unsupported` | `-32020` | format NV12 is unavailable; MJPG, YUYV would be accepted |
 | `settle_timeout` | `-32021` | frames did not settle within 5000 ms (3 frames seen) |
 | `fingerprint_mismatch` | `-32022` | camera fingerprint differs from the session's in: card, usb_id |
 | `session_conflict` | `-32023` | session conflict: another session for this camera and task is already sweeping |
