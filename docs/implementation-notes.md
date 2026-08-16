@@ -14858,6 +14858,30 @@ that compares whole buffers and still passes when two of them are exchanged.
 close the half this entry leaves open and turn it into a finding with a date rather than an
 open task.
 
+### Amendment, 2026-08-15: the open half is closed, and it was open by three swaps rather than one
+
+**The entry is not retired and not rewritten**, for the reason AGENTS gives — an entry retires
+on empirical disproof, and nothing above was disproved. The half this note left open has been
+closed, and note **N130** carries the repair. What belongs here is the condition being met and
+the two things the closing measured that this entry could not have known.
+
+The first is that the amendment clause above was written for **one** defect and there were
+three. `decode_yuyv`'s orientation is `yuyv422_to_rgb` against `yvyu422_to_rgb` and
+`decode_nv12`'s is `yuv_nv12_to_rgb` against `yuv_nv21_to_rgb`, one identifier apart in each
+case; and a third, which this note did not anticipate at all, is `decode_nv12` starting the
+chroma plane at the Y plane's last useful byte rather than at the end of its stride — a
+*coverage* error rather than an identity one, invisible on an unpadded frame and a colour
+error rather than a length error on a padded one. All three passed the whole workspace suite,
+now **1381 tests**, on the day it was closed. The population grew by 120 tests since the 1261
+this entry recorded and not one of them had moved the number that matters.
+
+The second is that the fix needed a property this note did not name: the fixture's decoded RGB
+must clip at **neither** end in **either** chroma orientation. A channel saturated at 0 or 255
+is constant along the dimension under test, so a fixture with strong chroma and free luma is
+this note's own class arriving one level up — in the *expectation* rather than in the samples.
+That constraint is what stopped `imaging::y4m`'s generators being reused for it, and it is why
+there are two colour fixtures in this crate rather than one.
+
 ## N109 — A FourCC crosses the wire as its four characters, and the escape it needed first was not the one the ruling described
 
 **The ruling (owner, 2026-08-14):** `schema::camera::PixelFormat` serializes as its FourCC
@@ -17010,3 +17034,91 @@ value cannot disagree with anything.
 **Amend this note if** a fourth caller acquires the variant, since the sentence is now neutral
 but the *guide's* disposition column still has to say which lever each caller's reader should
 pull, and that column is a `match` on the kind rather than on the caller.
+
+## N130 — `imaging::decode` could not tell Cb from Cr, and closing it needed a fixture that decodes without clipping
+
+**Doc:** AGENTS' "Writing tests" — *"Construct the buggy implementation first and watch it fail
+— at workspace scope"*; rubric rule 2; design **D6**'s source-format set and `imaging::decode`'s
+own "Colour conventions" section. Recorded 2026-08-15, closing the half note **N108** left open
+at P6b. N108's amendment records the condition being met; this entry is the repair.
+
+**Measured first, because the whole point is that the suite could not tell.** Three one-line
+edits to `crates/imaging/src/decode.rs`, each a plausible slip rather than a contrived one,
+applied one at a time and run at workspace scope:
+
+| mutant | what it is on a camera | verdict before | verdict after |
+|---|---|---|---|
+| `yuyv422_to_rgb` → `yvyu422_to_rgb` | every YUYV colour inverted about the neutral axis | 1381 passed | 1 test red |
+| `yuv_nv12_to_rgb` → `yuv_nv21_to_rgb` | the same, for NV12 | 1381 passed | 2 tests red |
+| the UV plane starting at `w * h` rather than at `y_stride * h` | chroma read from the wrong offset on any padded frame | 1381 passed | 1 test red |
+
+The first two are the defect N108 predicted. The third it did not: it is a *coverage* error
+rather than an identity one, it is invisible on a tightly packed frame, and the module's own
+comment warns about it in so many words — *"the UV plane starts where the Y plane's stride ends,
+not where its last useful byte does"* — which is exactly the kind of claim that has a comment
+and no test. Reds become blues in a photograph whose whole product claim, per AGENTS' opening
+section, is comparability across time.
+
+### Where the expected numbers come from, since that was the part left to judgement
+
+`decode.rs`'s tests derive RGB from Rec. ITU-R BT.601 and from the two arguments the module
+*passes* — `YuvRange::Limited` and `YuvStandardMatrix::Bt601` — rather than from any matrix a
+reader might prefer or from a run of the code under test. `bt601_limited_to_rgb` undoes the
+8-bit studio quantization (Y' over 219 codes from 16, Cb/Cr over 224 about 128) and inverts the
+forward transform symbolically, writing the coefficients as `2(1 - Kr)`, `2(1 - Kb)` and
+`2·Kr(1 - Kr)/Kg` rather than as the decimals they come to, so a reader checks an identity
+instead of a transcription. Nothing was copied out of the `yuv` crate's tables. The tolerance is
+**two codes** and it is an error budget rather than a shrug: that crate works in 13-bit fixed
+point, so its coefficients are within `1/8192` of the exact ratios — 0.004 of a code over this
+fixture's luma span — and it ends on one rounded right shift worth half a code. A swapped chroma
+pair moves red by at least 22 codes and blue by at least 28, and every pixel asserts that
+separation rather than leaving it as a claim in a comment.
+
+**The shipped orientation is correct.** The derivation agrees with `decode_yuyv` and
+`decode_nv12` to within one code at every pixel of both fixtures, so nothing this project has
+photographed is colour-inverted. That is a finding worth stating plainly, because the opposite
+finding would have changed what the G6 review is looking at.
+
+### The three properties the fixture needs, and the one that was not obvious
+
+`imaging::fixtures`' `colour_yuv_luma`/`_cb`/`_cr` and the two packers beside them give luma
+58–100, Cb 108–126 and Cr 140–156 — disjoint, so a swap must change a value rather than move
+one — with every sample a function of its own position under prime moduli 43, 19 and 17, so a
+plane shifted by a row or a column is full of wrong numbers rather than matching by luck. Those
+two are N108's repair, copied in intent from `imaging::y4m`'s test generators.
+
+The third is not in N108 and is what forced a second fixture rather than a reuse of the first:
+**the decoded RGB must clip at neither end, in either chroma orientation.** A channel saturated
+at 0 or 255 is constant along the dimension under test, which is N108's own class arriving in
+the expectation instead of in the samples — and BT.601 limited range makes the window tight,
+since a chroma sample 20 codes below neutral subtracts 40 codes of blue from the luma term while
+a chroma sample 28 above adds 45 to red. `imaging::y4m`'s ranges (luma 0–250, Cb 64–124, Cr
+160–220) drive red past 255 and blue below 0 over most of their domain, and they cannot be
+re-centred because they also generate two committed byte-exact fixtures. So there are two colour
+fixtures in this crate on purpose, each with its obligation written beside it, rather than one
+set of numbers pressed into serving two.
+
+The tests hold that property directly instead of trusting the arithmetic above:
+`assert_decoded_colour_is_what_bt601_says` refuses a pixel whose correct *or* swapped
+expectation touches either end, and refuses a pixel where exchanging Cb and Cr fails to move red
+and blue past the tolerance. A fourth mutant proved that guard can fire — the fixture's chroma
+constants set back to a constant 128, which is the P6b defect reintroduced at the fixture level,
+turned **five** tests red including three that named the fixture rather than the decoder.
+
+### What was kept
+
+`a_gray_fixture_survives_the_yuyv_round_trip`, `…nv12_round_trip` and
+`yuyv_limited_range_extremes_land_on_black_and_white` all stay, with a comment saying what they
+are for. They assert something real and unshared — a grey frame comes back grey, and the
+limited-range extremes land on black and white — and deleting them would trade a true narrow
+claim for nothing. What N108 found was not that they were wrong; it was that they were *read* as
+covering the chroma orientation for two phases. The three colour tests sit beside them and the
+comment above them says which claim is whose.
+
+**Amend this note if** `NegotiatedStream` starts carrying V4L2's signalled `colorspace` and
+`quantization`, which the module's "Colour conventions" section already names as the fix for a
+camera that emits full range. The derivation here is limited-range BT.601 because that is what
+the module passes; the day it passes something else, this fixture's no-clipping window moves
+with it and the expectation has to become a function of the signalled range rather than a
+constant matrix.
+

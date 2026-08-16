@@ -728,8 +728,226 @@ mod tests {
         assert!(raw.iter().skip(6).all(|&c| c >= 253), "white row: {raw:?}");
     }
 
+    // ------------------------------------------------- the chroma orientation (note N130)
+    //
+    // **Everything below this comment exists because nothing above it could tell Cb from Cr.**
+    // Note **N108** recorded the class at P6b and left this half open: the three round trips
+    // in this module run on neutral chroma, so `decode_yuyv` and `decode_nv12` could hand the
+    // `yuv` crate's converter the two chroma planes the wrong way round and produce
+    // colour-inverted photographs with nothing in the workspace noticing — the D8 metrics are
+    // computed on luma, and luma is unaffected by the swap. Measured rather than argued:
+    // `yuyv422_to_rgb` → `yvyu422_to_rgb` and `yuv_nv12_to_rgb` → `yuv_nv21_to_rgb`, the two
+    // one-word edits that spell exactly that defect, passed **1381 of 1381 tests** on
+    // 2026-08-15.
+    //
+    // The repair is a colour fixture (`imaging::fixtures`, whose section comment argues the
+    // three properties its samples need) plus an expectation this file derives from BT.601
+    // rather than from a run of the code under test — because a fixture whose expectations
+    // came out of the implementation cannot catch the implementation being wrong, which is
+    // the whole of N108.
+
+    /// The largest per-channel difference between the derivation below and what
+    /// `imaging::decode` produced that this project reads as agreement.
+    ///
+    /// **Two, and the number is an error budget rather than a shrug.** Both sides compute the
+    /// same BT.601 matrix; the `yuv` crate does it in 13-bit fixed point, so its coefficients
+    /// differ from the exact ratios by under `1/8192` — worth 0.004 of a code over this
+    /// fixture's luma span — and it finishes with one rounded right shift, worth half a code.
+    /// Two therefore covers rounding twice over and nothing else. What it must not cover is
+    /// the defect: a swapped chroma pair moves red by at least 22 codes and blue by at least
+    /// 28, and [`assert_decoded_colour_is_what_bt601_says`] asserts that separation at every
+    /// pixel rather than leaving it as a claim in this comment.
+    const CHROMA_ROUNDING_TOLERANCE: i32 = 2;
+
+    /// BT.601 limited-range Y'CbCr to full-range 8-bit R'G'B', derived from the standard.
+    ///
+    /// Rec. ITU-R BT.601 fixes the luma coefficients `Kr = 0.299` and `Kb = 0.114`, so
+    /// `Kg = 1 - Kr - Kb = 0.587`, and its 8-bit studio quantization puts Y' on \[16, 235\] —
+    /// 219 codes — and Cb/Cr on \[16, 240\] — 224 codes — offset about 128. Undo the
+    /// quantization first:
+    ///
+    /// ```text
+    /// y  = (Y' -  16) * 255 / 219
+    /// cb = (Cb - 128) * 255 / 224
+    /// cr = (Cr - 128) * 255 / 224
+    /// ```
+    ///
+    /// then invert the forward transform `Y = Kr·R + Kg·G + Kb·B`, `Cb = (B - Y) / 2(1 - Kb)`,
+    /// `Cr = (R - Y) / 2(1 - Kr)`. The first two invert by inspection; substituting them into
+    /// the first equation and using `1 - Kr - Kb = Kg` gives the third:
+    ///
+    /// ```text
+    /// R = y + 2(1 - Kr)·cr
+    /// B = y + 2(1 - Kb)·cb
+    /// G = y - (2·Kr(1 - Kr) / Kg)·cr - (2·Kb(1 - Kb) / Kg)·cb
+    /// ```
+    ///
+    /// The coefficients are written as those expressions and not as the decimals they come to,
+    /// so that a reader checks an identity rather than a transcription — and so that no number
+    /// here could have been copied from `yuv`'s tables or from a run of [`decode_yuyv`]. The
+    /// range and the matrix are the ones this module *passes* ([`YuvRange::Limited`],
+    /// [`YuvStandardMatrix::Bt601`]), not the ones this test would prefer: the module's own
+    /// "Colour conventions" section is what makes them the right question to ask.
+    fn bt601_limited_to_rgb(luma: u8, cb: u8, cr: u8) -> [u8; 3] {
+        const KR: f64 = 0.299;
+        const KB: f64 = 0.114;
+        const KG: f64 = 1.0 - KR - KB;
+
+        let y = (f64::from(luma) - 16.0) * 255.0 / 219.0;
+        let cb = (f64::from(cb) - 128.0) * 255.0 / 224.0;
+        let cr = (f64::from(cr) - 128.0) * 255.0 / 224.0;
+
+        let red = y + 2.0 * (1.0 - KR) * cr;
+        let blue = y + 2.0 * (1.0 - KB) * cb;
+        let green = y - (2.0 * KR * (1.0 - KR) / KG) * cr - (2.0 * KB * (1.0 - KB) / KG) * cb;
+        [to_channel(red), to_channel(green), to_channel(blue)]
+    }
+
+    /// Round to the nearest 8-bit code, saturating at both ends.
+    ///
+    /// The saturation is a total function and never a licence: the tests below assert that no
+    /// channel of this fixture reaches either end, in either chroma orientation, because a
+    /// channel pinned at 0 or 255 is constant along the dimension under test and therefore
+    /// cannot discriminate — N108's class, arriving at the expectation instead of the fixture.
+    fn to_channel(value: f64) -> u8 {
+        // Clamped into 0..=255 and rounded to an integer on the line above, so the conversion
+        // is exact. `as` is confined to test code, which the crate root's `not(test)` lint
+        // block deliberately does not reach.
+        value.round().clamp(0.0, 255.0) as u8
+    }
+
+    /// The (Y, Cb, Cr) triple `imaging::fixtures`' colour generators put at every pixel, in
+    /// raster order.
+    ///
+    /// `vertical_subsampling` is **1** for YUYV, whose 4:2:2 halves only the horizontal axis,
+    /// and **2** for NV12's 4:2:0, which halves both. Written from V4L2's descriptions of the
+    /// two formats — the same descriptions the packers' doc comments cite — so that the two
+    /// decoders are asked the same question about a chroma sample's *coverage* and not only
+    /// about its identity: a build that shared one chroma pair across the wrong two pixels
+    /// would be as wrong as one that swapped the planes, and is a different edit.
+    fn colour_fixture_triples(
+        width: u32,
+        height: u32,
+        vertical_subsampling: u32,
+    ) -> Vec<(u8, u8, u8)> {
+        let mut triples = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let (cx, cy) = (x / 2, y / vertical_subsampling);
+                triples.push((
+                    fixtures::colour_yuv_luma(x, y),
+                    fixtures::colour_yuv_cb(cx, cy),
+                    fixtures::colour_yuv_cr(cx, cy),
+                ));
+            }
+        }
+        triples
+    }
+
+    /// Assert a decoded frame is what BT.601 says the fixture's samples are — and that the
+    /// fixture could have said otherwise.
+    ///
+    /// Three claims per pixel, and the second and third are what make the first worth making:
+    ///
+    /// 1. every channel agrees with [`bt601_limited_to_rgb`] to within
+    ///    [`CHROMA_ROUNDING_TOLERANCE`];
+    /// 2. no channel of either the correct or the chroma-swapped expectation reaches 0 or 255,
+    ///    so no pixel is a dead assertion held there by saturation;
+    /// 3. the swapped expectation differs from the correct one, in red *and* in blue, by more
+    ///    than the tolerance — so this pixel would have gone red under the swap rather than
+    ///    relying on some other pixel to notice.
+    fn assert_decoded_colour_is_what_bt601_says(rgb: &RgbImage, triples: &[(u8, u8, u8)]) {
+        assert_eq!(
+            rgb.pixels().len(),
+            triples.len(),
+            "the decode produced a different number of pixels than the fixture has samples"
+        );
+        for (index, (pixel, &(luma, cb, cr))) in rgb.pixels().zip(triples).enumerate() {
+            let expected = bt601_limited_to_rgb(luma, cb, cr);
+            let swapped = bt601_limited_to_rgb(luma, cr, cb);
+            for (channel, name) in [(0usize, "red"), (1, "green"), (2, "blue")] {
+                let (got, want) = (i32::from(pixel.0[channel]), i32::from(expected[channel]));
+                assert!(
+                    (got - want).abs() <= CHROMA_ROUNDING_TOLERANCE,
+                    "pixel {index} ({luma}, {cb}, {cr}): {name} decoded as {got}, BT.601 \
+                     limited range says {want}"
+                );
+                assert!(
+                    want > 0 && want < 255 && expected[channel] != 0 && swapped[channel] != 0,
+                    "pixel {index}: {name} saturates, so this pixel cannot tell a swap apart"
+                );
+                assert!(
+                    swapped[channel] != 255 && expected[channel] != 255,
+                    "pixel {index}: {name} saturates white, so this pixel cannot tell a swap apart"
+                );
+            }
+            for (channel, name) in [(0usize, "red"), (2, "blue")] {
+                let moved = i32::from(expected[channel]) - i32::from(swapped[channel]);
+                assert!(
+                    moved.abs() > CHROMA_ROUNDING_TOLERANCE,
+                    "pixel {index}: exchanging Cb and Cr moves {name} by {moved}, which this \
+                     test's tolerance would absorb — the fixture has stopped discriminating"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_yuyv_frame_puts_cr_on_red_and_cb_on_blue_rather_than_the_other_way_round() {
+        // `decode_yuyv` chooses the orientation by which of the `yuv` crate's four packed
+        // 4:2:2 entry points it calls, and `yvyu422_to_rgb` sits one identifier away from
+        // `yuyv422_to_rgb`. That one-word edit is a camera whose every recorded colour is
+        // inverted about the neutral axis — reds become blues — in photographs whose whole
+        // claim is that their samples are the device's own. It passed every test in this
+        // workspace until this one existed (note N130).
+        let bytes = fixtures::pack_yuyv_colour(32, 16);
+        let rgb = decode_yuyv(&bytes, 32, 16, 0).expect("the colour fixture decodes");
+        assert_decoded_colour_is_what_bt601_says(&rgb, &colour_fixture_triples(32, 16, 1));
+    }
+
+    #[test]
+    fn an_nv12_frame_reads_its_interleaved_plane_as_cb_then_cr_over_the_right_two_by_two_block() {
+        // The same defect, a different edit: NV12's chroma is one interleaved plane, so the
+        // orientation is `yuv_nv12_to_rgb` against `yuv_nv21_to_rgb`, and the sample covers a
+        // 2x2 block rather than a horizontal pair. Both halves are asserted — a build that had
+        // the planes right and the block wrong would still be a build that colours the wrong
+        // pixels.
+        let bytes = fixtures::pack_nv12_colour(32, 16);
+        let rgb = decode_nv12(&bytes, 32, 16, 0).expect("the colour fixture decodes");
+        assert_decoded_colour_is_what_bt601_says(&rgb, &colour_fixture_triples(32, 16, 2));
+    }
+
+    #[test]
+    fn a_stride_padded_colour_frame_decodes_the_same_colours_as_a_tightly_packed_one() {
+        // The orientation claim above has to survive the thing a driver actually does. A
+        // padded Y plane moves where the chroma plane starts, and `decode_nv12` computes that
+        // start from the *stride* rather than from the useful bytes — get that wrong and every
+        // chroma sample is read from the wrong offset, which on this fixture is a colour error
+        // rather than the length error the existing short-buffer tests would catch.
+        let packed = fixtures::pack_nv12_colour(16, 8);
+        let stride = 24;
+        let mut padded = Vec::new();
+        for row in packed.chunks(16).take(8) {
+            padded.extend_from_slice(row);
+            padded.extend(std::iter::repeat_n(0xffu8, stride - 16));
+        }
+        for row in packed[16 * 8..].chunks(16) {
+            padded.extend_from_slice(row);
+            padded.extend(std::iter::repeat_n(0xffu8, stride - 16));
+        }
+        let rgb = decode_nv12(&padded, 16, 8, u32::try_from(stride).expect("small"))
+            .expect("the padded colour fixture decodes");
+        assert_decoded_colour_is_what_bt601_says(&rgb, &colour_fixture_triples(16, 8, 2));
+    }
+
     #[test]
     fn a_gray_fixture_survives_the_yuyv_round_trip() {
+        // **Kept deliberately, and note N130 says why.** This asserts something the colour
+        // tests above do not: that a grey frame comes back grey, luma preserved end to end
+        // through the packer this crate ships and the `image` buffer it lands in. What it
+        // cannot assert is which chroma plane is which — every byte it compares is 128 either
+        // way — and it was read as covering that for two phases, which is the entire finding
+        // of N108. The two live side by side; neither is the other's replacement.
         let source = fixtures::gradient(16, 8);
         let packed = fixtures::pack_yuyv(&source);
         let rgb = decode_yuyv(&packed, 16, 8, 0).expect("packed fixture decodes");
@@ -742,6 +960,7 @@ mod tests {
 
     #[test]
     fn a_gray_fixture_survives_the_nv12_round_trip() {
+        // Kept for its sibling's reason: it is the luma claim, and it is not the chroma one.
         let source = fixtures::gradient(16, 8);
         let packed = fixtures::pack_nv12(&source);
         let rgb = decode_nv12(&packed, 16, 8, 0).expect("packed fixture decodes");
