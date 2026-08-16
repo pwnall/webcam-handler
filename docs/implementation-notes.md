@@ -17198,3 +17198,123 @@ mapping from a manifest key to the words the README introduces it with is the on
 table here, and it is hand-written because a prose label cannot honestly be derived from a JSON
 key — the manifest says `chromiumVersion` and the README says "Chrome version", and that is the
 right sentence rather than a drifted one.
+
+## N132 — T2 ships nine methods and design §2.3 declares eight, and the ninth is the one N83 needed
+
+**Doc:** design **§2.3**'s T2 block, which is the sketch a backend author implements against;
+**D12**'s 2026-08-12 amendment and note **N83** (a photo suspends a live preview rather than being
+refused by it); the precedent is the Changes-from-v1 row for T1's fifth method, *"`CameraBackend`
+gains `diagnose`, with a default empty body"*, which absorbed note **N7**. Recorded 2026-08-15 by
+the G6 adversarial review (docs/11), which found it by reading the trait against the document
+rather than by anything going red.
+
+**Measured.** `crates/schema/src/backend.rs:137-191` declares nine methods — `info`, `formats`,
+`controls`, `get`, `set`, `start_stream`, **`streaming`**, `next_frame`, `stop_stream`. §2.3's
+block lists eight; `streaming` is not among them.
+
+### Why the ninth exists, and why it is the device that is asked
+
+`fn streaming(&self) -> Option<NegotiatedStream>` landed with N83's ruling. `engine::preview`'s
+header records the two guesses that ruling's implementation disproved, and this method is the
+answer to the second of them: the photo path "knows only that *something* was streaming when its
+command began", and **the device is the authority on whether it is streaming** (AGENTS rule 4).
+There is no ioctl that asks a node that question, so the backend answers from the state it already
+keeps in order to refuse a second `STREAMON` the way the driver would — which is why the method's
+own doc says *"a flag kept beside the handle by a layer above would be a second answer that can
+drift from the first"*.
+
+It returns the negotiated stream rather than a `bool` for a reason the caller supplies:
+`while_suspended` has to **restore** what it interrupted, and the negotiated stream is what the
+viewers were watching. Resuming from a re-derived request would ask the driver the same question
+twice and hope for the same answer — which D5 says in as many words a driver need not give.
+
+### Why it never reached the document, which is the only part worth an entry
+
+N7 was written *before* the v2 revision, so the revision had an entry to absorb and the
+Changes-from-v1 table carries the row. N83 landed *after* it. There has been no revision since, so
+the growth has had nowhere to land — the note records the behaviour, the sequence, the bound and the
+test it retired, and the one consequence that belongs in the design's own sketch rather than in a
+note is the trait's arity.
+
+What it costs is small and self-announcing: §2.3's block is what §2.11's backend playbook step 1
+points a new backend author at, and a backend written against the document does not compile. That is
+the good failure mode — the compiler is what tells them, immediately — which is why this is a
+documentation debt and not a defect. It is stated here so the next revision has the row ready
+rather than rediscovering it.
+
+**Both shipped backends implement it as a read of state they already hold**
+(`crates/backends/v4l2/src/lib.rs:623-630`, `crates/backends/fake/src/camera.rs`), and the fake's is
+what E5's resemblance claim rests on for the suspend/resume path: `engine::preview`'s whole suite
+drives `ScriptedCamera`, so "the resume asks for the stream that was suspended" is asserted against
+a stand-in whose answer to this method is the same shape the real one gives.
+
+**Retires when** a design revision adds `streaming` to §2.3's block, the way the v2 revision added
+`diagnose` to T1's — at which point this entry has been absorbed and N7's row is the model for the
+sentence.
+
+## N133 — §2.8's dependency registry has drifted three ways, and each is a different kind of drift
+
+**Doc:** AGENTS' "Docs and dependencies" — *"Dependencies: permissive licenses only, enforced by
+cargo-deny (design §2.8 is the registry)"*; §2.8's owner ruling of 2026-08-09 on who decides an
+adoption; §2.8's standing instruction *"re-run N5's measurement on any jsonrpsee bump"*; note
+**N5**. Recorded 2026-08-15 by the G6 adversarial review (docs/11), measured with `cargo tree` and
+by reading `Cargo.toml` against the document.
+
+**The drift is in the registry, not in the practice.** Every item below was decided the way the
+2026-08-09 ruling says to decide it — licence checked, crate judged, conclusion written down at the
+point of adoption — and `Cargo.toml`'s comments are where the reasoning went. Some of them are among
+the longest arguments in the manifest. What did not happen is §2.8 learning any of it, and §2.8 is
+the sentence AGENTS points a reader at.
+
+### 1. Three adopted crates the registry never learned
+
+| Crate | Version | Edge | Where its argument lives |
+|---|---|---|---|
+| `tower` | 0.5.3 | `webcam-handler-daemon` | `Cargo.toml`'s entry: jsonrpsee hands its wire surface out as a `tower::Service` and neither `jsonrpsee-server` nor `axum` re-exports the trait, so a daemon mounting that service has to name it |
+| `tokio-stream` | 0.1.19, `default-features = false` | `webcam-handler-daemon` | `Cargo.toml`'s entry: `wrappers::ReceiverStream` and nothing else, bridging the MJPEG preview's `mpsc::Receiver` to `axum::body::Body::from_stream` |
+| `caps` | 0.5.6 | `webcam-handler-priv` | nowhere but the manifest line |
+
+The third is the one worth naming on its own. Design **§2.13** and note **N8** say the blessed
+helper's boundary is a file mode over a **root-equivalent** binary, and `crates/priv/src/modules.rs`
+declines to reuse `schema::Holder` on exactly that ground — *"this binary carries root-equivalent
+capabilities, and every dependency it links is attack surface inside that boundary. Thirty lines of
+`/proc` walking is a better trade than pulling the product's crate graph into a blessed binary."*
+So the crate with the strongest stated reason for its dependency list to be reviewed is the one
+whose single third-party edge the registry does not list. `caps` is MIT/Apache-2.0 and cargo-deny
+passes it; the gap is the review, not the licence.
+
+### 2. A version the registry states and the manifest does not use
+
+§2.8 reads *"tokio 1.x / axum 0.8 / **tower-http 0.7** (MIT)"*. `Cargo.toml` pins
+`tower-http = { version = "0.6.11", default-features = false }`. The document states the higher
+number; the build uses the lower one.
+
+### 3. A measurement quoted as evidence that has stopped being true
+
+§2.8 justifies N5's narrowed wall like this: *"What it was protecting — 'only `daemon` links the web
+stack' — is intact and gate-asserted for `api` specifically (measured at adoption: no axum, no
+hyper, **no tower** in its tree)."* Measured 2026-08-15,
+`cargo tree -p webcam-handler-api --edges normal` lists `tower 0.5.3`, `tower-layer 0.3.3` and
+`tower-service 0.3.3` — `jsonrpsee-core`'s, not ours.
+
+**The wall itself is intact, and that distinction is the whole reason this is a note rather than a
+finding.** N5 narrowed the api wall to *"no axum, no hyper, no tower-http; tokio allowed"*, and
+`scripts/gates/dependency-walls.sh:76` checks exactly those three names; none of them is in the
+tree. What has drifted is the parenthetical offered as the wall's *evidence*, not the wall. A reader
+who takes the parenthetical for the rule would conclude the gate is broken; a reader who takes the
+gate for the rule is right. This is also the first evidence that N5's closure has moved since it was
+measured, which is precisely the trigger §2.8 writes for itself.
+
+### Why nothing went red, and the shape that would close it
+
+§2.8 is prose, and `dependency-walls.sh` derives its lists from its own `--argjson` arguments rather
+than from the document, so the two cannot disagree in a way a predicate can see. The population that
+*would* make them comparable is derivable and small: `Cargo.toml`'s own `[workspace.dependencies]`
+keys against the crate names §2.8's registry paragraph spells. That is `msrv-sync.sh`'s shape and,
+more exactly, `browser-pins-sync.sh`'s (note **N131**, landed two days before this was found) — a
+reconciler between a manifest's keys and a prose sentence about them, with a pin the manifest
+declares and the prose does not naming a **failure** rather than a skip.
+
+**Amend this note if** the next design revision absorbs the three adoptions and corrects the two
+numbers, and re-run N5's measurement in the same pass — §2.8 asks for it on any jsonrpsee bump, and
+item 3 is the first measurement showing the closure has moved.
