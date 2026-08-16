@@ -50,8 +50,18 @@ base64 = "0.23.1"
 caps = "0.5.6"
 camino = { version = "1.2.5", features = ["serde1"] }
 clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
-clap_complete = "4.6.9"
-clap_mangen = "0.3.2"
+# `clap_complete` and `clap_mangen` were pinned here at P0 for an `xtask` that would emit shell
+# completions and man pages, and that emitter was never written: `xtask::generate` writes the
+# JSON Schema bundle, the OpenRPC document and `docs/agent-guide.md`, and nothing in this
+# workspace ever named either crate. They were removed on 2026-08-16 (the G6 review's L32, note
+# **N164**). Two lines, and the reason they are worth a paragraph: design §2.8 makes this table
+# the dependency registry, so an entry here is a claim about what the product links — and a
+# version pinned "at adoption" for a crate that was never adopted is a pin nothing can go stale
+# against, since a workspace dependency nobody names does not reach `Cargo.lock` at all.
+# `futures-timer` four lines down is the opposite case and the contrast is the rule: it is listed
+# because the lock *does* resolve it, transitively, and an adoption visible only in the lock is
+# one nobody reviewed. Re-adopting either is a one-line decision the owner's 2026-08-09 ruling
+# explicitly says is not an escalation — but it belongs in the commit that writes the emitter.
 comfy-table = "8.0.0"
 fd-lock = "4.0.4"
 # Adopted at P4f with `jsonrpsee/async-client`, which is the only thing that reaches it:

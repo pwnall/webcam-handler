@@ -48,6 +48,12 @@
 # to either shape that the runner's `grep` no longer matches turns this predicate red instead of
 # turning the rung silent.
 #
+# That sentence was written at P6d and was not true until 2026-08-16, when the G6 review found
+# the fixtures were hand-typed `printf` literals of those sentences (its L33, note **N163**). The
+# section that builds them now reads `crates/testkit/src/oracle.rs` out of the tree under test,
+# and the paragraph there says what is derived, what is invented, and why the split falls where
+# it does.
+#
 # ## The seam this predicate offers its own case file
 #
 #   $WCH_GATE_ORACLE_RUNNER   the runner-shaped program to drive. `pass_case` leaves it unset,
@@ -64,6 +70,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # through the seam above. `mutation-verdict.sh` makes the identical distinction.
 checkout="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 runner="${WCH_GATE_ORACLE_RUNNER:-$checkout/scripts/rung-oracles.sh}"
+root="$(gate_root)"
 
 if [[ ! -x "$runner" ]]; then
     gate_fail "$runner is not an executable program; this gate has no rung runner to drive"
@@ -74,31 +81,140 @@ gate_note "driving $runner"
 scratch="$(mktemp -d "$(gate_scratch_root)/wch-oracle-rung.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
+# --------------------------------------------------- the line shapes, read out of the harness
+#
+# **This is the half the header above promised and the file did not do until 2026-08-16** (the
+# G6 review's L33, note **N163**). The three logs below were hand-typed `printf` literals
+# carrying a transcription of `testkit::oracle`'s sentences, so a rename in `run_line` or
+# `decline_lines` moved the rung's output, left these fixtures spelling it the old way, and this
+# predicate went on passing about a rung that had gone silent — docs/9's derived-population rule
+# asserted in a header and applied nowhere in the file.
+#
+# The source is read from `gate_root`, so a selftest arm that seeds a renamed shape hands this
+# predicate a tree it actually reads; the runner still comes from the checkout, because the
+# question is whether the **shipped** runner's `grep` still matches what the harness in the tree
+# under test emits.
+
+oracle_src="$root/crates/testkit/src/oracle.rs"
+if [[ ! -f "$oracle_src" ]]; then
+    gate_fail "there is no crates/testkit/src/oracle.rs in the tree under test; the fixtures below are derived from its line shapes and this predicate has nothing to derive them from"
+    gate_finish
+fi
+
+# Product code only. The test half of that module prints a decline shape of its own
+# (`both_oracles_or_decline`), and a fixture built from a sentence only a *test* emits would be
+# evidence about the wrong thing. `lib.sh` owns the boundary rule, for its own stated reason.
+test_region="$(gate_test_region_start "$oracle_src")"
+if ((test_region < 0)); then
+    gate_fail "crates/testkit/src/oracle.rs has a test region this cannot identify, so a shape taken out of it might be one only its own tests print"
+    gate_finish
+fi
+
+# Rust's line continuation, undone: a `\` at the end of a line inside a string literal swallows
+# the newline and the next line's indentation, so a `format!` wrapped for width is not the string
+# the compiler builds until the halves are put back together. Both shapes below are wrapped.
+shapes="$scratch/line-shapes.txt"
+gate_product_lines "$oracle_src" "$test_region" |
+    sed -e ':join' -e '/\\$/{N;s/\\\n[[:space:]]*//;bjoin' -e '}' >"$shapes"
+
+# The literal text of one `format!`, placeholders and all, with the quotes taken off. Absence is
+# a failure and not a fallback to a transcription: a derivation that quietly degrades into the
+# thing it replaced is `mutation-verdict.sh`'s first property, and it is the whole point.
+#
+# The answer comes back in `SHAPE` rather than on standard output, which is not a style choice:
+# a command substitution is a subshell, and `gate_fail`'s counter incremented in one is a
+# violation that prints and does not count — this suite's own `gate_finish` would then read
+# PASS over a line reading FAIL. `{ grep … || true; }` for the reason `scripts/rung-oracles.sh:44`
+# gives: `grep` exits 1 on zero matches and this file runs under `pipefail`.
+derived=0
+SHAPE=''
+one_shape() {
+    local pattern="$1" what="$2" found
+    found="$({ grep -o "$pattern" "$shapes" || true; } | head -n1)"
+    SHAPE=''
+    if [[ -z "$found" ]]; then
+        gate_fail "no $what in crates/testkit/src/oracle.rs; the fixtures are derived from that string and this predicate cannot build one"
+        return 0
+    fi
+    derived=$((derived + 1))
+    found="${found#\"}"
+    SHAPE="${found%\"}"
+}
+
+one_shape '"SKIP oracles: [^"]*"' 'decline line shape'
+decline_shape="$SHAPE"
+one_shape '"oracles: [^"]*"' 'run line shape'
+run_shape="$SHAPE"
+# The remedies, in `Oracle::install_hint`'s own match order. Which remedy a fixture's decline
+# names is not load-bearing — no assertion below reads past `install` — but that the word is
+# still there is, so these are read rather than typed too.
+remedies=()
+mapfile -t remedies < <(grep -o '"install [^"]*"' "$shapes" | sed 's/^"//; s/"$//')
+if ((${#remedies[@]} < 2)); then
+    gate_fail "crates/testkit/src/oracle.rs offers ${#remedies[@]} install hint(s) and the declined fixture needs two; a decline with no remedy is a skip AGENTS' primary consumer cannot act on"
+else
+    derived=$((derived + ${#remedies[@]}))
+fi
+
+gate_checked "$derived" "line shapes derived from crates/testkit/src/oracle.rs"
+gate_require_nonzero "$derived" "line shapes"
+if ((GATE_FAILURES > 0)); then
+    gate_finish
+fi
+
+# One shape rendered: each `{…}` placeholder, left to right, replaced by the next argument.
+# `{ran}`, `{oracle}`, `{reason}` and a bare `{}` are all the same thing to this — a hole the
+# formatter fills — which is what lets a shape be renamed, re-wrapped or given a named argument
+# without this function caring, while a change to the *words between* the holes moves the fixture
+# and is exactly what the runner's anchors are made of.
+render_shape() {
+    local rest="$1" out='' head
+    shift
+    while [[ "$rest" == *'{'*'}'* ]]; do
+        head="${rest%%\{*}"
+        rest="${rest#*\}}"
+        out+="$head${1-}"
+        if (($# > 0)); then
+            shift
+        fi
+    done
+    printf '%s%s' "$out" "$rest"
+}
+
 # ------------------------------------------------------------------ the fixtures
 #
 # Three logs, each one a nextest transcript reduced to the lines the accounting reads. The
 # indentation is nextest's: it indents a captured test's output, which is why the runner's
 # patterns allow leading whitespace and why these fixtures carry it — a fixture written flush
 # left would pass a runner whose anchors had lost their `[[:space:]]*`.
+#
+# The *values* poured into the shapes are invented, and that is the same division
+# `mutation-verdict.sh` draws: its population comes from the committed register and its two
+# caught rows are written out by hand. A run's numbers, paths and reasons are what a run
+# supplies; the sentence around them is what the harness owns, and only the sentence is what the
+# runner greps.
 
 ran_log="$scratch/ran.log"
 {
     printf '        PASS [   1.9s] (1/2) webcam-handler-engine::oracles a_recording_the_product_path_produced_is_the_file_two_third_parties_read_back\n'
-    printf '    oracles: 4 container claim(s) about %s/take.avi checked by ffprobe and mpv\n' "$scratch"
-    printf '    oracles: 4 container claim(s) about %s/take.y4m checked by ffprobe and mpv\n' "$scratch"
+    printf '    %s\n' "$(render_shape "$run_shape" 4 "$scratch/take.avi" "ffprobe and mpv")"
+    printf '    %s\n' "$(render_shape "$run_shape" 4 "$scratch/take.y4m" "ffprobe and mpv")"
     printf '     Summary [   2.0s] 2 tests run: 2 passed, 0 skipped\n'
 } >"$ran_log"
 
 declined_log="$scratch/declined.log"
-# SC2016: the backticks below are *inside* a decline sentence this fixture reproduces verbatim,
-# not command substitutions this script wants performed. Spelling them any other way would make
-# the fixture stop being what `testkit::oracle::OracleReport::decline_lines` emits, which is the
-# one property that makes it evidence about the runner's own `grep`.
-# shellcheck disable=SC2016
 {
     printf '        PASS [   0.1s] (1/2) webcam-handler-engine::oracles a_recording_the_product_path_produced_is_the_file_two_third_parties_read_back\n'
-    printf '    SKIP oracles: ffprobe is not on this host (no `ffprobe` on this host'"'"'s PATH), so 3 claim(s) about %s/take.avi went unasked — demux, frames, rate — and nothing here says whether libavformat demuxes this file into the frames, geometry and rate its summary claims; remedy: install ffmpeg'"'"'s ffprobe (Debian/Ubuntu: `apt install ffmpeg`)\n' "$scratch"
-    printf '    SKIP oracles: mpv is not on this host (no `mpv` on this host'"'"'s PATH), so 1 claim(s) about %s/take.avi went unasked — playback — and nothing here says whether the file plays end to end; remedy: install mpv (Debian/Ubuntu: `apt install mpv`)\n' "$scratch"
+    printf '    %s\n' "$(render_shape "$decline_shape" \
+        ffprobe "not on this host's PATH" 3 "$scratch/take.avi" \
+        "demux, frames, rate" \
+        "whether libavformat demuxes this file into the frames, geometry and rate its summary claims" \
+        "${remedies[0]}")"
+    printf '    %s\n' "$(render_shape "$decline_shape" \
+        mpv "not on this host's PATH" 1 "$scratch/take.avi" \
+        "playback" \
+        "whether the file plays end to end" \
+        "${remedies[1]}")"
     printf '     Summary [   0.2s] 2 tests run: 2 passed, 0 skipped\n'
 } >"$declined_log"
 

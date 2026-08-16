@@ -488,6 +488,21 @@ impl Error {
     /// them is three lists that drift. This match is exhaustive over [`ErrorKind`], so
     /// the population is the vocabulary.
     #[must_use]
+    // Six `expect`s below, all of the same shape and all of it in view: every argument is a
+    // string literal in this match, so each one states a precondition rather than risking a
+    // device — which is the reason docs/9's lint set carves `cfg(test)` out, applied to a
+    // function that is a table of literals wearing product visibility. One expectation over the
+    // whole function rather than six, because six copies of one sentence is what
+    // `allow_attributes_without_reason` exists to stop.
+    //
+    // Bare, and not wrapped in `cfg_attr(not(test), …)` to match the crate root's `deny`, for
+    // the reason `pairing.rs` states beside its own: `#[expect]` sets the level at this node
+    // either way, so the wrapper changes nothing except who can notice when the suppression goes
+    // stale (note **N167**).
+    #[expect(
+        clippy::expect_used,
+        reason = "every id and slug in this table is a literal spelled in this match"
+    )]
     pub fn sample(kind: ErrorKind) -> Error {
         match kind {
             ErrorKind::DeviceGone => Error::DeviceGone {

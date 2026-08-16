@@ -105,3 +105,55 @@ success-output = "final"
 # browser, and a cold Chromium start on a loaded machine is seconds rather than milliseconds.
 # Still bounded, and still not synchronisation — nothing waits on this to learn anything.
 slow-timeout = { period = "120s", terminate-after = 3 }
+
+# ## Why two of the privileged helper's tests show their output, added 2026-08-16
+# ## (notes **N160**, **N167**)
+#
+# `crates/priv/src/modules.rs` holds the only executable proof of design §2.13's interlock —
+# that `cycle_uvcvideo` refuses to unload `uvcvideo` while a `/dev/video*` node is open — and
+# beside it the non-vacuity check that makes that proof mean anything, that the holder scan can
+# see a node this process deliberately opened. Both need a camera, and until 2026-08-16 both met
+# a host without one with a bare `return`: the G6 review found them proving nothing and saying
+# nothing, which is AGENTS rule 3's "skip that reads as pass" in the one place where what goes
+# unproved is the bound on what a root-capable binary may do.
+#
+# They print one census line each now — `SKIP:` when the host lends no node, `HELD:` when it
+# does — and nextest hides a passing test's output, so without this the line would go into the
+# same void the two rungs above were named here to escape.
+#
+# ## Why the filter names two tests rather than the binary
+#
+# **`success-output = "final"` shows every passing test's captured stdout, libtest banner
+# included** — it is not a filter on what a test chose to print. Measured on 2026-08-16:
+# `binary(webcam-handler-priv)` turned a 30-line run into 208, twenty near-identical `stdout ───`
+# blocks, in which the one line rule 3 is about would be the hardest thing on the screen to find.
+# The paragraph that first justified it here claimed the other 18 tests print nothing; one of them
+# (`status_verbs_work_without_a_blessing`) prints two JSON documents, and the banner made the other
+# 17 noisy anyway. A repair that buys ~140 lines of permanent noise per `just ci` to make one line
+# visible has spent the reader's attention on the wrong thing (note **N167**).
+#
+# So the override names the two host-dependent tests, and the run grows by two blocks whose
+# content is exactly the census. The cost of naming tests rather than a binary is a coupling to
+# their names, which a rename breaks in silence — held by
+# `the_two_claims_a_host_may_not_be_able_to_make_are_the_ones_nextest_is_told_to_print`, which
+# reads this file and goes red on either name or on the override's removal.
+#
+# Two shapes were rejected. `testkit`'s arrangement — pass `--success-output` on a wrapper
+# script's own command line — needs a wrapper, and these tests run under plain `just ci` nextest
+# with no rung of their own. Moving the claim to a shell predicate, where `gate_skip` prints
+# *and* counts, is note N44's remedy and it is wrong here for the reason N160 gives: the claim is
+# about the **code**, and only its precondition is about the host, so a predicate would have to
+# build and run a root-capable binary on every push.
+#
+# It is **not** in the `exclusive-device` group and must not be: neither test streams. They open
+# a node, read `/proc`, and close it, which contends with nothing — and putting them in a
+# one-thread group would be a claim about contention that does not exist. `CAMERA_FD` inside the
+# module serializes the pair against each other, which is a different claim and the right one.
+[[profile.default.overrides]]
+filter = '''
+    binary(webcam-handler-priv) and (
+        test(the_holder_scan_reads_this_process_and_survives_unreadable_ones)
+        or test(cycling_refuses_while_a_camera_is_open_unless_forced)
+    )
+'''
+success-output = "final"

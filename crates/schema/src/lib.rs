@@ -38,6 +38,24 @@
 //! - **Availability is not capability** (E3). [`error::Error`] keeps `Busy`,
 //!   `PermissionDenied`, `DeviceGone` and `SettleTimeout` apart.
 #![forbid(unsafe_code)]
+// docs/9's "device/request-driven paths" lint set. This crate is the vocabulary every
+// device-derived value is parsed into — `PixelFormat::parse`, `ControlRange`, the flag bits, the
+// slugs a card name produces — so its parsing and folding paths are request-driven end to end
+// even though it opens nothing. `not(test)` because a test asserting an invariant with
+// `.expect("literal fixture")` is stating a precondition, not risking a device; docs/9 writes
+// the same carve-out.
+//
+// `as_conversions` is deliberately not in this set — see `lint-posture.sh`, which walks for the
+// four and records which crates add the fifth and why.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 pub mod vocabulary;
 

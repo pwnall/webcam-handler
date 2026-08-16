@@ -254,6 +254,97 @@
 # applied by hand were all killed and one of them found a real gap (note **N112**), but
 # twelve hand-chosen mutants is not a floor — the whole point of this job is the mutations
 # nobody thought of.
+# ## What the G6 review found in neither list, and where each of them lands (2026-08-16)
+#
+# The paragraph above `crates/daemon` states the law twice — *"an exclusion that is not a
+# decision with a date is an oversight wearing one"* — and the review walked the tree against it
+# for the first time. Nine groups were in neither list (its L20, note **N162**). The review's
+# headline said three imaging modules; the honest count is four in `imaging/` plus five whole
+# crates, most of `crates/backends/v4l2/`, most of `crates/cli-core/`, and seven modules of
+# `crates/engine/` the P4b paragraph's list does not reach. Every one of them is written down
+# here now, and **nothing below widens the floor**: the precedent this file sets twice (P4d at
+# `:49-59`, P6a at `:149-161`) is that a widening lands *with* its run and with every survivor
+# triaged, and this session had no floor budget. A decision with a date is what the rule asks
+# for; a widening is what the next run buys.
+#
+# **Owed, and the closest calls — folds that belong in on the merits, waiting only for the run
+# that would triage them:**
+#
+#   crates/imaging/src/decode.rs   `&[u8]` in, pixels out, and the one module in this list with
+#                                  measured evidence against it: note **N130** hand-applied
+#                                  three mutants here and every one of them survived **1381
+#                                  passing tests**. The tests that kill those three landed with
+#                                  N130, so what a floor run would find now is unknown rather
+#                                  than known — which is the argument for running it, not for
+#                                  assuming it is clean.
+#   crates/imaging/src/encode.rs   the PNG/PPM sinks: values in, bytes out, driven over a
+#                                  `Cursor` by their own suite.
+#   crates/imaging/src/exif.rs     the APP1 assembly. A fold over a control list, and the
+#                                  review's L5 says it is unbounded — which is a mutant's
+#                                  question as much as a reviewer's.
+#   crates/imaging/src/photo.rs    **explicitly last**: the review's L21 measures four of its six
+#                                  pixel transforms as unasserted anywhere in the workspace, so a
+#                                  run over it today would report missing *tests* as survivors.
+#                                  Widen it after L21, or the triage is the finding read twice.
+#   crates/engine/src/resolve.rs   D1's prefix resolution over a whole enumeration — a fold, and
+#                                  the one home two roots share.
+#   crates/engine/src/profile.rs   the T3 invariant/volatile split, which is the whole value of
+#                                  the corpus expressed as a fold over an open camera's answers.
+#
+# **Out, and each for a stated reason rather than by omission:**
+#
+#   crates/backends/fake/          the fake *is* the double. Rubric A9 judges it by resemblance
+#                                  to a probe record, not by whether a test noticed a changed
+#                                  line, so a survivor here says "no test asserts the fake does
+#                                  this" — which is a claim about a fixture. `testkit`'s
+#                                  resemblance battery is what holds this crate.
+#   crates/testkit/                the harness that does the asserting. Mutating it asks whether
+#                                  the tests test the tests, and note **N15**'s lesson is that
+#                                  the answer is bought with a better fault, not a better mutant.
+#   crates/imaging/src/fixtures.rs the synthetic image generators, and `imaging/src/fault.rs`,
+#   crates/imaging/src/fault.rs    the one-line D13 routing beside them: a fixture generator and
+#                                  a `match` with one arm. Same class as `testkit`.
+#   crates/priv/                   dev-only, root-capable, and every claim in it is about a
+#                                  filesystem, a subprocess environment or `/proc`. Its boundary
+#                                  is held by `privileged-helper.sh` and by its own tests, which
+#                                  is where a root-equivalent binary's claims belong.
+#   xtask/                         the emitter. Its output is diffed **byte for byte** against
+#                                  committed artifacts by `schema-artifacts-current.sh` and
+#                                  `agent-guide-current.sh` on every push, which is a strictly
+#                                  stronger check than a mutant: any change to what it emits is
+#                                  already red, including the ones nobody thought of.
+#   crates/client/                 `remote.rs`, `transport.rs`, `lib.rs`, `main.rs` — a socket, a
+#                                  jsonrpsee client and a composition root. The same class as
+#                                  `engine`'s shell and `crates/daemon`: a survivor needs a rig
+#                                  before it needs a test, and `cli-parity.sh` compares this
+#                                  root against `crates/cli` byte for byte over the fake.
+#   crates/cli-core/               `render.rs` was already out for rendering; `lib.rs` is the
+#                                  clap tree and the verb bodies, whose answers are pinned by
+#                                  `cli-parity.sh` and by the emitted `docs/agent-guide.md`, and
+#                                  `contracts.rs` is a committed TSV read back. Mutating a clap
+#                                  declaration produces survivors about help text.
+#   crates/backends/v4l2/          `enumerate.rs`, `sysfs.rs`, `holders.rs`, `lib.rs` — the same
+#                                  argument `watch.rs` is out on, one level up: they walk `/sys`
+#                                  and `/proc` and drive an open device, so their mutants are
+#                                  decidable only against hardware. R2 and R3 own that half, and
+#                                  `hotplug.rs` is in precisely because the *decision* was pushed
+#                                  out of them into a fold.
+#   crates/engine/src/paths.rs     the XDG state directory, `progress.rs`'s seam (whose `emit`
+#   crates/engine/src/progress.rs  cannot fail by design), `refusal.rs`'s one spelling of
+#   crates/engine/src/refusal.rs   `IllegalTransition`, `lib.rs`'s module declarations, and
+#   crates/engine/src/lib.rs       `double.rs`, which is `#[cfg(test)]`. Declarations, an
+#   crates/engine/src/double.rs    environment lookup and a test double: nothing here is a fold
+#                                  over device-derived values.
+#   crates/imaging/src/lib.rs      module declarations and the crate's lint block.
+#
+# **What this file still cannot do, and it is the honest residual:** nothing checks that the two
+# lists together cover the tree. This section was written by a walk somebody performed once, and
+# the next module added to `crates/` will be in neither list again on the day it lands. The
+# mechanical form is a canonical marker per exclusion — one `scope-out: <path> — <reason>` line
+# apiece — and a predicate that walks every product `.rs` and requires it to be in
+# `examine_globs` or to have one. That is the shape `unsafe-scope.sh` already uses for a
+# crate-root attribute it cannot make uniform, and it is what retires this paragraph's
+# maintenance cost.
 examine_globs = [
     "crates/api/src/codes.rs",
     "crates/api/src/photo.rs",

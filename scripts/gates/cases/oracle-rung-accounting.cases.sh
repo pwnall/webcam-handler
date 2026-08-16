@@ -33,6 +33,12 @@
 #   - **missing-log=green** — a seam handed a path that is not there, answering 0. A typo in a
 #     fixture path would then read as a green rung.
 #
+# Since 2026-08-16 the fixtures are derived from `testkit::oracle`'s own `format!` strings rather
+# than transcribed (note **N163**), so there is a second subject and it is a *tree* rather than a
+# runner: the three arms at the bottom seed the shapes the derivation reads. They are what makes
+# the header's promise checkable — a rename that moved the rung's output used to leave the
+# fixtures spelling it the old way and this predicate green about a rung gone silent.
+#
 # shellcheck shell=bash
 
 # Write a runner-shaped program: it reads the recorded log the same way the shipped one does and
@@ -169,5 +175,43 @@ fail_case_no_runner_to_drive_at_all() {
     # The subject having left the build, which is `dependency-walls.sh`'s "the crate left the
     # workspace" arm charged to a script: a predicate whose program is gone must go red rather
     # than examine zero things and pass.
-    WCH_GATE_ORACLE_RUNNER="/nonexistent/rung-oracles.sh" "$GATE"
+    gate_red_because 'is not an executable program; this gate has no rung runner to drive' \
+        env "WCH_GATE_ORACLE_RUNNER=/nonexistent/rung-oracles.sh" "$GATE"
+}
+
+fail_case_the_run_line_the_rung_greps_for_was_reworded() {
+    # **The arm the derivation exists for.** One word changed *between* the shape's placeholders,
+    # which is where the runner's anchor lives: the harness still emits a run line and the
+    # extraction still finds it, so nothing here is missing — but `rung-oracles.sh` stops counting
+    # it, and a rung that ran and cannot say so is one nobody can tell from a rung never invoked.
+    # Green under the transcribed fixtures this predicate shipped with until 2026-08-16.
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed -i 's/{ran} container claim(s) about/{ran} container assertion(s) about/' \
+        "$tree/crates/testkit/src/oracle.rs"
+    gate_red_because 'the run verdict: the runner exited 1 over the recorded log' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_the_decline_line_shape_was_renamed() {
+    # The other half of the same claim, and the louder failure: rename the decline's leading words
+    # and the derivation has nothing to build a decline out of. A fallback to the old
+    # transcription here would be the derivation quietly becoming the thing it replaced, so the
+    # answer is a violation rather than a default.
+    local tree
+    tree="$(gate_scratch_tree)"
+    sed -i 's/"SKIP oracles: {oracle} is not on this host ({reason})/"DECLINED oracles: {oracle} is not on this host ({reason})/' \
+        "$tree/crates/testkit/src/oracle.rs"
+    gate_red_because 'no decline line shape in crates/testkit/src/oracle.rs' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_the_harness_that_owns_the_line_shapes_left_the_tree() {
+    # `mutation-verdict.sh`'s first property, charged to this predicate: a derivation whose source
+    # is gone fails rather than degrading into a hard-coded fixture nobody would notice was one.
+    local tree
+    tree="$(gate_scratch_tree)"
+    rm -f "$tree/crates/testkit/src/oracle.rs"
+    gate_red_because 'there is no crates/testkit/src/oracle.rs in the tree under test' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
 }

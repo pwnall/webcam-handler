@@ -301,8 +301,9 @@ mutants *args:
 mutants-iterate *args:
     ./scripts/mutants.sh --iterate {{args}}
 
-# Regenerate committed generated artifacts (JSON Schema bundle, OpenRPC, completions,
-# man pages). `schema-artifacts-current.sh` proves the committed copies match.
+# Regenerate the committed generated artifacts: the JSON Schema bundle and the OpenRPC document
+# under `schemas/`, and `docs/agent-guide.md`. `schema-artifacts-current.sh` and
+# `agent-guide-current.sh` prove the committed copies match what this emits.
 generate:
     cargo run --locked -p webcam-handler-xtask -- generate
 

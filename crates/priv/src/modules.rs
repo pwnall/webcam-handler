@@ -411,6 +411,224 @@ mod tests {
     /// misleading failure.
     static CAMERA_FD: Mutex<()> = Mutex::new(());
 
+    /// A `/dev/video*` node held open for the caller's assertions, having said on one line
+    /// either that it holds one or why this host lends none.
+    ///
+    /// The two tests at the bottom of this module are host-dependent in the same two ways — no
+    /// camera, or no permission on the one there is — and one of them is the only executable
+    /// proof of design §2.13's interlock. Until 2026-08-16 both of them met either condition
+    /// with a bare `return`, six of them across the pair, so a machine with no camera ran the
+    /// interlock's proof, proved nothing, and reported it as a pass: AGENTS rule 3's *"never
+    /// silence"* broken in the one place where what goes unproved is what a root-capable binary
+    /// may do (note **N160**).
+    ///
+    /// **One line either way, and that is the repair rather than the decline alone** — the
+    /// argument `testkit::oracle::OracleReport::print` states for the oracle rung and note
+    /// **N167** re-states here: *a rung that printed neither is a rung nobody can tell apart
+    /// from one that was never invoked*. A reader of `just ci` who sees nothing cannot know
+    /// whether the interlock was exercised, so the held case announces itself too.
+    ///
+    /// **The sentence is built as data and written through a seam**, which is note **N121**'s
+    /// shape carried one step further than G6 first landed it. Returning the decline made the
+    /// *wording* assertable; it left the `println!` at the call site, and deleting both of them
+    /// restored the exact silence this repair is about with every test still green (the review
+    /// of B3 measured that). The census is a `dyn Write` argument so the write itself is the
+    /// thing a test drives.
+    ///
+    /// The candidates are full paths and a parameter for the same reason. [`video_nodes`] reads
+    /// `/dev`, and a helper that called it here would make both of its own lines unassertable
+    /// on whichever machine the suite happens to run on.
+    fn a_node_to_hold(
+        candidates: &BTreeSet<String>,
+        claims: usize,
+        about: &str,
+        census: &mut dyn std::io::Write,
+    ) -> Option<(String, std::fs::File)> {
+        let line = match candidates.iter().next() {
+            None => decline(
+                claims,
+                about,
+                "no /dev/video* node is present on this host",
+                "attach a camera, or run `just rung-vivid-managed`, which loads the virtual driver",
+            ),
+            Some(path) => match std::fs::File::open(path) {
+                Ok(held) => {
+                    report(census, &held_line(claims, about, path));
+                    return Some((path.clone(), held));
+                }
+                Err(error) => decline(
+                    claims,
+                    about,
+                    &format!("{path} is listed but this user cannot open it ({error})"),
+                    "add this user to the `video` group, or run this suite as one who is in it",
+                ),
+            },
+        };
+        report(census, &line);
+        None
+    }
+
+    /// The `/dev/video*` nodes as paths, which is what [`a_node_to_hold`] takes.
+    fn video_node_paths() -> BTreeSet<String> {
+        video_nodes().iter().map(|n| format!("/dev/{n}")).collect()
+    }
+
+    /// One line onto the census, and a write that fails is not a reason to fail a claim about
+    /// the kernel — but it is not a reason to swallow the failure either, so it lands where a
+    /// failing test's output is read.
+    fn report(census: &mut dyn std::io::Write, line: &str) {
+        if let Err(error) = writeln!(census, "{line}") {
+            eprintln!("the census line could not be written ({error}): {line}");
+        }
+    }
+
+    /// One decline, on one line, in the shape the other rungs' censuses count.
+    ///
+    /// `SKIP` first because that is the anchor a census greps — `scripts/smoke-hw.sh:138` reads
+    /// `^[[:space:]]*SKIP` and reprints what follows it, and `crates/backends/v4l2/tests/
+    /// hardware.rs` writes to that shape for that reason. (`scripts/rung-oracles.sh` is the
+    /// same idea with its own anchor, `SKIP oracles:`, which these lines deliberately do not
+    /// wear: neither wrapper runs this suite, and a line that answered to another rung's
+    /// census would be counted into a total it is not part of.) Everything after it on that one
+    /// line, because the first line is the only one a census reprints: what was missing, how
+    /// many claims went unasked about what, and the remedy — the three things
+    /// `testkit::oracle::OracleReport::decline_lines` carries, for its reason, which is that
+    /// AGENTS' primary consumer has no hands to work any of them out with.
+    fn decline(claims: usize, about: &str, why: &str, remedy: &str) -> String {
+        format!("SKIP: {why}, so {claims} claim(s) about {about} went unasked; remedy: {remedy}")
+    }
+
+    /// The other half of the census: the run happened, against what, about what.
+    ///
+    /// `HELD` rather than `SKIP` so no census counts it as a decline, and the node named because
+    /// "the interlock was proved" against `/dev/video0` and against a `vivid` node loaded by
+    /// `just rung-vivid-managed` are different runs and a reader a week later wants to know
+    /// which one this was.
+    fn held_line(claims: usize, about: &str, path: &str) -> String {
+        format!("HELD: {path}, so {claims} claim(s) about {about} were asked of a real node")
+    }
+
+    #[test]
+    fn a_host_that_lends_no_camera_declines_by_name_rather_than_printing_nothing() {
+        // The two tests at the bottom of this module need a `/dev/video*` node, and one of
+        // them is the only executable proof of design §2.13's interlock. A host without one
+        // is a host they have nothing to say about — which is a decline and not a pass, and
+        // the difference is AGENTS rule 3's. Driven over an invented empty set so the claim
+        // holds on this machine, which has cameras, as well as on the one it is about.
+        //
+        // The census is read back rather than the return value: what rule 3 is about is a
+        // line somebody sees, and G6 landed this claim over the returned `Err` alone — which
+        // left both `println!`s deletable with the suite green (note **N167**).
+        let no_nodes = BTreeSet::new();
+        let mut census = Vec::new();
+        let held = a_node_to_hold(&no_nodes, 2, "the uvcvideo interlock", &mut census);
+        assert!(
+            held.is_none(),
+            "an empty candidate set offers nothing to hold"
+        );
+        let declined = String::from_utf8(census).expect("the census line is UTF-8");
+        assert!(
+            declined.starts_with("SKIP"),
+            "a census greps only lines that begin SKIP: {declined}"
+        );
+        assert_eq!(
+            declined.lines().count(),
+            1,
+            "everything a decline wants read a week later has to fit on that first line: \
+             {declined}"
+        );
+        assert!(
+            declined.ends_with('\n'),
+            "a census greps whole lines, so the last one is terminated: {declined:?}"
+        );
+        assert!(
+            declined.contains("2 claim(s) about the uvcvideo interlock"),
+            "a decline that does not price what went unasked is a skip nobody can rank: \
+             {declined}"
+        );
+        assert!(
+            declined.contains("remedy: "),
+            "AGENTS' primary consumer has no hands to work a remedy out with: {declined}"
+        );
+    }
+
+    #[test]
+    fn a_node_this_host_does_lend_is_announced_rather_than_held_in_silence() {
+        // The other half, and it is not decoration: a run that prints nothing is one nobody
+        // can tell apart from a run that never happened, which is exactly why
+        // `testkit::oracle::OracleReport::print` emits a run line beside its declines. Driven
+        // over `/dev/null`, which every Linux host lends and no camera test wants — the point
+        // is the announcement, not the node.
+        let lendable = BTreeSet::from(["/dev/null".to_owned()]);
+        let mut census = Vec::new();
+        let (path, held) =
+            a_node_to_hold(&lendable, 3, "the uvcvideo interlock", &mut census).expect("/dev/null");
+        assert_eq!(path, "/dev/null");
+        drop(held);
+        let announced = String::from_utf8(census).expect("the census line is UTF-8");
+        assert!(
+            !announced.starts_with("SKIP"),
+            "a run that answered must not be counted as a decline: {announced}"
+        );
+        assert!(
+            announced.contains("/dev/null") && announced.contains("3 claim(s)"),
+            "which node and how many claims is what a reader a week later wants: {announced}"
+        );
+        assert_eq!(
+            announced.lines().count(),
+            1,
+            "one line per run, like the decline it replaces: {announced}"
+        );
+    }
+
+    #[test]
+    fn a_node_this_user_cannot_open_declines_with_the_reason_the_kernel_gave() {
+        // The third branch, and the one a shared machine actually meets: the node is there and
+        // the user is not in `video`. The kernel's own words are carried because
+        // `PermissionDenied` and `DeviceGone` are different setup problems (AGENTS rule 7), and
+        // a decline that flattened them would send a reader to the wrong remedy.
+        let unopenable = BTreeSet::from(["/dev/definitely-not-a-node-xyzzy".to_owned()]);
+        let mut census = Vec::new();
+        let held = a_node_to_hold(&unopenable, 1, "the holder scan", &mut census);
+        assert!(held.is_none(), "an unopenable node cannot be held");
+        let declined = String::from_utf8(census).expect("the census line is UTF-8");
+        assert!(
+            declined.starts_with("SKIP"),
+            "a census greps only lines that begin SKIP: {declined}"
+        );
+        assert!(
+            declined.contains("cannot open it (") && declined.contains("video"),
+            "the reason the kernel gave and the remedy that answers it: {declined}"
+        );
+    }
+
+    #[test]
+    fn the_two_claims_a_host_may_not_be_able_to_make_are_the_ones_nextest_is_told_to_print() {
+        // The census above is a `println!`, and nextest hides a passing test's output — so the
+        // line only reaches a reader because `.config/nextest.toml` carries a `success-output`
+        // override naming these two tests. That override is coupled to their *names*, which is
+        // the cheapest thing in this repository to break: rename either and the decline goes
+        // back into the void with nothing red (note **N167**). This is that coupling held.
+        let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/nextest.toml");
+        let text = std::fs::read_to_string(&config)
+            .unwrap_or_else(|error| panic!("{} is readable: {error}", config.display()));
+        for named in [
+            "the_holder_scan_reads_this_process_and_survives_unreadable_ones",
+            "cycling_refuses_while_a_camera_is_open_unless_forced",
+        ] {
+            assert!(
+                text.contains(named),
+                ".config/nextest.toml does not name {named}, so nextest hides whatever it \
+                 prints and its decline is a skip that reads as a pass (AGENTS rule 3)"
+            );
+        }
+        assert!(
+            text.contains("success-output"),
+            ".config/nextest.toml names those tests but shows no successful output, which is \
+             the same silence with the names still in it"
+        );
+    }
+
     #[test]
     fn a_loaded_module_is_found_and_an_invented_one_is_not() {
         // Both directions against the live kernel. `uvcvideo` is loaded on any host with
@@ -486,16 +704,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Non-vacuity for the interlock: the scan must at minimum be able to see a
         // *deliberately opened* node, or `cycle_uvcvideo`'s refusal would never fire.
-        let nodes = video_nodes();
-        if nodes.is_empty() {
-            return; // No camera on this host; the interlock has nothing to guard.
-        }
-        let Some(node) = nodes.iter().next() else {
+        let Some((path, held)) = a_node_to_hold(
+            &video_node_paths(),
+            2,
+            "the holder scan",
+            &mut std::io::stdout().lock(),
+        ) else {
             return;
-        };
-        let path = format!("/dev/{node}");
-        let Ok(held) = std::fs::File::open(&path) else {
-            return; // No permission on this host; not a failure of the scan.
         };
 
         let seen = video_holders();
@@ -524,14 +739,12 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // The interlock itself. Written so it exercises the refusal without ever
         // unloading anything: `force = false` returns before the first modprobe.
-        let nodes = video_nodes();
-        if nodes.is_empty() {
-            return;
-        }
-        let Some(node) = nodes.iter().next() else {
-            return;
-        };
-        let Ok(held) = std::fs::File::open(format!("/dev/{node}")) else {
+        let Some((_path, held)) = a_node_to_hold(
+            &video_node_paths(),
+            3,
+            "the uvcvideo interlock",
+            &mut std::io::stdout().lock(),
+        ) else {
             return;
         };
 

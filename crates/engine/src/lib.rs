@@ -34,6 +34,22 @@
 //! | [`discover`] | empirical pair discovery, by toggling and diffing INACTIVE (D3, PF:3) |
 //! | [`store`] | the session directory, atomic state writes, and the one fd-lock (D9) |
 #![forbid(unsafe_code)]
+// docs/9's "device/request-driven paths" lint set. Every value that reaches this crate came
+// from a device or from a caller's request, and every path here acts on one, so the whole crate
+// is inside it. `not(test)` because a test asserting an invariant with `.expect("literal
+// fixture")` is stating a precondition, not risking a device; docs/9 writes the same carve-out.
+//
+// `as_conversions` is deliberately not in this set — see `lint-posture.sh`, which walks for the
+// four and records which crates add the fifth and why.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 #[cfg(test)]
 mod double;

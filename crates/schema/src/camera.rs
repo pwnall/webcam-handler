@@ -149,6 +149,20 @@ pub fn assign_ids(cards: &[String]) -> Vec<CameraId> {
             base
         };
         taken.insert(chosen.clone());
+        // The precondition is three branches up and in view: `chosen` is either a natural slug
+        // this function has already tested for emptiness, or `camera-<index>`, or one of those
+        // with `-<n>` appended. `from_slug` refuses exactly the empty string, so this states a
+        // precondition rather than risking a device-derived value — docs/9's `cfg(test)`
+        // carve-out, applied to the one site in this file that is that shape. Restructuring it
+        // is a real option and a different change: the answer this function owes its caller is
+        // one id per card, positionally, so there is no honest total form that does not first
+        // decide what a card with no representable handle *is*.
+        //
+        // Bare, for the reason `pairing.rs` states beside its own (note **N167**).
+        #[expect(
+            clippy::expect_used,
+            reason = "`chosen` is non-empty by the three branches above"
+        )]
         out.push(CameraId::from_slug(&chosen).expect("chosen slug is non-empty by construction"));
     }
     out
@@ -175,14 +189,18 @@ pub fn resolve_prefix(ids: &[CameraId], input: &str) -> PrefixMatch {
     if let Some(exact) = ids.iter().find(|id| id.body() == body) {
         return PrefixMatch::Unique(exact.clone());
     }
-    let matches: Vec<CameraId> = ids
+    let mut matches: Vec<CameraId> = ids
         .iter()
         .filter(|id| id.body().starts_with(body))
         .cloned()
         .collect();
+    // `pop` rather than a length check and an `expect`: the two questions "how many matched"
+    // and "which one" are then answered by the same value, so the single-match arm has no
+    // precondition to state. A `None` from `pop` means the list was empty, which is exactly
+    // what `PrefixMatch::None` says — a total match with no unreachable arm to argue about.
     match matches.len() {
         0 => PrefixMatch::None,
-        1 => PrefixMatch::Unique(matches.into_iter().next().expect("length checked")),
+        1 => matches.pop().map_or(PrefixMatch::None, PrefixMatch::Unique),
         _ => PrefixMatch::Ambiguous(matches),
     }
 }

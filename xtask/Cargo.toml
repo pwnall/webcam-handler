@@ -1,6 +1,6 @@
 [package]
 name = "webcam-handler-xtask"
-description = "Build-side tasks: emit the JSON Schema bundle and OpenRPC document, shell completions, man pages, and the generated agent usage guide."
+description = "Build-side tasks: emit the JSON Schema bundle, the OpenRPC document and the generated agent usage guide."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

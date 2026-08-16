@@ -116,6 +116,22 @@ pub struct ProbeSkip {
 /// empirical discovery, where it arrives with evidence attached.
 #[must_use]
 pub fn declared_pairs() -> Vec<AutomationPair> {
+    // The one `expect` in this file, and the shape docs/9's `not(test)` carve-out describes:
+    // every argument below is a string literal written four lines away, so this states a
+    // precondition rather than risking a device.
+    //
+    // Bare, and not wrapped in `cfg_attr(not(test), …)` to match the crate root's `deny`.
+    // `#[expect]` raises the lint's level at *this* node whichever way the root's `cfg`
+    // resolves, so the expectation is fulfilled in the `cfg(test)` build too and the wrapper
+    // changes nothing — measured both directions on 2026-08-16, note **N167**. What it does
+    // change is who can check it: an attribute compiled out under `cfg(test)` is one nothing can
+    // report as unfulfilled, so the wrapper is the spelling that hides its own staleness. This
+    // one is answered by `cargo clippy --workspace --all-targets -- -D warnings`, a `just ci`
+    // step, on the day the `.expect()` below leaves.
+    #[expect(
+        clippy::expect_used,
+        reason = "every caller below passes a literal declared in this function"
+    )]
     fn slug(s: &str) -> ControlSlug {
         ControlSlug::parse(s).expect("declared table slugs are non-empty literals")
     }

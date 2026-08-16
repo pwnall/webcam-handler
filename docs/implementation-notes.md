@@ -14230,7 +14230,12 @@ fire only when both are zero. Every input that then reaches the arithmetic still
 - `denominator == 0`, any numerator: `checked_div(0)` is `None`, and the `?` returns it.
 - Both zero: the mutated guard fires, exactly as the original does.
 
-**`imaging::avi::write::AviWriter::declared_interval`, `replace > with >=`.** The line is
+**`imaging::avi::write::AviWriter::declared_interval`, `replace > with >=`.** *(Amended
+2026-08-16, note **N166**: P6d moved this arithmetic to `crate::video::declared_interval`, where
+both containers now reach it. `AviWriter::declared_interval` is a pure forwarder with no
+comparison in it at all, so the register key below moved with the code. The argument is unchanged
+and was re-measured at the new home; what did change is the second sentence of the paragraph after
+next, because the mean's own filter is now demonstrably **not** shadowed.)* The line is
 `.filter(|span| *span > 0)` over a `u64`, so `>= 0` makes the filter the identity. The only
 span it stops admitting is `0`, and a span of `0` divides to a mean of `0`, which the next
 line's `.filter(|mean| *mean > 0)` drops for the reason its own comment gives: a zero frame
@@ -19122,5 +19127,555 @@ heartbeat goes on being answered — so the socket is demonstrably alive when th
 and reads the rejection's identity: not the closed sentinel, `call_timed_out`, and a message
 naming the wait. Driven red by rejecting with a bare `Error` again: *Expected "call_timed_out",
 received undefined*.
+
+**Retires when:** nothing retires it.
+
+## N160 — The only executable proof of §2.13's interlock returned silently on a host with no camera
+
+**Doc:** AGENTS rule 3 — *"every auto-skipping rung (vivid, hardware, oracles) reports a **named,
+counted skip** — never silence"*; design §2.13 and notes **N8**, **N125** on what bounds a
+root-capable binary; note **N44** on where a host-dependent claim belongs. Recorded 2026-08-16 by
+the G6 adversarial review (docs/11 L27), confirmed by reading the module.
+
+`crates/priv/src/modules.rs` holds two host-dependent tests. `cycling_refuses_while_a_camera_is_open_unless_forced`
+is the **only** place in this workspace where §2.13's interlock — `cycle_uvcvideo` refusing to
+unload `uvcvideo` while a `/dev/video*` node is open — is executed at all; the other,
+`the_holder_scan_reads_this_process_and_survives_unreadable_ones`, is the non-vacuity check that
+makes the first one mean anything, and its own comment says so: *"the scan must at minimum be able
+to see a **deliberately opened** node, or `cycle_uvcvideo`'s refusal would never fire."*
+
+Between them they met a host without a camera, or a user without permission on the one there was,
+with **six bare `return`s**. No line, no count, nothing in the log. On such a host both tests ran,
+proved nothing, and were reported as passing — which is "the skip that reads as pass" in the one
+place where what goes unproved is the bound on what a root-capable process may do. The review found
+two; the module had six.
+
+`scripts/gates/phase-criteria.tsv` makes the shape exact: `g6 tests package(webcam-handler-priv)`
+selected and counted 19 tests. **The selection was counted; the vacuity was not.**
+
+**Both halves of the repair, because neither works alone.** A `SKIP:` line per decline, and a
+`success-output = "final"` override in `.config/nextest.toml` — nextest hides a passing test's
+output (note N44), so without the second the first is printed into a void.
+
+**Two paragraphs of this entry were measured wrong the next day and are corrected in note N167,
+which is where the shape now lives.** The override was written as `binary(webcam-handler-priv)` on
+the argument that the crate declares no `[lib]`, that all its tests live in the one `[[bin]]`
+target, and that none of the others prints anything. The first two are true and the third is not
+(`status_verbs_work_without_a_blessing` prints two JSON documents), and the argument was beside the
+point anyway: `success-output = "final"` shows every passing test's captured stdout *including
+libtest's banner*, so the whole-binary override turned a 30-line run into 208. N167 narrows it to
+the two host-dependent tests and holds the name coupling that narrowing creates.
+
+**The decline is data first and a line second**, which is note **N121**'s shape and the reason this
+is testable at all: `a_node_to_hold` builds the sentence rather than printing it inline, and it
+takes the candidate set as an argument rather than reading `/dev`, so the decline can be driven on
+*this* machine, which has cameras and would never reach the branch. The sentence carries what
+`testkit::oracle::OracleReport::decline_lines` carries and for its reason: what was missing, how
+many claims went unasked about what, and the remedy, all on the first line, because a census greps
+only lines beginning `SKIP`. What this entry got wrong is that *returning* the sentence is not the
+same as *writing* it: N167 records both `println!`s being deletable with the suite green, and moves
+the write behind a seam a test drives.
+
+**What was chosen and what was not.** The review offered two ways to close the "counted" half:
+accept "named and visible" with a note, or follow N44 and move the host-dependent claim to a shell
+predicate, where `gate_skip` prints *and* counts. **Named and visible was chosen**, and the argument
+is that N44's move was right for a different reason than it looks: what N44 moved was a claim about
+a *host* wearing a test's clothes. This is the opposite — the claim is about the **code** (the
+interlock refuses) and only its precondition is about the host, so moving it would put the proof of
+§2.13 somewhere that cannot call `cycle_uvcvideo` without a gate building and running a
+root-capable binary, which no predicate in this suite does and which every push would then pay for.
+What is bought instead is a decline that carries its own count and its own remedy, in the shape the
+two counted rungs use, visible in `just ci`'s summary.
+
+**The residual, stated:** no run-level census adds these up, because `hw_`, `vivid_` and the oracles
+are counted by their `scripts/rung-*.sh` wrappers and these tests have none — they run under plain
+`just ci` nextest. This entry first wrote that `scripts/smoke-hw.sh` **and** `scripts/rung-oracles.sh`
+grep for the shape these lines wear; only the first does. `rung-oracles.sh:91` anchors on `SKIP
+oracles:`, which a `SKIP: …` line never matches — which is right rather than a gap, because a line
+counted into another rung's total would be a worse answer than one counted into none.
+
+**Retires when:** something aggregates declines across a whole `just ci` run, at which point the
+count stops being per-line and the wrapper distinction goes away.
+
+## N161 — The gate holding "killing is never a fallback" counted files, and was blind in the one file its own justification names
+
+**Doc:** AGENTS' "Hardware and privacy" — *"Killing a process that holds the camera is an explicit
+command naming its target, never a fallback"*; design §5; rubric B8; note **N48** point 2. Recorded
+2026-08-16 by the G6 adversarial review (docs/11 H3), reproduced against the shipped predicate.
+
+`scripts/gates/kill-is-never-a-fallback.sh` is the whole-tree half of that rule, and N48 says
+exactly why the Rust suite beside it is not enough: *"a `Busy` retry added to `wch_photo` would have
+left the first green"*. Its own header states the claim as a **call-site** count — *"A second call
+site anywhere … is the fallback AGENTS forbids"* — and the walk asked `grep -q` per file and
+appended one array element per **file** that matched.
+
+So a second `holders::terminate(` **in a file that already had one** was invisible. The file that
+already has one is `crates/daemon/src/server.rs`, which is where `wch_photo` lives: the gate was
+blind in precisely the place its own justification names. And it said so out loud — the closing
+`gate_checked` reported the file count under the label "call sites", so CI printed `checked 1 call
+sites` over a tree that could have five. Measured against a scratch copy with a second call appended
+to `server.rs`: `PASS … 168 items examined`, `checked 1 call sites`.
+
+This is note **N10**'s family for the fifth recorded time — a selection that is counted and counts
+the wrong thing — and it is the instance guarding the most consequential of the eight
+non-negotiable rules.
+
+**The repair is occurrences summed across files**, with two things the direction alone does not
+give. `{ grep -Eo … || true; } | wc -l` rather than a bare pipeline, because `grep` exits 1 on zero
+matches, 163 of the 164 scanned files have none and this script runs under `pipefail` — the trap
+`scripts/rung-oracles.sh` and `scripts/gates/counted-selections.sh` each already name. And the
+violation message names `file:count` pairs rather than file names, because a list of names reports
+two-in-one-file as one entry and sends a reader looking for a second file that is not there.
+
+**What is deliberately unchanged.** Comments and strings still count — the header says so and
+`pass_case_a_comment_that_does_not_name_the_call` pins the other direction, so
+`unsafe-scope.sh`'s comment stripping is not a precedent to copy here. The backend-subtree
+exemption is still derived from `cargo metadata`.
+
+**What goes red.** `fail_case_a_second_caller_in_the_file_that_already_has_one`, which appends a
+`make_room_for_the_retry` beside the legitimate call in `server.rs` — the shape a `Busy` retry would
+actually take. The two arms that existed both seeded *new* files, which is why the defect survived
+a suite with six inverse arms. Written in note **N31**'s stronger form, naming the branch: `is
+called from 2 places outside`.
+
+**Retires when:** nothing retires it.
+
+## N162 — Nine groups sat in neither of `.cargo/mutants.toml`'s lists, which is the one state that file forbids
+
+**Doc:** `.cargo/mutants.toml`'s own rule, stated twice — *"an exclusion that is not a decision with
+a date is an oversight wearing one"* — and docs/9 Part 2. Recorded 2026-08-16 by the G6 adversarial
+review (docs/11 L20), and the walk that priced it was the first anybody had performed.
+
+The file states its exclusions as **absence from `examine_globs`** so that widening the floor is
+adding a line rather than deleting one, and it accepts that only on the condition that every absence
+is written down and dated. It had been written down twice under exactly this pressure — P5e for
+`crates/daemon`, P6a for `crates/imaging/src/avi/` — and each time the paragraph says the module was
+found "in neither list, which is the one state the paragraph above forbids".
+
+**The review understated it.** Its headline says three imaging modules and its body names two. The
+walk finds four product modules in `crates/imaging/` (`decode.rs`, `encode.rs`, `exif.rs`,
+`photo.rs`), five whole crates (`client`, `priv`, `backends/fake`, `testkit`, `xtask`), most of
+`crates/backends/v4l2/` and most of `crates/cli-core/` — **and seven modules of `crates/engine/`
+the review did not reach at all** (`paths.rs`, `profile.rs`, `progress.rs`, `refusal.rs`,
+`resolve.rs`, `lib.rs`, `double.rs`), because P4b's exclusion paragraph names eight engine modules
+by hand and the crate has more than eight. This sentence and the summary in `.cargo/mutants.toml`
+both said *five* until the review of the batch that landed them counted the section's own
+enumeration (note **N167**); the nine-group count above is unaffected. `crates/daemon` is *not* among them: P5e closed that one and the review's parent question
+about it is already answered.
+
+**The repair is a dated decision per group and not a widening**, which is what the file's rule asks
+for and all it asks for. Two of the groups are folds that belong in on the merits and are recorded
+as owed — `imaging/decode.rs` above all, where note **N130** measured three hand-applied mutants
+each surviving **1381 passing tests** — and the reason they did not land in this commit is the
+precedent the file sets twice: a widening arrives *with* its run and with every survivor triaged.
+`imaging/photo.rs` is explicitly last, because the same review's L21 measures four of its six pixel
+transforms as unasserted anywhere, so a run over it today would report missing tests as survivors
+and the triage would be the finding read twice.
+
+**One argument in the new section is worth restating here, because it is the only "out" that is
+stronger than an "in".** `xtask/` stays out not because its mutants would be hard to triage but
+because its output is diffed **byte for byte** against committed artifacts by
+`schema-artifacts-current.sh` and `agent-guide-current.sh` on every push. Any change to what it
+emits is already red, including the ones nobody thought of, which is more than a mutation floor
+promises.
+
+**The residual, and it is the honest one:** nothing checks that the two lists together cover the
+tree. The section was written by a walk somebody performed once, and the next module added to
+`crates/` will be in neither list again on the day it lands.
+
+**Retires when:** the exclusions carry a canonical marker — one `scope-out: <path> — <reason>` line
+apiece — and a predicate walks every product `.rs` requiring it to be in `examine_globs` or to have
+one. That is `unsafe-scope.sh`'s shape for a crate-root attribute that cannot be uniform, and it is
+what turns this paragraph from maintenance into a check.
+
+## N163 — `oracle-rung-accounting.sh` asserted docs/9's derived-population rule in its header and transcribed its fixtures
+
+**Doc:** docs/9's derived-population rule — populations are walked, never transcribed; AGENTS rule 3
+on the oracle rung's named, counted skip. Recorded 2026-08-16 by the G6 adversarial review
+(docs/11 L33), reproduced against the shipped predicate.
+
+The header promised this, in these words: *"The fixtures are **derived from the harness's own line
+shapes** rather than transcribed … so a change to either shape that the runner's `grep` no longer
+matches turns this predicate red instead of turning the rung silent."* Underneath it, the three
+fixture logs were hand-typed `printf` literals reproducing
+`testkit::oracle::OracleReport::run_line` and `decline_lines` word for word. Nothing in the
+predicate read `crates/testkit/src/oracle.rs` at all.
+
+**Measured**, against a scratch tree with both shapes renamed (`SKIP oracles:` → `SKIPPED oracles:`,
+`oracles: {ran} container claim(s)` → `oracle-run: {ran} container claim(s)`): `PASS
+oracle-rung-accounting — 6 items examined`. A rename that would have made `scripts/rung-oracles.sh`
+stop counting the rung's own lines — turning the rung silent, which is the exact defect the four
+verdicts exist to keep apart — left this predicate green.
+
+**`mutation-verdict.sh` next door is the working model and the repair copies it.** Its population is
+a committed artifact read at gate time and re-shaped into the form the tool under test consumes,
+with four properties worth naming: the source's absence is a `gate_fail` rather than a fallback, the
+population is `gate_require_nonzero`'d, the normalisation is *the same* one the tool performs, and
+the transformation rebuilds the shape the tool consumes rather than copying a recording.
+
+Here that means: read `crates/testkit/src/oracle.rs` from `gate_root` (the runner still comes from
+the checkout — the question is whether the **shipped** runner's `grep` still matches what the
+harness in the tree under test emits), take the product half only via `gate_test_region_start`
+(that module's test half prints a decline shape of its own, and a fixture built from a sentence only
+a *test* emits is evidence about the wrong thing), undo Rust's line continuations, and lift the two
+`format!` strings and the install hints out with their placeholders intact. `render_shape` then
+pours fixture values into the holes, treating `{ran}`, `{oracle}` and a bare `{}` alike — so the
+shape can be re-wrapped or given named arguments freely, while a change to the **words between the
+holes** moves the fixture, which is exactly what the runner's anchors are made of.
+
+**The division of labour, stated because it is the same one `mutation-verdict.sh` draws:** the
+sentence is derived, the values are invented. A run's numbers, paths and reasons are what a run
+supplies; only the sentence is what the runner greps.
+
+**One implementation trap paid for and worth not re-learning:** the extractor returns its answer in
+a variable, not on standard output. A command substitution is a subshell, and `gate_fail`'s counter
+incremented in one is a violation that **prints and does not count** — `gate_finish` would then
+print PASS underneath a line reading FAIL.
+
+**What goes red.** Three arms, all in N31's stronger form.
+`fail_case_the_run_line_the_rung_greps_for_was_reworded` is the one the derivation exists for: one
+word changed *between* the placeholders, so nothing is missing and everything still extracts, and
+the runner simply stops counting — measured red as *"the run verdict: the runner exited 1 over the
+recorded log"*. The other two seed a renamed decline shape and a deleted `oracle.rs`.
+
+**Retires when:** nothing retires it.
+
+## N164 — Two crates were pinned in the dependency registry for an emitter nobody wrote
+
+**Doc:** AGENTS' "Docs and dependencies" — *"design §2.8 is the registry"*, *"versions pinned at
+adoption"*; the owner's 2026-08-09 ruling that adopting a crate clearing the bar is not an
+escalation. Recorded 2026-08-16 by the G6 adversarial review (docs/11 L32).
+
+`clap_complete = "4.6.9"` and `clap_mangen = "0.3.2"` were pinned in `[workspace.dependencies]` at
+P0 for an `xtask` that would emit shell completions and man pages. That emitter was never written:
+`xtask::generate` writes the JSON Schema bundle, the OpenRPC document and `docs/agent-guide.md`, and
+no manifest in this workspace ever named either crate — so neither reaches `Cargo.lock` at all.
+
+**Four prose sites said otherwise**, not the three the review counted: `docs/6-…-v2.md:986-987`,
+`docs/6-…-v2.md:1112`, `xtask/Cargo.toml`'s package description, and `justfile:304-305`, whose
+second sentence claims a gate proves the committed copies match — for artifacts that do not exist.
+
+**They were removed rather than kept**, and the argument is the contrast four lines further down the
+same table. `futures-timer` is listed with a paragraph explaining that **nothing in this workspace
+names it directly** and that it is listed anyway *because the lock resolves it* and an adoption
+visible only in `Cargo.lock` is one nobody reviewed. That is the registry's job: to say what the
+product links. A pin for a crate that was never adopted is the inverse — a claim about the product
+that nothing can go stale against, since a workspace dependency nobody names is not resolved,
+version-checked, licence-checked or walked by `dependency-walls.sh` or `feature-posture.sh`.
+Removing them changed `Cargo.lock` by zero lines, which is the measurement that says what they were
+worth. Re-adopting either is a one-line decision the 2026-08-09 ruling explicitly calls not an
+escalation, and it belongs in the commit that writes the emitter.
+
+**What the reconciliation pass owes `docs/6`:** §2.8's registry line must stop naming `clap_complete`
+and `clap_mangen`, and §6's tree must describe `xtask/` as emitting the JSON Schema bundle, the
+OpenRPC document and the agent guide — three artifacts, not five.
+
+**Nothing goes red on this**, and that is the finding's own shape: the manifest is the registry, and
+nothing compares the manifest to the document. The predicate that would is `browser-pins-sync.sh`'s
+(note **N131**) applied to §2.8, which note **N133** already asks for.
+
+**Retires when:** §2.8 and `[workspace.dependencies]` are compared by a predicate, at which point an
+entry with no consumer is a question somebody has to answer rather than a line nobody reads.
+
+## N165 — "clippy-enforced" was a hand-copied attribute, and two product crate roots did not have it
+
+**Doc:** AGENTS' "Writing code" — *"On device/request-driven paths no
+`unwrap`/`expect`/`panic`/indexing (clippy-enforced)"*; docs/9 Part 1's *"enforced by
+**module-scoped lint levels**"*; note **N1** on why the workspace lints table cannot hold this.
+Recorded 2026-08-16 by the G6 adversarial review (docs/11 L28), measured by walking all sixteen
+crate roots.
+
+The set — `clippy::unwrap_used`, `expect_used`, `panic`, `indexing_slicing` — lives at each crate
+root as a `#![cfg_attr(not(test), deny(…))]` block, hand-copied. Thirteen shipped roots had it.
+**`crates/engine/src/lib.rs` and `crates/schema/src/lib.rs` did not** — the calibration engine and
+the vocabulary every device-derived value is parsed into — and no gate walked for the attribute
+anywhere: `grep -rn 'indexing_slicing\|unwrap_used\|expect_used' scripts/` returned nothing.
+
+**Why not `[workspace.lints]`.** N1 settled the same question for the two suppression-hygiene lints
+and the reasoning inverts here. Cargo's lints table cannot express `cfg`, and this set is
+deliberately `not(test)`: a test asserting an invariant with `.expect("literal fixture")` is stating
+a precondition, not risking a device. N1 could take the table because binding test code was
+*strictly stronger*; binding it here would deny some 1935 in-crate and 1414 integration-test sites,
+every one of them a fixture precondition. So the shape is the one N1's own "Adjacent" paragraph
+records for `#![forbid(unsafe_code)]`: an attribute per root that cannot be uniform, plus a gate
+that checks the copies.
+
+**Measured cost.** `crates/engine` was free — zero `unwrap`/`expect`/`panic`/indexing in product
+code. `crates/schema` cost **nine** sites, and every one is the literal-precondition shape the
+`not(test)` carve-out was written for: six inside `Error::sample`, whose whole body is a table of
+string literals and which the schema emitter and the CLI renderer walk; one in `declared_pairs`'
+three-line `slug` helper; and two in `camera.rs`. One of those two is now total —
+`resolve_prefix` uses `matches.pop().map_or(PrefixMatch::None, PrefixMatch::Unique)`, so the "how
+many" and the "which one" are answered by the same value and there is no unreachable arm to argue
+about. The rest are `#[expect(clippy::…, reason = "…")]` at the narrowest scope that covers them.
+
+**This entry first wrote them as `#[cfg_attr(not(test), expect(…))]`, on the argument that the lint
+is only denied outside `cfg(test)` and that a lint expectation nobody can fulfil is itself a
+warning. That argument is false and note N167 measures it both directions**: `#[expect]` raises the
+lint's level at its own node whichever way the crate root's `cfg` resolves, so the expectation is
+fulfilled in the `cfg(test)` build too and the wrapper changed nothing. The wrappers are gone, and
+the reason the bare form is the better one is the inverse of the one that was written: an attribute
+compiled out under `cfg(test)` cannot be reported unfulfilled by anything, so it is the spelling
+that hides its own staleness.
+
+**`as_conversions` is a documented split, not drift.** Three roots deny it additionally —
+`crates/imaging` and the two backends — because those are the crates that convert device-supplied
+integers, where a silent `as` truncation of a `bytesused` or an `elem_size` is rubric B10's own
+worked example. It was **not** added anywhere new: doing so would be a decision this repair has no
+standing to take.
+
+**What goes red.** `scripts/gates/lint-posture.sh`, four claims over a population derived from
+`cargo metadata` exactly as `unsafe-scope.sh`'s claim 2 derives its own: every shipped root carries
+the whole set; every root, shipped or not, carries all four or none (a partial set is the shape
+drift takes — somebody adds the lint that bit them and stops); a root denying `as_conversions`
+carries the four as well; and at least one root still carries the widening. Product and dev-only are
+split by `publish = false`, which is `crates/priv`, `crates/testkit` and `xtask` and nothing else —
+their posture is a `gate_note` rather than a rule, and the shipped tree's is reported on every run.
+
+**The residual, stated rather than implied:** deleting the whole block from `crates/priv` would pass
+claim 1, because `publish = false` is the only derived signal separating a shipped crate from a
+dev-only one and it puts `priv` on the wrong side of that line for this purpose — the crate opens
+`/dev/video*` and parses `/proc` inside a root-capable process. Claim 2 catches a *partial* deletion
+there, which is the shape drift actually takes. And this predicate sees the attribute, not its
+effect: a crate could carry the block and `#[expect]` every site under it, which `cargo clippy -D
+warnings` answers and this does not.
+
+**Three residuals this paragraph did not state, all of them measured green the next day and all of
+them now closed** — note **N167** carries the transcripts and the arms. A block moved onto the next
+item by a lost `!`; a block wrapped in `/* … */` rather than deleted, under a header that said
+flatly *"comments are stripped"*; and a workspace member declaring `crate-type = ["rlib"]`, which
+left the derived population in silence.
+
+**Retires when:** `cargo metadata` can answer "does this crate act on a device path", or the
+workspace lints table learns `cfg`.
+
+## N166 — The mutation register's last entry named a function with no comparison left in it, and re-deciding it caught the floor lying in both directions
+
+**Doc:** `scripts/mutants-accepted.txt`'s own header — *"a line here that no longer survives also
+fails it… an acceptance nobody re-checks is how that mistake gets made twice"*; note **N101**,
+whose argument this entry carries; notes **N52**, **N66**, **N68** on a verdict that moves with the
+machine. Recorded 2026-08-16 by the G6 adversarial review (docs/11 L19), and re-measured here.
+
+**The finding.** The register's last line accepted `replace > with >=` in
+`AviWriter<W>::declared_interval`. P6d moved that arithmetic and its three refusals into
+`crate::video::declared_interval`, where both containers reach it; what is left at the old address
+is a five-line forwarder with **zero** comparison operators (`grep -c '[<>]='` over it: 0). So the
+mutant the register named cannot be generated at all, while `crates/imaging/src/video.rs` **is** in
+`examine_globs` — and `scripts/mutants.sh` compares the register in both directions, so the next
+floor run would have failed twice over: once for an acceptance that no longer survives, once for a
+survivor with no acceptance.
+
+**Why this could not be repaired by rewriting the path.** `video::declared_interval` holds *three*
+comparisons where the old function's paragraph in N101 argued about one: `frames_written >= 2`, the
+span filter `*span > 0`, and the mean filter `*mean > 0`. N101's equivalence argument covers the
+span filter only, and the register key it produces — `<path>: replace > with >= in
+declared_interval`, line and column stripped — is the **same key for the span filter and the mean
+filter**. The register's own header anticipates exactly that ("two survivors sharing a key need two
+lines here"), so which of the three survive is a question only a run can answer.
+
+### What the run found, and why the run is not what decided it
+
+A `cargo mutants` pass scoped to `declared_interval` — 30 mutants, `test_workspace = true` as the
+config pins — reported **17 caught, 12 unviable, 1 timeout, 0 survivors**, on a machine that was
+running `scripts/gates/run-all.sh` at the same time with 8 GB free on the root filesystem. Reading
+the per-mutant logs is what stopped that from being the answer:
+
+| mutant | the run said | what killed it, per the log |
+|---|---|---|
+| span filter `> → >=` | **caught** | six `webcam-handler-daemon::subscriptions` tests, at 5–10 s each |
+| mean filter `> → >=` | **timeout** (counted a survivor) | nothing; 180 s test budget exhausted |
+| `> → ==`, `> → <` (both filters) | caught | `oracles::the_rate_libavformat_reads_back_is_the_mean…` and `mutating_verbs::a_recording_reaches_the_device…`, ~2 s |
+
+The genuine kills are 2-second failures in tests about frame rates. The two `>=` verdicts are a
+loaded box: daemon integration tests that normally finish in under two seconds taking thirteen, and
+a workspace suite that normally runs in three seconds exceeding a 180-second floor.
+
+**So both were re-decided by hand-applied mutants on an idle machine**, which is the method N101
+itself used and what P6a and P6b's paragraphs mean by "watched failing against a hand-applied copy":
+
+- **span filter `*span > 0` → `*span >= 0`: survives.** `1424 tests run: 1424 passed`. N101's
+  argument holds at the new address — the only span it stops admitting is `0`, and a span of `0`
+  divides to a mean of `0`, which the next filter drops.
+- **mean filter `*mean > 0` → `*mean >= 0`: caught in 4 ms**, by
+  `avi::write::tests::timestamps_that_do_not_move_measure_nothing_rather_than_a_zero_interval`.
+- `frames_written >= 2` → `<`, and both `> → ==` / `> → <` variants: caught, as N101 already said.
+
+So the register keeps exactly one line, re-keyed to `crates/imaging/src/video.rs`, with a comment
+naming which of the two identically-keyed comparisons is meant and what kills the other.
+
+### The part worth not re-learning
+
+N52, N66 and N68 each record this floor's verdict moving with the machine, and every one of them
+records it in the **same direction**: a healthy line reported as a survivor. This run produced the
+other direction as well — an equivalent mutant reported as **caught**, because unrelated tests
+happened to fail underneath it. That direction is worse, and it is worse in a way the job's
+own two-way comparison amplifies: a false kill makes `mutants.sh` report the acceptance as stale,
+and the obvious response to "this acceptance no longer survives" is to delete it. One loaded run
+would have removed a true equivalence argument and left nothing behind saying it had been there.
+
+**What follows for anyone reading a floor result:** a caught verdict is only as good as the test
+that caught it, and the per-mutant log names it. A kill by tests that have nothing to do with the
+mutated line is a machine report, not a code report — the same reading N52 asks for, applied to the
+column nobody checks.
+
+**The residual, which the review of this batch found and this entry owes:** the re-keyed line was
+**hand-derived**, not copied out of a run's own output — the run that decided it was scoped to the
+old address. `scripts/gates/mutation-verdict.sh` builds its fixtures *from* the register, so a
+mis-spelled path or function name round-trips through its own predicate and stays green; what would
+notice is a real floor run, which is hours and is not a `just ci` step. The line was re-read by
+hand against `crates/imaging/src/video.rs` twice, which is the only check there is until then.
+
+**Retires when:** the floor's verdicts carry the killing test's name into the summary, so a kill by
+an unrelated suite is visible without opening `target/mutants.out/log/`.
+
+## N167 — Five repairs held, and the paragraphs justifying three of them were the part that was wrong
+
+**Doc:** AGENTS' unsafe-code rule applied to prose — *"a false safety claim is a defect even when
+the code works"*; AGENTS rule 3 (*named, counted, never silence*); rule 1 (*a fix lands with its
+gate*); note **N10**'s family (a selection that is counted and counts the wrong thing). Recorded
+2026-08-16 by the adversarial review of the batch that landed notes **N160**–**N166**, every finding
+below reproduced by hand before it was repaired.
+
+The batch's five gate repairs all worked and all went red for the right reasons — thirty-two
+individual arms were run and every one behaved. What did not survive the reading was the **writing
+around them**: three load-bearing justifications that one command each refutes, and two gates whose
+"honest limits" paragraphs were shorter than the limits. This entry is the correction, and it is one
+entry rather than five because the failure has one shape — *a sentence nobody re-ran*.
+
+### 1. `success-output = "final"` was a repair that defeated itself, argued for by a false sentence
+
+N160 gave `binary(webcam-handler-priv)` a `success-output = "final"` override so a `SKIP:` line
+would reach a reader, on the argument that *"its 20 tests all live in the one `[[bin]]` target, and
+none of the other 18 prints anything — so `final` on this binary shows the declines and nothing
+else."*
+
+`success-output` is **not a filter on what a test chose to print**. It shows every passing test's
+captured stdout, libtest's own banner included. Measured: `cargo nextest run -p webcam-handler-priv`
+went from 30 lines to **208**, twenty near-identical `stdout ───` blocks, of which — on a host with
+cameras — **none** contains a `SKIP:`. And the sentence was independently false:
+`tests::status_verbs_work_without_a_blessing` prints two JSON documents. So the repair bought ~140
+lines of permanent noise per `just ci` in order to make one line visible, and the line would have
+been the hardest thing on the screen to find.
+
+**The override now names the two host-dependent tests**, and the run grows by two blocks whose
+content is the census. Two alternatives were rejected on the record. `testkit`'s arrangement — pass
+`--success-output` on a wrapper's own command line — needs a wrapper, and these tests run under
+plain `just ci` nextest with no rung of their own. Moving the claim to a shell predicate, where
+`gate_skip` prints *and* counts, is note **N44**'s remedy and stays wrong here for N160's own
+reason: the claim is about the **code** and only its precondition is about the host, so a predicate
+would have to build and run a root-capable binary on every push.
+
+Naming tests rather than a binary buys a coupling to their names, which a rename breaks in silence —
+so `the_two_claims_a_host_may_not_be_able_to_make_are_the_ones_nextest_is_told_to_print` reads
+`.config/nextest.toml` and goes red on either name or on the override's removal.
+
+### 2. Nothing asserted that the decline was ever printed
+
+N160's own repair had the gap its argument was about. `a_node_to_hold` returned the sentence and the
+caller printed it, and the test drove the *return value* — so **deleting both `println!("{declined}");`
+lines left the suite green** and restored the exact silence the note was written about. Measured:
+`1 passed`, with both prints gone.
+
+Returning a decline is not the same as emitting one, and the half that rule 3 is about is the half
+that was untested. The write is now a `census: &mut dyn Write` argument, and three tests drive it
+over an invented candidate set: the empty set writes the `SKIP:` line, `/dev/null` writes the run
+line, and a path that cannot be opened writes the decline carrying the kernel's own reason. All
+three go red with the write removed.
+
+**And the run line is new**, for the argument `testkit::oracle::OracleReport::print` already makes
+about the oracle rung: *a rung that printed neither is a rung nobody can tell apart from one that was
+never invoked*. A `HELD:` line naming the node is what turns the two remaining nextest blocks from
+banner noise into the answer to "was §2.13's interlock exercised on this machine, and against what".
+
+### 3. The `cfg_attr` around three `#[expect]`s was decoration, and its stated reason was false
+
+N165 wrote nine suppressions as `#[cfg_attr(not(test), expect(clippy::…, reason = "…"))]` and said,
+in `pairing.rs`, in `error.rs` and in the note, that *"a lint expectation nobody can fulfil is itself
+a warning, which `-D warnings` turns into an error on every test build."*
+
+Measured both directions on a scratch tree. A bare `#[expect(clippy::expect_used, reason = …)]`:
+`cargo clippy -p webcam-handler-schema --lib --tests -- -D warnings` **clean, exit 0**. The control —
+the same bare `#[expect]` naming `clippy::unwrap_used`, which genuinely cannot be fulfilled there —
+`error: this lint expectation is unfulfilled`, in the `lib test` unit. So the machinery is live in
+the `cfg(test)` build and the expectation is simply **fulfilled**: `#[expect]` raises the lint's
+level at its own node regardless of how the crate-level `deny`'s `cfg` resolves.
+
+The wrappers are gone from `pairing.rs`, `error.rs` and `camera.rs`. The bare form is not merely
+shorter: an attribute compiled out under `cfg(test)` is one that nothing can report as unfulfilled,
+so the wrapper is the spelling that hides its own staleness, and the bare one is the spelling
+`cargo clippy --workspace --all-targets -- -D warnings` — a `just ci` step and a G6 criterion — goes
+red on the day the `.expect()` beneath it leaves.
+
+### 4. `lint-posture.sh` had two residuals its header denied having
+
+Both measured **PASS** against the shipped predicate, both realistic, both now with an arm.
+
+- **A lost `!`.** `block_open` was `cfg_attr(not(test),deny(`, which matches `#[cfg_attr…]` exactly
+  as it matches `#![cfg_attr…]`. Changing `crates/engine/src/lib.rs` from the inner form to the
+  outer one is valid Rust that lands the attribute on the following `#[cfg(test)] mod double;` —
+  the set denied for a module that does not exist outside `cfg(test)`, i.e. the posture gone —
+  and the gate reported `PASS lint-posture — 35 items examined`. The `#!` is part of the match now,
+  and `fail_case_the_block_landed_on_the_next_item_instead_of_the_crate` is the arm.
+- **Block comments.** The header said flatly *"Comments are stripped"*; the walk ran `sed 's://.*::'`
+  and nothing else, so `/* … */` around the whole block was **PASS**. `lib.sh:369` is careful to say
+  *"Block comments and string literals are not stripped"* about `gate_product_lines`; this header
+  had dropped the qualification rather than earned it. Both kinds are stripped now — line comments
+  per line before the whitespace squeeze, block comments after it, where a `/* … */` that spanned
+  twenty lines is one run of characters. String literals still are not, and the header says so and
+  says why: nobody arrives at a crate-root attribute inside a string by accident.
+
+Two more things in the same file. The header claimed *"Five roots additionally deny
+`clippy::as_conversions`"* where the gate reports three, the case file says three and N165 says
+three — **it is three**. And the derived population selected `kind == "lib" | "bin" | "proc-macro"`,
+so a member declaring `crate-type = ["rlib"]` or `["cdylib"]` would have dropped out with only
+`roots_checked` getting smaller and no claim firing; it is written as an exclusion of
+`test`/`bench`/`example`/`custom-build` now, and `fail_case_a_root_the_graph_calls_an_rlib_leaves_the_population`
+is green under the old spelling and red under the new one.
+
+**One arm was a duplicate of another and said so in its own comment.** `pass_case_a_dev_only_root_without_the_set`
+claimed to be *"seeded rather than trusted, because … an arm that asserted a state it did not create
+proves nothing"* — and then seeded a comment containing none of the matched spellings into a crate
+that was already bare. It is now a root that writes *about* the set in both comment syntaxes, naming
+three of the four each time, so that a stripping regression trips claim 2 and the arm can fail.
+
+### 5. `kill-is-never-a-fallback.sh` understated the hole in the rule it guards
+
+N161 repaired the file-versus-occurrence count correctly. What the "Honest limits" paragraph then
+listed as still-invisible was *"a re-export under another name, or built the syscall itself"*. **A
+plain import is neither**, and it is the most natural way anybody would write a second call site:
+
+```rust
+use v4l2::holders::terminate;
+fn free_the_device_the_easy_way(pid: i32) -> schema::Result<()> { terminate(pid) }
+```
+
+appended to `crates/engine/src/photo.rs` gave `PASS … checked 1 call sites`, because the `use` line
+carries no `(` and the call carries no `holders::`. This is inside the claim guarding the most
+consequential of the eight non-negotiable rules.
+
+**Claim 3 closes it**: no `use` statement outside the backend crate may name `terminate` at all.
+That costs nothing — there is one legitimate caller and it already writes the qualified path — and
+it is what keeps the count honest, because the count can only see what is spelled `holders::terminate(`.
+It reads each file with its line comments stripped and its whitespace squeezed out, so a `use` group
+rustfmt broke across four lines is one run of characters; the strip is not optional, because the
+argument for the ban is written in comments that spell the import, and
+`pass_case_a_comment_about_the_import_is_not_an_import` is that direction. What stays invisible is
+narrower and is now stated exactly: a caller that aliased the *module*, a re-export, a hand-built
+syscall, and a call whose `(` sits on the next line — which `cargo fmt --check` does not produce.
+
+### The part worth not re-learning
+
+Five findings, and the code was right in all five. What failed was the sentence beside it, in the
+one direction this repository is least equipped to catch: **a justification is not checked by the
+thing it justifies.** A gate proves its predicate, an arm proves the gate, and nothing at all proves
+the paragraph that says why either is shaped as it is — so the only defence is that each such
+sentence names a command somebody can run, and that somebody runs it. Every claim repaired here was
+refuted by a single command taking under a minute. Three of them were written by an author who had
+the tree checked out at the time.
+
+The same reading applies to counts written into prose: `.cargo/mutants.toml` said "five modules of
+`crates/engine/`" over a list of seven, `phase-criteria.tsv` said 19 tests over a selection of 20,
+and `lint-posture.sh` said five roots over a claim of three. None of the three is enforced by
+anything, and all three were introduced in the same session as the enumerations they contradict.
 
 **Retires when:** nothing retires it.

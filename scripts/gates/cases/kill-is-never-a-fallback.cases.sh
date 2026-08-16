@@ -1,9 +1,11 @@
 # Both-direction cases for `kill-is-never-a-fallback.sh`.
 #
-# The predicate is an absence claim with two halves, so each half gets its own inverse: the
-# home going away, and a second caller appearing. The second-caller arms are the ones the
-# gate exists for — they are the shape a future `Busy` retry would take, seeded in the two
-# crates most likely to be tempted by it.
+# The predicate is an absence claim with three claims, so each gets its own inverse: the home
+# going away, a second caller appearing, and the bare name reaching a caller's scope. The
+# second-caller arms are the ones the gate exists for — they are the shape a future `Busy` retry
+# would take, seeded in the two crates most likely to be tempted by it, in the file that already
+# has the one legitimate call, and in the two import spellings that would make a second call site
+# invisible to a count of qualified paths (note **N167**).
 #
 # shellcheck shell=bash
 
@@ -47,6 +49,81 @@ fail_case_a_second_caller_in_the_daemon() {
 fn retry_by_making_room(pid: i32) -> schema::Result<()> {
     v4l2::holders::terminate(pid)
 }
+RS
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_second_caller_in_the_file_that_already_has_one() {
+    # **The arm this suite was missing, and the one shape it most needed.** The two arms above
+    # seed *new* files, so a predicate that counted files rather than occurrences passed both of
+    # them — and passed on a tree with two calls in `server.rs`, which is where the one
+    # legitimate call lives and where `wch_photo` lives beside it. A `Busy` retry that signalled
+    # the holder it had just diagnosed would be written here, four functions down from the verb
+    # whose whole contract is naming its target, and until 2026-08-16 this gate reported
+    # "1 call sites" about it (the G6 review's H3, note **N161**).
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >>"$tree/crates/daemon/src/server.rs" <<'RS'
+
+fn make_room_for_the_retry(pid: i32) -> schema::Result<()> {
+    v4l2::holders::terminate(pid)
+}
+RS
+    gate_red_because 'is called from 2 places outside' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_a_second_caller_that_imported_the_bare_name() {
+    # **The way anybody would actually write it**, and the one the occurrence count cannot see:
+    # the `use` line carries no `(` and the call carries no `holders::`, so half two counts one
+    # call site over a tree with two. Measured green against the shipped predicate on 2026-08-16
+    # (note **N167**), which is why claim 3 exists.
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >>"$tree/crates/engine/src/photo.rs" <<'RS'
+
+use v4l2::holders::terminate;
+
+fn free_the_device_the_easy_way(pid: i32) -> schema::Result<()> {
+    terminate(pid)
+}
+RS
+    gate_red_because 'import terminate rather than calling holders::terminate(' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_a_second_caller_that_imported_it_inside_a_wrapped_group() {
+    # The same import with a second item beside it, which rustfmt then breaks across four lines
+    # — so the `use` and the name it pulls in are not on the same line and a line-oriented grep
+    # sees neither. Claim 3 reads the file with its whitespace squeezed out for exactly this.
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >>"$tree/crates/engine/src/photo.rs" <<'RS'
+
+use v4l2::holders::{
+    Holder,
+    terminate,
+};
+
+fn free_the_device_the_easy_way(pid: i32, _seen: &[Holder]) -> schema::Result<()> {
+    terminate(pid)
+}
+RS
+    gate_red_because 'import terminate rather than calling holders::terminate(' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+pass_case_a_comment_about_the_import_is_not_an_import() {
+    # Claim 3's own direction of `pass_case_a_comment_that_does_not_name_the_call`, and it is
+    # load-bearing rather than symmetrical: the argument for banning the import is written in
+    # comments that spell the import — in this predicate's header, in this file, and in note
+    # N167 — so a claim that could not tell the two apart would be red on its own reasoning.
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >>"$tree/crates/engine/src/photo.rs" <<'RS'
+
+// Deliberately not written as `use v4l2::holders::terminate;` — the qualified path is what
+// lets `kill-is-never-a-fallback.sh` count the one legitimate call site (design §5).
 RS
     WCH_GATE_ROOT="$tree" "$GATE"
 }

@@ -45,4 +45,4 @@ crates/api/src/codes.rs: replace <impl std::error::Error for WireError>::source 
 
 # --- equivalent: an early guard the filter below it already applies [N101] ---
 crates/imaging/src/avi.rs: replace || with && in interval_micros       # [N101] a zero numerator divides to zero and is dropped by the `> 0` filter; a zero denominator makes `checked_div` return None
-crates/imaging/src/avi/write.rs: replace > with >= in AviWriter<W>::declared_interval  # [N101] the span filter; a span of 0 divides to a mean of 0, which the mean's own `> 0` filter drops. NOT the `frames_written >= 2` guard four lines above, which is caught
+crates/imaging/src/video.rs: replace > with >= in declared_interval  # [N101, moved by N166] the span filter; a span of 0 divides to a mean of 0, which the mean's own `> 0` filter drops. NOT the mean filter two lines below, which `timestamps_that_do_not_move_measure_nothing_rather_than_a_zero_interval` kills in 4ms, and NOT the `frames_written >= 2` guard, also caught
