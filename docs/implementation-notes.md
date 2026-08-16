@@ -17122,3 +17122,79 @@ the module passes; the day it passes something else, this fixture's no-clipping 
 with it and the expectation has to become a function of the signalled range rather than a
 constant matrix.
 
+## N131 — The README's browser pins had no reconciler, and the pin's exactness was only checked where the rung ran
+
+**Doc:** AGENTS' "one home per law" and rule 1 (*"every anticipated or discovered defect class
+becomes a lint, a CI job, or a test that can go red"*); docs/9's predicate table gains
+`browser-pins-sync.sh`; design **§3.1** R1-web. Recorded 2026-08-15, ahead of the G6 review.
+
+**Found by writing it.** The README grew a "The pin is threefold" sentence naming
+`@playwright/test` 1.62.1, Chromium build 1234 and Chrome 151.0.7922.34 — three numbers that
+already lived in `crates/daemon/tests/browser/package.json`. That is a second home for one law,
+created in the same session that noticed it, and the failure it opens is the quiet kind: a
+version bump touches the manifest and the lockfile, `npm ci` installs the new browser,
+`pins.spec.mjs` asserts the new browser against the new manifest, the whole workspace stays
+green, and the README goes on telling somebody about to run `just rung-web-install` which
+browser they are about to fetch — wrongly. Nothing in the repository could have gone red.
+
+### Which copy is authoritative, and why the messages name a file
+
+**The manifest**, and the argument is mechanism rather than seniority. `package.json` is what
+`npm ci` installs, what the Playwright CLI reads when the install recipe fetches a browser, and
+what `pins.spec.mjs` compares the *launched binary* against — three consumers that act on it.
+The README has one consumer and it is a human reading prose. So a disagreement means the
+description went stale, and every message this predicate emits ends by naming the file to edit
+(`README.md`, or `npm ci` for the lockfile) rather than reporting a difference and leaving the
+reader to work out which side moved.
+
+### The claim that had no home at all until now
+
+`pins.spec.mjs` asserts the pin is an exact version — `^1.62.1` is a pin that silently becomes
+1.63 on the next install, and it is what `npm install --save @playwright/test` writes. That file
+runs only where the host has node. Design §3.1 wants exactly that (node is never a build
+dependency, and the rung declines by name without it), and the README says plainly that **the
+GitHub workflow installs no node**, so upstream CI has never run that assertion once. The
+exactness claim therefore lived on a developer's laptop and nowhere else. This predicate needs
+no node, no browser and no network, so it holds that claim on every host and in CI — which makes
+it the second thing the gate buys, and not a side effect of the first.
+
+The lockfile is the third copy and is checked the same way, in both of the places it states the
+version: the root package's dependency spec, and the resolved `version` of the installed
+package. `npm ci` refuses a lockfile that disagrees with its manifest — again, only where npm
+exists, so the disagreement would have arrived as a failed install on somebody's laptop rather
+than as a red gate.
+
+### What it deliberately does not read, and why that is the interesting half
+
+**Only `README.md`.** These same three numbers appear in evidence **E16**'s transcripts and in a
+`phase-criteria.tsv` `what` column — *"the rung ran on this host at P5d: 10 of 10 green in
+Chromium 151.0.7922.34, build 1234"*. Those are records of a run on a date, and the notes are
+append-only by AGENTS' own rule. A reconciler that swept the tree for the current values would
+demand that history be rewritten every time the pin moves, which is the exact opposite of what
+an evidence register is for. **A claim about what the rung installs and a record of what it once
+drove are different sentences that happen to contain the same number**, and a gate that cannot
+tell them apart would be a gate somebody turns off.
+
+### Three claims and not one, because `gate_checked` counts
+
+The three pins are compared separately and counted separately (3 pins, 3 README claims, 1
+exactness check, 1 citation, 2 lockfile statements — ten items), because a predicate reporting
+"checked 1 thing" where it means three under-reports what a reader of CI output is entitled to
+see. The **population is derived from the manifest's own keys** rather than listed here, and the
+arm that matters most is the fallback: a pin the manifest declares that this predicate has no
+README sentence for is a **failure**, not a skip. A fourth pin is a fourth thing the README's
+reader is entitled to know, and letting it pass would turn "the README states the pins" into
+"the README states the pins somebody remembered" — which is the same defect this note is about,
+one level up.
+
+Nine failing arms and two green ones. The second green arm is the one worth naming: a README
+rewrapped so a label and its value land on different lines must still pass, because the sentence
+carrying these numbers is prose and a version check has no business having an opinion about
+where a paragraph breaks. The predicate reads the README as one whitespace-normalized string for
+that reason.
+
+**Amend this note if** the R1-web rung acquires a second browser or a second pinned package. The
+mapping from a manifest key to the words the README introduces it with is the one hand-written
+table here, and it is hand-written because a prose label cannot honestly be derived from a JSON
+key — the manifest says `chromiumVersion` and the README says "Chrome version", and that is the
+right sentence rather than a drifted one.

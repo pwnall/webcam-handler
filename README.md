@@ -264,8 +264,12 @@ browser, which is the failure the pin exists to prevent. The pin is threefold �
 `@playwright/test` at exactly `1.62.1` with no range operator, Chromium build `1234`, and
 Chrome version `151.0.7922.34` — declared in `crates/daemon/tests/browser/package.json`
 beside a committed `package-lock.json`, and *asserted* in `pins.spec.mjs`, because a version
-being arranged and a version being checked are two different claims (evidence **E16**). The
-lockfile's engines floor is Node 20 or newer; Ubuntu's `nodejs` clears it. `WCH_E2E_NODE`
+being arranged and a version being checked are two different claims (evidence **E16**). Those
+three numbers are stated twice — there, and in the paragraph you are reading — so
+`scripts/gates/browser-pins-sync.sh` reconciles this prose against that manifest on every `just
+ci`, and the manifest wins: it is what `npm ci` installs. The same gate holds the *exactness*
+of the package pin on hosts where `pins.spec.mjs` never runs, which upstream CI is every time
+(note **N131**). The lockfile's engines floor is Node 20 or newer; Ubuntu's `nodejs` clears it. `WCH_E2E_NODE`
 points the rung at a node that is not on `PATH`, and `PLAYWRIGHT_BROWSERS_PATH` at a browser
 cache that is not `~/.cache/ms-playwright`.
 
