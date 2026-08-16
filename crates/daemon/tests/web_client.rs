@@ -4,9 +4,11 @@
 //! `http.rs` and `web_rpc.rs` are this suite's neighbours and the three divide the listener
 //! between them. That file's subject is the **credential and D11's matrix**; that one's is
 //! **what the wire surface carries over TCP** — the same registration, the subscriptions, the
-//! bound, the stop. This one's subject is the **client**: `crates/web/assets/` is ten files of
-//! hand-written HTML, CSS and ES modules, and every claim below is one of them depending on
-//! something this daemon does.
+//! bound, the stop. This one's subject is the **client**: `crates/web/assets/` is hand-written
+//! HTML, CSS and ES modules, and every claim below is one of them depending on something this
+//! daemon does. (How many of each is `webcam-handler-web`'s own header, stated there and
+//! nowhere else — a third copy of that count is exactly what note **N153** is about, and this
+//! file used to carry one.)
 //!
 //! ## What this suite may claim, and the line it does not cross
 //!
@@ -323,6 +325,274 @@ async fn every_module_of_the_client_is_served_with_a_content_type_a_browser_will
     assert!(
         page.body().contains("app.js"),
         "the page served at / does not name an entry module"
+    );
+
+    client.stop().await;
+}
+
+/// Where `source` fails to declare `name` as `value`, exactly once. Empty is green.
+///
+/// A pure function over text, so the arms below can drive it with a number the tree does not
+/// carry — the half that proves a reconciler can go red (AGENTS rule 2).
+fn declares(source: &str, name: &str, value: u64) -> Vec<String> {
+    let mut drift = Vec::new();
+    let exact = format!("const {name} = {value};");
+    if source.matches(exact.as_str()).count() != 1 {
+        drift.push(format!(
+            "assets/rpc.js does not declare `{exact}` exactly once; `schema::limits` says \
+             {value}"
+        ));
+    }
+    // The *name* has to be there once whatever its value is, so a constant that was renamed or
+    // deleted is a different sentence from one that drifted. Without it the line above reports
+    // "the number is wrong" about a number that is no longer in the file at all.
+    let declaration = format!("const {name} =");
+    let declared = source.matches(declaration.as_str()).count();
+    if declared != 1 {
+        drift.push(format!(
+            "assets/rpc.js declares `{name}` {declared} time(s); a bound the page reads twice is \
+             two bounds"
+        ));
+    }
+    drift
+}
+
+#[test]
+fn the_bounds_the_page_runs_on_are_the_ones_this_build_declares() {
+    // **The one place a `limits` constant crosses into JavaScript, checked** (docs/11 **L38**,
+    // note **N157**). AGENTS puts every bound in `webcam-handler-schema::limits` and asks that
+    // something read each one, and until 2026-08-16 the web client read none of them: it had no
+    // per-call timeout and no liveness at all, so a socket severed without a FIN left every call
+    // parked under a banner reading `connected`. The owner's ruling gave it two, and a browser
+    // cannot `use` a Rust constant — so the numbers are a second copy, and a second copy is only
+    // as good as the thing that reconciles it. This is that thing.
+    //
+    // It lives in this suite rather than in `webcam-handler-web` because this is the file whose
+    // subject is *what the shipped client asks this daemon for*: it already builds the two
+    // camera-bearing URLs from `daemon::http`'s own constants rather than from transcriptions of
+    // them, for the reason its `wire` helper states. `crates/web` has one dependency on purpose
+    // and its manifest argues at length for that, so the crate that owns both halves of this
+    // comparison is this one.
+    //
+    // What it reads is `web::get`, not the file on disk: the bytes asserted about are the bytes
+    // a browser is served (`debug-embed`), so a source tree that had been edited without a
+    // rebuild cannot make this pass.
+    let module = web::get("rpc.js").expect("the client's JSON-RPC helper");
+    let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+
+    let bounds = [
+        ("CALL_TIMEOUT_MS", schema::limits::CLIENT_REQUEST_TIMEOUT_MS),
+        ("HEARTBEAT_MS", schema::limits::CLIENT_WS_HEARTBEAT_MS),
+    ];
+    // Distinct, or one declaration in the page could satisfy both rows and the pair would be
+    // checking half of what it claims to.
+    assert_ne!(
+        bounds[0].1, bounds[1].1,
+        "the two bounds are the same number"
+    );
+
+    for (name, value) in bounds {
+        let drift = declares(&source, name, value);
+        assert!(drift.is_empty(), "{drift:?}");
+        // Both directions, driven rather than asserted about: a number that moved in `limits`
+        // and not in the page is the whole failure mode, so it is the one that has to be seen.
+        assert!(
+            !declares(&source, name, value + 1).is_empty(),
+            "`{name}` was accepted at a value this build does not declare"
+        );
+        assert!(
+            !declares(&source, &format!("{name}_THAT_IS_NOT_THERE"), value).is_empty(),
+            "a constant this page does not declare at all was accepted"
+        );
+    }
+}
+
+/// How many lines of code `source` gives the top-level function `name`.
+///
+/// **The rule is stated once, here and in the sentence this checks**: non-blank, non-comment
+/// lines from the `export` that declares the function to the `}` in the first column that ends
+/// it. Coarse on purpose — a JavaScript parser to count a function would be a second opinion
+/// about a language this repository does not otherwise read, and what the count is *for* is a
+/// budget in a design document, which is a size and not a measurement.
+fn code_lines(source: &str, name: &str) -> usize {
+    let opening = format!("export async function {name}(");
+    let mut counted = 0;
+    let mut inside = false;
+    for line in source.lines() {
+        inside = inside || line.starts_with(opening.as_str());
+        if !inside {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let comment =
+            trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*');
+        if !trimmed.is_empty() && !comment {
+            counted += 1;
+        }
+        if line == "}" {
+            break;
+        }
+    }
+    counted
+}
+
+/// Every comment in `source`, unwrapped into the sentences a reader reads.
+///
+/// **A sentence in a wrapped comment is a sentence and a line break**, so a search of the raw
+/// file for the sentence a reader sees finds nothing at all — and a check that then happens to
+/// match somewhere else is worse than one that matches nowhere. That is not hypothetical: the
+/// same repair pass found half of `webcam-handler-web`'s file-count reconciler being satisfied by
+/// a comment in its own test rather than by the doc it named (note **N153**). Both spellings this
+/// module uses are unwrapped — `//` for its header, ` * ` for the JSDoc blocks — because which
+/// one a sentence lands in is a decision about where it belongs, not about whether it counts.
+fn commented_prose(source: &str) -> String {
+    let mut prose = String::with_capacity(source.len());
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(text) = trimmed
+            .strip_prefix("//")
+            .or_else(|| trimmed.strip_prefix("* "))
+        else {
+            continue;
+        };
+        prose.push(' ');
+        prose.push_str(text.trim());
+    }
+    prose
+}
+
+/// Where `source`'s own header fails to say `name` is `lines` long, exactly once. Empty is green.
+fn counts_itself(source: &str, name: &str, lines: usize) -> Vec<String> {
+    let sentence = format!("`{name}` is {lines} lines of code");
+    let said = commented_prose(source).matches(sentence.as_str()).count();
+    if said == 1 {
+        return Vec::new();
+    }
+    vec![format!(
+        "assets/rpc.js says `{sentence}` {said} time(s) and should say it once; the function is \
+         {lines} line(s) of code today"
+    )]
+}
+
+#[test]
+fn the_client_helper_states_its_own_size_and_the_size_it_states_is_the_one_it_has() {
+    // **A count in a comment is worth what the thing that checks it is worth** (note **N158**).
+    // This module's header opens by measuring itself against design §2.7's "~50-line" budget, and
+    // for two sub-milestones the number in that sentence was fifty-three while the function was
+    // seventy-one lines and then a hundred and twelve: it grew by more than half in the same
+    // batch that repaired the identical defect class in `webcam-handler-web`'s header (note
+    // **N153**), in the file being edited, and nothing could go red on it.
+    //
+    // The overshoot itself is not this test's business — a design number is the owner's and N158
+    // is where it is argued. What is this test's business is that the sentence stays true, so
+    // that widening the budget is something somebody decides rather than something that happens.
+    //
+    // `web::get` rather than the file on disk, for the reason the bounds above are read that way:
+    // what a reader of the shipped client is told is what the shipped client carries.
+    let module = web::get("rpc.js").expect("the client's JSON-RPC helper");
+    let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+
+    let lines = code_lines(&source, "connect");
+    // Not vacuous: a rule that found nothing would make `0 lines of code` a sentence somebody
+    // could write in the header and satisfy this with.
+    assert!(lines > 20, "`connect` counted as {lines} line(s) of code");
+
+    let drift = counts_itself(&source, "connect", lines);
+    assert!(drift.is_empty(), "{drift:?}");
+    // Both directions, driven with sizes the function does not have — the half that proves a
+    // reconciler can go red (AGENTS rule 2), and the half whose absence is the finding.
+    for wrong in [lines - 1, lines + 1] {
+        assert!(
+            !counts_itself(&source, "connect", wrong).is_empty(),
+            "the header was accepted stating a size (`{wrong}`) the function does not have"
+        );
+    }
+}
+
+/// What `source` declares the string constant `name` as, or `None` when it does not declare
+/// exactly one.
+///
+/// [`declares`]'s shape for a name rather than a number, and `None` covers both ways the
+/// question has no answer: not declared at all, and declared twice. A page with two spellings of
+/// the method it pings with is a page whose liveness depends on which one runs.
+fn declared_string(source: &str, name: &str) -> Option<String> {
+    let declaration = format!("const {name} = \"");
+    let mut after = source.split(declaration.as_str());
+    let _before = after.next()?;
+    let value = after.next()?;
+    if after.next().is_some() {
+        return None;
+    }
+    value.split('"').next().map(str::to_owned)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_heartbeat_the_page_sends_is_answered_on_the_socket_the_page_sends_it_on() {
+    // **The dependency claim `assets/rpc.js` bets a connection on, measured here rather than
+    // read somewhere else** (docs/11 **L38**, note **N157**). The heartbeat treats *silence* as
+    // a dead socket and closes it, and the reason that is evidence about the connection rather
+    // than about a busy camera is one sentence in that module's header: `wch_ping` is not a
+    // registered method, so jsonrpsee answers `-32601` without a handler running. Until this
+    // test the sentence rested on nothing this repository had run: the `-32601` claim is
+    // asserted for the **Unix** transport (`tests/uds.rs`) and once more for a foreign name over
+    // HTTP (`tests/http.rs`), never over the TCP WebSocket the page actually opens and never for
+    // the name the page actually sends.
+    //
+    // **If it were false the cost would be one-sided and silent.** Every idle tab would ask,
+    // hear nothing, and close its own socket a heartbeat later — the banner reading "the
+    // connection closed" on a daemon that is perfectly healthy — while the browser rung stayed
+    // green, because the claim it drives severs the link first and therefore only ever sees the
+    // failing path. That is rubric **A9**'s second half, a claim about a dependency nobody had
+    // read, and it is the class this review found three times.
+    //
+    // The name is read out of the served module rather than typed here, for the reason the two
+    // bounds above are: what has to be answered is what the page sends.
+    let module = web::get("rpc.js").expect("the client's JSON-RPC helper");
+    let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+    let method =
+        declared_string(&source, "HEARTBEAT_METHOD").expect("the page declares one ping method");
+
+    let client = Client::start().await;
+
+    // **Why `-32601` can be asserted rather than merely allowed.** The page treats *any* answer
+    // as proof of life, so a build that registered this name would break nothing — but a test
+    // that accepted either answer would be a test with no failing direction. So the surface's
+    // own vocabulary is asked first: this name is not in it, which is what makes the refusal
+    // below the only correct answer and makes registering it a red line with an explanation
+    // rather than a silent change of meaning (N157's *Retires when*).
+    let methods = daemon::server::mount(client.wchd.clone()).expect("the T5 surface mounts once");
+    assert!(
+        !methods.method_names().any(|name| name == method),
+        "`{method}` is a registered method now; the page's heartbeat is a call that reaches a \
+         handler, so N157's reasoning has to move with it"
+    );
+
+    let mut page = client.page_socket().await;
+
+    // The positive control first, on the same socket: a registered method answers a result. It
+    // is what stops "the refusal came back" from being satisfied by a fixture whose socket
+    // carries nothing at all — the failure this whole test is about looks exactly like that.
+    let listing = page.call("wch_list", json!({})).await;
+    assert!(
+        result(&listing, "wch_list").get("cameras").is_some(),
+        "the page's socket did not carry an ordinary call: {listing}"
+    );
+
+    let answered = page.call(&method, json!({})).await;
+    let error = refusal(&answered, &method);
+    assert_eq!(
+        error["code"],
+        json!(-32601),
+        "the heartbeat was answered with something other than jsonrpsee's method-not-found: \
+         {answered}"
+    );
+    // …and it carries no D13 payload, which is the other half of what `rpc.js` says about it:
+    // `RpcError.kind` is `null` for a protocol refusal, because a name that is not registered is
+    // not a device error and inventing one would be the collapse the registry exists to prevent.
+    assert_eq!(
+        error["data"]["kind"],
+        Value::Null,
+        "a protocol refusal arrived carrying a D13 discriminant: {answered}"
     );
 
     client.stop().await;

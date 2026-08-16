@@ -1,11 +1,20 @@
 // JSON-RPC over one WebSocket: calls, subscriptions, and the typed refusal.
 //
 // Design §2.7 budgets this at "~50 lines", and the budget is the design saying what kind of
-// thing this is. `connect` is fifty-three lines of code and `RpcError` is ten more, counted
-// rather than claimed. The reason it can be that small is that jsonrpsee already owns the
-// hard half — framing, batching, the subscribe/unsubscribe protocol, `-32601` for a name
-// that is not registered — and a client that re-implemented any of it would be a second
-// opinion about a protocol `webcam-handler-api` has exactly one home for (D10, T5).
+// thing this is: a helper, not a framework. **It is overshot, and not by rounding.** `connect`
+// is 112 lines of code — non-blank, non-comment, from its signature to its closing brace, which
+// is the whole of what the budget is about. Sixty of them arrived on 2026-08-16 with the two
+// liveness bounds the owner ruled for, and note **N158** prices the overshoot, says what it
+// bought and says what would end it; the number in this sentence is **counted rather than
+// claimed**, and counted by `crates/daemon/tests/web_client.rs`, which counts the function in
+// the bytes this daemon serves and goes red on a header that states a size this file does not
+// have. A count in a comment with nothing to check it is the defect this same repair pass closed
+// one crate along (note **N153**), and it is not cheaper here for being about a module.
+//
+// The reason the rest of it can stay small is that jsonrpsee already owns the hard half —
+// framing, batching, the subscribe/unsubscribe protocol, `-32601` for a name that is not
+// registered — and a client that re-implemented any of it would be a second opinion about a
+// protocol `webcam-handler-api` has exactly one home for (D10, T5).
 //
 // ## What it does, in three sentences
 //
@@ -21,6 +30,33 @@
 // rejected, every call made afterwards is rejected before it is written, and every
 // subscription is told. Nothing this module hands out stays quiet, because the one failure a
 // page cannot render is the one it was never told about.
+//
+// ## …and a socket that did not close is the failure that sentence used to miss
+//
+// Every promise above hangs off the `close` event, and a link cut without a FIN never fires
+// one. `readyState` stays `OPEN`, `send()` goes on succeeding into nothing, and the page's
+// story about itself stops being false and starts being *absent*: calls park for ever, the
+// banner reads `connected`, and `#photo-status` reads "taking a photo …" until the tab is shut
+// (docs/11 **L38**, note **N157**). Until 2026-08-16 the paragraph above claimed that could not
+// happen, which is the honest reason to record what closed it.
+//
+// The owner's ruling is two bounds, and they answer two different questions:
+//
+// - **[`CALL_TIMEOUT_MS`] bounds one call.** A promise nobody will settle is the same spinner
+//   the `close` handler refuses to leave behind, arriving by a different road, so a call that
+//   is not answered inside `schema::limits::CLIENT_REQUEST_TIMEOUT_MS` is rejected with a
+//   sentence naming the wait. It does **not** end the connection: two minutes is a bound on
+//   patience, not evidence about a socket, and a `wch_controls` queued behind a sweep is a
+//   daemon working rather than a daemon gone (E3 — a timeout is not a verdict on the machine).
+//   The rejection says which of the two it is (`err.reason`), because a consumer that could not
+//   tell them apart acted on the wrong one (note **N159**).
+// - **[`HEARTBEAT_MS`] bounds silence.** A page nobody is clicking on makes no calls, so the
+//   bound above never fires and nothing would ever notice; the heartbeat is what puts a
+//   question on an idle socket so that there is something to time out. A heartbeat that is
+//   still unanswered when the next one falls due **does** end the connection, and it may,
+//   because it is the one call on this surface that reaches no camera: `wch_ping` is not a
+//   registered method, jsonrpsee answers `-32601` without a handler running, and silence in
+//   answer to a question no device could slow down is a fact about the socket.
 //
 // ## The refusal is a value, not a string
 //
@@ -56,7 +92,50 @@
 const CLOSED_MESSAGE = "the connection to webcam-handler-daemon closed";
 
 /**
- * The reason a subscription is handed when the socket goes out from under it.
+ * How long one call waits for its answer, in milliseconds.
+ *
+ * `schema::limits::CLIENT_REQUEST_TIMEOUT_MS`, which is `webcam-handler-client`'s number
+ * because it is an answer to the same question — "how long before a client that has lost its
+ * daemon says so" — and that constant's own doc prices it against the longest ordinary verb on
+ * this surface. A browser cannot `use` a Rust constant, so this is a second copy of one, and
+ * `crates/daemon/tests/web_client.rs` reconciles the two rather than trusting them.
+ */
+const CALL_TIMEOUT_MS = 120000;
+
+/**
+ * How long this socket may be silent before the page asks it something.
+ *
+ * `schema::limits::CLIENT_WS_HEARTBEAT_MS`, reconciled with it in the same place as the number
+ * above.
+ */
+const HEARTBEAT_MS = 15000;
+
+/**
+ * What the heartbeat asks, and the reason it is a name this daemon does not answer.
+ *
+ * The question is "is this socket carrying anything", and the cheapest true answer to it is a
+ * frame that comes back without a handler having run: jsonrpsee answers `-32601` for a method
+ * that is not registered (this module's header), which reaches no camera, opens no device and
+ * reads no store. So a heartbeat costs the daemon a parse and a reply, and its *silence* cannot
+ * be a slow camera — which is what makes it evidence about the connection rather than about the
+ * machine (AGENTS rule 7).
+ *
+ * A build that later registers this name breaks nothing here: any answer at all is the answer
+ * this asks for, and [`connect`] treats a refusal exactly as it treats a result.
+ */
+const HEARTBEAT_METHOD = "wch_ping";
+
+/** What a call that was never answered says. The wait is named, because the wait is the fact. */
+function timedOutMessage(method) {
+  return (
+    `webcam-handler-daemon did not answer ${method} within ${CALL_TIMEOUT_MS} ms; the ` +
+    "connection may still be open and carrying nothing"
+  );
+}
+
+/**
+ * The reason a subscription is handed, and a call is rejected with, when the socket goes out
+ * from under it.
  *
  * A **sentinel compared by identity**. A stream that ends for its own reasons arrives as the
  * daemon's own `params.error` — `shutting_down` and a failed source are different advice,
@@ -66,11 +145,44 @@ const CLOSED_MESSAGE = "the connection to webcam-handler-daemon closed";
  * on it cannot be fooled by a daemon that happens to send a `kind` of `socket_closed`. The
  * fields are there because a consumer that renders a reason rather than branching on it must
  * still get a sentence out of this one.
+ *
+ * **It rides a rejected call as `err.reason` as well**, which is one value for one fact rather
+ * than two vocabularies for it: the calls waiting at the close, the calls made after it and
+ * every registered subscription are three arrivals of "this socket ended", and a consumer that
+ * has to *do* something about that — `assets/recording.js` retires its poll loop — asks the same
+ * question of all three.
  */
 export const SOCKET_CLOSED = Object.freeze({
   kind: "socket_closed",
   message: CLOSED_MESSAGE,
 });
+
+/**
+ * …and the reason a call is rejected with when *it* ran out of patience.
+ *
+ * A second sentinel rather than a second use of the first, because the two are different advice
+ * and one consumer already acts on the difference. A closed socket is a page that can make no
+ * further call — `recording.js` stops polling, and stopping is right. A call that timed out is
+ * one slow answer on a connection that is still open and may still work, and the loop that meets
+ * it should say so and ask again. Until 2026-08-16 both were a bare `Error`, so `err.kind` was
+ * `undefined` for each and the one consumer branching on that shape read a slow daemon as a dead
+ * one and retired its line, in silence, for the life of the tab (note **N159**).
+ *
+ * No `message` of its own: the wait is named per call by [`timedOutMessage`], and a sentinel
+ * carrying a second, vaguer sentence would be a sentence somebody eventually renders instead.
+ */
+const CALL_TIMED_OUT = Object.freeze({ kind: "call_timed_out" });
+
+/**
+ * One failure of this module's own making, carrying the sentinel a consumer branches on.
+ *
+ * `Error` for the message, `reason` for the identity. A subclass per case would be `instanceof`
+ * doing the same work with more surface, and the sentinels already exist because subscriptions
+ * need them.
+ */
+function failure(reason, message) {
+  return Object.assign(new Error(message), { reason });
+}
 
 /** A D13 refusal, as something a caller can branch on. */
 export class RpcError extends Error {
@@ -105,8 +217,20 @@ export async function connect(url, { onClose } = {}) {
   let opened = false;
   // …and whether it has since ended, which is what makes this handle refuse rather than park.
   let closed = false;
+  // When this socket last said anything at all, which is what "idle" is measured from. Every
+  // frame counts and not only answers: a notification off a subscription is a daemon writing
+  // to this socket, which is the whole of what the heartbeat is trying to find out.
+  let heard = Date.now();
+  // Whether a heartbeat has gone out and not come back. One bit rather than a timestamp,
+  // because the only question asked of it is at the next tick and the tick is the clock.
+  let beating = false;
+  // The idle check's timer, declared here and started after the handshake. `null` is a state
+  // that really happens: a refused handshake fires `close`, so the handler below runs on a
+  // connection that never had a heartbeat to stop.
+  let heartbeat = null;
 
   socket.addEventListener("message", (event) => {
+    heard = Date.now();
     const frame = JSON.parse(event.data);
     const waiting = pending.get(frame.id);
     if (waiting !== undefined) {
@@ -129,11 +253,19 @@ export async function connect(url, { onClose } = {}) {
 
   socket.addEventListener("close", () => {
     closed = true;
+    // The heartbeat exists to *reach* this handler on a socket that would never have got here
+    // on its own; once here it has nothing left to ask, and a timer left running would be a
+    // dead connection still spending a turn of the event loop every fifteen seconds for as
+    // long as the tab lives.
+    if (heartbeat !== null) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
     // Every call still waiting is refused rather than left pending: a promise nobody will
     // ever settle is a spinner that spins forever, which is the shape a stopped daemon
     // would otherwise take in this page.
     for (const waiting of pending.values()) {
-      waiting.reject(new Error(CLOSED_MESSAGE));
+      waiting.reject(failure(SOCKET_CLOSED, CLOSED_MESSAGE));
     }
     pending.clear();
     // …and every subscription is **told**, rather than dropped on the floor. `streams.clear()`
@@ -168,7 +300,7 @@ export async function connect(url, { onClose } = {}) {
     socket.addEventListener("error", () => failed(refused()), { once: true });
   });
 
-  return {
+  const handle = {
     call(method, params = {}) {
       // **The one line that stops a dead handle from being a spinner.** WHATWG makes
       // `WebSocket.send()` throw only while the socket is still `CONNECTING`; on `CLOSING` and
@@ -186,18 +318,92 @@ export async function connect(url, { onClose } = {}) {
       // line rather than as the spinner an operator would meet. The refusal below is what
       // makes the two hosts agree.)
       if (closed || socket.readyState !== WebSocket.OPEN) {
-        return Promise.reject(new Error(CLOSED_MESSAGE));
+        return Promise.reject(failure(SOCKET_CLOSED, CLOSED_MESSAGE));
       }
       const id = next++;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        // **The bound on one call, which is the other half of what a dead socket used to do.**
+        // The `close` handler refuses every promise it can see; a socket that never closes is
+        // never seen, so the wait is bounded here as well. It is a bound on *this call* and not
+        // on the connection: the timer is cleared by whichever of the two settlements arrives,
+        // and the `pending` entry is removed with it so a very late answer finds no id to
+        // resolve — which is the same rule the message handler already keeps.
+        //
+        // It is rejected as a **timeout and not as a closure**, which matters to exactly one
+        // consumer and mattered enough to be a finding: a bare `Error` here has the same shape a
+        // closed socket's rejection had, so `recording.js` — which stops its poll loop for good
+        // on "a call this page cannot make any more" — retired the recording line on one slow
+        // answer, without a word (note **N159**).
+        const overdue = setTimeout(() => {
+          pending.delete(id);
+          reject(failure(CALL_TIMED_OUT, timedOutMessage(method)));
+        }, CALL_TIMEOUT_MS);
+        pending.set(id, {
+          resolve: (result) => {
+            clearTimeout(overdue);
+            resolve(result);
+          },
+          reject: (err) => {
+            clearTimeout(overdue);
+            reject(err);
+          },
+        });
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
       });
     },
     async subscribe(method, event, ended) {
-      const id = await this.call(method);
+      const id = await handle.call(method);
       streams.set(id, { event, ended });
       return id;
     },
   };
+
+  /**
+   * The idle check, and the only thing in this module that ends a connection of its own accord.
+   *
+   * Three states, asked in this order at every tick:
+   *
+   * 1. **something crossed recently** — nothing to do, and the ordinary case for any page that
+   *    is showing a preview, since `assets/recording.js` polls once a second;
+   * 2. **silent, and a heartbeat is already outstanding** — the question was asked a whole
+   *    interval ago and the one call on this surface that cannot be slowed down by a camera has
+   *    not come back, so the socket is not carrying anything. `close()` rather than a sentence
+   *    of its own: the close handler above is where every waiting call is refused, every
+   *    subscription is told and `onClose` writes the page's one statement about the connection,
+   *    and a second story about a dead socket would be a second story to keep true;
+   * 3. **silent, and nothing outstanding** — ask.
+   *
+   * So a severed link is noticed within two ticks of the last frame plus however long the first
+   * tick lands after it, which is under three times [`HEARTBEAT_MS`] — a bound where this page
+   * had none at all.
+   *
+   * Started after the handshake rather than beside the socket, because a connection that was
+   * never accepted has no silence to measure: [`connect`] throws above this line and the caller
+   * is told what it was told.
+   */
+  heartbeat = setInterval(() => {
+    if (closed) {
+      return;
+    }
+    if (Date.now() - heard < HEARTBEAT_MS) {
+      return;
+    }
+    if (beating) {
+      socket.close();
+      return;
+    }
+    beating = true;
+    // Any answer is the answer: a `-32601` refusal proves the socket exactly as a result would,
+    // so this rejects only on the timeout or the close, and both of those are already somebody
+    // else's sentence. Swallowed rather than reported for that reason — a heartbeat is not a
+    // call this page made on anyone's behalf.
+    handle
+      .call(HEARTBEAT_METHOD)
+      .catch(() => {})
+      .finally(() => {
+        beating = false;
+      });
+  }, HEARTBEAT_MS);
+
+  return handle;
 }

@@ -18709,3 +18709,418 @@ rollback finds the answer here rather than debugging their own tree.
 
 **Retires when:** the log gains a version of its own, or `SESSION_SCHEMA_VERSION` moves — at which
 point the second paragraph above is the argument for what a bump has to be worth.
+
+## N152 — `preview.stop()` reasoned correctly about the wrong object, and every camera a tab looked at kept streaming
+
+**Doc:** design **D12** (one stream per camera, the idle close, the fan-out); `crates/web/assets/
+preview.js`; `schema::limits::PREVIEW_MAX_VIEWERS_PER_CAMERA`; AGENTS' *"the primary consumer has
+no hands"* and rule 7; rubric **A9** (*a claim about a dependency nobody had read*); note **N96**,
+the P5 web review that read this module and confirmed fourteen other defects in it. Raised as
+docs/11 **H4**, measured by the review in the pinned Chromium. Recorded 2026-08-16.
+
+**Repo:** `crates/web/assets/preview.js`, `crates/daemon/tests/browser/client.spec.mjs`,
+`crates/daemon/tests/web_browser.rs`, `crates/daemon/tests/browser/{claims.json,harness.mjs}`.
+
+**The defect, in three lines that each looked right.** `stop` cloned the `<img>`, called
+`removeAttribute("src")` **on the clone**, and replaced the original with it. The clone had never
+made a request; the original was the element holding a live `multipart/x-mixed-replace` response,
+and it was detached and otherwise left alone. Nothing in this client ever aborted it. So a page
+that had previewed five cameras had five open `/preview` responses and the daemon was still
+writing parts to all five, measured against Chromium 151.0.7922.34 — the build
+`@playwright/test@1.62.1` pins, which is this rung's own browser — and an explicit
+`HeapProfiler.collectGarbage` did not end them.
+
+**A detached element is not an aborted request, and that is the whole finding.** The doc comment
+above those lines argues, at length and correctly, why `removeAttribute` beats assigning `""`:
+*"an empty source is a request — for this document's own URL"*. Every word of that is true and it
+was applied to an object with nothing to end. The repair is one line moved to the element that
+owns the request, and the clone stays for the listener hygiene its own header argues for.
+
+**What it cost is not a socket.** Each abandoned stream holds a camera *open and streaming*, so
+D12's idle close can never fire for a camera an operator looked at,
+`limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` is spent four returns later on viewers nobody is
+watching, and every one of those is a camera the **agent** — this project's primary consumer, the
+one with no hands — then meets as `Busy`. A defect in the human's occasional client, paid for by
+the unattended one.
+
+**Why nothing was red, which is the part worth keeping.** The R1-web rung exists precisely to ask
+Chromium questions, and it did not ask this one: every claim it made was about something
+*starting* — a menu painting, a frame arriving, a refusal rendering — and none about something
+stopping. The new claim reads the daemon's own viewer count through the one aperture a browser
+has. Nothing on this listener reports how many readers a feed has and adding a route to answer a
+test would be `CAMERA_BEARING_PATHS` growing for the suite's convenience, so the probe opens
+`PREVIEW_MAX_VIEWERS_PER_CAMERA` readers of the camera the page walked away from: all served
+means the camera had none left over, one short and a `503` means it did. The number arrives from
+Rust as an environment variable for `WCH_E2E_MODULE_COUNT`'s reason. The claim's **positive
+control** is the same probe run while the page is still watching, which is what stops "every
+reader was served" from being satisfied by a probe that cannot see a reader at all.
+
+The rung needed a second camera to make any of it askable, and it is honestly a second
+*identity* rather than a second device: the same `synthetic_basic`, another card, another bus
+path, one control value changed so two panels can be told apart by what the device reports.
+
+**Retires when:** nothing retires it. The measurement about Chromium is the kind rubric A9 asks
+to be re-taken rather than believed, and the claim re-takes it on every push where the host has
+node.
+
+## N153 — Two sentences counted this client's files, both were wrong, and they were wrong in different directions
+
+**Doc:** `webcam-handler-web`'s crate header and `content_type`'s doc; AGENTS' *"docs state each
+fact once"*; note **N131** (the README's browser pins had no reconciler). Raised as docs/11
+**L37**. Recorded 2026-08-16.
+
+**Repo:** `crates/web/src/lib.rs`, `crates/daemon/tests/web_client.rs` (header).
+
+**What was there.** The crate header said *"Ten files … a page, a stylesheet, and eight ES
+modules"* and then enumerated **eight** roles, omitting the recording view; `content_type`'s doc
+forty lines down said *"one page, one stylesheet and nine modules"*; `assets/` held **eleven**
+files and **nine** modules. A third copy — *"ten files"* — sat in `crates/daemon/tests/
+web_client.rs`'s header. `recording.js` landed at P6c and none of them moved.
+
+**Nothing could go red on any of them**, which is the finding rather than the arithmetic. A count
+in a comment is what a reader is told this crate *is*, and a reader told the client has eight
+modules when it has nine has been told it is smaller than it is — the same class as a skip that
+reads as a pass, one document along. So the two counts are now reconciled against `paths()` by a
+test in the crate they are in, and the third copy is **deleted** rather than reconciled: the
+honest fix for a fact stated three times is to state it once.
+
+**The test reads its own source**, which is the only unusual thing here and is worth a sentence.
+`rust-embed` gives this crate a table it can count; the paragraph that says how big the table is
+is a comment, and there is no other way to reach one. It asserts each sentence appears **exactly
+once**, not merely somewhere — a check satisfied by *a* correct copy would have been satisfied by
+the tree that produced this finding — and it drives its own failing direction with counts the
+directory does not have, so the number that goes red has been seen going red.
+
+**Amended the same day, because half of it was not true.** The paragraph above described the
+intent; the code checked one sentence and a comment. `content_type`'s count is **line-wrapped** —
+`…one page, one stylesheet and\n/// nine modules…` — so the sentence a reader reads is not a
+string that occurs in the file, and the one occurrence the search did find was inside the *test's
+own* narrative paragraph, which quoted the historical wording on a single line. The review that
+caught it corrupted `content_type` to say four modules and the suite stayed green; worse, an
+editor who re-wrapped that comment would have turned the test red naming a doc that had not
+moved. Both failing arms went red anyway, for the header's sake alone, which is what let it look
+driven.
+
+Two lines close it. The haystack is `documented_prose` — the file's `//!` and `///` lines,
+unwrapped into the sentences they read as — so a wrapped sentence is findable and a comment
+*about* the defect is not the thing that satisfies the check. And the arms now count complaints
+per sentence rather than asking whether there were any: a file count one out is one complaint and
+a module count one out is two, because the module count is stated twice. **The lesson generalises
+and it was needed again ninety minutes later**: `crates/daemon/tests/web_client.rs`'s new size
+reconciler (note **N158**) matched nothing on its first run for exactly this reason, and unwraps
+comments for exactly this one.
+
+`NUMBER_WORDS` also lost its trap. It is thirteen entries against eleven files, and the arm that
+drives the reconciler one file past the directory would have indexed off the end the moment a
+twelfth asset landed — a *panic* naming Rust where the whole point was a sentence naming the
+drift. The lookup answers `None` past the end, a count the prose has no word for is a complaint,
+and there is an arm that drives it.
+
+**Retires when:** nothing retires it, though a client that stopped stating its own shape in prose
+would leave the test with nothing to check, and deleting both together would be the right way to
+do that.
+
+## N154 — The control panel had no camera identity, in a window and in an ordering
+
+**Doc:** design **D3** (guarded writes), **§2.10** (one home per law); `crates/web/assets/app.js`;
+AGENTS' *"the two consumers overlap on one camera as the normal case"*. Raised as docs/11
+**M32**. Recorded 2026-08-16.
+
+**Repo:** `crates/web/assets/app.js`, `crates/daemon/tests/browser/client.spec.mjs`.
+
+**Two defects wearing one description.** `select()` set `state.camera` synchronously and then
+awaited `wch_controls`; the panel was neither cleared nor fenced in between, and `write()` read
+`state.camera` at **send** time. So for the whole round trip — a device open and a control walk,
+minutes if a sweep is in front of that actor — every widget on screen belonged to the previous
+camera while a click on one wrote to the new one. And because `daemon::http::rpc` spawns a task
+per inbound WS message, two answers can come back in the other order and paint the wrong panel
+permanently, with nothing on screen to say so.
+
+**The repair is three things and each closes a different half.** The panel is emptied in the same
+task as the click, with a line saying which camera is being read — so the window shows an empty
+panel and a sentence rather than another camera's controls with nothing to mark them as another
+camera's, and there is nothing left to click on. `refreshControls` numbers its request and drops
+an answer that is not the one the panel is waiting for; a number rather than a camera comparison,
+because two answers about the *same* camera can also arrive out of order and a camera comparison
+cannot see that. And `write` takes the camera as an argument, bound to the report the widget was
+painted from — so a card can only ever reach the device its own report described, however long
+the round trip took.
+
+**A third element had the same defect and the review did not name it.** `select()` goes on to
+`calibration.showSessions` after the panel, so an answer that arrived late used to paint the
+session list, the session detail and the calibration status of the camera the operator had left.
+
+**And the first repair for it was half of one, on a wrong argument.** What landed was the fence in
+`select()` — is this still the camera the page is showing — with the reasoning that "the session
+list is read once per selection and has no second reader to reorder against". It is read once
+*per selection*, and two selections are two readers: a fence before the call drops a
+**continuation** and cannot see a `wch_calibrate_list` that is already on the wire. Two quick
+camera clicks put two of them there, and this daemon spawns a task per inbound message, so the
+first camera's answer can land last and paint three elements permanently — the worse half of the
+two defects above, left open in the paragraph claiming it was closed.
+
+So `calibration.js` numbers its own reads, exactly as `refreshControls` does and for the same
+reason, and drops an answer a newer view has retired in the success arm and in the refusal arm
+both. One counter covers `showSessions` and `showSession` because the second is reachable only
+through the first: a detail is opened from a button a list painted, so a detail read cannot be in
+flight before the list read that produced it, and a newer list is a newer view. The `select()`
+fence stays, because dropping the continuation early is still worth doing — it is what stops a
+second read from being started at all.
+
+**What goes red**: a browser claim that hands the module its answers, `probePanel`'s arrangement
+for `recording.js`'s reason — the ordering is inside one function, and the two answers have to
+*differ* for the question to have an observable answer at all. This daemon has no sessions for
+either camera, so two real answers are the same document; two arranged ones are a list of one and
+a list of none, and the stale refusal gets its own round.
+
+**What goes red.** One browser claim in two halves. The window is observed **synchronously**:
+the click is dispatched from inside the page and the panel read in the same task, because every
+Playwright locator assertion retries and would therefore be satisfied by the correct panel
+arriving a moment later, which is exactly the moment the defect is about. The ordering is arranged
+on the wire — both answers held off the page and released newest first — and the absence is
+established rather than assumed: the socket is closed from the proxy after the stale answer, and
+a WebSocket delivers in order, so a page that reports the closure has already run its handler for
+the frame in front of it.
+
+**Retires when:** nothing retires it.
+
+## N155 — A refused `wch_list` at startup was an unhandled rejection, and the identical call one function away was wrapped
+
+**Doc:** design **D1** (*"an empty enumeration is diagnosed, not shrugged at"*);
+`crates/web/assets/app.js`'s `#connection` ownership rule. Raised as docs/11 **M33**. Recorded
+2026-08-16.
+
+**Repo:** `crates/web/assets/app.js`, `crates/daemon/tests/browser/client.spec.mjs`.
+
+**What happened to a refusal.** `main()` awaited `enumerate()` with no `try`/`catch` and was
+itself called with no `.catch`, so a refused `wch_list` became an unhandled rejection in the
+console: the banner went on reading `connected`, the camera list stayed empty with no sentence
+beside it, and D1's diagnosis was never reached because the throw happened before it. The line
+*after* it never ran either, so a page that later recovered on a hotplug event had a photo button
+nothing had wired up. The same call on the hotplug path **was** wrapped, which is what makes this
+an omission rather than a policy.
+
+**One sentence, not two.** Both callers now go through `listRefused`, because "the camera list is
+not this machine's" is one fact with two arrivals — nothing yet, or a list that has stopped being
+current — and `#connection` has been wrong twice already from writers that each had their own
+copy of a sentence. It opens with the word `connected` under this module's own ownership rule:
+the socket really is up, this is a statement about a call, and a writer that dropped the word
+would be claiming something about the connection it has no evidence for.
+
+Not fatal, for `watchDevices`' reason: the device-change stream is live, so a machine whose
+enumeration failed once re-enumerates the next time anything is plugged in, and a page that
+returned there would have thrown that away.
+
+**What goes red.** The refusal is arranged on the wire, because no fake backend will produce one:
+`wch_list` over `synthetic_basic` always answers, which is precisely why nothing in this suite had
+ever seen the failing path. The claim's positive control withdraws the refusal and reloads
+**through the same proxy** rather than removing it — "the page works once I stop interfering with
+it" is a weaker thing to have proved.
+
+**Retires when:** nothing retires it.
+
+## N156 — One writer is not one writer per moment: a retired recording handle still had a call in flight
+
+**Doc:** `crates/web/assets/recording.js`; `index.html`'s split of the two status lines (E16 §1);
+note **N117** (the preview is fed the recording's own frames). Raised as docs/11 **L36**. Recorded
+2026-08-16.
+
+**Repo:** `crates/web/assets/recording.js`, `crates/daemon/tests/browser/client.spec.mjs`.
+
+**The claim that was half true.** That module's header says `#recording-status` has exactly one
+writer, which is the property E16 §1 split the calibration lines apart to get. It was true of the
+*module* and false of the *moment*: `poll()` wrote its answer into the node before consulting
+`view.stopped`, and a handle is retired while a call is in flight every time an operator switches
+cameras — that is what `stop()` is for. So the previous camera's sentence landed under the new
+camera's picture, in the element that exists so a line cannot be about something else.
+
+The repair asks the question again after the answer arrives, in both the success and the refusal
+arm, and drops what it finds without a word: a late answer is not wrong and not a failure, it is
+about a camera nobody is looking at.
+
+**What goes red.** A browser claim that hands the module a stub rather than a daemon — the
+arrangement `probePanel` already uses for `controls.js` — because what is asserted is an ordering
+*inside one function*, and the only reliable way to make an answer arrive after a `stop()` is to
+be the thing that answers. No clock: the resolve is followed by two turns of the microtask queue,
+and `poll`'s continuation was registered on that promise first. Its positive control is the same
+answer on a handle nobody retired, which *is* written — without it, "the element stayed empty" is
+satisfied by a module that never writes anything.
+
+**Retires when:** nothing retires it.
+
+## N157 — The web client had no liveness of its own, and its header said that could not happen
+
+**Doc:** owner ruling, 2026-08-16; `schema::limits::{CLIENT_REQUEST_TIMEOUT_MS,
+CLIENT_WS_HEARTBEAT_MS}`; AGENTS' *"bounded everything … constants live in
+`webcam-handler-schema::limits` and something reads each one"*; design **D11** (the loopback
+posture), **E3** (availability is not capability); note **N96**'s H5 repair. Raised as docs/11
+**L38**. Recorded 2026-08-16.
+
+**Repo:** `crates/web/assets/rpc.js`, `crates/schema/src/limits.rs`,
+`crates/daemon/tests/web_client.rs`, `crates/daemon/tests/browser/client.spec.mjs`.
+
+**The shape.** N96's H5 repair made a *closed* socket refuse every call at once — the calls
+waiting at the close, the calls made after it, and every subscription. Every one of those hangs
+off the `close` event, and **a link cut without a FIN never fires one**: `readyState` stays
+`OPEN`, `send()` goes on succeeding into nothing, and the page's story about itself stops being
+false and becomes absent. Every call parks, the banner reads `connected`, `#photo-status` reads
+"taking a photo …" until the tab is shut. The module's header claimed in as many words that a
+socket answers everything at once; that sentence is now the one that says why it did not.
+
+**The owner ruled for two bounds, and they answer two different questions.**
+`CLIENT_REQUEST_TIMEOUT_MS` bounds one call, and it is **not a new number**: it is
+`webcam-handler-client`'s, whose doc already prices two minutes against the longest ordinary verb
+on this surface, and the two clients are asking the same question of the same daemon. A timed-out
+call is rejected and the connection is left alone, deliberately — two minutes is a bound on
+patience, not evidence about a socket, and a `wch_controls` queued behind a sweep is a daemon
+working rather than a daemon gone (E3 with a stopwatch on).
+
+`CLIENT_WS_HEARTBEAT_MS` is the new one and it bounds **silence**, because a page nobody is
+clicking on makes no calls at all and the bound above would never fire. Fifteen seconds, priced
+against what this page already spends: a tab showing a preview asks `wch_record_status` once a
+second, so a heartbeat every fifteen — asked *only* when nothing else has crossed in that time —
+is a twentieth of the traffic that tab already makes. A heartbeat still unanswered when the next
+one falls due closes the socket, which it may because it is the one call on this surface that
+reaches no camera: `wch_ping` is not a registered method, jsonrpsee answers `-32601` without a
+handler running, and silence in answer to a question no device could slow down is a fact about
+the connection. It closes rather than inventing a sentence — the close handler is where every
+waiting call is refused, every subscription is told and `onClose` writes the page's one statement
+about the connection, and a second story about a dead socket is a second story to keep true.
+
+**Where the number crosses into JavaScript, and how it is kept honest.** A browser cannot `use` a
+Rust constant, and this repository had no mechanism for one crossing: `credential.js`'s
+transcriptions of `RPC_PATH` and `TOKEN_QUERY_PARAM` are reconciled by the browser rung noticing a
+`404`, and a timeout has no such symptom. So the numbers are a declared copy in `rpc.js` and
+`crates/daemon/tests/web_client.rs` compares them against `limits` — reading the bytes through
+`web::get`, so what is asserted is what a browser is served rather than a source tree somebody
+edited without rebuilding. It lives in that suite rather than in `webcam-handler-web` because
+`crates/web` has one dependency on purpose and its manifest argues at length for that; this file
+already builds the two camera-bearing URLs from the daemon's own constants for the same reason.
+
+**What goes red.** The reconciler, driven in both directions with a number the tree does not
+carry. And a browser claim that severs the link at the proxy — both sockets open, nothing
+crossing — and advances **a clock the test owns** (Playwright's, installed before the page loads)
+past two heartbeat intervals, which is the `SteppedClock` rule one language along: the bound is
+tens of seconds and a rung that waited them out is a rung nobody runs.
+
+**Amended: the sentence this rests on is now measured, and the healthy path is now driven.** As
+landed, every claim about this severed the link *first*, so no run had ever seen a heartbeat
+**answered** — and the paragraph above asserted, as a fact about a dependency, that jsonrpsee
+answers `-32601` for an unregistered name over the WebSocket route. This repository had that
+measured for the **Unix** transport (`tests/uds.rs`) and once for a foreign name over HTTP
+(`tests/http.rs`), never over the TCP socket a page opens and never for the name the page sends.
+Had it been false the cost would have been one-sided and invisible: every idle tab closing its own
+socket every thirty seconds, the banner reading "the connection closed" against a healthy daemon,
+and this rung green throughout — rubric **A9**'s second half, a claim about a dependency nobody
+had read, which is the class the G6 review found three times.
+
+It is true. Measured 2026-08-16 over the page's own route
+(`/rpc?token=…` on the TCP listener, `daemon::server::mount`'s surface, the method name read out
+of the served `rpc.js`):
+
+```
+{"error":{"code":-32601,"message":"Method not found"},"id":2,"jsonrpc":"2.0"}
+```
+
+`the_heartbeat_the_page_sends_is_answered_on_the_socket_the_page_sends_it_on` is that measurement,
+and it asks the surface's own vocabulary whether the name is registered *first* — which is what
+makes `-32601` an assertable answer rather than one of two acceptable ones, and makes registering
+the name a red test with an explanation in it rather than a silent change of meaning. A browser
+claim drives the composed half on a socket it opens itself, because the client's own socket is
+never idle: `recording.js` polls once a second, so a page showing a camera has no idle connection
+on it to watch.
+
+One measured detail worth keeping, because it cost a rung run to find: **the tick at exactly one
+interval never asks.** `heard` is set when the previous answer *arrived*, a moment after the
+interval was created, so the tick at `+15 s` lands a few milliseconds inside the window and the
+one after it is the one that asks. That is why a severed link is noticed in under three heartbeats
+rather than two, and why a claim that steps this clock spends two intervals per question.
+
+**Retires when:** the daemon grows a registered method whose purpose is liveness, at which point
+`HEARTBEAT_METHOD` should be it — though nothing breaks if it is registered by accident, since
+any answer is the answer this asks for.
+
+## N158 — Design §2.7's "~50-line" helper is 112 lines, and the sentence that said fifty-three could not go red
+
+**Doc:** design **§2.7** (*"a ~50-line JSON-RPC-over-WebSocket helper"*); `crates/web/assets/
+rpc.js`'s header; AGENTS' *"docs state each fact once"* and rule 1; note **N153** (the identical
+class, one crate along, repaired in the same batch). Raised by the review of that batch. Recorded
+2026-08-16.
+
+**Repo:** `crates/web/assets/rpc.js`, `crates/daemon/tests/web_client.rs`.
+
+**The number.** That module opens by measuring itself against the design's budget: *"`connect` is
+fifty-three lines of code and `RpcError` is ten more, counted rather than claimed."* By the rule
+it states — non-blank, non-comment, from the signature to the closing brace — `connect` was
+**71** lines before the G6 repairs and is **112** after them, so the sentence had been wrong by a
+third and became wrong by a factor of two. It was written in the same batch that repaired
+`webcam-handler-web`'s file count, in the file being edited, and nothing could go red on it.
+
+**The overshoot is real and it is not being widened by silence.** Sixty of those lines are the
+liveness the owner ruled for on 2026-08-16 (note **N157**): a per-call timeout with its timer
+teardown on both settlements, a heartbeat with three states and an interval to stop on close, and
+the two flags they are asked about. The rest is what §2.7 budgeted for. Two things are worth
+saying plainly rather than adjusting the design number to fit:
+
+- **What §2.7 is buying with "~50 lines" is still bought.** The budget is the design saying *what
+  kind of thing this is* — a helper over jsonrpsee rather than a second opinion about JSON-RPC —
+  and none of the added lines is protocol: framing, batching, subscribe/unsubscribe and `-32601`
+  are still jsonrpsee's, and this file still knows nothing about them (D10, T5).
+- **What it is not buying is the thing that was found.** A helper you can read in one screen is a
+  helper whose failure modes you can enumerate, and this one had a failure mode nobody had
+  enumerated for two sub-milestones — a socket that never closes. The lines that fixed it are the
+  evidence for the budget rather than against it.
+
+Moving the design number is the owner's, and this note is the request rather than the change:
+§2.7 still says `~50`, `rpc.js` says 112 and says why, and a reader meeting both is told the truth
+twice rather than a comfortable number once.
+
+**What goes red.** `the_client_helper_states_its_own_size_and_the_size_it_states_is_the_one_it_has`
+counts the function in the bytes `web::get` serves and refuses a header that states any other
+size, driven in both directions with sizes the function does not have. It reads the file's
+comments **unwrapped** — and it had to: its first run reported the sentence missing, because the
+sentence it was looking for spans a line break, which is note N153's finding arriving in the test
+written to prevent it.
+
+**Retires when:** §2.7's budget is restated by the owner, at which point the sentence in the
+header changes and this test moves with it — the count is measured either way.
+
+## N159 — A call that timed out and a socket that closed were one shape, to the one consumer that acts on the difference
+
+**Doc:** `crates/web/assets/rpc.js`'s `SOCKET_CLOSED`; `crates/web/assets/recording.js`'s poll
+loop; design **E3** / AGENTS rule 7 (*availability is not capability*); note **N157** (the two
+bounds), note **N156** (the same loop's other repair). Raised by the review of the batch that
+landed N157. Recorded 2026-08-16.
+
+**Repo:** `crates/web/assets/rpc.js`, `crates/web/assets/recording.js`,
+`crates/daemon/tests/browser/client.spec.mjs`.
+
+**Two facts, one shape.** N157's per-call timeout rejected with a bare `Error`, exactly as a
+closed socket already did, so `err.kind` was `undefined` for both. Every renderer in this client
+treats that as "no D13 name, print the message" and is right to. One consumer does more:
+`recording.js` reads it as *a call this page cannot make any more*, calls `stop()`, clears
+`#recording-status` and ends the poll loop — for the life of the tab, without a word, until the
+operator re-selects the camera. Stopping is the right answer to a dead socket and the wrong answer
+to a slow one, and the two arrived as the same value.
+
+**Latent rather than live, and recorded because the next reader would not know that.**
+`CAMERA_ENQUEUE_WAIT_MS` bounds a camera call at about seventeen seconds and refuses past it with
+`Busy`, so a two-minute timeout realistically only fires on a link that is already gone — where
+stopping is correct. The defect is in the *vocabulary*, and a vocabulary that happens to be safe
+today is the kind of thing this register exists to not re-learn.
+
+**The repair is a sentinel, not a `kind`.** `SOCKET_CLOSED` already existed as a frozen object
+compared by identity, precisely so a daemon that sent `{"kind": "socket_closed"}` could not forge
+it; it now rides a rejected call as `err.reason` as well, so the calls waiting at the close, the
+calls made after it and every subscription are three arrivals of one fact carrying one value. A
+timeout carries a second sentinel of its own. Adding `kind: "call_timed_out"` to the D13 namespace
+instead would have put this client's own vocabulary where the *device's* lives, which is the
+collapse rule 7 is about, one layer up.
+
+**What goes red.** A browser claim that holds one method's answers at the proxy while the
+heartbeat goes on being answered — so the socket is demonstrably alive when the call gives up —
+and reads the rejection's identity: not the closed sentinel, `call_timed_out`, and a message
+naming the wait. Driven red by rejecting with a bare `Error` again: *Expected "call_timed_out",
+received undefined*.
+
+**Retires when:** nothing retires it.

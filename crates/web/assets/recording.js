@@ -43,6 +43,18 @@
 // and clears itself: `socketClosed` owns the one sentence that covers every stream on a dead
 // connection, and a line still counting a recording up under a banner saying the connection is
 // gone would be the page contradicting itself in two elements at once.
+//
+// **One writer is not one writer per moment**, which is the part that had to be repaired. A
+// retired handle has a call in flight for as long as the daemon takes to answer it, so "this
+// module writes the line" and "the handle that owns the line writes the line" are two different
+// claims — and only the second one is worth anything. [`watch`]'s `poll` asks whether it is
+// still the owner *after* its answer arrives as well as before it goes out.
+
+// The *value*, not the transport: this module opens no socket and is handed its `rpc` by app.js.
+// `SOCKET_CLOSED` is what "this socket has ended" is spelled as in this client, and importing the
+// sentinel is what lets this loop branch on identity rather than on the absence of a field
+// (calibration.js imports it for the same reason, one view along).
+import { SOCKET_CLOSED } from "./rpc.js";
 
 /** How often the daemon is asked, in milliseconds. See the header for why it is not 250. */
 export const POLL_MS = 1000;
@@ -71,17 +83,42 @@ export function watch(rpc, camera, node) {
       return;
     }
     try {
-      say(node, sentence(await rpc.call("wch_record_status", { camera })), false);
+      const status = await rpc.call("wch_record_status", { camera });
+      // **Asked again after the answer, not only before the call.** `stop()` happens while a
+      // call is in flight every time an operator switches cameras — that is what it is for —
+      // and a handle that wrote whatever came back afterwards put the *previous* camera's
+      // sentence under the new camera's picture, in an element index.html gives one writer
+      // precisely so it cannot be about something else (docs/11 **L36**, note **N156**). The
+      // answer is not wrong and it is not a failure; it is about a camera nobody is looking at,
+      // so it is dropped without a word.
+      if (view.stopped) {
+        return;
+      }
+      say(node, sentence(status), false);
     } catch (err) {
+      // The same fence, on the same reasoning: a refusal about the previous camera is still
+      // about the previous camera.
+      if (view.stopped) {
+        return;
+      }
       // A call this page cannot make any more is not a fact about a recording, so this stops
       // rather than writing a sentence about a socket into a line about a camera. Anything
-      // else — a camera that stopped resolving, a daemon that refused — is reported here and
-      // the loop goes on, because the next answer may be different and the text is idempotent.
-      if (err.kind === null || err.kind === undefined) {
+      // else — a camera that stopped resolving, a daemon that refused, an answer that took too
+      // long — is reported here and the loop goes on, because the next answer may be different
+      // and the text is idempotent.
+      //
+      // **Asked by identity, of `rpc.js`'s own sentinel.** The question here is "has this socket
+      // ended", and until 2026-08-16 it was asked as "does this error carry no D13 name" — which
+      // is also true of a call that merely timed out, and of jsonrpsee's own protocol refusals.
+      // So a single slow answer on a live connection cleared this line and stopped the loop
+      // permanently, in silence, until the operator re-selected the camera (note **N159**). The
+      // sentinel cannot be forged by a daemon that sends a `kind` of `socket_closed`, which is
+      // the reason it is a sentinel (`rpc.js`'s `SOCKET_CLOSED`).
+      if (err.reason === SOCKET_CLOSED) {
         stop();
         return;
       }
-      say(node, `this camera's recording state is unknown: ${err.kind}: ${err.message}`, true);
+      say(node, `this camera's recording state is unknown: ${why(err)}`, true);
     }
     if (!view.stopped) {
       // `setTimeout` after the answer rather than `setInterval`, so a slow daemon is polled
@@ -121,6 +158,22 @@ export function sentence(status) {
 /** Milliseconds as a human's seconds. One decimal, because a take is seconds rather than hours. */
 function seconds(ms) {
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/**
+ * A failure as this line names it: the D13 discriminant when there is one, and the message
+ * otherwise.
+ *
+ * The fourth copy of three lines that app.js, controls.js, photo.js and calibration.js each carry,
+ * and the duplication is real rather than hidden: `dom.js` is this client's one shared module and
+ * it is a *DOM* helper, so a refusal renderer would be the wrong law in the only file every view
+ * imports. What each copy is for is stated where it is — this one exists because a name is what a
+ * reader can act on and `undefined:` in front of a sentence is what a page prints when it assumed
+ * every failure carries one.
+ */
+function why(err) {
+  const kind = err.kind ?? err.reason?.kind;
+  return kind === null || kind === undefined ? err.message : `${kind}: ${err.message}`;
 }
 
 /** Write one status line, marking it as a failure or not. app.js's `say`, one element along. */

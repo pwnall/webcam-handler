@@ -38,6 +38,11 @@
 // "goes" means for a browser is that the request ends. Clearing the attribute is how a page
 // ends it, so switching cameras clears it first: an `<img>` left pointed at the previous
 // camera is a second live stream, on a second device, that nobody is looking at.
+//
+// **Taking the element out of the document is not taking the source away**, and the difference
+// is measured rather than assumed: Chromium goes on writing parts to a detached `<img>` that
+// still carries a `src`, and an explicit collection does not end it either. [`stop`]'s doc
+// carries what believing otherwise cost (note **N152**).
 
 import { previewUrl } from "./credential.js";
 
@@ -73,19 +78,39 @@ export function watch(img, status, camera, token) {
 /**
  * End whatever this element was watching.
  *
+ * **Two things happen here and only one of them ends the stream.** The clone is *listener*
+ * hygiene; the `removeAttribute` on `img` is the abort. Keeping them apart in the reader's
+ * head is worth a paragraph, because this function had them the wrong way round from P5c
+ * until the G6 review measured it in the pinned Chromium (docs/11 **H4**, note **N152**): it
+ * removed the attribute from the clone, which had never made a request, and detached the
+ * original, which went on owning the response. A detached `<img>` is *not* an aborted
+ * request — Chromium keeps writing parts to it, and collecting the garbage does not end it —
+ * so every camera the tab had looked at stayed open and streaming on the daemon for the life
+ * of the tab.
+ *
  * `removeAttribute` rather than assigning the empty string: an empty source is a *request*
  * — for this document's own URL, which is the page, which the browser then fails to decode
  * as an image — where removing the attribute is the element having no source at all. The
  * difference is one pointless request to the daemon per camera switch, and one spurious
- * `error` event that would land in the status line above.
+ * `error` event that would land in the status line above. That argument was always right;
+ * it was applied to the wrong object.
+ *
+ * The order is deliberate too. The attribute goes first, so that the element that owns the
+ * request is still the one this function was handed, whatever `replaceWith` does to it.
  */
 export function stop(img, status) {
+  // **The abort.** The daemon retires a feed when its last reader goes, and for a browser
+  // "goes" means the request ends — so this line is the whole of what `Previews::release`
+  // sees, and without it D12's idle close can never fire for a camera an operator looked at,
+  // `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` is spent on viewers nobody is watching, and each
+  // one is a camera the agent then meets as `Busy`.
+  img.removeAttribute("src");
   // A fresh element, so the listeners attached by a previous `watch` go with the old one.
   // Reattaching to the same node would leave two `error` handlers writing two sentences
   // into one status line, which is the shape "the preview failed twice" takes when it
-  // failed once.
+  // failed once. The clone is made *after* the attribute is gone, so it carries no source of
+  // its own to start a second request with.
   const replacement = img.cloneNode(false);
-  replacement.removeAttribute("src");
   img.replaceWith(replacement);
   status.classList.remove("failed");
   status.textContent = "";

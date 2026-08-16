@@ -55,6 +55,27 @@ import { SOCKET_CLOSED } from "./rpc.js";
 const LOG_DEPTH = 200;
 
 /**
+ * Which read of this view is the current one, so a late answer can be told it is not.
+ *
+ * **The control panel's rule, in the third element that had the same defect** (docs/11 **M32**,
+ * note **N154**). `showSessions` awaits `wch_calibrate_list` and then paints three nodes; the
+ * daemon spawns a task per inbound WS message, so two camera clicks put two lists on the wire
+ * and the *first* camera's answer can land last — painting a camera the operator has left into
+ * the panel of the camera they are looking at, permanently, with nothing on screen to say so.
+ * app.js fences before the call, which drops a *continuation*; it cannot see an answer that is
+ * already in flight.
+ *
+ * A number rather than a comparison of camera ids, for `refreshControls`' reason: two answers
+ * about the *same* camera can also arrive out of order, and a camera comparison cannot see that.
+ *
+ * **One counter for both readers, because the second one is reachable only through the first.**
+ * `showSession` opens a session the operator clicked in a list `showSessions` painted, so a
+ * detail read can never be in flight before the list read that produced its button — and a newer
+ * list is a newer view, which is exactly what should retire a detail belonging to the old one.
+ */
+let reads = 0;
+
+/**
  * Subscribe to every sweep this daemon runs, and paint the events into `log`.
  *
  * Called once, at startup, rather than per camera: the stream is per client (see the
@@ -100,11 +121,20 @@ export async function watchSweeps(rpc, { status, log }) {
  * is passed here because the page is showing one camera. Its answer is built from the
  * directory tree alone — nothing is parsed out of a session document (D9), which is why a
  * session this build cannot read still appears in the list and only fails when it is opened.
+ *
+ * **The answer is painted only if it is still the answer this view is waiting for** — see
+ * [`reads`] for the arrival that makes that a repair rather than a precaution. A late answer is
+ * dropped in silence and deliberately so: it is not a failure, it is a list about a camera
+ * nobody is looking at.
  */
 export async function showSessions(rpc, camera, nodes) {
+  const read = ++reads;
   fill(nodes.detail, []);
   try {
     const listing = await rpc.call("wch_calibrate_list", { camera });
+    if (read !== reads) {
+      return;
+    }
     nodes.status.classList.remove("failed");
     nodes.status.textContent =
       listing.sessions.length === 0
@@ -125,6 +155,11 @@ export async function showSessions(rpc, camera, nodes) {
       ),
     );
   } catch (err) {
+    // The same fence on the refusal arm, for `refreshControls`' reason: a stale refusal painted
+    // over a current list is the same wrong statement as a stale list, and it is the louder one.
+    if (read !== reads) {
+      return;
+    }
     nodes.status.classList.add("failed");
     nodes.status.textContent = `the session list was refused: ${refusal(err)}`;
     fill(nodes.list, []);
@@ -133,17 +168,27 @@ export async function showSessions(rpc, camera, nodes) {
 
 /** One session's document and its history. */
 async function showSession(rpc, camera, id, nodes) {
+  const read = reads;
   try {
     const status = await rpc.call("wch_calibrate_status", {
       camera,
       session: { kind: "id", id },
     });
+    // Read rather than taken: a detail belongs to the view that painted the button it came
+    // from, so it is dropped when that view has been replaced and left alone otherwise ([`reads`]
+    // argues why one counter covers both).
+    if (read !== reads) {
+      return;
+    }
     fill(nodes.detail, [
       el("p", {}, `${status.session.task} — ${status.session.goal}`),
       controlTable(status.session),
       el("p", { class: "note" }, `${status.log.length} entries in this session's log`),
     ]);
   } catch (err) {
+    if (read !== reads) {
+      return;
+    }
     // A session written by another build is `schema_version_foreign`, which is a typed
     // refusal and never a best-effort parse (D9) — so it is named as itself rather than
     // rendered as "could not load".

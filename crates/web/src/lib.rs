@@ -8,12 +8,18 @@
 //!
 //! ## What is here
 //!
-//! Ten files, and P5c is the sub-milestone that made them a client rather than a skeleton: a
-//! page, a stylesheet, and eight ES modules — the JSON-RPC-over-WebSocket helper, the
-//! credential, a DOM helper, and one module each for the camera list's composition root, the
-//! control panel, the preview, the photo trigger and the calibration view. Every one of them
-//! is hand-written; nothing here was generated, bundled, minified or vendored (§2.7, AGENTS:
-//! "the web client vendors or hand-writes everything — no CDN, no npm").
+//! Eleven files: a page, a stylesheet, and nine ES modules — the JSON-RPC-over-WebSocket
+//! helper, the credential, a DOM helper, and one module each for the camera list's composition
+//! root, the control panel, the preview, the photo trigger, the recording line and the
+//! calibration view. P5c is the sub-milestone that made them a client rather than a skeleton
+//! and the recording line arrived at P6c with note **N117**'s ruling. Every one of them is
+//! hand-written; nothing here was generated, bundled, minified or vendored (§2.7, AGENTS: "the
+//! web client vendors or hand-writes everything — no CDN, no npm").
+//!
+//! Both numbers in that sentence are checked against the directory by
+//! `the_prose_at_the_top_of_this_crate_counts_the_directory_underneath_it`, and they are
+//! checked because they were wrong: the count here and the one in `content_type`'s doc drifted
+//! apart over two sub-milestones and neither could go red (docs/11 **L37**, note **N153**).
 //!
 //! **They are ordinary subresources, and until 2026-08-12 they could not have been.** The
 //! token rides the URL, and a browser does not carry a document's query string over to the
@@ -215,6 +221,180 @@ mod tests {
     /// be a reference this scan cannot see — which is a reason not to write one rather than
     /// a reason to write a parser.
     const REFERENCE_MARKERS: [&str; 4] = ["from ", "import ", "src=", "href="];
+
+    /// This crate's own source, so the prose at the top of it can be checked like anything else.
+    ///
+    /// The only file in the workspace that reads itself, and it is worth the oddity: what is
+    /// being asserted is two sentences, and there is no other way to reach them. `rust-embed`
+    /// puts `assets/` in a table this crate can count; the paragraph that says how big that
+    /// table is is a comment, which is bytes on disk and nothing else.
+    const OWN_SOURCE: &str = include_str!("lib.rs");
+
+    /// The small numbers this file's prose counts in, spelled the way it spells them.
+    ///
+    /// House style writes a count of files as a word rather than a digit, so a check that
+    /// compared numbers would be checking prose nobody writes. Thirteen of them, `zero` through
+    /// `twelve`, and **the end of the table is not a failure mode**: [`number_word`] answers
+    /// `None` past it. It had to be, because the arm below drives this table one past the
+    /// directory's real count on purpose — so a twelfth asset would have met `NUMBER_WORDS[13]`
+    /// and *panicked* where the whole point was to report a stale sentence, and a test that
+    /// panics names Rust rather than the drift (note **N153**).
+    const NUMBER_WORDS: [&str; 13] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
+
+    /// How this file's prose spells `n`, or `None` for a count it has no word for.
+    fn number_word(n: usize) -> Option<&'static str> {
+        NUMBER_WORDS.get(n).copied()
+    }
+
+    /// [`number_word`], capitalised, because one of the two sentences starts with it.
+    fn capitalised(n: usize) -> Option<String> {
+        let word = number_word(n)?;
+        let (first, rest) = word.split_at(1);
+        Some(format!("{}{rest}", first.to_uppercase()))
+    }
+
+    /// This file's doc comments, unwrapped into the sentences a reader reads.
+    ///
+    /// **A doc comment is wrapped to the column limit, so a sentence in one is a sentence *and a
+    /// line break*.** `content_type`'s count is written `…one page, one stylesheet and\n/// nine
+    /// modules…`, and a search of the raw source for that sentence as a reader reads it finds
+    /// nothing there. Until this existed the second half of the reconciler below matched the only
+    /// unwrapped copy in the file — the narrative comment in the test itself — so `content_type`'s
+    /// count could be edited to any number at all and this suite stayed green, which is the
+    /// finding it was written to close arriving one line lower down (note **N153**).
+    ///
+    /// **`//!` and `///` only**, which is the other half of the repair rather than an
+    /// optimisation. What is reconciled is the prose this crate *documents itself with*; the
+    /// test's own account of what went wrong quotes the old wording, and a haystack that included
+    /// it would be satisfied by a comment about the defect instead of by the doc that carries it.
+    fn documented_prose(source: &str) -> String {
+        let mut prose = String::with_capacity(source.len());
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            let Some(text) = trimmed
+                .strip_prefix("//!")
+                .or_else(|| trimmed.strip_prefix("///"))
+            else {
+                continue;
+            };
+            // One space per line, which is what unwraps a sentence: the break between `and` and
+            // `nine modules` becomes the space it was written as.
+            prose.push(' ');
+            prose.push_str(text.trim());
+        }
+        prose
+    }
+
+    /// Where this crate's prose fails to state `files` and `modules` exactly once. Empty is
+    /// green.
+    ///
+    /// A pure function over the source text so the arms below can drive it with numbers the
+    /// directory does not have, which is the half that proves it can go red: a reconciler whose
+    /// failing direction has never been seen is a reconciler nobody has checked (AGENTS rule 2).
+    ///
+    /// **Once**, not merely somewhere. The finding this closes is two sentences in one file that
+    /// stated different counts, so a check satisfied by *a* correct copy would be satisfied by
+    /// the tree that produced the finding. Counting occurrences of the assembled sentence also
+    /// keeps this function's own format templates out of its own haystack — they carry the
+    /// placeholders rather than the numbers, so they can never be a match — and the haystack is
+    /// [`documented_prose`] rather than `source`, which is what makes the second sentence a
+    /// sentence this can find at all.
+    fn counts_the_client(source: &str, files: usize, modules: usize) -> Vec<String> {
+        let mut stale = Vec::new();
+        let prose = documented_prose(source);
+        let (Some(files_word), Some(modules_word)) = (capitalised(files), number_word(modules))
+        else {
+            // A count past the end of the table is reported rather than indexed: the sentence
+            // cannot even be assembled, so it certainly is not in the file, which is the same
+            // answer by a shorter road.
+            stale.push(format!(
+                "this file's prose has no word for {files} file(s) or {modules} module(s); \
+                 `NUMBER_WORDS` counts to {last} and `assets/` has outgrown it",
+                last = NUMBER_WORDS.len() - 1
+            ));
+            return stale;
+        };
+        let header =
+            format!("{files_word} files: a page, a stylesheet, and {modules_word} ES modules");
+        let said = prose.matches(&header).count();
+        if said != 1 {
+            stale.push(format!(
+                "this crate's header says `{header}` {said} time(s) and should say it once; \
+                 `assets/` holds {files} file(s) and {modules} module(s) today"
+            ));
+        }
+        let typed = format!("one page, one stylesheet and {modules_word} modules");
+        let named = prose.matches(&typed).count();
+        if named != 1 {
+            stale.push(format!(
+                "`content_type`'s doc says `{typed}` {named} time(s) and should say it once; \
+                 `assets/` holds {modules} module(s) today"
+            ));
+        }
+        stale
+    }
+
+    #[test]
+    fn the_prose_at_the_top_of_this_crate_counts_the_directory_underneath_it() {
+        // **Two sentences in this file state how many files the client has, and until the G6
+        // review nothing could go red on either** (docs/11 **L37**, note **N153**). They had
+        // drifted in opposite directions and disagreed with each other as well as with the
+        // directory: the header said "ten files … eight ES modules" and enumerated eight roles,
+        // `content_type`'s doc said "one page, one stylesheet and nine modules", and `assets/`
+        // held eleven files and nine modules. `recording.js` landed at P6c and neither sentence
+        // moved, which is the ordinary way a count in a comment stops being one.
+        //
+        // A count in prose is not decoration here. The header is where a reader is told what
+        // this crate *is*, and a reader who believes there are eight modules when there are
+        // nine has been told the client is smaller than it is — which is the same class as a
+        // skip that reads as a pass, one document along.
+        //
+        // **And this comment was, for one afternoon, half of what the check checked.** The
+        // second sentence is line-wrapped in `content_type`'s doc and the paragraph above quotes
+        // it whole, so the one match a search of the raw source found was *here*: `content_type`
+        // could be edited to say four modules and this test stayed green, while an editor who
+        // re-wrapped this comment would have turned it red blaming a doc that had not moved.
+        // `counts_the_client` reads [`documented_prose`] for that reason, and this paragraph is
+        // no longer in the haystack it searches.
+        let files = paths().count();
+        let modules = paths().filter(|path| path.ends_with(".js")).count();
+        assert!(files > 2, "the asset walk found {files} file(s)");
+        assert!(modules > 0, "the asset walk found no modules");
+
+        let stale = counts_the_client(OWN_SOURCE, files, modules);
+        assert!(stale.is_empty(), "{stale:?}");
+
+        // Both directions, driven rather than asserted about — and driven **per sentence**,
+        // which is the half that was missing. A file added to `assets/` and a module added to it
+        // are the two ways this drifts; the file count is stated in the header alone and the
+        // module count in both sentences, so a module one out is *two* complaints and a file one
+        // out is one. Arms that only asked whether the answer was non-empty were satisfied by the
+        // header's complaint alone, which is how the second sentence went unchecked while the arm
+        // that was supposed to check it went red for the first one's sake (note **N153**).
+        assert_eq!(
+            counts_the_client(OWN_SOURCE, files + 1, modules).len(),
+            1,
+            "a file count one ahead of the directory should be stale in the header and nowhere \
+             else"
+        );
+        assert_eq!(
+            counts_the_client(OWN_SOURCE, files, modules + 1).len(),
+            2,
+            "a module count one ahead of the directory should be stale in both sentences that \
+             state it"
+        );
+        // …and one past the end of the number table, which is the arm above arriving at a client
+        // that has grown: a count this file's prose has no word for is a complaint, never an
+        // index off the end of `NUMBER_WORDS`.
+        assert_eq!(
+            counts_the_client(OWN_SOURCE, NUMBER_WORDS.len(), modules).len(),
+            1,
+            "a count past the end of the number table should be a sentence rather than a panic"
+        );
+    }
 
     #[test]
     fn the_index_page_is_embedded_and_is_html() {

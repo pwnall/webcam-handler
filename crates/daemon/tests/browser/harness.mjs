@@ -33,6 +33,37 @@ export const readyToOpenUrl = required("WCH_E2E_URL");
 export const cameraId = required("WCH_E2E_CAMERA");
 
 /**
+ * The second camera this daemon serves, which is what makes a *switch* something to assert.
+ *
+ * `crates/daemon/tests/web_browser.rs` says what it is and is not: the same profile under a
+ * second identity, so nothing here claims two kinds of hardware. What it buys is a camera to
+ * walk away *to*, which is the arrangement docs/11's **H4** and **M32** are both about.
+ */
+export const secondCameraId = required("WCH_E2E_SECOND_CAMERA");
+
+/**
+ * The brightness the second camera reports, so a panel can be asked which device it came from.
+ *
+ * The first camera's is 128 and this is not it — the difference is the whole instrument. A
+ * claim that switches cameras and reads this one number off the panel is asking *which device
+ * this panel was painted from*, and matching numbers would have made the wrong answer look
+ * like the right one.
+ */
+export const secondBrightness = required("WCH_E2E_SECOND_BRIGHTNESS");
+
+/**
+ * `schema::limits::PREVIEW_MAX_VIEWERS_PER_CAMERA`, as the number a probe opens.
+ *
+ * The daemon publishes no count of a camera's readers — it serves two camera-bearing routes
+ * and neither is a status page — so the count is read where the daemon already refuses on it:
+ * the reader past this many meets `Error::Busy` and a `503`. A probe that opens exactly this
+ * many readers of one camera and is served every one of them has established that the camera
+ * had no readers left over, which is the only browser-visible form of "the preview the page
+ * walked away from is a preview the daemon stopped" (**H4**).
+ */
+export const previewViewerCap = Number(required("WCH_E2E_PREVIEW_VIEWER_CAP"));
+
+/**
  * An absolute path a claim may record into.
  *
  * `wch_record_start` takes a server path and refuses a relative one (note **N110**), and the

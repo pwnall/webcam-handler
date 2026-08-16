@@ -140,7 +140,7 @@ struct Floor {
 /// line naming how far ahead the manifest has got — never silence, AGENTS rule 3 — and raising
 /// this pair is what closes a boundary.
 ///
-/// Measured, never estimated: **16 claims and 138 assertions** are what `claims.json` carries on
+/// Measured, never estimated: **23 claims and 198 assertions** are what `claims.json` carries on
 /// the run that landed this (the same two numbers the decline line above prints).
 ///
 /// Raised at P6c's second half, which is what "raising this pair closes a boundary" looks like
@@ -160,9 +160,24 @@ struct Floor {
 /// it is the one that drives a manifest one claim short: one short of 15 is 14, which clears a
 /// floor of 11 and complains about nothing. **File isolation prevents collisions between edits and
 /// not between meanings** (note **N98**).
+/// Raised again at the G6 repair pass, by the five claims docs/11 §2.2 asked this rung for. The
+/// review's fourth HIGH was a preview stream that never ends, and what let it survive a review
+/// which read the same module was that **every claim this rung made was about something
+/// starting** — a menu painting, a frame arriving, a refusal rendering. The five added then were
+/// about things stopping (notes **N152**, **N154**–**N157**), and this pair moves with them in
+/// the same diff, because a floor left behind its manifest is a floor that lets that many claims
+/// be deleted in silence.
+///
+/// Raised twice more by the repair pass over that batch. Both additions are the same lesson from
+/// the other side: the five claims about *stopping* left the **healthy** path of what they drove
+/// unasserted. The heartbeat's every claim severed the link first, so no run had ever seen a
+/// heartbeat answered and the whole mechanism rested on an unread sentence about jsonrpsee (note
+/// **N157**'s correction); and the calibration view's reorder was argued closed in prose rather than driven at
+/// all (note **N154**'s correction). A rung that only asks whether a thing stops cannot see a
+/// thing that stops when it should not.
 const FLOOR: Floor = Floor {
-    claims: 16,
-    assertions: 138,
+    claims: 23,
+    assertions: 198,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.
@@ -377,6 +392,16 @@ fn pinned_chromium_build(suite: &Utf8Path) -> String {
 struct Serving {
     serving: http::Serving,
     camera: CameraId,
+    /// The second camera, which exists so a claim can *switch* between two of them.
+    ///
+    /// Two claims need a page to stop looking at one camera and start looking at another, and
+    /// neither can be made against a machine with one camera on it: whether the preview a page
+    /// walked away from is a preview the daemon stopped (docs/11 **H4**, note **N152**) and
+    /// whether the panel on screen belongs to the camera on screen (**M32**, note **N154**)
+    /// are both questions about the *switch*. It replays the same profile with its identity
+    /// and one control value changed, so the two panels are told apart by what the device
+    /// reports rather than by their order on the page.
+    second_camera: CameraId,
     /// Where a claim that starts a recording may write one.
     ///
     /// Handed to the browser rather than chosen there, because `wch_record_start` takes an
@@ -398,16 +423,19 @@ impl Serving {
     /// rather than one this file assembled.
     async fn start() -> Serving {
         let backend = Arc::new(
-            FakeBackend::new(vec![small_mjpeg_camera()])
+            FakeBackend::new(vec![small_mjpeg_camera(), second_mjpeg_camera()])
                 .expect("the synthetic profile is this build's version"),
         );
-        let camera = backend
+        let cameras = backend
             .enumerate()
-            .expect("the fake enumerates what it replays")
-            .first()
-            .expect("one camera")
-            .id
-            .clone();
+            .expect("the fake enumerates what it replays");
+        let camera = cameras.first().expect("the first camera").id.clone();
+        let second_camera = cameras.get(1).expect("the second camera").id.clone();
+        assert_ne!(
+            camera, second_camera,
+            "the two profiles collapsed into one identity, so no claim below can switch \
+             between them"
+        );
 
         let state = TempStore::new().expect("a state directory");
         let store = SessionStore::new(state.root());
@@ -439,6 +467,7 @@ impl Serving {
         Serving {
             serving,
             camera,
+            second_camera,
             take: runtime.base().join("browser-take.avi"),
             shutdown,
             _lock: lock,
@@ -479,6 +508,58 @@ fn small_mjpeg_camera() -> schema::profile::DeviceProfile {
             }];
         }
     }
+    profile
+}
+
+/// The brightness the second camera reports, so that two panels can be told apart.
+///
+/// The fixture's own brightness is 128 and this is not it. That difference is the whole
+/// mechanism behind [`SECOND_CAMERA_CARD`]'s paragraph: a claim that switches cameras and then
+/// reads one number off the panel is asking *which device this panel was painted from*, which
+/// is the question M32 is about. Matching numbers would have made the wrong answer look like
+/// the right one.
+const SECOND_CAMERA_BRIGHTNESS: i64 = 64;
+
+/// What the second camera calls itself, which is what gives it an id of its own.
+///
+/// `fake::assign_ids` derives every camera's [`CameraId`] from its card, so this string is the
+/// second camera's identity rather than its label — two profiles sharing a card would collapse
+/// into one id and the switch claims would be switching to the camera they were already on.
+/// `Serving::start` asserts they came out different rather than trusting that.
+const SECOND_CAMERA_CARD: &str = "Synthetic Second Camera";
+
+/// A second camera on this daemon: the same device, under another identity, at another
+/// brightness.
+///
+/// **It is a second identity rather than a second device**, and that is the honest description
+/// of what it buys. Nothing here claims the fake now replays two kinds of hardware — every
+/// format, every control and every measured pair is `synthetic_basic`'s, so the four device
+/// edges design §1.2 recorded are on both cameras and no claim about them cares which one it
+/// ran against. What this profile adds is the one thing a one-camera daemon cannot offer: a
+/// camera to switch *to*. Two of this rung's claims are about the switch itself — the preview
+/// the page walked away from (docs/11 **H4**) and the panel that still belongs to the camera
+/// the page walked away from (**M32**) — and neither is askable on a machine with one camera.
+///
+/// Its bus path, its bus info and its node paths differ too, because a fixture that is a
+/// second camera only in its card would be a fixture that D1's grouping is entitled to fold
+/// back into one \[PF:13\]: `bus_info` is per-USB-device, and two logical cameras sharing one
+/// are one camera with two nodes.
+fn second_mjpeg_camera() -> schema::profile::DeviceProfile {
+    let mut profile = small_mjpeg_camera();
+    let info = &mut profile.invariant.info;
+    info.id = CameraId::parse("cam:synthetic-second").expect("a literal, non-empty id");
+    info.card = SECOND_CAMERA_CARD.to_owned();
+    info.fingerprint.card = SECOND_CAMERA_CARD.to_owned();
+    info.fingerprint.bus_path = "3-5:1.0".to_owned();
+    info.bus_info = "usb-0000:00:14.0-5".to_owned();
+    for (index, node) in info.nodes.iter_mut().enumerate() {
+        node.path = format!("/dev/video{}", index + 10).into();
+    }
+    let brightness = schema::control::ControlSlug::parse("brightness").expect("a literal slug");
+    profile.state.values.insert(
+        brightness,
+        schema::control::ControlValue::Int(SECOND_CAMERA_BRIGHTNESS),
+    );
     profile
 }
 
@@ -531,6 +612,19 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
     let modules = web::paths().filter(|name| name.ends_with(".js")).count();
 
     let camera = daemon.camera.as_str().to_owned();
+    let second_camera = daemon.second_camera.as_str().to_owned();
+    let brightness = SECOND_CAMERA_BRIGHTNESS.to_string();
+    // **The aperture through which a browser reads the daemon's own viewer count.** Nothing on
+    // this listener reports how many readers a camera's feed has — `daemon::http` serves two
+    // camera-bearing routes and neither of them is a status page, and adding one to answer a
+    // test would be a route `CAMERA_BEARING_PATHS` has to grow for the suite's convenience. So
+    // the count is read where the daemon already refuses on it: the viewer past
+    // `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` meets `Error::Busy` and a `503`, so a probe that
+    // opens exactly this many readers and is served all of them has established that the camera
+    // had none left over (docs/11 **H4**, note **N152**). Passed in rather than written down in
+    // JavaScript for `WCH_E2E_MODULE_COUNT`'s reason: a number typed twice is a claim that stops
+    // being about the constant the daemon reads.
+    let viewer_cap = schema::limits::PREVIEW_MAX_VIEWERS_PER_CAMERA.to_string();
     let take = daemon.take.clone();
     let workdir = suite.clone();
     let output_arg = output.clone();
@@ -541,6 +635,9 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
             .current_dir(workdir.as_std_path())
             .env("WCH_E2E_URL", url)
             .env("WCH_E2E_CAMERA", camera)
+            .env("WCH_E2E_SECOND_CAMERA", second_camera)
+            .env("WCH_E2E_SECOND_BRIGHTNESS", brightness)
+            .env("WCH_E2E_PREVIEW_VIEWER_CAP", viewer_cap)
             .env("WCH_E2E_MODULE_COUNT", modules.to_string())
             .env("WCH_E2E_TAKE", take.as_str())
             .env("WCH_E2E_OUTPUT", output_arg.as_str())

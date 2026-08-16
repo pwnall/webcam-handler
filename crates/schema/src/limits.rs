@@ -138,7 +138,13 @@ pub const RPC_MAX_BATCH: u32 = 16;
 /// timeout that fired while the daemon was still working would be this client inventing a
 /// failure the daemon had not had, which is E3's conversion wearing a stopwatch.
 ///
-/// Read by `webcam-handler-client`'s `Remote::request_timeout`, once per invocation.
+/// Read by `webcam-handler-client`'s `Remote::request_timeout`, once per invocation — and,
+/// since the owner's ruling of 2026-08-16 (note **N157**), by the **web client** too, which had
+/// no bound of its own at all: `crates/web/assets/rpc.js` parks a promise per call and nothing
+/// ever settled it on a socket that never closed. The two clients ask the same question of the
+/// same surface and the paragraph above is the answer to it, so they read one number rather
+/// than two; the browser's copy of it is reconciled against this one by
+/// `crates/daemon/tests/web_client.rs`.
 pub const CLIENT_REQUEST_TIMEOUT_MS: u64 = 120_000;
 
 // The relation the paragraph above argues, checked where all four numbers are: the ordinary
@@ -312,6 +318,45 @@ const _: () = assert!(CLIENT_RECORD_POLL_MS > 0);
 // a client that gives up on its second poll. Checked where both numbers are, in
 // `CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS`' tradition.
 const _: () = assert!(CLIENT_RECORD_POLL_MS < DEFAULT_RECORDING_MS);
+
+/// How long the web client's socket may be silent before the page asks it something.
+///
+/// **The bound on a lie, rather than on a resource** (owner ruling, 2026-08-16; note
+/// **N157**). A WebSocket that is severed without a FIN — a dropped link, a NAT table that
+/// forgot the flow, a laptop lid — leaves `readyState` at `OPEN` for ever: no `close` event
+/// arrives, so nothing the page does on a closed socket ever runs, every call parks, and the
+/// banner under the title goes on reading `connected` about a daemon that is not there. There
+/// is no timeout in that story and no failure either; the page simply stops being about
+/// anything. This is how long that may last before the page asks a question, and
+/// [`CLIENT_REQUEST_TIMEOUT_MS`] is how long it then waits for the answer — the same two
+/// numbers `webcam-handler-client` already lives by, because the two clients have the same
+/// question and D10 has one answer to it.
+///
+/// **Fifteen seconds, priced against what this page already spends.** A tab showing a preview
+/// asks `wch_record_status` once a second (`assets/recording.js`), so a heartbeat every
+/// fifteen is a twentieth of the traffic that tab already makes, and it is asked *only* when
+/// nothing else has crossed the socket in that time — a busy page never sends one. Against
+/// that, the cost of the number being larger is an operator reading a wrong word for longer,
+/// and the cost of it being smaller is a frame each way on every idle tab for a failure that
+/// is rare. Fifteen is where a person looking back at a window has not yet had time to act on
+/// what it says.
+///
+/// It is not a keepalive and nothing on the daemon's side depends on it: `daemon::http::rpc`
+/// has no idle timeout to be held off, and this build's listener is loopback (D11), so there
+/// is no intermediary whose flow table this is feeding either. The one thing it buys is the
+/// page finding out.
+///
+/// Read by `crates/web/assets/rpc.js`, whose copy of the number
+/// `crates/daemon/tests/web_client.rs` reconciles against this one — a browser cannot `use`
+/// a Rust constant, so the second copy is checked rather than avoided.
+pub const CLIENT_WS_HEARTBEAT_MS: u64 = 15_000;
+
+// The relation the paragraph above argues, checked where both numbers are: the heartbeat is
+// the thing that *creates* a call on an idle socket and the request timeout is what refuses it,
+// so a heartbeat interval at or above the timeout would mean the page had given up on the
+// answer before it was due to ask the next question — a liveness check that can never be the
+// thing to notice. `CAMERA_ENQUEUE_WAITERS == DAEMON_MAX_CONNECTIONS`' tradition.
+const _: () = assert!(CLIENT_WS_HEARTBEAT_MS < CLIENT_REQUEST_TIMEOUT_MS);
 
 /// How many unwritten notifications one subscription may hold before the daemon drops.
 ///

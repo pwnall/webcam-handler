@@ -57,6 +57,10 @@ import {
   moduleCount,
   openClient,
   origin,
+  previewViewerCap,
+  readyToOpenUrl,
+  secondBrightness,
+  secondCameraId,
   takePath,
   token,
 } from "./harness.mjs";
@@ -1039,4 +1043,674 @@ test("a subscription that died with the socket stops saying it is watching", asy
   await expect(page.locator("#connection")).toHaveText(
     "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
   );
+});
+
+// ------------------------------------------------- what the page stops doing, asked in Chromium
+//
+// The five claims below are the G6 review's own finding about this rung turned into arms of it
+// (docs/11 §2.2). Every claim above asserts that something *happens* — a menu paints, a frame
+// arrives, a refusal is rendered — and the review's fourth HIGH was a stream that never *ends*:
+// `preview.stop()` detached an `<img>` and left its `multipart/x-mixed-replace` response running
+// for the life of the tab. That defect is invisible in the source, invisible to every protocol
+// test, and was read past by a review that confirmed fourteen other defects in the same module,
+// because the question it turns on — "is a detached element's request aborted?" — is a question
+// about Chromium. **A rung that only ever asks whether a thing starts cannot see a thing that
+// does not stop**, so these arms ask the other half: what the page stops streaming, stops
+// showing, stops believing and stops saying.
+
+/**
+ * Proxy this page's socket, and hand back the levers a claim needs on the frames crossing it.
+ *
+ * `proxiedSocket` above cuts a connection; this cuts *into* one. Three claims need something a
+ * healthy daemon will never do for them — an answer that is refused, an answer that arrives
+ * late, and a link that stops carrying anything without ever closing — and all three are
+ * properties of the wire rather than of the daemon, so the wire is where they are arranged.
+ * Everything not named by a lever is forwarded verbatim in both directions, which is what keeps
+ * the page talking to the real `webcam-handler-daemon` for every other frame of the run.
+ *
+ * The levers, and what each one is for:
+ *
+ * - **`refuse(predicate, error)`** answers a matching *request* from the page itself and never
+ *   forwards it, which is the only way to see what this client does with a `wch_list` the fake
+ *   backend will always answer (**M33**).
+ * - **`hold(predicate)`** keeps matching *answers* off the page until `release()`, which is how
+ *   an answer about a camera the page has walked away from is made to arrive after the walk
+ *   rather than during it (**M32**).
+ * - **`sever()`** stops forwarding in both directions while leaving both sockets open — a link
+ *   that died without a FIN, which is the one failure `rpc.js` had no answer for (**L38**).
+ * - **`answered(method)`** counts the answers that reached the page for a request of that name,
+ *   which is how a claim asks whether the daemon replied to something the *page* decided to
+ *   send. The heartbeat is the only such call — nothing in the client's own code path asks for
+ *   it — so it is the only one whose arrival is otherwise unobservable from the DOM.
+ */
+async function interposed(page) {
+  const wire = {
+    severed: false,
+    refusals: [],
+    holding: () => false,
+    held: [],
+    toPage: null,
+    answered: [],
+  };
+  await page.routeWebSocket(
+    (url) => url.pathname === "/rpc",
+    (socket) => {
+      const server = socket.connectToServer();
+      wire.toPage = socket;
+      // **Per socket, because JSON-RPC ids are.** Every connection numbers its calls from one,
+      // so a claim that opens a second socket beside the client's own — the only way to watch an
+      // *idle* connection, since `recording.js` polls the client's once a second — would have two
+      // requests under id 1 in one map, and `hold` would then be deciding about whichever was
+      // written last. The levers below reach the most recent socket, which is the one a claim
+      // that opens its own is asking about.
+      const asked = new Map();
+      socket.onMessage((message) => {
+        if (wire.severed) {
+          return;
+        }
+        const frame = JSON.parse(message);
+        // Remembered before anything is decided, because an answer carries an id and nothing
+        // else: "the answer to the `wch_controls` this page sent about that camera" is only a
+        // sentence the proxy can say if the proxy wrote the request down first.
+        asked.set(frame.id, frame);
+        const refusal = wire.refusals.find((candidate) => candidate.matches(frame));
+        if (refusal !== undefined) {
+          socket.send(
+            JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: refusal.error }),
+          );
+          return;
+        }
+        server.send(message);
+      });
+      server.onMessage((message) => {
+        if (wire.severed) {
+          return;
+        }
+        const frame = JSON.parse(message);
+        const request = asked.get(frame.id);
+        if (wire.holding(request ?? {}, frame)) {
+          wire.held.push(message);
+          return;
+        }
+        if (request !== undefined) {
+          wire.answered.push(request.method);
+        }
+        socket.send(message);
+      });
+    },
+  );
+  return {
+    refuse: (matches, error) => wire.refusals.push({ matches, error }),
+    /**
+     * Stop refusing anything, leaving the proxy in place.
+     *
+     * A claim's positive control runs through the same wire rather than around it — `unrouteAll`
+     * would take the proxy out and leave "the page works" a statement about a page this suite
+     * had stopped interfering with, which is a weaker thing to have proved.
+     */
+    allow: () => {
+      wire.refusals.length = 0;
+    },
+    hold: (predicate) => {
+      wire.holding = predicate;
+    },
+    /**
+     * Let one held answer through — **newest first** — and answer whether there was one.
+     *
+     * The order is the whole point rather than a convenience: what is being reproduced is a
+     * daemon that spawns a task per inbound message and therefore answers two questions in the
+     * order its scheduler felt like, so releasing the answers a page is waiting for in reverse
+     * is the arrival this rung could not otherwise arrange.
+     */
+    release: () => {
+      const message = wire.held.pop();
+      if (message === undefined) {
+        return false;
+      }
+      wire.toPage.send(message);
+      return true;
+    },
+    held: () => wire.held.length,
+    answered: (method) => wire.answered.filter((name) => name === method).length,
+    sever: () => {
+      wire.severed = true;
+    },
+    /** End the page's socket from the wire, which is ordered *after* everything released. */
+    close: () => wire.toPage.close(),
+  };
+}
+
+/**
+ * Open `count` readers of one camera's preview and answer what the daemon said to each.
+ *
+ * **This is the daemon's own viewer count, read through the one aperture a browser has.**
+ * Nothing on this listener reports how many readers a feed has — `CAMERA_BEARING_PATHS` is two
+ * routes and neither is a status page — but `Previews::reserve` refuses the reader past
+ * `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` with `Error::Busy`, which reaches an HTTP client as
+ * `503`. So a camera with *no* readers left over serves every one of `previewViewerCap`, and a
+ * camera holding one serves one fewer and refuses the last. The two answers are different
+ * arrays, which is what makes the count observable without a route that exists for a test.
+ *
+ * Opened one at a time and held open until the last has answered, because concurrency is the
+ * whole point: `fetch` resolves on the response headers, and the reservation is already made by
+ * the time they are written. They are aborted on the way out, so a claim that calls this twice
+ * is not counting its own probe the second time.
+ *
+ * **And it is one connection under a limit that is not this project's.** Chromium allows six
+ * concurrent HTTP/1.1 connections per host, and this probe holds `previewViewerCap` of them
+ * (four) beside the page's own preview: five. A viewer cap raised to five would make the sixth
+ * `fetch` queue in the browser *behind* connections that never end, so it would never reach the
+ * daemon and this probe would hang rather than report a `503` — a deadlock against Chromium
+ * wearing a test's timeout. Raising `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` past four therefore
+ * means reading the cap here through a second browser context (its own connection pool) rather
+ * than adjusting a number: the constant this probe reads is the daemon's, and the one it runs
+ * into is the browser's.
+ */
+function previewReaders(page, camera, count) {
+  return page.evaluate(
+    async ({ camera, count, token }) => {
+      const query = new URLSearchParams();
+      query.set("camera", camera);
+      if (token !== null) {
+        query.set("token", token);
+      }
+      const url = `/preview?${query}`;
+      const controllers = [];
+      const statuses = [];
+      try {
+        for (let reader = 0; reader < count; reader += 1) {
+          const controller = new AbortController();
+          controllers.push(controller);
+          statuses.push((await fetch(url, { signal: controller.signal })).status);
+        }
+      } finally {
+        for (const controller of controllers) {
+          controller.abort();
+        }
+      }
+      return statuses;
+    },
+    { camera, count, token },
+  );
+}
+
+/** What `previewReaders` sees on a camera nobody else is watching. */
+const everyReaderServed = () => Array.from({ length: previewViewerCap }, () => 200);
+
+/** …and on a camera one other reader already holds: one fewer, and the last refused. */
+const oneReaderShort = () => [
+  ...Array.from({ length: previewViewerCap - 1 }, () => 200),
+  503,
+];
+
+test("a preview the page walked away from is a preview the daemon stopped", async ({ page }) => {
+  // **docs/11 H4, measured here rather than reasoned about.** `preview.stop()` cloned the
+  // `<img>`, called `removeAttribute("src")` on the *clone* — which never had a request — and
+  // replaced the original, which went on owning a live `multipart/x-mixed-replace` response.
+  // The doc comment above it argued, correctly and at length, why removing the attribute beats
+  // assigning `""`, and applied that argument to the wrong object. Nothing in the client ever
+  // aborted the request, so every camera a tab had ever looked at stayed open and streaming
+  // until the tab closed: D12's idle close can never fire for a camera in use, four returns to
+  // one camera exhaust `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` with viewers nobody is
+  // watching, and every one of them is a camera the *agent* — this project's primary
+  // consumer — then meets as `Busy`.
+  //
+  // It is asserted through the daemon's refusal rather than through the page, because the page
+  // cannot see it: from inside the document a detached element is gone whether or not its
+  // request is. `previewReaders` says how.
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);
+
+  // **The positive control, and it is load-bearing.** Every assertion below is satisfied by a
+  // probe that cannot see a held reader at all — a wrong camera, a wrong route, a token the
+  // gate ignores — so the first thing established is that this probe *can* see one: the page
+  // is watching this camera right now, and the last reader is refused because of it.
+  await expect.poll(() => previewReaders(page, cameraId, previewViewerCap)).toEqual(
+    oneReaderShort(),
+  );
+
+  await page.locator(`button[data-camera="${secondCameraId}"]`).click();
+  await expect(page.locator("#preview-status")).toHaveText(`streaming ${secondCameraId}`);
+
+  // The claim. Polled rather than asked once, because the release is the daemon's: the driver
+  // notices its last reader has gone between frames, which is a condition it causes rather than
+  // a duration this suite guessed at.
+  await expect.poll(() => previewReaders(page, cameraId, previewViewerCap)).toEqual(
+    everyReaderServed(),
+  );
+
+  // …and the camera the page moved *to* is held, which is the same probe answering the other
+  // way round on the same run. Without it, a build whose preview had simply stopped working
+  // would satisfy the line above.
+  await expect.poll(() => previewReaders(page, secondCameraId, previewViewerCap)).toEqual(
+    oneReaderShort(),
+  );
+});
+
+test("the control panel on screen belongs to the camera on screen", async ({ page }) => {
+  // **docs/11 M32, in the two halves it has.** `select()` set `state.camera` synchronously and
+  // then awaited `wch_controls`; between those two the panel was neither cleared nor fenced, so
+  // for the whole round trip — a device open and a control walk, minutes if a sweep is in front
+  // of that actor — every widget on screen belonged to the previous camera while `write()` read
+  // `state.camera` at *send* time. A click in that window wrote one camera's value to another
+  // camera's control. And because the daemon spawns a task per inbound WS message, two answers
+  // can come back out of order and paint the wrong panel permanently.
+  //
+  // The two halves are asserted separately because they are two defects: one is a window, the
+  // other is an ordering, and a repair for either leaves the other standing.
+  const wire = await interposed(page);
+  await openClient(page);
+  const brightness = () => control(page, "brightness").locator("input[type=number]");
+  // Read rather than written down: the claims above this one drive brightness on the first
+  // camera, so its value here is whatever the last of them left, and a literal would be this
+  // claim asserting the order of the file it lives in. What has to be true is only that the two
+  // cameras answer differently — which is what makes "whose panel is this" a question with an
+  // answer — and the fixture arranges that on purpose.
+  const firstBrightness = await brightness().inputValue();
+  expect(firstBrightness).not.toBe(secondBrightness);
+
+  // **Half one: the window, observed synchronously.** The click is dispatched from inside the
+  // page and the panel is read in the same task, so what is measured is the state `select()`
+  // leaves behind *before its first `await`* — the exact instant an operator's next click would
+  // land in. Playwright's own auto-waiting cannot ask this question: every locator assertion
+  // retries, so it would be satisfied by the correct panel arriving a moment later, which is
+  // precisely the moment this defect is not about.
+  const duringTheSwitch = await page.evaluate((camera) => {
+    document.querySelector(`button[data-camera="${camera}"]`).click();
+    return {
+      controls: document.querySelectorAll("#control-panel .control").length,
+      status: document.getElementById("controls-status").textContent,
+    };
+  }, secondCameraId);
+  expect(duringTheSwitch.controls).toBe(0);
+  expect(duringTheSwitch.status).toBe(`reading ${secondCameraId}'s controls…`);
+
+  // …and the panel that arrives is the new camera's, told apart by what the *device* reports
+  // rather than by its place on the page: this fixture's second camera holds a different
+  // brightness on purpose.
+  await expect(brightness()).toHaveValue(secondBrightness);
+
+  // **Half two: the ordering.** Both answers are held off the page, released in the wrong
+  // order, and the panel is asked whose it is. The first camera's answer is released *last* —
+  // after the second camera's has already painted — which is the arrival a task-per-message
+  // server can produce on its own and which used to repaint the previous camera's values over
+  // the current camera's panel, permanently, with nothing on screen to say so.
+  wire.hold((request) => request.method === "wch_controls");
+  await page.locator(`button[data-camera="${cameraId}"]`).click();
+  await expect(page.locator("#controls-status")).toHaveText(`reading ${cameraId}'s controls…`);
+  await page.locator(`button[data-camera="${secondCameraId}"]`).click();
+  await expect(page.locator("#controls-status")).toHaveText(
+    `reading ${secondCameraId}'s controls…`,
+  );
+  await expect.poll(() => wire.held()).toBe(2);
+
+  wire.hold(() => false);
+  // Newest first: the second camera's answer paints, and then the first camera's — the stale
+  // one — arrives on a page that has moved on.
+  expect(wire.release()).toBe(true);
+  await expect(brightness()).toHaveValue(secondBrightness);
+  expect(wire.release()).toBe(true);
+
+  // **How the stale answer is known to have been delivered**, which is the half an assertion
+  // about an absence has to establish or it is asserting nothing. The close is sent on the same
+  // socket, after it, and a WebSocket delivers in order — so a page that reports the closure has
+  // already run its handler for every frame in front of it, this one included.
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+  await expect(brightness()).toHaveValue(secondBrightness);
+});
+
+test("a refused camera list at startup is a sentence rather than a silence", async ({ page }) => {
+  // **docs/11 M33.** `main()` awaited `enumerate()` with no `try`/`catch` and was called with no
+  // `.catch`, so a refused `wch_list` became an unhandled rejection: the banner went on reading
+  // `connected`, the list stayed empty, D1's "an empty enumeration is diagnosed, not shrugged
+  // at" was never reached — the throw happened before the diagnosis — and `main()` never got as
+  // far as wiring `#take-photo` up at all. The identical call on the hotplug path **is** wrapped
+  // (`watchDevices`), which is what makes this an omission rather than a policy, and the repair
+  // gives both callers one sentence rather than a second copy of a sentence.
+  //
+  // The refusal is arranged on the wire because no fake backend will produce it: `wch_list` over
+  // `synthetic_basic` always answers, which is exactly why nothing in this suite had ever seen
+  // the failing path.
+  const wire = await interposed(page);
+  wire.refuse((request) => request.method === "wch_list", {
+    code: -32012,
+    message: "camera /dev/video0 is gone (unplugged, or its driver unbound)",
+    data: { kind: "device_gone", path: "/dev/video0" },
+  });
+  // **Where the defect actually landed, recorded by the page itself.** The refusal did not go
+  // nowhere — it went into an unhandled promise rejection, which is a console entry and nothing
+  // else. `#take-photo` is disabled in the markup this daemon ships and was disabled in the
+  // defective build too, so an assertion about that button cannot tell the two apart; a page that
+  // rejected into nowhere can be told from one that did not, and this is the listener that tells.
+  await page.addInitScript(() => {
+    window.unhandled = [];
+    addEventListener("unhandledrejection", (event) => {
+      window.unhandled.push(String(event.reason));
+    });
+  });
+  await page.goto(readyToOpenUrl);
+
+  await expect(page.locator("#connection")).toHaveText(
+    "connected; this daemon refused to list its cameras (device_gone: camera /dev/video0 is " +
+      "gone (unplugged, or its driver unbound)), so the camera list beside this line is empty " +
+      "or stale rather than this machine's",
+  );
+  await expect(page.locator("#camera-list button[data-camera]")).toHaveCount(0);
+  // Asked after the banner rather than before it, because the banner is what establishes that
+  // the refusal has been dealt with at all: an empty list of rejections on a page that has not
+  // got there yet is a claim about nothing.
+  expect(await page.evaluate(() => window.unhandled)).toEqual([]);
+
+  // The positive control: the same page, over the same wire with the refusal withdrawn, lists
+  // the two cameras this daemon really has. Without it every assertion above is satisfied by a
+  // page that never enumerates anything.
+  wire.allow();
+  await openClient(page);
+  await expect(page.locator("#camera-list button[data-camera]")).toHaveCount(2);
+});
+
+test("a recording answer in flight is not written under the next camera's picture", async ({
+  page,
+}) => {
+  // **docs/11 L36.** `recording.js`'s `poll()` wrote its answer into `#recording-status` before
+  // consulting `view.stopped`, so an answer already in flight when the handle was retired landed
+  // afterwards: the previous camera's sentence, under the new camera's picture, in the one
+  // element index.html gives a single writer precisely so it cannot be about something else.
+  //
+  // Driven by handing the module a stub rather than a daemon — `probePanel`'s arrangement, for
+  // its reason — because what is being asserted is an *ordering inside one function*, and the
+  // only way to make an answer arrive after a `stop()` reliably is to be the thing that answers.
+  // The module is imported out of the origin this daemon is already serving, so what runs is the
+  // file it ships rather than a copy of it.
+  await openClient(page);
+  const written = await page.evaluate(async () => {
+    const module = await import("./recording.js");
+    const node = document.createElement("p");
+    // **Written into before the handle exists**, so that the line below is about `stop()` having
+    // cleared it. A node created empty is a node that reads `""` in every build there has ever
+    // been, and an assertion that holds in the defective build is weight rather than evidence.
+    node.textContent = "a recording owns some camera or other";
+    document.body.append(node);
+
+    /** One `wch_record_status` answer this test decides the timing of. */
+    const answer = { take: { started: 0, elapsed_ms: 1500, budget_ms: 10000 } };
+    let deliver = null;
+    const inFlight = new Promise((resolve) => {
+      deliver = resolve;
+    });
+    const rpc = { call: () => inFlight };
+
+    const handle = module.watch(rpc, "cam:whatever", node);
+    // The retirement, while the first poll's call is still parked on `inFlight`.
+    handle.stop();
+    const afterStop = node.textContent;
+    deliver(answer);
+    // Two turns of the microtask queue and no clock at all: `poll`'s continuation was registered
+    // on this promise before this line was, so it has already run by the time the second `await`
+    // resolves. A `setTimeout` here would be a duration standing in for an ordering.
+    await inFlight;
+    await Promise.resolve();
+    return { afterStop, afterAnswer: node.textContent };
+  });
+  expect(written.afterStop).toBe("");
+  expect(written.afterAnswer).toBe("");
+
+  // The positive control, and it is the whole of the claim's meaning: the same answer, on a
+  // handle nobody retired, *is* written. Without it "the element stayed empty" is satisfied by a
+  // module that never writes anything.
+  const live = await page.evaluate(async () => {
+    const module = await import("./recording.js");
+    const node = document.createElement("p");
+    document.body.append(node);
+    let deliver = null;
+    const inFlight = new Promise((resolve) => {
+      deliver = resolve;
+    });
+    module.watch({ call: () => inFlight }, "cam:whatever", node);
+    deliver({ take: { started: 0, elapsed_ms: 1500, budget_ms: 10000 } });
+    await inFlight;
+    await Promise.resolve();
+    return node.textContent;
+  });
+  expect(live).toBe(
+    "a recording owns this camera — 1.5 s of 10.0 s; the picture is the recording's own frames",
+  );
+});
+
+test("a socket severed without a FIN stops reading as connected", async ({ page }) => {
+  // **docs/11 L38, and the sentence in `rpc.js` that was false.** That module's header claimed
+  // that "a socket that closed answers **everything at once**", and it did — for a socket that
+  // *closed*. A link cut without a FIN never closes: `readyState` stays `OPEN`, the `close`
+  // event never fires, and so N96's H5 repair — the one line that refuses a call on a dead
+  // handle — never runs. Every call parks, the banner goes on reading `connected`, and
+  // `#photo-status` reads "taking a photo …" until the tab is closed.
+  //
+  // The owner ruled on 2026-08-16 for a per-call timeout and an idle heartbeat, and this drives
+  // the heartbeat, which is the half that answers a page nobody is clicking on. It runs on a
+  // clock **this test owns** — Playwright's, installed before the page loads — because the bound
+  // is tens of seconds and a rung that waited them out would be a rung nobody runs. That is the
+  // same rule the Rust suites keep with `SteppedClock`, one language along.
+  await page.clock.install();
+  const wire = await interposed(page);
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toHaveText(`streaming ${cameraId}`);
+
+  // The cut: both sockets stay open and nothing crosses. This is what a dropped link, a NAT
+  // table that forgot, or a laptop lid produces — and it is the one failure a page cannot be
+  // told about, because there is nothing left to tell it.
+  wire.sever();
+
+  // Two heartbeat intervals: the first finds a silent socket and asks it something, the second
+  // finds the question unanswered. `runFor` fires the timers in between rather than jumping over
+  // them, which is what makes this the mechanism running rather than a number being reached.
+  await page.clock.runFor(3 * 15_000);
+
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+  // …and everything `socketClosed` owns follows from it, which is the point of ending the socket
+  // rather than inventing a second story about a page whose connection has gone.
+  await expect(page.locator("#take-photo")).toBeDisabled();
+  expect(
+    await page.evaluate(() => document.getElementById("preview-frame").hasAttribute("src")),
+  ).toBe(false);
+  await expect(page.locator("#sweep-status")).toHaveText(
+    "the sweep stream ended because the connection to webcam-handler-daemon closed",
+  );
+});
+
+test("an idle socket is kept by an answer, and a slow call is not a dead socket", async ({
+  page,
+}) => {
+  // **The other three quarters of L38, and the reason they were missing is worth more than the
+  // claim.** The claim above severs the link *before* any heartbeat is answered, so it drives the
+  // failing path and only that; every other claim in this file keeps `heard` fresh through
+  // `recording.js`'s one-second poll, so no claim in this rung had ever seen a heartbeat
+  // **answered**. The whole mechanism rested on one sentence in `rpc.js`'s header — that
+  // jsonrpsee answers `-32601` for a name it does not have — which this repository asserted for
+  // the Unix transport and never for the TCP WebSocket a page opens. If that had been false,
+  // every idle tab would have closed its own socket every thirty seconds and read "the connection
+  // closed" against a healthy daemon, with this rung green throughout: rubric **A9**'s second
+  // half, a claim about a dependency nobody had read.
+  //
+  // `crates/daemon/tests/web_client.rs` now measures the answer itself. This is the composed
+  // half — the timer, the frame and the page all together — and it asserts three things a
+  // severed link cannot show: that the heartbeat is answered, that a call which is merely slow is
+  // refused as *slow* and leaves the connection alone, and that silence still ends it.
+  await page.clock.install();
+  const wire = await interposed(page);
+  await openClient(page);
+
+  // **The client's own socket is ended first, and that is what makes the rest of this claim
+  // askable.** `recording.js` polls once a second for as long as a camera is selected, and the
+  // heartbeat deliberately asks nothing while anything else is crossing — that is what makes it
+  // cost an ordinary tab a twentieth of the traffic it already makes. So a page showing a camera
+  // has no idle socket on it to observe, and every ping counted below would otherwise be
+  // ambiguous about which connection sent it.
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+
+  // The idle socket, opened by importing the client's own module out of the origin this daemon is
+  // serving — so what runs is `rpc.js` as shipped rather than a copy of it, and the URL is built
+  // the way `crates/daemon/tests/http.rs` builds one: from this run's origin and this run's token.
+  const socketUrl = `${origin.replace(/^http/, "ws")}/rpc?${new URLSearchParams({ token })}`;
+  await page.evaluate(async (url) => {
+    const { connect, SOCKET_CLOSED } = await import("./rpc.js");
+    window.idle = { closed: false, socketClosed: SOCKET_CLOSED };
+    window.idle.handle = await connect(url, {
+      onClose: () => {
+        window.idle.closed = true;
+      },
+    });
+  }, socketUrl);
+
+  // The positive control: this socket carries an ordinary call. Without it, "it was not closed"
+  // is satisfied by a connection that was never usable in the first place.
+  expect(await page.evaluate(() => window.idle.handle.call("wch_list"))).toHaveProperty(
+    "cameras",
+  );
+
+  // **Two intervals per question, and one `runFor` each, with the answer waited for in between.**
+  // Two, because the tick at exactly one interval never asks: `heard` is set when the *previous*
+  // answer arrived, which is a moment after the interval was created, so that tick lands a few
+  // milliseconds inside the window and the one after it is the one that asks. (The claim above
+  // spends three intervals to close a socket for the same reason, and it is why a page notices a
+  // severed link in under three heartbeats rather than in two.) And stepped, because the clock is
+  // fake and inside the page while the answer travels a real socket — one leap across both
+  // questions would be asking whether a cross-process round trip fits inside a macrotask, which
+  // is a rung that passes when the machine is quick. What is waited on is the proxy's own count of
+  // what it forwarded, which is the condition rather than a duration.
+  await page.clock.runFor(2 * 15_000);
+  await expect.poll(() => wire.answered("wch_ping")).toBeGreaterThanOrEqual(1);
+  await page.clock.runFor(2 * 15_000);
+  await expect.poll(() => wire.answered("wch_ping")).toBeGreaterThanOrEqual(2);
+  // The claim: two heartbeats asked, two answered, and the socket that would have closed on the
+  // second unanswered one is still open.
+  expect(await page.evaluate(() => window.idle.closed)).toBe(false);
+
+  // **A call nobody answers, on a socket that is still carrying.** Only this method's answers are
+  // held, so the heartbeat goes on being answered and the connection goes on being alive — which
+  // is the arrangement that separates the two bounds: one is about a call, the other about a
+  // link.
+  wire.hold((request) => request.method === "wch_list");
+  await page.evaluate(() => {
+    window.idle.slow = window.idle.handle.call("wch_list").then(
+      () => ({ settled: "answered" }),
+      (err) => ({
+        settled: "refused",
+        closed: err.reason === window.idle.socketClosed,
+        kind: err.reason?.kind,
+        message: err.message,
+      }),
+    );
+  });
+  // `fastForward` rather than `runFor`, and it is the honest instrument for this one: it is the
+  // laptop lid, firing every due timer **once** at the far end instead of replaying two minutes
+  // of them. What is under test here is the call's own bound, so the heartbeats in between are
+  // machinery — and replaying them would put eight more round trips inside a fake clock, which is
+  // the race the loop above steps around rather than one to walk into.
+  await page.clock.fastForward(121_000);
+  const slow = await page.evaluate(() => window.idle.slow);
+  expect(slow.settled).toBe("refused");
+  // The two used to be the same shape — a bare `Error` with no `kind` — and `recording.js`
+  // branches on exactly that to decide "a call this page cannot make any more", so one slow
+  // answer retired the recording line for the life of the tab (note **N159**).
+  expect(slow.closed).toBe(false);
+  expect(slow.kind).toBe("call_timed_out");
+  expect(slow.message).toContain("did not answer wch_list within 120000 ms");
+  expect(await page.evaluate(() => window.idle.closed)).toBe(false);
+
+  // …and the other end of the same mechanism, on the same socket: hold *everything*, and the
+  // heartbeat that goes unanswered ends the connection at the following tick. No round trip to
+  // wait for here — the answers are the thing being withheld — so the clock may run straight
+  // through both.
+  wire.hold(() => true);
+  await page.clock.runFor(3 * 15_000);
+  await expect.poll(() => page.evaluate(() => window.idle.closed)).toBe(true);
+});
+
+test("a stale session list is not painted under the camera on screen", async ({ page }) => {
+  // **docs/11 M32's third element, which the repair for the control panel did not reach.**
+  // `app.js` fences on the camera before it calls `showSessions`, and that drops a *continuation*
+  // — it cannot see a `wch_calibrate_list` already on the wire. Two quick camera clicks put two
+  // of them there, the daemon spawns a task per inbound message, and the first camera's answer
+  // can land last: the session list, the session detail and the calibration status of a camera
+  // the operator has left, painted under the camera they are looking at, permanently. Note
+  // **N154** claimed this was closed by the fence, on the ground that the list "is read once per
+  // selection and has no second reader to reorder against" — it is read once *per selection*, and
+  // two selections are two readers.
+  //
+  // Driven by handing the module stub answers rather than a daemon, which is the arrangement the
+  // recording claim above uses and for its reason: what is asserted is an ordering *inside one
+  // function*, and being the thing that answers is the only way to decide when an answer arrives.
+  // It also lets the two answers differ — this daemon has no sessions for either camera, so two
+  // real answers would be identical documents and "whose list is this" would have no observable
+  // answer at all.
+  await openClient(page);
+  const painted = await page.evaluate(async () => {
+    const module = await import("./calibration.js");
+    const nodes = {
+      status: document.createElement("p"),
+      list: document.createElement("ul"),
+      detail: document.createElement("div"),
+    };
+    for (const node of Object.values(nodes)) {
+      document.body.append(node);
+    }
+
+    const answers = [];
+    const rpc = {
+      call: () => new Promise((resolve, reject) => answers.push({ resolve, reject })),
+    };
+    const onScreen = {
+      sessions: [{ id: "s-on-screen", task_slug: "exposure", path: "/state/sessions/s-on-screen" }],
+    };
+
+    /** Two selections, the newer one answered first and the older one settled after it. */
+    const round = async (settleStale) => {
+      const stale = module.showSessions(rpc, "cam:the-one-left", nodes);
+      const current = module.showSessions(rpc, "cam:the-one-on-screen", nodes);
+      const [older, newer] = answers.splice(0, 2);
+      newer.resolve(onScreen);
+      await current;
+      const shown = nodes.status.textContent;
+      settleStale(older);
+      await stale;
+      // One turn of the microtask queue and no clock: the stale call's continuation was
+      // registered on its promise before this line was, so it has already run.
+      await Promise.resolve();
+      return {
+        shown,
+        after: nodes.status.textContent,
+        failed: nodes.status.classList.contains("failed"),
+        sessions: nodes.list.querySelectorAll("button").length,
+      };
+    };
+
+    return {
+      answered: await round((older) => older.resolve({ sessions: [] })),
+      refused: await round((older) =>
+        older.reject(
+          Object.assign(new Error("camera /dev/video0 is gone"), { kind: "device_gone" }),
+        ),
+      ),
+    };
+  });
+
+  // The positive control, and it is the claim's meaning: the answer this view is waiting for *is*
+  // painted. Without it, "the stale one changed nothing" is satisfied by a module that paints
+  // nothing at all.
+  expect(painted.answered.shown).toBe("1 session(s) recorded for this camera");
+  expect(painted.answered.after).toBe("1 session(s) recorded for this camera");
+  expect(painted.answered.sessions).toBe(1);
+  // A stale **refusal** is the same defect wearing its loudest form: a red line about a camera
+  // nobody is looking at, over a list that is correct.
+  expect(painted.refused.after).toBe("1 session(s) recorded for this camera");
+  expect(painted.refused.failed).toBe(false);
+  expect(painted.refused.sessions).toBe(1);
 });

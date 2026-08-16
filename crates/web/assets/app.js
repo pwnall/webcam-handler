@@ -16,15 +16,16 @@
 // open is a wrong token or a stopped daemon, and an empty camera list is a diagnosis the
 // daemon itself supplies (D1: "an empty enumeration is diagnosed, not shrugged at").
 //
-// ## `#connection` has four writers and one rule
+// ## `#connection` has five writers and one rule
 //
-// The line under the title is this page's single sentence about the daemon, and four places
+// The line under the title is this page's single sentence about the daemon, and five places
 // write it: the **credential check**, before anything has been attempted; the **connect
 // attempt**, which either says `connected` or says how the handshake failed; **`watchDevices`**,
-// which describes a *connected* page whose device-change stream or re-enumeration failed; and
-// **`socketClosed`**, which says the connection this page was given has ended. Their lifetimes
-// are all different — the first is true for the whole run, the last is final — so "whoever
-// wrote last" is not a rule, it is an accident, and it has produced a wrong sentence twice.
+// which describes a *connected* page whose device-change stream failed; **`listRefused`**, which
+// describes a connected page whose camera list is not this machine's; and **`socketClosed`**,
+// which says the connection this page was given has ended. Their lifetimes are all different —
+// the first is true for the whole run, the last is final — so "whoever wrote last" is not a
+// rule, it is an accident, and it has produced a wrong sentence twice.
 //
 // The rule is that **no writer may make a statement it cannot know, and the last writer that
 // still can wins.** The credential check knows only what the URL carried, so the handshake
@@ -59,6 +60,21 @@ const state = {
   rpc: null,
   token: null,
   camera: null,
+  /**
+   * Which `wch_controls` the panel is waiting for, counted so a late answer can be told it is
+   * late.
+   *
+   * **Not the camera, and the difference is the whole of the fence.** An answer knows which
+   * camera it was asked about, so comparing cameras catches the ordinary case — an answer about
+   * the camera the operator has walked away from. It does not catch two answers about the *same*
+   * camera arriving out of order, which this daemon can produce on its own: `daemon::http::rpc`
+   * spawns a task per inbound WS message, so a repaint asked for after a write and the one asked
+   * for by the next write are two tasks, and the wire imposes no order on their answers. A
+   * number that only goes up asks both cases the one question that covers them — *is this the
+   * answer the panel is still waiting for?* — and an answer nobody is waiting for is dropped
+   * rather than painted (docs/11 **M32**, note **N154**).
+   */
+  controlsRequest: 0,
   /** The live `<img>`, which `preview.watch` replaces on every camera switch. */
   frame: null,
   /**
@@ -168,9 +184,44 @@ async function main() {
     log: nodes.sweeps,
   });
   await watchDevices();
-  await enumerate();
+  // **Caught, because the alternative is a page that says nothing at all.** `enumerate` is one
+  // `wch_list` and a refused one used to leave this function as an unhandled rejection: the
+  // banner went on reading `connected`, the camera list stayed empty with no sentence beside it,
+  // and D1's "an empty enumeration is diagnosed, not shrugged at" was never reached because the
+  // throw happened before the diagnosis. The line after this one never ran either, so a page
+  // that later recovered on a hotplug event had a photo button nothing had wired up. The same
+  // call on the hotplug path was already wrapped, which is what made this an omission rather
+  // than a policy (docs/11 **M33**, note **N155**).
+  //
+  // Not fatal, for `watchDevices`'s reason: the device-change stream is live, so a machine whose
+  // enumeration failed once re-enumerates the next time anything is plugged in, and a page that
+  // returned here would have thrown that away.
+  await enumerate().catch(listRefused);
 
   nodes.takePhoto.addEventListener("click", takePhoto);
+}
+
+/**
+ * What a refused `wch_list` means, in the one place both of its callers say it.
+ *
+ * Two callers, one fact: the startup enumeration and the re-enumeration a hotplug event asks
+ * for. They differ only in what is left on screen — nothing yet, or a list that has stopped
+ * being this machine's — and one sentence covers both because "the list is not what is plugged
+ * in" is the part an operator can act on either way. Two sentences would be two copies that
+ * drift, which is the shape `#connection` has already been wrong in twice.
+ *
+ * It opens with `connected`, and that is the ownership rule this module's header states rather
+ * than a flourish: the socket really is up, this is a statement about a *call*, and a writer
+ * that dropped the word would be claiming something about the connection it has no evidence
+ * for. `socketClosed` is the writer that may say the connection has ended, and it is final.
+ */
+function listRefused(err) {
+  say(
+    nodes.connection,
+    `connected; this daemon refused to list its cameras (${refusalSentence(err)}), so the ` +
+      "camera list beside this line is empty or stale rather than this machine's",
+    true,
+  );
 }
 
 /** Ask the daemon what cameras there are, and show what it says about what is missing. */
@@ -240,7 +291,20 @@ function hintSentence(hint) {
   }
 }
 
-/** Show one camera: its controls, its preview, its photo button and its sessions. */
+/**
+ * Show one camera: its controls, its preview, its photo button and its sessions.
+ *
+ * **Everything on screen that belongs to a camera is taken down before anything slow starts.**
+ * The control panel used to be the exception and it was the expensive one: `state.camera` moved
+ * synchronously, `write()` reads it at *send* time, and the panel was left standing for the
+ * whole `wch_controls` round trip — a device open and a control walk, minutes if a sweep is in
+ * front of that actor. So every widget on screen belonged to the previous camera while a click
+ * on one wrote to the new one, which is a control panel with no camera identity at all (docs/11
+ * **M32**, note **N154**). Two things close it: the panel is emptied here, in the same task as
+ * the click, so there is nothing left to misread or to click on; and the widgets the answer
+ * paints are bound to the camera **that answer was about**, so a click can only ever reach the
+ * device its own card came from.
+ */
 async function select(camera) {
   state.camera = camera;
   controls.forgetOutcomes();
@@ -271,7 +335,25 @@ async function select(camera) {
   nodes.photoFrame.removeAttribute("src");
   fill(nodes.photoReport, []);
   nodes.photoStatus.textContent = "";
+  // The panel comes down now rather than when its replacement arrives, and the line above it
+  // says which camera is being read — so the window between the click and the answer shows an
+  // empty panel with a sentence in it instead of another camera's controls with nothing to say
+  // they are another camera's. An empty panel is also the only honest thing to show: this page
+  // has not been told what this camera's controls are yet.
+  fill(nodes.panel, []);
+  say(nodes.controlsStatus, `reading ${camera}'s controls…`);
   await refreshControls();
+  // Is this still the camera the page is showing? A `select` whose `wch_controls` was answered
+  // after the operator moved on would otherwise go on to *start* a session list for the camera
+  // they left, in three elements that say nothing about which camera they are about.
+  //
+  // It is the same fence the panel gets and it closes the same half — a continuation that should
+  // not run. The other half is not here and cannot be: a `wch_calibrate_list` already on the wire
+  // when the operator clicks is an answer this function has no way to reach, so `calibration.js`
+  // numbers its own reads and drops the ones a newer view has retired (note **N154**).
+  if (state.camera !== camera) {
+    return;
+  }
   await calibration.showSessions(state.rpc, camera, {
     status: nodes.calibrationStatus,
     list: nodes.sessions,
@@ -279,23 +361,53 @@ async function select(camera) {
   });
 }
 
-/** Re-read the control report and repaint the panel from it. */
+/**
+ * Re-read the control report and repaint the panel from it.
+ *
+ * **The answer is only painted if it is still the answer this panel is waiting for.** The
+ * camera is captured here rather than read again at the end, and the request is numbered, so
+ * both ways a late answer arrives are one comparison: an answer about a camera the operator has
+ * walked away from, and an answer about *this* camera that overtook a newer one because the
+ * daemon spawns a task per inbound message. A late answer is dropped in silence and deliberately
+ * so — it is not a failure and there is nothing to tell anybody about it, and the sentence in
+ * `#controls-status` belongs to the request that is still running.
+ */
 async function refreshControls() {
+  const request = ++state.controlsRequest;
+  // The camera this report will be *about*, held rather than re-read: it is what the widgets
+  // below write to, so a card painted from this answer cannot reach a device the answer was
+  // never about, however long the round trip took and whatever the operator clicked meanwhile.
+  const camera = state.camera;
   try {
-    const report = await state.rpc.call("wch_controls", { camera: state.camera });
+    const report = await state.rpc.call("wch_controls", { camera });
+    if (request !== state.controlsRequest) {
+      return;
+    }
     say(
       nodes.controlsStatus,
       `${report.controls.length} controls, ${(report.pairs ?? []).length} automation pair(s)`,
     );
-    controls.paint(nodes.panel, report, { write, refresh: refreshControls });
+    controls.paint(nodes.panel, report, {
+      write: (control, value) => write(camera, control, value),
+      refresh: refreshControls,
+    });
   } catch (err) {
+    if (request !== state.controlsRequest) {
+      return;
+    }
     say(nodes.controlsStatus, refusalSentence(err), true);
     fill(nodes.panel, []);
   }
 }
 
 /**
- * One `wch_set`, with D3's guard as the operator left it.
+ * One `wch_set` on `camera`, with D3's guard as the operator left it.
+ *
+ * The camera is an argument rather than a read of `state.camera`, and that is the repair rather
+ * than a tidy-up: a widget belongs to the report it was painted from, so the device it writes to
+ * is the device that report described. Reading the selection at *send* time made a click's
+ * target depend on what the operator had done since the panel was painted, which is how a
+ * brightness meant for one camera arrived at another (docs/11 **M32**).
  *
  * `guarded` is a checkbox rather than a constant because the two answers are different
  * operations, not a preference. Guarded means the daemon *plans* the write: an automation
@@ -307,9 +419,9 @@ async function refreshControls() {
  * to release \[PF:3\].) Hiding the choice would hide which of those an operator is doing,
  * which is the difference between changing an exposure and asking a camera to ignore one.
  */
-function write(control, value) {
+function write(camera, control, value) {
   return state.rpc.call("wch_set", {
-    camera: state.camera,
+    camera,
     writes: [{ control, value }],
     guarded: nodes.guarded.checked,
   });
@@ -371,7 +483,7 @@ async function watchDevices(retry = true) {
       () => {
         // The event names a *node*, never a camera — grouping is not a node property — so
         // the answer to any of them is to enumerate again rather than to patch the list.
-        enumerate().catch((err) => say(nodes.connection, refusalSentence(err), true));
+        enumerate().catch(listRefused);
       },
       (reason) => {
         if (reason === SOCKET_CLOSED) {

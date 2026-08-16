@@ -90,6 +90,41 @@
       "what": "E16 §1's class again: every stream is told the socket ended, and no writer of #connection contradicts the one sentence that covers it"
     },
     {
+      "title": "a preview the page walked away from is a preview the daemon stopped",
+      "assertions": 7,
+      "what": "docs/11 H4 — a camera the page stops previewing is a camera the daemon stops streaming, read through the viewer cap that is the only count a browser can see"
+    },
+    {
+      "title": "the control panel on screen belongs to the camera on screen",
+      "assertions": 14,
+      "what": "docs/11 M32 — the panel is emptied in the same task as the click, and an answer about a camera the page has walked away from is dropped rather than painted"
+    },
+    {
+      "title": "a refused camera list at startup is a sentence rather than a silence",
+      "assertions": 6,
+      "what": "docs/11 M33 — a refused wch_list at startup reaches the banner instead of becoming an unhandled rejection under the word `connected`"
+    },
+    {
+      "title": "a recording answer in flight is not written under the next camera's picture",
+      "assertions": 5,
+      "what": "docs/11 L36 — an answer that arrives after the handle was retired writes nothing into #recording-status"
+    },
+    {
+      "title": "a socket severed without a FIN stops reading as connected",
+      "assertions": 7,
+      "what": "docs/11 L38 — the idle heartbeat ends a connection that stopped carrying anything without ever closing, on a clock the test owns"
+    },
+    {
+      "title": "an idle socket is kept by an answer, and a slow call is not a dead socket",
+      "assertions": 13,
+      "what": "L38's healthy path: the heartbeat is answered over the route the page opens (A9 — the dependency claim the rung had never run), a call that merely timed out is refused as a timeout and leaves the connection alone, and silence still ends it"
+    },
+    {
+      "title": "a stale session list is not painted under the camera on screen",
+      "assertions": 8,
+      "what": "docs/11 M32's third element — a wch_calibrate_list answer about a camera the page has walked away from paints nothing, in the success arm and the refusal arm"
+    },
+    {
       "title": "the browser this rung drove is the pinned one",
       "assertions": 6,
       "what": "the Playwright package and the Chromium build that ran are the pinned ones"
