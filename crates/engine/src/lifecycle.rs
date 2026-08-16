@@ -63,7 +63,7 @@ use schema::{Error, Result};
 use uuid::Uuid;
 
 use crate::discover::Discovery;
-use crate::store::{SessionRef, SessionStore, StoreLock};
+use crate::store::{Reach, SessionRef, SessionStore, StoreLock};
 use crate::{discover, pairing, snapshot, write};
 
 // ------------------------------------------------------------------ create and resume
@@ -534,6 +534,14 @@ pub fn select(
 ///
 /// `*session` is replaced *before* the append, so a caller whose log write failed is
 /// holding the state the disk holds rather than the state before it.
+///
+/// **And the same rule, for the same reason, on the half of the document write that
+/// already landed** (note **N141**). An atomic write publishes at the rename; a refusal
+/// after it — the parent directory's `fsync` — is a document on disk that this function
+/// used to answer `Err` for while leaving `*session` a state behind it. The caller's next
+/// draft would then be cloned from the older value and written over the newer document,
+/// which is a *rollback* rather than a refusal. [`crate::store::SessionStore::publish_session`]
+/// is what makes the two cases tellable apart, and this is its one reader.
 fn persist(
     store: &SessionStore,
     lock: &StoreLock,
@@ -542,7 +550,16 @@ fn persist(
     now: Stamp,
     event: Option<&SessionEvent>,
 ) -> Result<()> {
-    let dir = store.save_session(lock, &draft)?;
+    let dir = match store.publish_session(lock, &draft) {
+        Ok(dir) => dir,
+        // Nothing landed: the caller's value is what the disk holds, and the refusal is the
+        // whole answer.
+        Err((error, Reach::Untouched)) => return Err(error),
+        Err((error, Reach::Published)) => {
+            *session = draft;
+            return Err(error);
+        }
+    };
     *session = draft;
     if let Some(event) = event {
         store.append_log(
@@ -902,11 +919,18 @@ pub fn apply(
 pub enum Recovery {
     /// The session carries no unconsumed snapshot: either it never wrote to the camera,
     /// or an earlier restore already put it back.
-    NothingPersisted,
+    ///
+    /// **Not "nothing happened"**: the session repair below runs on this path too, and a
+    /// sweep killed before its first sample is exactly the case that reaches it with no
+    /// snapshot at all (note N139).
+    NothingPersisted {
+        /// The controls a dead sweep had stranded, given back by this call.
+        freed: Vec<ControlSlug>,
+    },
     /// The camera is back where the snapshot found it, and the session no longer carries
     /// it.
     Restored {
-        /// Per-control outcomes, in D4's attempted order.
+        /// Per-control outcomes, in D4's attempted order, and the stranded controls freed.
         report: RestoreReport,
     },
     /// Some of it could not go back. **The snapshot is kept**, so the next attempt still
@@ -922,8 +946,22 @@ impl Recovery {
     #[must_use]
     pub const fn report(&self) -> Option<&RestoreReport> {
         match self {
-            Recovery::NothingPersisted => None,
+            Recovery::NothingPersisted { .. } => None,
             Recovery::Restored { report } | Recovery::Incomplete { report } => Some(report),
+        }
+    }
+
+    /// The controls a dead sweep had stranded and this call gave back (note **N150**).
+    ///
+    /// Answerable on every arm, which is the point: the two facts a restore produces are
+    /// independent — a session can have a snapshot and no stranded control, a stranded
+    /// control and no snapshot, both, or neither — and a caller that could only read the
+    /// second one through the first would be told nothing on the arm N139 is about.
+    #[must_use]
+    pub fn freed(&self) -> &[ControlSlug] {
+        match self {
+            Recovery::NothingPersisted { freed } => freed,
+            Recovery::Restored { report } | Recovery::Incomplete { report } => &report.freed,
         }
     }
 }
@@ -953,13 +991,27 @@ impl Recovery {
 /// `write_json_atomic` publishes by rename: the document either carries the snapshot or
 /// does not.
 ///
+/// **And it repairs the session, not only the camera — which is the durable half of note
+/// N24** (note **N139**). N24 closed the *in-process* hole: [`crate::calibrate`]'s
+/// interruption path returns a control that recorded nothing to `Untouched`, because
+/// `Sweeping { done: 0 }` is a state every shipped verb refuses. That path runs in the
+/// process the sweep is in, and best-effort at that, so the two ways it does not run are
+/// the two that matter — a process that was killed, and a store that could not take the
+/// write. Either leaves the state on disk, and until this call learned about it nothing a
+/// caller could type ever moved it: `calibrate restore` put the camera back and left the
+/// session unusable, `calibrate start` answered [`Error::SessionConflict`] for the life of
+/// the state directory, and a transient availability failure at sample 1 had become a
+/// permanent capability refusal (AGENTS rule 7). So `free_stranded_sweeps` runs here,
+/// after the camera is back, on every path.
+///
 /// # Errors
 ///
 /// [`Error::FingerprintMismatch`] when the snapshot belongs to another camera, naming the
 /// fields that differ, and whatever the camera says when asked for its controls. Whatever
-/// the store refuses with when the consumption cannot be written — in which case the
-/// camera *is* back and the snapshot is still on disk, which is the safe direction: the
-/// next attempt is a no-op restore and a retried consumption.
+/// the store refuses with when a stranded control cannot be freed or when the consumption
+/// cannot be written — in which case the camera *is* back and the snapshot is still on
+/// disk, which is the safe direction: the next attempt is a no-op restore and a retried
+/// consumption.
 pub fn recover(
     store: &SessionStore,
     lock: &StoreLock,
@@ -968,35 +1020,132 @@ pub fn recover(
     pairs: &[AutomationPair],
     now: Stamp,
 ) -> Result<Recovery> {
-    let Some(persisted) = session.pre_snapshot.clone() else {
-        return Ok(Recovery::NothingPersisted);
+    // The camera first, in every case, because that is what a caller is here for — and its
+    // three outcomes are decided *after* the session repair below, so that a session with no
+    // snapshot at all still gets repaired. That case is not hypothetical: `begin_sweep`
+    // commits before [`sweep_write`] arms the snapshot, so a process killed in that window
+    // leaves a stranded control and nothing to restore.
+    let restored = match session.pre_snapshot.clone() {
+        Some(persisted) => Some(snapshot::restore(camera, pairs, &persisted)?),
+        None => None,
     };
 
-    let report = snapshot::restore(camera, pairs, &persisted)?;
-    if !report.is_complete() {
+    // **The answer is carried, not discarded** (note **N150**). This walk changes a control's
+    // status on disk, and a `calibrate restore --json` that answered `{"outcomes":[]}` and
+    // exited 0 after doing so would be telling an unattended caller that nothing happened —
+    // rubric A8, the same shape N145 repaired one module along.
+    let freed = free_stranded_sweeps(store, lock, session, now)?;
+
+    match restored {
+        None => Ok(Recovery::NothingPersisted { freed }),
         // Consuming here would record a recovery that did not happen — a session that
         // thinks it put the camera back while a control it moved is still where the sweep
         // left it.
-        return Ok(Recovery::Incomplete { report });
+        Some(mut report) if !report.is_complete() => {
+            report.freed = freed;
+            Ok(Recovery::Incomplete { report })
+        }
+        Some(mut report) => {
+            let unrestored = report.unrestored().len();
+            let restored = report.outcomes.len().saturating_sub(unrestored);
+            let mut draft = session.clone();
+            draft.pre_snapshot = None;
+            draft.updated_at = now;
+            persist(
+                store,
+                lock,
+                session,
+                draft,
+                now,
+                Some(&SessionEvent::Restored {
+                    restored,
+                    unrestored,
+                }),
+            )?;
+            report.freed = freed;
+            Ok(Recovery::Restored { report })
+        }
     }
+}
 
-    let unrestored = report.unrestored().len();
-    let restored = report.outcomes.len().saturating_sub(unrestored);
-    let mut draft = session.clone();
-    draft.pre_snapshot = None;
-    draft.updated_at = now;
-    persist(
-        store,
-        lock,
-        session,
-        draft,
-        now,
-        Some(&SessionEvent::Restored {
-            restored,
-            unrestored,
-        }),
-    )?;
-    Ok(Recovery::Restored { report })
+/// Give back every control a dead sweep left in `Sweeping { done: 0 }`, and say so on the
+/// record.
+///
+/// The durable half of note N24, which is why the rule it applies is
+/// [`crate::session::abandon_sweep`]'s and not a second copy: a control that recorded
+/// nothing goes back to `Untouched`, a control that recorded *something* stays mid-sweep
+/// because those samples happened and `select` is the documented way out. `abandon_sweep`
+/// refuses every other state, so this walk cannot throw away somebody's work even if the
+/// filter above it were wrong.
+///
+/// **Two writes per control, and the log line is not optional here.** In
+/// [`crate::calibrate`]'s interruption path both are best effort, because the sweep already
+/// has a refusal to report and answering "the disk is full" to somebody whose camera was
+/// pulled out is the conversion AGENTS rule 7 forbids (note N18). This path has no such
+/// refusal to protect: it *is* the repair, and a repair that silently did not happen is the
+/// hole N139 records one layer down. So the store's failure is the caller's.
+///
+/// **Why the recorded `failure` is absent** (note **N149**). The field is "the refusal's
+/// discriminant, so a reader can branch without parsing prose", and this process does not
+/// know why the sweep stopped: the process that knew was killed without writing anything.
+/// Naming a device kind would invent a measurement. Naming
+/// [`schema::ErrorKind::IllegalTransition`] — the refusal the *next* verb met, with
+/// `may_begin_sweep` answering `from: "sweeping"` — reads as a real answer and is a worse
+/// lie than silence, because `docs/agent-guide.md` dispatches that discriminant to "fix the
+/// request" and there is nothing to fix: the process is gone and the control has already
+/// been given back. So the field is `None`, which is exactly what the schema documents an
+/// absent one to mean, and the `detail` carries the story.
+///
+/// **The log line goes down before the status does**, and the order is the decision. Two
+/// writes cannot be one: if the transition landed and the line did not, the control would be
+/// `Untouched` on disk with nothing in the history saying why — and it would no longer match
+/// the `done == 0` filter above, so no later run could ever notice and repair the record.
+/// That loss is permanent. In this order the failure a caller can still meet is a line
+/// describing a repair whose commit refused, which the next `calibrate restore` performs
+/// again and records again: a duplicated line is recoverable and a lost one is not.
+fn free_stranded_sweeps(
+    store: &SessionStore,
+    lock: &StoreLock,
+    session: &mut Session,
+    now: Stamp,
+) -> Result<Vec<ControlSlug>> {
+    // Collected before anything is written, because each commit below replaces `*session`.
+    let stranded: Vec<(ControlSlug, u32)> = session
+        .controls
+        .iter()
+        .filter_map(|(control, entry)| match entry.status {
+            ControlStatus::Sweeping { done: 0, total, .. } if entry.samples.is_empty() => {
+                Some((control.clone(), total))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut freed = Vec::with_capacity(stranded.len());
+    for (control, total) in stranded {
+        note(
+            store,
+            lock,
+            session,
+            now,
+            SessionEvent::SweepInterrupted {
+                control: control.clone(),
+                taken: 0,
+                total,
+                failure: None,
+                detail: "the process that began this sweep is gone and it recorded no \
+                         samples; recovery gave the control back. Why the sweep stopped is \
+                         not recorded — the process that knew was killed without writing a \
+                         line."
+                    .to_owned(),
+            },
+        )?;
+        commit_state(store, lock, session, now, |draft, now| {
+            crate::session::abandon_sweep(draft, &control, now)
+        })?;
+        freed.push(control);
+    }
+    Ok(freed)
 }
 
 /// What the `calibrate restore` verb answers, on both surfaces (note N23).
@@ -1028,8 +1177,12 @@ pub fn restore(
 ) -> Result<RestoreReport> {
     let pairs = session.pairs.clone();
     let recovery = recover(store, lock, session, camera, &pairs, now)?;
+    // The `NothingPersisted` arm has no camera report and may still have repaired the
+    // session, so the freed list is read off [`Recovery`] rather than off the report — an
+    // empty document here after a status changed on disk is the answer note N150 is about.
     Ok(recovery.report().cloned().unwrap_or(RestoreReport {
         outcomes: Vec::new(),
+        freed: recovery.freed().to_vec(),
     }))
 }
 
@@ -1057,6 +1210,20 @@ mod tests {
 
     fn slug(name: &str) -> ControlSlug {
         ControlSlug::parse(name).expect("literal slug")
+    }
+
+    /// A plan described only by its spec and its size.
+    ///
+    /// The transitions these tests drive are the D8 machine's business, not the planner's, so
+    /// the stride and the adjustment list are what a sweep nobody planned carries: nothing.
+    /// `crate::calibrate` is the path that fills them in (note **N145**).
+    fn planned(spec: &SweepSpec, total: u32) -> session::Planned<'_> {
+        session::Planned {
+            spec,
+            total,
+            precision: 0,
+            adjustments: &[],
+        }
     }
 
     fn fingerprint() -> CameraFingerprint {
@@ -1206,7 +1373,7 @@ mod tests {
         })
         .expect("queueing is legal");
         commit(temp.store(), &lock, &mut first, later(), |s, now| {
-            session::begin_sweep(s, &control, &SweepSpec::All, 1, now)
+            session::begin_sweep(s, &control, planned(&SweepSpec::All, 1), now)
         })
         .expect("a fresh control sweeps");
         commit(temp.store(), &lock, &mut first, later(), |s, now| {
@@ -1397,7 +1564,7 @@ mod tests {
         // The inverse: the same operation on a well-formed session goes through, and the
         // document and the log both show it.
         commit(temp.store(), &lock, &mut session, later(), |s, now| {
-            session::begin_sweep(s, &control, &SweepSpec::All, 1, now)
+            session::begin_sweep(s, &control, planned(&SweepSpec::All, 1), now)
         })
         .expect("a fresh control sweeps");
         commit(temp.store(), &lock, &mut session, later(), |s, now| {
@@ -1448,7 +1615,7 @@ mod tests {
             .arrange(StoreFault::DiskFull)
             .expect("scriptable");
         let err = commit(temp.store(), &lock, &mut session, later(), |s, now| {
-            session::begin_sweep(s, &control, &SweepSpec::All, 1, now)
+            session::begin_sweep(s, &control, planned(&SweepSpec::All, 1), now)
         })
         .expect_err("no space");
         assert_eq!(err.kind(), ErrorKind::StorageIo);
@@ -1460,7 +1627,7 @@ mod tests {
         temp.store_mut().clear_faults();
 
         commit(temp.store(), &lock, &mut session, later(), |s, now| {
-            session::begin_sweep(s, &control, &SweepSpec::All, 1, now)
+            session::begin_sweep(s, &control, planned(&SweepSpec::All, 1), now)
         })
         .expect("a healthy store takes the same transition");
     }
@@ -1487,7 +1654,7 @@ mod tests {
         std::fs::create_dir(log.as_std_path()).expect("the session directory is ours");
 
         let err = commit(temp.store(), &lock, &mut session, later(), |s, now| {
-            session::begin_sweep(s, &control, &SweepSpec::All, 1, now)
+            session::begin_sweep(s, &control, planned(&SweepSpec::All, 1), now)
         })
         .expect_err("the log cannot be appended to");
         assert_eq!(err.kind(), ErrorKind::StorageIo);
@@ -1805,7 +1972,7 @@ mod tests {
         })
         .expect("queueing is legal");
         commit(store, lock, session, later(), |s, now| {
-            session::begin_sweep(s, control, &SweepSpec::All, 1, now)
+            session::begin_sweep(s, control, planned(&SweepSpec::All, 1), now)
         })
         .expect("a fresh control sweeps");
         commit(store, lock, session, later(), |s, now| {
@@ -2056,7 +2223,270 @@ mod tests {
         assert_eq!(
             recover(temp.store(), &lock, &mut session, &mut camera, &[], later())
                 .expect("nothing to do"),
-            Recovery::NothingPersisted
+            Recovery::NothingPersisted { freed: Vec::new() }
+        );
+    }
+
+    #[test]
+    fn a_commit_the_parent_fsync_refused_leaves_the_caller_holding_what_the_disk_holds() {
+        // Note **N141**, at the layer that was believing the false half of the contract.
+        // The directory is set to 0300, so the rename lands and `fsync_dir`'s open is
+        // `EACCES` (`store`'s own test arranges and explains the mode). The refusal is
+        // right; what was wrong is that `*session` stayed a state behind a document that
+        // had already landed, so the caller's next draft would have been written over it.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let spec = spec(1_000, "focus");
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        let dir = temp.store().session_dir(&session);
+
+        std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o300))
+            .expect("the mode is ours to set");
+        let refused = commit(temp.store(), &lock, &mut session, later(), |draft, now| {
+            session::begin_sweep(draft, &slug("brightness"), planned(&SweepSpec::All, 4), now)
+        })
+        .expect_err("the directory cannot be fsynced at this mode");
+        std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the mode is ours to set");
+        assert_eq!(refused.kind(), ErrorKind::StorageIo);
+
+        // The property: the caller's value and the document agree. Either both moved or
+        // neither did — and here both moved, because the rename is the publication.
+        let on_disk = temp.store().load_session(&dir).expect("readable");
+        assert!(
+            matches!(
+                session
+                    .controls
+                    .get(&slug("brightness"))
+                    .map(|entry| &entry.status),
+                Some(ControlStatus::Sweeping { done: 0, .. })
+            ),
+            "the caller is holding a session older than the document it just wrote: {:?}",
+            session.controls
+        );
+        assert_eq!(on_disk.controls, session.controls);
+    }
+
+    #[test]
+    fn a_sweep_that_died_before_its_first_sample_is_given_back_and_one_with_samples_is_not() {
+        // Note **N139**, on the branch the crash suite cannot reach: `begin_sweep` commits
+        // *before* [`sweep_write`] arms the snapshot, so a process killed in that window
+        // leaves a stranded control and no snapshot at all — the `NothingPersisted` answer,
+        // which used to return before touching a single status. The second control is the
+        // other direction, and it is the one that makes this a rule rather than a sweep:
+        // samples that were taken happened, and `select` is their documented way out (N24).
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = ScriptedCamera::new(vec![
+            integer("brightness", 50),
+            integer("focus_absolute", 10),
+        ]);
+        let mut spec = spec(1_000, "focus");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+
+        for control in ["brightness", "focus_absolute"] {
+            commit(temp.store(), &lock, &mut session, later(), |draft, now| {
+                session::begin_sweep(draft, &slug(control), planned(&SweepSpec::All, 4), now)
+            })
+            .expect("a writable store");
+        }
+        commit(temp.store(), &lock, &mut session, later(), |draft, now| {
+            session::record_sample(draft, &slug("focus_absolute"), sample(10, 1.0), now)
+        })
+        .expect("a writable store");
+
+        assert_eq!(
+            session.pre_snapshot, None,
+            "this branch is the one with nothing to put back; a snapshot here would test \
+             the other one"
+        );
+        let recovery = recover(temp.store(), &lock, &mut session, &mut camera, &[], later())
+            .expect("a session with no snapshot is not a failure");
+        assert_eq!(
+            recovery,
+            Recovery::NothingPersisted {
+                freed: vec![slug("brightness")]
+            },
+            "the repair is invisible to the caller unless it is on the answer (note N150)"
+        );
+
+        let status = |control: &str| {
+            session
+                .controls
+                .get(&slug(control))
+                .expect("the control is on the document")
+                .status
+                .clone()
+        };
+        assert_eq!(status("brightness"), ControlStatus::Untouched);
+        assert!(
+            matches!(
+                status("focus_absolute"),
+                ControlStatus::Sweeping { done: 1, .. }
+            ),
+            "a sweep that recorded a sample was rolled back: {:?}",
+            status("focus_absolute")
+        );
+
+        // On disk as well as in hand, because the process that reads this next is a
+        // different one.
+        let dir = temp.store().session_dir(&session);
+        assert_eq!(
+            temp.store()
+                .load_session(&dir)
+                .expect("readable")
+                .controls
+                .get(&slug("brightness"))
+                .expect("on the document")
+                .status,
+            ControlStatus::Untouched
+        );
+        let log = temp.store().load_log(&dir).expect("readable");
+        let interrupted: Vec<&SessionEvent> = log
+            .iter()
+            .map(|entry| &entry.event)
+            .filter(|event| matches!(event, SessionEvent::SweepInterrupted { .. }))
+            .collect();
+        assert!(
+            matches!(
+                interrupted.as_slice(),
+                [SessionEvent::SweepInterrupted {
+                    control,
+                    taken: 0,
+                    total: 4,
+                    // **Absent, and that is the assertion** (note **N149**). This process was
+                    // not there when the sweep stopped and has nothing to read: the one that
+                    // knew was killed without writing. A discriminant here would be a reason
+                    // nobody measured, and D13's discriminant is what an unattended agent
+                    // dispatches on — `illegal_transition` sends it to "fix the request",
+                    // which is advice about a request that no longer exists.
+                    failure: None,
+                    ..
+                }]
+                    if control.as_str() == "brightness"
+            ),
+            "the repair left the wrong record: {interrupted:?}"
+        );
+        let SessionEvent::SweepInterrupted { detail, .. } = interrupted[0] else {
+            unreachable!("just matched")
+        };
+        assert!(
+            detail.contains("no samples") && detail.contains("gave the control back"),
+            "a line with no discriminant has to say the rest in words: {detail}"
+        );
+    }
+
+    #[test]
+    fn the_restore_verb_names_the_controls_it_gave_back_even_with_no_snapshot_to_put_back() {
+        // **Rubric A8, on the verb** (note **N150**). `free_stranded_sweeps` returns the
+        // controls it freed and `recover` carries them, but the shipped answer is
+        // [`RestoreReport`] — and `restore` built an empty one on the `NothingPersisted`
+        // arm, so `calibrate restore --json` printed `{"outcomes":[]}` and exited 0 having
+        // just changed a control's status on disk. To an unattended caller that is "nothing
+        // happened", which is the one thing that had not happened.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = ScriptedCamera::new(vec![integer("brightness", 50)]);
+        let mut spec = spec(1_000, "focus");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        commit(temp.store(), &lock, &mut session, later(), |draft, now| {
+            session::begin_sweep(draft, &slug("brightness"), planned(&SweepSpec::All, 4), now)
+        })
+        .expect("a writable store");
+
+        let report = restore(temp.store(), &lock, &mut session, &mut camera, later())
+            .expect("a session with no snapshot is not a failure");
+        assert!(
+            report.outcomes.is_empty(),
+            "there was no snapshot; a camera outcome here would be about a different repair"
+        );
+        assert_eq!(
+            report.freed,
+            vec![slug("brightness")],
+            "the verb changed a status on disk and answered a document that says nothing"
+        );
+
+        // The other direction, out of the same store: running it again repairs nothing and
+        // says so, so an empty list means "nothing was stranded" rather than "nobody looked".
+        let again = restore(temp.store(), &lock, &mut session, &mut camera, later())
+            .expect("running restore twice is not an error");
+        assert!(again.freed.is_empty());
+    }
+
+    #[test]
+    fn a_repair_whose_record_cannot_be_written_leaves_the_control_stranded_for_the_next_run() {
+        // **The ordering inside `free_stranded_sweeps`, from the side that decides it**
+        // (note **N139**). Two writes cannot be one. If the status transition landed and
+        // the log line did not, the control would be `Untouched` on disk with nothing in the
+        // history saying why — and it would no longer match the `done == 0` filter, so no
+        // later run could notice. That loss is permanent, and it is the residue the review
+        // of the N139 repair named.
+        //
+        // Arranged for real rather than scripted, for the reason `store`'s 0300-directory
+        // test gives: `StoreFault::DiskFull` refuses the document *and* the log, so it
+        // cannot tell the two orders apart. A read-only `log.ndjson` inside a writable
+        // session directory is the only arrangement that fails exactly one of them. It
+        // assumes the suite is not running as root, which bypasses the mode.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = ScriptedCamera::new(vec![integer("brightness", 50)]);
+        let mut spec = spec(1_000, "focus");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+        commit(temp.store(), &lock, &mut session, later(), |draft, now| {
+            session::begin_sweep(draft, &slug("brightness"), planned(&SweepSpec::All, 4), now)
+        })
+        .expect("a writable store");
+
+        let dir = temp.store().session_dir(&session);
+        let log = dir.join(schema::limits::SESSION_LOG_FILE);
+        std::fs::set_permissions(log.as_std_path(), std::fs::Permissions::from_mode(0o400))
+            .expect("the mode is ours to set");
+
+        let refused = recover(temp.store(), &lock, &mut session, &mut camera, &[], later())
+            .expect_err("a log this call cannot append to is not one it may repair behind");
+        assert_eq!(refused.kind(), ErrorKind::StorageIo);
+
+        // The property: the control is still stranded, in hand and on disk, so the next run
+        // sees it and repairs it. A build that committed the status first would leave
+        // `Untouched` here and no record anywhere that a sweep had ever been interrupted.
+        std::fs::set_permissions(
+            log.as_std_path(),
+            std::fs::Permissions::from_mode(crate::store::STATE_FILE_MODE),
+        )
+        .expect("the mode is ours to set");
+        let on_disk = temp.store().load_session(&dir).expect("readable");
+        assert!(
+            matches!(
+                on_disk.controls[&slug("brightness")].status,
+                ControlStatus::Sweeping { done: 0, .. }
+            ),
+            "the status moved without its record: {:?}",
+            on_disk.controls
+        );
+
+        // The other direction, out of the same arrangement: with the log writable again the
+        // repair happens, and it is recorded.
+        let recovery = recover(temp.store(), &lock, &mut session, &mut camera, &[], later())
+            .expect("a writable store");
+        assert_eq!(recovery.freed(), [slug("brightness")]);
+        assert_eq!(
+            session.controls[&slug("brightness")].status,
+            ControlStatus::Untouched
+        );
+        assert!(
+            temp.store()
+                .load_log(&dir)
+                .expect("readable")
+                .iter()
+                .any(|entry| matches!(entry.event, SessionEvent::SweepInterrupted { .. })),
+            "the retried repair left no record"
         );
     }
 

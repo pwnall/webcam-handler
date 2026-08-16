@@ -211,7 +211,7 @@ webcam-handler-client photo <CAMERA> [--out <PATH>] [--format <FORMAT>] [--trans
 | `--pixel-format` | `<FOURCC>` | — | The pixel format to ask the device for, as a fourcc such as `MJPG` |
 | `--skip-frames` | `<N>` | — | Discard this many frames before taking one [PF:11] |
 | `--settle-for` | `<MS>` | — | Discard frames for this long before taking one, in milliseconds |
-| `--settle-deadline` | `<MS>` | — | How long the whole settle may take, in milliseconds |
+| `--settle-deadline` | `<MS>` | — | How long the whole settle may take, in milliseconds. At most 10000, because one camera is one thread and a longer settle is time nobody else gets; a bigger number is refused rather than quietly shortened |
 | `--wait` | — | — | Wait for the camera rather than being refused while it is busy (D12) |
 
 ### `record`
@@ -312,7 +312,7 @@ Exactly one of `--all`, `--step`, `--points`, `--values` is required.
 | `--pixel-format` | `<FOURCC>` | — | The pixel format to ask the device for, as a fourcc such as `MJPG` |
 | `--skip-frames` | `<N>` | — | Discard this many frames before taking one [PF:11] |
 | `--settle-for` | `<MS>` | — | Discard frames for this long before taking one, in milliseconds |
-| `--settle-deadline` | `<MS>` | — | How long the whole settle may take, in milliseconds |
+| `--settle-deadline` | `<MS>` | — | How long the whole settle may take, in milliseconds. At most 10000, because one camera is one thread and a longer settle is time nobody else gets; a bigger number is refused rather than quietly shortened |
 
 ### `calibrate status`
 
@@ -530,7 +530,7 @@ A failed verb writes one line to standard error, prints the failure document und
 | `control_read_only` | `16` | **do not retry** | The device says this control cannot be written — `privacy` on a camera with a hardware shutter, for instance. This is the camera's answer about itself, not a temporary state. |
 | `control_inactive` | `17` | **change the plan** | An automation control currently owns this one, and the message names the automation. Write without `--no-guard` and the write turns it off first; or turn it off yourself and write again. |
 | `format_unsupported` | `18` | **fix the request** | The camera cannot deliver what was asked for, and the payload says which half. When `size` is present the frame size is the problem: `size.requested_width` and `size.requested_height` are what you asked for and `size.available` lists every size this camera can deliver — pick one, or leave `--size` out and let the camera choose. Otherwise the format is the problem: `requested` is what you asked for and `available` lists what would be taken — either a `--pixel-format` this device does not offer, or a recording container that cannot carry what this camera produces, and a `.avi` needs MJPEG frames so a camera that delivers raw ones records to `.y4m`. The two never both appear: one refusal names one lever. |
-| `settle_timeout` | `19` | **retry once, then stop** | The camera did not deliver enough frames inside the settle deadline. Retry with a longer `--settle-deadline` or fewer `--skip-frames`. If it repeats, the device is not delivering and that is worth telling the human. |
+| `settle_timeout` | `19` | **retry once, then stop** | The camera did not deliver enough frames inside the settle deadline. Retry with a longer `--settle-deadline` or fewer `--skip-frames`. If it repeats, the device is not delivering and that is worth telling the human. The deadline has a ceiling of its own: 10000 ms is the most one capture may hold a camera, and a larger `--settle-deadline` is refused as `illegal_transition` rather than quietly shortened. |
 | `fingerprint_mismatch` | `20` | **stop** | The snapshot or session you named was recorded against a different camera, and the message names the fields that differ. Do not apply it here — the values would mean something else on this device. |
 | `session_conflict` | `21` | **change the plan** | This camera and task already have an open calibration session. Use it — `calibrate status` says where it got to — or start one under a different task name. |
 | `illegal_transition` | `22` | **fix the request** | The verb does not apply in the state the session or the request is in — selecting a value for a control that never swept, an output extension this build does not write. `calibrate status` says what state a session is in; the message says what was refused. |
@@ -577,7 +577,7 @@ The document says where the file went, what the camera negotiated, and what was 
 
 Two things decide whether two photographs an hour apart are comparable, which is what this tool is for.
 
-**Settle before the shot.** A webcam's auto-exposure and auto-focus need frames to converge, and the first frame after `STREAMON` is not the picture. The default discards ten frames; `--skip-frames` and `--settle-for` set it yourself, and `--settle-deadline` bounds the whole thing so a camera that never settles fails instead of hanging.
+**Settle before the shot.** A webcam's auto-exposure and auto-focus need frames to converge, and the first frame after `STREAMON` is not the picture. The default discards ten frames; `--skip-frames` and `--settle-for` set it yourself, and `--settle-deadline` bounds the whole thing so a camera that never settles fails instead of hanging. That deadline may be at most 10000 ms — one camera is one thread, so a settle is time nothing else on that camera gets — and a larger one is refused as `illegal_transition` rather than quietly shortened.
 
 ```console
 $ webcam-handler-client photo <CAMERA> -o <PHOTO> --skip-frames 20 --settle-deadline 8000

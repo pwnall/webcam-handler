@@ -229,7 +229,12 @@ pub fn restore(
         outcomes.push(restore_one(camera, entry)?);
     }
 
-    Ok(RestoreReport { outcomes })
+    // A camera restore frees no stranded control: that repair is `lifecycle::recover`'s and
+    // it fills this in afterwards (note **N150**).
+    Ok(RestoreReport {
+        outcomes,
+        freed: Vec::new(),
+    })
 }
 
 /// Put a snapshot back, against the pair set **this device is in now**.

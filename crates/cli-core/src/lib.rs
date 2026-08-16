@@ -777,10 +777,17 @@ pub struct SettleArgs {
     #[arg(long, value_name = "MS")]
     pub settle_for: Option<u64>,
 
-    /// How long the whole settle may take, in milliseconds.
+    /// How long the whole settle may take, in milliseconds. At most 10000, because one
+    /// camera is one thread and a longer settle is time nobody else gets; a bigger number is
+    /// refused rather than quietly shortened.
     #[arg(long, value_name = "MS")]
     pub settle_deadline: Option<u64>,
 }
+
+// The number the help above states, checked against the constant it states. A flag that
+// advertised a bound the tool does not have would send an unattended caller into a retry
+// loop against a refusal that never moves (note **N147**).
+const _: () = assert!(schema::limits::MAX_SETTLE_DEADLINE_MS == 10_000);
 
 impl SettleArgs {
     /// The policy these flags describe; the `limits` table decides what they leave unsaid.

@@ -24,7 +24,7 @@ use schema::control::{ControlSlug, ControlValue};
 use schema::metrics::{MetricName, Preference};
 use schema::session::{
     BlockedReason, ControlSession, ControlStatus, Sample, Selector, Session, SessionEvent,
-    SweepSpec,
+    SweepAdjustment, SweepSpec,
 };
 use schema::time::Stamp;
 use schema::{Error, Result};
@@ -106,7 +106,34 @@ pub fn auto_disabled(
     })
 }
 
-/// Begin a sweep of `control` over `total` samples.
+/// What the planner decided, as the D8 machine has to record it (note **N145**).
+///
+/// A value rather than four parameters, because these four travel together everywhere and
+/// three of them are answers to the same question: *what did the planner do to the spec the
+/// caller wrote?* The spec is the request, and `total`, `precision` and `adjustments` are
+/// what became of it — D3's `{requested, applied}` doctrine at the level of a whole sweep.
+///
+/// It exists at all because the answers used to go nowhere. `crate::sweep::plan` has always
+/// produced them and both composition roots dropped the whole outcome, so a sweep whose
+/// stride was widened forty-fold to fit a cap told its caller a sample count and nothing
+/// else. [`begin_sweep`] writes them onto [`ControlStatus::Sweeping`] and onto the
+/// `SweepStarted` log line, which are the two places a caller that was not watching can
+/// still read them: `calibrate sweep --json` answers the document and `calibrate status`
+/// reads the history.
+#[derive(Debug, Clone, Copy)]
+pub struct Planned<'a> {
+    /// The spec as the caller wrote it.
+    pub spec: &'a SweepSpec,
+    /// How many samples the plan holds.
+    pub total: u32,
+    /// The smallest gap between consecutive planned values — the stride, which is what a
+    /// `--precision` request is answered by and what a refinement pass divides down.
+    pub precision: i64,
+    /// Every way the plan differs from the spec, in the order the planner made them.
+    pub adjustments: &'a [SweepAdjustment],
+}
+
+/// Begin a sweep of `control` over `planned.total` samples.
 ///
 /// Legal from [`ControlStatus::Calibrated`] as well as from the earlier states: D8's
 /// `precision` field exists so a coarse pass can be followed by a fine one, and a
@@ -122,11 +149,10 @@ pub fn auto_disabled(
 pub fn begin_sweep(
     session: &mut Session,
     control: &ControlSlug,
-    plan: &SweepSpec,
-    total: u32,
+    planned: Planned<'_>,
     now: Stamp,
 ) -> Result<SessionEvent> {
-    if total == 0 {
+    if planned.total == 0 {
         return Err(illegal(
             "no_values(sweep total=0)",
             format!("sweep {control}"),
@@ -137,14 +163,22 @@ pub fn begin_sweep(
         return Err(refuse(&entry.status, "sweep", control));
     }
     entry.status = ControlStatus::Sweeping {
-        plan: plan.clone(),
+        plan: planned.spec.clone(),
         done: 0,
-        total,
+        total: planned.total,
+        precision: planned.precision,
+        adjustments: planned.adjustments.to_vec(),
     };
     session.updated_at = now;
     Ok(SessionEvent::SweepStarted {
         control: control.clone(),
-        total,
+        total: planned.total,
+        // The same two facts on the durable line as on the document, and deliberately not
+        // "the document already has it": a `select` moves the control to `Calibrated` and
+        // the `Sweeping` status with them in it is gone, while `log.ndjson` is the record
+        // that outlives every transition.
+        precision: planned.precision,
+        adjustments: planned.adjustments.to_vec(),
     })
 }
 
@@ -163,7 +197,14 @@ pub fn record_sample(
     now: Stamp,
 ) -> Result<SessionEvent> {
     let entry = session.controls.entry(control.clone()).or_default();
-    let ControlStatus::Sweeping { plan, done, total } = &entry.status else {
+    let ControlStatus::Sweeping {
+        plan,
+        done,
+        total,
+        precision,
+        adjustments,
+    } = &entry.status
+    else {
         return Err(refuse(&entry.status, "record a sample for", control));
     };
     if done >= total {
@@ -181,6 +222,10 @@ pub fn record_sample(
         plan: plan.clone(),
         done: done.saturating_add(1),
         total: *total,
+        // Carried across, not re-derived: what the planner did is a fact about the plan this
+        // sweep is executing, and a sample is not a new plan.
+        precision: *precision,
+        adjustments: adjustments.clone(),
     };
     entry.samples.push(sample);
     session.updated_at = now;
@@ -571,14 +616,31 @@ mod tests {
         Stamp::from_millis(1_000).expect("in range")
     }
 
+    /// A plan described only by its spec and its size.
+    ///
+    /// The transitions these tests drive are this module's business, not the planner's, so
+    /// the stride and the adjustment list are what a sweep nobody planned carries: nothing.
+    /// `crate::calibrate` is the path that fills them in, and the one test above that cares
+    /// spells all four fields out (note **N145**).
+    fn planned(spec: &SweepSpec, total: u32) -> Planned<'_> {
+        Planned {
+            spec,
+            total,
+            precision: 0,
+            adjustments: &[],
+        }
+    }
+
     /// A control taken all the way to a finished sweep with scored samples.
     fn swept(session: &mut Session, control: &ControlSlug, scores: &[(i64, f64)]) {
         enqueue(session, control, Stamp::epoch());
         begin_sweep(
             session,
             control,
-            &SweepSpec::Uniform { step: 10 },
-            u32::try_from(scores.len()).expect("small fixture"),
+            planned(
+                &SweepSpec::Uniform { step: 10 },
+                u32::try_from(scores.len()).expect("small fixture"),
+            ),
             Stamp::epoch(),
         )
         .expect("a fresh control sweeps");
@@ -622,8 +684,12 @@ mod tests {
         let event = begin_sweep(
             &mut session,
             &focus,
-            &SweepSpec::Uniform { step: 10 },
-            3,
+            Planned {
+                spec: &SweepSpec::Uniform { step: 10 },
+                total: 3,
+                precision: 10,
+                adjustments: &[SweepAdjustment::Deduplicated { dropped: 1 }],
+            },
             later(),
         )
         .expect("an auto-disabled control sweeps");
@@ -631,7 +697,12 @@ mod tests {
             event,
             SessionEvent::SweepStarted {
                 control: focus.clone(),
-                total: 3
+                total: 3,
+                // The planner's answer reaches the durable line, which is where a reader who
+                // was not watching finds out what the sweep it is about to compare
+                // photographs from actually planned (note **N145**).
+                precision: 10,
+                adjustments: vec![SweepAdjustment::Deduplicated { dropped: 1 }],
             }
         );
 
@@ -688,8 +759,7 @@ mod tests {
         begin_sweep(
             &mut session,
             &focus,
-            &SweepSpec::Uniform { step: 1 },
-            5,
+            planned(&SweepSpec::Uniform { step: 1 }, 5),
             later(),
         )
         .expect("a refinement pass is legal");
@@ -707,8 +777,7 @@ mod tests {
         begin_sweep(
             &mut session,
             &focus,
-            &SweepSpec::Uniform { step: 10 },
-            5,
+            planned(&SweepSpec::Uniform { step: 10 }, 5),
             Stamp::epoch(),
         )
         .expect("a fresh control sweeps");
@@ -719,8 +788,7 @@ mod tests {
         begin_sweep(
             &mut session,
             &focus,
-            &SweepSpec::Uniform { step: 10 },
-            5,
+            planned(&SweepSpec::Uniform { step: 10 }, 5),
             later(),
         )
         .expect("an abandoned sweep leaves a sweepable control");
@@ -785,7 +853,7 @@ mod tests {
     fn a_sweep_that_recorded_no_samples_cannot_be_selected_on() {
         let mut session = fixture();
         let focus = slug("focus_absolute");
-        begin_sweep(&mut session, &focus, &SweepSpec::All, 4, later()).expect("legal");
+        begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 4), later()).expect("legal");
         let err = select_value(&mut session, &focus, 10, Selector::Human, later())
             .expect_err("no samples yet");
         assert!(err.to_string().contains("no_samples"), "{err}");
@@ -801,7 +869,7 @@ mod tests {
             BlockedReason::ReadOnly,
             Stamp::epoch(),
         );
-        let err = begin_sweep(&mut session, &privacy, &SweepSpec::All, 4, later())
+        let err = begin_sweep(&mut session, &privacy, planned(&SweepSpec::All, 4), later())
             .expect_err("the device said no");
         assert_eq!(
             err,
@@ -818,8 +886,8 @@ mod tests {
         // can read afterwards.
         let mut session = fixture();
         let focus = slug("focus_absolute");
-        begin_sweep(&mut session, &focus, &SweepSpec::All, 4, later()).expect("legal");
-        let err = begin_sweep(&mut session, &focus, &SweepSpec::All, 4, later())
+        begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 4), later()).expect("legal");
+        let err = begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 4), later())
             .expect_err("one at a time");
         assert!(err.to_string().contains("from state sweeping"), "{err}");
     }
@@ -830,8 +898,7 @@ mod tests {
         let err = begin_sweep(
             &mut session,
             &slug("focus_absolute"),
-            &SweepSpec::All,
-            0,
+            planned(&SweepSpec::All, 0),
             later(),
         )
         .expect_err("a sweep with no samples is not a sweep");
@@ -860,7 +927,7 @@ mod tests {
     fn a_sweep_cannot_record_more_samples_than_it_planned() {
         let mut session = fixture();
         let focus = slug("focus_absolute");
-        begin_sweep(&mut session, &focus, &SweepSpec::All, 1, later()).expect("legal");
+        begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 1), later()).expect("legal");
         record_sample(&mut session, &focus, sample(0, &[]), later()).expect("the one sample");
         let err = record_sample(&mut session, &focus, sample(1, &[]), later())
             .expect_err("the plan said one");
@@ -938,7 +1005,7 @@ mod tests {
         // taken, and the samples do not say which side of the change they are on.
         let mut session = fixture();
         let focus = slug("focus_absolute");
-        begin_sweep(&mut session, &focus, &SweepSpec::All, 4, later()).expect("legal");
+        begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 4), later()).expect("legal");
         let err = auto_disabled(
             &mut session,
             &focus,
@@ -996,7 +1063,8 @@ mod tests {
             Stamp::epoch(),
         );
         for err in [
-            begin_sweep(&mut session, &focus, &SweepSpec::All, 1, later()).expect_err("blocked"),
+            begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 1), later())
+                .expect_err("blocked"),
             select_value(&mut session, &focus, 0, Selector::Human, later()).expect_err("blocked"),
             defer(&mut session, &focus, "x", later()).expect_err("blocked"),
             auto_disabled(&mut session, &focus, &slug("a"), None, later()).expect_err("blocked"),
@@ -1015,7 +1083,7 @@ mod tests {
         let mut session = fixture();
         let focus = slug("focus_absolute");
         enqueue(&mut session, &focus, later());
-        begin_sweep(&mut session, &focus, &SweepSpec::All, 2, later()).expect("legal");
+        begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 2), later()).expect("legal");
         for (value, luma) in [(0_i64, 0.2_f64), (10, 0.9)] {
             record_sample(
                 &mut session,
@@ -1048,7 +1116,13 @@ mod tests {
         let mut session = fixture();
         let exposure = slug("exposure_time_absolute");
         enqueue(&mut session, &exposure, later());
-        begin_sweep(&mut session, &exposure, &SweepSpec::All, 3, later()).expect("legal");
+        begin_sweep(
+            &mut session,
+            &exposure,
+            planned(&SweepSpec::All, 3),
+            later(),
+        )
+        .expect("legal");
         for (value, clipped) in [(100_i64, 0.30_f64), (200, 0.02), (300, 0.75)] {
             record_sample(
                 &mut session,
@@ -1121,7 +1195,7 @@ mod tests {
         let mut lower = fixture();
         let exposure = slug("exposure_time_absolute");
         enqueue(&mut lower, &exposure, later());
-        begin_sweep(&mut lower, &exposure, &SweepSpec::All, 3, later()).expect("legal");
+        begin_sweep(&mut lower, &exposure, planned(&SweepSpec::All, 3), later()).expect("legal");
         for (value, clipped) in [(100_i64, 0.30_f64), (200, 0.02), (300, 0.02)] {
             record_sample(
                 &mut lower,

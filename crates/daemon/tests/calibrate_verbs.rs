@@ -603,7 +603,10 @@ async fn applying_needs_the_work_finished_and_restoring_puts_the_camera_back_twi
     assert_eq!(
         again,
         RestoreReport {
-            outcomes: Vec::new()
+            outcomes: Vec::new(),
+            // Nothing was stranded either: the session repair runs on this path too, and an
+            // empty list is what "nothing was left mid-sweep" looks like (note **N150**).
+            freed: Vec::new(),
         }
     );
 }

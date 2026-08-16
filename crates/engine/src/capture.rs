@@ -54,15 +54,29 @@ pub struct Capture {
 ///
 /// # Errors
 ///
-/// [`schema::Error::SettleTimeout`] when the policy's deadline passes first, carrying how
-/// long it waited and how many frames it saw — the pair that separates a slow camera from
-/// a dead one (E3). Otherwise whatever the device said, unchanged.
+/// [`schema::Error::IllegalTransition`] when the policy's deadline is above
+/// [`limits::MAX_SETTLE_DEADLINE_MS`] — refused **before the stream starts**, because the
+/// bound is on how long this camera's one actor thread is held and a check after `STREAMON`
+/// would already have held it. [`schema::Error::SettleTimeout`] when the policy's deadline
+/// passes first, carrying how long it waited and how many frames it saw — the pair that
+/// separates a slow camera from a dead one (E3). Otherwise whatever the device said,
+/// unchanged.
 pub fn grab(
     camera: &mut dyn Camera,
     request: &StreamRequest,
     policy: SettlePolicy,
     clock: &dyn Clock,
 ) -> Result<Capture> {
+    // **The door, and therefore the invariant** (notes **N144**, **N147**): a photo and a
+    // sweep sample both arrive at this function, so a settle nobody may ask for cannot get
+    // past it however it was composed. The rule itself is
+    // `schema::capture::SettlePolicy::within_bound`, beside the field it constrains, and
+    // callers ask it *earlier* as well — before a snapshot is armed or a motor moves — so
+    // that the refusal is cheap as well as certain. Refused rather than clamped because one
+    // camera is one thread (D12): shortening a number the caller chose would answer a
+    // question they did not ask, and `webcam-handler-daemon`'s `while_suspended` refuses the
+    // same excess one layer out when somebody is watching a preview.
+    policy.within_bound()?;
     let negotiated = camera.start_stream(request)?;
     let guard = StreamGuard { camera };
     let mut state = SettlePolicyState::new(policy, clock.now_ms());
@@ -268,13 +282,53 @@ mod tests {
             &StreamRequest::default(),
             SettlePolicy {
                 spec: SettleSpec::SkipFrames { frames: 1 },
-                deadline_ms: u64::MAX,
+                // The largest a caller may ask for. It used to be `u64::MAX`, which since
+                // note N144 is a refusal rather than a settle — and the case is unchanged
+                // either way, because a clock that does not move never reaches *any*
+                // deadline, which is the whole reason the backstop exists.
+                deadline_ms: limits::MAX_SETTLE_DEADLINE_MS,
             },
             &clock,
         )
         .expect_err("the backstop reports the timeout the deadline never would");
         assert_eq!(error.kind(), ErrorKind::SettleTimeout);
         assert_eq!(device.stops, 1, "the stream is stopped on that path too");
+    }
+
+    #[test]
+    fn a_settle_deadline_above_the_cap_is_refused_before_the_camera_is_streamed() {
+        // Note **N144**. The bound is on how long one camera's single actor thread is held
+        // (D12), so a check after `STREAMON` would already have held it — which is why the
+        // counter, and not only the refusal, is asserted. Both directions: one millisecond
+        // over is refused, exactly the cap is a photo.
+        let mut device = camera(4);
+        let clock = SteppedClock::new(0);
+        let over = SettlePolicy {
+            spec: SettleSpec::SkipFrames { frames: 0 },
+            deadline_ms: limits::MAX_SETTLE_DEADLINE_MS + 1,
+        };
+        let error = grab(&mut device, &StreamRequest::default(), over, &clock)
+            .expect_err("a deadline no capture may hold a camera for");
+        assert_eq!(error.kind(), ErrorKind::IllegalTransition);
+        assert!(
+            error
+                .to_string()
+                .contains(&limits::MAX_SETTLE_DEADLINE_MS.to_string()),
+            "the refusal must name the bound: {error}"
+        );
+        assert!(
+            device.started.is_empty(),
+            "the camera was streamed before the budget was checked: {:?}",
+            device.started
+        );
+        assert_eq!(device.stops, 0);
+
+        let at_the_cap = SettlePolicy {
+            spec: SettleSpec::SkipFrames { frames: 0 },
+            deadline_ms: limits::MAX_SETTLE_DEADLINE_MS,
+        };
+        grab(&mut device, &StreamRequest::default(), at_the_cap, &clock)
+            .expect("the cap itself is a settle a caller may ask for");
     }
 
     #[test]

@@ -1736,12 +1736,22 @@ impl WchRpcServer for Wchd {
         // Three steps before the camera is touched, in an order where each one is the
         // cheapest thing that can still refuse.
         //
-        // 1. The sink, which is a question about the *request* and needs neither a
-        //    filesystem nor an enumeration — so a `.webp` or a relative path costs nothing
-        //    and creates nothing (see `addressable`).
+        // 1. The sink and the settle budget, which are questions about the *request* and
+        //    need neither a filesystem nor an enumeration — so a `.webp`, a relative path or
+        //    a deadline no capture may hold a camera for costs nothing and creates nothing
+        //    (see `addressable`; the budget's rule is
+        //    `schema::capture::SettlePolicy::within_bound`, beside the field it constrains).
+        //    `engine::capture::grab` asks the budget question again at the door and that is
+        //    the invariant; asking it here is what stops the refusal costing a caller-named
+        //    zero-length file and a seat in this camera's actor queue (note **N147**).
         {
             let sink = request.sink.clone();
-            self.offload(move |_| addressable(&sink)).await?;
+            let settle = request.settle;
+            self.offload(move |_| {
+                addressable(&sink)?;
+                settle.within_bound()
+            })
+            .await?;
         }
         // 2. Which camera. Before the destination is opened rather than after, so a request
         //    naming a camera this host does not have leaves no file where none was.
@@ -2181,6 +2191,11 @@ impl WchRpcServer for Wchd {
         session: SessionRef,
         request: SweepRequest,
     ) -> Result<Session, WireError> {
+        // Before the camera is resolved, for `wch_photo`'s reason and one more: a sweep that
+        // reached the actor would arm a snapshot and move a motor before its settle budget
+        // was looked at (note **N147**). `engine::calibrate::run` asks this too, and that is
+        // the invariant; this is what makes the refusal cost nothing.
+        request.settle.within_bound()?;
         let info = self.resolve(camera).await?;
         let fingerprint = info.fingerprint.clone();
         let editing = self.editing_sessions().await;

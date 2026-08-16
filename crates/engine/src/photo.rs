@@ -33,6 +33,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 
 use camino::Utf8Path;
 use schema::backend::Camera;
@@ -133,6 +134,41 @@ impl Destination for WhereverTheCallerSaid {
             errno: error.raw_os_error(),
             message: error.to_string(),
         })
+    }
+}
+
+/// Write inside D9's session tree, at the mode that tree is kept at (note **N142**).
+///
+/// [`WhereverTheCallerSaid`]'s sibling, and the split is the whole point. That one is for a
+/// path the *caller* named — `webcam-handler-cli photo -o` may be handed a fifo,
+/// `/dev/stdout` or a file in a directory whose permissions are the operator's business, and
+/// a tool that imposed 0600 there would be overriding a decision that was never its own. This
+/// one is for a path *this tool* composed, inside a directory it created, holding a
+/// calibration sample: a photograph of whatever the camera was pointed at, and a frame may
+/// contain a person. Those files were created 0664 at the ambient umask until this type
+/// existed.
+///
+/// `create(true).truncate(true)` rather than [`std::fs::write`], because the mode has to be
+/// given at the `open`: `std::fs::write` creates at `0o666 & !umask` and a `set_permissions`
+/// afterwards would leave a window in which the bytes were already on disk at the wider mode.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IntoTheSessionTree;
+
+impl Destination for IntoTheSessionTree {
+    fn write(&mut self, path: &Utf8Path, bytes: &[u8]) -> Result<()> {
+        let storage_io = |error: &std::io::Error| Error::StorageIo {
+            path: path.to_owned(),
+            errno: error.raw_os_error(),
+            message: error.to_string(),
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(crate::store::STATE_FILE_MODE)
+            .open(path.as_std_path())
+            .map_err(|error| storage_io(&error))?;
+        file.write_all(bytes).map_err(|error| storage_io(&error))
     }
 }
 
@@ -511,6 +547,66 @@ mod tests {
             .expect("one camera")
             .id;
         backend.open(&id).expect("opens")
+    }
+
+    #[test]
+    fn a_photo_this_tool_placed_is_private_and_one_the_caller_placed_keeps_their_umask() {
+        // Note **N142**, and both directions of the split, because getting either wrong
+        // costs something. A calibration sample is a photograph of whatever the camera was
+        // pointed at, written at a path this tool composed inside a directory it created, so
+        // it is kept at the session tree's own mode — 0664 at this project's umask before
+        // the repair. A `-o` path is the operator's, and imposing 0600 on a file they named
+        // would be overriding a decision that was never ours.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = crate::paths::scratch_dir().expect("a scratch dir");
+        let root = Utf8Path::from_path(temp.path()).expect("utf-8");
+        let mode = |path: &Utf8Path| {
+            std::fs::metadata(path.as_std_path())
+                .expect("written")
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+
+        let ours = root.join("sample.jpg");
+        IntoTheSessionTree
+            .write(&ours, b"not a real frame")
+            .expect("writable");
+        assert_eq!(mode(&ours), crate::store::STATE_FILE_MODE);
+
+        // Written twice, because the mode is given at the `open` and an existing file keeps
+        // the one it has: a repair that only worked on a fresh file would be a repair that
+        // stops working the second time a pass refines a value it already photographed.
+        IntoTheSessionTree
+            .write(&ours, b"still not a real frame")
+            .expect("writable");
+        assert_eq!(mode(&ours), crate::store::STATE_FILE_MODE);
+
+        let theirs = root.join("named-by-the-operator.jpg");
+        WhereverTheCallerSaid
+            .write(&theirs, b"not a real frame")
+            .expect("writable");
+        assert_eq!(
+            mode(&theirs),
+            0o666 & !current_umask(),
+            "a path the caller named must keep the process umask's answer"
+        );
+    }
+
+    /// This process's umask, read the only way POSIX offers — by setting it and putting it
+    /// back.
+    ///
+    /// Not `unsafe`, and not a syscall this crate makes: `std` has no reader, so the value
+    /// comes from `/proc/self/status`, which Linux has carried since 4.7 and which is the
+    /// same number without the round trip through a global the rest of the suite shares.
+    fn current_umask() -> u32 {
+        let status = std::fs::read_to_string("/proc/self/status").expect("Linux");
+        let line = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Umask:"))
+            .expect("Linux 4.7 and later report it");
+        u32::from_str_radix(line.trim(), 8).expect("an octal mode")
     }
 
     #[test]

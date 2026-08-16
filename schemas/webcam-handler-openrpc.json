@@ -914,6 +914,13 @@
           {
             "description": "A sweep is in progress.",
             "properties": {
+              "adjustments": {
+                "description": "Every way the planner's values differ from what `plan` literally asked for.\n\nD3's `{requested, applied}` doctrine one layer up, on the *document* rather than\non the event, because the event is gone the moment the process that watched it is\nand `calibrate sweep --json` answers this document (note **N145**). Empty means the\nspec was executed as written.",
+                "items": {
+                  "$ref": "#/components/schemas/SweepAdjustment"
+                },
+                "type": "array"
+              },
               "done": {
                 "description": "Samples taken.",
                 "format": "uint32",
@@ -922,7 +929,13 @@
               },
               "plan": {
                 "$ref": "#/components/schemas/SweepSpec",
-                "description": "The plan being executed."
+                "description": "The plan being executed — the spec as the caller wrote it, not the values it\nbecame. What the planner did to it is `adjustments` below."
+              },
+              "precision": {
+                "default": 0,
+                "description": "The smallest gap between the values this sweep will visit — the skill's\n\"calibration precision\", and the number a refinement pass divides down.\n\n**The planned stride, which is a different fact from the achieved one** — the\n`precision` a `calibrated` status carries is measured from the values the camera\nactually held. It is here because it is the answer to the question a caller asks\n*before* the photographs exist: `--precision 1` over a 10 000-wide range plans a\nstride of 40, and an agent told only `total` has no way to find that out until it\nhas compared 251 pictures at a resolution it believes is forty times finer than it\nis (note **N145**). Zero on a document an older build wrote, which is why it is\n`#[serde(default)]` rather than required.",
+                "format": "int64",
+                "type": "integer"
               },
               "status": {
                 "const": "sweeping",
@@ -2504,6 +2517,13 @@
           {
             "description": "A sweep began.",
             "properties": {
+              "adjustments": {
+                "description": "Every way the planner's values differ from the spec, in the order it made them.\n\nA history reader's copy of what the `sweep_started` progress event carried. An\nagent that was not watching — or that came back to a session an hour later — has\nnowhere else to learn that the sweep it is about to compare 251 photographs from\nwas strided to fit a cap.",
+                "items": {
+                  "$ref": "#/components/schemas/SweepAdjustment"
+                },
+                "type": "array"
+              },
               "control": {
                 "$ref": "#/components/schemas/ControlSlug",
                 "description": "Which control."
@@ -2511,6 +2531,12 @@
               "event": {
                 "const": "sweep_started",
                 "type": "string"
+              },
+              "precision": {
+                "default": 0,
+                "description": "The smallest gap between the values it will visit — the stride the planner\narrived at, which is not always the one the caller asked for (note **N145**).\n\nOn the durable line as well as on the live event, because this is the number that\nsays what every photograph in the session directory is worth, and the terminal\nthat showed the live event is gone by the time anybody reads `calibrate status`.\nZero on a line an older build wrote.",
+                "format": "int64",
+                "type": "integer"
               },
               "total": {
                 "description": "How many samples are planned.",
@@ -2582,14 +2608,14 @@
             "type": "object"
           },
           {
-            "description": "A sweep stopped before its plan did, and why.\n\nThe one event here whose subject is a *refusal*, and it earns its place by what a\nsession directory looks like without it. The recorded `SampleTaken` lines bound\n**when** a sweep stopped — three samples of sixteen and then nothing — and say\nnothing at all about **why**: a camera that was unplugged, a sensor that never\nsettled [PF:11], and a full disk leave byte-identical histories, and design's own\nrule that availability is not capability is exactly the distinction that would be\nlost. The live [`crate::progress::CalibrationProgress::SweepInterrupted`] carries\nthe same fact to whoever was watching; this is the copy that survives the process,\nbecause `calibrate status` is read after the terminal is gone.\n\nIts absence is not evidence of anything: a process that was killed leaves no line\neither (design §6's crash story is the pre-sweep snapshot, not the log). A present\nline means a known reason; an absent one means the reason is not known here.",
+            "description": "A sweep stopped before its plan did, and why.\n\nThe one event here whose subject is a *refusal*, and it earns its place by what a\nsession directory looks like without it. The recorded `SampleTaken` lines bound\n**when** a sweep stopped — three samples of sixteen and then nothing — and say\nnothing at all about **why**: a camera that was unplugged, a sensor that never\nsettled [PF:11], and a full disk leave byte-identical histories, and design's own\nrule that availability is not capability is exactly the distinction that would be\nlost. The live `sweep_interrupted` progress event carries the same fact to whoever\nwas watching; this is the copy that survives the process,\nbecause `calibrate status` is read after the terminal is gone.\n\nThe absence of a *line* is not evidence of anything: a process that was killed\nleaves none (design §6's crash story is the pre-sweep snapshot, not the log). What\nthe line says is that the sweep stopped; whether anybody knows **why** is the\n`failure` field's question, and since note **N149** that field answers it honestly\nin both directions rather than by always naming something.",
             "properties": {
               "control": {
                 "$ref": "#/components/schemas/ControlSlug",
                 "description": "Which control."
               },
               "detail": {
-                "description": "The refusal, rendered.",
+                "description": "What happened, in words. Always present — a line whose `failure` is absent still\nsays what this process knows, which is what it repaired and why it could not name\na cause.",
                 "type": "string"
               },
               "event": {
@@ -2597,8 +2623,15 @@
                 "type": "string"
               },
               "failure": {
-                "$ref": "#/components/schemas/ErrorKind",
-                "description": "The refusal's discriminant, so a reader can branch without parsing prose."
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ErrorKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The refusal's discriminant, so a reader can branch without parsing prose — and\n**absent when the reason is not known to whoever wrote the line** (note\n**N149**).\n\nTwo producers write this event and they know different things.\n`engine::calibrate`'s interruption path is inside the sweep that stopped, so it\nrecords the refusal that stopped it — `DeviceGone`, `SettleTimeout`, `StorageIo`.\n`engine::lifecycle::free_stranded_sweeps` runs in a *later* process, repairing a\ncontrol a killed sweep left behind, and it has nothing to read: the process that\nknew died without writing. It leaves this absent, and `detail` carries the story.\n\nThe rejected alternative was to name the refusal the *next* verb met\n(`IllegalTransition`, from `may_begin_sweep`). That is a real refusal, but it is a\nrefusal about a different call at a different time, and D13's discriminant is what\nan unattended agent dispatches on — `docs/agent-guide.md` answers\n`illegal_transition` with \"fix the request\", and there is nothing to fix: the\nprocess was killed and the control has already been given back. One field with two\nmeanings costs more than one field that can be absent."
               },
               "taken": {
                 "description": "How many samples were recorded before it stopped.",
@@ -2618,7 +2651,6 @@
               "control",
               "taken",
               "total",
-              "failure",
               "detail"
             ],
             "type": "object"
@@ -3291,6 +3323,13 @@
           {
             "description": "A sweep began, and this is how big it is.",
             "properties": {
+              "adjustments": {
+                "description": "Every way the planner's values differ from what `plan` literally asked for\n(note **N145**).\n\nD3's `{requested, applied}` doctrine, one layer up, and it rides on *this* event\nbecause this is the one a subscriber reads before any sample exists. Empty means\nthe spec was executed as written, and the encoding says that by omitting the\nfield: `skip_serializing_if` makes \"no adjustments\" and \"no such key\" one\ndocument, exactly as `NegotiatedStream::adjustments` does. What is *not* left to\ninference is the durable half — `session::SessionEvent::SweepStarted` carries the\nsame list, so a reader who was not subscribed still learns what the planner did.",
+                "items": {
+                  "$ref": "#/components/schemas/SweepAdjustment"
+                },
+                "type": "array"
+              },
               "control": {
                 "$ref": "#/components/schemas/ControlSlug",
                 "description": "Which control."
@@ -3298,6 +3337,12 @@
               "plan": {
                 "$ref": "#/components/schemas/SweepSpec",
                 "description": "The plan it is executing."
+              },
+              "precision": {
+                "default": 0,
+                "description": "The smallest gap between the values it will visit — the stride the planner\narrived at (note **N145**).\n\nThe number a caller compares against the `--precision` they typed, and the one a\nrefinement pass divides down. A sweep whose stride was widened forty-fold to fit a\ncap announced a sample count and nothing else until this field existed.",
+                "format": "int64",
+                "type": "integer"
               },
               "progress": {
                 "const": "sweep_started",
@@ -3818,8 +3863,15 @@
         ]
       },
       "RestoreReport": {
-        "description": "What a whole restore did.",
+        "description": "What a whole restore did — to the camera, and to the session document.",
         "properties": {
+          "freed": {
+            "description": "The controls a dead sweep had stranded, given back by this call (note **N139**).\n\n**A restore repairs the session as well as the camera, and this is the half that has\nnothing to do with the snapshot** (note **N150**). A process killed between\n`begin_sweep` and its first sample leaves a control in `Sweeping { done: 0 }`, which\nevery shipped verb refuses and no snapshot describes; `calibrate restore` puts it back\nto `Untouched` and names it here. Empty is the ordinary answer and means nothing was\nstranded — not that nothing was looked at.\n\nIt is on the report rather than only in `log.ndjson` because `calibrate restore\n--json` answers *this* document and exits 0. A run that changed a control's status on\ndisk and answered `{\"outcomes\":[]}` would be telling an unattended caller that nothing\nhappened (rubric A8).",
+            "items": {
+              "$ref": "#/components/schemas/ControlSlug"
+            },
+            "type": "array"
+          },
           "outcomes": {
             "description": "One entry per snapshotted control, in the order they were attempted.",
             "items": {
@@ -3877,6 +3929,21 @@
           "captured_at"
         ],
         "type": "object"
+      },
+      "SampleCap": {
+        "description": "Which cap trimmed a sweep.\n\nTwo numbers, because a sweep is bounded for two unrelated reasons and a caller told\nonly \"it was capped\" cannot tell which lever they have. `ALL` is generated from this\ndefinition, so a third cap joins every walk that reads it rather than acquiring a\nspelling nobody looked at (rubric rule 6).\n\nEvery sentence below writes its number out. These are published into\n`schemas/webcam-handler-schema.json`, which D10 commits so a consumer needs no Rust\ntoolchain — and a description that is only the name of a constant tells such a reader\nnothing at all (note **N148**).",
+        "oneOf": [
+          {
+            "const": "total",
+            "description": "The whole-sweep cap: 256 samples, `limits::MAX_SWEEP_SAMPLES`.\n\nIt bounds camera time rather than wear — at PF:9's two seconds per photo a\n256-sample sweep is already eight and a half minutes — so it applies to every\ncontrol. The stride is widened rather than the range truncated, so a capped plan\nstill spans the whole range at a coarser precision.",
+            "type": "string"
+          },
+          {
+            "const": "motion",
+            "description": "The motion cap: 32 samples, `limits::MAX_MOTION_SWEEP_SAMPLES`.\n\nThis control moves motors and motors wear (design §5), so a pan or tilt sweep is\nheld to an eighth of the general cap. Nothing turns this off; a caller who wants\nparticular positions names them with explicit values.",
+            "type": "string"
+          }
+        ]
       },
       "Selection": {
         "description": "What `calibrate select` was told to do (design D8).\n\nLives here rather than in the shared command surface because both surfaces need it and\nonly one of them may name the other: `webcam-handler-cli-core` is behind the T6 purity\nwall and can never depend on `webcam-handler-api`, so a selection the wire carries and\na selection a command line parses have to be one type or two that drift.\n\nStruct variants rather than newtypes because this crate's enums are internally tagged\nand serde cannot internally tag a newtype variant wrapping a scalar.",
@@ -4185,8 +4252,9 @@
         "properties": {
           "deadline_ms": {
             "default": 5000,
-            "description": "How long the whole settle may take.",
+            "description": "How long the whole settle may take, in milliseconds. At most 10000\n(`limits::MAX_SETTLE_DEADLINE_MS`).\n\nA deadline above that cap is refused rather than clamped: one camera is one actor\nthread, so a settle is time nobody else gets, and silently shortening a number a\ncaller chose would answer a question they did not ask. The number is written out\nhere as well as named, because this sentence is published into\n`schemas/webcam-handler-schema.json` for consumers who have no Rust toolchain to\nresolve a constant with (D10), and `schemars` carries the same bound as this field's\n`maximum` so a validator refuses what the tool refuses.",
             "format": "uint64",
+            "maximum": 10000,
             "minimum": 0,
             "type": "integer"
           },
@@ -4437,6 +4505,120 @@
           }
         },
         "type": "object"
+      },
+      "SweepAdjustment": {
+        "description": "One way the values a sweep will actually visit differ from what the spec literally asked\nfor.\n\nThe same doctrine as D3's `{requested, applied}`, one layer up: the caller is told what\nhappened to their request instead of diffing two lists to find out.\n\n**It is here rather than in `webcam-handler-engine::sweep` since note N145**, and the move\nis the finding rather than tidying. The planner has always produced these and both\ncomposition roots dropped the whole sweep outcome on the floor, so four adjustment kinds\nand a precision reached no caller for three phases — rubric A8's \"a typed declaration\nnothing reads\", read only by a hardware test. They reach a caller now because they ride on\nthe `sweep_started` progress event *and* are written into the session document beside the\ncontrol they are about; a vocabulary that crosses those seams is the schema's, like every\nother one.\n\nWhy it matters to the consumer AGENTS names: a `--precision 1` sweep of a 10 000-wide\nrange plans 251 samples at a stride of 40, and without this the agent is told \"251\nsamples\" and has no way to learn that the precision it asked for is not the precision it\ngot. Every comparison it then draws from those photos is drawn at a resolution it believes\nis forty times finer than it is.",
+        "oneOf": [
+          {
+            "description": "A requested value sat outside the control's range.",
+            "properties": {
+              "adjustment": {
+                "const": "clamped",
+                "type": "string"
+              },
+              "planned": {
+                "description": "What the plan holds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "requested": {
+                "description": "What the spec named.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adjustment",
+              "requested",
+              "planned"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A requested value was not a whole number of steps above the control's minimum.",
+            "properties": {
+              "adjustment": {
+                "const": "step_aligned",
+                "type": "string"
+              },
+              "planned": {
+                "description": "What the plan holds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "requested": {
+                "description": "What the spec named.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adjustment",
+              "requested",
+              "planned"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Values collapsed onto each other after clamping and alignment.",
+            "properties": {
+              "adjustment": {
+                "const": "deduplicated",
+                "type": "string"
+              },
+              "dropped": {
+                "description": "How many were dropped.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adjustment",
+              "dropped"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A cap trimmed the sweep, and the stride was widened so the plan still spans the whole\nrange rather than stopping part way in.",
+            "properties": {
+              "adjustment": {
+                "const": "capped",
+                "type": "string"
+              },
+              "cap": {
+                "$ref": "#/components/schemas/SampleCap",
+                "description": "Which cap it was."
+              },
+              "limit": {
+                "description": "The cap that fired.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "planned": {
+                "description": "How many the plan holds.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "requested": {
+                "description": "How many samples the spec would have taken.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adjustment",
+              "requested",
+              "planned",
+              "limit",
+              "cap"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "SweepRequest": {
         "description": "Everything one sweep needs that is not the session, the camera, or the clock.\n\nA DTO rather than an engine struct because three callers need the same request and two of\nthem cannot see the engine: `webcam-handler-cli` parses one from a command line through the\nshared command surface (T4), P4's `calibrate_sweep` takes one off the wire (D10), and\n`webcam-handler-engine::calibrate::run` executes it. The engine re-exports this type rather\nthan defining a second one — a request that had to be translated at each seam is a request\nthree places can disagree about.",
@@ -5685,7 +5867,7 @@
       "summary": "Put a snapshot back, automation before manual (D4)."
     },
     {
-      "description": "Take one photo (D5, D6, D10).\n\nTakes an assembled [`PhotoRequest`], never the flags one is built from: the sink\ncarries either \"hand the bytes back\" or an **absolute** server path, and D10 puts\nthe relative-path resolution on the caller's side, before the request is sent. A\nrelative `Sink::ServerPath` arriving here is a request the server must refuse\nrather than resolve against its own working directory, which under systemd is `/`.\nThat rule is not restated here as prose to be remembered: it is\n[`schema::capture::Sink::is_addressable`], beside the variants it constrains, and\nthe routing that landed at P4c calls it — before it resolves a camera, so a sink\nthis server cannot address costs nobody a descriptor. Its sibling\n[`schema::capture::Sink::writable_format`] is asked at the same moment and is the\nreason a path named `.webp` is a refusal rather than JPEG bytes in a file whose\nname says otherwise.\n\nA `ServerPath` sink is a write primitive: any client that can call this can write a\nfile anywhere the daemon's uid can. That is deliberate and it is exactly what D11's\nauthentication model covers — filesystem permissions on a 0700 socket directory —\nand it is why the opt-in TCP listener is token-gated with no flag that removes the\ntoken off loopback.\n\n# Errors\n\nAs `wch_info`, plus `settle_timeout` [PF:11],\n`format_unsupported` when the camera offers nothing that was asked\nfor, `storage_io` from the sink, and\n`illegal_transition` for a sink this server will not honour at all\n— a `ServerPath` that is not absolute, or one whose extension names an encoding\nthis build does not write, naming the three it does. Deliberately not\n`FormatUnsupported`: the camera declined nothing, and `.webp` is not its fault\n(E3, note N46).",
+      "description": "Take one photo (D5, D6, D10).\n\nTakes an assembled [`PhotoRequest`], never the flags one is built from: the sink\ncarries either \"hand the bytes back\" or an **absolute** server path, and D10 puts\nthe relative-path resolution on the caller's side, before the request is sent. A\nrelative `Sink::ServerPath` arriving here is a request the server must refuse\nrather than resolve against its own working directory, which under systemd is `/`.\nThat rule is not restated here as prose to be remembered: it is\n[`schema::capture::Sink::is_addressable`], beside the variants it constrains, and\nthe routing that landed at P4c calls it — before it resolves a camera, so a sink\nthis server cannot address costs nobody a descriptor. Its sibling\n[`schema::capture::Sink::writable_format`] is asked at the same moment and is the\nreason a path named `.webp` is a refusal rather than JPEG bytes in a file whose\nname says otherwise.\n\nA `ServerPath` sink is a write primitive: any client that can call this can write a\nfile anywhere the daemon's uid can. That is deliberate and it is exactly what D11's\nauthentication model covers — filesystem permissions on a 0700 socket directory —\nand it is why the opt-in TCP listener is token-gated with no flag that removes the\ntoken off loopback.\n\n# Errors\n\nAs `wch_info`, plus `settle_timeout` [PF:11],\n`format_unsupported` when the camera offers nothing that was asked\nfor, `storage_io` from the sink, and\n`illegal_transition` for a request this server will not honour at\nall — a `ServerPath` that is not absolute, or one whose extension names an\nencoding this build does not write, naming the three it does; or a\n`settle.deadline_ms` past 10000 (`schema::limits::MAX_SETTLE_DEADLINE_MS`), which\nis refused rather than clamped for `wch_record_start`'s reason one bound along: one\ncamera is one thread (D12), so a settle is time nobody else on this daemon gets,\nand an agent whose settle was quietly shortened cannot tell that from a sensor\nthat converged. All of them are answered before a camera is resolved and before\nthe destination is opened, so a request this build was never going to honour\ncosts nobody a descriptor and leaves no file where none was (note **N147**).\nDeliberately not `FormatUnsupported`: the camera declined nothing, and `.webp` is\nnot its fault (E3, note N46). Deliberately not `SettleTimeout` either: nothing\nwaited.",
       "errors": [
         {
           "$ref": "#/components/errors/device_gone"
@@ -6386,7 +6568,7 @@
       "summary": "Queue controls for calibration, or reorder the queue."
     },
     {
-      "description": "Sweep one control and record a sample per value (D8).\n\nRequest and response, with no progress parameter: the live events are\n`schema::progress::ProgressEvent`s and P4e puts them on their own subscription\nrather than threading a watcher through a call. Until then a client's progress bar\nsimply does not move, which is honest; a boolean or a subscription id in this\nrequest would be a wire field with no producer and a second progress vocabulary\nforever.\n\nThis is the one method whose latency is unbounded by design — a sweep is minutes of\ncamera time — so a client's request timeout has to be raised or disabled at\nconnection setup rather than left at jsonrpsee's 60-second default.\n\n# Errors\n\nAs `wch_calibrate_start`, plus the planner's refusals (a control with no\nordered range; a motorized control without `allow_motion`, because §5 says a plan\nthat would move motors says so first) and whatever the camera said at the sample\nthat stopped it.",
+      "description": "Sweep one control and record a sample per value (D8).\n\nRequest and response, with no progress parameter: the live events are\n`schema::progress::ProgressEvent`s and P4e puts them on their own subscription\nrather than threading a watcher through a call. Until then a client's progress bar\nsimply does not move, which is honest; a boolean or a subscription id in this\nrequest would be a wire field with no producer and a second progress vocabulary\nforever.\n\nThis is the one method whose latency is unbounded by design — a sweep is minutes of\ncamera time — so a client's request timeout has to be raised or disabled at\nconnection setup rather than left at jsonrpsee's 60-second default.\n\n# Errors\n\nAs `wch_calibrate_start`, plus the planner's refusals (a control with no\nordered range; a motorized control without `allow_motion`, because §5 says a plan\nthat would move motors says so first) and whatever the camera said at the sample\nthat stopped it. `illegal_transition` also for a\n`settle.deadline_ms` past 10000 (`schema::limits::MAX_SETTLE_DEADLINE_MS`), which\nis answered before the camera is resolved — a sweep that reached its first sample\nwould have armed a pre-sweep snapshot, switched an automation partner off and\nmoved a motor before finding out this build was never going to honour the request\n(note **N147**).",
       "errors": [
         {
           "$ref": "#/components/errors/device_gone"

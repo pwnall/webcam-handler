@@ -147,11 +147,26 @@ pub enum RestoreOutcome {
     },
 }
 
-/// What a whole restore did.
+/// What a whole restore did — to the camera, and to the session document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RestoreReport {
     /// One entry per snapshotted control, in the order they were attempted.
     pub outcomes: Vec<RestoreOutcome>,
+    /// The controls a dead sweep had stranded, given back by this call (note **N139**).
+    ///
+    /// **A restore repairs the session as well as the camera, and this is the half that has
+    /// nothing to do with the snapshot** (note **N150**). A process killed between
+    /// `begin_sweep` and its first sample leaves a control in `Sweeping { done: 0 }`, which
+    /// every shipped verb refuses and no snapshot describes; `calibrate restore` puts it back
+    /// to `Untouched` and names it here. Empty is the ordinary answer and means nothing was
+    /// stranded — not that nothing was looked at.
+    ///
+    /// It is on the report rather than only in `log.ndjson` because `calibrate restore
+    /// --json` answers *this* document and exits 0. A run that changed a control's status on
+    /// disk and answered `{"outcomes":[]}` would be telling an unattended caller that nothing
+    /// happened (rubric A8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub freed: Vec<ControlSlug>,
 }
 
 impl RestoreReport {
@@ -282,6 +297,7 @@ mod tests {
                     reason: UnrestorableReason::StillInactive { automation: None },
                 },
             ],
+            freed: Vec::new(),
         };
         assert!(!report.is_complete());
         assert_eq!(report.unrestored().len(), 1);
@@ -291,6 +307,7 @@ mod tests {
             outcomes: vec![RestoreOutcome::AlreadyCorrect {
                 control: ControlSlug::parse("brightness").expect("literal slug"),
             }],
+            freed: Vec::new(),
         };
         assert!(clean.is_complete());
         assert!(clean.unrestored().is_empty());
@@ -309,6 +326,7 @@ mod tests {
         };
         let report = RestoreReport {
             outcomes: vec![RestoreOutcome::Restored { applied }],
+            freed: Vec::new(),
         };
         assert!(!report.is_complete());
         assert_eq!(report.unrestored().len(), 1);

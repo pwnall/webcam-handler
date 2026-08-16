@@ -433,6 +433,7 @@ mod tests {
                     control: ControlSlug::parse("white_balance_temperature").expect("literal slug"),
                     reason: UnrestorableReason::NoLongerWritable,
                 }],
+                freed: Vec::new(),
             },
         };
         let json = serde_json::to_string(&report).expect("serialize");
@@ -451,6 +452,7 @@ mod tests {
             skipped: Vec::new(),
             restored: RestoreReport {
                 outcomes: Vec::new(),
+                freed: Vec::new(),
             },
         };
         let json = serde_json::to_string(&clean).expect("serialize");

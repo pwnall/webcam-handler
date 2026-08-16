@@ -47,7 +47,10 @@
 //! three copies of a fixture, which is three copies of a law.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{
+    DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use schema::camera::CameraFingerprint;
@@ -59,6 +62,137 @@ use schema::vocabulary::closed_vocabulary;
 use schema::{Error, Result, limits};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+// --------------------------------------------------------------------------- the posture
+
+/// The mode every directory in D9's state tree is created with, and the one the tree's root
+/// is checked against (note **N142**).
+///
+/// **A frame may contain a person**, and a calibration session is the one place in this tool
+/// where frames come to rest: `photos/<control>/<pass>/<value>.jpg` is a photograph of
+/// whatever the camera was pointed at, kept for as long as the operator keeps the session.
+/// The session document beside it names the camera, the task and the goal in the operator's
+/// own words. None of that is anybody else's on this machine, and until this constant existed
+/// the tree was created at the ambient umask — measured 0775 on directories and 0664 on
+/// `log.ndjson` and on every sample photo, with `session.json` private only by accident of
+/// `tempfile::Builder`'s default.
+///
+/// D11 has had this for its runtime directory since P4b and D9 did not, which is the whole
+/// finding: one home for a number, created with it and asserted against it, so "0700" is not
+/// written five times and cannot come to mean five things. `SOCKET_DIR_MODE` in
+/// `webcam-handler-daemon` is its sibling and note N39 is the argument both rest on.
+pub const STATE_DIR_MODE: u32 = 0o700;
+
+/// The mode every file this store creates is created with.
+///
+/// [`STATE_DIR_MODE`]'s reason, one level in. It matters even under a 0700 directory,
+/// because a mode is what survives the tree being copied, archived or moved somewhere less
+/// private — and because a file created 0664 is a decision nobody made.
+pub const STATE_FILE_MODE: u32 = 0o600;
+
+/// `create_dir_all` at [`STATE_DIR_MODE`].
+///
+/// The mode is applied to every component this call creates. It is masked by the process
+/// umask, which can only *clear* bits, so a directory this call creates is at most 0700 —
+/// N39 makes the same observation about `mkdir` for the same reason, and it is why the check
+/// below is about directories this call did **not** create.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] naming the directory.
+fn create_private_dir(dir: &Utf8Path) -> Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(STATE_DIR_MODE)
+        .create(dir.as_std_path())
+        .map_err(|err| storage_io(dir, &err))
+}
+
+/// Refuse a state directory anybody but its owner can reach, or that its owner is not us
+/// (note **N142**).
+///
+/// **Refused, not repaired**, which is N39's ruling applied to D9's tree: a `chmod` here
+/// would hide the fact that the directory was reachable, and for however long it was
+/// reachable it may already have been reached. An operator who is not told cannot act, and
+/// what they have to act on is a directory of photographs.
+///
+/// The check is on the *root* rather than on every directory beneath it, because the root is
+/// what a traversal has to get through: a 0700 directory is one another account cannot
+/// search, so the modes inside it are defence in depth rather than the boundary. That is the
+/// same reason N39 gives for asserting the socket **directory** and never the socket file.
+///
+/// **Both of N39's halves, not one** (note **N150**). The mode says who *may* walk in; the
+/// owner says who may change that answer, and a mode-only check misses the case N39's own
+/// argument names — "a root daemon traverses a 0700 directory belonging to a user without
+/// noticing". A `webcam-handler-daemon` run as root against an `XDG_STATE_HOME` under
+/// somebody else's tree would write calibration photographs into a directory that user owns
+/// and can read, and a mode-only check would say yes.
+///
+/// **What "too wide" means here, and why it is not `!= STATE_DIR_MODE`.** The question this
+/// asks is who other than the owner can reach the frames, so the mask is
+/// `paths::GROUP_AND_OTHER_BITS` and nothing else. Two consequences are deliberate. A
+/// *narrower* mode (0500, 0000) passes: it is not an exposure, it is the operator's business,
+/// and the first write into it fails with the kernel's own `EACCES` rather than with an
+/// invented refusal. And the set-user, set-group and sticky bits are ignored, because Linux
+/// **inherits** `S_ISGID` on `mkdir` under a setgid parent — a mask of `!STATE_DIR_MODE`
+/// makes this tool create a directory at 2700 and refuse it on the same call, permanently, on
+/// a first run, on hosts whose group-managed home carries the bit. It also made the printed
+/// remedy false: `chmod -R go-rwx` cannot clear a set-id bit, and the one thing a refusal owes
+/// an unattended reader is a way out that works.
+///
+/// `daemon::uds::check_mode_and_owner` is the sibling and asks for *exact* equality instead,
+/// which is not a divergence but a different question: D11 makes the socket directory's mode
+/// the whole authentication model, so anything but 0700 there is wrong. Here the mode is
+/// privacy, and only the bits that grant it are the subject. That function's doc states the
+/// same split from its own side and prices what exactness costs it, so neither check is the
+/// only place the reasoning appears.
+///
+/// `ours` is the effective uid to compare against, **taken as a value** rather than read from
+/// the process: a check whose second half can only be exercised by owning a second account is
+/// a check with one half nobody drives, and `scripts/gates/uds-permissions.sh` already carries
+/// the cost of the real-account arrangement for D11's directory (note N44). The one caller
+/// passes `geteuid()`.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] naming the directory, the modes and the one command that fixes it;
+/// or naming both uids when the directory belongs to somebody else.
+fn check_state_dir(root: &Utf8Path, ours: u32) -> Result<()> {
+    let found = fs::metadata(root.as_std_path()).map_err(|err| storage_io(root, &err))?;
+    let mode = found.permissions().mode() & schema::paths::MODE_BITS;
+    let reachable = mode & schema::paths::GROUP_AND_OTHER_BITS;
+    if reachable != 0 {
+        return Err(Error::StorageIo {
+            path: root.to_owned(),
+            errno: None,
+            message: format!(
+                "is mode {mode:04o}, and this tool's state directory must grant nothing to \
+                 group or other ({STATE_DIR_MODE:04o}) — it holds calibration photographs of \
+                 whatever the cameras were pointed at, and a frame may contain a person. \
+                 Refused rather than quietly tightened, because a directory that was \
+                 reachable may already have been read: run `chmod -R go-rwx {root}` when you \
+                 have decided that is acceptable"
+            ),
+        });
+    }
+
+    let owner = found.uid();
+    if owner != ours {
+        return Err(Error::StorageIo {
+            path: root.to_owned(),
+            errno: None,
+            message: format!(
+                "is owned by uid {owner} and this process runs as uid {ours} — the mode above \
+                 makes it private to its owner, and its owner is not us, so every session \
+                 document and every calibration photograph written here would be readable by \
+                 somebody else. A process running as root traverses such a directory without \
+                 noticing, which is exactly the case this refuses; point $XDG_STATE_HOME at a \
+                 directory this user owns"
+            ),
+        });
+    }
+    Ok(())
+}
 
 // --------------------------------------------------------------------------- the store
 
@@ -211,13 +345,42 @@ impl SessionStore {
     ///
     /// [`Error::SchemaVersionForeign`] when the document is not at this build's version.
     /// [`Error::StorageIo`] for any filesystem failure, carrying the real `errno` where
-    /// the kernel supplied one.
-    pub fn save_session(&self, _lock: &StoreLock, session: &Session) -> Result<Utf8PathBuf> {
+    /// the kernel supplied one. A refusal that reached the parent directory's `fsync` has
+    /// **published** the document — see `SessionStore::publish_session`, which is the same
+    /// write with that distinction kept.
+    pub fn save_session(&self, lock: &StoreLock, session: &Session) -> Result<Utf8PathBuf> {
+        self.publish_session(lock, session)
+            .map_err(|(error, _)| error)
+    }
+
+    /// [`SessionStore::save_session`], with which side of the rename it failed on.
+    ///
+    /// The same write and the same law — `save_session` is this function with the
+    /// distinction thrown away, not a second copy of it — and it exists because exactly one
+    /// caller has to act on the difference. `lifecycle::persist` replaces the caller's
+    /// in-memory [`Session`] with the draft it just wrote; if the document landed and the
+    /// directory's `fsync` did not, refusing *and* leaving the caller a state behind is how
+    /// the next write rolls the document back (note **N141**).
+    ///
+    /// `pub(crate)` because that reader is in this crate and a wider surface would be an
+    /// invitation to make the decision a second time somewhere else.
+    ///
+    /// # Errors
+    ///
+    /// As [`SessionStore::save_session`], paired with the [`Reach`] the failure reached.
+    pub(crate) fn publish_session(
+        &self,
+        _lock: &StoreLock,
+        session: &Session,
+    ) -> std::result::Result<Utf8PathBuf, (Error, Reach)> {
         if session.schema_version != limits::SESSION_SCHEMA_VERSION {
-            return Err(Error::SchemaVersionForeign {
-                found: session.schema_version,
-                supported: limits::SESSION_SCHEMA_VERSION,
-            });
+            return Err((
+                Error::SchemaVersionForeign {
+                    found: session.schema_version,
+                    supported: limits::SESSION_SCHEMA_VERSION,
+                },
+                Reach::Untouched,
+            ));
         }
         let dir = self.session_dir(session);
         let path = dir.join(limits::SESSION_FILE);
@@ -239,19 +402,35 @@ impl SessionStore {
         Ok(dir)
     }
 
-    /// Append one event to `log.ndjson`.
+    /// Append one event to `log.ndjson`, healing an unterminated tail first.
     ///
     /// One entry per line, compact — `session.json` is the document a human reads, and a
     /// log is a thing `grep` and `jq -c` read. `O_APPEND` plus an `fsync` of the data
     /// means a concurrent writer cannot interleave *within* a line and a crash can only
     /// lose the tail, which is the case [`SessionStore::load_log`] is built to survive.
     ///
+    /// **The heal is what keeps that survivable case survivable** (note **N140**).
+    /// [`load_log`](SessionStore::load_log) drops a torn *last* line and refuses a torn
+    /// *interior* one, and that pair is deliberate and argued: a crash mid-append cannot
+    /// write a terminator after the damage, so damage with a terminator behind it is
+    /// corruption and guessing at its contents would invent a session history (note N12
+    /// pins it against a seeded mutant). But an append that wrote at whatever byte the last
+    /// writer stopped at *turned the first into the second* — one crash plus one later
+    /// append produced a file `calibrate status` refused for ever, with no verb that
+    /// repaired it. So the tail is inspected under the lock this call already holds, before
+    /// anything is written: a tail that parses is given the terminator its writer never
+    /// managed, and one that does not is cut back to the last newline, which makes durable
+    /// the drop the loader was already going to perform. Nothing is invented either way,
+    /// and the interior refusal now means what it says — somebody other than this tool
+    /// damaged the file.
+    ///
     /// # Errors
     ///
-    /// [`Error::StorageIo`] for any filesystem failure.
+    /// [`Error::StorageIo`] for any filesystem failure, the heal's included: a log this
+    /// call could not make appendable is not one it may append to.
     pub fn append_log(&self, _lock: &StoreLock, dir: &Utf8Path, entry: &LogEntry) -> Result<()> {
         let path = dir.join(limits::SESSION_LOG_FILE);
-        fs::create_dir_all(dir.as_std_path()).map_err(|err| storage_io(dir, &err))?;
+        create_private_dir(dir)?;
 
         let mut line = serde_json::to_vec(entry).map_err(|err| {
             corrupt(
@@ -270,9 +449,12 @@ impl SessionStore {
             Some(StoreFault::LockHeld | StoreFault::ForeignSchemaVersion) | None => {}
         }
 
+        heal_log_tail(&path)?;
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(STATE_FILE_MODE)
             .open(path.as_std_path())
             .map_err(|err| storage_io(&path, &err))?;
         file.write_all(&line)
@@ -294,7 +476,7 @@ impl SessionStore {
         from: usize,
     ) -> Result<Utf8PathBuf> {
         let dir = SessionStore::photo_dir(session_dir, control, from)?;
-        fs::create_dir_all(dir.as_std_path()).map_err(|err| storage_io(&dir, &err))?;
+        create_private_dir(&dir)?;
         Ok(dir)
     }
 
@@ -559,6 +741,26 @@ pub struct SessionRef {
 
 // ---------------------------------------------------------------------- atomic writes
 
+/// How far a failed atomic write got — which is a different question from what went wrong.
+///
+/// D13's registry answers *what the filesystem refused*; this answers *what the destination
+/// now holds*, and a caller needs both (note **N141**). The publication is the rename, so
+/// every failure before it leaves the old document in place and every failure after it
+/// leaves the new one — and until N141 the contract claimed the first for both, while
+/// `lifecycle::persist` believed it and left the caller's in-memory session one state behind
+/// a document that had already landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The rename never ran, so the destination is exactly as it was. Every failure up to
+    /// and including the temporary file's `sync_all` is this one.
+    Untouched,
+    /// The rename ran and the parent directory's `fsync` refused. The new document is
+    /// published and every reader sees it; what is in doubt is only whether the rename
+    /// survives a power cut, which is the promise note N12 says those two `fsync`s buy and
+    /// nothing else in this suite can observe.
+    Published,
+}
+
 /// Write `value` to `path` as pretty-printed JSON, atomically.
 ///
 /// **The one home for state writes** (design §2.10, rubric A5). The sequence, and what
@@ -579,52 +781,199 @@ pub struct SessionRef {
 /// # Errors
 ///
 /// [`Error::StorageIo`] carrying the path that failed and the real `errno` where one
-/// exists. A failure at any step leaves the destination exactly as it was.
+/// exists. **A failure at steps 1–4 leaves the destination exactly as it was; a failure at
+/// step 5 leaves the new document published** — the rename is the publication, and no
+/// answer this function can give un-renames it. Step 5's failure is still returned, because
+/// a state store that silently dropped a durability promise would be hiding the one thing
+/// D9 asked for. A caller that has to tell the two apart uses
+/// `SessionStore::publish_session`, which is where the distinction has a reader.
 pub fn write_json_atomic<T: Serialize + ?Sized>(path: &Utf8Path, value: &T) -> Result<()> {
-    write_json_atomic_scripted(path, value, None)
+    write_json_atomic_scripted(path, value, None).map_err(|(error, _)| error)
 }
 
 fn write_json_atomic_scripted<T: Serialize + ?Sized>(
     path: &Utf8Path,
     value: &T,
     scripted: Option<StoreFault>,
-) -> Result<()> {
+) -> std::result::Result<(), (Error, Reach)> {
+    // Everything through the rename is `Reach::Untouched` by construction, which is why the
+    // classification is a closure over one variant rather than a decision at each `?`.
+    let untouched = |error: Error| (error, Reach::Untouched);
+
     let dir = path
         .parent()
-        .ok_or_else(|| corrupt(path, "has no parent directory to write a temp file in"))?;
-    fs::create_dir_all(dir.as_std_path()).map_err(|err| storage_io(dir, &err))?;
+        .ok_or_else(|| corrupt(path, "has no parent directory to write a temp file in"))
+        .map_err(untouched)?;
+    create_private_dir(dir).map_err(untouched)?;
 
     // Serialized first, in full. `to_writer_pretty` would stream into the temp file and
     // wrap any `errno` the write hit inside a `serde_json::Error`, which loses the number
     // D13's `StorageIo` exists to carry.
     let mut bytes = serde_json::to_vec_pretty(value)
-        .map_err(|err| corrupt(path, format!("could not be serialized: {err}")))?;
+        .map_err(|err| corrupt(path, format!("could not be serialized: {err}")))
+        .map_err(untouched)?;
     bytes.push(b'\n');
 
     let mut temp = tempfile::Builder::new()
         .prefix(".wch-")
         .suffix(".tmp")
+        // By decision rather than by `tempfile`'s default, which is the same 0600 and is
+        // not this project's to promise (note **N142**).
+        .permissions(fs::Permissions::from_mode(STATE_FILE_MODE))
         .tempfile_in(dir.as_std_path())
-        .map_err(|err| storage_io(dir, &err))?;
+        .map_err(|err| untouched(storage_io(dir, &err)))?;
     temp.write_all(&bytes)
-        .map_err(|err| storage_io(dir, &err))?;
+        .map_err(|err| untouched(storage_io(dir, &err)))?;
     temp.as_file()
         .sync_all()
-        .map_err(|err| storage_io(dir, &err))?;
+        .map_err(|err| untouched(storage_io(dir, &err)))?;
 
     if let Some(fault) = scripted {
         match fault {
             // Fired *here*, in the one window atomicity is about: the bytes are written
             // and synced, and the destination has not been touched. The temp file is
             // unlinked as it drops, so the failure leaves the directory as it found it.
-            StoreFault::DiskFull => return Err(disk_full(path)),
+            StoreFault::DiskFull => return Err(untouched(disk_full(path))),
             StoreFault::LockHeld | StoreFault::TornLogLine | StoreFault::ForeignSchemaVersion => {}
         }
     }
 
     temp.persist(path.as_std_path())
-        .map_err(|err| storage_io(path, &err.error))?;
-    fsync_dir(dir)
+        .map_err(|err| untouched(storage_io(path, &err.error)))?;
+    // Past this line the document is published, and every reader — including the next
+    // process — sees the new one.
+    fsync_dir(dir).map_err(|error| (error, Reach::Published))
+}
+
+/// How far back [`last_terminator`] reads at a time while hunting the last `\n`.
+///
+/// **A buffer size and nothing else** (note **N140**, corrected from the window the heal
+/// first landed with). It keeps the common case cheap: a log grows, an append happens per sample, and
+/// reading the file whole on each one would make appending quadratic in the history an
+/// append-only file exists to avoid. Eight kibibytes finds the terminator in one read for
+/// every entry this build writes.
+///
+/// It is deliberately **not** a bound on what the heal will parse. It was one, under the
+/// premise that "a tail longer than this cannot be a log line this build wrote" — and that
+/// premise is false: [`schema::session::SessionEvent::Started`] carries the operator's or
+/// the agent's own `goal` text, which nothing in `limits` bounds, and a harness writing a
+/// task description into it can exceed any figure chosen here. The consequence was worse
+/// than the premise: past the window the tail was dropped **without being parsed**, while
+/// `parse_log` parses an unterminated last segment and keeps it when it parses — so the two
+/// halves of D9's one rule disagreed for exactly the files nobody would think to check, and
+/// when the over-long line was the only one in the file the heal truncated it to nothing.
+///
+/// The bound the heal actually has is the one [`SessionStore::load_log`] already has: the
+/// file. That call `read`s the whole thing on every `calibrate status`, so a heal that reads
+/// one unterminated tail after a crash costs strictly less than the read that follows it,
+/// and inventing a tighter bound here is what made the two disagree.
+const LOG_SCAN_CHUNK: u64 = 8 * 1024;
+
+/// Make `log.ndjson` appendable again after a crash left it mid-line (note **N140**).
+///
+/// Reads one byte in the ordinary case — the last one — because a file that ends in a
+/// terminator has nothing to heal, and that is every append but the first one after a
+/// crash. Only an unterminated tail costs more.
+///
+/// The two answers, and neither invents anything:
+///
+/// - **A tail that parses** is a whole entry whose terminator never reached the platter.
+///   Its newline is written, and the event is kept: the writer had already serialized the
+///   whole thing, so dropping it would throw away a record that is entirely present.
+/// - **A tail that does not parse** is the torn write
+///   [`SessionStore::load_log`] already drops. `set_len` back to the last newline makes that
+///   drop durable, which is the whole repair: without it the next append puts a terminator
+///   behind the damage and the loader's *interior* refusal — argued, and correct — starts
+///   firing on a file only this tool ever wrote.
+///
+/// **The two answers are the loader's own, for a tail of any length.** Nothing is dropped
+/// without being parsed first, which is what keeps this function and `parse_log` one rule
+/// rather than two that agree on the cases somebody happened to write a fixture for
+/// ([`LOG_SCAN_CHUNK`] carries what that cost and why the earlier bound was wrong).
+///
+/// A file that is missing, empty, or already terminated is left exactly as it is.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] for any filesystem failure.
+fn heal_log_tail(path: &Utf8Path) -> Result<()> {
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.as_std_path())
+    {
+        Ok(file) => file,
+        // The first append creates the file; there is no tail yet.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(storage_io(path, &err)),
+    };
+    let len = file.metadata().map_err(|err| storage_io(path, &err))?.len();
+    if len == 0 {
+        return Ok(());
+    }
+
+    let mut last = [0_u8; 1];
+    file.seek(SeekFrom::Start(len.saturating_sub(1)))
+        .map_err(|err| storage_io(path, &err))?;
+    file.read_exact(&mut last)
+        .map_err(|err| storage_io(path, &err))?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+
+    let cut = last_terminator(&mut file, path, len)?;
+    // The tail in full, however long it is — because the question below is exactly the
+    // question `parse_log` asks of the same bytes, and asking it of a prefix would give a
+    // different answer for the same file (note **N140**). A `goal` an agent wrote can be any
+    // length, so "too long to be one of ours" is not a fact this code can establish; and
+    // dropping bytes *without parsing them* is the one thing the loader never does.
+    let mut tail = vec![0_u8; usize::try_from(len.saturating_sub(cut)).unwrap_or(0)];
+    file.seek(SeekFrom::Start(cut))
+        .map_err(|err| storage_io(path, &err))?;
+    file.read_exact(&mut tail)
+        .map_err(|err| storage_io(path, &err))?;
+
+    let whole = std::str::from_utf8(&tail)
+        .ok()
+        .is_some_and(|line| serde_json::from_str::<LogEntry>(line).is_ok());
+    if whole {
+        file.seek(SeekFrom::Start(len))
+            .map_err(|err| storage_io(path, &err))?;
+        file.write_all(b"\n")
+            .map_err(|err| storage_io(path, &err))?;
+    } else {
+        file.set_len(cut).map_err(|err| storage_io(path, &err))?;
+    }
+    // `sync_all` rather than `sync_data`: the truncating arm's whole effect is the file's
+    // length, and the repair has to be on the platter before the append that follows it —
+    // otherwise a second crash leaves the damage the first one caused *and* a terminator
+    // behind it, which is the state this function exists to make unreachable.
+    file.sync_all().map_err(|err| storage_io(path, &err))
+}
+
+/// One past the last `\n` in `file`, or `0` when it holds none.
+///
+/// Walks backwards a [`LOG_SCAN_CHUNK`] at a time rather than reading the file whole, for
+/// that constant's reason.
+fn last_terminator(file: &mut File, path: &Utf8Path, len: u64) -> Result<u64> {
+    let mut probe = len;
+    loop {
+        let from = probe.saturating_sub(LOG_SCAN_CHUNK);
+        let mut chunk = vec![0_u8; usize::try_from(probe.saturating_sub(from)).unwrap_or(0)];
+        file.seek(SeekFrom::Start(from))
+            .map_err(|err| storage_io(path, &err))?;
+        file.read_exact(&mut chunk)
+            .map_err(|err| storage_io(path, &err))?;
+        if let Some(index) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(from
+                .saturating_add(u64::try_from(index).unwrap_or(0))
+                .saturating_add(1));
+        }
+        if from == 0 {
+            return Ok(0);
+        }
+        probe = from;
+    }
 }
 
 /// `fsync` a directory, so a rename into it survives a power cut.
@@ -831,13 +1180,18 @@ pub struct StoreLock {
 
 impl StoreLock {
     fn acquire(root: &Utf8Path, protocol: LockProtocol) -> Result<StoreLock> {
-        fs::create_dir_all(root.as_std_path()).map_err(|err| storage_io(root, &err))?;
+        create_private_dir(root)?;
+        // Every mutating operation in D9 passes through here, which is why the tree's mode
+        // is asserted here (note **N142**): it is the one funnel, and a check the reads do
+        // not pay for is a check `calibrate status` still answers under.
+        check_state_dir(root, rustix::process::geteuid().as_raw())?;
         let path = root.join(limits::STORE_LOCK_FILE);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
+            .mode(STATE_FILE_MODE)
             .open(path.as_std_path())
             .map_err(|err| storage_io(&path, &err))?;
 
@@ -1074,6 +1428,35 @@ impl TempStore {
         SessionStore::new(self.root().to_owned())
     }
 
+    /// Lay `log.ndjson` down byte for byte, for the shapes a crash leaves behind.
+    ///
+    /// [`StoreFault::TornLogLine`]'s family, and it lives beside it for the same reason: the
+    /// bytes a torn append leaves are a *store* fixture, and D9's two answers to them — drop
+    /// an unterminated last line, refuse a torn interior one — are only assertable against
+    /// real bytes (note **N140**). A suite that reached for `std::fs::write` to plant them
+    /// would be a raw state-directory write, which `scripts/gates/atomic-write-home.sh`
+    /// reserves to this file; a fixture is not a reason to weaken that rule, so the fixture
+    /// comes here instead.
+    ///
+    /// Deliberately **not** atomic and deliberately not under the lock: the whole point is
+    /// to produce a file the store's own protocol never would.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StorageIo`] naming the file.
+    pub fn plant_log(&self, dir: &Utf8Path, bytes: &[u8]) -> Result<()> {
+        create_private_dir(dir)?;
+        let path = dir.join(limits::SESSION_LOG_FILE);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(STATE_FILE_MODE)
+            .open(path.as_std_path())
+            .map_err(|err| storage_io(&path, &err))?;
+        file.write_all(bytes).map_err(|err| storage_io(&path, &err))
+    }
+
     /// Keep the directory instead of deleting it, and return its path.
     ///
     /// For the failure a temp-dir fixture makes hardest to debug: the tree is gone by the
@@ -1132,6 +1515,8 @@ mod tests {
             event: SessionEvent::SweepStarted {
                 control: ControlSlug::parse(control).expect("literal slug"),
                 total,
+                precision: 1,
+                adjustments: Vec::new(),
             },
         }
     }
@@ -1509,6 +1894,258 @@ mod tests {
                 .kind(),
             ErrorKind::StorageIo
         );
+    }
+
+    #[test]
+    fn a_write_the_parent_fsync_refused_reports_the_document_as_published_not_untouched() {
+        // Note **N141**, arranged for real rather than scripted. A directory at mode 0300
+        // may be written into and renamed within by its owner and may **not** be opened for
+        // reading, so the temp file, the write, the `sync_all` and the rename all land and
+        // `fsync_dir`'s `File::open` is `EACCES`. That is the one window this classification
+        // exists for, and it cannot be reached by any fault that fires earlier.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempStore::new().expect("a temp dir");
+        let closed = temp.root().join("closed");
+        fs::create_dir_all(closed.as_std_path()).expect("creatable");
+        let path = closed.join("document.json");
+        fs::set_permissions(closed.as_std_path(), fs::Permissions::from_mode(0o300))
+            .expect("the mode is ours to set");
+
+        let (error, reach) =
+            write_json_atomic_scripted(&path, &serde_json::json!({ "n": 1 }), None).expect_err(
+                "a directory that cannot be opened for reading cannot be fsynced — unless \
+                 this suite is running as root, which bypasses the mode and is not a \
+                 configuration this project's tests run in",
+            );
+        assert_eq!(reach, Reach::Published);
+        assert_eq!(error.kind(), ErrorKind::StorageIo);
+
+        // The whole point of the distinction: the destination holds the *new* document. A
+        // caller told "untouched" here is told the write did not happen when it did.
+        fs::set_permissions(closed.as_std_path(), fs::Permissions::from_mode(0o700))
+            .expect("the mode is ours to set");
+        assert_eq!(
+            fs::read_to_string(path.as_std_path()).expect("the rename landed"),
+            "{\n  \"n\": 1\n}\n"
+        );
+
+        // The other direction, out of the same function: a refusal before the rename leaves
+        // the destination exactly as it was, and classifies itself that way.
+        let (_, reach) = write_json_atomic_scripted(
+            &path,
+            &serde_json::json!({ "n": 2 }),
+            Some(StoreFault::DiskFull),
+        )
+        .expect_err("no space");
+        assert_eq!(reach, Reach::Untouched);
+        assert_eq!(
+            fs::read_to_string(path.as_std_path()).expect("still there"),
+            "{\n  \"n\": 1\n}\n",
+            "a failure before the rename published something"
+        );
+    }
+
+    // ------------------------------------------------------------------ the tree's posture
+
+    /// Every path under `root`, files and directories alike, depth first.
+    fn walk(root: &Utf8Path) -> Vec<Utf8PathBuf> {
+        let mut found = Vec::new();
+        let Ok(listing) = fs::read_dir(root.as_std_path()) else {
+            return found;
+        };
+        for entry in listing.flatten() {
+            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                continue;
+            };
+            if path.is_dir() {
+                found.extend(walk(&path));
+            }
+            found.push(path);
+        }
+        found
+    }
+
+    #[test]
+    fn every_directory_and_file_this_store_creates_is_private_to_its_owner() {
+        // Note **N142**. Measured before the repair, under this project's own umask:
+        // directories 0775, `log.ndjson` 0664, every calibration sample photo 0664, and
+        // `session.json` 0600 only by accident of `tempfile::Builder`'s default. A session
+        // tree holds photographs of whatever the cameras were pointed at, and a frame may
+        // contain a person.
+        //
+        // The walk is over what a session actually leaves behind rather than over a list
+        // written here, so a file a later sub-milestone adds is covered the day it lands
+        // rather than the day somebody remembers to add it to an inventory.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let session = session(uuid_v7(70), "focus");
+        let dir = temp
+            .store()
+            .save_session(&lock, &session)
+            .expect("writable");
+        temp.store()
+            .append_log(&lock, &dir, &entry("focus_absolute", 4))
+            .expect("appendable");
+        temp.store()
+            .create_photo_dir(
+                &lock,
+                &dir,
+                &ControlSlug::parse("focus_absolute").expect("literal slug"),
+                0,
+            )
+            .expect("creatable");
+
+        let found = walk(temp.root());
+        assert!(
+            found.len() >= 7,
+            "the walk found almost nothing, so it proves almost nothing: {found:?}"
+        );
+        for path in &found {
+            let metadata = fs::metadata(path.as_std_path()).expect("it was just walked");
+            let mode = metadata.permissions().mode() & schema::paths::MODE_BITS;
+            let expected = if metadata.is_dir() {
+                STATE_DIR_MODE
+            } else {
+                STATE_FILE_MODE
+            };
+            // **The nine bits this tool chose, against the mode it chose them as.** The
+            // top three — set-user, set-group, sticky — are masked off because they are
+            // inherited from whatever `$TMPDIR` this host uses rather than asked for
+            // (note **N150**; `paths::MODE_BITS`' own doc argues the inheritance), and a
+            // test that compared them would be red on a group-managed home and green here.
+            //
+            // Masking all the way down to `GROUP_AND_OTHER_BITS` — which is what
+            // `check_state_dir` above asks, for its own reason — is not the same claim and
+            // was briefly what this asserted: it let a file this tool creates at 0700, or a
+            // photo directory at 0500, pass a message naming 0600 and 0700. The check's
+            // question is who can reach the frames; this test's question is whether one
+            // decision produced every mode in the tree, so it is the exact one.
+            let chosen = mode & !schema::paths::INHERITED_MODE_BITS;
+            assert_eq!(
+                chosen, expected,
+                "{path} is mode {mode:04o}, and this tree is kept at {expected:04o}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_state_directory_anybody_can_walk_into_is_refused_rather_than_tightened() {
+        // N39's ruling, applied to D9's tree: a wrong mode is refused because a `chmod`
+        // would hide the fact that the directory was reachable, and for however long it was
+        // reachable it may already have been read. `set_permissions` rather than a mode at
+        // `mkdir`, because the umask can only clear bits and this arrangement has to *add*
+        // them.
+        let temp = TempStore::new().expect("a temp dir");
+        let root = temp.root().join("wider");
+        create_private_dir(&root).expect("creatable");
+        fs::set_permissions(root.as_std_path(), fs::Permissions::from_mode(0o755))
+            .expect("the mode is ours to set");
+
+        let store = SessionStore::new(root.clone());
+        let refused = store
+            .lock(LockProtocol::PerOperation)
+            .expect_err("a state directory the whole machine can walk into");
+        assert_eq!(refused.kind(), ErrorKind::StorageIo);
+        let rendered = refused.to_string();
+        assert!(rendered.contains("0755"), "{rendered}");
+        assert!(rendered.contains("0700"), "{rendered}");
+        assert!(
+            rendered.contains("chmod"),
+            "the refusal has to name the way out: {rendered}"
+        );
+        assert_eq!(
+            fs::metadata(root.as_std_path())
+                .expect("still there")
+                .permissions()
+                .mode()
+                & schema::paths::MODE_BITS,
+            0o755,
+            "the directory was repaired, which is exactly what note N39 forbids"
+        );
+
+        // Healthy twin: the same store over the same directory, once its mode is right.
+        fs::set_permissions(
+            root.as_std_path(),
+            fs::Permissions::from_mode(STATE_DIR_MODE),
+        )
+        .expect("the mode is ours to set");
+        drop(store.lock(LockProtocol::PerOperation).expect("private now"));
+    }
+
+    #[test]
+    fn a_state_directory_this_tool_creates_under_a_setgid_parent_is_not_refused_on_the_spot() {
+        // **The check has to be about who can read the frames, not about the mode word**
+        // (note **N150**). Linux inherits `S_ISGID` on `mkdir` under a setgid parent — the
+        // arrangement below is one line of `chmod g+s`, and it is ordinary on group-managed
+        // and shared homes. With the exposure mask written as `!STATE_DIR_MODE` this tool
+        // created the directory at 2700 and refused it *on the same call*: a first run, on a
+        // directory nobody but this tool had ever touched, refused permanently — and the
+        // remedy it printed, `chmod -R go-rwx`, cannot clear a set-id bit, so an operator
+        // following it would loop.
+        //
+        // The set-group bit is not an exposure: it decides which group new files inherit,
+        // and with `go` clear nobody in that group can reach them anyway.
+        let temp = TempStore::new().expect("a temp dir");
+        let parent = temp.root().join("group-managed");
+        create_private_dir(&parent).expect("creatable");
+        fs::set_permissions(parent.as_std_path(), fs::Permissions::from_mode(0o2700))
+            .expect("the mode is ours to set");
+
+        let root = parent.join("webcam-handler");
+        let store = SessionStore::new(root.clone());
+        drop(
+            store
+                .lock(LockProtocol::PerOperation)
+                .expect("a directory this tool just created is not one it may refuse"),
+        );
+
+        // Non-vacuous: if the kernel or the filesystem under `$TMPDIR` did not propagate the
+        // bit there is nothing here to have got wrong, and a green run would prove nothing.
+        let mode = fs::metadata(root.as_std_path())
+            .expect("created")
+            .permissions()
+            .mode()
+            & schema::paths::MODE_BITS;
+        assert_eq!(
+            mode & 0o2000,
+            0o2000,
+            "this filesystem did not inherit the set-group bit, so this test is not arranged: \
+             {mode:04o}"
+        );
+        assert_eq!(mode & schema::paths::GROUP_AND_OTHER_BITS, 0);
+    }
+
+    #[test]
+    fn a_private_state_directory_somebody_else_owns_is_refused_naming_both_uids() {
+        // **N39's other half** (note **N150**). Its own argument is that "a root daemon
+        // traverses a 0700 directory belonging to a user without noticing, which is exactly
+        // the case this refuses" — and D9's tree had the mode check and not the owner one, so
+        // a `webcam-handler-daemon` run as root with `$XDG_STATE_HOME` under somebody else's
+        // home would write calibration photographs into a directory that user can read, and
+        // be told everything was fine.
+        //
+        // The uid is a parameter rather than a syscall for exactly this reason: the arm that
+        // matters needs a second account, and a check whose failing direction only runs on a
+        // host with one is a check that is green because nobody drove it.
+        let temp = TempStore::new().expect("a temp dir");
+        let root = temp.root().join("somebody-elses");
+        create_private_dir(&root).expect("creatable");
+
+        let ours = rustix::process::geteuid().as_raw();
+        let refused = check_state_dir(&root, ours.wrapping_add(1))
+            .expect_err("a private directory belonging to another account");
+        assert_eq!(refused.kind(), ErrorKind::StorageIo);
+        let rendered = refused.to_string();
+        assert!(rendered.contains(&ours.to_string()), "{rendered}");
+        assert!(
+            rendered.contains(&ours.wrapping_add(1).to_string()),
+            "the refusal names one uid and not the other, so a reader cannot tell which \
+             account to fix: {rendered}"
+        );
+
+        // The other direction, over the same directory: ours is ours.
+        check_state_dir(&root, ours).expect("a directory this account owns");
     }
 
     // ------------------------------------------------------------------ the log
@@ -2179,6 +2816,8 @@ mod tests {
                     plan: schema::session::SweepSpec::Uniform { step: 8 },
                     done: 1,
                     total: 4,
+                    precision: 8,
+                    adjustments: Vec::new(),
                 },
                 samples: vec![schema::session::Sample {
                     requested: 42,

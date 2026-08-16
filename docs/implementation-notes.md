@@ -17252,7 +17252,7 @@ a stand-in whose answer to this method is the same shape the real one gives.
 `diagnose` to T1's — at which point this entry has been absorbed and N7's row is the model for the
 sentence.
 
-## N133 — §2.8's dependency registry has drifted three ways, and each is a different kind of drift
+## N133 — §2.8's dependency registry has drifted four ways, and each is a different kind of drift
 
 **Doc:** AGENTS' "Docs and dependencies" — *"Dependencies: permissive licenses only, enforced by
 cargo-deny (design §2.8 is the registry)"*; §2.8's owner ruling of 2026-08-09 on who decides an
@@ -17318,6 +17318,28 @@ declares and the prose does not naming a **failure** rather than a skip.
 **Amend this note if** the next design revision absorbs the three adoptions and corrects the two
 numbers, and re-run N5's measurement in the same pass — §2.8 asks for it on any jsonrpsee bump, and
 item 3 is the first measurement showing the closure has moved.
+
+### 4. An edge the registry does not carry, added 2026-08-16
+
+Note **N150** gave `engine::store::check_state_dir` the owner half of N39's ruling, and the one
+caller passes `rustix::process::geteuid()` — so `webcam-handler-engine` now has a direct `rustix`
+edge (`crates/engine/Cargo.toml`, `features = ["process"]`). That is an **edge and not an
+adoption**: `rustix = "1.1.4"` is already a pinned workspace dependency with two consumers, its
+licence is allowlisted in `deny.toml` including the LLVM-exception alternative, and the crate's
+`#![forbid(unsafe_code)]` is unaffected because the `unsafe` is `rustix`'s. `dependency-walls.sh`
+is green: `webcam-handler-engine` is in the *pure* set, whose forbidden list is tokio/axum/hyper.
+
+**What `docs/6` must end up saying**, for the reconciliation pass that owns that file: the tree
+listing at §2.8 reads `engine/ # webcam-handler-engine [schema + imaging + tempfile + fd-lock +
+tracing; …]` and needs `rustix` in that bracket; the "Core picks" paragraph names rustix as a
+direct edge of `webcam-handler-v4l2` and `webcam-handler-daemon` and needs `webcam-handler-engine`
+added — **and `webcam-handler-client`**, whose own `rustix` (`process`) edge predates all of this
+and appears in neither place. So the paragraph's list goes from two crates to four.
+
+This item is what the clause above asked for and did not get: the clause fires when the registry
+gains an item, and the batch that added one wrote the note about the *check* instead. A fourth
+kind of drift, and the cheapest to introduce — an edge costs one manifest line and no argument,
+which is exactly why nothing notices it.
 
 ## N134 — D5's "an explicit request still wins" was enforced in the stand-in and nowhere else, and the size half was enforced nowhere at all
 
@@ -17720,3 +17742,970 @@ where a reader meets it.
 "what was asked for" slot has to hold two kinds of thing. At that point the pattern here (an optional
 payload naming the half that failed, plus constructors that keep the halves exclusive) is either the
 registry's convention or the wrong shape twice, and it is worth deciding which.
+
+---
+
+## N139 — N24 closed the in-process half of a stranded sweep, and `calibrate restore` put the camera back while leaving the session unusable
+
+**Doc:** design **§6**'s crash story (*"the snapshot is persisted to the session directory before the
+first write, so `restore` survives the death of the process that took it"*); **D8**'s per-control
+vocabulary; note **N24**, whose *Retires when* clause names exactly what it left open; note **N18**,
+which defines the durable `SweepInterrupted` line; AGENTS rule **7** (availability is not capability)
+and rubric **A4**. Raised as docs/11 §3 **H2**. Recorded 2026-08-16.
+
+**Repo:** `engine::lifecycle::free_stranded_sweeps`, run by `engine::lifecycle::recover` on every
+path.
+
+### What N24 closed, and what it could not
+
+N24 walked every exit from `Sweeping { done: 0 }` and found them all shut: `may_begin_sweep` refuses
+`Sweeping`, `selectable` refuses `no_samples`, `lifecycle::draft` touches only `Untouched`, and
+`Sweeping` is never terminal, so `is_open` stays true and `calibrate start` answers
+`SessionConflict` for that (camera, task) slot. Its repair is `engine::calibrate`'s interruption
+path calling `session::abandon_sweep`, and that path is **in the process the sweep is in** and
+**best effort by construction** (N18's reason: the sweep already has a refusal to report). So the
+two ways it does not run are the two that matter — a process that was killed, and a store that could
+not take the write. Either leaves the state on disk.
+
+**And nothing a caller could type ever moved it.** `lifecycle::recover` — the durable recovery path,
+and what `calibrate restore` runs — restored the camera snapshot, wrote `pre_snapshot = None`, and
+never touched a control's status. The shipped repair verb put the camera back and left the session
+refusing every verb for the life of the state directory. There is no session GC (N55) and no
+`abandon` verb, so a transient availability failure at sample 1 had become a permanent capability
+refusal.
+
+### The window with no snapshot, which the review did not name and the repair had to
+
+`calibrate::run` commits `Sweeping { done: 0, total }` **before** `execute`, and the pre-sweep
+snapshot is armed inside the first sample by `sweep_write`. A process killed between those two
+leaves a stranded control and **no snapshot at all** — and `recover`'s first line returned
+`NothingPersisted` before touching anything. So the repair could not sit behind the snapshot: the
+camera restore now produces its three outcomes *after* the session walk rather than around it, and
+`free_stranded_sweeps` runs on all three.
+
+### What the line says, and why its `failure` is `illegal_transition`
+
+The walk appends N18's `SweepInterrupted` per freed control. Its `failure` field is *"the refusal's
+discriminant, so a reader can branch without parsing prose"*, and this process does not know why the
+sweep stopped — N18 is explicit that a killed process leaves no line and that an absent one means
+the reason is not known here. Naming a device kind would invent a measurement. `IllegalTransition`
+is not invented: it is literally the refusal the next verb met (`may_begin_sweep` answering
+`from: "sweeping"`), it cannot be mistaken for something the camera did, and the `detail` says the
+rest in one sentence. The line's value is not the reason but the *repair*: without it
+`calibrate status` shows a `SweepStarted` and then nothing while the document says `Untouched`, and
+a reader cannot tell a sweep that never started from one that was rolled back.
+
+**The store's failure is the caller's here**, unlike in `calibrate`'s interruption path. That path
+must not displace the refusal it is describing; this one *is* the repair, and a repair that silently
+did not happen is the hole this note records one layer down.
+
+### What the repair answers with, and the order it writes in
+
+Two things the first form of this repair got wrong, both found by the adversarial reading of it
+and both the same shape as the finding itself — a value nothing reads.
+
+**The freed controls are on the answer.** `free_stranded_sweeps` returns them,
+`lifecycle::recover` carries them on every one of its three arms, and
+`schema::snapshot::RestoreReport` has a `freed` field, because `calibrate restore --json` answers
+*that document* and exits 0. Without it the H2 scenario end to end was: sweep killed at sample 1,
+`calibrate restore --json` answers `{"outcomes":[]}`, exit 0 — an unattended caller told nothing
+happened by the call that had just changed a control's status on disk. That is rubric **A8**, in
+the batch that was fixing A8 one module along (N145). `Recovery::NothingPersisted` carries the
+list too rather than only the two arms that have a report: the two facts are independent — a
+session can have a snapshot and no stranded control, a stranded control and no snapshot, both, or
+neither — and the arm N139 is *about* is the one with no report.
+
+*Completed 2026-08-16*: for a day that repair was proven **only at the verb**. `lifecycle`'s
+`the_restore_verb_names_the_controls_it_gave_back_even_with_no_snapshot_to_put_back` asserts the
+list reaches `RestoreReport`, and nothing in the repository ever built a report with a non-empty
+`freed` and *rendered* it — so the note beside the table and the `freed` array in the `--json`
+document, which are the two surfaces a caller actually meets, were exactly the shape this note is
+about one layer up: written by the product, read by nobody, and green whether they existed or not.
+`render::tests::a_restore_that_gave_a_stranded_control_back_says_so_on_both_the_table_and_the_document`
+is the arm, both directions (a report with nothing stranded must say nothing at all, or the note
+stops meaning anything), and it went red on the deleted note as *"the restore repaired brightness
+and told the operator nothing: \"\""* and on a `freed` that never reaches the document as *"left
+`RestoreReport { outcomes: [], freed: [] }`, right `… freed: [ControlSlug(\"brightness\"),
+ControlSlug(\"focus_absolute\")] }`"*.
+
+**The log line goes down before the status.** Two writes cannot be one, and the order decides
+which failure is survivable. Status-then-line: the transition lands, the append refuses, and the
+control is `Untouched` on disk with nothing in the history saying why — and it no longer matches
+the `done == 0 && samples.is_empty()` filter, so no later run can notice. **That loss is
+permanent.** Line-then-status: the append lands, the commit refuses, and the next
+`calibrate restore` performs the repair again and records it again. A duplicated line is
+recoverable and a lost one is not.
+`a_repair_whose_record_cannot_be_written_leaves_the_control_stranded_for_the_next_run` is the arm,
+arranged for real rather than scripted for N141's reason — `StoreFault::DiskFull` refuses the
+document *and* the log, so it cannot tell the two orders apart, and a `log.ndjson` at mode 0400
+inside a writable session directory is the only arrangement that fails exactly one.
+
+**Still gated on the camera, and this is where that is written down.** `recover` propagates
+`snapshot::restore`'s `Err` before the session walk runs, and both roots open the camera before
+taking the lock, so `DeviceGone` / `Busy` / `PermissionDenied` / `FingerprintMismatch` still leave
+the pure-document repair unreachable — even though the repair itself touches no camera. It is
+narrow (the camera usually comes back; `Busy` is retryable) and it is left, because moving the
+walk in front of the restore would make `calibrate restore` a verb that edits a session document
+on a camera that is not there, which is a different decision from the one this note took. The
+honest name for what is missing is the one N24 and N55 already gave it: a document-only `abandon`
+verb.
+
+### The suite could not see it, which is the review's own smell for the fourth time
+
+`crates/engine/tests/crash_recovery.rs` existed to prove design §6's crash story and contained no
+reference to `calibrate::run`, `begin_sweep` or `Sweeping`: its one write went through
+`lifecycle::sweep_write` directly, so the SIGKILL rung never produced the state the crash story is
+about. The fixture is repaired rather than the code alone — `PersistentCamera` streams a 16×16
+synthetic grey gradient (generated, never a device frame), and a second child runs a real
+`calibrate::run` and announces itself from inside its first sample, where the document says
+`Sweeping { done: 0 }` and the snapshot is armed.
+
+### What went red first
+
+- `crash_recovery.rs::a_sweep_killed_before_its_first_sample_leaves_the_control_sweepable_again`, at
+  the second `run`: *"a sweep killed before its first sample left the control in a state every verb
+  refuses, and the repair verb did not give it back: IllegalTransition { from: "sweeping", op:
+  "sweep brightness" }"*.
+- `lifecycle::tests::a_sweep_that_died_before_its_first_sample_is_given_back_and_one_with_samples_is_not`,
+  on the no-snapshot branch: *left `Sweeping { plan: All, done: 0, total: 4 }`, right `Untouched`*.
+  Its second control is the other direction — a sweep that recorded a sample is left mid-sweep,
+  because those samples happened and `select` is their documented way out.
+
+**Retires when:** N24's and N18's own trigger — D8 gains a durable "this sweep is running, owned by
+that process" fact. Silence would then be readable and this walk would become a decision rather than
+an inference from `done == 0`.
+
+---
+
+## N140 — A crash tore the log's tail, and the next append made the tear permanent
+
+**Doc:** design **D9** (*"a torn last line of `log.ndjson` is a process that died mid-append; it is
+dropped. A torn line anywhere else is corruption, and corruption is a typed refusal"*); note **N12**,
+which pins the refusing half against a seeded mutant. Raised as docs/11 §4.3 **M9**, *narrowed after
+the review refuted its own first form*. Recorded 2026-08-16.
+
+**Repo:** `engine::store::heal_log_tail`, called by `SessionStore::append_log` under the lock it
+already holds.
+
+**The refusal is not the defect and was not touched.** Refusing an unparsable *interior* line is
+deliberate and argued — a crash mid-append cannot write a terminator after the damage, so damage with
+one behind it is corruption and guessing at its contents would invent a session history. N12 lists
+*"a torn last line dropped even when a terminator follows it"* among nineteen buggy implementations a
+named test caught.
+
+**What survived the refutation is narrower.** `append_log` opened `O_APPEND` and wrote at whatever
+byte the last writer stopped at, without looking. So one crash plus one later append produced a file
+that `lifecycle::status` → `history` → `load_log` refused **permanently**, with no verb that repairs
+it — H2's shape, on the log. The repair invents nothing and heals at *append* time: a tail that
+parses is given the terminator its writer never managed (the record is entirely present; dropping it
+for want of one byte would throw away a whole event), and a tail that does not is `set_len` back to
+the last newline, which makes durable the drop `load_log` was already going to perform.
+
+**Two consequences worth writing down.** The interior refusal now means what it says: this tool can
+no longer produce that file, so one on disk was damaged by something else. And the check is one byte
+in the ordinary case — a log that ends in a terminator has nothing to heal — with `LOG_SCAN_CHUNK`
+bounding the backward scan, so an append does not become linear in the history the append-only file
+exists to keep cheap.
+
+### The window this first landed with, and why it had to go
+
+`LOG_SCAN_CHUNK` was `LOG_HEAL_WINDOW`, and it bounded two things rather than one: the backward
+scan *and* the bytes this build was willing to read back and parse. Its stated premise was *"a tail
+longer than this cannot be a log line this build wrote"*, and the premise is **false**.
+`SessionEvent::Started` carries the `goal` — the operator's or the agent's own words — and nothing
+in `limits` bounds it; an AI harness writing a task description into it makes a line of any length,
+which is precisely the consumer AGENTS names.
+
+The consequence was worse than the premise. Past the window the tail was set to empty, so the "does
+it parse?" question was answered `false` **without the bytes ever being read**, and `set_len(cut)`
+ran. `parse_log` does the opposite — it parses an unterminated last segment and *keeps* it when it
+parses — so the two halves of D9's one rule gave different answers for the same file:
+`calibrate status` showed the event before an unrelated append and not after. When the over-long
+line was the only one in the log, `cut == 0` and the heal truncated the file to nothing. A 32 KiB
+goal is one `calibrate start`.
+
+The repair is to stop bounding what is parsed. The bound the heal actually has is the one
+`load_log` already has — the file, which that call `read`s whole on every `calibrate status` — so a
+heal that reads one unterminated tail after a crash costs strictly less than the read that follows
+it, and inventing a tighter bound here is what made the two disagree. The new fixtures are the
+cases the first test could not have had: its lines are all short.
+`a_torn_tail_longer_than_the_scan_chunk_is_still_parsed_before_it_is_kept_or_dropped` went red
+against the window with *left: [the appended line], right: [the 32 KiB entry, the appended line]* —
+the entry erased.
+
+**What went red first:**
+`store_faults.rs::a_crash_torn_tail_is_healed_by_the_next_append_rather_than_left_to_refuse_for_ever`
+— *"a log a crash tore and this build appended to is still readable: StorageIo { … line 2 is not a
+log entry, and it is not the unterminated last line a crash would leave … }"*. Its second arm is the
+other direction (a parseable tail is kept, not dropped) and its third is that a healthy log is
+byte-identical after an append.
+
+`a_torn_line_is_dropped_or_refused_by_where_it_is` changed with it: its interior-tear arm used to be
+arranged by *appending after a tear*, which is now the healing path, so the corrupt file is written
+as bytes. That is a better fixture for the same claim — the store no longer manufactures the
+corruption it refuses.
+
+**Retires when:** nothing. The pair of behaviours is D9's and both halves now have a producer.
+
+---
+
+## N141 — `write_json_atomic`'s contract was false after the rename, and `persist` believed it
+
+**Doc:** design **D9**'s `tempfile in-dir → sync_all → rename → fsync parent`; note **N12** (what the
+two `fsync`s buy and why no hermetic test can see it); rubric **A5**. Raised as docs/11 §4.3 **M10**,
+which asked for a ruling on whether the code or the contract was wrong. Recorded 2026-08-16.
+
+**Repo:** `engine::store::Reach`, `SessionStore::publish_session`, and the `match` in
+`engine::lifecycle::persist`.
+
+**The ruling: both, and the contract first.** The published sentence was *"A failure at any step
+leaves the destination exactly as it was"*, and step 5 is the parent directory's `fsync`, which runs
+*after* `temp.persist(path)` has published the document. No answer this function can give un-renames
+it, so the sentence was simply untrue and now says which steps it covers. The `fsync`'s failure is
+still returned: a state store that silently dropped a durability promise would be hiding the one
+thing D9 asked for.
+
+**But the code had to change too, because the caller genuinely needs to know which side.**
+`lifecycle::persist` replaces `*session` with the draft only on success, so a post-rename refusal left
+the caller a state *behind* a document that had already landed — and the caller's next draft is cloned
+from `*session`, so the next write is a **rollback** rather than a refusal. The mirror-image
+assumption is equally wrong: advancing `*session` on a *pre*-rename failure would put the caller ahead
+of the disk and skip a state. Neither blanket answer is right, which is what makes this a
+classification rather than a policy. `Reach::{Untouched, Published}` is that classification;
+`publish_session` is `save_session` carrying it, `pub(crate)` because it has exactly one reader and a
+wider surface would invite a second opinion.
+
+**Arranged for real rather than scripted, and the arrangement is worth keeping.** A directory at mode
+`0300` may be written into and renamed within by its owner and may not be opened for reading, so the
+temp file, the write, the `sync_all` and the rename all land and `fsync_dir`'s `File::open` is
+`EACCES`. That is the only window this distinction exists for and no fault that fires earlier can
+reach it. It assumes the suite is not running as root, which bypasses the mode; the assumption is in
+the `expect` message, and a root run fails loudly rather than passing vacuously.
+
+**What went red first:**
+`lifecycle::tests::a_commit_the_parent_fsync_refused_leaves_the_caller_holding_what_the_disk_holds`
+— *"the caller is holding a session older than the document it just wrote: {}"*.
+`store::tests::a_write_the_parent_fsync_refused_reports_the_document_as_published_not_untouched`
+covers both classifications from the one function.
+
+**Retires when:** nothing. N12's two `fsync`s stay uncovered for durability; this note is about what
+their *failure* means, which is a different and checkable question.
+
+---
+
+## N142 — D9's session tree was created at the ambient umask, and it is where camera frames come to rest
+
+**Doc:** AGENTS **"A frame may contain a person"**; design **D9** (the session directory as the
+inspectable record); design **D11** and note **N39**, which give the runtime directory `0700` *and*
+re-check it at startup, refusing a wrong mode rather than repairing it. Raised as docs/11 §4.3
+**M11**. Recorded 2026-08-16.
+
+**Repo:** `engine::store::{STATE_DIR_MODE, STATE_FILE_MODE, create_private_dir,
+check_state_dir_mode}`, `engine::photo::IntoTheSessionTree`, and `engine::paths::scratch_dir`.
+
+**Measured before the repair, under this project's own umask (0002):** directories `0775`,
+`log.ndjson` `0664`, the lock file `0664`, and **every calibration sample photo `0664`**.
+`session.json` was `0600` — by accident of `tempfile::Builder`'s default rather than by decision,
+which is the sharpest way to put it.
+
+**Honest scope, unchanged from the review's:** `~/.local/state` is `0700` on the machine this project
+is developed on, so nothing is exposed today; the exposure needs a `$XDG_STATE_HOME` elsewhere or a
+distro leaving the parent at `0755`. This is defence in depth D11 has and D9 did not, on a directory
+of photographs of whatever the cameras were pointed at.
+
+**The three decisions.** Directories are created at `0700` and files at `0600`, so the posture is a
+decision in one place rather than five accidents. The **root** is checked and a wider mode
+**refused, not repaired** — N39's ruling, for N39's reason: a silent `chmod` would hide that the
+directory was reachable, and for however long it was reachable it may already have been reached. The
+check is at `StoreLock::acquire`, the one funnel every mutating operation passes through, so reading
+`calibrate status` does not pay for it. And the photo write is **split**: `WhereverTheCallerSaid`
+still writes a `-o` path at the caller's umask, because a fifo, `/dev/stdout` or a directory whose
+permissions are the operator's business is not this tool's to override; `IntoTheSessionTree` is for a
+path this tool composed inside a directory it created.
+
+**One migration cost, and it is real.** An existing state tree created by an earlier build is refused
+until it is tightened. The refusal names the directory, the mode and the command
+(`chmod -R go-rwx <dir>`). That is the price of N39's ruling applied here, and the alternative —
+repairing quietly — is the thing N39 forbids.
+
+*Corrected 2026-08-16*: this note first said "the tree on the development machine is `drwxrwxr-x`
+and needs it". Measured again while writing the end-to-end coverage below:
+`~/.local/state/webcam-handler` on this machine is **`drwx------`**, and `~/.local/state` is too.
+The migration cost is real for somebody and it was not real here, which is exactly the kind of
+sentence that has to be measured rather than assumed — and part of why nothing in the suite
+noticed the break **N150** records.
+
+**What the check asks, and what it does not.** The mask is `paths::GROUP_AND_OTHER_BITS` and
+nothing else, so a *narrower* mode passes (0500 is not an exposure; the first write into it fails
+with the kernel's own `EACCES`) and the set-id and sticky bits are ignored. N150 records what
+happened when it was written as `!STATE_DIR_MODE` instead, and it is not hypothetical: Linux
+inherits `S_ISGID` on `mkdir`, so under a setgid parent this tool created 2700 and refused it on
+the same call.
+
+**And the end-to-end half.** `scripts/gates/state-dir-permissions.sh` plants a pre-existing 0755
+tree and drives a shipped `webcam-handler-cli` at it, because every Rust test in this repository
+roots its store at a directory the tool creates itself and so could not see a compatibility break
+at all. It also runs the remedy the refusal prints and starts a session again afterwards — a
+refusal whose way out does not work is a tool that has stopped working.
+
+**The fixture was wider than the thing it stands in for**, which is how this was found:
+`tempfile::TempDir` creates at `0o777 & !umask`, so every `TempStore` root was `0775` and the
+store's own check refused it. `paths::scratch_dir` sets the mode, because a scratch session tree
+holds exactly what a real one does.
+
+**What went red first:**
+`store::tests::every_directory_and_file_this_store_creates_is_private_to_its_owner` — *"…/photos/
+focus_absolute/0 is mode 0775, wider than the 0700 this tree is kept at"*;
+`store::tests::a_state_directory_anybody_can_walk_into_is_refused_rather_than_tightened`, which also
+asserts the directory is **unchanged** afterwards so a helpful repair cannot be added without a red
+test; and `photo::tests::a_photo_this_tool_placed_is_private_and_one_the_caller_placed_keeps_their_umask`
+— *left 436 (0664), right 384 (0600)* — whose second half pins the split from the other side.
+
+**Retires when:** nothing. The mode is a posture, not a bound.
+
+---
+
+## N143 — The D3 probe snapshotted itself against an empty pair set, so its own restore had no automation to put back first
+
+**Doc:** design **D3** layer 2 (the probe), **D4**'s automation-first restore ordering, **E1**
+(measured beats declared), design §2.10's one home per law. Raised as docs/11 §4.3 **M13**. Recorded
+2026-08-16.
+
+**Repo:** `engine::discover::pairs` now takes its pre-probe snapshot through
+`engine::snapshot::take_in_effect`.
+
+`snapshot::take` derives each entry's `ControlRole` from the pair set it is handed — *"for restore
+ordering 'automation' means 'something depends on me', and only the pair set knows that"* — and the
+probe handed it `&[]`. So every entry came back `Manual`, `Snapshot::restore_order` degenerated to
+alphabetical, and `UnrestorableReason::StillInactive` could not name the partner it was blocked by.
+The one home for "which relationships are automation" was bypassed by the one code path whose whole
+job is to discover them.
+
+The probe has measured nothing yet, so what it can honestly ask for is the *declared* table narrowed
+to this device — `pairing::in_effect(&controls, Vec::new())`, which is exactly what `take_in_effect`
+composes and exists for. The restore at the end of the function keeps using the measured set,
+because by then there is one.
+
+**What went red first:**
+`discover::tests::the_probes_own_restore_puts_automation_back_first_rather_than_alphabetically` —
+*left `"brightness"`, right `"white_balance_automatic"`*, with the report showing the second half as
+well: `Unrestorable { control: white_balance_temperature, reason: StillInactive { automation: None } }`.
+`brightness` is in the fixture because it sorts *before* the automation control, so alphabetical
+order and D4's order disagree about what goes back first.
+
+---
+
+## N144 — `SettlePolicy::deadline_ms` was the one caller-supplied number with no bound
+
+**Doc:** AGENTS **"Bounded everything: … constants live in `webcam-handler-schema::limits` and
+something reads each one"**; design **D12** (one camera is one actor thread);
+`limits::PREVIEW_SUSPEND_MAX_MS` and its own derivation. Raised as docs/11 §4.3 **M12**. Recorded
+2026-08-16.
+
+**Repo:** `schema::limits::MAX_SETTLE_DEADLINE_MS`, read by `engine::capture::grab`.
+
+The only ceiling on how long one photo could hold a camera's single actor thread was
+`MAX_SETTLE_ROUNDS × FRAME_DEADLINE_MS` — and that backstop's own doc prices it against *"a round
+that neither consumes a frame nor advances the clock"*, which is a question about a wedged camera and
+not about what a caller's number is allowed to be.
+
+**Derived rather than chosen.** `PREVIEW_SUSPEND_MAX_MS` is already the argued ceiling sitting beside
+it: ten seconds, priced from below by the ordinary photo that must fit
+(`DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS`) and from above by what a person watching a preview
+would call broken. Two names for one number is deliberate here, and the compile-time assertion says
+why: a settle cap *above* the preview bound would be a request `engine::capture` accepted and
+`engine::preview::while_suspended` refused, which makes the answer a property of whether somebody
+happened to have a browser tab open.
+
+**Refused, not clamped**, and **before `start_stream`**: the bound is on how long the thread is held,
+so a check after `STREAMON` would already have held it. The two checks are not a duplicate — the
+preview one refuses before the stream is stopped at all and has more to say; this one bounds every
+capture on the device whether or not anyone is watching. `grab` is the *door*, which makes it the
+invariant and not the whole answer: note **N147** is what a refusal there still costs, and where
+the same question is asked earlier.
+
+**Two corrections to the form this first landed in**, both from the adversarial reading:
+
+- The constant's doc said `engine::capture::grab` is *"the one door every settle in this engine
+  goes through — a photo's, a sweep sample's **and a recording's alike**"*. A recording does not
+  settle: `engine::record`'s header says so in its first line and `schema::video::RecordRequest`
+  carries no settle policy at all. The sentence now names the two that are true.
+- It landed with two compile-time assertions and **one of them could not fail.**
+  `assert!(MAX_SETTLE_DEADLINE_MS >= DEFAULT_SETTLE_DEADLINE_MS)` was the right idea with the
+  load-bearing term dropped: 5000 ≥ 5000 holds, so the one-token edit the prose forbids
+  (`= PREVIEW_SUSPEND_MAX_MS / 2`, which silently makes the cap equal the default and puts every
+  default photo one `FRAME_DEADLINE_MS` from a refusal nobody asked for) sailed through it. With
+  `+ FRAME_DEADLINE_MS` restored it does not: *"evaluation panicked: assertion failed:
+  MAX_SETTLE_DEADLINE_MS >= DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS"*.
+
+*Corrected again 2026-08-16*, by the reading of the batch that made the correction above: the
+same edit **deleted** `assert!(MAX_SETTLE_DEADLINE_MS <= PREVIEW_SUSPEND_MAX_MS)` as a tautology,
+on the argument that `<=` over an alias unfolds to `X <= X` and no value of any constant in the
+file can make it false. That argument holds every constant variable and the *definition* fixed —
+and the definition is the only thing either assertion was ever constraining. `=
+PREVIEW_SUSPEND_MAX_MS * 2` is the mirror of the `/ 2` edit the surviving assertion exists to
+catch, it keeps the alias shape and every word of the doc paragraph plausible, and after it
+`capture::grab` accepts a settle `preview::while_suspended` refuses — which the constant's own
+doc calls *"the one answer a caller cannot act on"*. It is back, and it is red on that edit:
+*"evaluation panicked: assertion failed: MAX_SETTLE_DEADLINE_MS <= PREVIEW_SUSPEND_MAX_MS"*.
+What the deletion left behind for a fortnight was a relation held only incidentally, by the two
+`== 10_000` asserts in `schema::capture` and `cli_core` that pin *documentation literals* — and
+those are precisely what somebody deliberately raising the cap would update, so the one edit that
+needed a check would have met none. Two assertions, and each of them constrains the same
+expression from one side.
+
+**What went red first:**
+`capture::tests::a_settle_deadline_above_the_cap_is_refused_before_the_camera_is_streamed`, which
+asserts the `started` list is empty as well as the refusal, and whose second half is the other
+direction — the cap itself is a settle a caller may ask for. The existing backstop test moved from
+`deadline_ms: u64::MAX` to the cap; the case is unchanged, because a clock that does not move never
+reaches *any* deadline, which is the whole reason `MAX_SETTLE_ROUNDS` exists.
+
+---
+
+## N145 — `SweepAdjustment` was built for every sweep and read by nobody, and the agent it was written for was the one not told
+
+**Doc:** rubric **A8** (*"a typed declaration nothing reads"*); D3's `{requested, applied}` doctrine,
+which the type's own doc claims to be *"one layer up"*; AGENTS' *"who runs this"* — the primary
+consumer is an unattended agent harness with no hands. Raised as docs/11 §4.3 **M14**, which asked
+for a ruling: give it a reader or delete it. Recorded 2026-08-16.
+
+**Repo:** `schema::session::{SampleCap, SweepAdjustment}` (moved from `engine::sweep`, which
+re-exports them), a new `adjustments` field on
+`schema::progress::CalibrationProgress::SweepStarted`, and `cli_core::render::sweep_adjustment_line`.
+
+**The ruling is a reader, and E6's precedent is why.** Deleting would throw away four kinds of
+measurement the planner already makes. E6 met the same shape in `Session::pre_snapshot` — written by
+the product, read only by the suite — and its answer was an eighth verb (N23), not a deletion. Here
+the only reader was `crates/backends/v4l2/tests/hardware.rs`.
+
+**What the silence cost.** `sweep::plan` widens the *stride* rather than truncating the range when a
+cap fires, so a `--precision 1` sweep of a 10 000-wide range plans 251 samples at a stride of 40.
+Both composition roots drop the whole `SweepOutcome`, so an agent was told *"251 sample(s)"* and had
+no way to learn that the precision it asked for is not the precision it got — and every comparison it
+then draws from those photos is drawn at a resolution it believes is forty times finer than it is.
+Clamped and step-aligned values are the same story one size down.
+
+**Three surfaces, not one, and the first form of this repair reached only the third.** The live
+`SweepStarted` event is where the information is *first* actionable — a subscriber reads it before
+any sample exists — but it is the surface the consumer M14 was raised about never sees.
+`cli_core::render::watcher` routes `--json` into `Quiet`, deliberately and correctly (a bar drawn
+into a document makes the document unparsable), so `calibrate sweep --json` answered `"total": 251`
+and nothing else; and a reader who arrives after the sweep — the ordinary case for
+`calibrate status` — has only `log.ndjson`. So the planner's answer lands in all three, written by
+the one transition so they cannot disagree:
+
+- `ControlStatus::Sweeping` gains `precision` and `adjustments`. This is the document
+  `calibrate sweep --json` prints, and D8 leaves a finished sweep in `Sweeping` until something
+  selects, so the answer really carries it.
+- `SessionEvent::SweepStarted` gains the same pair. The document's copy is gone the moment a
+  `select` moves the control to `Calibrated`; the log is what outlives every transition.
+- `CalibrationProgress::SweepStarted` gains `precision` beside the `adjustments` it already had.
+
+`engine::session::begin_sweep` takes a `Planned` value rather than four parameters, which is what
+makes "written by the one transition" a property rather than a convention: the status and the log
+line come out of the same call.
+
+**And the `precision` half was the point.** M14 named "four adjustment kinds **and a `precision`**",
+and the stride is the number that says what every photograph in the session directory is worth — a
+`--precision 1` sweep of a 10 000-wide range plans 251 samples at a stride of 40. It had no reader
+outside its own test module. It now has four, counting the human line.
+
+**On the wire, and on the page.** Riding the wire is what moves the vocabulary into `schema` —
+`SweepRequest`'s reason, and the same seam. The field is `skip_serializing_if = "Vec::is_empty"`,
+and the encoding is the claim: absent and empty are one document, exactly as
+`NegotiatedStream::adjustments` is. (The sentence *"an empty list is a claim, so it is reported
+rather than assumed"* was in the first form of this note and is false of a field that is omitted;
+what is not left to inference is the durable copy.) `crates/web/assets/calibration.js` renders both
+on `sweep_started`, because AGENTS names the owner calibrating from that page as the person who
+types a precision — and an unknown `adjustment` kind is *shown* rather than dropped, since a daemon
+newer than the page is exactly what "represent the unknown" is about.
+
+**The human line survives the bar.** `SweepStarted` is not `is_terminal`, so `Bar::event` only
+`set_message`d it: the next `ValueSet` overwrote it a settle later and `finish_and_clear` wiped it,
+and indicatif hides the bar entirely when standard error is not a tty. A line carrying an adjustment
+is `println`ed into scrollback, for the reason terminal events are — it is the one thing on that
+stream that changes what every photograph the sweep is about to take is worth.
+
+Rendering lives in the shared T4 core, so `webcam-handler-cli` and `webcam-handler-client` say the
+same sentence by construction. The motion cap names *why* it fired, because a sweep trimmed for wear
+(design §5) and one trimmed for size are not the same news.
+
+**What went red first:**
+`calibrate::tests::a_sweep_the_planner_adjusted_announces_the_adjustments_rather_than_only_the_count`
+— *"the event and the plan disagree about what the planner did: left `[]`, right `[Clamped {
+requested: -5, planned: 0 }, Clamped { requested: 4000, planned: 255 }, Deduplicated { dropped: 2 }]`"* —
+and `render::tests::a_sweep_the_planner_trimmed_says_so_on_the_line_that_announces_it`.
+
+That second test's *claim* — "every kind is walked, so a fifth cannot acquire a spelling nobody
+looked at" — was false when it was written: it iterated a hand-written four-element array, which is
+the hand list rubric rule 6 bans, and a fifth variant would have been caught by the compiler's
+exhaustive `match` in `sweep_adjustment_line` and by nothing in the test. `SweepAdjustment` carries
+struct variants, so `closed_vocabulary!` cannot generate an `ALL` for it directly;
+`SweepAdjustmentKind` plus `SweepAdjustment::kind` is the join, and the test now walks
+`SweepAdjustmentKind::ALL` and builds its example through an exhaustive `match`, so a fifth kind is
+a compile error in three places rather than a green test. It also asserts each example really is of
+the kind it was asked for, since a mis-typed arm would otherwise leave one kind unwalked and report
+a duplicate spelling instead of the real fault.
+
+The `calibrate` half grew with the repair and is named for what it now covers:
+`a_sweep_the_planner_adjusted_says_so_on_the_answer_the_history_and_the_event`, which went red on
+the document — *"the answer document says nothing about what the planner did: left `([], 0)`,
+right `([Clamped { requested: -5, planned: 0 }, Clamped { requested: 4000, planned: 255 },
+Deduplicated { dropped: 2 }], 255)`"*.
+
+**The stride's own table cell, corrected 2026-08-16.** The `Sweeping` row printed the new
+`precision` as `N (planned)` and printed a **dash** for zero, under a comment naming two meanings
+for that dash: "this plan has one value" and "this document predates the field". That is note
+**N149**'s collapse — an absent value rendered as a plausible one — a page above the `Calibrated`
+arm that spells its own zero `(single sample)` for exactly this reason. It is also not what zero
+means here: `engine::sweep::precision_of` falls back to the descriptor's `effective_step`, which
+`ControlRange::effective_step` floors at 1, so **no sweep this build plans can carry a zero
+stride**. A zero on a `Sweeping` status has one origin, the `#[serde(default)]` on a document an
+older build wrote, and the cell now says so — `(not recorded)`, which is a different sentence
+from the dash that means "this status has no such number" and from `(single sample)`, which is a
+claim about the plan the document does not support. Neither branch had an assertion when it
+landed; both have one now, and the zero half is red on the dash it replaced (*"a stride nobody
+recorded reads as a sweep with no stride: left `"—"`, right `"—"`"*).
+
+---
+
+## N146 — A session's disk writes are quadratic in its sample count, and measuring it is what decided to leave them alone
+
+**Doc:** design **D9**'s write protocol and **§6**'s crash story; note **N12** (the two `fsync`s);
+notes **N139** and **N140**, the two repairs landed beside this one. Raised as docs/11 §8 **P2**,
+which called it *"the one performance finding worth acting on"* and asked for a reasoned refusal if
+it could not be made safely. Recorded 2026-08-16.
+
+**Repo:** unchanged. `engine::lifecycle::persist` still clones the whole `Session`, serialises it and
+publishes it through `write_json_atomic` on every sample.
+
+**The finding is real.** At `MAX_SWEEP_SAMPLES = 256` the last write carries 255 samples' worth of
+document and each one costs two `fsync`s. Measured on a real session document from the development
+machine's state directory: **~1.7 KB per sample**, so a full sweep's mean document is ~220 KB and its
+total write volume is ~56 MB for ~440 KB of information.
+
+**And it is 0.04 % of the sweep.** Measured 2026-08-16 on this machine's `target/` filesystem — **ext4
+on an NVMe SSD** (`/dev/nvme0n1p5`, non-rotational), which is the fact a later reader retiring this
+entry needs, because `fsync` latency is a property of the device and not of the code: the same loop
+on a spinning disk or a network filesystem is one to two orders of magnitude slower. 256 cycles of
+`tempfile → write → fsync → rename → fsync(dir)` at 220 KB each: **0.204 s total, 0.80 ms per
+publish**. PF:9 measures 2.0 s per photo on the OBSBOT and 0.48 s on the Chicony, both including
+the ten-frame settle, so a 256-sample sweep is 512 s of camera time on the OBSBOT. The plumbing is
+0.2 s of it. The review's premise — *"on the long path, `fsync`-bound rather than CPU-bound"* — is
+correct about the shape and wrong about the magnitude, and the magnitude is the whole decision.
+
+**The change would also cost crash-safety, which is the constraint the review named.** Moving samples
+onto `log.ndjson` and rewriting `session.json` on a coarser schedule means the log becomes
+*authoritative* for state the document no longer holds between rewrites. Three things follow, and the
+first is decisive:
+
+- **The log's failure mode is "refuse the whole file".** An unparsable interior line is a typed
+  refusal, and it must stay one (N12 pins it against a seeded mutant; N140 narrowed what could
+  produce one but did not make it impossible — an operator's editor still can). Today that costs the
+  *history*; after the change it would cost the *calibration*, because the samples would be in there.
+  Converting "no history" into "no calibration" for the same damage is a worse trade than the one it
+  buys.
+- **`SessionEvent::SampleTaken` is not a sample.** It carries `{control, requested, applied}` and a
+  `Sample` carries warnings, the photo path, the metrics and `captured_at`. Making the log
+  sufficient means changing that payload, which moves `SESSION_SCHEMA_VERSION` and every committed
+  artifact under `schemas/`.
+- **It would have to agree with N139 and N140, which landed in this batch.** `free_stranded_sweeps`
+  reads `session.controls[…].samples` to decide whether a control recorded anything; with a coarser
+  rewrite schedule that field is stale by construction, and a recovery that read it would roll back
+  samples that had been taken. The repair and the optimisation would have to be designed together,
+  and this batch had the first one red before it had the second one drawn.
+
+**Left, therefore, with the arithmetic on the record rather than the intuition.** A wrong answer here
+loses a user's calibration run, and the measured saving is a fifth of a second in eight and a half
+minutes.
+
+**Retires when:** the sample cost stops being dominated by the camera — a backend that captures
+without a settle, or a `MAX_SWEEP_SAMPLES` raised by an order of magnitude — or the log gains a
+per-record framing whose damage is recoverable line by line rather than file-wide. Either changes the
+trade above; nothing else does.
+
+---
+
+## N147 — A bound had one home and it was the wrong end: the settle cap refused after the motor had moved
+
+**Doc:** AGENTS **"Bounded everything"** and rule **1** (a fix lands with its gate); design **D12**
+(one camera is one actor thread); note **N144**, which introduced
+`limits::MAX_SETTLE_DEADLINE_MS`; `scripts/gates/phase-criteria.tsv`'s `record` criterion —
+*"a request this build was never going to honour must not cost anybody a descriptor"*. Raised
+against the N144 repair by the adversarial reading of batch B2. Recorded 2026-08-16.
+
+**Repo:** `schema::capture::SettlePolicy::within_bound`, asked by `engine::capture::grab`,
+`engine::calibrate::run`, `daemon::server::photo` and `daemon::server::calibrate_sweep`.
+
+**The check was right and its position was not.** N144 put the cap at `engine::capture::grab`,
+which is the one door every settle in this engine goes through, and that is what makes it the
+*invariant*: a settle nobody may ask for cannot get past it however the request was composed.
+What `grab` cannot be is *cheap*. It runs at the sample, and by the time a sweep reaches its
+first sample `calibrate::run` has committed `Sweeping { done: 0 }` to the document, armed a
+pre-sweep snapshot, switched an automation partner off and driven a value into the device — which
+for a PTZ control is **a motor that has moved**, on hardware §5 says wears. On the daemon the same
+shape cost a caller-named zero-length file (`open_destination` runs before the actor) and a seat
+in that camera's single command queue, behind whatever else was waiting.
+
+**The tree already had the rule and the words for it.** `record`'s criterion says a request this
+build was never going to honour must not cost anybody a descriptor, and
+`schema::video::RecordRequest` and `schema::capture::Sink` already carry their refusals *beside
+the fields they constrain* so that every caller can ask before the request has cost anything —
+`Sink::is_addressable` is the model this follows exactly. `webcam-handler-daemon` links no
+`cli-core` (N46), so a rule written at either composition root is a rule the other one does not
+have; the schema is the only home both can reach.
+
+**Door and gate, not door or gate.** `grab` still asks. Four callers ask earlier. That is not a
+duplicated law — it is one predicate with one implementation, called where a refusal is free and
+called again where it must be certain, and the criterion row is what keeps the earlier calls from
+quietly disappearing.
+
+**What the refusal says.** `IllegalTransition` naming both the deadline asked for and the cap,
+never `SettleTimeout`: nothing waited, and nothing about the camera is being reported (E3). The
+number is in the message because the guide tells an agent that met `settle_timeout` to *"retry
+with a longer `--settle-deadline`"*, and a ceiling that is not stated is a retry loop.
+
+**Which is the other half of this note, and it is the documentation.** The bound reached no
+surface an agent reads. `schemas/webcam-handler-schema.json` gave `deadline_ms` a `minimum: 0` and
+no `maximum`, so a consumer validating `{"deadline_ms": 60000}` against the committed bundle was
+told it was valid for a request the tool rejects — the precise failure D10 commits those artifacts
+to prevent. `docs/agent-guide.md` described the flag with no cap and answered `settle_timeout`
+with an unbounded retry. `crates/api`'s `# Errors` for `wch_photo` omitted the refusal while
+`wch_record_start` spelled out the analogous `MAX_RECORDING_MS` case three methods away. All four
+now say it, and **every number is derived**: `#[schemars(range(max = 10000))]` beside a
+`const _: () = assert!(limits::MAX_SETTLE_DEADLINE_MS == 10_000)`, the guide's row and its photo
+recipe formatted from `schema::limits`, and the clap help with the same assertion behind it. A
+document that advertised a ceiling this build does not have would be worse than one that
+advertised none.
+
+**What went red first:**
+`calibrate::tests::a_settle_no_camera_may_be_held_for_is_refused_before_the_document_or_the_device_moves`
+— *"the document says a sweep began that this build was never going to run: left `Some(Untouched)`,
+right `None`"* — which also asserts no snapshot was armed, the camera's controls are unchanged and
+no progress event was emitted. And
+`mutating_verbs.rs::a_sink_only_a_socket_can_build_is_refused_before_any_camera_is_opened`, whose
+new arm went red on *"a request this build was never going to honour left a file where none was"*.
+The door's own test (N144's) is the third row of the criterion, unchanged.
+
+**Retires when:** nothing. The pair of positions is the point; a build with only one of them is a
+build that has lost either the invariant or the price.
+
+---
+
+## N148 — The committed artifacts are documentation for a reader with no Rust toolchain, and four sentences forgot it
+
+**Doc:** design **D10** (the JSON Schema bundle and the OpenRPC document are generated
+documentation, committed so a consumer needs no Rust toolchain); note **N123** (clap prints doc
+comments to a user, so a rustdoc link in one is a shipped defect); rubric rule **6** (no hand
+lists). Raised as docs/11 **M22**'s class, firing inside the batch that was repairing a
+neighbouring class. Recorded 2026-08-16.
+
+**Repo:** `schema::session::{SampleCap, SweepAdjustment, SweepAdjustmentKind}`.
+
+**N123's lesson generalises and had not been generalised.** That note's finding was that clap
+prints doc comments *to a person*, so ``[`Cli::try_parse_checked_from`]`` reaches them as brackets
+around an identifier they cannot open. The same is true one artifact along: `schemars` and the
+OpenRPC emitter copy doc comments verbatim into `schemas/*.json`, which exist precisely so a
+consumer does not have to read Rust — and `no_text_this_surface_prints_carries_a_rustdoc_link`
+covers the clap tree only, so nothing could go red.
+
+Four landed with the `SweepAdjustment` move, and one of them was the whole of a `$def`'s published
+documentation: `SampleCap::Total`'s description was ``[`limits::MAX_SWEEP_SAMPLES`]``, so the
+document said the cap exists, said nothing about what it is, and pointed at a name that appears
+nowhere in the document. **The values are written out** — 256 and 32 — with a
+`const _: () = assert!(…)` on each, because a stated number that drifts is worse than a named
+constant: a consumer of the artifact has no way to notice.
+
+**And the hand list under the claim.** `render::tests::…says_so_on_the_line_that_announces_it` said
+it walked every adjustment kind "so a fifth cannot acquire a spelling nobody looked at" while
+iterating a four-element array written in the test. `closed_vocabulary!` generates `ALL` from an
+enum's definition and cannot do it for struct variants, which is why this one had none;
+`SweepAdjustmentKind` is the discriminant on its own and `SweepAdjustment::kind` is the exhaustive
+join, so a fifth variant is a compile error in `kind`, then a missing member of `ALL`, then a
+missing arm in the test's own `match`. The kind enum is deliberately **not** on the wire:
+`SweepAdjustment` is already tagged with those names, and a second encoding of one discriminant is
+a second thing to disagree with.
+
+**Left undone, named:** the class is wider than this batch. `schemas/webcam-handler-openrpc.json`
+carries **124** rustdoc links (101 distinct targets) across 81 lines and the JSON Schema bundle
+**103** (78 distinct) across 68, all predating this work, so a gate that went red on them would go
+red 124 times on its first run. M22 owns them; what this note owns is not adding to the pile and
+the one `$def` whose only documentation was a link.
+
+*Corrected 2026-08-16*: this paragraph first said "85 … and a comparable number in the bundle",
+which was neither figure — it is close to the *line* count of one of the two files, taken before
+this batch removed four links, and it was written from memory rather than measured. The count
+above is `grep -c '\[\`'` for the lines and a walk of every `description`, `summary` and `title`
+string for the links themselves, run on the committed artifacts. A note whose own argument is
+that *"a stated number that drifts is worse than a named constant: a consumer of the artifact
+has no way to notice"* is the last place a number should be estimated, and the correction is
+cheaper than the sentence it replaces was: the figure is what decides whether M22 is an
+afternoon or a week.
+
+---
+
+## N149 — A refusal nobody measured is an absent field, not a plausible one
+
+**Doc:** note **N18** (the durable `SweepInterrupted` line, and what its `failure` field is for);
+design **D13**'s closed registry; `docs/agent-guide.md`'s dispatch table, which is what an
+unattended agent does with a discriminant; AGENTS rule **7** (availability is not capability) and
+the "represent the unknown" rule. Raised against N139's repair by the adversarial reading of batch
+B2. Recorded 2026-08-16.
+
+**Repo:** `schema::session::SessionEvent::SweepInterrupted::failure`, now
+`Option<ErrorKind>`; its two producers are `engine::calibrate`'s interruption path and
+`engine::lifecycle::free_stranded_sweeps`.
+
+**Two producers know different things, and one field cannot mean two.** `calibrate`'s path is
+*inside* the sweep that stopped: it has the refusal in hand, and `DeviceGone`, `SettleTimeout` and
+`StorageIo` are answers to "why". `free_stranded_sweeps` runs in a **later process**, repairing a
+control a killed sweep left behind, and has nothing to read — the process that knew died without
+writing a line. N139's first form wrote `IllegalTransition` there, with a `detail` whose own words
+were *"Why it stopped is not recorded here"*: a present discriminant saying the discriminant is not
+known, in the field N18 documents as *"the refusal's discriminant, so a reader can branch without
+parsing prose"*.
+
+**Why `IllegalTransition` was the tempting wrong answer.** It is not invented — it is literally
+what `may_begin_sweep` answers when the next verb meets the stranded control — and it cannot be
+mistaken for something the camera did. But it is a refusal about **a different call at a different
+time**, and D13's discriminant is the thing an agent dispatches on:
+`docs/agent-guide.md` answers `illegal_transition` with *"fix the request"*, and there is nothing
+to fix. The process is gone and the control has already been given back. That is §9.3's *"the
+message is the payload, and it goes stale"* — N129's class — landing inside the batch repairing
+N129's class.
+
+**The representation.** `#[serde(default, skip_serializing_if = "Option::is_none")]`, so an absent
+`failure` is a line whose writer could not name a reason and `detail` carries the story. This
+keeps N18's invariant literally true rather than nearly true, and it needed no new D13 variant: the
+registry is closed at eighteen and adding a nineteenth to describe "we do not know" would be a
+refusal nothing ever refuses with.
+
+The `Option` is on the **durable** event only. `CalibrationProgress::SweepInterrupted` — the live
+one — keeps a required `ErrorKind`, because the only thing that emits it is the sweep that stopped,
+and a live interruption with no reason is not a state this build can be in.
+
+**One rendering fixed with it.** `cli_core::render::status` printed `{failure:?}` — Rust `Debug`,
+`IllegalTransition` — beside a `--json` view of the same line carrying `"illegal_transition"`. Two
+spellings for one value, on the surface whose whole job is to let a reader branch. It now prints
+the registry's own serde spelling, and prints nothing at all where the field is absent: a
+parenthesis reading "(none)" would look like a kind.
+
+**What went red first:**
+`lifecycle::tests::a_sweep_that_died_before_its_first_sample_is_given_back_and_one_with_samples_is_not`
+— *"the repair left the wrong record: [SweepInterrupted { …, failure: Some(IllegalTransition), … }]"*.
+
+*Completed 2026-08-16*: the rendering above landed **with no assertion of its own**, in the batch
+whose subject is a value nothing reads.
+`render::tests::a_status_rendering_says_why_a_sweep_stopped_…` asserted the count and the detail
+and never the discriminant, so putting `{failure:?}` back left it green; and no fixture anywhere
+in `cli-core` carried `failure: None`, so the branch this note is *about* had no reader at the
+layer a person meets it. Both halves are pinned now, against the ends of the line rather than
+against a substring, because what an absent reason has to render as is *nothing at all*: the
+known one is *"the discriminant is missing, or spelled some way other than the registry's own:
+… `/dev/video0 disappeared (Some(DeviceGone))`"* on the `Debug` spelling, and the absent one is
+*"an absent reason was rendered as something after the detail … `gave the control back (none)`"*
+on the invented parenthesis this note argued against in prose.
+
+**Retires when:** N24's and N18's own trigger — D8 gains a durable "this sweep is running, owned by
+that process" fact. A reason would then be readable rather than absent, and this field would be
+present on both producers again.
+
+---
+
+## N150 — N39's ruling has two halves and a mask, and D9's tree got one of the three
+
+**Doc:** note **N39** (the socket directory's mode *and* owner, and why a wrong mode is refused
+rather than repaired); design **D9** and **D11**; note **N142**, which applied N39 to the session
+tree; design §2.10 (one home per law); AGENTS **"A frame may contain a person"**. Raised against
+N142's repair by the adversarial reading of batch B2. Recorded 2026-08-16.
+
+**Repo:** `engine::store::check_state_dir`, `schema::paths::{MODE_BITS, GROUP_AND_OTHER_BITS}`,
+`engine::paths::scratch_dir`, and `scripts/gates/state-dir-permissions.sh`.
+
+### The mask, which refused a directory this tool had just created
+
+`MODE_BITS` is `0o7777` and includes set-user, set-group and sticky, and the check asked
+`mode & !STATE_DIR_MODE != 0`. Linux **inherits `S_ISGID` on `mkdir`** under a setgid parent, which
+is an ordinary arrangement on group-managed and shared homes — so on such a host
+`create_private_dir(root)` produced `2700` and `check_state_dir_mode(root)` refused it **on the
+same call, on a first run, on a directory nobody but this tool had ever touched**. Every mutating
+verb then refused for ever, and the printed remedy `chmod -R go-rwx` cannot by POSIX clear a
+set-id bit, so an operator following the message would loop.
+
+The question the check is actually asking is *who other than the owner can reach the frames*, and
+the mask for that is `GROUP_AND_OTHER_BITS` — `0o077`, which is exactly the set `chmod go-rwx`
+clears. Two consequences follow and both are deliberate: a **narrower** mode passes, because 0500
+is not an exposure and the first write into it fails with the kernel's own `EACCES` rather than
+with an invented refusal; and the set-id and sticky bits are ignored, because they decide group
+inheritance and deletion, not readability.
+
+**The tree-wide test is a different question and briefly got this one's answer.** The same edit
+that narrowed the check narrowed `store::tests::every_directory_and_file_this_store_creates_is_
+private_to_its_owner` with it, from "no bit outside the mode this tool chose" to
+`GROUP_AND_OTHER_BITS` alone — after which `expected` was computed, named in the failure message
+and never compared, so a file this tool created at 0700 passed a test whose message says 0600. The
+inheritance only ever required masking the top three bits (`paths::INHERITED_MODE_BITS`), and what
+remains is the exact comparison: the check asks who can reach the frames, the test asks whether
+one decision produced every mode in the tree, and only one of those questions tolerates a
+narrower answer. Red on the case the weakened form let through: *"…/session.json is mode 0700, and
+this tree is kept at 0600"*.
+
+### The owner, which N39 argues for in the sentence N142 quoted
+
+N39's own words are *"a root daemon traverses a 0700 directory belonging to a user without
+noticing, which is exactly the case this refuses"*, and `daemon::uds::check_mode_and_owner` checks
+`st_uid == geteuid()` for it. N142 claimed that ruling and took the mode half only. So a
+`webcam-handler-daemon` run as root with `$XDG_STATE_HOME` under another user's 0700 tree wrote
+calibration photographs into a directory that user owns and can read, and was told everything was
+fine.
+
+`check_state_dir` takes the euid **as a value** rather than reading it, which is the pure-core
+rule earning its keep here: the failing direction needs a second account, and a check whose red arm
+only runs on a host that has one is a check that is green because nobody drove it. The one caller
+passes `rustix::process::geteuid()` — a `rustix` edge on `webcam-handler-engine`, which is an edge
+rather than an adoption (already a pinned workspace dependency, `process` feature only, and safe
+by construction for a crate that is `#![forbid(unsafe_code)]`).
+
+**The two predicates are not one, and the difference is the question.** `uds.rs` asks for *exact*
+equality with 0700 because D11 makes the socket directory's mode the entire authentication model,
+so anything else there is wrong. Here the mode is privacy, and only the bits that grant it are the
+subject. Each function's doc now carries that sentence from its own side, so a reader who meets
+either check first is not left to guess the other exists — and `uds.rs`'s half names what
+exactness costs it: `SocketDir::prepare` `mkdirat`s and then checks, so a setgid
+`$XDG_RUNTIME_DIR` would reproduce the break below one directory along. It stays exact anyway,
+because that directory is `/run/user/<uid>` made 0700 by the login manager rather than by a site's
+group policy, and because a daemon whose whole authentication is a mode word should refuse rather
+than serve when the word is not the one it asked for.
+
+The *constant* is shared: `MODE_BITS` was a private copy in each file and is now
+`schema::paths::MODE_BITS`, with `GROUP_AND_OTHER_BITS` beside it — §2.10 is about one home per
+law, and two copies that happen to agree are still two. **That sentence was true of one file when
+it was written**: the copy in `daemon::uds` survived the move and was found by the reading of the
+batch a day later, which is the ordinary way a "one home" claim goes wrong — the note records the
+intention and the diff does one side. `crates/daemon/src/uds.rs` imports it now, at its four uses.
+`INHERITED_MODE_BITS` (`0o7000`) joined the pair afterwards for the third mask in this argument:
+the bits an object arrives carrying that its creator did not ask for, which a claim about *what
+this tool created* masks off before asserting the rest exactly.
+
+### Nothing in the suite or the gates could see any of it
+
+Every Rust test roots its store at `TempStore::new()` → `paths::scratch_dir()`, which is 0700 by
+construction; every shell gate points `$XDG_STATE_HOME` at a fresh directory and `paths::state_dir`
+appends `webcam-handler`, so the *checked* root is always one the tool creates itself. No test
+planted a pre-existing 0755 app directory and drove a shipped binary at it, and no test ran under a
+setgid parent. `scripts/gates/state-dir-permissions.sh` is that coverage: it drives a real
+`webcam-handler-cli calibrate start` against three planted arrangements — a fresh directory (mode,
+owner, and a session actually written, so the mode is not a mode on an empty directory), a
+pre-existing 0755 tree (refused, left unchanged, and **the remedy the refusal prints is then run
+and the verb tried again**, because a refusal whose way out does not work is a tool that has
+stopped working), and a setgid parent (accepted at 2700, with a named counted skip on a filesystem
+that does not propagate the bit). Its failing arms drive the documented `$WCH_GATE_WCH` seam at
+wrong tools this repository has been or nearly was: the tree created at the umask and used, the
+same tree created and then refused by its own creator, the wide tree quietly repaired, a refusal
+with no remedy, a refusal whose remedy names some other directory, a success reported over a tree
+nothing was written into, a symlink standing in for the tree, and a build refusing its own setgid
+directory.
+
+**It landed with four of those, and all four went red in the same place**, which the reading of
+the batch caught: **not one of claim 1's three assertions was ever executed by an arm.** The umask
+arm created its tree 0775 and then *refused* it, so the predicate went red on the exit status two
+lines above and the mode comparison below it never ran — while the case file's own comment
+described a tool that creates wide and does **not** refuse, which is a stub that did not exist.
+The owner and the "a session was actually written" lines had no candidate at all. That is the
+shape this whole suite is built to catch, wearing the suite's own clothes: assertions nobody had
+driven, inside a gate written because nothing could go red. The stub now takes where it puts its
+tree and what it leaves behind as parameters, the arms are one wrong tool each, and a fourth
+assertion joined claim 1 with an arm of its own — the tree must not be a **symlink**, because
+Rust's `fs::metadata` follows one and the mode and owner checked above would then be a fact about
+whatever the link points at. The **owner** comparison still has no arm
+and cannot get one through this seam — a stub runs as whoever runs the selftest — so the
+predicate's header names that, names the second-account cost `uds-permissions.sh` pays once for
+D11 (note N44), and names the two things that stand in for it: `check_state_dir`'s own red arm,
+which takes the euid as a value for exactly this reason, and the symlink assertion, which is how a
+tree this tool created acquires somebody else's owner with nobody changing accounts.
+
+**And the remedy is no longer `eval`ed.** The arm that runs the printed `chmod` parsed it out of
+the tool's stderr and handed the string back to the shell, which is a code-execution seam driven
+by program output — unreachable while every path in it comes from `mktemp`, and not a thing this
+suite gets to hold "unreachable today" about. It is split into an argv with `read -a`, checked to
+be a `chmod` of the directory that was actually refused, and executed as arguments; the check
+earned an arm of its own, since a refusal whose way out fixes some *other* directory is a loop an
+operator cannot get out of by following it.
+
+### And the shape one object up
+
+`paths::scratch_dir` created at the ambient umask and `set_permissions`ed afterwards — the exact
+shape `photo::IntoTheSessionTree` spends ten lines of the same batch arguing against, because a
+`set_permissions` after a create leaves a window in which the object exists at the wider mode. An
+empty directory leaks nothing; a rule that holds in one place and not its neighbour is a rule
+nobody can rely on. `tempfile::Builder::permissions` passes the mode to the `mkdir`, so there is no
+window to argue about.
+
+**What went red first:**
+`store::tests::a_state_directory_this_tool_creates_under_a_setgid_parent_is_not_refused_on_the_spot`
+— *"a directory this tool just created is not one it may refuse: StorageIo { …, message: \"is mode
+2700, and this tool's state directory must grant nothing to group or other (0700) … run `chmod -R
+go-rwx …`\" }"* — and
+`store::tests::a_private_state_directory_somebody_else_owns_is_refused_naming_both_uids`, which
+went red as *"a private directory belonging to another account: ()"*, the check having answered
+`Ok`.
+
+**Retires when:** nothing. The mode and the owner are a posture, not a bound.
+
+---
+
+## N151 — The on-disk shape changed four ways and `SESSION_SCHEMA_VERSION` did not move, which is right and was nowhere written down
+
+**Doc:** `schema::limits::SESSION_SCHEMA_VERSION`, whose own doc read, until this note, *"Bumped
+when the on-disk shape changes; a foreign version is `SchemaVersionForeign`, never a best-effort
+parse"*; design **D9** (the session tree as the inspectable record); AGENTS' *"represent the
+unknown"*; notes **N145** (the stride and the adjustments) and **N149** (the absent refusal).
+Raised by the adversarial reading of batch B2b. Recorded 2026-08-16.
+
+**Repo:** `schema::limits::SESSION_SCHEMA_VERSION`, `schema::session::{ControlStatus::Sweeping,
+SessionEvent}`, `engine::store::{load_session, parse_log}`.
+
+**The four changes.** `session.json` gained `precision` and `adjustments` on
+`ControlStatus::Sweeping`; `log.ndjson` gained the same pair on `SessionEvent::SweepStarted`, and
+`SessionEvent::SweepInterrupted::failure` went from a required `ErrorKind` to an optional one. The
+sentence above says a bump follows, and no bump happened.
+
+**Not bumping is the decision, and the reason is what a bump would do to a tree that already
+exists.** `store::load_session` refuses **any** version that is not this build's — older and newer
+alike, deliberately, because a build cannot know what a document it has never seen means — so
+`SESSION_SCHEMA_VERSION = 2` would turn every calibration session on every machine into
+`SchemaVersionForeign` on the next `calibrate status`. What that buys has to be weighed against
+what it costs, and here it buys nothing: every one of the four is absorbed by a `#[serde(default)]`
+on the way in — three added fields and one field that stopped being required — so a version-1
+document read by this build produces a `Sweeping` with a zero stride and an empty
+adjustment list — which the table renders as *"(not recorded)"* rather than as a stride, because
+this build's planner cannot produce a zero (note **N145**'s correction). Reading forward is clean;
+a bump would make it impossible. The doc sentence is now the rule for a shape change a default
+cannot absorb — a field removed, a field's meaning changed, a variant renamed — and this note is
+the deviation it did not have.
+
+**The direction that is not clean is backwards, and it is worth stating exactly.** `LogEntry`
+carries no version of its own: `load_session` checks `session.json` and `parse_log` checks
+nothing, because the log's shape has always been the document's. So an **older** binary — a
+rollback, the only way to meet this — reading a `log.ndjson` this build wrote refuses on any line
+whose `failure` is absent, and `parse_log`'s failure is **file-wide**: the whole history is
+refused as `StorageIo` in `store::corrupt`'s words (*"line N is not a log entry, and it is not
+the unterminated last line a crash would leave — this file is corrupt, and guessing at its
+contents would invent a session history"*), not as a foreign version, and not as the one line it
+cannot read. The message an operator gets names corruption for a file that is intact. (D13 has no
+"corrupt document" variant and `SchemaVersionForeign` would be a lie on that path today, which is
+`corrupt`'s own argument — the field it would have to be a lie *about* is the one the log does
+not carry.)
+
+Left as it is, and narrowly, because acting on it means one of two things this batch is not the
+place for: a version on every log line (a per-line cost for a file that is append-only and read
+whole), or a per-line skip in `parse_log`, which is exactly the "best-effort parse" the version
+constant's own sentence forbids — a history with a line silently dropped is worse than one that
+refuses, since D9's whole claim is that the log is what outlives every transition. It also needs
+two coincidences to reach: a downgrade, *and* a session with a sweep that a killed process left
+behind. What this note buys is that whoever meets `SessionCorrupt` on an intact file after a
+rollback finds the answer here rather than debugging their own tree.
+
+**Retires when:** the log gains a version of its own, or `SESSION_SCHEMA_VERSION` moves — at which
+point the second paragraph above is the argument for what a bump has to be worth.

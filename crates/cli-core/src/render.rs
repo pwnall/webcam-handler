@@ -33,7 +33,8 @@ use schema::profile::DeviceProfile;
 use schema::progress::{CalibrationProgress, ProgressEvent};
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{
-    BlockedReason, ControlStatus, Session, SessionEvent, SessionList, SessionStatus,
+    BlockedReason, ControlStatus, SampleCap, Session, SessionEvent, SessionList, SessionStatus,
+    SweepAdjustment,
 };
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot, UnrestorableReason};
 use schema::video::{IntervalSource, RecordReport, RecordingEnd};
@@ -733,6 +734,27 @@ pub(crate) fn restore(report: &RestoreReport, as_json: bool, out: &mut Output) -
     }
     out.line(Stream::Stdout, &table.to_string())?;
 
+    // A restore repairs the session as well as the camera, and the second half has nothing
+    // to do with the snapshot: a sweep killed before its first sample leaves a control every
+    // verb refuses and nothing to put back (note **N139**). A run that changed a status on
+    // disk and printed an empty table would be telling the operator nothing happened.
+    if !report.freed.is_empty() {
+        out.line(
+            Stream::Stderr,
+            &format!(
+                "note: {} control(s) were left mid-sweep by a process that is gone and have \
+                 been given back: {}",
+                report.freed.len(),
+                report
+                    .freed
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )?;
+    }
+
     // The one line that matters, and it is on stderr because a caller scripting a restore
     // wants the exit code and the table, not prose in the middle of them.
     if !report.is_complete() {
@@ -1288,10 +1310,30 @@ fn status_cells(status: &ControlStatus) -> StatusCells {
             score: dash(),
             chosen_by: dash(),
         },
-        ControlStatus::Sweeping { done, total, .. } => StatusCells {
+        ControlStatus::Sweeping {
+            done,
+            total,
+            precision,
+            ..
+        } => StatusCells {
             state: format!("sweeping {done}/{total}"),
             value: dash(),
-            precision: dash(),
+            // The stride the planner arrived at, which is the number a caller compares
+            // against the `--precision` it typed (note **N145**). A dash here would be the
+            // table saying "no spacing" about a sweep whose whole subject is one.
+            //
+            // **Zero is one fact and it is not that one** (note **N149**'s shape, a page on
+            // from the `Calibrated` arm below). This build's planner cannot produce a zero
+            // stride — `engine::sweep::precision_of` falls back to the descriptor's
+            // `effective_step`, which is at least 1 — so a zero can only have come from a
+            // document written before the field existed (`#[serde(default)]`). Naming that
+            // is the whole difference between "this sweep has no spacing" and "nobody
+            // recorded one", and a dash would say the first about the second.
+            precision: if *precision == 0 {
+                "(not recorded)".to_owned()
+            } else {
+                format!("{precision} (planned)")
+            },
             score: dash(),
             chosen_by: dash(),
         },
@@ -1376,11 +1418,22 @@ pub(crate) fn status(status: &SessionStatus, as_json: bool, out: &mut Output) ->
             detail,
         } = &entry.event
         {
+            // The D13 discriminant in **the registry's own serde spelling**, which is what
+            // the `--json` view of this same line carries and what an agent dispatches on
+            // (note **N149**); `{failure:?}` printed `IllegalTransition` beside a document
+            // saying `illegal_transition`, which is two spellings for one value. And a
+            // *known* reason is what earns the parenthesis: an absent `failure` is a line
+            // whose writer could not name one, and inventing "(none)" would read as a kind.
+            let named = failure
+                .as_ref()
+                .and_then(|kind| serde_json::to_value(kind).ok())
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .map_or_else(String::new, |name| format!(" ({name})"));
             out.line(
                 Stream::Stderr,
                 &format!(
                     "note: the sweep of {control} stopped after {taken} of {total} sample(s) \
-                     at {}: {detail} ({failure:?})",
+                     at {}: {detail}{named}",
                     entry.at
                 ),
             )?;
@@ -1435,6 +1488,16 @@ pub trait SweepWatcher: Send + Sync + std::fmt::Debug {
 /// error, so they cannot collide — but a caller redirecting both into one file would find
 /// a document with a progress bar in it, and the answer is not to draw one. Otherwise the
 /// bar, which indicatif itself hides when standard error is not a terminal.
+///
+/// **What a `--json` caller loses by that is nothing it needs, and that is a property of the
+/// answer rather than of this function** (note **N145**). A progress stream is a *live*
+/// view; the facts on it that outlive the sweep are on the answer document and in the session
+/// history — `ControlStatus::Sweeping` carries the stride and every planner adjustment, and
+/// `SessionEvent::SweepStarted` carries the same pair for a reader who arrives later. It
+/// was not true when this function was written: the answer said `"total": 251` and the
+/// adjustments existed only on an event this discards, which is the shape M14 was raised
+/// about. An agent that wants the events as they happen subscribes to them through
+/// `webcam-handler-client`, which is the surface that has them.
 #[must_use]
 pub(crate) fn watcher(as_json: bool) -> Box<dyn SweepWatcher> {
     if as_json {
@@ -1499,11 +1562,24 @@ impl Default for Bar {
 impl SweepWatcher for Bar {
     fn event(&self, event: &ProgressEvent) {
         match &event.progress {
-            CalibrationProgress::SweepStarted { total, .. } => {
+            CalibrationProgress::SweepStarted {
+                total, adjustments, ..
+            } => {
                 self.bar
                     .set_draw_target(indicatif::ProgressDrawTarget::stderr());
                 self.bar.set_length(u64::from(*total));
                 self.bar.set_position(0);
+                // **An adjustment is printed, not merely set as the message** (note
+                // **N145**). The bar's message is overwritten by the next `ValueSet` a
+                // settle later and wiped by `finish_and_clear`, so a sweep whose stride was
+                // widened forty-fold announced that fact for a few seconds to whoever
+                // happened to be looking. It is the one thing on this stream that changes
+                // what every photograph the sweep is about to take is worth, so it goes to
+                // scrollback where a terminal keeps it — the same reason `is_terminal`
+                // events are printed below.
+                if !adjustments.is_empty() {
+                    self.bar.println(progress_line(&event.progress));
+                }
             }
             CalibrationProgress::ValueSet { index, .. } => {
                 self.bar.set_position(u64::from(index.saturating_sub(1)));
@@ -1534,8 +1610,28 @@ impl SweepWatcher for Bar {
 /// walk below proves no two share a spelling.
 fn progress_line(progress: &CalibrationProgress) -> String {
     match progress {
-        CalibrationProgress::SweepStarted { control, total, .. } => {
-            format!("sweeping {control}: {total} sample(s)")
+        CalibrationProgress::SweepStarted {
+            control,
+            total,
+            precision,
+            adjustments,
+            ..
+        } => {
+            let mut line = format!("sweeping {control}: {total} sample(s)");
+            // The stride, because "251 sample(s)" and "251 sample(s) every 40" are different
+            // news to somebody who asked for every value (note **N145**). Zero is a
+            // single-value plan and has no stride to report.
+            if *precision != 0 {
+                line.push_str(&format!(" every {precision}"));
+            }
+            // What the planner did to the spec, at the moment it happened rather than never.
+            // Rendered here so both roots say it: `webcam-handler-cli` and
+            // `webcam-handler-client` share this function, and a difference between the two
+            // would be the parity claim quietly stopping being true.
+            for adjustment in adjustments {
+                line.push_str(&format!("; {}", sweep_adjustment_line(adjustment)));
+            }
+            line
         }
         CalibrationProgress::ValueSet {
             control,
@@ -1575,6 +1671,43 @@ fn progress_line(progress: &CalibrationProgress) -> String {
             detail,
             ..
         } => format!("{control}: stopped after {taken} of {total}: {detail}"),
+    }
+}
+
+/// One planner adjustment, in words (note **N145**).
+///
+/// An exhaustive `match` rather than a `Debug` rendering, so a fifth kind cannot acquire a
+/// spelling by accident (rubric rule 6) — and because the numbers are what a caller acts on:
+/// "251 of a requested 10 001" is a sentence an agent can compare against the precision it
+/// asked for, and `Capped { requested: 10001, .. }` is not.
+fn sweep_adjustment_line(adjustment: &SweepAdjustment) -> String {
+    match adjustment {
+        SweepAdjustment::Clamped { requested, planned } => {
+            format!("{requested} clamped to {planned}, outside this control's range")
+        }
+        SweepAdjustment::StepAligned { requested, planned } => {
+            format!("{requested} aligned to {planned}, the nearest step this control has")
+        }
+        SweepAdjustment::Deduplicated { dropped } => {
+            format!("{dropped} value(s) collapsed onto ones already planned")
+        }
+        SweepAdjustment::Capped {
+            requested,
+            planned,
+            limit,
+            cap,
+        } => {
+            let which = match cap {
+                // Named rather than numbered, because the two caps are refused for different
+                // reasons and only one of them is about wear (design §5).
+                SampleCap::Total => "the sweep cap",
+                SampleCap::Motion => "the motion cap, because this control moves motors",
+            };
+            format!(
+                "{planned} of a requested {requested} sample(s), strided to fit {limit} — \
+                 {which}"
+            )
+        }
     }
 }
 
@@ -2173,6 +2306,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_restore_that_gave_a_stranded_control_back_says_so_on_both_the_table_and_the_document() {
+        // **Rubric A8, on the two surfaces the field was added for** (notes **N139** and
+        // **N150**). A process killed between `begin_sweep` and its first sample leaves a
+        // control every verb refuses and no snapshot describes; `calibrate restore` gives it
+        // back, and `RestoreReport::freed` is where the answer says so. `engine::lifecycle`
+        // proves the verb repairs the session — what neither surface had was a caller who
+        // could tell: a run that changed a status on disk and then printed an empty table,
+        // or `{"outcomes":[]}`, is telling an unattended caller that nothing happened, which
+        // is the one thing that had not happened.
+        let slug = |s: &str| ControlSlug::parse(s).expect("literal slug");
+        let repaired = RestoreReport {
+            outcomes: Vec::new(),
+            freed: vec![slug("brightness"), slug("focus_absolute")],
+        };
+
+        let (mut out, _, stderr) = captured();
+        restore(&repaired, false, &mut out).expect("rendering into a buffer cannot fail");
+        let note = stderr.text();
+        // Both controls by name, and the count, because "some controls" is not something an
+        // operator can go and look at.
+        for control in &repaired.freed {
+            assert!(
+                note.contains(control.as_str()),
+                "the restore repaired {control} and told the operator nothing: {note:?}"
+            );
+        }
+        assert!(note.contains('2'), "{note:?}");
+        // And it is the *session* repair rather than a camera write: an outcome table this
+        // report does not have must not be described as one.
+        assert!(note.contains("mid-sweep"), "{note:?}");
+
+        // The other direction, and the one that keeps the note meaning something: nothing
+        // stranded says nothing at all.
+        let (mut out, _, stderr) = captured();
+        restore(
+            &RestoreReport {
+                outcomes: Vec::new(),
+                freed: Vec::new(),
+            },
+            false,
+            &mut out,
+        )
+        .expect("rendering into a buffer cannot fail");
+        assert!(
+            stderr.text().is_empty(),
+            "a restore that found nothing stranded volunteered a note anyway: {}",
+            stderr.text()
+        );
+
+        // `--json`, which is the surface the primary consumer reads: the same value, as the
+        // document, with nothing computed on the side.
+        let (mut out, stdout, stderr) = captured();
+        restore(&repaired, true, &mut out).expect("rendering into a buffer cannot fail");
+        let document = stdout.text();
+        assert_eq!(
+            serde_json::from_str::<RestoreReport>(&document).expect("valid JSON"),
+            repaired
+        );
+        assert!(
+            document.contains("freed") && document.contains("brightness"),
+            "the answer an agent parses does not carry what the run repaired: {document}"
+        );
+        assert!(stderr.text().is_empty(), "{}", stderr.text());
+    }
+
+    #[test]
     fn every_photo_rendering_and_transform_application_has_a_distinct_rendering() {
         let renderings = vec![
             PhotoRendering::Verbatim {
@@ -2377,7 +2576,7 @@ pub(crate) mod tests {
                     control: ControlSlug::parse("focus_absolute").expect("literal slug"),
                     taken: 2,
                     total: 5,
-                    failure: schema::ErrorKind::DeviceGone,
+                    failure: Some(schema::ErrorKind::DeviceGone),
                     detail: "/dev/video0 disappeared".to_owned(),
                 },
             }],
@@ -2392,6 +2591,19 @@ pub(crate) mod tests {
         let note = stderr.text();
         assert!(note.contains("stopped after 2 of 5"), "{note}");
         assert!(note.contains("disappeared"), "{note}");
+        // **The registry's own serde spelling, and only that one** (note **N149**). This is
+        // the line an agent branches on, and the `--json` view of the same event carries
+        // `"device_gone"`; printing Rust's `Debug` here put two spellings of one value on
+        // the two surfaces whose whole job is to agree.
+        assert!(
+            note.trim_end().ends_with("(device_gone)"),
+            "the discriminant is missing, or spelled some way other than the registry's own: \
+             {note}"
+        );
+        assert!(
+            !note.contains("DeviceGone"),
+            "the human line spells the discriminant one way and the document another: {note}"
+        );
 
         // And `--json` carries the whole history, so the human rendering computes nothing
         // a reader of the document could not.
@@ -2400,6 +2612,37 @@ pub(crate) mod tests {
         assert_eq!(
             serde_json::from_str::<SessionStatus>(&stdout.text()).expect("valid JSON"),
             stopped
+        );
+
+        // **The line whose writer could not name a reason** (note **N149**). The second
+        // producer of this event is `engine::lifecycle::free_stranded_sweeps`, running in a
+        // later process over a control a killed sweep left behind: the process that knew why
+        // died without writing it down, so `failure` is absent rather than plausible. The
+        // rendering has to be absent too — a parenthesis reading "(none)" or "()" is a shape
+        // an agent dispatching on the discriminant would read as one.
+        let unexplained = SessionStatus {
+            session: session_fixture(),
+            log: vec![schema::session::LogEntry {
+                at: schema::time::Stamp::epoch(),
+                event: SessionEvent::SweepInterrupted {
+                    control: ControlSlug::parse("focus_absolute").expect("literal slug"),
+                    taken: 0,
+                    total: 5,
+                    failure: None,
+                    detail: "no samples were taken; gave the control back".to_owned(),
+                },
+            }],
+        };
+        let (mut out, _, stderr) = captured();
+        status(&unexplained, false, &mut out).expect("rendering into a buffer cannot fail");
+        let note = stderr.text();
+        // The story it does have, in words, since there is no discriminant to carry it —
+        // and nothing after it, which is what "prints nothing at all where the field is
+        // absent" has to mean on a line that ends in the detail.
+        assert!(
+            note.trim_end().ends_with("gave the control back"),
+            "an absent reason was rendered as something after the detail, and anything there \
+             is a shape a reader takes for a kind: {note}"
         );
     }
 
@@ -2452,6 +2695,8 @@ pub(crate) mod tests {
                 plan: SweepSpec::All,
                 done: 3,
                 total: 16,
+                precision: 64,
+                adjustments: Vec::new(),
             },
             ControlStatus::Calibrated {
                 value: 512,
@@ -2488,6 +2733,48 @@ pub(crate) mod tests {
         });
         assert!(single.precision.contains("single"), "{}", single.precision);
 
+        // **The running sweep's precision cell, both branches** (note **N145**). The stride
+        // is the number a caller compares against the `--precision` it typed, and it is the
+        // one fact `total` alone cannot be turned into — so a table that dropped it would
+        // leave an agent believing a resolution it never got.
+        let sweeping = status_cells(&statuses[2]);
+        assert!(
+            sweeping.precision.contains("64"),
+            "the stride the planner arrived at is not on the row that announces the sweep: {}",
+            sweeping.precision
+        );
+        assert!(
+            sweeping.precision.contains("planned"),
+            "the stride a sweep has not finished walking is the planned one, not a measured \
+             one, and the cell has to say which: {}",
+            sweeping.precision
+        );
+
+        // And zero, which is a *different* sentence here from the one it is two arms down.
+        // `engine::sweep::precision_of` falls back to the descriptor's `effective_step` and
+        // that is never below 1, so no sweep this build plans carries a zero: one on the
+        // document came from a build that had no such field. A dash would say "this sweep
+        // has no spacing", and "(single sample)" would say something the document does not
+        // support — either is note N149's collapse of an absent value into a plausible one.
+        let older = status_cells(&ControlStatus::Sweeping {
+            plan: SweepSpec::All,
+            done: 3,
+            total: 16,
+            precision: 0,
+            adjustments: Vec::new(),
+        });
+        // The dash comes from the table's own vocabulary rather than typed here: it is
+        // whatever a status with no precision at all renders as.
+        assert_ne!(
+            older.precision,
+            status_cells(&ControlStatus::Untouched).precision,
+            "a stride nobody recorded reads as a sweep with no stride"
+        );
+        assert_ne!(
+            older.precision, single.precision,
+            "a document with no stride recorded reads as a control calibrated from one sample"
+        );
+
         let mut seen = std::collections::BTreeSet::new();
         for reason in [
             BlockedReason::ReadOnly,
@@ -2517,6 +2804,8 @@ pub(crate) mod tests {
                 control: slug("focus_absolute"),
                 plan: SweepSpec::All,
                 total: 16,
+                precision: 4,
+                adjustments: Vec::new(),
             },
             CalibrationProgress::ValueSet {
                 control: slug("focus_absolute"),
@@ -2577,6 +2866,97 @@ pub(crate) mod tests {
         // The finished line says what a sweep deliberately does *not* do (D8): choose.
         let finished = progress_line(&events[3]);
         assert!(finished.contains("nothing selected"), "{finished}");
+    }
+
+    #[test]
+    fn a_sweep_the_planner_trimmed_says_so_on_the_line_that_announces_it() {
+        // Note **N145**. `SweepAdjustment` was built for every sweep and read by nobody: an
+        // agent that asked for a stride of 1 across a 10 000-wide range was told "251
+        // sample(s)" and left believing its precision request had been honoured. Both
+        // directions, because a line that always mentioned an adjustment would be as
+        // useless as one that never did.
+        //
+        // **The walk is over `SweepAdjustmentKind::ALL`, not over an array typed here**
+        // (note **N148**). This test claimed to prove "a fifth kind cannot acquire a spelling
+        // nobody looked at" while iterating a hand-written four-element array, which is
+        // exactly the hand list rubric rule 6 bans — a fifth variant would have been caught
+        // by the compiler's `match` in `sweep_adjustment_line` and by nothing here. The
+        // `match` below is what makes the claim true: a fifth kind is a fifth member of `ALL`
+        // and a missing arm right here.
+        use schema::session::{SweepAdjustmentKind, SweepSpec};
+
+        let slug = |s: &str| ControlSlug::parse(s).expect("literal slug");
+        let started =
+            |precision: i64, adjustments: Vec<SweepAdjustment>| CalibrationProgress::SweepStarted {
+                control: slug("focus_absolute"),
+                plan: SweepSpec::All,
+                total: 251,
+                precision,
+                adjustments,
+            };
+
+        let plain = progress_line(&started(0, Vec::new()));
+        assert_eq!(plain, "sweeping focus_absolute: 251 sample(s)");
+
+        // The stride on its own is news even when nothing was adjusted: a caller who asked
+        // for every value and got every fortieth learns it here.
+        let strided = progress_line(&started(40, Vec::new()));
+        assert!(strided.contains("every 40"), "{strided}");
+
+        let trimmed = progress_line(&started(
+            40,
+            vec![SweepAdjustment::Capped {
+                requested: 10_001,
+                planned: 251,
+                limit: 256,
+                cap: SampleCap::Total,
+            }],
+        ));
+        assert!(trimmed.contains("10001"), "{trimmed}");
+        assert!(trimmed.contains("251"), "{trimmed}");
+        assert!(
+            trimmed.len() > strided.len(),
+            "the adjustment left no trace on the line: {trimmed}"
+        );
+
+        let example = |kind: SweepAdjustmentKind| match kind {
+            SweepAdjustmentKind::Clamped => SweepAdjustment::Clamped {
+                requested: -5,
+                planned: 0,
+            },
+            SweepAdjustmentKind::StepAligned => SweepAdjustment::StepAligned {
+                requested: 7,
+                planned: 8,
+            },
+            SweepAdjustmentKind::Deduplicated => SweepAdjustment::Deduplicated { dropped: 2 },
+            SweepAdjustmentKind::Capped => SweepAdjustment::Capped {
+                requested: 400,
+                planned: 32,
+                limit: 32,
+                cap: SampleCap::Motion,
+            },
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in SweepAdjustmentKind::ALL {
+            let adjustment = example(*kind);
+            // The example really is of that kind — otherwise a `match` arm that returned the
+            // wrong variant would leave one kind unwalked and one walked twice, and the
+            // `seen` check below would report a duplicate spelling instead of the real fault.
+            assert_eq!(adjustment.kind(), *kind);
+            assert!(
+                seen.insert(sweep_adjustment_line(&adjustment)),
+                "{adjustment:?} duplicates a spelling"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            SweepAdjustmentKind::ALL.len(),
+            "the walk did not reach every kind"
+        );
+        // The motion cap says *why*, because §5's reason is the operator's business: a
+        // sweep trimmed for wear and one trimmed for size are not the same news.
+        let motion = sweep_adjustment_line(&example(SweepAdjustmentKind::Capped));
+        assert!(motion.contains("motors"), "{motion}");
     }
 
     #[test]

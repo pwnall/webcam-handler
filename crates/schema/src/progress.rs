@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::control::{ControlSlug, WriteWarning};
 use crate::error::ErrorKind;
 use crate::metrics::MetricName;
-use crate::session::SweepSpec;
+use crate::session::{SweepAdjustment, SweepSpec};
 use crate::time::Stamp;
 
 /// What a calibration sweep is doing, as it does it.
@@ -54,6 +54,26 @@ pub enum CalibrationProgress {
         plan: SweepSpec,
         /// How many samples it will take.
         total: u32,
+        /// The smallest gap between the values it will visit — the stride the planner
+        /// arrived at (note **N145**).
+        ///
+        /// The number a caller compares against the `--precision` they typed, and the one a
+        /// refinement pass divides down. A sweep whose stride was widened forty-fold to fit a
+        /// cap announced a sample count and nothing else until this field existed.
+        #[serde(default)]
+        precision: i64,
+        /// Every way the planner's values differ from what `plan` literally asked for
+        /// (note **N145**).
+        ///
+        /// D3's `{requested, applied}` doctrine, one layer up, and it rides on *this* event
+        /// because this is the one a subscriber reads before any sample exists. Empty means
+        /// the spec was executed as written, and the encoding says that by omitting the
+        /// field: `skip_serializing_if` makes "no adjustments" and "no such key" one
+        /// document, exactly as `NegotiatedStream::adjustments` does. What is *not* left to
+        /// inference is the durable half — `session::SessionEvent::SweepStarted` carries the
+        /// same list, so a reader who was not subscribed still learns what the planner did.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        adjustments: Vec<SweepAdjustment>,
     },
     /// The camera has been moved to the next value; the sensor is settling.
     ///
@@ -184,6 +204,8 @@ pub struct ProgressEvent {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::SampleCap;
+
     use super::*;
 
     fn slug(s: &str) -> ControlSlug {
@@ -206,6 +228,16 @@ mod tests {
                 control: slug("focus_absolute"),
                 plan: SweepSpec::Uniform { step: 64 },
                 total: 16,
+                precision: 40,
+                // Non-empty, because this is the round-trip that would otherwise carry a
+                // field no fixture ever fills — and `skip_serializing_if` means an empty
+                // list and an absent one are the same document (note **N145**).
+                adjustments: vec![SweepAdjustment::Capped {
+                    requested: 10_001,
+                    planned: 251,
+                    limit: 256,
+                    cap: SampleCap::Total,
+                }],
             },
             CalibrationProgress::ValueSet {
                 control: slug("focus_absolute"),

@@ -240,6 +240,53 @@ function selectorSentence(selector) {
 }
 
 /**
+ * What the planner did to the spec, in words (note **N145**).
+ *
+ * The owner calibrates from this page and is the person who types a precision, so this is the
+ * consumer that needs it most directly: a `--precision 1` sweep of a 10 000-wide range plans
+ * 251 samples at a stride of 40, and a line that said only "251 samples" would leave every
+ * comparison drawn from those photographs drawn at a resolution nobody chose.
+ *
+ * An unknown `adjustment` is *shown*, not dropped: a build of the daemon newer than this page
+ * is exactly the case AGENTS' "represent the unknown" is about, and a silent omission here
+ * would be a page that looks like it is telling you everything.
+ */
+function adjustmentSentence(adjustment) {
+  switch (adjustment.adjustment) {
+    case "clamped":
+      return `${adjustment.requested} clamped to ${adjustment.planned}`;
+    case "step_aligned":
+      return `${adjustment.requested} aligned to ${adjustment.planned}`;
+    case "deduplicated":
+      return `${adjustment.dropped} value(s) collapsed`;
+    case "capped":
+      return `${adjustment.planned} of ${adjustment.requested}, strided to fit ${adjustment.limit} (${
+        adjustment.cap === "motion" ? "motors wear" : "the sweep cap"
+      })`;
+    default:
+      return `an adjustment this page does not know: ${adjustment.adjustment}`;
+  }
+}
+
+/**
+ * The tail of a `sweep_started` line: the stride, and everything the planner changed.
+ *
+ * Both are optional on the wire — an older daemon sends neither, and `adjustments` is omitted
+ * when it is empty — so the absent case has to read as "nothing to report" rather than as a
+ * hole.
+ */
+function plannedSentence(event) {
+  const parts = [];
+  if (event.precision) {
+    parts.push(`every ${event.precision}`);
+  }
+  for (const adjustment of event.adjustments ?? []) {
+    parts.push(adjustmentSentence(adjustment));
+  }
+  return parts.length === 0 ? "" : ` — ${parts.join("; ")}`;
+}
+
+/**
  * The `{requested, applied}` pairs a control was sampled at.
  *
  * Both numbers, always. D3 applies inside a sweep too \[PF:6\], and a sample labelled with a
@@ -258,7 +305,7 @@ function line(event) {
   const at = `${event.session.slice(0, 8)}`;
   switch (event.progress) {
     case "sweep_started":
-      return `${at} sweep of ${event.control} started: ${event.total} samples (${planSentence(event.plan)})`;
+      return `${at} sweep of ${event.control} started: ${event.total} samples (${planSentence(event.plan)})${plannedSentence(event)}`;
     case "value_set":
       return `${at} ${event.index}/${event.total} ${event.control} := ${
         event.requested === event.applied ? event.applied : `${event.requested} → ${event.applied}`

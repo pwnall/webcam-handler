@@ -35,6 +35,21 @@ use schema::{Error, ErrorKind};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+/// A plan described only by its spec and its size.
+///
+/// The transitions below are the D8 machine's business, not the planner's, so the stride and
+/// the adjustment list are what a sweep nobody planned carries: nothing. The path that fills
+/// them in is `calibrate::run`, and `crates/engine/tests/sweep.rs` is where the numbers on the
+/// document are asserted against the numbers the planner produced (note **N145**).
+fn planned(spec: &SweepSpec, total: u32) -> session::Planned<'_> {
+    session::Planned {
+        spec,
+        total,
+        precision: 0,
+        adjustments: &[],
+    }
+}
+
 fn fingerprint() -> CameraFingerprint {
     CameraFingerprint {
         bus_path: "3-1:1.0".to_owned(),
@@ -224,7 +239,7 @@ fn selecting_before_any_sweep_is_refused_through_the_engine_and_a_swept_control_
     temp.store()
         .with_lock(|lock| {
             lifecycle::commit(temp.store(), lock, &mut session, now(), |draft, at| {
-                session::begin_sweep(draft, &control, &SweepSpec::All, 1, at)
+                session::begin_sweep(draft, &control, planned(&SweepSpec::All, 1), at)
             })?;
             lifecycle::commit(temp.store(), lock, &mut session, now(), |draft, at| {
                 session::record_sample(draft, &control, sample(10, 4.0), at)
@@ -275,7 +290,7 @@ fn a_session_off_disk_with_nothing_calibrated_does_not_apply_without_partial() {
                 Ok(())
             })?;
             lifecycle::commit(temp.store(), lock, &mut session, now(), |draft, at| {
-                session::begin_sweep(draft, &control, &SweepSpec::All, 2, at)
+                session::begin_sweep(draft, &control, planned(&SweepSpec::All, 2), at)
             })?;
             for (value, score) in [(10_i64, 4.0_f64), (20, 9.0)] {
                 lifecycle::commit(temp.store(), lock, &mut session, now(), |draft, at| {

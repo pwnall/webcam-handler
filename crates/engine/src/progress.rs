@@ -193,6 +193,8 @@ mod tests {
                 control: ControlSlug::parse("focus_absolute").expect("literal slug"),
                 plan: SweepSpec::All,
                 total: index,
+                precision: 1,
+                adjustments: Vec::new(),
             },
         }
     }

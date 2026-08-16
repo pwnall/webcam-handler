@@ -210,11 +210,19 @@ fn a_torn_line_is_dropped_or_refused_by_where_it_is() {
     assert_eq!(loaded.len(), 1, "the whole entry before the tear was lost");
     assert_eq!(loaded[0], entry("focus_absolute"));
 
-    // Now the same tear in the middle: a later run appends after it, so the damage is no
-    // longer at the end and no longer explainable as a crash.
-    temp.store()
-        .append_log(&lock, &dir, &entry("zoom_absolute"))
-        .expect("appendable");
+    // Now the same tear in the middle: damage with a terminator behind it, which a crash
+    // mid-append cannot produce and which this store therefore refuses rather than guesses
+    // at. **Written as bytes**, and that is the change note **N140** made: an append used to
+    // put this file into this state by writing at whatever byte the last writer stopped at,
+    // so the store manufactured its own corruption. It heals the tail now
+    // (`a_crash_torn_tail_is_healed_by_the_next_append_rather_than_left_to_refuse_for_ever`),
+    // which leaves an interior tear meaning what it says: somebody other than this tool
+    // damaged the file. The refusal itself is untouched — note N12 pins it against a seeded
+    // mutant, and it is still the right answer.
+    let mut corrupted = raw.clone();
+    corrupted.extend_from_slice(b"\n");
+    corrupted.extend_from_slice(&whole);
+    temp.plant_log(&dir, &corrupted).expect("writable");
     let err = temp
         .store()
         .load_log(&dir)
@@ -307,8 +315,159 @@ fn entry(control: &str) -> LogEntry {
         event: SessionEvent::SweepStarted {
             control: ControlSlug::parse(control).expect("literal slug"),
             total: 4,
+            precision: 1,
+            adjustments: Vec::new(),
         },
     }
+}
+
+/// The repair note **N140** landed: an append inspects the tail it is about to write behind.
+///
+/// Both directions, because the two tails are two different answers and getting either one
+/// wrong loses something. An unparsable tail is the crash `load_log` already drops, and the
+/// heal makes that drop durable; a *parseable* one is a whole entry whose terminator never
+/// reached the platter, and dropping that would throw away a record that is entirely there.
+///
+/// The bug this turns red: `append_log` writing at whatever byte the last writer stopped at.
+/// That puts a terminator behind the damage, which turns a survivable torn tail into the
+/// interior corruption `load_log` refuses — permanently, with no verb that repairs it.
+#[test]
+fn a_crash_torn_tail_is_healed_by_the_next_append_rather_than_left_to_refuse_for_ever() {
+    let temp = TempStore::new().expect("a temp dir");
+    let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+    let session = session(5_000, "focus");
+    let dir = temp.store().session_dir(&session);
+    let path = dir.join(limits::SESSION_LOG_FILE);
+    let line = |control: &str| {
+        let mut bytes = serde_json::to_vec(&entry(control)).expect("serializable");
+        bytes.push(b'\n');
+        bytes
+    };
+
+    // A crash that stopped mid-JSON. Half a line is not a line, so the entry is gone — but
+    // the one before it, and the ones after, must not be.
+    let mut torn = line("focus_absolute");
+    let brightness = line("brightness");
+    torn.extend_from_slice(&brightness[..brightness.len() / 2]);
+    temp.plant_log(&dir, &torn).expect("writable");
+
+    temp.store()
+        .append_log(&lock, &dir, &entry("zoom_absolute"))
+        .expect("appendable");
+    let loaded = temp
+        .store()
+        .load_log(&dir)
+        .expect("a log a crash tore and this build appended to is still readable");
+    assert_eq!(
+        loaded,
+        vec![entry("focus_absolute"), entry("zoom_absolute")],
+        "the torn tail was not dropped, or the history before it was"
+    );
+
+    // A crash that stopped between the entry and its terminator. The record is whole, so it
+    // is kept rather than thrown away for want of one byte.
+    let mut unterminated = line("focus_absolute");
+    let whole = line("brightness");
+    unterminated.extend_from_slice(&whole[..whole.len() - 1]);
+    temp.plant_log(&dir, &unterminated).expect("writable");
+
+    temp.store()
+        .append_log(&lock, &dir, &entry("zoom_absolute"))
+        .expect("appendable");
+    assert_eq!(
+        temp.store().load_log(&dir).expect("readable"),
+        vec![
+            entry("focus_absolute"),
+            entry("brightness"),
+            entry("zoom_absolute")
+        ],
+        "an entry that was entirely written was discarded for want of its newline"
+    );
+
+    // And a healthy log is left exactly as it was: the heal reads a byte and does nothing,
+    // so an append cannot rewrite history it had no reason to touch.
+    let before = std::fs::read(path.as_std_path()).expect("readable");
+    temp.store()
+        .append_log(&lock, &dir, &entry("pan_absolute"))
+        .expect("appendable");
+    let after = std::fs::read(path.as_std_path()).expect("readable");
+    assert_eq!(
+        &after[..before.len()],
+        before.as_slice(),
+        "the heal changed a file that had nothing wrong with it"
+    );
+}
+
+/// The same two answers for a tail longer than the heal's backward-scan chunk (note
+/// **N140**).
+///
+/// **The bug this turns red is the window the heal first landed with.** It read back at most
+/// eight kibibytes of unterminated tail and dropped anything longer *without parsing it*, on
+/// the premise that "a tail longer than this cannot be a log line this build wrote". The
+/// premise is false: `SessionEvent::Started` carries the operator's or the agent's own `goal`
+/// text and nothing in `limits` bounds it, so an AI harness writing a task description makes
+/// a line of any length. And the consequence was worse than the premise — `parse_log` parses
+/// an unterminated last segment and *keeps* it when it parses, so the two halves of D9's one
+/// rule gave different answers for the same file, and when the over-long line was the only
+/// one in the log the heal truncated the file to nothing.
+///
+/// The fixtures are the cases the first test could not have: its lines are all short.
+#[test]
+fn a_torn_tail_longer_than_the_scan_chunk_is_still_parsed_before_it_is_kept_or_dropped() {
+    let temp = TempStore::new().expect("a temp dir");
+    let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+    let session = session(6_000, "focus");
+    let dir = temp.store().session_dir(&session);
+    let path = dir.join(limits::SESSION_LOG_FILE);
+
+    // A `goal` of 32 KiB — four times the scan chunk, and a plausible thing for an agent
+    // harness to write, which is the whole point of the case.
+    let long = LogEntry {
+        at: Stamp::epoch(),
+        event: SessionEvent::Started {
+            goal: "photograph the device under test until the serial number is legible; "
+                .repeat(512),
+        },
+    };
+    let mut serialized = serde_json::to_vec(&long).expect("serializable");
+    serialized.push(b'\n');
+    assert!(
+        serialized.len() > 8 * 1024,
+        "the fixture is inside the old window, so it proves nothing: {} bytes",
+        serialized.len()
+    );
+
+    // Case one, and the destructive one: the over-long line is the *only* line, and its
+    // terminator never landed. It parses, so it is a record that is entirely present.
+    temp.plant_log(&dir, &serialized[..serialized.len() - 1])
+        .expect("writable");
+    temp.store()
+        .append_log(&lock, &dir, &entry("zoom_absolute"))
+        .expect("appendable");
+    assert_eq!(
+        temp.store().load_log(&dir).expect("readable"),
+        vec![long.clone(), entry("zoom_absolute")],
+        "an entry longer than the scan chunk was thrown away without being read"
+    );
+
+    // Case two, the other direction at the same length: an over-long tail that does not
+    // parse is the torn write the loader drops, and the heal makes that durable — while the
+    // whole line in front of it survives.
+    let mut torn = serialized.clone();
+    torn.extend_from_slice(&serialized[..serialized.len() / 2]);
+    temp.plant_log(&dir, &torn).expect("writable");
+    temp.store()
+        .append_log(&lock, &dir, &entry("pan_absolute"))
+        .expect("appendable");
+    assert_eq!(
+        temp.store().load_log(&dir).expect("readable"),
+        vec![long, entry("pan_absolute")],
+        "the over-long torn tail was kept, or the whole line before it was lost"
+    );
+    assert!(
+        std::fs::read(path.as_std_path()).expect("readable").len() > serialized.len(),
+        "the heal emptied a log that held a whole entry"
+    );
 }
 
 /// A store that is not a [`TempStore`] still refuses the same way — the double is a

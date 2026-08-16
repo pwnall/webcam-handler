@@ -1124,6 +1124,8 @@ mod tests {
                 control: slug(control),
                 plan: SweepSpec::All,
                 total: 4,
+                precision: 1,
+                adjustments: Vec::new(),
             },
         }
     }

@@ -32,52 +32,14 @@ use schema::{Result, limits};
 
 use crate::refusal::illegal;
 
-/// Which cap trimmed a sweep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SampleCap {
-    /// [`schema::limits::MAX_SWEEP_SAMPLES`].
-    Total,
-    /// [`schema::limits::MAX_MOTION_SWEEP_SAMPLES`] — this control moves motors.
-    Motion,
-}
-
-/// One way the planned values differ from what the spec literally asked for.
+/// Which cap trimmed a sweep, and how the plan differs from the spec.
 ///
-/// The same doctrine as D3's `{requested, applied}`, one layer up: the caller is told
-/// what happened to their request instead of diffing two lists to find out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SweepAdjustment {
-    /// A requested value sat outside the control's range.
-    Clamped {
-        /// What the spec named.
-        requested: i64,
-        /// What the plan holds.
-        planned: i64,
-    },
-    /// A requested value was not a whole number of steps above the control's minimum.
-    StepAligned {
-        /// What the spec named.
-        requested: i64,
-        /// What the plan holds.
-        planned: i64,
-    },
-    /// Values collapsed onto each other after clamping and alignment.
-    Deduplicated {
-        /// How many were dropped.
-        dropped: usize,
-    },
-    /// A cap trimmed the sweep.
-    Capped {
-        /// How many samples the spec would have taken.
-        requested: u64,
-        /// How many the plan holds.
-        planned: u32,
-        /// The cap that fired.
-        limit: u32,
-        /// Which cap it was.
-        cap: SampleCap,
-    },
-}
+/// The schema's, not this module's, since note **N145**: they ride on
+/// [`schema::progress::CalibrationProgress::SweepStarted`] now, so they cross the wire, and a
+/// vocabulary two seams each translated would be a vocabulary two seams can disagree about —
+/// which is [`schema::session::SweepRequest`]'s reason for living there too. Re-exported so
+/// every `engine::sweep::SweepAdjustment` in the tree still names one type.
+pub use schema::session::{SampleCap, SweepAdjustment};
 
 /// An ordered set of values to sweep, and what it took to get there.
 #[derive(Debug, Clone, PartialEq, Eq)]

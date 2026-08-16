@@ -2683,6 +2683,7 @@ dependencies = [
  "camino",
  "fd-lock",
  "kamadak-exif",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",

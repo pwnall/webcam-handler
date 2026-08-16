@@ -68,6 +68,43 @@ pub const APP_DIR: &str = "webcam-handler";
 /// prevent.
 pub const XDG_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
 
+/// The permission bits of a `st_mode` word — everything below the file-type bits.
+///
+/// A POSIX fact rather than a policy, and it lives here because this project keeps **two**
+/// directories private for the same reason and neither may own the other's constant:
+/// `daemon::uds::SOCKET_DIR_MODE` guards D11's socket, `engine::store::STATE_DIR_MODE`
+/// guards D9's session tree, and both mask a `stat` with this before they say anything about
+/// it. It was written out twice until note **N150** — two private copies of one number,
+/// which is design §2.10's second-home defect even when the two copies agree.
+///
+/// It includes the set-user, set-group and sticky bits, so it is the right mask for
+/// *reporting* a mode and the wrong one for asking who can reach a directory: Linux
+/// **inherits** `S_ISGID` on `mkdir` under a setgid parent, so a directory this tool creates
+/// 0700 arrives as 2700 on such a host. What a privacy check asks is
+/// [`GROUP_AND_OTHER_BITS`].
+pub const MODE_BITS: u32 = 0o7777;
+
+/// The mode bits a directory can arrive carrying that its creator did not ask for.
+///
+/// Set-user, set-group and sticky. Linux **inherits** `S_ISGID` on `mkdir` from a setgid
+/// parent, which is an ordinary arrangement on group-managed homes, so these three are the
+/// difference between "the mode this tool chose" and "the mode the object has" — and a check
+/// or a test that compares the whole word is one that is green on the machine it was written
+/// on and red on somebody's shared home (note **N150**). They grant nothing to group or
+/// other on their own, which is why the privacy question ([`GROUP_AND_OTHER_BITS`]) ignores
+/// them; a claim about *what this tool created* masks them off and asserts the rest exactly,
+/// which is what `engine::store`'s tree-wide walk does.
+pub const INHERITED_MODE_BITS: u32 = 0o7000;
+
+/// The permission bits that let somebody other than a file's owner reach it.
+///
+/// The mask a "is this private?" check uses, and the exact set `chmod go-rwx` clears — which
+/// matters, because that command is what this tool's refusals tell an operator to run and a
+/// remedy that cannot clear the bit it complains about is worse than no remedy (note
+/// **N150**). Owner bits are the operator's business: a directory at 0500 is not an exposure,
+/// and the first write into it fails loudly with the kernel's own `EACCES`.
+pub const GROUP_AND_OTHER_BITS: u32 = 0o077;
+
 /// A read-only view of an environment.
 ///
 /// One method, because two paths is all this tool resolves. Implementors are values, so a

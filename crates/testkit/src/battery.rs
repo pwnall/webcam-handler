@@ -3623,6 +3623,7 @@ mod tests {
         // \[PF:24\]; `brightness` was written and is the arm's business. The two must not be
         // in the same population, and nothing here spells either name — the outcomes do.
         let claim = restoration_claim(&RestoreReport {
+            freed: Vec::new(),
             outcomes: vec![
                 restored("brightness"),
                 owned("white_balance_temperature", Some("white_balance_automatic")),
@@ -3646,6 +3647,7 @@ mod tests {
         // business again, which is PF:24's own inverse arm. A count on its own would not let
         // them.
         let claim = restoration_claim(&RestoreReport {
+            freed: Vec::new(),
             outcomes: vec![
                 owned("white_balance_temperature", Some("white_balance_automatic")),
                 owned("exposure_time_absolute", Some("auto_exposure")),
@@ -3668,6 +3670,7 @@ mod tests {
         // make the arm assert a value against a control the restore has already said it
         // could not write.
         let claim = restoration_claim(&RestoreReport {
+            freed: Vec::new(),
             outcomes: vec![
                 restored("brightness"),
                 RestoreOutcome::Unrestorable {
@@ -3691,6 +3694,7 @@ mod tests {
         // rule 8. This is the assertion that stops the repair from becoming the defect it
         // was written against.
         let claim = restoration_claim(&RestoreReport {
+            freed: Vec::new(),
             outcomes: vec![
                 owned("white_balance_temperature", Some("white_balance_automatic")),
                 owned("exposure_time_absolute", Some("auto_exposure")),
@@ -3707,6 +3711,7 @@ mod tests {
         // control" is a fact about the device. An empty report must not panic — the counted
         // line it prints instead is what keeps it from reading as a pass.
         restoration_claim(&RestoreReport {
+            freed: Vec::new(),
             outcomes: Vec::new(),
         })
         .account_for("cam:three-read-only-controls", 0);

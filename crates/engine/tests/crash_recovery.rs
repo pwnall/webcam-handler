@@ -32,6 +32,24 @@
 //! (three controls, one automation pair, PF:3's INACTIVE coupling) because the subject is
 //! the crash, not the driver; realistic device behaviour is `webcam-handler-fake`'s job
 //! and it cannot survive a `SIGKILL`.
+//!
+//! ## Two crashes, because §6's story has two halves and only one of them was pinned
+//!
+//! The suite began with one: a kill between the write and the restore, which is the
+//! *camera's* half — the snapshot is on disk, so the next process can put the device back.
+//! Its fixture reached [`lifecycle::sweep_write`] directly and never ran a sweep, so the
+//! *session's* half was pinned by nothing: no test in this file mentioned
+//! [`calibrate::run`], `begin_sweep` or [`ControlStatus::Sweeping`], and the state the crash
+//! story is about was a state the crash suite never produced. The G6 review named that as its
+//! own smell — a test whose fixture cannot exercise the rule it pins — and note **N139** is
+//! what it was hiding: a sweep killed before its first sample left the control in
+//! `Sweeping { done: 0 }`, which every shipped verb refuses, **for the life of the state
+//! directory**.
+//!
+//! So the second rung runs a real [`calibrate::run`] in the child and kills it from inside
+//! the first sample. That makes the camera a streaming one — a 16×16 synthetic gradient,
+//! generated here, never a frame off a device (AGENTS: a frame may contain a person) — and
+//! it makes the two rungs share every piece of fixture except where the child stops.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -40,11 +58,15 @@ use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use engine::calibrate::{self, SweepContext, SweepRequest};
 use engine::lifecycle::{self, Recovery, SessionSpec};
+use engine::progress::Silent;
+use engine::settle::FrozenClock;
 use engine::store::{LockProtocol, SessionStore, StoreLock, TempStore, write_json_atomic};
 use schema::backend::{BackendKind, Camera};
 use schema::camera::{
-    CameraFingerprint, CameraId, CameraInfo, DeviceNode, FormatInfo, NodeKind, PixelFormat,
+    CameraFingerprint, CameraId, CameraInfo, DeviceNode, FormatInfo, FrameInterval, FrameSize,
+    FrameSizeInfo, NodeKind, PixelFormat,
 };
 use schema::capture::{Frame, NegotiatedStream, StreamRequest};
 use schema::control::{
@@ -54,7 +76,7 @@ use schema::control::{
 use schema::error::{Error, Result};
 use schema::limits;
 use schema::pairing::{AutomationOff, AutomationPair, Provenance};
-use schema::session::SessionEvent;
+use schema::session::{ControlStatus, SessionEvent, SweepSpec};
 use schema::snapshot::RestoreOutcome;
 use schema::time::Stamp;
 use serde::{Deserialize, Serialize};
@@ -69,6 +91,16 @@ const READY: &str = "wch-crash-child: the first write is on the device";
 /// The test the child runs — the same one that, with no environment pointing at it, is
 /// this file's in-process proof of the ordering.
 const CHILD_TEST: &str = "a_sweep_persists_its_snapshot_before_its_first_write_reaches_the_camera";
+
+/// The line the second child prints from inside its first sample.
+const SWEEP_READY: &str = "wch-crash-child: the sweep is inside its first sample";
+/// The test that second child runs, in the same double-duty shape as [`CHILD_TEST`].
+const SWEEP_CHILD_TEST: &str =
+    "a_sweep_is_sweeping_on_disk_before_the_first_sample_reaches_the_camera";
+
+/// The control the sweeping rung sweeps. Motorless, so §5's `--allow-motion` is not part of
+/// this suite's subject, and unpaired, so a sample's write needs no automation switched off.
+const SWEEP_CONTROL: &str = "brightness";
 
 const TASK: &str = "Read text from the DUT display";
 
@@ -160,6 +192,46 @@ fn range(min: i64, max: i64) -> ControlRange {
     ControlRange { min, max, step: 1 }
 }
 
+/// What the child does the first time its sweep asks this camera for a stream.
+///
+/// The hook is at `start_stream` rather than at the write, because that is the instant the
+/// sweep's *durable* state is `Sweeping { done: 0 }` with the pre-sweep snapshot armed and
+/// nothing yet recorded — the one moment note **N139** is about, and the moment no test in
+/// this file could previously produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtFirstStream {
+    /// Carry on. The in-process arm runs its sweep to the end and asserts what the document
+    /// said at this instant.
+    CarryOn,
+    /// Announce on standard output and block on standard input, so the parent kills this
+    /// process at a moment it chose rather than one it guessed (this file's header).
+    AnnounceAndWait,
+}
+
+/// The synthetic frame this camera delivers: a 16×16 grey gradient, generated here.
+///
+/// Generated rather than loaded, and grey rather than anything a sensor produces, for the
+/// reason AGENTS gives once: a frame may contain a person, so no camera frame enters this
+/// repository. Sixteen square because the subject is a crash and not an image — the sweep
+/// decodes it, scores it and writes it, and none of those three cares how big it is.
+const FRAME_EDGE: u32 = 16;
+
+fn synthetic_frame(sequence: u32) -> Frame {
+    let edge = FRAME_EDGE as usize;
+    let bytes = (0..edge * edge)
+        .map(|index| u8::try_from(index % 256).unwrap_or(0))
+        .collect();
+    Frame {
+        bytes,
+        pixel_format: PixelFormat::GREY,
+        width: FRAME_EDGE,
+        height: FRAME_EDGE,
+        bytes_per_line: FRAME_EDGE,
+        sequence,
+        timestamp_us: i64::from(sequence),
+    }
+}
+
 /// A camera whose control values live in a file.
 #[derive(Debug)]
 struct PersistentCamera {
@@ -169,6 +241,17 @@ struct PersistentCamera {
     session_file: Option<Utf8PathBuf>,
     state: DeviceState,
     info: CameraInfo,
+    /// What to do the first time a stream is asked for.
+    at_first_stream: AtFirstStream,
+    /// Whether the hook has already fired, so a second sample does not announce again.
+    announced: bool,
+    /// What `session.json` said about [`SWEEP_CONTROL`] the first time a stream was asked
+    /// for — the in-process arm's whole assertion.
+    sweeping_at_first_stream: Option<(u32, u32)>,
+    /// What the device agreed to, while it is streaming.
+    stream: Option<NegotiatedStream>,
+    /// How many frames it has delivered, so each one carries its own sequence number.
+    delivered: u32,
 }
 
 impl PersistentCamera {
@@ -180,6 +263,11 @@ impl PersistentCamera {
             path: path.to_owned(),
             session_file,
             state,
+            at_first_stream: AtFirstStream::CarryOn,
+            announced: false,
+            sweeping_at_first_stream: None,
+            stream: None,
+            delivered: 0,
             info: CameraInfo {
                 id: CameraId::parse("cam:crash").expect("literal id"),
                 fingerprint: fingerprint(),
@@ -195,6 +283,12 @@ impl PersistentCamera {
                 backend: BackendKind::Fake,
             },
         }
+    }
+
+    /// Announce and block the first time a stream is asked for, rather than carrying on.
+    fn halting_at_the_first_stream(mut self) -> PersistentCamera {
+        self.at_first_stream = AtFirstStream::AnnounceAndWait;
+        self
     }
 
     /// Lay the device down as the operator left it.
@@ -261,6 +355,28 @@ impl PersistentCamera {
             .is_some_and(|found| !found.is_null())
     }
 
+    /// What the session document says about [`SWEEP_CONTROL`] right now, as
+    /// `(done, total)` — `None` unless it is mid-sweep.
+    ///
+    /// Read out of the file rather than out of the caller's `Session`, for the reason the
+    /// device file is a file: the claim is about what *survives this process*, and an
+    /// in-memory struct would be the sweep agreeing with itself.
+    fn sweeping_on_disk(&self) -> Option<(u32, u32)> {
+        let path = self.session_file.as_ref()?;
+        let bytes = std::fs::read(path.as_std_path()).ok()?;
+        let document: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let status = document
+            .get("controls")?
+            .get(SWEEP_CONTROL)?
+            .get("status")?
+            .clone();
+        let parsed: ControlStatus = serde_json::from_value(status).ok()?;
+        match parsed {
+            ControlStatus::Sweeping { done, total, .. } => Some((done, total)),
+            _ => None,
+        }
+    }
+
     /// Publish the device's state.
     ///
     /// Through the store's own atomic write, and for the store's own reason: this process
@@ -277,9 +393,24 @@ impl Camera for PersistentCamera {
     }
 
     fn formats(&self) -> Result<Vec<FormatInfo>> {
-        // No format, so `start_stream` refuses without anyone scripting a lie. This
-        // suite's subject is control state across a crash; a frame never enters it.
-        Ok(Vec::new())
+        // One size, one interval, one format: the least a sweep needs to negotiate, so that
+        // the frame model stays out of the way of the subject. No camera frame ever enters
+        // this suite — see [`synthetic_frame`].
+        Ok(vec![FormatInfo {
+            pixel_format: PixelFormat::GREY,
+            description: "8-bit greyscale".to_owned(),
+            flags: 0,
+            sizes: vec![FrameSizeInfo {
+                size: FrameSize::Discrete {
+                    width: FRAME_EDGE,
+                    height: FRAME_EDGE,
+                },
+                intervals: vec![FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30,
+                }],
+            }],
+        }])
     }
 
     fn controls(&self) -> Result<Vec<ControlDesc>> {
@@ -334,28 +465,66 @@ impl Camera for PersistentCamera {
     }
 
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
-        Err(Error::format_unsupported(
-            request.pixel_format,
-            Vec::<PixelFormat>::new(),
-        ))
+        // The one moment the second rung is about, recorded before anything else happens:
+        // the guarded write is on the device, the snapshot is on disk, and the document says
+        // this control is sweeping with nothing recorded.
+        if !self.announced {
+            self.announced = true;
+            self.sweeping_at_first_stream = self.sweeping_on_disk();
+            if self.at_first_stream == AtFirstStream::AnnounceAndWait {
+                announce_and_wait(SWEEP_READY);
+            }
+        }
+
+        let interval = FrameInterval::Discrete {
+            numerator: 1,
+            denominator: 30,
+        };
+        let negotiated = NegotiatedStream {
+            pixel_format: PixelFormat::GREY,
+            width: FRAME_EDGE,
+            height: FRAME_EDGE,
+            bytes_per_line: FRAME_EDGE,
+            size_image: FRAME_EDGE * FRAME_EDGE,
+            interval,
+            adjustments: NegotiatedStream::diff(
+                request,
+                PixelFormat::GREY,
+                FRAME_EDGE,
+                FRAME_EDGE,
+                interval,
+            ),
+        };
+        self.stream = Some(negotiated.clone());
+        Ok(negotiated)
     }
 
     fn streaming(&self) -> Option<NegotiatedStream> {
-        // A fixture that refuses every `start_stream` is never streaming, and saying so is
-        // not the same as refusing: this is the one question on the trait whose answer is a
-        // fact rather than an operation.
-        None
+        // The device is the authority on itself (AGENTS rule 4), so this answers from what
+        // the last `start_stream`/`stop_stream` left behind rather than from a flag a caller
+        // set.
+        self.stream.clone()
     }
 
     fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {
-        Err(Error::DeviceIo {
-            operation: "next_frame".to_owned(),
-            errno: None,
-            message: "this fixture does not stream".to_owned(),
-        })
+        if self.stream.is_none() {
+            return Err(Error::DeviceIo {
+                operation: "next_frame".to_owned(),
+                errno: None,
+                message: "the stream is not running".to_owned(),
+            });
+        }
+        // Endless, so the settle policy's frame count rather than the fixture's patience is
+        // what decides when a sample is taken. A camera that ran out would answer this
+        // suite's question with `SettleTimeout`, which is a correct answer to a question it
+        // is not asking (note N60).
+        let frame = synthetic_frame(self.delivered);
+        self.delivered = self.delivered.saturating_add(1);
+        Ok(frame)
     }
 
     fn stop_stream(&mut self) -> Result<()> {
+        self.stream = None;
         Ok(())
     }
 }
@@ -432,6 +601,70 @@ fn open_and_write(plan: &Plan) -> (StoreLock, PersistentCamera) {
     (lock, camera)
 }
 
+/// The sweep the second rung runs: two samples of [`SWEEP_CONTROL`], through the real
+/// [`calibrate::run`].
+///
+/// Two values rather than one because the finding is about a sweep that had more to do when
+/// it died, and explicit rather than [`SweepSpec::All`] because a hundred and one samples of
+/// a synthetic gradient would prove nothing that two do not.
+fn sweep_request() -> SweepRequest {
+    SweepRequest::new(
+        slug(SWEEP_CONTROL),
+        SweepSpec::Explicit {
+            values: vec![10, 20],
+        },
+    )
+}
+
+/// Run one sweep, exactly as a composition root does, and answer what the camera saw.
+///
+/// The clock is [`FrozenClock`] rather than a stepped one because the settle deadline is not
+/// this suite's subject: a deadline that cannot expire removes `SettleTimeout` from the set
+/// of outcomes, so a red run here is about the crash rather than about how busy the machine
+/// was (note **N60**). The lock is returned rather than dropped for [`open_and_write`]'s
+/// reason.
+fn run_one_sweep(plan: &Plan, at_first_stream: AtFirstStream) -> (StoreLock, PersistentCamera) {
+    let store = SessionStore::new(plan.state_root.clone());
+    let lock = store
+        .lock(LockProtocol::HeldForLifetime)
+        .expect("nobody else holds the state directory");
+    let mut session = match lifecycle::resume(&store, &fingerprint(), TASK).expect("readable") {
+        Some(resumed) => resumed,
+        None => lifecycle::create(&store, &lock, &spec(), now()).expect("a free slot"),
+    };
+
+    let session_file = store.session_dir(&session).join(limits::SESSION_FILE);
+    let mut camera = PersistentCamera::open(&plan.device, Some(session_file));
+    if at_first_stream == AtFirstStream::AnnounceAndWait {
+        camera = camera.halting_at_the_first_stream();
+    }
+
+    let clock = FrozenClock;
+    let context = SweepContext {
+        store: &store,
+        lock: &lock,
+        clock: &clock,
+        progress: &Silent,
+        started_at: now(),
+    };
+    calibrate::run(&context, &mut session, &mut camera, &sweep_request())
+        .expect("a willing camera and a writable store");
+    (lock, camera)
+}
+
+/// Say the line and block until the parent answers or goes away.
+///
+/// Blocking on a pipe rather than on a clock: no sleep is a synchronisation (rubric Part C),
+/// and reading standard input also means a parent that dies without killing us closes the
+/// pipe and lets us go instead of leaving a process behind.
+fn announce_and_wait(line: &str) {
+    let mut out = std::io::stdout();
+    writeln!(out, "{line}").expect("the parent is listening");
+    out.flush().expect("the parent is listening");
+    let mut ignored = String::new();
+    let _ = std::io::stdin().read_line(&mut ignored);
+}
+
 // ------------------------------------------------------------------ the tests
 
 /// The ordering design §6 rests on — and, when a parent asks for it by name, the child
@@ -444,15 +677,7 @@ fn open_and_write(plan: &Plan) -> (StoreLock, PersistentCamera) {
 fn a_sweep_persists_its_snapshot_before_its_first_write_reaches_the_camera() {
     if let Some(plan) = Plan::from_env() {
         let _held = open_and_write(&plan);
-        let mut out = std::io::stdout();
-        writeln!(out, "{READY}").expect("the parent is listening");
-        out.flush().expect("the parent is listening");
-
-        // Blocking on a pipe rather than on a clock: no sleep is a synchronisation
-        // (rubric Part C), and reading stdin also means a parent that dies without killing
-        // us closes the pipe and lets us go instead of leaving a process behind.
-        let mut ignored = String::new();
-        let _ = std::io::stdin().read_line(&mut ignored);
+        announce_and_wait(READY);
         return;
     }
 
@@ -509,8 +734,8 @@ fn a_sweep_killed_between_its_write_and_its_restore_recovers_from_the_persisted_
     let device = temp.root().join("device-under-test.json");
     PersistentCamera::plant(&device);
 
-    let mut child = spawn_child(temp.root(), &device);
-    wait_for_ready(&mut child);
+    let mut child = spawn_child(CHILD_TEST, temp.root(), &device);
+    wait_for_ready(&mut child, READY);
 
     // The crash. `Child::kill` is SIGKILL on Unix: no unwinding, no `Drop`, no last-gasp
     // restore — which is the whole point. A test that let the child exit tidily would be
@@ -647,7 +872,11 @@ fn a_sweep_killed_between_its_write_and_its_restore_recovers_from_the_persisted_
             )
         })
         .expect("nothing to do is not a failure");
-    assert_eq!(again, Recovery::NothingPersisted);
+    assert_eq!(
+        again,
+        Recovery::NothingPersisted { freed: Vec::new() },
+        "a second recovery found something to repair, so the first one did not finish"
+    );
     assert_eq!(
         PersistentCamera::read(&device).writes.len(),
         before,
@@ -655,15 +884,137 @@ fn a_sweep_killed_between_its_write_and_its_restore_recovers_from_the_persisted_
     );
 }
 
+/// The durable half of the same ordering — and, when a parent asks for it by name, the
+/// child half of the sweeping crash test.
+///
+/// The claim: by the time a sweep asks the camera for its first frame, `session.json`
+/// already says the control is `Sweeping` with nothing recorded. That is the state note
+/// **N139** is about, and it is worth asserting from *inside* the sweep because it is the
+/// only window in which it holds — one sample later `done` is 1 and the control has an exit.
+#[test]
+fn a_sweep_is_sweeping_on_disk_before_the_first_sample_reaches_the_camera() {
+    if let Some(plan) = Plan::from_env() {
+        let _held = run_one_sweep(&plan, AtFirstStream::AnnounceAndWait);
+        return;
+    }
+
+    let temp = TempStore::new().expect("a temp dir");
+    let device = temp.root().join("device-under-test.json");
+    PersistentCamera::plant(&device);
+    let plan = Plan {
+        state_root: temp.root().to_owned(),
+        device,
+    };
+
+    let (lock, camera) = run_one_sweep(&plan, AtFirstStream::CarryOn);
+    assert_eq!(
+        camera.sweeping_at_first_stream,
+        Some((0, 2)),
+        "the document did not say this control was sweeping with nothing recorded when the \
+         first sample reached the camera, so a kill at that instant would leave something \
+         other than the state this suite is about"
+    );
+    drop(lock);
+}
+
+#[test]
+fn a_sweep_killed_before_its_first_sample_leaves_the_control_sweepable_again() {
+    // Note **N139**, and the half of design §6's crash story this suite could not see until
+    // its fixture ran a real sweep. A child begins one, announces itself from inside the
+    // first sample and is killed there; the repair verb runs; and the question is whether
+    // the control the crash touched can be swept at all afterwards.
+    let temp = TempStore::new().expect("a temp dir");
+    let device = temp.root().join("device-under-test.json");
+    PersistentCamera::plant(&device);
+
+    let mut child = spawn_child(SWEEP_CHILD_TEST, temp.root(), &device);
+    wait_for_ready(&mut child, SWEEP_READY);
+    child.kill().expect("the child is still running");
+    let status = child.wait().expect("the child is reapable");
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "the child exited on its own instead of being killed: {status:?}"
+    );
+
+    // The state the finding is about, on disk, written by a process that no longer exists.
+    // Without this the rest of the test would pass on a session that never swept.
+    let store = SessionStore::new(temp.root().to_owned());
+    let mut session = lifecycle::resume(&store, &fingerprint(), TASK)
+        .expect("the crashed session is readable")
+        .expect("a session that never finished is still open");
+    let stranded = session
+        .controls
+        .get(&slug(SWEEP_CONTROL))
+        .expect("the sweep reached the document");
+    assert!(
+        matches!(stranded.status, ControlStatus::Sweeping { done: 0, .. }),
+        "the child did not leave the control mid-sweep: {:?}",
+        stranded.status
+    );
+    assert!(
+        stranded.samples.is_empty(),
+        "the child recorded a sample, so this is not the zero-sample case"
+    );
+
+    // The shipped repair verb, run by a process that never saw the sweep — `calibrate
+    // restore`'s own function, not a private one this test reached for.
+    let session_file = store.session_dir(&session).join(limits::SESSION_FILE);
+    let mut camera = PersistentCamera::open(&device, Some(session_file));
+    store
+        .with_lock(|lock| lifecycle::restore(&store, lock, &mut session, &mut camera, now()))
+        .expect("the lock is free and the snapshot is this camera's");
+
+    // The property, and it is deliberately the whole verb rather than the status field: a
+    // repair that moved the status without making the control sweepable would be a repair
+    // that only looked like one.
+    let clock = FrozenClock;
+    let outcome = store
+        .with_lock(|lock| {
+            let context = SweepContext {
+                store: &store,
+                lock,
+                clock: &clock,
+                progress: &Silent,
+                started_at: now(),
+            };
+            calibrate::run(&context, &mut session, &mut camera, &sweep_request())
+        })
+        .expect(
+            "a sweep killed before its first sample left the control in a state every verb \
+             refuses, and the repair verb did not give it back",
+        );
+    assert_eq!(outcome.samples.len(), 2);
+
+    // And the history says what happened, for the reader who arrives after the terminal is
+    // gone (note N18): a sweep that started, an interruption, and a sweep that finished.
+    let log: Vec<SessionEvent> = store
+        .load_log(&store.session_dir(&session))
+        .expect("readable")
+        .into_iter()
+        .map(|entry| entry.event)
+        .collect();
+    assert!(
+        log.iter()
+            .any(|event| matches!(event, SessionEvent::SweepInterrupted { taken: 0, .. })),
+        "nothing on disk says the first sweep was abandoned: {log:?}"
+    );
+    assert!(
+        log.iter()
+            .any(|event| matches!(event, SessionEvent::SweepFinished { samples: 2, .. })),
+        "{log:?}"
+    );
+}
+
 // ------------------------------------------------------------------ the child, as a process
 
-fn spawn_child(state_root: &Utf8Path, device: &Utf8Path) -> Child {
+fn spawn_child(test: &str, state_root: &Utf8Path, device: &Utf8Path) -> Child {
     let binary = std::env::current_exe().expect("this test binary has a path");
     Command::new(binary)
-        // libtest's own selection, so the child runs exactly the sweep half. A name that
-        // matched nothing would exit 0 with no output, and `wait_for_ready` fails loudly
-        // on that rather than blocking.
-        .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+        // libtest's own selection, so the child runs exactly the half the parent named. A
+        // name that matched nothing would exit 0 with no output, and `wait_for_ready` fails
+        // loudly on that rather than blocking.
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
         .env(STATE_ENV, state_root.as_str())
         .env(DEVICE_ENV, device.as_str())
         .stdin(Stdio::piped())
@@ -673,17 +1024,17 @@ fn spawn_child(state_root: &Utf8Path, device: &Utf8Path) -> Child {
         .expect("the test binary is executable")
 }
 
-/// Block until the child says its write is on the device.
+/// Block until the child says it has reached the moment the parent is waiting for.
 ///
 /// Reading a pipe, not sleeping on a guess: the announcement is the observable event, and
 /// end-of-file without it means the child died or ran the wrong test — reported with
 /// everything it printed, because a crash suite that hangs is worse than one that fails.
-fn wait_for_ready(child: &mut Child) {
+fn wait_for_ready(child: &mut Child, ready: &str) {
     let stdout = child.stdout.take().expect("stdout was piped");
     let mut transcript = Vec::new();
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
-        if line.contains(READY) {
+        if line.contains(ready) {
             return;
         }
         transcript.push(line);

@@ -195,6 +195,15 @@ pub fn run(
         sink: cx.progress,
     };
 
+    // **Before anything is asked of the device, because everything below costs something**
+    // (note **N147**). A settle deadline this build will not honour is a fact about the
+    // request, and the first write below persists a snapshot, switches an automation partner
+    // off and drives a value into the camera — a motor that has moved, for a PTZ control.
+    // `capture::grab` asks the same question at the door and that is the invariant; this is
+    // what stops the refusal arriving after the sweep has announced itself and taken the
+    // camera apart. Same rule, one home: `schema::capture::SettlePolicy::within_bound`.
+    request.settle.within_bound()?;
+
     let desc = describe(camera, &request.control)?;
     // The bound on every sweep comes from here: `sweep::plan` reads
     // `limits::MAX_SWEEP_SAMPLES` and `limits::MAX_MOTION_SWEEP_SAMPLES` and widens the
@@ -224,8 +233,19 @@ pub fn run(
     // refuses are all sweeps that never started. `begin_sweep` is on this side of the line
     // deliberately — the document says yes before the stream says "started", so a refused
     // transition cannot announce a sweep that is not happening.
+    //
+    // **And what the planner did to the spec goes onto the document here** (note **N145**),
+    // which is why it is `begin_sweep`'s business rather than this function's: the status and
+    // the log line are written by the one transition, so the live event below and the answer
+    // `calibrate sweep --json` prints cannot disagree about what was planned.
+    let planned = session::Planned {
+        spec: &request.plan,
+        total: sweeping.total,
+        precision: plan.precision,
+        adjustments: &plan.adjustments,
+    };
     lifecycle::commit(store, lock, session, stream.at(clock), |draft, now| {
-        session::begin_sweep(draft, &request.control, &request.plan, sweeping.total, now)
+        session::begin_sweep(draft, &request.control, planned, now)
     })?;
     stream.emit(
         clock,
@@ -233,6 +253,13 @@ pub fn run(
             control: request.control.clone(),
             plan: request.plan.clone(),
             total: sweeping.total,
+            // The stride and the adjustments, carried to whoever is watching. They reached no
+            // caller at all until P6f: both composition roots drop the whole `SweepOutcome`,
+            // so a sweep whose stride was widened forty-fold to fit `MAX_SWEEP_SAMPLES`
+            // announced its sample count and nothing about the precision the caller was not
+            // going to get.
+            precision: plan.precision,
+            adjustments: plan.adjustments.clone(),
         },
     );
 
@@ -415,7 +442,12 @@ fn interrupted(
             control: control.clone(),
             taken,
             total: sweeping.total,
-            failure: error.kind(),
+            // **Present**, because this producer is inside the sweep that stopped and knows
+            // (note **N149**): the refusal in hand is the one that ended it. The other
+            // producer — `lifecycle::free_stranded_sweeps`, repairing a killed sweep from a
+            // later process — has nothing to read and leaves this absent rather than naming
+            // something plausible.
+            failure: Some(error.kind()),
             detail: error.to_string(),
         },
     );
@@ -547,8 +579,10 @@ fn one_sample(
         },
         // The destination is the session tree's own, under a directory this process made
         // (D9) — never a path a client named, which is what note N51's non-blocking open is
-        // for. There is nothing here for a client to swap.
-        &mut photo::WhereverTheCallerSaid,
+        // for. There is nothing here for a client to swap, and because the path is this
+        // tool's rather than a caller's the file is created at the tree's own mode rather
+        // than at the ambient umask (note **N142**).
+        &mut photo::IntoTheSessionTree,
         controls,
         captured_at,
     )?;
@@ -664,6 +698,7 @@ mod tests {
     use testkit::fixtures;
 
     use super::*;
+    use crate::sweep::SweepAdjustment;
 
     /// A sweep of `control` under `plan`, at a size this module chose rather than one the
     /// camera did.
@@ -945,6 +980,10 @@ mod tests {
                 },
                 done: 2,
                 total: 2,
+                // The planner's own numbers, on the status the caller is handed back — the
+                // two values are 255 apart and neither needed adjusting (note **N145**).
+                precision: 255,
+                adjustments: Vec::new(),
             },
             "the sweep chose a value nobody selected"
         );
@@ -1315,6 +1354,175 @@ mod tests {
             })
             .collect();
         assert_eq!(indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_sweep_the_planner_adjusted_says_so_on_the_answer_the_history_and_the_event() {
+        // Note **N145**, on all three surfaces a caller can read, because the event alone
+        // reaches the one consumer that is watching and nobody else. `calibrate sweep --json`
+        // routes progress into `cli_core::render::Quiet` and answers the *document*; a reader
+        // who arrives after the sweep has `log.ndjson` and nothing else. So the planner's
+        // answer is asserted where each of them looks:
+        //
+        // - the session document, which is what the verb prints;
+        // - the `SweepStarted` log line, which outlives the process;
+        // - the live event, for whoever was subscribed.
+        //
+        // Told "2 sample(s)" and nothing else, an agent that asked for four values cannot
+        // learn that two of them were not photographed — and an agent that asked for a
+        // stride of 1 over a 10 000-wide range cannot learn it got 40.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let backend = backend();
+        let mut camera = open(&backend);
+        let control = slug("brightness");
+        let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
+
+        let recorder = Recorder::new();
+        let clock = FrozenClock;
+        let outcome = run(
+            &context(&temp, &lock, &clock, &recorder),
+            &mut session,
+            camera.as_mut(),
+            // Two outside the control's range and one that collapses onto a clamped
+            // neighbour: three planner decisions the caller did not make.
+            &sweep_request(
+                control.clone(),
+                SweepSpec::Explicit {
+                    values: vec![-5, 0, 255, 4_000],
+                },
+            ),
+        )
+        .expect("a willing camera");
+
+        assert!(
+            !outcome.plan.adjustments.is_empty(),
+            "the fixture stopped producing adjustments, so this proves nothing"
+        );
+        let announced = recorder
+            .events()
+            .iter()
+            .find_map(|event| match &event.progress {
+                CalibrationProgress::SweepStarted {
+                    adjustments,
+                    precision,
+                    ..
+                } => Some((adjustments.clone(), *precision)),
+                _ => None,
+            })
+            .expect("the sweep announced itself");
+        assert_eq!(
+            announced,
+            (outcome.plan.adjustments.clone(), outcome.plan.precision),
+            "the event and the plan disagree about what the planner did"
+        );
+        assert!(
+            announced
+                .0
+                .iter()
+                .any(|adjustment| matches!(adjustment, SweepAdjustment::Clamped { .. })),
+            "a value outside the range was planned without being reported: {:?}",
+            announced.0
+        );
+
+        // **The answer document**, which is what `calibrate sweep --json` prints and the only
+        // thing a caller that was not subscribed ever sees.
+        let status = &session.controls[&control].status;
+        let schema::session::ControlStatus::Sweeping {
+            precision,
+            adjustments,
+            ..
+        } = status
+        else {
+            panic!("a finished sweep leaves its control mid-sweep (D8): {status:?}");
+        };
+        assert_eq!(
+            (adjustments.clone(), *precision),
+            (outcome.plan.adjustments.clone(), outcome.plan.precision),
+            "the answer document says nothing about what the planner did"
+        );
+
+        // **The history**, for the reader who arrives after the terminal is gone — and after
+        // a `select` has moved the status above out of `Sweeping` entirely.
+        let started = temp
+            .store()
+            .load_log(&temp.store().session_dir(&session))
+            .expect("readable")
+            .into_iter()
+            .find_map(|entry| match entry.event {
+                SessionEvent::SweepStarted {
+                    precision,
+                    adjustments,
+                    ..
+                } => Some((adjustments, precision)),
+                _ => None,
+            })
+            .expect("the sweep recorded its start");
+        assert_eq!(
+            started,
+            (outcome.plan.adjustments.clone(), outcome.plan.precision),
+            "the durable record says nothing about what the planner did"
+        );
+    }
+
+    #[test]
+    fn a_settle_no_camera_may_be_held_for_is_refused_before_the_document_or_the_device_moves() {
+        // **Note N147.** `capture::grab` refuses the deadline, and that is the invariant —
+        // but `grab` is reached at the *sample*, and by then this function has committed
+        // `Sweeping` to the document, armed a pre-sweep snapshot, switched an automation
+        // partner off and driven a value into the camera. On a PTZ control that last one is a
+        // motor that has moved. `scripts/gates/phase-criteria.tsv` already carries the same
+        // claim for `record` — "a request this build was never going to honour must not cost
+        // anybody a descriptor" — and this is that claim for a sweep.
+        //
+        // The three assertions are the three things it must not have cost: a document that
+        // says a sweep is running, a write the camera can feel, and a snapshot on disk.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let backend = backend();
+        let mut camera = open(&backend);
+        let control = slug("brightness");
+        let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
+        let before = camera.controls().expect("a willing camera");
+
+        let recorder = Recorder::new();
+        let clock = FrozenClock;
+        let mut request = sweep_request(control.clone(), SweepSpec::All);
+        request.settle.deadline_ms = schema::limits::MAX_SETTLE_DEADLINE_MS + 1;
+        let refused = run(
+            &context(&temp, &lock, &clock, &recorder),
+            &mut session,
+            camera.as_mut(),
+            &request,
+        )
+        .expect_err("a deadline no capture may hold a camera for");
+        assert_eq!(refused.kind(), schema::ErrorKind::IllegalTransition);
+        assert!(
+            refused
+                .to_string()
+                .contains(&schema::limits::MAX_SETTLE_DEADLINE_MS.to_string()),
+            "the refusal must name the bound an unattended caller has to fit inside: {refused}"
+        );
+
+        assert_eq!(
+            session.controls.get(&control).map(|entry| &entry.status),
+            None,
+            "the document says a sweep began that this build was never going to run"
+        );
+        assert_eq!(
+            session.pre_snapshot, None,
+            "a snapshot was armed for nothing"
+        );
+        assert_eq!(
+            camera.controls().expect("a willing camera"),
+            before,
+            "the camera was written to before the request was found unacceptable"
+        );
+        assert!(
+            recorder.events().is_empty(),
+            "a sweep that never started announced itself: {:?}",
+            recorder.events()
+        );
     }
 
     #[test]

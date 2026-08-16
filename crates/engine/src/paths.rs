@@ -92,11 +92,30 @@ pub fn state_dir(env: &dyn Env) -> Result<Utf8PathBuf> {
 /// directory cannot be created inside it.
 pub fn scratch_dir() -> Result<tempfile::TempDir> {
     let root = schema::paths::scratch_root()?;
-    tempfile::TempDir::new_in(&root).map_err(|err| Error::StorageIo {
+    let storage_io = |err: &std::io::Error| Error::StorageIo {
         path: root.as_str().into(),
         errno: err.raw_os_error(),
         message: err.to_string(),
-    })
+    };
+    // **At `store::STATE_DIR_MODE`, not at the ambient umask** (note **N142**). `tempfile`
+    // creates a directory at `0o777 & !umask` by default — measured 0775 on the machine this
+    // project is developed on — and a scratch session tree holds exactly what a real one
+    // does: sample photographs of whatever the camera was pointed at. A fixture that was more
+    // open than the thing it stands in for is a fixture that cannot pin the thing's posture,
+    // and the store's own startup check would refuse it (which is how this was found).
+    //
+    // **The mode is given at the `mkdir`, not set afterwards** (note **N150**).
+    // `photo::IntoTheSessionTree` spends ten lines arguing that a `set_permissions` after a
+    // create leaves a window in which the object exists at the wider mode, and this call is
+    // the same shape one object up — an empty directory leaks nothing, but a rule that holds
+    // in one place and not its neighbour is a rule nobody can rely on. `tempfile`'s
+    // `Builder::permissions` passes it to the `mkdir`, so there is no window to argue about.
+    tempfile::Builder::new()
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(
+            crate::store::STATE_DIR_MODE,
+        ))
+        .tempdir_in(&root)
+        .map_err(|err| storage_io(&err))
 }
 
 /// A private `$XDG_RUNTIME_DIR` that disappears with the value.
@@ -209,6 +228,34 @@ mod tests {
     use super::*;
     use schema::ErrorKind;
     use schema::paths::runtime_dir;
+
+    #[test]
+    fn a_scratch_session_tree_is_as_private_as_the_real_one_and_is_created_that_way() {
+        // Notes **N142** and **N150**. A scratch session tree holds exactly what a real one
+        // does — sample photographs of whatever the camera was pointed at — so a fixture more
+        // open than the thing it stands in for cannot pin that thing's posture, and the
+        // store's own startup check refuses it (which is how the umask default was found).
+        //
+        // What this assertion cannot see is the *window*, which is the other half: the mode
+        // is given to `mkdir` rather than set afterwards, so the directory never exists at
+        // the wider one. `photo::IntoTheSessionTree` argues the same shape one object down,
+        // and the two now agree.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = scratch_dir().expect("a scratch dir");
+        let mode = std::fs::metadata(dir.path())
+            .expect("just created")
+            .permissions()
+            .mode()
+            & schema::paths::MODE_BITS;
+        assert_eq!(
+            mode & schema::paths::GROUP_AND_OTHER_BITS,
+            0,
+            "a scratch session tree came out at mode {mode:04o}, which somebody else can walk \
+             into"
+        );
+        assert_eq!(mode & 0o700, crate::store::STATE_DIR_MODE);
+    }
 
     #[test]
     fn xdg_state_home_wins_when_it_is_set() {

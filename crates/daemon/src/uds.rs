@@ -117,7 +117,11 @@ use rustix::fs::{AtFlags, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use schema::limits;
-use schema::paths::Env;
+// The mode bits a `stat` carries below the file-type bits, from the crate that owns the
+// fact rather than written out again here: `engine::store` masks with the same number for
+// the same reason one directory along, and two private copies of one POSIX constant is
+// design §2.10's second home even while they agree (note **N150**).
+use schema::paths::{Env, MODE_BITS};
 use schema::{Error, Result};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -127,9 +131,6 @@ use tokio::net::{UnixListener, UnixStream};
 /// and names it in the refusal, so "0700" is not written three times and cannot come to
 /// mean three things.
 pub const SOCKET_DIR_MODE: u32 = 0o700;
-
-/// The mode bits a directory's permissions carry — everything below the type bits.
-const MODE_BITS: u32 = 0o7777;
 
 /// How the socket directory and the base above it are opened, in one place because the
 /// combination is the security property and not a spelling.
@@ -608,6 +609,23 @@ fn dir_mode() -> Mode {
 /// One home for both, because [`SocketDir::prepare`] and [`SocketDir::bind`] ask exactly
 /// the same question of exactly the same descriptor and a second copy would be a second
 /// opinion (design §2.10).
+///
+/// **Exact equality here, a subset one directory along, and the difference is the question**
+/// (note **N150**). `engine::store::check_state_dir` guards D9's session tree and asks only
+/// `paths::GROUP_AND_OTHER_BITS` — who other than the owner can reach the frames — so there a
+/// *narrower* mode passes and an inherited `S_ISGID` is ignored. D11 makes **this**
+/// directory's mode the entire authentication model for a socket with no token and no
+/// peer-credential check, so anything that is not `SOCKET_DIR_MODE` is wrong here whichever
+/// way it differs. That function's doc carries the other end of this sentence, because a
+/// reader who meets either check first should not have to guess the other one exists.
+///
+/// The residue that divergence leaves is named rather than assumed away: [`SocketDir::prepare`]
+/// `mkdirat`s and then arrives here, so a `$XDG_RUNTIME_DIR` carrying the set-group bit would
+/// make this daemon refuse the directory it had just created — N150's break, one directory
+/// along. It stays exact anyway. `$XDG_RUNTIME_DIR` is `/run/user/<uid>`, made 0700 by the
+/// login manager rather than by a site's group policy, so the setgid arrangement that is
+/// ordinary on a shared *home* does not occur on it; and if it ever did, a daemon whose whole
+/// authentication is this mode word is a daemon that should say so rather than serve.
 fn check_mode_and_owner(path: &Utf8Path, found: &rustix::fs::Stat) -> Result<()> {
     let mode = found.st_mode & MODE_BITS;
     if mode != SOCKET_DIR_MODE {

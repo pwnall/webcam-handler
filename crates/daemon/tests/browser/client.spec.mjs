@@ -700,8 +700,12 @@ test("the calibration view tracks a sweep it did not start", async ({ page }) =>
   // running more than one.
   const short = session.slice(0, 8);
   const log = page.locator("#sweep-log li");
+  // The **stride** rides the start line since note **N145**, and this is the surface AGENTS
+  // names for it: the owner calibrates from this page and is the person who types a precision.
+  // Two values 255 apart plan a stride of 255, and a line that said only "2 samples" would
+  // leave every comparison drawn from those photographs drawn at a resolution nobody chose.
   await expect(log.first()).toHaveText(
-    `${short} sweep of brightness started: 2 samples (2 named values)`,
+    `${short} sweep of brightness started: 2 samples (2 named values) — every 255`,
   );
   await expect(log.last()).toHaveText(`${short} sweep of brightness finished after 2 samples`);
 

@@ -123,7 +123,17 @@ pub fn pairs(camera: &mut dyn Camera, now: Stamp) -> Result<Discovery> {
     // Before anything is written. A failure here is a refusal to begin, which is the
     // correct direction: the alternative is a camera perturbed with no record of where it
     // was.
-    let before_all = snapshot::take(camera, &[], now)?;
+    //
+    // **Against the pair set this device is in now, not against an empty one** (note
+    // **N143**). [`snapshot::take`] derives each entry's `ControlRole` from the set it is
+    // handed, and `&[]` roles every control `Manual` — so D4's automation-first restore
+    // ordering collapsed to alphabetical for the one restore whose whole subject is
+    // automation. The probe has measured nothing yet, so what it can honestly ask for is
+    // the *declared* table narrowed to this device, which is exactly what
+    // [`snapshot::take_in_effect`] composes and is the one home for the question (E1:
+    // measured beats declared, and there is nothing measured here to prefer). The restore at
+    // the end of this function uses the measured set, because by then there is one.
+    let before_all = snapshot::take_in_effect(camera, now)?;
 
     let mut found: Vec<AutomationPair> = Vec::new();
     let mut skipped: Vec<ProbeSkip> = Vec::new();
@@ -311,6 +321,54 @@ mod tests {
             assert!(!is_motorized(&slug(calm)));
             assert!(!testkit::battery::is_motorized(&slug(calm)));
         }
+    }
+
+    #[test]
+    fn the_probes_own_restore_puts_automation_back_first_rather_than_alphabetically() {
+        // Note **N143**. `snapshot::take` derives each entry's `ControlRole` from the pair
+        // set it is handed, and this probe used to hand it `&[]` — so every entry came back
+        // `Manual` and D4's automation-first ordering degenerated to alphabetical for the
+        // one restore whose entire subject is automation. The one home for "which
+        // relationships are automation" was being bypassed by the one code path whose whole
+        // job is to discover them.
+        //
+        // `brightness` is what makes this readable: it sorts before
+        // `white_balance_automatic`, so alphabetical order and D4's order disagree about
+        // which control is put back first, and the report's outcomes are in the order the
+        // writes were *attempted*.
+        let mut camera = ScriptedCamera::new(vec![
+            boolean("white_balance_automatic", 1),
+            integer("white_balance_temperature", 46),
+            integer("brightness", 50),
+        ])
+        .on_write(
+            "white_balance_automatic",
+            OnWrite::Couple(vec!["white_balance_temperature"]),
+        );
+
+        let found = pairs(&mut camera, Stamp::epoch()).expect("probes");
+        let named = |outcome: &schema::snapshot::RestoreOutcome| match outcome {
+            schema::snapshot::RestoreOutcome::Restored { applied } => {
+                applied.slug.as_str().to_owned()
+            }
+            schema::snapshot::RestoreOutcome::AlreadyCorrect { control }
+            | schema::snapshot::RestoreOutcome::OwnedByAutomation { control, .. }
+            | schema::snapshot::RestoreOutcome::Unrestorable { control, .. } => {
+                control.as_str().to_owned()
+            }
+        };
+        let first = found
+            .restored
+            .outcomes
+            .first()
+            .map(named)
+            .expect("the probe restored something");
+        assert_eq!(
+            first, "white_balance_automatic",
+            "the probe's own restore did not start with the automation control, so it was \
+             planned against a pair set that says this device has no automation: {:?}",
+            found.restored
+        );
     }
 
     #[test]

@@ -789,7 +789,31 @@ fn failure_document() -> String {
 /// AGENTS states the requirement in one sentence — *"`Busy` means retry, `DeviceGone` means
 /// stop and tell the human, `PermissionDenied` means a setup problem — collapsing them makes
 /// the agent guess"* — and this function is where that sentence is spent.
-fn disposition(kind: ErrorKind) -> (&'static str, &'static str) {
+fn disposition(kind: ErrorKind) -> (&'static str, String) {
+    let (verb, meaning) = disposition_text(kind);
+    match kind {
+        // **The one row that names a number, and it is derived** (note **N147**). The advice
+        // below tells a reader to retry with a longer deadline, and until the bound was
+        // written beside it that instruction had no ceiling — an unattended reader following
+        // it past the cap meets `illegal_transition` instead, which its own row answers with
+        // "fix the request" and no idea which part. The figure comes out of
+        // `schema::limits::MAX_SETTLE_DEADLINE_MS` rather than being typed here, so a guide
+        // that advertised a ceiling this build does not have cannot be committed.
+        ErrorKind::SettleTimeout => (
+            verb,
+            format!(
+                "{meaning} The deadline has a ceiling of its own: {} ms is the most one \
+                 capture may hold a camera, and a larger `--settle-deadline` is refused as \
+                 `illegal_transition` rather than quietly shortened.",
+                schema::limits::MAX_SETTLE_DEADLINE_MS
+            ),
+        ),
+        _ => (verb, meaning.to_owned()),
+    }
+}
+
+/// [`disposition`]'s table: literal prose, one row per D13 variant.
+fn disposition_text(kind: ErrorKind) -> (&'static str, &'static str) {
     match kind {
         ErrorKind::DeviceGone => (
             "stop",
@@ -923,7 +947,7 @@ fn errors() -> Result<String> {
             out,
             "| `{name}` | `{}` | **{verb}** | {} |",
             cli_core::exit_code(&Error::sample(kind)),
-            cell(meaning)
+            cell(&meaning)
         );
         rows += 1;
     }
@@ -968,7 +992,9 @@ fn photograph_recipe() -> String {
          converge, and the first frame after `STREAMON` is not the picture. The default \
          discards ten frames; `--skip-frames` and `--settle-for` set it yourself, and \
          `--settle-deadline` bounds the whole thing so a camera that never settles fails \
-         instead of hanging.\n\n\
+         instead of hanging. That deadline may be at most {settle_cap} ms — one camera is one \
+         thread, so a settle is time nothing else on that camera gets — and a larger one is \
+         refused as `illegal_transition` rather than quietly shortened.\n\n\
          ```console\n\
          $ {client} photo <CAMERA> -o <PHOTO> --skip-frames 20 --settle-deadline 8000\n\
          ```\n\n\
@@ -985,7 +1011,12 @@ fn photograph_recipe() -> String {
          ```\n\n\
          With no `-o`, the photo's bytes are standard output — which is why `--json` requires \
          a path.\n",
-        client = cli_core::Program::Client.as_str()
+        client = cli_core::Program::Client.as_str(),
+        // Derived rather than typed, for the reason `disposition`'s `settle_timeout` row is
+        // (note **N147**): this sentence tells an unattended reader what to fit inside, and a
+        // number that drifted from `schema::limits` would be an instruction to keep asking
+        // for something the tool refuses.
+        settle_cap = schema::limits::MAX_SETTLE_DEADLINE_MS,
     )
 }
 

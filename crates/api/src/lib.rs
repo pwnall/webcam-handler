@@ -277,11 +277,19 @@ wire_surface! {
         /// As `wch_info`, plus [`schema::Error::SettleTimeout`] \[PF:11\],
         /// [`schema::Error::FormatUnsupported`] when the camera offers nothing that was asked
         /// for, [`schema::Error::StorageIo`] from the sink, and
-        /// [`schema::Error::IllegalTransition`] for a sink this server will not honour at all
-        /// — a `ServerPath` that is not absolute, or one whose extension names an encoding
-        /// this build does not write, naming the three it does. Deliberately not
-        /// `FormatUnsupported`: the camera declined nothing, and `.webp` is not its fault
-        /// (E3, note N46).
+        /// [`schema::Error::IllegalTransition`] for a request this server will not honour at
+        /// all — a `ServerPath` that is not absolute, or one whose extension names an
+        /// encoding this build does not write, naming the three it does; or a
+        /// `settle.deadline_ms` past 10000 (`schema::limits::MAX_SETTLE_DEADLINE_MS`), which
+        /// is refused rather than clamped for `wch_record_start`'s reason one bound along: one
+        /// camera is one thread (D12), so a settle is time nobody else on this daemon gets,
+        /// and an agent whose settle was quietly shortened cannot tell that from a sensor
+        /// that converged. All of them are answered before a camera is resolved and before
+        /// the destination is opened, so a request this build was never going to honour
+        /// costs nobody a descriptor and leaves no file where none was (note **N147**).
+        /// Deliberately not `FormatUnsupported`: the camera declined nothing, and `.webp` is
+        /// not its fault (E3, note N46). Deliberately not `SettleTimeout` either: nothing
+        /// waited.
         #[method(name = "photo")]
         async fn photo(
             &self,
@@ -490,7 +498,12 @@ wire_surface! {
         /// As `wch_calibrate_start`, plus the planner's refusals (a control with no
         /// ordered range; a motorized control without `allow_motion`, because §5 says a plan
         /// that would move motors says so first) and whatever the camera said at the sample
-        /// that stopped it.
+        /// that stopped it. [`schema::Error::IllegalTransition`] also for a
+        /// `settle.deadline_ms` past 10000 (`schema::limits::MAX_SETTLE_DEADLINE_MS`), which
+        /// is answered before the camera is resolved — a sweep that reached its first sample
+        /// would have armed a pre-sweep snapshot, switched an automation partner off and
+        /// moved a motor before finding out this build was never going to honour the request
+        /// (note **N147**).
         #[method(name = "calibrate_sweep")]
         async fn calibrate_sweep(
             &self,

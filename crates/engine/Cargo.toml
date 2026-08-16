@@ -24,6 +24,12 @@ workspace = true
 [dependencies]
 camino.workspace = true
 fd-lock.workspace = true
+# `geteuid`, for D9's state-directory check: N39's ruling has two halves and the second one
+# is "who owns it" (note **N150**). **`rustix` and not `libc`** for the reason
+# `webcam-handler-daemon`'s own dependency note gives — this crate is `#![forbid(unsafe_code)]`
+# and rustix is a safe wrapper — and it is already a workspace dependency at a pinned version,
+# so this is an edge rather than an adoption. `process` only: no filesystem, no net.
+rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

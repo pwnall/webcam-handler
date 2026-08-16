@@ -48,6 +48,141 @@ pub enum SweepSpec {
     },
 }
 
+closed_vocabulary! {
+    /// Which cap trimmed a sweep.
+    ///
+    /// Two numbers, because a sweep is bounded for two unrelated reasons and a caller told
+    /// only "it was capped" cannot tell which lever they have. `ALL` is generated from this
+    /// definition, so a third cap joins every walk that reads it rather than acquiring a
+    /// spelling nobody looked at (rubric rule 6).
+    ///
+    /// Every sentence below writes its number out. These are published into
+    /// `schemas/webcam-handler-schema.json`, which D10 commits so a consumer needs no Rust
+    /// toolchain — and a description that is only the name of a constant tells such a reader
+    /// nothing at all (note **N148**).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SampleCap {
+        /// The whole-sweep cap: 256 samples, `limits::MAX_SWEEP_SAMPLES`.
+        ///
+        /// It bounds camera time rather than wear — at PF:9's two seconds per photo a
+        /// 256-sample sweep is already eight and a half minutes — so it applies to every
+        /// control. The stride is widened rather than the range truncated, so a capped plan
+        /// still spans the whole range at a coarser precision.
+        Total,
+        /// The motion cap: 32 samples, `limits::MAX_MOTION_SWEEP_SAMPLES`.
+        ///
+        /// This control moves motors and motors wear (design §5), so a pan or tilt sweep is
+        /// held to an eighth of the general cap. Nothing turns this off; a caller who wants
+        /// particular positions names them with explicit values.
+        Motion,
+    }
+}
+
+// The two sentences above state numbers, and a stated number that drifts is worse than a
+// named constant, because a consumer of the committed artifact has no way to notice. Both
+// caps are checked here, where all three literals are visible at once.
+const _: () = assert!(limits::MAX_SWEEP_SAMPLES == 256);
+const _: () = assert!(limits::MAX_MOTION_SWEEP_SAMPLES == 32);
+
+closed_vocabulary! {
+    /// Which of [`SweepAdjustment`]'s four shapes a value has, without its payload.
+    ///
+    /// The discriminant on its own, so a completeness check has something the compiler owns
+    /// to walk: [`SweepAdjustment`] carries struct variants and `closed_vocabulary!` cannot
+    /// generate an `ALL` for those, while a hand-written array of four examples is exactly
+    /// the hand list rubric rule 6 bans. A fifth adjustment forces a fifth member here
+    /// (through [`SweepAdjustment::kind`]'s exhaustive match), which forces every walk over
+    /// `ALL` to say what that kind looks like and how it is spelled.
+    ///
+    /// Not on the wire: [`SweepAdjustment`] is already tagged with these names, and a second
+    /// encoding of one discriminant is a second thing to disagree with.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum SweepAdjustmentKind {
+        /// [`SweepAdjustment::Clamped`].
+        Clamped,
+        /// [`SweepAdjustment::StepAligned`].
+        StepAligned,
+        /// [`SweepAdjustment::Deduplicated`].
+        Deduplicated,
+        /// [`SweepAdjustment::Capped`].
+        Capped,
+    }
+}
+
+/// One way the values a sweep will actually visit differ from what the spec literally asked
+/// for.
+///
+/// The same doctrine as D3's `{requested, applied}`, one layer up: the caller is told what
+/// happened to their request instead of diffing two lists to find out.
+///
+/// **It is here rather than in `webcam-handler-engine::sweep` since note N145**, and the move
+/// is the finding rather than tidying. The planner has always produced these and both
+/// composition roots dropped the whole sweep outcome on the floor, so four adjustment kinds
+/// and a precision reached no caller for three phases — rubric A8's "a typed declaration
+/// nothing reads", read only by a hardware test. They reach a caller now because they ride on
+/// the `sweep_started` progress event *and* are written into the session document beside the
+/// control they are about; a vocabulary that crosses those seams is the schema's, like every
+/// other one.
+///
+/// Why it matters to the consumer AGENTS names: a `--precision 1` sweep of a 10 000-wide
+/// range plans 251 samples at a stride of 40, and without this the agent is told "251
+/// samples" and has no way to learn that the precision it asked for is not the precision it
+/// got. Every comparison it then draws from those photos is drawn at a resolution it believes
+/// is forty times finer than it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "adjustment", rename_all = "snake_case")]
+pub enum SweepAdjustment {
+    /// A requested value sat outside the control's range.
+    Clamped {
+        /// What the spec named.
+        requested: i64,
+        /// What the plan holds.
+        planned: i64,
+    },
+    /// A requested value was not a whole number of steps above the control's minimum.
+    StepAligned {
+        /// What the spec named.
+        requested: i64,
+        /// What the plan holds.
+        planned: i64,
+    },
+    /// Values collapsed onto each other after clamping and alignment.
+    Deduplicated {
+        /// How many were dropped.
+        dropped: usize,
+    },
+    /// A cap trimmed the sweep, and the stride was widened so the plan still spans the whole
+    /// range rather than stopping part way in.
+    Capped {
+        /// How many samples the spec would have taken.
+        requested: u64,
+        /// How many the plan holds.
+        planned: u32,
+        /// The cap that fired.
+        limit: u32,
+        /// Which cap it was.
+        cap: SampleCap,
+    },
+}
+
+impl SweepAdjustment {
+    /// Which shape this is, payload dropped.
+    ///
+    /// Exhaustive, which is the whole reason it exists: it is the join between this enum's
+    /// struct variants and a `closed_vocabulary!` a completeness walk can iterate, so a fifth
+    /// adjustment is a compile error here before it is a missing case anywhere else.
+    #[must_use]
+    pub const fn kind(&self) -> SweepAdjustmentKind {
+        match self {
+            SweepAdjustment::Clamped { .. } => SweepAdjustmentKind::Clamped,
+            SweepAdjustment::StepAligned { .. } => SweepAdjustmentKind::StepAligned,
+            SweepAdjustment::Deduplicated { .. } => SweepAdjustmentKind::Deduplicated,
+            SweepAdjustment::Capped { .. } => SweepAdjustmentKind::Capped,
+        }
+    }
+}
+
 /// Everything one sweep needs that is not the session, the camera, or the clock.
 ///
 /// A DTO rather than an engine struct because three callers need the same request and two of
@@ -264,12 +399,34 @@ pub enum ControlStatus {
     },
     /// A sweep is in progress.
     Sweeping {
-        /// The plan being executed.
+        /// The plan being executed — the spec as the caller wrote it, not the values it
+        /// became. What the planner did to it is `adjustments` below.
         plan: SweepSpec,
         /// Samples taken.
         done: u32,
         /// Samples planned.
         total: u32,
+        /// The smallest gap between the values this sweep will visit — the skill's
+        /// "calibration precision", and the number a refinement pass divides down.
+        ///
+        /// **The planned stride, which is a different fact from the achieved one** — the
+        /// `precision` a `calibrated` status carries is measured from the values the camera
+        /// actually held. It is here because it is the answer to the question a caller asks
+        /// *before* the photographs exist: `--precision 1` over a 10 000-wide range plans a
+        /// stride of 40, and an agent told only `total` has no way to find that out until it
+        /// has compared 251 pictures at a resolution it believes is forty times finer than it
+        /// is (note **N145**). Zero on a document an older build wrote, which is why it is
+        /// `#[serde(default)]` rather than required.
+        #[serde(default)]
+        precision: i64,
+        /// Every way the planner's values differ from what `plan` literally asked for.
+        ///
+        /// D3's `{requested, applied}` doctrine one layer up, on the *document* rather than
+        /// on the event, because the event is gone the moment the process that watched it is
+        /// and `calibrate sweep --json` answers this document (note **N145**). Empty means the
+        /// spec was executed as written.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        adjustments: Vec<SweepAdjustment>,
     },
     /// A value has been chosen.
     Calibrated {
@@ -475,6 +632,23 @@ pub enum SessionEvent {
         control: ControlSlug,
         /// How many samples are planned.
         total: u32,
+        /// The smallest gap between the values it will visit — the stride the planner
+        /// arrived at, which is not always the one the caller asked for (note **N145**).
+        ///
+        /// On the durable line as well as on the live event, because this is the number that
+        /// says what every photograph in the session directory is worth, and the terminal
+        /// that showed the live event is gone by the time anybody reads `calibrate status`.
+        /// Zero on a line an older build wrote.
+        #[serde(default)]
+        precision: i64,
+        /// Every way the planner's values differ from the spec, in the order it made them.
+        ///
+        /// A history reader's copy of what the `sweep_started` progress event carried. An
+        /// agent that was not watching — or that came back to a session an hour later — has
+        /// nowhere else to learn that the sweep it is about to compare 251 photographs from
+        /// was strided to fit a cap.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        adjustments: Vec<SweepAdjustment>,
     },
     /// A sample was recorded.
     SampleTaken {
@@ -500,13 +674,15 @@ pub enum SessionEvent {
     /// nothing at all about **why**: a camera that was unplugged, a sensor that never
     /// settled \[PF:11\], and a full disk leave byte-identical histories, and design's own
     /// rule that availability is not capability is exactly the distinction that would be
-    /// lost. The live [`crate::progress::CalibrationProgress::SweepInterrupted`] carries
-    /// the same fact to whoever was watching; this is the copy that survives the process,
+    /// lost. The live `sweep_interrupted` progress event carries the same fact to whoever
+    /// was watching; this is the copy that survives the process,
     /// because `calibrate status` is read after the terminal is gone.
     ///
-    /// Its absence is not evidence of anything: a process that was killed leaves no line
-    /// either (design §6's crash story is the pre-sweep snapshot, not the log). A present
-    /// line means a known reason; an absent one means the reason is not known here.
+    /// The absence of a *line* is not evidence of anything: a process that was killed
+    /// leaves none (design §6's crash story is the pre-sweep snapshot, not the log). What
+    /// the line says is that the sweep stopped; whether anybody knows **why** is the
+    /// `failure` field's question, and since note **N149** that field answers it honestly
+    /// in both directions rather than by always naming something.
     SweepInterrupted {
         /// Which control.
         control: ControlSlug,
@@ -514,9 +690,29 @@ pub enum SessionEvent {
         taken: u32,
         /// How many the plan held.
         total: u32,
-        /// The refusal's discriminant, so a reader can branch without parsing prose.
-        failure: ErrorKind,
-        /// The refusal, rendered.
+        /// The refusal's discriminant, so a reader can branch without parsing prose — and
+        /// **absent when the reason is not known to whoever wrote the line** (note
+        /// **N149**).
+        ///
+        /// Two producers write this event and they know different things.
+        /// `engine::calibrate`'s interruption path is inside the sweep that stopped, so it
+        /// records the refusal that stopped it — `DeviceGone`, `SettleTimeout`, `StorageIo`.
+        /// `engine::lifecycle::free_stranded_sweeps` runs in a *later* process, repairing a
+        /// control a killed sweep left behind, and it has nothing to read: the process that
+        /// knew died without writing. It leaves this absent, and `detail` carries the story.
+        ///
+        /// The rejected alternative was to name the refusal the *next* verb met
+        /// (`IllegalTransition`, from `may_begin_sweep`). That is a real refusal, but it is a
+        /// refusal about a different call at a different time, and D13's discriminant is what
+        /// an unattended agent dispatches on — `docs/agent-guide.md` answers
+        /// `illegal_transition` with "fix the request", and there is nothing to fix: the
+        /// process was killed and the control has already been given back. One field with two
+        /// meanings costs more than one field that can be absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<ErrorKind>,
+        /// What happened, in words. Always present — a line whose `failure` is absent still
+        /// says what this process knows, which is what it repaired and why it could not name
+        /// a cause.
         detail: String,
     },
     /// A value was chosen.
@@ -747,6 +943,8 @@ mod tests {
                     plan: SweepSpec::Uniform { step: 8 },
                     done: 3,
                     total: 32,
+                    precision: 8,
+                    adjustments: Vec::new(),
                 },
                 samples: Vec::new(),
             },
@@ -881,7 +1079,7 @@ mod tests {
                 control: slug("focus_absolute"),
                 taken: 3,
                 total: 16,
-                failure: crate::error::ErrorKind::DeviceGone,
+                failure: Some(crate::error::ErrorKind::DeviceGone),
                 detail: "/dev/video0 disappeared".to_owned(),
             },
         };
@@ -960,6 +1158,8 @@ mod tests {
             event: SessionEvent::SweepStarted {
                 control: slug("focus_absolute"),
                 total: 20,
+                precision: 12,
+                adjustments: Vec::new(),
             },
         };
         let json = serde_json::to_string(&entry).expect("serialize");

@@ -456,7 +456,7 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
         .collect::<Vec<_>>();
     assert_eq!(
         stopped,
-        vec![(2, 5, ErrorKind::DeviceGone, error.to_string())],
+        vec![(2, 5, Some(ErrorKind::DeviceGone), error.to_string())],
         "the session's history does not say why the sweep stopped: {history:?}"
     );
     assert!(
@@ -478,6 +478,13 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
             plan: five_across_focus(),
             done: 2,
             total: 5,
+            // What the planner did to the spec, carried on the status the sweep left behind
+            // (note **N145**): the five values are the ones the spec named and none of them
+            // needed touching, so the stride is the news and the adjustment list is empty.
+            // 255 rather than 256, because `precision` is the *smallest* gap and the last
+            // step of this plan is 1023 - 768.
+            precision: 255,
+            adjustments: Vec::new(),
         }
     );
     assert_eq!(stored.controls[&control].samples.len(), 2);
@@ -714,7 +721,7 @@ fn a_sweep_that_cannot_make_its_photo_directory_still_ends_the_stream_it_opened(
             entry.event,
             SessionEvent::SweepInterrupted {
                 taken: 0,
-                failure: ErrorKind::StorageIo,
+                failure: Some(ErrorKind::StorageIo),
                 ..
             }
         )),
@@ -871,7 +878,7 @@ fn a_sweep_whose_closing_write_refuses_reports_an_interruption_rather_than_a_fin
             SessionEvent::SweepInterrupted {
                 taken: 2,
                 total: 2,
-                failure: ErrorKind::StorageIo,
+                failure: Some(ErrorKind::StorageIo),
                 ..
             }
         )),

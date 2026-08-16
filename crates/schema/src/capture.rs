@@ -668,10 +668,25 @@ pub struct SettlePolicy {
     /// What counts as settled.
     #[serde(default)]
     pub spec: SettleSpec,
-    /// How long the whole settle may take.
+    /// How long the whole settle may take, in milliseconds. At most 10000
+    /// (`limits::MAX_SETTLE_DEADLINE_MS`).
+    ///
+    /// A deadline above that cap is refused rather than clamped: one camera is one actor
+    /// thread, so a settle is time nobody else gets, and silently shortening a number a
+    /// caller chose would answer a question they did not ask. The number is written out
+    /// here as well as named, because this sentence is published into
+    /// `schemas/webcam-handler-schema.json` for consumers who have no Rust toolchain to
+    /// resolve a constant with (D10), and `schemars` carries the same bound as this field's
+    /// `maximum` so a validator refuses what the tool refuses.
     #[serde(default = "default_settle_deadline")]
+    #[schemars(range(max = 10000))]
     pub deadline_ms: u64,
 }
+
+/// The relation the sentence above states, checked where both numbers are — a `maximum` in a
+/// committed artifact that disagreed with the constant would be worse than none, because a
+/// consumer would have validated against it.
+const _: () = assert!(limits::MAX_SETTLE_DEADLINE_MS == 10_000);
 
 fn default_settle_deadline() -> u64 {
     limits::DEFAULT_SETTLE_DEADLINE_MS
@@ -683,6 +698,45 @@ impl Default for SettlePolicy {
             spec: SettleSpec::default(),
             deadline_ms: limits::DEFAULT_SETTLE_DEADLINE_MS,
         }
+    }
+}
+
+impl SettlePolicy {
+    /// Whether this build will hold a camera for this long at all (note **N144**).
+    ///
+    /// **The rule lives here, beside the field it constrains**, for
+    /// [`Sink::is_addressable`]'s reason: it is a question about the *request* and needs no
+    /// filesystem, no enumeration and no camera, so every caller can ask it before the
+    /// request has cost anybody anything. `webcam-handler-daemon` links no `cli-core` (note
+    /// N46), so a rule written at either composition root would be a rule the other one does
+    /// not have.
+    ///
+    /// **Asked early, and asked again at the door** (note **N147**). `engine::capture::grab`
+    /// is where every settle in this engine actually happens and it asks this too — that
+    /// call is the invariant. The early calls are what stop a refusal being *expensive*: by
+    /// the time a sweep reaches `grab` it has committed `Sweeping` to the document, armed a
+    /// pre-sweep snapshot, switched an automation partner off and driven a value into the
+    /// device, which for a PTZ control is a motor that has moved. `scripts/gates/phase-criteria.tsv`
+    /// carries the same claim for `record` in the words this one inherits: a request this
+    /// build was never going to honour must not cost anybody a descriptor.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::IllegalTransition`] naming the deadline asked for and the cap, because
+    /// a refusal an unattended reader cannot act on is a refusal that costs a retry loop.
+    /// Deliberately not [`crate::Error::SettleTimeout`]: nothing waited, and nothing about
+    /// the camera is being reported.
+    pub fn within_bound(&self) -> Result<()> {
+        if self.deadline_ms > limits::MAX_SETTLE_DEADLINE_MS {
+            return Err(Error::IllegalTransition {
+                from: format!("a settle deadline of {} ms", self.deadline_ms),
+                op: format!(
+                    "hold this camera for it, which is more than the {} ms one capture may",
+                    limits::MAX_SETTLE_DEADLINE_MS
+                ),
+            });
+        }
+        Ok(())
     }
 }
 

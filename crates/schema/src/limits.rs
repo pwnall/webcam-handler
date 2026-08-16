@@ -9,9 +9,18 @@
 //! paths, and the CLI and the daemon read the same constants rather than repeating the
 //! strings.
 
-/// The persisted session document version (design D9). Bumped when the on-disk shape
-/// changes; a foreign version is [`crate::Error::SchemaVersionForeign`], never a
-/// best-effort parse.
+/// The persisted session document version (design D9).
+///
+/// Bumped when the on-disk shape changes **in a way a `#[serde(default)]` cannot absorb** — a
+/// field removed, a field's meaning changed, a variant renamed. An added optional field is not
+/// one of those: `engine::store::load_session` refuses every version but this one, older and
+/// newer alike, so a bump turns every session already on disk into
+/// [`crate::Error::SchemaVersionForeign`], and paying that for a change this build reads
+/// correctly buys nothing. Note **N151** records the four shape changes that did not move it and
+/// the one direction that is not clean — an *older* binary meeting a log line whose optional
+/// field is absent, which `parse_log` reports as a corrupt file rather than as a foreign version.
+///
+/// A foreign version is [`crate::Error::SchemaVersionForeign`], never a best-effort parse.
 pub const SESSION_SCHEMA_VERSION: u32 = 1;
 
 /// The session tree's root inside the state directory (design D9):
@@ -860,6 +869,59 @@ pub const DEFAULT_SETTLE_DEADLINE_MS: u64 = 5_000;
 
 /// How long a single `DQBUF` may block before the deadline logic gets a turn.
 pub const FRAME_DEADLINE_MS: u64 = 2_000;
+
+/// The longest settle deadline a caller may ask for (note **N144**).
+///
+/// [`DEFAULT_SETTLE_DEADLINE_MS`] is what a request gets when it names nothing; this is what
+/// a request that names something may name. Until it existed the only ceiling on how long
+/// one photo could hold a camera's single actor thread (D12) was
+/// [`MAX_SETTLE_ROUNDS`] × [`FRAME_DEADLINE_MS`] — and that backstop's own doc prices it
+/// against a camera whose clock and frames have both stopped, which is a very different
+/// question from what a caller's number is allowed to be. AGENTS' "bounded everything" wants
+/// the bound stated where the numbers are.
+///
+/// **Derived rather than chosen**, and [`PREVIEW_SUSPEND_MAX_MS`] is where the argument
+/// already is: ten seconds is the longest this tool will hold a camera dark for one photo,
+/// priced from below by the ordinary photo that must fit inside it
+/// ([`DEFAULT_SETTLE_DEADLINE_MS`] plus one [`FRAME_DEADLINE_MS`]) and from above by what a
+/// person watching a preview would call broken. Two names for one number is deliberate here:
+/// the settle cap is not independently choosable, because a settle a *running preview* would
+/// refuse is one nothing may ask for. The alternative is a bound that depends on whether
+/// somebody happened to have a browser tab open, which is the one answer a caller cannot act
+/// on.
+///
+/// Read by `schema::capture::SettlePolicy::within_bound`, which is where a request is asked
+/// whether this build will honour it at all, and by `engine::capture::grab`, which is the
+/// one door every settle in this engine goes through — a photo's and a sweep sample's alike.
+/// **Not a recording's**: `engine::record`'s header says a recording does not settle first
+/// and [`crate::video::RecordRequest`] carries no settle policy at all, so a sentence that
+/// claimed all three would be describing a field that does not exist.
+pub const MAX_SETTLE_DEADLINE_MS: u64 = PREVIEW_SUSPEND_MAX_MS;
+
+// **Two assertions, and what they constrain is the definition rather than today's value.**
+// Both read as arithmetic that is obviously true of the line above, and that is the wrong way
+// to price them: the mutable thing here is not the constants, it is the *expression*
+// `MAX_SETTLE_DEADLINE_MS` is derived by, and each of these is red on a one-token edit to it.
+//
+// The upper relation is the paragraph's own claim — a settle cap no higher than the preview
+// bound — and `= PREVIEW_SUSPEND_MAX_MS * 2` is the edit that breaks it while keeping every
+// word of the doc above plausible. After it, `capture::grab` accepts a settle
+// `preview::while_suspended` refuses, which is the doc's "one answer a caller cannot act on":
+// the same request succeeds or fails depending on whether somebody has a browser tab open.
+// It was briefly deleted here as a tautology, on the reading that `<=` over an alias unfolds
+// to `X <= X`. That reading holds the definition fixed, which is precisely the thing the
+// check exists to hold; today the two doc-literal asserts in `capture.rs` and `cli-core`
+// would notice such an edit incidentally, and those are exactly what a deliberate raise
+// updates.
+const _: () = assert!(MAX_SETTLE_DEADLINE_MS <= PREVIEW_SUSPEND_MAX_MS);
+// The lower one constrains the same expression from the other side. `PREVIEW_SUSPEND_MAX_MS
+// / 2` keeps the alias shape, satisfies the `<=` above, and silently makes the cap equal the
+// default — after which the ordinary photo the paragraph prices this from below by no longer
+// fits inside it, and every default `--skip-frames 10` capture is one `FRAME_DEADLINE_MS`
+// from a refusal nobody asked for. The `+ FRAME_DEADLINE_MS` is the whole content of the
+// check: it is the one blocking read that may begin just before the deadline arrives, exactly
+// as `PREVIEW_SUSPEND_MAX_MS`' own assertion counts it.
+const _: () = assert!(MAX_SETTLE_DEADLINE_MS >= DEFAULT_SETTLE_DEADLINE_MS + FRAME_DEADLINE_MS);
 
 /// The most times a settle loop may go round before giving up.
 ///

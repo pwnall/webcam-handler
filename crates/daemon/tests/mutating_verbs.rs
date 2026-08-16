@@ -1433,8 +1433,35 @@ async fn a_sink_only_a_socket_can_build_is_refused_before_any_camera_is_opened()
     }
     assert!(!webp.exists(), "a refused photo was written anyway");
 
-    // Neither refusal opened a camera, which is the whole reason they are answered where
-    // they are rather than inside `engine::photo`.
+    // A settle deadline no capture may hold a camera for (note **N147**). It joins these two
+    // because it is the same kind of question — one about the *request*, answerable with no
+    // filesystem and no enumeration — and because it was answered in the wrong place:
+    // `engine::capture::grab` refuses it, but `grab` runs inside the camera's actor, after
+    // this daemon has resolved a camera, opened the destination and taken a seat in the
+    // queue. What that cost a caller was a zero-length file at a path they named.
+    let long = scratch.base().join("long-settle.jpg");
+    let mut over = photo_request(Sink::ServerPath { path: long.clone() });
+    over.settle.deadline_ms = schema::limits::MAX_SETTLE_DEADLINE_MS + 1;
+    let (code, error) = refusal(wire.photo(camera.clone(), over).await);
+    assert_eq!(code, rpc_code(ErrorKind::IllegalTransition));
+    assert!(
+        error
+            .to_string()
+            .contains(&schema::limits::MAX_SETTLE_DEADLINE_MS.to_string()),
+        "the refusal must name the bound an unattended caller has to fit inside: {error}"
+    );
+    assert_ne!(
+        error.kind(),
+        ErrorKind::SettleTimeout,
+        "nothing waited (E3)"
+    );
+    assert!(
+        !long.exists(),
+        "a request this build was never going to honour left a file where none was"
+    );
+
+    // None of the three refusals opened a camera, which is the whole reason they are
+    // answered where they are rather than inside `engine::photo`.
     assert_eq!(
         fixture.backend.opens(),
         0,
