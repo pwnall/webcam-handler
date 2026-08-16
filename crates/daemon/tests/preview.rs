@@ -944,6 +944,65 @@ async fn a_stop_with_an_open_preview_tab_completes_inside_the_bound() {
 }
 
 #[tokio::test]
+async fn a_stop_that_gave_up_waiting_ends_the_connection_it_gave_up_on() {
+    // Note **N175**, and it is the other half of the test above rather than a repeat of it.
+    // That one asserts the *stop* completes inside the bound; this one asserts what the stop
+    // let go of. `Serving::stopped` aborts the listener task on expiry, and the doc used to
+    // say the sockets "close with it" — they do not: `axum::serve` spawns a task per accepted
+    // connection and moves the socket into it, so the abort ends the accept loop and leaves
+    // the stalled connection parked in a write, holding its descriptor. In the shipped daemon
+    // the process exits a moment later and the kernel tidies up, which is why nobody noticed;
+    // what was untrue is that "the listener stopped" and "the listener let the camera's
+    // viewers go" were one sentence.
+    //
+    // The reader **never reads again**, which is what makes this assertion about the daemon
+    // rather than about the client: a client that resumed reading would unblock hyper's final
+    // write and the connection would end on its own, which is exactly how a build with no
+    // repair in it looks green. So the observable is the daemon's own count of connections it
+    // is holding, and it is awaited rather than polled.
+    let preview = Preview::with_send_buffer(4096).await;
+    let mut stream = Stream::open(preview.serving.bound(), &preview.target(), Some(4096)).await;
+    assert!(stream.part().await.is_jpeg());
+
+    let mut published = preview.wchd.watch_preview_frames();
+    published
+        .wait_for(|count| *count > 64)
+        .await
+        .expect("the daemon is still publishing");
+
+    let mut connections = preview.serving.connections();
+    assert!(
+        *connections.borrow_and_update() > 0,
+        "this daemon is holding no connection, so there is nothing for the stop to give up on"
+    );
+
+    preview.shutdown.cancel();
+    preview
+        .serving
+        .stopped()
+        .await
+        .expect("the server task ended");
+
+    // Bounded so that a build which left the connection up is a named failure rather than a
+    // hang, and bounded by the same number the stop itself is measured against.
+    tokio::time::timeout(
+        Duration::from_millis(limits::DAEMON_SHUTDOWN_DRAIN_MS),
+        connections.wait_for(|live| *live == 0),
+    )
+    .await
+    .expect("a stalled tab kept this daemon's listener holding its socket after the stop")
+    .expect("the listener outlives this borrow");
+
+    // And the client's own end of it, from a reader that has been silent throughout: whatever
+    // the kernel had already buffered arrives, and then the connection **ends**.
+    let mut reads = 0;
+    while stream.fill().await > 0 {
+        reads += 1;
+        assert!(reads < 4_096, "the tab outlived the daemon");
+    }
+}
+
+#[tokio::test]
 async fn two_tabs_on_one_camera_are_one_streamer() {
     // D12's "exclusive streaming by construction", at the case that would break it: two
     // readers of one camera. The second attaches to the feed the first created — one `open`,

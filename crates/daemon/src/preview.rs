@@ -417,6 +417,11 @@ pub(crate) fn shot(index: u64, sequence: u32, bytes: Vec<u8>) -> Shot {
 /// (`crate::http::preview`). Dropping it is how a client that went away stops the capture:
 /// the receiver goes with it, the feed's receiver count falls, and the driver notices between
 /// frames.
+///
+/// `must_use` because it is a claim (note **N177**): the `Drop` above *is* its release, so a
+/// [`Previews::attach`] whose answer nobody keeps has started a stream for a reader that does
+/// not exist. `scripts/gates/claims-come-back-with-their-values.sh` is what asks.
+#[must_use = "dropping a Viewer ends the stream it just asked a camera to start"]
 #[derive(Debug)]
 pub struct Viewer {
     frames: watch::Receiver<Option<Arc<Shot>>>,
@@ -771,6 +776,34 @@ impl Previews {
             },
             previews: self.clone(),
             feed,
+            handed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Give `feed` back to whoever is still watching it, and drive it again if anybody is.
+    ///
+    /// The body of [`Watchers::hand_back`], here rather than there because [`Watchers`]' `Drop`
+    /// is the same act arriving without a caller (note **N177**), and "what happens when a
+    /// recording lets a camera's frames go" is one law (§2.10). The `Drop` cannot `await`, so
+    /// it spawns *this*; a second copy of the three lines would be a second answer to whether
+    /// an open tab keeps its picture.
+    async fn give_back(&self, feed: &Arc<Feed>) {
+        let handed = self.release(feed, Revive::IfWatched).await;
+        tracing::debug!(
+            camera = %feed.info.id,
+            outcome = handed.name(),
+            "the recording gave the camera's frames back"
+        );
+        if let Handed::ToAFreshDriver(actor) = handed {
+            // Spawned rather than awaited: this runs on the recording's driver, which still has
+            // a container to close, and a preview that had to wait for a flush would be the
+            // owner's tab paying for the agent's disk.
+            tokio::spawn(drive(
+                self.clone(),
+                actor,
+                Arc::clone(feed),
+                Started::Resuming,
+            ));
         }
     }
 
@@ -950,10 +983,50 @@ impl Handed {
 /// It holds the [`Publisher`] the *preview's own* driver uses rather than a second sink — "what
 /// may enter this fan-out" is one law (design §2.10), and a recording that published through a
 /// copy of it would be a second place the frame cap and the paintability guard could drift.
+///
+/// **The claim comes back when this value goes, whether or not a code path ran** (note
+/// **N177**, and note **N169**'s rule, which this is the second instance of). Until then the
+/// give-back was `hand_back` and nothing else, so a `Watchers` that was *dropped* — a hand-over
+/// task cancelled between claiming the frames and stowing them, a slot overwritten under a
+/// caller — left the feed with no publisher and every later tab on that camera subscribed to
+/// nothing. `scripts/gates/claims-come-back-with-their-values.sh` is what keeps the next value
+/// of this shape from shipping without one.
 pub(crate) struct Watchers {
     previews: Previews,
     feed: Arc<Feed>,
     sink: Publisher,
+    /// Whether the claim has already gone back, so the explicit call and the `Drop` are one
+    /// give-back rather than two.
+    ///
+    /// A second [`Previews::release`] on a feed a first one revived would start a *second*
+    /// driver on a node V4L2 allows one streamer on, so this is correctness and not tidiness.
+    /// An atomic rather than a `bool` because [`Watchers::hand_back`] is reached through an
+    /// `Arc<crate::record::Live>` and there is no `&mut` to be had.
+    handed: std::sync::atomic::AtomicBool,
+}
+
+impl Drop for Watchers {
+    /// Give this camera's frames back **now**, if nothing else did.
+    ///
+    /// [`crate::record::Reserved`]'s `Drop` one module along, for the same reason and with the
+    /// same limit: giving a fan-out back takes a `tokio::sync::Mutex` and a `Drop` cannot
+    /// `await`, so this spawns the work and `try_current` is what a value dropped while the
+    /// runtime is going away answers `Err` to — and needs nothing from, since the registry it
+    /// would repair is going too.
+    ///
+    /// It is a **backstop and not the path**: `hand_back` is what a take, a withdrawal and a
+    /// reap all call, and each of them wants the give-back to have finished before it answers.
+    /// What this catches is the value nobody called it on.
+    fn drop(&mut self) {
+        if *self.handed.get_mut() {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let previews = self.previews.clone();
+            let feed = Arc::clone(&self.feed);
+            runtime.spawn(async move { previews.give_back(&feed).await });
+        }
+    }
 }
 
 impl std::fmt::Debug for Watchers {
@@ -1001,24 +1074,15 @@ impl Watchers {
     /// reading gets a driver again rather than being withdrawn: ending it would be a second home
     /// for "how a preview ends" (§2.10), and the notes' item 4 says the overlap is the ordinary
     /// case rather than an exception to clean up after.
+    ///
+    /// **At most once**, which is what lets this value also have a `Drop`: a second
+    /// [`Previews::release`] on a feed the first one revived would find it `Source::Preview`
+    /// again and start a second driver on it.
     pub(crate) async fn hand_back(&self) {
-        let handed = self.previews.release(&self.feed, Revive::IfWatched).await;
-        tracing::debug!(
-            camera = %self.feed.info.id,
-            outcome = handed.name(),
-            "the recording gave the camera's frames back"
-        );
-        if let Handed::ToAFreshDriver(actor) = handed {
-            // Spawned rather than awaited: this runs on the recording's driver, which still has
-            // a container to close, and a preview that had to wait for a flush would be the
-            // owner's tab paying for the agent's disk.
-            tokio::spawn(drive(
-                self.previews.clone(),
-                actor,
-                Arc::clone(&self.feed),
-                Started::Resuming,
-            ));
+        if self.handed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
         }
+        self.previews.give_back(&self.feed).await;
     }
 }
 
@@ -1043,6 +1107,15 @@ pub(crate) fn node_of(info: &CameraInfo) -> camino::Utf8PathBuf {
 ///
 /// A unit type rather than a `bool` so that the responsibility travels in the type: the only
 /// way to get one is to be the call that inserted the feed.
+///
+/// `must_use` rather than `Drop`, and it is the one claim in these two modules for which that
+/// is the right half of note **N177**'s rule: there is nothing to *give back*. What this
+/// carries is a debt to **start** something, so a value nobody looked at is a feed in the
+/// registry with no driver — which a `Drop` could not repair either, since starting a driver is
+/// what the holder was being asked to do. The compiler saying so at the call site is the whole
+/// of the enforcement, and `scripts/gates/claims-come-back-with-their-values.sh` is what keeps
+/// the attribute here.
+#[must_use = "a Starting nobody acts on is a feed with no driver on it"]
 #[derive(Debug)]
 struct Starting;
 
@@ -1657,6 +1730,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_camera_s_frames_come_back_when_the_value_claiming_them_is_dropped() {
+        // **Note N177, and note N169's rule at its second instance.** A [`Watchers`] is the
+        // claim on one camera's fan-out, and until this it came back only if `hand_back` ran.
+        // Everything that can stop that line from running is a way for the claim to outlive its
+        // owner — a hand-over task cancelled between claiming the frames and stowing them, a
+        // slot overwritten under a caller — and what is left behind is a feed with no publisher
+        // that every later tab on that camera subscribes to and hears nothing from.
+        //
+        // The give-back is a spawned task, so what is waited on is the fan-out's own count
+        // rather than a poll of the map: a build with no `Drop` never moves it, and the wait
+        // ends in nextest's deadline rather than in a green test that asserted nothing.
+        let previews = fanout();
+        let info = camera();
+
+        let watchers = previews.hand_over(&info).await;
+        assert_eq!(
+            previews.feeds(),
+            1,
+            "the claim did not take this camera's frames, so dropping it proves nothing"
+        );
+        let mut feeds = previews.watch_feeds();
+
+        drop(watchers);
+
+        feeds
+            .wait_for(|open| *open == 0)
+            .await
+            .expect("the fan-out's own count, which this registry owns for its whole life");
+
+        // **The other direction, and it is correctness rather than tidiness**: the explicit
+        // hand-back and the `Drop` are one give-back. A second `Previews::release` on a feed the
+        // first one *revived* finds it `Source::Preview` with readers and starts a second driver
+        // on a node V4L2 allows one streamer on — so what is asserted is that a claim already
+        // handed back leaves the feed alone when its value goes.
+        let watchers = previews.hand_over(&info).await;
+        let viewer = previews.viewer(&previews.0.live.lock().await[&info.id].clone());
+        watchers.hand_back().await;
+        assert_eq!(
+            previews.feeds(),
+            1,
+            "a feed somebody is reading was withdrawn by the take that finished"
+        );
+        drop(viewer);
+        drop(watchers);
+        // A bounded number of turns of a current-thread runtime, which is what a spawned task
+        // needs to run at all: a build whose `Drop` released a second time removes the now
+        // unwatched feed inside them.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            previews.feeds(),
+            1,
+            "the claim was given back twice, and the second release is a second driver"
+        );
+    }
+
+    #[tokio::test]
     async fn a_feed_a_recording_has_claimed_is_never_taken_away_by_the_driver_that_left() {
         // The invariant `Previews::hand_over`'s wait rests on. That call marks the feed
         // `Yielding` and then awaits a transition on a channel **inside the feed** — so a
@@ -1810,8 +1941,11 @@ mod tests {
         assert_eq!(refused.kind(), ErrorKind::Busy);
 
         // One leaves, and the next one in is served — so the bound is a bound rather than a
-        // latch.
+        // latch. The answer is kept rather than dropped on the spot, because a `Viewer` is a
+        // claim and dropping one is how a reader leaves (note **N177**): discarding it here
+        // would end the very seat this line is asserting was free.
         held.pop();
-        previews.reserve(info).await.expect("a place came free");
+        let (_feed, viewer, _starting) = previews.reserve(info).await.expect("a place came free");
+        held.push(viewer);
     }
 }

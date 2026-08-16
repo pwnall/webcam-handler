@@ -51,13 +51,35 @@
 //! device — and two loops dequeuing from one stream would hand the recording every other frame,
 //! which item 10 forbids in as many words. [`Recordings::reserve`] therefore ends in
 //! `Previews::hand_over`, which claims the camera's feed and **waits** for any preview driver to
-//! leave; [`Reserved`] carries the resulting `Watchers` so the obligation to give it back travels
-//! in the type, through [`Recordings::withdraw`] on every refusal path and into `Live` on the
-//! one that succeeds. `drive` hands it back after the stream is stopped and before the
-//! container is closed.
+//! leave; the resulting `Watchers` live **in the slot**, so the obligation to give them back is
+//! the registry's rather than a caller's, and it travels out of the slot through
+//! [`Recordings::withdraw`] on every refusal path and into `Live` on the one that succeeds.
+//! `drive` hands it back after the stream is stopped and before the container is closed.
 //!
 //! Both ends are `crate::preview`'s decisions, argued there: this module says *when* a recording
 //! owns a camera's frames, and that module says what owning them means.
+//!
+//! ## The obligation is the registry's, because a caller can be cancelled
+//!
+//! [`Reserved`] is a **witness and not a holding**: the slot and the camera's frames are in
+//! `Registry::live` from the instant they are claimed, and what the value a caller holds
+//! carries is an `Arc` whose `Weak` twin the slot keeps. That is the answer to the defect note
+//! **N171** records — a handler future that is *dropped* rather than refused runs neither
+//! `withdraw` nor `adopt`, so a rule that says "every refusal path calls `withdraw`" is a rule a
+//! cancellation can skip. Nothing here relies on a code path running:
+//!
+//! - the reservation's liveness is a question the registry **asks** (`Reservation::wanted`),
+//!   and every entry point asks it before it decides anything, so a slot whose `record_start`
+//!   went away is not a slot;
+//! - `Previews::hand_over` runs on a task of its own, so a caller cancelled *inside* the wait
+//!   cannot leave the camera's frames half-claimed — the task finishes, finds no reservation
+//!   wanting them, and hands them straight back;
+//! - and [`Reserved`]'s own `Drop` spawns that reap when a runtime is there, which is
+//!   promptness rather than correctness: the owner's tab gets its picture back at once instead
+//!   of at the next verb.
+//!
+//! Note **N169** is the rule this is one instance of, and `crate::server`'s `photo` is the
+//! other.
 //!
 //! ## One take per camera, and what each of the three verbs does about it
 //!
@@ -127,8 +149,8 @@
 //! nowhere else. `Live`'s `Debug` prints counts, as `engine::record::Recording`'s does.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Weak};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use engine::actor::{CameraActor, Cameras, OpenCamera};
@@ -141,6 +163,7 @@ use schema::video::{RecordReport, RecordStatus, RecordingEnd, TakeStatus, VideoF
 use schema::{Error, ErrorKind, Result, limits};
 use tokio::sync::{Mutex, oneshot, watch};
 
+use crate::preview::Watchers;
 use crate::shutdown::Shutdown;
 
 /// Every camera this daemon is recording, and every take waiting to be collected.
@@ -216,11 +239,66 @@ enum Slot {
     /// together would both find an empty map and both reach `VIDIOC_STREAMON`, and the second
     /// would be refused by the *kernel* — a refusal about the machine rather than about this
     /// daemon, arriving after a file had been opened.
-    Starting,
+    Starting(Box<Reservation>),
     /// A take is running, and a driver task is feeding it.
     Running(Arc<Live>),
     /// A take has ended and nobody has collected it yet.
     Ended(Box<Finished>),
+}
+
+/// What a `Slot::Starting` is holding while its `record_start` negotiates.
+///
+/// The two claims a `record_start` takes both live **here** rather than in the [`Reserved`] the
+/// handler holds, and that is the whole of note **N171**'s repair: a future that is dropped
+/// mid-flight destroys the value it was holding, and a value that was holding an obligation
+/// takes the obligation with it. What the handler holds instead is a witness whose absence this
+/// registry can *see*.
+#[derive(Debug)]
+struct Reservation {
+    /// The camera this reservation is about, resolved by the `record_start` that took it.
+    ///
+    /// Kept because every refusal about this slot has to name a node ([`Error::Busy`]'s `path`)
+    /// and because a take on a camera that has since been unplugged is still collectable
+    /// through it — `crate::server`'s `record_stop` resolves the *registry* when the machine no
+    /// longer resolves (note **N173**).
+    info: CameraInfo,
+    /// Whether anybody is still going to use this reservation.
+    ///
+    /// The `Arc` is in the caller's [`Reserved`] and this is its `Weak`, so "the `record_start`
+    /// went away" is a fact with no code path behind it: dropping a future drops the `Arc`, and
+    /// `Reservation::wanted` answers `false` from then on. A `bool` a refusal path set would
+    /// be the thing that is not set when a caller is cancelled.
+    holder: Weak<Holding>,
+    /// The camera's frames, from the moment `Previews::hand_over` answers.
+    ///
+    /// `None` for the length of that call and no longer. It is not a state a decision reads —
+    /// a reservation is a reservation whether or not the hand-over has finished — but it is
+    /// what makes the give-back total: whoever removes this slot hands back whatever is here.
+    watchers: Option<Watchers>,
+}
+
+/// The `Arc` half of a reservation's liveness. One per `record_start`, held by its [`Reserved`].
+///
+/// A unit type because the only thing about it that carries information is whether it still
+/// exists.
+#[derive(Debug)]
+struct Holding;
+
+impl Reservation {
+    /// Whether the `record_start` that took this slot is still there to use it.
+    fn wanted(&self) -> bool {
+        self.holder.strong_count() > 0
+    }
+
+    /// Whether `holder` is *this* reservation's witness.
+    ///
+    /// Pointer identity rather than a camera id, for `crate::preview::remove`'s reason one
+    /// variant shape along: a slot that was given back and re-taken by a later `record_start`
+    /// has the same key and is a different claim, and an earlier caller must not be able to
+    /// discharge a later one's.
+    fn is(&self, holder: &Weak<Holding>) -> bool {
+        Weak::ptr_eq(&self.holder, holder)
+    }
 }
 
 /// A take in progress: what it is, what it has produced, and the muxer under it.
@@ -228,7 +306,12 @@ enum Slot {
 /// Shared between the driver task and the actor thread's per-frame closure, which is why every
 /// mutable field is an atomic or behind a `std::sync::Mutex` rather than owned by the loop.
 struct Live {
-    camera: CameraId,
+    /// The camera this take is on, as it resolved when the take began.
+    ///
+    /// The whole [`CameraInfo`] and not just its id, for [`Reservation::info`]'s second reason:
+    /// a take outlives the enumeration that started it, so an unplug must not make the take
+    /// uncollectable (note **N173**).
+    info: CameraInfo,
     /// Whoever is watching this camera, and this take's claim on their fan-out.
     ///
     /// Held for the length of the take rather than looked up per frame, and that is the field
@@ -236,7 +319,7 @@ struct Live {
     /// `crate::preview`'s `tokio::sync::Mutex`, and the thread that has the frame in its hand is
     /// the camera's **actor** thread, which has no runtime to await on. So the claim is taken
     /// once, before the device work, and what runs per frame is a `watch::Sender` write.
-    watchers: crate::preview::Watchers,
+    watchers: Watchers,
     path: Utf8PathBuf,
     format: VideoFormat,
     negotiated: NegotiatedStream,
@@ -279,7 +362,7 @@ impl std::fmt::Debug for Live {
         // A frame may contain a person, and the muxer holds the sink those frames go to.
         // Counts, a path the caller named and this module's own vocabulary — never bytes.
         f.debug_struct("Live")
-            .field("camera", &self.camera)
+            .field("camera", &self.info.id)
             .field("path", &self.path)
             .field("format", &self.format)
             .field("frames", &self.frames.load(Ordering::Relaxed))
@@ -291,6 +374,10 @@ impl std::fmt::Debug for Live {
 /// A take that has ended, waiting to be collected.
 #[derive(Debug)]
 struct Finished {
+    /// The camera it was taken on, carried for [`Reservation::info`]'s second reason: the
+    /// ending most worth collecting is `DeviceFailed`, and a camera that failed is very often
+    /// a camera that is no longer there to enumerate (note **N173**).
+    info: CameraInfo,
     /// What `record_status` answers with — the same document a running take produces, with
     /// its ending filled in.
     status: TakeStatus,
@@ -304,15 +391,51 @@ struct Finished {
 /// The witness that a caller holds this camera's recording slot **and its frames**.
 ///
 /// A value rather than a `bool` for `crate::preview::Starting`'s reason: the only way to get
-/// one is to be the call that reserved the slot, so the obligation to release it travels in
-/// the type rather than in a paragraph. It carries the camera so neither
-/// [`Recordings::withdraw`] nor [`Recordings::adopt`] has to be told which slot it is about,
-/// and since P6c's second half it carries the fan-out claim too — one value, two obligations,
-/// and the two functions that can consume it are the two that discharge both.
+/// one is to be the call that reserved the slot. What it is *not*, since note **N171**, is the
+/// place the claims live — those are in `Slot::Starting`, and this is the `Arc` whose
+/// existence says somebody still means to use them. The difference is what a cancelled handler
+/// costs: a value that held the claims took them with it when its future was dropped, and a
+/// value that holds a witness gives them back by being dropped.
+///
+/// It carries the camera so neither [`Recordings::withdraw`] nor [`Recordings::adopt`] has to
+/// be told which slot it is about.
 #[derive(Debug)]
 pub struct Reserved {
     info: CameraInfo,
-    watchers: crate::preview::Watchers,
+    /// The registry to give this slot back to, for [`Reserved`]'s `Drop`.
+    ///
+    /// A clone of the one `Arc`, not a second registry — and no cycle, because the slot holds
+    /// only a [`Weak`] of the value below.
+    recordings: Recordings,
+    held: Arc<Holding>,
+}
+
+impl Drop for Reserved {
+    /// Give an undischarged reservation back **now** rather than at the next verb.
+    ///
+    /// Correctness does not depend on this — every entry point in this module reaps a slot
+    /// whose holder has gone before it decides anything, which is what makes the invariant
+    /// independent of a runtime being here. What this buys is promptness, and the thing it is
+    /// prompt about is somebody's picture: a `record_start` cancelled after it claimed the
+    /// camera's frames leaves an open tab watching a feed with no publisher until the next
+    /// `record_*` verb on that camera, and there may not be one.
+    ///
+    /// It is a `spawn` and not the work itself for the reason the explicit path existed in the
+    /// first place: giving a slot back takes two `tokio::sync::Mutex`es and a `Drop` cannot
+    /// `await`. `try_current` rather than `Handle::current` because a task dropped while the
+    /// runtime itself is going away has no handle to spawn on — and no need of one, since the
+    /// registry it would repair is about to be dropped too.
+    ///
+    /// Discharged reservations reach here as well ([`Recordings::withdraw`] and
+    /// [`Recordings::adopt`] both consume the value), and the reap is a no-op for them: it acts
+    /// only on a `Slot::Starting` this very witness belongs to, which by then is gone.
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let recordings = self.recordings.clone();
+            let camera = self.info.id.clone();
+            runtime.spawn(async move { recordings.reap(&camera).await });
+        }
+    }
 }
 
 /// What one turn of a take's loop produced.
@@ -402,29 +525,58 @@ impl Recordings {
     /// the frames first would leave a second `record_start` waiting on a preview driver it was
     /// about to be refused over.
     ///
-    /// **The hand-over happens with the registry lock released**, and the two-block shape below
-    /// is the whole reason: `Previews::hand_over` waits for a `STREAMOFF`, and a wait under this
-    /// lock would be one camera's preview delaying every other camera's `record_status`. The
-    /// slot is `Slot::Starting` throughout, which is what makes that safe.
+    /// **The hand-over happens with the registry lock released**, and the shape below is the
+    /// whole reason: `Previews::hand_over` waits for a `STREAMOFF`, and a wait under this lock
+    /// would be one camera's preview delaying every other camera's `record_status`. The slot is
+    /// `Slot::Starting` throughout, which is what makes that safe.
+    ///
+    /// **And the hand-over runs on a task of its own**, which is the half note **N171** added.
+    /// That wait is the widest part of a `record_start`, so it is where a client that hangs up
+    /// is most likely to cancel this future — and a cancellation *inside* `hand_over` would
+    /// leave the camera's frames claimed by a value that no longer exists. Spawning makes the
+    /// claim uncancellable: the task finishes whatever happens here, and hands the frames
+    /// straight back if by then there is no reservation wanting them.
     ///
     /// # Errors
     ///
     /// [`Error::Busy`] naming the camera's node when a take is already running on it or
     /// another `record_start` is negotiating one. The module header argues why that variant
-    /// and why its `holders` list is empty.
+    /// and why its `holders` list is empty. [`Error::DeviceIo`] when the hand-over task itself
+    /// could not be joined — this process failing to compose itself, and the one path on which
+    /// a take must not start, because the camera may still have a preview driver on it.
     pub async fn reserve(&self, info: &CameraInfo) -> Result<Reserved> {
-        self.claim(info).await?;
-        Ok(Reserved {
-            watchers: self.0.previews.hand_over(info).await,
-            info: info.clone(),
-        })
+        let reserved = self.claim(info).await?;
+        let handing = {
+            let recordings = self.clone();
+            let info = info.clone();
+            let holder = Arc::downgrade(&reserved.held);
+            tokio::spawn(async move {
+                let watchers = recordings.0.previews.hand_over(&info).await;
+                recordings.stow(&info.id, &holder, watchers).await;
+            })
+        };
+        if let Err(err) = handing.await {
+            self.withdraw(reserved).await;
+            return Err(Error::DeviceIo {
+                operation: format!("claim the frames of {camera}", camera = info.id),
+                errno: None,
+                message: format!("the hand-over from this camera's preview did not finish: {err}"),
+            });
+        }
+        Ok(reserved)
     }
 
     /// Put `Slot::Starting` in this camera's slot, or refuse.
-    async fn claim(&self, info: &CameraInfo) -> Result<()> {
+    async fn claim(&self, info: &CameraInfo) -> Result<Reserved> {
+        // Before anything is decided, because a slot whose `record_start` went away is not a
+        // slot and must not refuse this one (note **N171**). It is a separate lock acquisition
+        // and that is deliberate: the give-back it performs is `Previews`', and this module
+        // does not hold its own lock across another module's.
+        self.reap(&info.id).await;
+        let held = Arc::new(Holding);
         let mut live = self.0.live.lock().await;
         match live.get(&info.id) {
-            Some(Slot::Starting | Slot::Running(_)) => {
+            Some(Slot::Starting(_) | Slot::Running(_)) => {
                 return Err(Error::Busy {
                     path: crate::preview::node_of(info),
                     holders: Vec::new(),
@@ -445,33 +597,154 @@ impl Recordings {
             }
             None => {}
         }
-        live.insert(info.id.clone(), Slot::Starting);
-        Ok(())
+        live.insert(
+            info.id.clone(),
+            Slot::Starting(Box::new(Reservation {
+                info: info.clone(),
+                holder: Arc::downgrade(&held),
+                watchers: None,
+            })),
+        );
+        Ok(Reserved {
+            info: info.clone(),
+            recordings: self.clone(),
+            held,
+        })
+    }
+
+    /// Put the camera's frames in the slot that was waiting for them, or give them straight
+    /// back.
+    ///
+    /// The tail of [`Recordings::reserve`]'s hand-over task, and the reason that task can
+    /// finish alone: whatever happened to the caller in the meantime, this leaves the frames
+    /// with exactly one owner. They go to the reservation when it is still this one and still
+    /// wanted, and back to `crate::preview` otherwise — including the case where a `Reserved`
+    /// was dropped mid-hand-over, where the dead slot goes with them.
+    async fn stow(&self, camera: &CameraId, holder: &Weak<Holding>, watchers: Watchers) {
+        let unwanted = {
+            let mut live = self.0.live.lock().await;
+            match live.get_mut(camera) {
+                Some(Slot::Starting(reservation)) if reservation.is(holder) => {
+                    if reservation.wanted() {
+                        reservation.watchers = Some(watchers);
+                        None
+                    } else {
+                        live.remove(camera);
+                        Some(watchers)
+                    }
+                }
+                // Somebody else's slot, or none: this reservation was withdrawn while its
+                // frames were being handed over, and the frames are all that is left to
+                // return.
+                _ => Some(watchers),
+            }
+        };
+        if let Some(watchers) = unwanted {
+            watchers.hand_back().await;
+        }
+    }
+
+    /// Give back a reservation whose `record_start` is no longer there to use it.
+    ///
+    /// **The invariant, rather than the tidying**: it is asked at the top of every entry point
+    /// that reads this registry, so a cancelled `record_start` cannot make a camera answer
+    /// `Busy` for the life of the process (note **N171**) — and asking is what makes that true
+    /// without a runtime, a task or a `Drop` having to have run.
+    ///
+    /// A no-op on every other shape, including a reservation that is still wanted: a
+    /// `record_start` in the middle of writing its header is exactly what `Slot::Starting`
+    /// means.
+    ///
+    /// **And a no-op while the hand-over is still in flight**, which is the one subtlety worth
+    /// the sentence. A reservation whose caller has gone but whose `Previews::hand_over` has
+    /// not yet answered is holding the camera's frames in a call rather than in a field, so
+    /// removing the slot here would let a second `record_start` claim those same frames — and
+    /// the first call's hand-back would then take the *second* take's fan-out out of the
+    /// registry, which is a second stream on one node the moment a tab arrives. So the slot
+    /// stays until [`Recordings::stow`] answers, which is the wait the `record_start` that took
+    /// it would have imposed anyway.
+    async fn reap(&self, camera: &CameraId) {
+        let abandoned = {
+            let mut live = self.0.live.lock().await;
+            match live.get(camera) {
+                Some(Slot::Starting(reservation))
+                    if !reservation.wanted() && reservation.watchers.is_some() =>
+                {
+                    match live.remove(camera) {
+                        Some(Slot::Starting(reservation)) => reservation.watchers,
+                        // Removed under a lock this call holds, so the entry is the one the
+                        // arm above matched; written rather than assumed away because a
+                        // `None` here would otherwise be a frame claim dropped in silence.
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        if let Some(watchers) = abandoned {
+            tracing::debug!(
+                %camera,
+                "a record_start went away before its take began; the slot and the camera's \
+                 frames are free again"
+            );
+            watchers.hand_back().await;
+        }
     }
 
     /// Give the slot back without a take in it, and the camera's frames with it.
     ///
     /// The path out of a `record_start` whose negotiation, container pairing or header write
-    /// was refused. Written explicitly on that path rather than as a `Drop` on [`Reserved`],
-    /// because releasing it takes the registry lock and a `Drop` cannot `await` —
-    /// `crate::preview::Previews::attach` makes the same call at the same moment for the same
-    /// reason.
+    /// was refused. It is the *explicit* discharge and it stays, because a refusal that names
+    /// its reason should not have to wait for a `Drop` to be scheduled — but since note
+    /// **N171** it is no longer the only thing standing between a cancelled handler and a
+    /// wedged camera: `Recordings::reap` answers for the paths that never reach here.
     ///
     /// **The hand-back is on this path too, and it is the half that is easy to forget**: a
     /// `record_start` that stopped somebody's preview and was then refused its container would
     /// otherwise leave a tab watching a feed nothing publishes into, for a take that never
-    /// existed. It is why [`Reserved`] carries the `Watchers` rather than `record_start`
-    /// holding them beside it — there are three refusal paths and each one would have had to
-    /// remember.
+    /// existed.
     pub async fn withdraw(&self, reserved: Reserved) {
-        reserved.watchers.hand_back().await;
+        let watchers = self.release(&reserved).await;
+        if let Some(watchers) = watchers {
+            watchers.hand_back().await;
+        }
+    }
+
+    /// Take this reservation's slot out of the registry, and answer what it was holding.
+    ///
+    /// The one home for "this reservation is over", shared by the two ways it can be:
+    /// [`Recordings::withdraw`] hands what comes back to `crate::preview`, and
+    /// [`Recordings::adopt`] hands it to the take.
+    async fn release(&self, reserved: &Reserved) -> Option<Watchers> {
         let mut live = self.0.live.lock().await;
-        // Only if the slot is still the reservation this call is about: a `record_start` that
-        // was refused after a *later* one had already taken the slot must not remove the
-        // later one's take. `crate::preview::remove`'s `Arc::ptr_eq` makes the same check for
-        // the same reason, one variant shape along.
-        if matches!(live.get(&reserved.info.id), Some(Slot::Starting)) {
-            live.remove(&reserved.info.id);
+        Recordings::take_out(&mut live, reserved)
+    }
+
+    /// [`Recordings::release`], out of a map the caller has **already locked**.
+    ///
+    /// Synchronous, and that is the whole of note **N176**: [`Recordings::adopt`] has to take
+    /// the reservation out and put the take in as **one** mutation, so the two cannot be an
+    /// `await` apart. A slot that is briefly absent while `VIDIOC_STREAMON` has already
+    /// succeeded is a camera this daemon reports as free while it is streaming — which is
+    /// N118's photo defect, `record_stop`'s `IllegalTransition`-for-`Busy`, and two
+    /// `record_start`s holding one node, all at once. Handing the guard through rather than
+    /// taking the lock twice is what makes the transition atomic by construction.
+    ///
+    /// **Only if the slot is still this reservation**, by pointer identity: a `record_start`
+    /// refused after a *later* one had already taken the slot must not remove the later one's
+    /// claim. A `matches!(.., Slot::Starting)` would not see the difference, because both
+    /// reservations spell it the same way.
+    fn take_out(live: &mut BTreeMap<CameraId, Slot>, reserved: &Reserved) -> Option<Watchers> {
+        let holder = Arc::downgrade(&reserved.held);
+        match live.get(&reserved.info.id) {
+            Some(Slot::Starting(reservation)) if reservation.is(&holder) => {
+                match live.remove(&reserved.info.id) {
+                    Some(Slot::Starting(reservation)) => reservation.watchers,
+                    // See `reap`: removed under the lock this call is holding.
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
@@ -486,9 +759,11 @@ impl Recordings {
     /// # Errors
     ///
     /// [`Error::DeviceIo`] when the camera's actor thread cannot be started — this process
-    /// failing to compose itself, which is the variant `engine::actor` already uses for it.
-    /// The slot is given back on that path, so a failure here leaves the camera exactly as
-    /// this call found it.
+    /// failing to compose itself, which is the variant `engine::actor` already uses for it —
+    /// and when the reservation this call was handed is no longer in the registry, which is
+    /// the same class of failure and cannot happen while [`Recordings::reserve`] is the only
+    /// way to get one. The slot is given back on both paths, so a failure here leaves the
+    /// camera exactly as this call found it.
     pub async fn adopt(
         &self,
         reserved: Reserved,
@@ -510,34 +785,65 @@ impl Recordings {
             }
         };
 
-        let live = Arc::new(Live {
-            camera: reserved.info.id.clone(),
-            // Moved out of the reservation and into the take: from here the obligation to give
-            // the camera's frames back belongs to `drive`, which is the only thing that knows
-            // when this take's stream has stopped.
-            watchers: reserved.watchers,
-            path: path.to_owned(),
-            format: opened.format,
-            negotiated: opened.negotiated.clone(),
-            started_at: now,
-            started_ms: at,
-            budget_ms: opened.budget_ms,
-            frames: AtomicU32::new(0),
-            recording: std::sync::Mutex::new(Some(recording)),
-            stopping: AtomicBool::new(false),
-            done: watch::Sender::new(false),
-        });
-
-        let status = {
+        // **`Slot::Starting` becomes `Slot::Running` in one mutation of one map, under one
+        // guard** — note **N176**, and the reason this whole block is written inside the
+        // critical section rather than around it. `VIDIOC_STREAMON` has already succeeded by
+        // the time this call is reached, so a slot that is *absent* for even an instant is a
+        // camera this daemon reports as free while the device is streaming: a photo dequeued in
+        // that instant suspends the take's stream (N118, N170), a `record_stop` is told
+        // `IllegalTransition` — terminal — where `Busy` is due, and a second `record_start` can
+        // claim the same node. Taking the frames out with `take_out` and putting the take in
+        // with the same guard is what makes the transition atomic by construction rather than
+        // by a window being small.
+        //
+        // The frames come out of the *slot*, which is where they have been since the hand-over
+        // finished (see the module header). `None` is a reservation that is no longer in the
+        // registry — nothing can produce it while `reserve` is the only constructor of a
+        // `Reserved`, and it is answered rather than assumed away, because the alternative is a
+        // take that publishes into a fan-out somebody else owns.
+        let (status, live) = {
             let mut map = self.0.live.lock().await;
-            map.insert(reserved.info.id.clone(), Slot::Running(Arc::clone(&live)));
+            let Some(watchers) = Recordings::take_out(&mut map, &reserved) else {
+                return Err(Error::DeviceIo {
+                    operation: format!("adopt the recording on {camera}", camera = info.id),
+                    errno: None,
+                    message: "this camera's recording slot was given away while its take was \
+                              being negotiated"
+                        .to_owned(),
+                });
+            };
+            let live = Arc::new(Live {
+                info: info.clone(),
+                // Moved out of the slot and into the take: from here the obligation to give the
+                // camera's frames back belongs to `drive`, which is the only thing that knows
+                // when this take's stream has stopped.
+                watchers,
+                path: path.to_owned(),
+                format: opened.format,
+                negotiated: opened.negotiated.clone(),
+                started_at: now,
+                started_ms: at,
+                budget_ms: opened.budget_ms,
+                frames: AtomicU32::new(0),
+                recording: std::sync::Mutex::new(Some(recording)),
+                stopping: AtomicBool::new(false),
+                done: watch::Sender::new(false),
+            });
+            // The key was emptied by `take_out` two lines up, under this same guard, so this
+            // insert can overwrite nothing: an unconditional insert here is what discarded a
+            // *later* `record_start`'s reservation — and its frame claim with it — while the
+            // two acquisitions were apart.
+            map.insert(info.id.clone(), Slot::Running(Arc::clone(&live)));
             self.0.running.send_replace(count_running(&map));
             // Built under the lock so the answer a caller receives is the state the registry
             // is in, rather than one a driver may already have moved past.
-            RecordStatus {
-                camera: reserved.info.id,
-                take: Some(live.status(&self.0.clock)),
-            }
+            (
+                RecordStatus {
+                    camera: info.id.clone(),
+                    take: Some(live.status(&self.0.clock)),
+                },
+                live,
+            )
         };
 
         tokio::spawn(drive(self.clone(), actor, live));
@@ -556,9 +862,10 @@ impl Recordings {
     /// Nobody is polling in that window either, because it closes before `record_start`
     /// answers.
     pub async fn status(&self, camera: &CameraId) -> RecordStatus {
+        self.reap(camera).await;
         let live = self.0.live.lock().await;
         let take = match live.get(camera) {
-            None | Some(Slot::Starting) => None,
+            None | Some(Slot::Starting(_)) => None,
             Some(Slot::Running(take)) => Some(take.status(&self.0.clock)),
             Some(Slot::Ended(finished)) => Some(finished.status.clone()),
         };
@@ -568,7 +875,7 @@ impl Recordings {
         }
     }
 
-    /// Refuse if a take is running on this camera.
+    /// Whether this camera has a take on it, and the refusal if it does.
     ///
     /// The one question another verb asks this registry, and it is asked by `wch_photo` — whose
     /// suspend/resume would otherwise take the *recording's* stream down and put a gap in the
@@ -581,24 +888,114 @@ impl Recordings {
     /// the *device* a moment later anyway. A camera holding an uncollected take is **not**
     /// refused — nothing is streaming, and the file is finished.
     ///
+    /// The node in the refusal comes out of the **slot**, which is the camera the take is
+    /// actually on: this is asked with an id, because its second caller has no `CameraInfo` and
+    /// a registry that made one up would be naming a device rather than reading one.
+    ///
+    /// ## Why this answers `Ok` where [`Recordings::claim`] answers `Busy`, on the same slot
+    ///
+    /// A reservation **nobody is waiting on** is a `Busy` to a second `record_start` and an
+    /// `Ok` to a photograph, and the two are not a disagreement about the camera (note
+    /// **N178**). They are different questions asked of one fact. `claim` asks *may I take this
+    /// slot* — and it may not, because the frames that reservation asked for are still inside a
+    /// `Previews::hand_over` call, so `reap` deliberately leaves it there until that call
+    /// answers. This asks *is a stream running that a suspend/resume would break* — and there
+    /// is not one and never will be: the `record_start` that would have reached
+    /// `VIDIOC_STREAMON` has gone. Refusing the photograph too would cost a caller a `Busy` on
+    /// a camera nothing is going to record, for as long as somebody else's cancelled call takes
+    /// to unwind.
+    fn refusal(live: &BTreeMap<CameraId, Slot>, camera: &CameraId) -> Result<()> {
+        match live.get(camera) {
+            // A reservation nobody is waiting on is not a recording — see `reap`, which is what
+            // takes it out of the map. Answered here as well because this decision is also read
+            // from a thread that cannot reap (notes **N170** and **N171**).
+            Some(Slot::Starting(reservation)) if !reservation.wanted() => Ok(()),
+            Some(Slot::Starting(reservation)) => Err(Error::Busy {
+                path: crate::preview::node_of(&reservation.info),
+                holders: Vec::new(),
+            }),
+            Some(Slot::Running(take)) => Err(Error::Busy {
+                path: crate::preview::node_of(&take.info),
+                holders: Vec::new(),
+            }),
+            None | Some(Slot::Ended(_)) => Ok(()),
+        }
+    }
+
+    /// `Recordings::refusal`, for a caller with a runtime under it.
+    ///
     /// # Errors
     ///
     /// [`Error::Busy`] naming the camera's node, with no holders — `Recordings::reserve`'s
     /// refusal, arriving at the other verb that meets the same fact.
-    pub async fn not_recording(&self, info: &CameraInfo) -> Result<()> {
+    pub async fn not_recording(&self, camera: &CameraId) -> Result<()> {
         // The same lock every other answer here is read under, awaited rather than tried: a
         // `try_lock` whose failure meant "no take" would be a refusal that depended on this
         // daemon's scheduling, which is a test that cannot be made to go red both ways. Nothing
         // holds this lock across device work — `reserve` releases it before the hand-over and
         // `collect` awaits the driver outside it — so the wait is a `BTreeMap` lookup long.
         let live = self.0.live.lock().await;
-        match live.get(&info.id) {
-            Some(Slot::Starting | Slot::Running(_)) => Err(Error::Busy {
-                path: crate::preview::node_of(info),
-                holders: Vec::new(),
-            }),
-            None | Some(Slot::Ended(_)) => Ok(()),
-        }
+        Recordings::refusal(&live, camera)
+    }
+
+    /// `Recordings::refusal`, **on a camera's actor thread**, where the answer is exact.
+    ///
+    /// This is the half of note **N118**'s interlock that note **N170** had to add, and the
+    /// reason it exists at all is the actor's queue. `not_recording` above is asked by
+    /// `wch_photo` before it opens a destination, which is a *check* — the photo then goes to
+    /// the blocking pool and only afterwards enqueues its command, and a `record_start` that
+    /// claimed the camera inside that window puts its `VIDIOC_STREAMON` in front of the photo.
+    /// The photo then suspends the take's stream, which is precisely what N118 exists to
+    /// prevent.
+    ///
+    /// Asked **here**, from inside the photo's own actor command, there is no window left:
+    /// `engine::actor` runs one command at a time in arrival order, so a take whose stream
+    /// exists is in this map already, and a take whose stream does not exist yet cannot start
+    /// it until this command has returned. The check-then-act becomes a check.
+    ///
+    /// # Panics
+    ///
+    /// `blocking_lock` panics inside a runtime, and this is the one call in the daemon that is
+    /// **not** inside one: `engine::actor` gives each open camera an OS thread (D12) precisely
+    /// because V4L2 ioctls block, and the engine holds no runtime (note N41). A caller that ran
+    /// this on a runtime worker would be a caller that had moved the photo's device work off
+    /// the actor, which is a larger change than this line.
+    ///
+    /// The wait is a `BTreeMap` lookup long, because nothing in this module holds this lock
+    /// across an `await`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Busy`], exactly as [`Recordings::not_recording`].
+    pub fn not_recording_on_this_thread(&self, camera: &CameraId) -> Result<()> {
+        let live = self.0.live.blocking_lock();
+        Recordings::refusal(&live, camera)
+    }
+
+    /// Whether this registry is holding a **take** for `camera`.
+    ///
+    /// The question `crate::server`'s `record_stop` and `record_status` ask when the *machine*
+    /// no longer resolves the id they were given (note **N173**): a take on a camera that has
+    /// been unplugged is still a take, and D13 keeps `CameraUnknown` — "a name that never
+    /// resolved" — for the case where this answers `false`. It is deliberately not a resolver:
+    /// D1's prefixes are resolved against an enumeration, and an id that no longer enumerates
+    /// is matched here exactly, which is the id `record_start` answered with.
+    ///
+    /// **A reservation is not a take, and that is what this answers `false` to** (note
+    /// **N178**). `Slot::Starting` is a `record_start` that has not negotiated a stream yet —
+    /// [`Recordings::status`] already says "no take" about one, in as many words and for the
+    /// reason argued there. So a build that counted it here answered `record_status` on an
+    /// **unplugged** camera with a successful `RecordStatus { take: None }`: a document saying
+    /// nothing is recording, about a camera that is no longer on this machine, to a consumer
+    /// whose whole vocabulary for that fact is `DeviceGone` and `CameraUnknown`. The
+    /// reservation's own `record_start` is the call that will be told what happened to the
+    /// device, because it is the one holding it.
+    pub async fn holds(&self, camera: &CameraId) -> bool {
+        self.reap(camera).await;
+        matches!(
+            self.0.live.lock().await.get(camera),
+            Some(Slot::Running(_) | Slot::Ended(_))
+        )
     }
 
     /// End this camera's take if one is running, and hand over what it turned out to be.
@@ -612,37 +1009,62 @@ impl Recordings {
     /// at its real size in note **N59**, and nothing in D12 provides the cancellable device
     /// thread that would bound it.
     ///
+    /// ## What the second reading can find, and why it is four answers rather than one
+    ///
+    /// The wait above releases the lock, so the slot this call comes back to is not always the
+    /// one it left — and note **N172** is the defect that taught it: a single catch-all told
+    /// every one of those callers that *this daemon is shutting down*, which on a healthy
+    /// daemon is a sentence about the wrong machine. Two of the shapes are ordinary
+    /// interleavings between two clients, and each already has a decided answer one `match`
+    /// higher up:
+    ///
+    /// - **the slot is empty** — a second `record_stop` got there first and is holding the
+    ///   report. This camera now holds nothing, which is `nothing_to_stop`'s exact sentence;
+    /// - **a reservation is in it** — a `record_start` arrived while this call was waiting and
+    ///   discarded the finished take it found (the module header's second bullet, counted).
+    ///   `Busy` means retry, and the take that took the slot is bounded by its own duration;
+    /// - **a *different* take is running** — the same interleaving, one step further on.
+    ///   `Busy` for the same reason;
+    /// - **this call's own take is still running**, by pointer identity, which is the one shape
+    ///   that really does mean the driver ended without installing a result. That happens when
+    ///   the runtime is going away underneath it, and it is the only shape allowed to say so.
+    ///
     /// # Errors
     ///
     /// [`Error::IllegalTransition`] when this camera holds no take at all — the module header
     /// argues why that is a refusal rather than a shrug. [`Error::Busy`] when a `record_start`
     /// for this camera is still negotiating, which means retry for the reason it does there.
-    /// Otherwise whatever ended the take, unchanged.
-    pub async fn collect(&self, info: &CameraInfo) -> Result<RecordReport> {
-        let camera = &info.id;
+    /// [`Error::DeviceIo`] for a driver that ended without a result. Otherwise whatever ended
+    /// the take, unchanged.
+    pub async fn collect(&self, camera: &CameraId) -> Result<RecordReport> {
+        self.reap(camera).await;
         let waiting = {
             let live = self.0.live.lock().await;
             match live.get(camera) {
                 None => return Err(nothing_to_stop(camera)),
-                Some(Slot::Starting) => {
+                Some(Slot::Starting(reservation)) => {
                     return Err(Error::Busy {
-                        path: crate::preview::node_of(info),
+                        path: crate::preview::node_of(&reservation.info),
                         holders: Vec::new(),
                     });
                 }
                 Some(Slot::Ended(_)) => None,
                 Some(Slot::Running(take)) => {
                     take.stopping.store(true, Ordering::Release);
-                    Some(take.done.subscribe())
+                    Some((Arc::clone(take), take.done.subscribe()))
                 }
             }
         };
-        if let Some(mut done) = waiting {
-            // `Err` means every sender is gone, which is the driver task ending without
-            // installing a result — a runtime that is shutting down. Not a device refusal and
-            // not spelled like one (E3); the re-read below is what decides what to say.
-            let _ = done.wait_for(|installed| *installed).await;
-        }
+        let asked = match waiting {
+            Some((take, mut done)) => {
+                // `Err` means every sender is gone, which is the driver task ending without
+                // installing a result — a runtime that is shutting down. Not a device refusal
+                // and not spelled like one (E3); the re-read below is what decides what to say.
+                let _ = done.wait_for(|installed| *installed).await;
+                Some(take)
+            }
+            None => None,
+        };
 
         let mut live = self.0.live.lock().await;
         match live.remove(camera) {
@@ -650,21 +1072,30 @@ impl Recordings {
                 self.0.running.send_replace(count_running(&live));
                 finished.outcome
             }
-            // The three shapes that mean the driver never installed a result. Put back
-            // whatever was there — a `record_stop` that failed must not empty a slot a later
-            // one could still collect — and answer with this process's own failure rather
-            // than with anything about the camera.
-            other => {
-                if let Some(slot) = other {
-                    live.insert(camera.clone(), slot);
-                }
-                Err(Error::DeviceIo {
-                    operation: format!("collect the recording on {camera}"),
-                    errno: None,
-                    message: "the recording's driver ended without a result; this daemon is \
-                              shutting down"
-                        .to_owned(),
-                })
+            None => Err(nothing_to_stop(camera)),
+            // Put back whatever was there — a `record_stop` that failed must not empty a slot
+            // a later one could still collect — and then say which of the two it was.
+            Some(slot) => {
+                let ours = matches!(
+                    (&slot, &asked),
+                    (Slot::Running(running), Some(take)) if Arc::ptr_eq(running, take)
+                );
+                let refusal = if ours {
+                    Error::DeviceIo {
+                        operation: format!("collect the recording on {camera}"),
+                        errno: None,
+                        message: "the recording's driver ended without a result; this daemon is \
+                                  shutting down"
+                            .to_owned(),
+                    }
+                } else {
+                    Error::Busy {
+                        path: node_of_slot(&slot),
+                        holders: Vec::new(),
+                    }
+                };
+                live.insert(camera.clone(), slot);
+                Err(refusal)
             }
         }
     }
@@ -718,6 +1149,19 @@ impl Recordings {
             Ok(answer) => answer,
             Err(_) => Err(actor.device_gone()),
         }
+    }
+}
+
+/// The node a refusal about `slot` names.
+///
+/// One function because every slot knows which camera it is about — a refusal that named the
+/// camera the *caller* asked about would be naming a device this daemon may no longer be able
+/// to enumerate (note **N173**).
+fn node_of_slot(slot: &Slot) -> Utf8PathBuf {
+    match slot {
+        Slot::Starting(reservation) => crate::preview::node_of(&reservation.info),
+        Slot::Running(take) => crate::preview::node_of(&take.info),
+        Slot::Ended(finished) => crate::preview::node_of(&finished.info),
     }
 }
 
@@ -784,7 +1228,7 @@ impl Live {
             // rather than assumed away for AGENTS rule 6's reason: a build that changed who
             // may take it must fail here rather than drop a frame silently.
             return Err(Error::DeviceIo {
-                operation: format!("record a frame on {camera}", camera = self.camera),
+                operation: format!("record a frame on {camera}", camera = self.info.id),
                 errno: None,
                 message: "the recording's container was closed while its driver was still \
                           feeding it"
@@ -832,7 +1276,7 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// a file is closed; closing before installing means the take a caller collects is one whose
 /// file is finished.
 async fn drive(recordings: Recordings, actor: Arc<CameraActor>, live: Arc<Live>) {
-    let camera = live.camera.clone();
+    let camera = live.info.id.clone();
     let ended = pump(&recordings, &actor, &live).await;
 
     // The stream, given back before anything else. A stop that fails is a warning and not a
@@ -859,7 +1303,11 @@ async fn drive(recordings: Recordings, actor: Arc<CameraActor>, live: Arc<Live>)
     if matches!(map.get(&camera), Some(Slot::Running(running)) if Arc::ptr_eq(running, &live)) {
         map.insert(
             camera.clone(),
-            Slot::Ended(Box::new(Finished { status, outcome })),
+            Slot::Ended(Box::new(Finished {
+                info: live.info.clone(),
+                status,
+                outcome,
+            })),
         );
     }
     recordings.0.running.send_replace(count_running(&map));
@@ -903,7 +1351,7 @@ async fn close(
     let taken = lock(&live.recording).take();
     let finished = match taken {
         None => Err(Error::DeviceIo {
-            operation: format!("close the recording on {camera}", camera = live.camera),
+            operation: format!("close the recording on {camera}", camera = live.info.id),
             errno: None,
             message: "the recording's container had already been taken".to_owned(),
         }),
@@ -1026,6 +1474,10 @@ async fn pump(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::task::Poll;
+
+    use schema::backend::CameraBackend;
     use schema::camera::{FrameInterval, PixelFormat};
 
     use super::*;
@@ -1052,6 +1504,60 @@ mod tests {
 
     fn camera() -> CameraInfo {
         testkit::fixtures::synthetic_basic().invariant.info
+    }
+
+    /// A registry whose backend actually **has** the camera, and that camera.
+    ///
+    /// [`registry`] replays nothing, which is all the assertions about the map need and is not
+    /// enough for [`Recordings::adopt`]: that call opens the camera's actor before it touches
+    /// the registry, so over an empty backend it would take its refusal path and never reach
+    /// the transition under test.
+    fn recording_registry() -> (Recordings, CameraInfo) {
+        let backend = Arc::new(
+            fake::FakeBackend::from_profile(testkit::fixtures::synthetic_basic())
+                .expect("the synthetic profile is this build's version"),
+        );
+        let info = backend
+            .enumerate()
+            .expect("the fake enumerates what it replays")
+            .first()
+            .cloned()
+            .expect("one profile is one camera");
+        let cameras = Arc::new(Cameras::new(
+            backend as Arc<dyn schema::backend::CameraBackend>,
+        ));
+        let clock = MonotonicClock::new();
+        let shutdown = Shutdown::new();
+        let recordings = Recordings::new(
+            Arc::clone(&cameras),
+            crate::preview::Previews::new(cameras, clock.clone(), shutdown.clone()),
+            clock,
+            shutdown,
+        );
+        (recordings, info)
+    }
+
+    /// What `engine::record::start` would have negotiated, without a device having been asked.
+    ///
+    /// Built by hand for [`live_take`]'s reason: the subjects below are the registry's own
+    /// transitions, and driving a real negotiation would put a device in front of a decision
+    /// that is three lines of `match`. `engine::record::Opened`'s fields are public for
+    /// exactly this.
+    fn an_opened() -> Opened {
+        let negotiated = a_take().negotiated;
+        Opened {
+            camera: camera().id,
+            negotiated: negotiated.clone(),
+            format: VideoFormat::Avi,
+            params: imaging::video::RecordingParams {
+                width: negotiated.width,
+                height: negotiated.height,
+                pixel_format: negotiated.pixel_format,
+                negotiated_interval_us: Some(33_333),
+                caps: engine::record::caps(),
+            },
+            budget_ms: limits::DEFAULT_RECORDING_MS,
+        }
     }
 
     fn a_take() -> TakeStatus {
@@ -1087,20 +1593,7 @@ mod tests {
     /// lines of `match`. `engine::record::Opened`'s fields are public for exactly this reason
     /// (its own doc says so), and `engine::record::OnDisk` is what a real take writes through.
     async fn live_take(recordings: &Recordings, path: &Utf8Path) -> Arc<Live> {
-        let negotiated = a_take().negotiated;
-        let opened = Opened {
-            camera: camera().id,
-            negotiated: negotiated.clone(),
-            format: VideoFormat::Avi,
-            params: imaging::video::RecordingParams {
-                width: negotiated.width,
-                height: negotiated.height,
-                pixel_format: negotiated.pixel_format,
-                negotiated_interval_us: Some(33_333),
-                caps: engine::record::caps(),
-            },
-            budget_ms: limits::DEFAULT_RECORDING_MS,
-        };
+        let opened = an_opened();
         let recording = Recording::begin(
             &opened,
             path,
@@ -1110,7 +1603,7 @@ mod tests {
         )
         .expect("a writable scratch path and a container that carries MJPG");
         Arc::new(Live {
-            camera: opened.camera.clone(),
+            info: camera(),
             // A real claim on a real fan-out, taken the way `reserve` takes one. Nobody is
             // watching it, which is what makes it cheap: `Watchers::show` is never reached from
             // these tests, and `close` — the subject below — does not touch it.
@@ -1206,6 +1699,288 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_record_start_that_went_away_before_its_take_began_leaves_the_camera_free() {
+        // Note **N171**, at its plainest: the handler future that took this slot is *dropped*
+        // rather than refused, so neither `withdraw` nor `adopt` runs and a rule that lives on
+        // those two paths has been skipped. Both claims have to come back — the slot, or every
+        // later `record_start` on this camera answers `Busy` for the life of the process, and
+        // the camera's frames, or an open tab watches a feed nothing publishes into.
+        //
+        // Nothing here waits for the `Drop`'s task: the assertions go through the entry points
+        // a client would use, which is where the reap that makes this true actually lives.
+        let recordings = registry();
+        let info = camera();
+
+        let reserved = recordings.reserve(&info).await.expect("a free camera");
+        assert_eq!(
+            recordings.0.previews.feeds(),
+            1,
+            "the reservation did not claim this camera's frames, so the half below proves nothing"
+        );
+
+        drop(reserved);
+
+        assert!(
+            recordings.status(&info.id).await.take.is_none(),
+            "an abandoned reservation is still being reported as a take"
+        );
+        assert_eq!(
+            recordings.0.previews.feeds(),
+            0,
+            "the abandoned reservation kept this camera's frames"
+        );
+        let again = recordings
+            .reserve(&info)
+            .await
+            .expect("an abandoned reservation is not a recording");
+        // And the second reservation is a real one rather than a leftover: it holds the frames
+        // and it can be given back the ordinary way.
+        assert_eq!(recordings.0.previews.feeds(), 1);
+        recordings.withdraw(again).await;
+        assert_eq!(recordings.0.previews.feeds(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_record_start_dropped_inside_the_hand_over_still_gives_the_camera_back() {
+        // The window docs/11 §4.10 tried twice to hit against a live daemon and could not,
+        // because over the fake the reserve→running interval is a few milliseconds. So it is
+        // **constructed** rather than raced: the reservation's future is polled exactly once —
+        // which is enough to claim the slot and spawn the hand-over, and not enough to finish
+        // it — and then dropped, which is what a client hanging up looks like from here.
+        //
+        // This is the widest part of a `record_start` on real hardware (a `STREAMOFF` behind a
+        // preview driver), and it is the one place where the claim exists in a *call* rather
+        // than in a field. Note **N171**'s answer is that the call is not the caller's: it runs
+        // on a task of its own, finds nobody wanting what it fetched, and puts both halves
+        // back.
+        let recordings = registry();
+        let info = camera();
+
+        let mut starting = Box::pin(recordings.reserve(&info));
+        let first = std::future::poll_fn(|cx| Poll::Ready(starting.as_mut().poll(cx))).await;
+        assert!(
+            first.is_pending(),
+            "the reservation finished in one poll, so this test constructed no window"
+        );
+        assert!(
+            matches!(
+                recordings.0.live.lock().await.get(&info.id),
+                Some(Slot::Starting(_))
+            ),
+            "the slot was not claimed before the hand-over, which is the order reserve promises"
+        );
+
+        drop(starting);
+
+        // The hand-over task is not this test's to await, so what is waited on is the state it
+        // leaves behind. Nothing sleeps and nothing is timed — and the bound is a **poll count**
+        // rather than a duration, which is exact here for the reason note **N178** gives: the
+        // thing being waited for is a task on this runtime, which `#[tokio::test]` runs on this
+        // thread, so "it has not happened after this many turns of the scheduler" is a fact
+        // about the build and not about how loaded the host is. A build whose task never ran
+        // fails by name instead of burning a core to nextest's deadline.
+        let mut turns = 0;
+        while recordings.0.live.lock().await.contains_key(&info.id) {
+            turns += 1;
+            assert!(
+                turns < 1_024,
+                "the cancelled record_start's slot never came back"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            recordings.0.previews.feeds(),
+            0,
+            "the cancelled hand-over left this camera's frames claimed by nobody"
+        );
+        recordings
+            .reserve(&info)
+            .await
+            .expect("a cancelled record_start is not a recording");
+    }
+
+    #[tokio::test]
+    async fn a_camera_whose_take_is_being_adopted_is_never_reported_free_to_the_next_caller() {
+        // **Note N176.** By the time `adopt` runs, `engine::record::start` has already reached
+        // `VIDIOC_STREAMON` — the device is streaming. So the registry must go from
+        // `Slot::Starting` to `Slot::Running` without ever being *empty*, because every other
+        // verb reads exactly that map to decide whether this camera is held: an empty slot
+        // admits a photo whose suspend/resume stops the take's stream (N118, N170), answers a
+        // `record_stop` with a terminal `IllegalTransition` where the retryable `Busy` is due,
+        // and lets a second `record_start` claim a node V4L2 allows one streamer on.
+        //
+        // The interleaving is **constructed** and not raced, which is docs/11 §4.10's whole
+        // point: this test holds the registry lock, parks `adopt` on it, queues a second caller
+        // *behind* `adopt` — `tokio::sync::Mutex` hands the lock on in the order it was asked
+        // for — and then lets go. Whatever `adopt` leaves in the map when it next releases the
+        // lock is exactly what that second caller sees, whether `adopt` has finished or not.
+        let (recordings, info) = recording_registry();
+        let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+        let path = scratch.base().join("adopting.avi");
+        let opened = an_opened();
+        let recording = Recording::begin(
+            &opened,
+            &path,
+            &mut engine::record::OnDisk,
+            &MonotonicClock::new(),
+            Stamp::epoch(),
+        )
+        .expect("a writable scratch path and a container that carries MJPG");
+        let reserved = recordings.reserve(&info).await.expect("a free camera");
+
+        let held = recordings.0.live.lock().await;
+        let mut adopting =
+            Box::pin(recordings.adopt(reserved, &info, &opened, recording, &path, Stamp::epoch()));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(adopting.as_mut().poll(cx)))
+                .await
+                .is_pending(),
+            "adopt did not stop at the registry lock this test is holding, so nothing below is \
+             ordered against it"
+        );
+
+        // The next caller in the queue, and it is the one N118 is about: `wch_photo` asks this
+        // exact question from the camera's own actor thread before it suspends anything.
+        let asking = tokio::spawn({
+            let recordings = recordings.clone();
+            let camera = info.id.clone();
+            async move { recordings.not_recording(&camera).await }
+        });
+        // One turn of the scheduler is what puts that task *in* the queue rather than merely
+        // spawned; it is behind `adopt`, which asked first.
+        tokio::task::yield_now().await;
+        drop(held);
+
+        // One poll of `adopt`: enough to take the reservation out, and — on a build whose
+        // transition is one mutation — to put the take in and answer. On a build that releases
+        // and re-acquires, this is where the map is empty and the lock is somebody else's.
+        let advanced = std::future::poll_fn(|cx| Poll::Ready(adopting.as_mut().poll(cx))).await;
+
+        let seen = asking.await.expect("the scripted second caller");
+        let refused = seen.expect_err(
+            "this camera was reported free while its take's stream was already running",
+        );
+        assert_eq!(refused.kind(), ErrorKind::Busy, "{refused:?}");
+
+        let status = match advanced {
+            Poll::Ready(answer) => answer,
+            Poll::Pending => adopting.await,
+        };
+        let started = status.expect("a reservation this test took and nobody else touched");
+        assert!(started.take.is_some(), "{started:?}");
+        // And the take is collectable afterwards, so the arm above ordered a transition rather
+        // than wedging one. The container is closed on the way out whatever the loop met.
+        let _ = recordings.collect(&info.id).await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_whose_take_somebody_else_took_says_which_and_never_blames_a_shutdown() {
+        // Note **N172**. `collect` releases the registry lock to wait for the driver, so the
+        // slot it comes back to is not always the one it left — and a single catch-all told
+        // every one of those callers that this daemon was shutting down, which on a healthy
+        // daemon is a sentence about the wrong machine. Three shapes, three answers, and the
+        // third is the one the sentence was always true of.
+        let recordings = registry();
+        let info = camera();
+        let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+
+        // 1. A second `record_stop` got there first: this camera now holds nothing, which is
+        //    the answer `record_stop` already has for it.
+        let take = live_take(&recordings, &scratch.base().join("collected.avi")).await;
+        let refused = stopped_while(&recordings, &info, &take, |live| {
+            live.remove(&info.id);
+        })
+        .await;
+        assert_eq!(refused.kind(), ErrorKind::IllegalTransition);
+        let rendered = refused.to_string();
+        assert!(rendered.contains("record_start"), "{rendered}");
+
+        // 2. A `record_start` arrived while this call was waiting and took the camera —
+        //    discarding the finished take it found, counted, which is the module header's
+        //    second bullet. `Busy` means retry, and the take that took the slot is bounded by
+        //    its own duration.
+        let take = live_take(&recordings, &scratch.base().join("replaced.avi")).await;
+        let claimant = Arc::new(Holding);
+        let refused = stopped_while(&recordings, &info, &take, |live| {
+            live.insert(
+                info.id.clone(),
+                Slot::Starting(Box::new(Reservation {
+                    info: camera(),
+                    holder: Arc::downgrade(&claimant),
+                    watchers: None,
+                })),
+            );
+        })
+        .await;
+        assert_eq!(
+            refused.kind(),
+            ErrorKind::Busy,
+            "a slot somebody else filled was reported as this daemon shutting down: {refused}"
+        );
+
+        // 3. And the shape the sentence is true of, so the two above are a narrowing rather
+        //    than a deletion: this call's *own* take is still in the slot, which means its
+        //    driver ended without installing a result.
+        let take = live_take(&recordings, &scratch.base().join("driverless.avi")).await;
+        let refused = stopped_while(&recordings, &info, &take, |_| {}).await;
+        assert_eq!(refused.kind(), ErrorKind::DeviceIo);
+        assert!(refused.to_string().contains("shutting down"), "{refused}");
+        assert!(
+            matches!(
+                recordings.0.live.lock().await.get(&info.id),
+                Some(Slot::Running(_))
+            ),
+            "a stop that could not collect emptied a slot a later one could still collect"
+        );
+    }
+
+    /// Run a `record_stop` over `take`, and change the registry underneath it while it waits.
+    ///
+    /// The interleaving is **constructed** rather than raced: `collect` subscribes to the
+    /// take's `done` before it waits, so a receiver on that channel is the exact signal that
+    /// this call has passed its first `match` and released the lock. `edit` then runs while it
+    /// is parked, and the driver's own signal releases it.
+    async fn stopped_while(
+        recordings: &Recordings,
+        info: &CameraInfo,
+        take: &Arc<Live>,
+        edit: impl FnOnce(&mut BTreeMap<CameraId, Slot>),
+    ) -> Error {
+        recordings
+            .0
+            .live
+            .lock()
+            .await
+            .insert(info.id.clone(), Slot::Running(Arc::clone(take)));
+        let stopping = tokio::spawn({
+            let recordings = recordings.clone();
+            let camera = info.id.clone();
+            async move { recordings.collect(&camera).await }
+        });
+        // A poll bound and not a duration, and the difference from note **N178**'s other loop is
+        // what makes it exact: the thing being waited for is a **task on this runtime**, which
+        // `#[tokio::test]` runs on this thread, so "it has not happened after this many turns of
+        // the scheduler" is a fact about the build rather than about how loaded the host is. It
+        // takes three; the bound is generous and its failure is named.
+        let mut turns = 0;
+        while take.done.receiver_count() == 0 {
+            turns += 1;
+            assert!(
+                turns < 1_024,
+                "the scripted record_stop never reached its wait, so nothing below is ordered \
+                 against it"
+            );
+            tokio::task::yield_now().await;
+        }
+        edit(&mut *recordings.0.live.lock().await);
+        take.done.send_replace(true);
+        stopping
+            .await
+            .expect("the scripted record_stop")
+            .expect_err("none of these three shapes is a report")
+    }
+
+    #[tokio::test]
     async fn a_start_over_an_uncollected_take_discards_it_and_says_how_many_it_has_discarded() {
         // The module header's second bullet, in both halves: the take is replaced rather than
         // refused — an abandoned poll loop must not wedge a camera — and the loss is a number
@@ -1219,6 +1994,7 @@ mod tests {
         recordings.0.live.lock().await.insert(
             info.id.clone(),
             Slot::Ended(Box::new(Finished {
+                info: camera(),
                 status: a_take(),
                 outcome: Err(Error::HolderGone { pid: 1 }),
             })),
@@ -1244,7 +2020,7 @@ mod tests {
         let recordings = registry();
         let info = camera();
         let refused = recordings
-            .collect(&info)
+            .collect(&info.id)
             .await
             .expect_err("this camera holds nothing");
         assert_eq!(refused.kind(), ErrorKind::IllegalTransition);
@@ -1257,12 +2033,13 @@ mod tests {
         recordings.0.live.lock().await.insert(
             info.id.clone(),
             Slot::Ended(Box::new(Finished {
+                info: camera(),
                 status: a_take(),
                 outcome: Err(Error::HolderGone { pid: 7 }),
             })),
         );
         let collected = recordings
-            .collect(&info)
+            .collect(&info.id)
             .await
             .expect_err("this take failed, and the failure is what it turned out to be");
         assert_eq!(collected.kind(), ErrorKind::HolderGone);
@@ -1272,7 +2049,7 @@ mod tests {
         );
         assert_eq!(
             recordings
-                .collect(&info)
+                .collect(&info.id)
                 .await
                 .expect_err("collected once")
                 .kind(),

@@ -57,6 +57,12 @@
 //! housekeeping, release the state directory. The order is the claim; that each of those
 //! happens at all is mostly older news.
 //!
+//! **And this file owns the last wait of the four** (note **N174**). `daemon::shutdown`'s
+//! header carries the table; what belongs here is that the runtime is built by [`main`] rather
+//! than by `#[tokio::main]`, because dropping a runtime waits for its blocking pool *without a
+//! bound* and that is where an abandoned idle-sweep pass really ends up. [`stop_runtime`] is
+//! the line that bounds it.
+//!
 //! **The web listener is in that order rather than beside it.** It watches the same
 //! cancellation token every subscription watches, so it begins stopping at the order's step 3
 //! — not at a step of its own, and not when the process happens to end — and it is **joined**
@@ -136,9 +142,9 @@ use daemon::state::OwnedState;
 use daemon::systemd::{self, Activation, Supervisor};
 use daemon::uds::{self, SocketDir};
 use engine::store::SessionStore;
-use schema::Result;
 use schema::backend::{BackendKind, CameraBackend};
 use schema::paths::SystemEnv;
+use schema::{Result, limits};
 
 /// Serve webcam-handler over a Unix socket (design D10, D11).
 #[derive(Debug, Parser)]
@@ -235,12 +241,44 @@ fn backend_for(args: &Args) -> Result<Arc<dyn CameraBackend>> {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// The process, and **the last of the four waits its stop is made of** (note **N174**).
+///
+/// The runtime is built here rather than by `#[tokio::main]` for one reason, and it is the
+/// half of the teardown `daemon::shutdown` cannot reach. `Drop for Runtime` waits
+/// **indefinitely** for blocking-pool threads that are still executing a task — which is
+/// exactly the state an idle-sweep pass parked on a camera actor's reply channel is left in
+/// when `stop_in_order`'s step 6 gives up on it, and exactly what note **N59**'s residual says
+/// about a `std::thread` inside `DQBUF`. Aborting a task detaches its handle; it does not end
+/// the closure. So a `#[tokio::main]` daemon that had bounded every step of its own teardown
+/// still had an unbounded wait after the last of them, in a place no line of this project
+/// mentioned, and the `warn` that said such a pass "ends with this process" had it backwards:
+/// the process could not end until the pass returned.
+///
+/// [`limits::DAEMON_SHUTDOWN_DRAIN_MS`] again and not a number of its own, because it is the
+/// same fact being bounded — this daemon gives a thread it cannot interrupt that long and then
+/// goes, which is what `daemon::shutdown`'s header says about actors. What is abandoned is a
+/// thread, so the kernel closing the process's descriptors is what releases the camera; that
+/// is stated there and this is where it becomes true.
+fn main() -> ExitCode {
     let args = Args::parse();
     logging::install();
 
-    match run(&args).await {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::error!(%error, "webcam-handler-daemon cannot start its runtime");
+            return ExitCode::FAILURE;
+        }
+    };
+    let served = runtime.block_on(run(&args));
+    // After `run` has returned, so every ordered step has already happened and this bounds
+    // only what those steps could not reach.
+    stop_runtime(runtime, limits::DAEMON_SHUTDOWN_DRAIN_MS);
+
+    match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // The typed error, rendered once, on the stream systemd captures. D13 already
@@ -250,6 +288,19 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// End `runtime`, giving its blocking pool `join_ms` and no more.
+///
+/// One line, and it is a function so that it can go red. `Runtime::shutdown_timeout` is the
+/// only thing in this workspace that puts a bound on a thread the daemon cannot interrupt: the
+/// worker tasks are cancelled at once, and a `spawn_blocking` closure that is still running —
+/// an idle-sweep pass parked on a camera actor's reply channel, `engine::actor`'s own thread
+/// inside a `DQBUF` — is given this long and then **left**, with the process exiting and the
+/// kernel closing its descriptors. `Drop for Runtime` waits for the same threads for ever,
+/// which is what [`main`]'s doc records and what note **N174** repairs.
+fn stop_runtime(runtime: tokio::runtime::Runtime, join_ms: u64) {
+    runtime.shutdown_timeout(std::time::Duration::from_millis(join_ms));
 }
 
 async fn run(args: &Args) -> Result<()> {
@@ -459,6 +510,61 @@ async fn run(args: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blocking_pass_that_will_not_end_does_not_hold_this_process_open() {
+        // **Note N174's fourth wait.** `daemon::shutdown` bounds every step of its own order,
+        // and the process still had one wait after all of them: `Drop for Runtime` waits
+        // *indefinitely* for a blocking-pool thread that is executing a task. That is exactly
+        // the state step 6 leaves an idle-sweep pass in when it gives up — an abort ends a
+        // task, never the closure a `spawn_blocking` handed to a thread — so the term the
+        // review removed from step 6 reappeared here, unnamed, and the line saying such a pass
+        // "ends with this process" was the wrong way round.
+        //
+        // The pass here is one this test can hold open for ever and then release, which is what
+        // makes the property assertable: it announces that it is running, so the shutdown below
+        // is provably about a thread the pool is *inside* rather than one it has finished with.
+        // The bound handed over is milliseconds rather than
+        // `limits::DAEMON_SHUTDOWN_DRAIN_MS`, because what is under test is that a bound is
+        // applied at all; which number the daemon passes is `main`'s line and is read there.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("this host can start a tokio runtime");
+        let (running, began) = std::sync::mpsc::channel::<()>();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let _ = running.send(());
+                // Ends when this test lets go, never when a duration passes.
+                let _ = held.recv();
+            });
+            tokio::task::spawn_blocking(move || began.recv())
+                .await
+                .expect("the blocking pool is alive")
+                .expect("the parked pass announces itself before it parks");
+        });
+
+        // On another thread, so a build with no bound is a *named* failure here rather than
+        // this test's own hang. The duration is a failure bound and not synchronisation:
+        // `stop_runtime` ends on its own timeout, and this only decides how long a reader
+        // waits to be told it did not.
+        let (stopped, ended) = std::sync::mpsc::channel::<()>();
+        let stopping = std::thread::spawn(move || {
+            stop_runtime(runtime, 50);
+            let _ = stopped.send(());
+        });
+        let outcome = ended.recv_timeout(std::time::Duration::from_secs(30));
+        // Before the assertion, so a failing run releases the parked thread rather than
+        // leaving it in this process for every test that follows.
+        drop(release);
+        assert!(
+            outcome.is_ok(),
+            "a blocking pass that will not end held this process's runtime open past every \
+             bound the teardown names"
+        );
+        stopping.join().expect("the thread that ended the runtime");
+    }
 
     #[test]
     fn the_argument_surface_is_the_one_clap_can_build() {

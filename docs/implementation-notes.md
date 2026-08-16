@@ -19679,3 +19679,769 @@ and `lint-posture.sh` said five roots over a claim of three. None of the three i
 anything, and all three were introduced in the same session as the enumerations they contradict.
 
 **Retires when:** nothing retires it.
+
+## N169 — A reservation whose release depends on a code path running is a reservation that leaks
+
+**Doc:** docs/11 §4.1 (findings **M1** and **M2**, and the paragraph after that table, which is
+where this rule was asked for); design **§2.10** ("one home per law"); AGENTS rule 8 ("leave the
+camera as you found it"); notes **N83**, **N117**, **N118**, **N170**, **N171**. Recorded
+2026-08-16, from the G6 repair pass.
+
+**The finding behind two findings.** M1 and M2 are not two defects that happen to be near each
+other; they are one shape, and the G6 review is where it became a pattern rather than a
+coincidence. In both, something is claimed — a camera's recording slot, a camera's frames, the
+right to take a photograph without a take underneath it — and the claim is released by *a
+particular line running later*. Everything that can stop that line from running is a way for the
+claim to outlive its owner: a cancelled future (M2), and an interleaving that makes the claim
+false between the check and the act (M1). H2, one phase earlier, was the same shape on a sweep.
+
+### The rule
+
+> **A claim's release belongs to the thing that owns the claim, not to the code path that took
+> it.** If releasing needs an `await`, the owner is a registry and the caller holds a *witness*
+> the registry can test — never a value that carries the obligation. And a claim that another
+> verb reads has to be read where the answer cannot change before it is used.
+
+Two corollaries, both of which this repair leans on:
+
+- **A witness is an `Arc` whose `Weak` the registry keeps.** Dropping a future drops the `Arc`,
+  and no code path is involved in that — which is exactly the property the explicit-`withdraw`
+  convention did not have. Correctness then lives in the registry's own entry points (each reaps
+  before it decides), and a `Drop` that spawns the reap is *promptness*, not correctness.
+- **A cancellable `await` cannot hold a claim.** `Previews::hand_over` claims the camera's frames
+  and takes an unbounded wait to do it; while it was the caller's own future, a cancellation left
+  the claim taken and nobody holding it. It runs on a task of its own now, so the claim's two
+  halves — taking it and disposing of it — are in one future that nothing outside can cancel.
+
+### Whether an async-drop-shaped answer exists in this codebase, judged
+
+The review asked. Four shapes were considered and the third is what landed:
+
+1. **A `Drop` that does the work.** Impossible as stated: `withdraw` takes `Recordings`' lock and
+   then `Previews`', and a `Drop` cannot `await`. Not a style objection — it does not compile.
+2. **A `Drop` that spawns the work.** It compiles and it is what promptness is bought with here,
+   but it cannot be the *invariant*: `tokio::runtime::Handle::try_current` answers `Err` for a
+   task dropped while the runtime is going away, and a rule that holds except during shutdown is
+   a rule with a hole exactly where the daemon is least able to notice. It is also silent about
+   the window before the value exists at all, which is where M2's widest case lives.
+3. **A registry that reaps on next access** — what landed. It needs no runtime, no task and no
+   `Drop` to have run; the cost is that a stranded claim is released when somebody next asks
+   about that camera, which is why 2 is kept beside it.
+4. **A guard holding an `OwnedSemaphorePermit`.** It gives back the *count* on drop and nothing
+   else, and what has to come back here is a `BTreeMap` entry and another module's fan-out
+   claim. It would have made the leak invisible rather than absent.
+
+### What can go red
+
+`a_record_start_that_went_away_before_its_take_began_leaves_the_camera_free` and
+`a_record_start_dropped_inside_the_hand_over_still_gives_the_camera_back` (note N171), and
+`a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera` (note
+N170).
+
+**Amended 2026-08-16 (B5b), and the amended part is the paragraph that said no check was
+possible.** It read: *"nothing in the tree can see a new claim released by a code path … a lint
+that could tell 'a value whose `Drop` matters' from 'a value' would have to know which fields
+are claims."* That is true of a lint over the workspace and it was too strong about the two
+modules this rule is actually about. `crate::record` and `crate::preview` name their claim
+constructors from a closed vocabulary — a `reserve`, a `claim`, a `hand_over`, an `attach` —
+and each answers with a type declared beside it, so the population is *derivable* and the
+obligation on it is one of two shapes: an `impl Drop`, or a `#[must_use]` for a claim that has
+nothing to give back and only something to do. `scripts/gates/claims-come-back-with-their-values.sh`
+is that check, with nine arms in `cases/`. It found `crate::preview::Watchers` failing on the
+day it was written — the value this whole repair hands around (note **N177**) — which is the
+answer to whether it was worth writing.
+
+What the gate does **not** see is a claim taken by a constructor spelled outside that
+vocabulary, or held by a module that is not one of those two. That residual is real and it is
+smaller than the sentence it replaced.
+
+**Amend this note if** a third instance appears that neither shape fits — at which point the
+question is a claim registry with a lease, and this note is the argument that has to be
+answered. Notes **N176** and **N177** are the second and third instances and both fit.
+
+## N170 — The photo's interlock had to move to the camera's own thread, because a check the queue can overtake is not a check
+
+**Doc:** note **N118** (a photo during a take is `Busy`, and why); note **N111** (a recording is a
+chain of turns); note **N41** (the actor holds no runtime); design **D7**'s close-time rewrite and
+**D12**'s per-camera actor; docs/11 **M1**. Recorded 2026-08-16, from the G6 repair pass.
+
+**Believed:** that asking `Recordings::not_recording` in `wch_photo`, "after the camera is
+resolved and before a destination is opened", was the interlock. N118 says so in those words and
+the test it names passes.
+
+**True:** it is a **check-then-act**, and the act is three awaits away. The check releases the
+registry lock; the destination is then opened on the blocking pool; only then is the actor command
+enqueued. A `record_start` that claims the camera inside that window reaches `VIDIOC_STREAMON`
+first — its own path is longer, but both go through the same blocking pool and neither orders the
+other — and the photo's `engine::preview::while_suspended` then stops **the take's** stream. That
+is precisely the defect N118 exists to prevent, arriving through the door N118 left open.
+
+### Why the repair is a second reading rather than a wider lock
+
+The two things being ordered are both *actor commands*, and `engine::actor` runs one per camera at
+a time in arrival order. So the exact question — "will a take's stream exist when this photo
+suspends whatever is streaming?" — has an exact answer at exactly one place: the head of the
+photo's own command, on the camera's thread. A take whose stream exists is in the registry by
+then; a take whose stream does not exist yet cannot start it until this command returns.
+
+**Amended 2026-08-16 (B5b): that last sentence used to read "there is no window left to make
+smaller", and it was a claim about a *second* module.** "A take whose stream exists is in the
+registry by then" is a property of `Recordings::adopt`, not of this reading — and at the time
+this note was written `adopt` released the registry lock between taking the reservation out and
+putting the take in, so for that interval a take whose stream existed was in the registry
+**nowhere**. This reading is exact only because that transition is one mutation under one
+guard, which is note **N176**. The two are one claim and they are asserted separately.
+
+`Recordings::not_recording_on_this_thread` is that reading, and it is a `blocking_lock` because
+the actor is an OS thread by construction (D12) with no runtime under it (N41) — the same reason
+`Live::recording` is a `std::sync::Mutex`. Nothing in `crate::record` holds the registry lock
+across an `await`, so the wait is a `BTreeMap` lookup long.
+
+Two alternatives were rejected. **Holding the registry lock from the check to the enqueue** would
+put one camera's photo in front of every other camera's `record_status`, and with D12's `wait`
+flag it would hold that global lock for `CAMERA_ENQUEUE_WAIT_MS`. **Making the photo take a claim
+the reservation refuses** would answer `Busy` to a `record_start` that arrives during an ordinary
+photo — a sequence that works today and should keep working, since the take simply queues behind
+the photo.
+
+**The cheap check stays**, and it is not redundant: it is what keeps a refused photo from
+creating a zero-length file at a caller-named path and taking a seat in the camera's queue, which
+is N118's own argument for where it sits. One rule asked twice, one layer apart, exactly as
+`engine::record::start` re-asks `RecordRequest`'s predicates.
+
+### What can go red
+
+`a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera`, which
+**constructs** the window rather than racing for it: the photo's future is polled until its
+destination exists — one step past the check, one step before the enqueue — and then left alone
+while a take is started to completion. With the actor-thread reading deleted, it photographs a
+camera that is recording; that is the red, and docs/11 §4.10 is the record of two attempts to
+reach the same state by timing that did not.
+
+**Amend this note if** a photo is ever served from a running take's stream (N118's rejected
+alternative), which would make both readings a fallback rather than the answer.
+
+## N171 — A `record_start` that was cancelled stranded its camera for the daemon's life, and the fix was to stop the caller owning the claim
+
+**Doc:** docs/11 **M2** and **§4.10**; note **N117** (`Previews::hand_over`, and why a take owns a
+camera's frames); note **N114** (one take per camera); note **N169**, which is the rule this is an
+instance of. Recorded 2026-08-16, from the G6 repair pass.
+
+**Believed:** that `Reserved` carrying both claims made the obligation travel in the type — "there
+are three refusal paths and each one would have had to remember", which is true and was the
+argument for the shape.
+
+**True:** it makes the obligation travel in a *value the caller owns*, and a caller can be
+**cancelled**. A jsonrpsee handler future is dropped when its client hangs up; a dropped future
+runs neither `withdraw` nor `adopt`, and `Reserved` had no `Drop` — the module said so, and gave
+the reason (`withdraw` awaits two locks). So the slot stayed `Slot::Starting` for the life of the
+process: every later `record_start` on that camera answered `Busy`, `record_stop` answered `Busy`,
+and any preview that had been handed over stayed handed over — a tab watching a feed with no
+publisher.
+
+### The repair, in three parts
+
+- **The claims live in the slot.** `Slot::Starting` carries the `CameraInfo` and the `Watchers`;
+  `Reserved` carries an `Arc<Holding>` whose `Weak` the slot keeps. Dropping the future drops the
+  `Arc`, and `Reservation::wanted` answers `false` from then on with no code path involved.
+- **Every entry point reaps first.** `claim`, `status`, `collect` and `holds` remove an unwanted
+  reservation and hand its frames back before they decide anything, so the *next* verb heals the
+  camera whatever else did or did not run.
+- **The hand-over is spawned.** `Previews::hand_over` is the widest part of a `record_start` — on
+  real hardware a `STREAMOFF` behind a preview driver — and while it was the caller's own future,
+  a cancellation inside it left the frames claimed by a `Watchers` that never existed anywhere.
+  It runs on a task of its own now, and that task stows the claim in the slot or hands it back.
+
+**One ordering subtlety, and it is the one that could have been a worse bug than the one being
+fixed.** The reap deliberately does *not* remove a dead reservation whose hand-over is still in
+flight. If it did, a second `record_start` could claim the same camera's frames, and the first
+call's hand-back would then take the *second* take's fan-out out of the registry — after which the
+next tab creates a feed of its own and `Previews::attach` starts a second driver on a node V4L2
+allows one streamer on. So the slot stays until the hand-over answers, which is the wait the
+cancelled `record_start` would have imposed anyway.
+
+**`withdraw` also got stricter.** It removed "the slot, if it is still `Slot::Starting`" — but a
+*later* `record_start`'s reservation spells itself the same way, so an earlier caller's refusal
+could take a later caller's claim. It is pointer identity now, which is what
+`crate::preview::remove`'s `Arc::ptr_eq` already does one variant shape along.
+
+### What can go red, and what §4.10 is doing in this note
+
+Two tests, and the second is the interesting one.
+`a_record_start_that_went_away_before_its_take_began_leaves_the_camera_free` drops a `Reserved`
+and asserts both halves come back. `a_record_start_dropped_inside_the_hand_over_still_gives_the_camera_back`
+**constructs** the window docs/11 §4.10 twice failed to race for — killing a client at 120 ms and
+at 350 ms both landed after the slot was `Slot::Running`, because over the fake the
+reserve→running interval is a few milliseconds — by polling the reservation's future exactly once
+and dropping it. One poll is enough to claim the slot and spawn the hand-over and not enough to
+finish it, which is a window a test *states* rather than one it hopes for.
+
+That test's red against the unrepaired shape is its own precondition assertion — with the
+hand-over inline the future finishes in one poll over the fake, so the window does not exist to
+be cancelled in. That is worth saying plainly: **the pre-repair build cannot be tested at this
+window on this backend**, which is exactly why §4.10's live attempts missed, and it is the second
+mutant (a hand-over task that drops what nobody wants instead of handing it back) that pins the
+repair's own behaviour.
+
+### Amended 2026-08-16 (B5b): the premise was a claim about jsonrpsee that nobody had read
+
+This note opens with *"a jsonrpsee handler future is dropped when its client hangs up"*, states
+it as a fact, and never says where it was checked. That is rubric **A9**'s second half, and the
+G6 review caught the same shape three times in one pass, so it was read against jsonrpsee 0.26.0
+rather than left standing. **It is true of one of this daemon's two transports and false of the
+other**, and the one it is false of is not the one you would guess:
+
+- **HTTP, which is the Unix socket** — `jsonrpsee_server::transport::http::call_with_service` is
+  `await`ed **inline** in the hyper service future (`transport/http.rs:62`). A client that hangs
+  up makes hyper drop that future, and the method future goes with it. So the primary consumer's
+  transport — `webcam-handler-client` over the UDS, and the web client's `/rpc` POST — cancels
+  handlers exactly as this note assumed.
+- **WebSocket, which is the browser's live surface** — `transport/ws.rs:154` does
+  `tokio::spawn` per method call and **keeps no handle**. `graceful_shutdown` waits for pending
+  calls only on the `Shutdown::Stopped` arm (a server stop); a client disconnect takes
+  `Shutdown::ConnectionClosed`, which skips the wait entirely. The spawned call therefore runs to
+  completion and only its `sink.send` fails. A `record_start` over a WebSocket is *not*
+  cancelled by the client going away.
+
+Nothing about the repair changes: a claim released only by a code path is still wrong, the drop
+still happens when the runtime goes away, and "the registry reaps" needs no transport to be true.
+What changes is the *size* of the defect this note fixed — it was a wedged camera per hung-up
+UDS client, not per hung-up tab — and that a sentence about a dependency now has a file and a
+line behind it.
+
+### Amended 2026-08-16 (B5b): there is a **third** claim, and this note said there were two
+
+The repair's own test says *"Both claims have to come back — the slot, or every later
+`record_start` on this camera answers `Busy` for the life of the process, and the camera's
+frames, or an open tab watches a feed nothing publishes into."* A `record_start` holds a third
+from the moment `engine::record::start` returns: the device's own `VIDIOC_STREAMON`. It has no
+witness, no `Drop` and no registry entry, and the actor runs the command it was given whatever
+became of the caller — so a handler dropped between the submit and the answer left the camera
+**streaming with nobody driving it**.
+
+Worse, this note's own repair is what made that visible: before it, the slot stayed
+`Slot::Starting` for ever and the daemon refused everything about the camera itself, which
+masked the stranded stream behind a wedged registry. With the reap, the daemon reports the
+camera free while the device streams, and the next `record_start` is refused by the *kernel* —
+verbatim what `Recordings::claim` exists to prevent. Note **N177** carries the repair and its
+test; the shape of the answer is this note's own second corollary, applied to the third claim.
+
+**Retires when** nothing: the shape is now the module's, and note N169 is where a fourth
+instance would be argued.
+
+## N172 — `Recordings::collect`'s catch-all said the daemon was shutting down, on a daemon that was fine
+
+**Doc:** note **N114**'s four decided answers; **D13**'s closed eighteen and AGENTS' error
+vocabulary paragraph ("`Busy` means retry, `DeviceGone` means stop and tell the human"); docs/11
+**M3**. Recorded 2026-08-16, from the G6 repair pass.
+
+`collect` releases the registry lock to wait for the driver's signal, so the slot it comes back to
+is not always the one it left. The re-read matched `Slot::Ended` and folded **everything else**
+into one `Error::DeviceIo` whose message is *"the recording's driver ended without a result; this
+daemon is shutting down"*. Two ordinary interleavings between two clients reach it on a daemon
+that is not shutting down at all:
+
+- **a second `record_stop` got there first**, and is holding the report — the slot is empty;
+- **a `record_start` arrived while this call waited**, discarded the finished take it found
+  (N114's decision 2, counted and logged) and left its own reservation in the slot.
+
+In the second the caller's report is genuinely gone, and it was told the wrong thing about why.
+
+The repair is four answers where there was one, and three of them are answers this verb already
+had one `match` higher up: an empty slot is `nothing_to_stop` (`IllegalTransition`, naming
+`record_start` and `record_status` in its remedy), somebody else's claim is `Busy` (retry — the
+take that took the camera is bounded by its own duration), and **this call's own take, by
+`Arc::ptr_eq`**, is the one shape that really does mean a driver ended without installing a
+result. The shutdown sentence is kept for exactly that shape, which makes it true.
+
+**What is deliberately not distinguished**: a `Slot::Ended` installed by a *different* take is
+still collected as this call's answer. Both reports are about the same camera and the same path
+the caller named, no caller can tell them apart, and an identity token on `Finished` would be
+state kept about a take after somebody asked for it to be handed over.
+
+### What can go red
+
+`a_stop_whose_take_somebody_else_took_says_which_and_never_blames_a_shutdown`, which constructs
+all three interleavings deterministically: `collect` subscribes to the take's `done` before it
+waits, so a receiver on that channel is the exact signal that the call has passed its first
+`match` and released the lock. Under the shipped catch-all the first arm answers `DeviceIo` where
+`IllegalTransition` is due.
+
+**Amend this note if** a recording ever becomes something a second client can attach to, which is
+also N114's own amendment clause: "somebody else's take" would stop being a phrase this daemon can
+use.
+
+## N173 — A take on a camera that was unplugged is still a take, and `CameraUnknown` is not what to call it
+
+**Doc:** **D13** (`CameraUnknown` — *"a name that never resolved — distinct from `DeviceGone`, a
+camera that was there"*); AGENTS rule 7 ("availability is not capability") and its "the error
+vocabulary is read unsupervised"; **E2** (resolution is live, every time); docs/11 **M4**.
+Recorded 2026-08-16, from the G6 repair pass.
+
+`record_stop` and `record_status` resolved against a live enumeration first, like every other
+verb. So a camera unplugged **during a take** made both of them answer `CameraUnknown` — while
+this daemon was holding, for that exact id, a file on disk, a driver that had ended or was ending,
+and a `RecordingEnd::DeviceFailed` waiting to be collected. `DeviceFailed` was unreachable through
+the two verbs that exist to reach it.
+
+The wording is the whole finding. To an unattended agent `CameraUnknown` reads as *your id is
+wrong* — the remedy is to list the cameras and try another name — and the fact it needs is that
+the camera it was photographing has gone. That is D13's `DeviceGone`, which the take is already
+holding.
+
+**The repair resolves the registry when the machine cannot.** `Wchd::recording_camera` tries
+`resolve` first (E2 is untouched: a camera that is there is resolved against the machine, prefixes
+and all), and turns a `CameraUnknown` — *only* that refusal — back into the requested id when
+`Recordings::holds` says this daemon has something under it. Every other refusal from the
+enumeration travels unchanged: a backend that cannot enumerate at all is not a camera that
+vanished.
+
+**It matches the id exactly, and that is a decision.** D1's prefixes are a property of an
+enumeration, and re-implementing prefix matching over the registry's keys would be a second
+resolver — the thing §2.10 forbids — with a different population under it. The id that works is
+the one `record_start` answered with, which is the id an agent following the guide already holds.
+A human who typed a prefix and then unplugged the camera gets `CameraUnknown`, and the note says
+so rather than the code pretending otherwise.
+
+The slots carry a `CameraInfo` now (the reservation's, the take's, the finished take's), which is
+what lets every refusal about a slot name the node the take is actually on rather than a node the
+caller's request implied.
+
+### What can go red
+
+`a_take_whose_camera_was_unplugged_is_still_collected_by_the_name_it_started_with`, over a backend
+decorator whose enumeration can be emptied on demand while an open descriptor keeps working —
+which is what an unplug looks like to `engine::resolve` and to a running take respectively. Both
+directions: the take is collected by name, and once it has been collected the same name answers
+`CameraUnknown` again, because by then this daemon really is holding nothing for it.
+
+**Amend this note if** the daemon ever keeps a camera's identity after a take is collected — at
+which point "this daemon holds something under that name" stops being the same question as "there
+is a take to collect".
+
+## N174 — Step 6 of the teardown was a join, and a join is not a bound
+
+**Doc:** `daemon::shutdown`'s ordered teardown (docs/7 P4e-ii), step 5's "one deadline, shared";
+`limits::DAEMON_SHUTDOWN_DRAIN_MS`; note **N59**'s residual (a camera actor is an OS thread and no
+token reaches it); **D12**'s idle close; AGENTS rule 3 ("never a silence"); docs/11 **M27** and
+**L7**. Recorded 2026-08-16, from the G6 repair pass.
+
+Two findings about the same task, and they are one entry because they are one reader's confusion:
+the idle-sweep driver is *housekeeping*, and housekeeping is the thing a teardown assumes will
+behave.
+
+### 1. The join had no deadline over it, and two documents said it did
+
+`stop_in_order` takes one deadline and spends it on step 3 (subscriptions) and step 5 (the drain).
+Step 6 was a bare `housekeeping.await`. The driver does end itself on the token — but a pass
+already inside `spawn_blocking` is waiting on a camera actor's reply channel, behind whatever
+command is in front of it, and on real hardware that is a calibration sweep of minutes. So the
+daemon's worst-case stop was `DAEMON_SHUTDOWN_DRAIN_MS` **plus an unbounded term**, while
+`server.rs`'s own doc said the wait "sits inside `limits::DAEMON_SHUTDOWN_DRAIN_MS` **because the
+join happens after the drain**" — which is exactly backwards, since after the drain is where
+nothing was measuring it — and `limits.rs` said the drain was "the only thing that waits during a
+stop".
+
+The repair is `timeout_at` on the **same** deadline, which is step 5's own arithmetic: the bound
+is on the *stop*, so a teardown whose drain expired gives housekeeping nothing. On expiry the
+driver is aborted and the line says both what was abandoned and what an abort cannot reach.
+
+#### Amended 2026-08-16 (B5b): the unbounded term **moved**, it did not go
+
+Two sentences above were still false after this repair, and they were false in the way the
+finding was: *"the daemon's worst case stays the one number three documents name"*, and the
+`warn` line's *"abandoning it — a pass parked on a camera's actor thread ends with this
+process"*.
+
+`timeout_at` bounds **`stop_in_order`**. The expiry arm aborts the driver *task*, and the pass
+it was waiting for is a `spawn_blocking` **closure**: aborting an async task detaches its
+`JoinHandle` and leaves the closure running on its pool thread. `main` was `#[tokio::main]`, so
+`Drop for Runtime` then waited for that thread **indefinitely** — neither `shutdown_timeout` nor
+`shutdown_background` was used anywhere. So the unbounded term was not removed; it was moved
+from step 6 to the runtime's own drop, where no line in this project mentioned it. And the warn
+was exactly inverted: the process could not end until the pass returned.
+
+Two repairs, and the second is why the first is worth having:
+
+- **`main` builds the runtime and ends it with `Runtime::shutdown_timeout`**, spending
+  `limits::DAEMON_SHUTDOWN_DRAIN_MS` again. Same number, because it is the same fact being
+  bounded — a thread this daemon cannot interrupt gets that long and is then left, with the
+  process exiting and the kernel closing its descriptors, which is what note N59's residual
+  always said. `stop_runtime` is a one-line function purely so that it can go red.
+- **The stop's worst case is written down as what it is**, in `daemon::shutdown`'s header, as a
+  table of four waits rather than one constant: the ordered teardown
+  (`DAEMON_SHUTDOWN_DRAIN_MS`, shared over steps 3, 5 and 6), the watchdog join (token-driven),
+  the web listener's stop (`WEB_LISTENER_STOP_MS`), and the blocking-pool join
+  (`DAEMON_SHUTDOWN_DRAIN_MS` again). Twice the drain plus two seconds, against systemd's 90 s
+  `TimeoutStopSec` — still the comparison that chooses the constant, and now an arithmetic a
+  reader can do.
+
+`a_blocking_pass_that_will_not_end_does_not_hold_this_process_open` is what goes red: a
+`spawn_blocking` closure that announces itself and then parks for as long as the test likes,
+and a runtime ended around it. With `stop_runtime` replaced by `drop(runtime)` it hangs, and it
+is a *named* failure rather than nextest's deadline because the shutdown runs on a thread of its
+own and the test waits on a channel it can give up on. The new test the first repair landed
+with (`a_housekeeping_pass_that_never_ends_does_not_hold_the_stop_open_for_ever`) cannot see any
+of this: its pass is `std::future::pending`, which is a task and not a thread.
+
+### 2. A panicked pass ended D12's idle close for ever, in silence
+
+The loop folded every `JoinError` into `break`. Cancelled means the blocking pool has gone (a
+runtime shutting down) and breaking is right; **panicked** means a defect — a backend that panics
+on device vocabulary is measured, not hypothetical \[PF:1\] — and breaking there means this daemon
+holds every camera it ever opens until the process exits, with nothing anywhere saying why. An
+operator whose other application cannot open a camera has no line to find.
+
+`JoinError::is_panic` distinguishes them. A panic is reported at `error!` and the driver **carries
+on**: the next pass is a fresh `spawn_blocking`, and a deterministic panic therefore repeats the
+line once per `limits::CAMERA_IDLE_SWEEP_MS`. That is the honest behaviour for a daemon whose
+housekeeping is failing, and cheaper than a descriptor nobody can get back.
+
+### What can go red
+
+`a_housekeeping_pass_that_never_ends_does_not_hold_the_stop_open_for_ever` hands `stop_in_order` a
+task the token cannot end and asserts three things — the stop ends, it names the bound at `warn`,
+and the rest of the teardown still happened — plus that the task was *ended* rather than detached,
+awaited through a value dropped with it, because an abort is a request and only the drop is the
+fact. Against the unrepaired step 6 it does not fail: it **hangs**, and nextest's deadline is what
+turns that into a named failure.
+
+`a_sweep_that_panicked_is_said_out_loud_and_the_next_one_still_closes_a_camera` drives the driver
+over a pass that panics once. It needed a seam: `spawn_idle_sweeps_every` now delegates to
+`spawn_sweeps_every`, which takes the pass as an argument — the split the cadence already has,
+made once more, because a `sweep_idle_cameras` that panics on demand is not something a replayed
+profile can be asked for. The pass signals on a channel it holds, so a build that broke out of the
+loop drops the sender and the test fails by name instead of hanging.
+
+**Amend this note if** the idle sweep ever stops being a round trip through an actor — the
+unbounded term is the actor's queue, and a pass that could not park would need no bound.
+
+## N175 — Aborting `axum::serve` does not close the connections, because they are not its
+
+**Doc:** `limits::WEB_LISTENER_STOP_MS` and the P5b measurement it records (a stalled MJPEG tab
+makes a graceful shutdown wait forever); design **§2.6** ("an open MJPEG tab must not hang
+shutdown"); AGENTS ("open streams are cancelled, never awaited, on shutdown"); rubric A9 (a claim
+about a dependency nobody read); docs/11 **L8**. Recorded 2026-08-16, from the G6 repair pass.
+
+`Serving::stopped`'s bounded join said, of its own abort: *"its sockets close with it, which is
+what unblocks nothing and ends everything"*. **Read `axum::serve` (0.8.9) and it is not so.** The
+`run` loop accepts, and `handle_connection` does `tokio::spawn` per connection with the socket
+moved in; the value `Serving` holds is the accept loop's handle and nothing else. Aborting it ends
+the accept loop and the graceful-shutdown wait, and leaves the stalled connection exactly where it
+was: parked in a write to a full socket, holding its descriptor.
+
+**Not a live hole, and worth saying why it looked fine.** In the shipped daemon `main` returns a
+moment later and the kernel closes everything, so the only untrue thing was the sentence — but the
+sentence is what a reader uses to decide whether "the listener stopped" also means "the listener
+let the camera's viewers go". It did not.
+
+### The repair, and the one thing it must not do
+
+`Bounded` — the decorator that already takes the connection permit at accept — now also keeps a
+**duplicate descriptor** per live connection, and the expiry arm shuts each one down for reading
+and writing. `shutdown(2)` is what makes the connection task's next poll finish: the pending write
+fails, the read ends, the task returns and drops the socket, and the descriptor comes back to the
+process. A client that has stopped reading cannot be *written* to; it can be ended.
+
+A duplicate and not the number, and not the stream. **Not the number**, because a `RawFd`
+remembered from an accept can be closed and reissued by the next `open`, and shutting that down
+would be this daemon reaching into an unrelated file — the same class of mistake `terminate_holder`
+spends note N48 narrowing. **Not the stream**, because tokio implements `AsyncRead` only for an
+owned `TcpStream` and hyper needs that ownership; a `dup(2)` costs one descriptor per connection,
+bounded by `limits::DAEMON_MAX_CONNECTIONS`, and `shutdown` acts on the socket both descriptors
+name. A descriptor that cannot be duplicated (`EMFILE`) is served anyway and says so at `debug`:
+the consequence is that this one connection is left to the process's exit, which is where every
+connection was before this note.
+
+The registry entry is removed by `Admitted`'s `Drop`, which is the same reason the permit rides on
+the socket rather than on a task's tail: the endings are three (a client that hung up, a graceful
+shutdown, the abort) and only the value can see all of them.
+
+### What can go red
+
+`a_stop_that_gave_up_waiting_ends_the_connection_it_gave_up_on`, whose reader **never reads again**
+— which is what makes it an assertion about the daemon. Its sibling
+`a_stop_with_an_open_preview_tab_completes_inside_the_bound` cannot see this defect at all, and
+that is worth recording: it ends by draining the socket, and draining unblocks hyper's final write,
+so the connection ends by itself on a build with no repair in it. The observable that
+discriminates is the daemon's own count of connections it is holding, awaited rather than polled;
+with the shutdown call removed it never reaches zero and the test fails on its bound.
+
+**Amend this note if** axum ever gives `serve` a handle on its connection tasks, at which point
+the duplicate descriptors are a second mechanism and one of the two should go.
+
+## N176 — `Slot::Starting → Slot::Running` stopped being one mutation, and the camera was free in between
+
+**Doc:** notes **N118**, **N169**, **N170**, **N171**; `crate::record`'s header ("Who holds the
+camera's stream"); AGENTS rule 7 ("`Busy` means retry, `DeviceGone` means stop"); D12's
+per-camera actor. Recorded 2026-08-16, from the B5b repair pass over the G6 review's own repairs.
+
+**A regression, and the first one this project's review pass has caught in its own work.** Note
+N171 moved a `record_start`'s two claims out of the value the caller holds and into the slot,
+which is right. What it cost was atomicity in the one place that had it: `Recordings::adopt`
+used to take the `Watchers` out of a `Reserved` — a value, no lock — and then overwrite
+`Slot::Starting` with `Slot::Running` in **one** `map.insert` under **one** guard. Afterwards it
+called `release`, which acquires the registry lock, *removes the entry* and drops the guard, and
+then re-acquired the lock to insert the take.
+
+Between those two acquisitions the map has no entry for that camera, **and
+`VIDIOC_STREAMON` has already succeeded** — the actor command that ran `engine::record::start`
+returned before `adopt` was reached, and the actor thread is idle in exactly that interval,
+already back in `inbox.recv()`. Every other verb reads that map to decide whether the camera is
+held, so four things follow and none of them needs a fault injected:
+
+- **N170's interlock is defeated at the one instant it exists for.** A photo dequeued in that
+  window finds an empty map, is admitted, and `engine::preview::while_suspended` stops **the
+  take's** stream — which is note N118's defect, arriving through the door N170 was written to
+  close. N170's "there is no window left to make smaller" was a sentence about `adopt`, and
+  `adopt` had one; that note is amended.
+- **`record_stop` answers a terminal refusal where a retryable one is due.** An empty slot is
+  `nothing_to_stop` — `IllegalTransition`, whose remedy names `record_start`. The same
+  interleaving used to produce `Busy`. To AGENTS' unattended primary consumer those are opposite
+  instructions: one stops and tells a human, the other retries and succeeds.
+- **Two `record_start`s can hold one camera.** A second `claim` winning the lock in the window
+  sees an empty map, installs its own `Slot::Starting` and hands its own frames over; the first
+  `adopt`'s **unconditional** `insert` then replaces it and *discards the returned value* —
+  dropping a `Reservation` whose `watchers` had no `Drop` at the time, so the fan-out claim never
+  came back and every later tab on that camera subscribed to a feed nothing writes.
+- And the second call has meanwhile issued a second `S_FMT`/`STREAMON` on a node V4L2 allows one
+  streamer on.
+
+### The repair, and why it is a signature rather than a check
+
+`release`'s body became `Recordings::take_out`, which takes `&mut BTreeMap` — a reference only a
+holder of the guard can produce — and `adopt` builds the whole `Live`, inserts it and publishes
+the running count **inside** the critical section. The alternative the review offered was for
+`adopt` to re-verify `Slot::Starting(this)` at insert time, and it was rejected for note N169's
+own reason: it makes the window smaller instead of absent, and it leaves the other three
+consequences intact for whatever the smaller window costs. The insert can now overwrite nothing,
+because the key was emptied two lines above it under the same guard.
+
+`release` stays as the `await`-taking wrapper, because `withdraw` genuinely has nothing to do
+under the lock.
+
+### What can go red
+
+`a_camera_whose_take_is_being_adopted_is_never_reported_free_to_the_next_caller`, which
+**constructs** the interleaving instead of racing for it — docs/11 §4.10's whole point, and this
+window is a few hundred nanoseconds of worker-thread work. `tokio::sync::Mutex` hands the lock on
+in the order it was asked for, so the test holds the registry lock, parks `adopt` on it, queues a
+second caller *behind* `adopt`, and then lets go. Whatever `adopt` leaves in the map when it next
+releases the lock is exactly what that second caller sees. The second caller asks
+`Recordings::not_recording` — which is `wch_photo`'s own question — and the red against the
+two-acquisition shape is:
+
+```
+this camera was reported free while its take's stream was already running: ()
+```
+
+The test says nothing about how many polls `adopt` takes, so it is green on either shape *that
+is correct*: on the repaired one the whole transition happens in the poll after the lock is
+released, and on any future shape that parks again the second caller still finds `Slot::Running`.
+
+### How wide the window was, measured against tokio rather than guessed at
+
+The review left this open — *"I could not settle by reading whether tokio's cooperative-budget
+accounting can force `Poll::Pending` at `self.0.live.lock().await`; if it can, the window widens
+from a few hundred nanoseconds of worker-thread work to a full scheduler round trip"* — and it
+is worth closing, because it is the difference between "a rare race" and "a likely one".
+
+**It can.** `tokio::sync::Mutex::lock` is an `Acquire` on the batch semaphore, and
+`Acquire::poll` (tokio 1.53.1, `src/sync/batch_semaphore.rs:598`) opens with
+`ready!(crate::task::coop::poll_proceed(cx))` — *before* it looks at the semaphore at all. A
+task that has spent its 128-operation budget for the scheduler turn therefore gets `Pending`
+from an **uncontended** lock, is rescheduled, and comes back later. A `record_start` reaching
+`adopt` has just been through a reservation, a hand-over, a blocking-pool round trip and an
+actor round trip, so it is not a task with a fresh budget. The two-acquisition shape put a
+yield point in the middle of a transition whose whole job was not to have one.
+
+**Amend this note if** `Recordings` ever holds more than one lock, at which point "one mutation
+under one guard" stops being expressible and the question is a lock order.
+
+## N177 — The claims a cancelled `record_start` keeps, and the two that had no value to give them back
+
+**Doc:** notes **N169** (the rule), **N171** (the first two claims), **N117** (a take owns a
+camera's frames), **N59** (a camera actor is a thread); docs/11 **M2**; AGENTS rule 8 ("leave the
+camera as you found it"). Recorded 2026-08-16, from the B5b repair pass.
+
+Note N169 said a claim's release belongs to the thing that owns the claim. Two of this daemon's
+claims did not have such a thing, and both were found by asking the question the note asks rather
+than by anything going red.
+
+### 1. The `VIDIOC_STREAMON` a dropped handler leaves behind
+
+N171 counted two claims and there are three. A jsonrpsee handler future is dropped when its
+client hangs up — over **HTTP**, which is this daemon's Unix socket and its primary consumer's
+transport; N171's amendment records where that was read and which transport it is false of.
+`crate::server`'s `record_start` submits an actor command and then awaits its answer, and
+`engine::actor` runs a submitted command **to completion whatever became of the caller** —
+`engine::record::start` streams the device on, `Recording::begin` writes the header, and the
+outcome is sent into a receiver that is gone. `engine::record::Opened` is a plain struct with no
+`Drop`; nothing calls `engine::record::stop`; `adopt` never runs.
+
+At `HEAD` this was masked by the very defect N171 fixed: the slot stayed `Slot::Starting` for
+ever, so the daemon refused everything about that camera itself. With N171's reap the slot comes
+back and **the daemon reports the camera free while the device streams with no driver**, so the
+next `record_start` is refused by the *kernel* — verbatim the outcome `Recordings::claim`'s own
+doc says it exists to prevent. It self-heals only when D12's idle sweep closes the descriptor at
+`limits::CAMERA_IDLE_CLOSE_MS`.
+
+**The repair is N169's second corollary again**: a cancellable `await` cannot hold a claim, so
+`record_start`'s steps three to five moved into `Wchd::begin_recording` and run on a **task of
+their own**, exactly as N171 put `Previews::hand_over` on one. The answer travels back over a
+`oneshot`, and that channel is also the disposal signal: `Sender::send` returning `Err` is the
+**race-free** fact that nobody is listening — not a check that can be raced, which is what an
+`is_closed()` before the send would have been — and it hands the finished `RecordStatus` back, so
+the task stops and collects the take it has just started. The file stays where the caller asked
+for it; what is discarded is this daemon's copy of the accounting, which is the trade the module
+header's second bullet already makes for an uncollected take, said at `warn`.
+
+**The residual, stated at its size.** If the caller's future is dropped *after* the send
+succeeded, the take runs and the answer is discarded by the receiver's own drop. The camera is
+then `Busy` until the take reaches its own duration, `record_status` and `record_stop` can both
+see it, and a later `record_start` discards it counted. That is a bounded, discoverable state,
+and it is the one this shape trades for: the alternative — no spawn — is an unbounded, invisible
+one.
+
+### 2. `Watchers`, the value the whole of N171's repair hands around
+
+N169's rule was applied to `Reserved` and not to `crate::preview::Watchers`, which is the claim on
+one camera's fan-out and was released only by `hand_back()` running. Two paths drop one without
+that: the spawned hand-over task cancelled between `Previews::hand_over` answering and
+`Recordings::stow` taking the lock, and — until note **N176** — `adopt`'s blind insert clobbering
+a later reservation. What is left behind is a feed in the registry marked `Source::Elsewhere`
+with no publisher, which every later tab on that camera subscribes to and hears nothing from.
+
+It has a `Drop` now, with `Reserved`'s shape and `Reserved`'s limit: it spawns, because giving a
+fan-out back takes a `tokio::sync::Mutex` and a `Drop` cannot `await`, and `Handle::try_current`
+answers `Err` for a value dropped while the runtime is going away — which needs nothing, since
+the registry it would repair is going too. The give-back moved to `Previews::give_back` so the
+explicit path and the `Drop` are one law (§2.10), and `hand_back` swaps an `AtomicBool` first:
+**at most once** is correctness rather than tidiness here, because a second `Previews::release`
+on a feed the first one *revived* finds it `Source::Preview` with readers and starts a second
+driver on the node.
+
+### 3. And the check note N169 said could not exist
+
+`scripts/gates/claims-come-back-with-their-values.sh`, which derives the population — the types
+`crate::record` and `crate::preview`'s `reserve`/`claim`/`hand_over`/`watchers`/`attach`
+constructors answer with, minus anything inside an `Arc<…>`, because shared ownership is the
+opposite of a claim one holder owes back — and requires each to `impl Drop` **or** carry
+`#[must_use]`. `Watchers` failed it the day it was written. `Starting` is the `#[must_use]` half
+and is why the rule has two shapes at all: it is a debt to *start* a driver, so there is nothing
+to give back and a `Drop` could not discharge it. `Viewer` carries the attribute too. N169's own
+"What can go red" paragraph is amended.
+
+### What can go red
+
+`a_record_start_whose_client_hung_up_leaves_no_camera_streaming`, over a backend decorator that
+announces from inside `start_stream` and waits there — so "the client hung up after the device
+streamed on" is a state the test *puts the daemon in* rather than one it races for. What it then
+waits for is the device's own `STREAMOFF`, announced by the same decorator, because the question
+is about the camera and a daemon that has forgotten the take would answer it about itself. On the
+unrepaired shape that announcement never comes and the wait ends at nextest's deadline; nothing
+spins while it waits, which is the difference note **N178** is about.
+
+`a_camera_s_frames_come_back_when_the_value_claiming_them_is_dropped` is the `Watchers` half,
+both directions: dropped without a `hand_back`, the fan-out's own count reaches zero; handed back
+explicitly and *then* dropped, the feed is left exactly as the hand-back left it.
+
+**Amend this note if** `engine::record::Opened` ever becomes a value with a `Drop` that can
+reach the device — at which point the third claim has an owner and the spawn is promptness rather
+than correctness.
+
+## N178 — Three smaller answers from the same review, and the one that is a lost update
+
+**Doc:** docs/11 §4.10; AGENTS rule 3 ("never a silence") and rule 7 (the error vocabulary);
+notes **N114**, **N173**, **N175**; `crate::record`'s header. Recorded 2026-08-16, from the B5b
+repair pass. One entry because each is a paragraph, and because all three are the same
+instruction: *say the thing the reader will act on, and make the check able to fail.*
+
+### 1. `Sockets`' published count was updated outside its lock
+
+`daemon::http::listener::Sockets` is one map and one published number, and note **N175**'s repair
+made that number the observable a teardown waits on (`Serving::connections`). Both writers read
+`live.len()` under the `std::sync::Mutex`, **dropped the guard**, and then called
+`count.send_replace`. Two connections ending together — which is precisely what
+`Sockets::close_all` causes, and what an aborted listener does to every live tab at once — can
+compute `1` and `0` and publish them in the other order, leaving the daemon claiming a connection
+over an empty map and a stop awaiting zero never seeing it.
+
+`send_replace` is synchronous, so there was never anything bought by being outside. The repair is
+a `Sockets::publish` that takes the **guard**: the stale read has nowhere to live. Measured while
+writing the test, and worth recording because it decided the constants: with eight endings
+released from one barrier the defect passed every run — the inversion needs a thread preempted in
+the handful of instructions between the unlock and the publish, and eight threads on this host
+never were. At 128 endings it went red inside 750 rounds on four runs out of four.
+`connections_that_end_together_leave_a_count_that_agrees_with_the_map` is that test, and the
+repaired shape holds all 1 024 rounds because it cannot represent the defect.
+
+### 2. Two verbs disagreed about whether a camera was held, and one of them said so with a success
+
+`Recordings::refusal` answers `Ok` for a `Slot::Starting` nobody is waiting on, while
+`Recordings::claim` and `Recordings::collect` answer `Busy` for the same slot. Each is right and
+the pair reads as a contradiction, so the divergence is now argued where it lives rather than
+left to be discovered: they are different questions. `claim` asks *may I take this slot* — and it
+may not, because the frames that reservation asked for are still inside a `Previews::hand_over`
+call, which is why `reap` deliberately leaves it. `refusal` asks *is a stream running that a
+suspend/resume would break* — and there is not one and never will be, because the `record_start`
+that would have reached `VIDIOC_STREAMON` has gone.
+
+`Recordings::holds` was a different matter and is a behaviour change. It answered `true` for
+every slot, and note **N173** uses it to turn a `CameraUnknown` back into the requested id when
+the machine no longer resolves it. So a `record_status` on a camera that had been **unplugged**,
+holding nothing but a reservation, answered a successful `RecordStatus { take: None }` — a
+document saying nothing is recording, about a camera that is not there, to a consumer whose whole
+vocabulary for that fact is `DeviceGone` and `CameraUnknown`. It answers for `Slot::Running` and
+`Slot::Ended` now: a reservation is not a take, which is what `Recordings::status` already says
+about one in as many words, and the `record_start` holding it is the call that will be told what
+happened to the device.
+
+### 3. Three waits that were spins, and one bound that was a poll count
+
+AGENTS forbids `sleep` as synchronisation and this repo's tests obey it; what it does not say is
+what a *failure* bound may be, and four loops had answered that differently:
+
+- Two test loops in `crate::record` were unbounded `yield_now` spins, so a regressed build burnt
+  a core to nextest's 180 s deadline instead of failing by name. Both are bounded by a **poll
+  count** now, and that is exact rather than lucky: what each waits for is a task on *this*
+  runtime, which `#[tokio::test]` runs on this thread, so "it has not happened after this many
+  turns of the scheduler" is a fact about the build.
+- `crate::server`'s N170 test bounded a wait by `polls < 4_096` while spinning `poll_fn` +
+  `yield_now` — but what it waits for is a file created on the **blocking pool**, and four
+  thousand polls of a current-thread runtime can elapse in milliseconds. That is a verdict that
+  moves with how loaded the host is, wearing the word a real finding gets, which is notes N52,
+  N66 and N68 for the fifth time. It is a duration now, thirty seconds, well inside nextest's own
+  deadline so that the named failure is the one a reader gets.
+- The new waits in notes N176 and N177 are events — a `watch` and a channel `recv` on the
+  blocking pool — so a build with no repair hangs *without spinning*, which is the only version
+  of "the deadline is the failure" worth having.
+
+**And a fourth, found by running the suite rather than by reading it, which is the honest way to
+say where it came from.** The N170 test itself failed twice in ten full-workspace runs — on a
+*correct* build, saying `a photo whose command lands during a take: PhotoResponse { … }`. Its
+loop was `while !photo.exists() { one_poll(&mut photographing) }`, and the window it constructs
+is "the destination exists and the actor command has not been enqueued". **One poll of
+`wch_photo` crosses both ends of it**: there is no `await` between the blocking open resolving
+and `CameraActor::submit`, so a test preempted between its `exists()` syscall and its next poll
+polls a future that was ready to run straight past the window. The photo's command then went
+into the camera's queue *before* `record_start` had even reserved the slot, and the answer the
+test read was a photograph. So the failure said "the interlock let a photo through" about a
+build whose interlock was fine — the shape N60 calls a gate that cries wolf, on the one test
+whose subject is a race.
+
+**The construction is now the runtime.** The test builds its own with `max_blocking_threads(1)`
+and fences after every poll: one pool thread taking queued closures in turn means an empty
+closure awaited now is a barrier for everything submitted before it, so after each fence the
+photo has nothing in flight, the destination's existence is read with no race under it, and the
+poll that would submit the actor command is the one the test declines to make. Its bound is a
+poll count again and that is exact — one poll is one step of `wch_photo`, and the number of
+steps is a property of the request rather than of the host.
+
+What made this findable at all was a **second** heavy test landing in the same binary (the
+128-thread one above), which is worth keeping in mind rather than treating as bad luck: a suite
+whose timing-shaped tests only pass on an idle machine is a suite that will fail on somebody
+else's.
+
+**Amend this note if** a second registry gains a published count beside its map, at which point
+the guard-taking `publish` is a shape rather than a repair and belongs in one place.

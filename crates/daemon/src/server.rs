@@ -131,7 +131,7 @@ use schema::report::{
 use schema::session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::video::{RecordReport, RecordRequest, RecordStatus};
-use schema::{Error, limits};
+use schema::{Error, ErrorKind, limits};
 use tokio::sync::oneshot;
 
 use crate::events::{Events, ProgressBroadcast};
@@ -824,13 +824,39 @@ impl Wchd {
     ///
     /// What it is deliberately *not* is a drain: a pass already in flight is allowed to
     /// finish, because it is a round trip through an actor's command queue and abandoning it
-    /// would leave a camera the registry thinks is closing. That wait is the actor's own,
-    /// bounded by the command in front of it, and the whole of it sits inside
-    /// [`limits::DAEMON_SHUTDOWN_DRAIN_MS`] because the join happens after the drain.
+    /// would leave a camera the registry thinks is closing. That wait is the actor's own and
+    /// is bounded by the command in front of it — **which is not a bound this daemon owns**,
+    /// because that command may be a calibration sweep. So the *join* is bounded instead, by
+    /// the one deadline [`crate::shutdown`] gives the whole teardown
+    /// ([`limits::DAEMON_SHUTDOWN_DRAIN_MS`], shared with steps 3 and 5), and a pass still
+    /// running when it expires is abandoned rather than waited for. The sentence this replaces
+    /// claimed the wait "sits inside" that number *because the join happens after the drain*,
+    /// which is precisely backwards: after the drain is where nothing was measuring it (note
+    /// **N174**).
+    ///
+    /// A panicked pass does **not** end this driver — see the `JoinError` arm below.
     ///
     /// Must be called from inside a tokio runtime.
     pub fn spawn_idle_sweeps_every(&self, cadence_ms: Millis) -> tokio::task::JoinHandle<()> {
         let wchd = self.clone();
+        self.spawn_sweeps_every(cadence_ms, move || wchd.sweep_idle_cameras())
+    }
+
+    /// [`Wchd::spawn_idle_sweeps_every`], over a pass supplied by the caller.
+    ///
+    /// The shipped caller passes [`Wchd::sweep_idle_cameras`] and there is no other, so this
+    /// is the same function with its one collaborator named — the split
+    /// [`Wchd::spawn_idle_sweeps`] already makes for the *cadence*, made once more for the
+    /// *pass*. What it buys is the claim below the loop that nothing else can make: a pass
+    /// that **panics** must not end this driver, and a `sweep_idle_cameras` that panics on
+    /// demand is not something a replayed profile can be asked for (AGENTS: a fake capability
+    /// no real device exhibits is a bug in the fake). The panic that is real — a backend that
+    /// panics on device vocabulary \[PF:1\] — happens on a camera's *actor* thread, which the
+    /// pool thread running a pass never sees as a panic of its own.
+    fn spawn_sweeps_every<P>(&self, cadence_ms: Millis, pass: P) -> tokio::task::JoinHandle<()>
+    where
+        P: Fn() -> Vec<CameraId> + Clone + Send + 'static,
+    {
         let stopping = self.shutdown().clone();
         tokio::spawn(async move {
             let mut cadence = idle_sweep_cadence(cadence_ms);
@@ -842,8 +868,8 @@ impl Wchd {
                     () = stopping.cancelled() => break,
                     _ = cadence.tick() => {}
                 }
-                let pass = wchd.clone();
-                let closed = tokio::task::spawn_blocking(move || pass.sweep_idle_cameras()).await;
+                let pass = pass.clone();
+                let closed = tokio::task::spawn_blocking(pass).await;
                 match closed {
                     Ok(closed) => {
                         for camera in closed {
@@ -853,8 +879,29 @@ impl Wchd {
                             tracing::info!(%camera, "closed an idle camera");
                         }
                     }
-                    // The blocking pool is gone, which happens when the runtime is
-                    // shutting down. There is nothing left to sweep and nobody to tell.
+                    // **Two endings, and only one of them is this driver's** (note **N174**).
+                    // A cancelled join is the blocking pool going away, which happens when
+                    // the runtime is shutting down: there is nothing left to sweep and
+                    // nobody to tell. A *panicked* pass is a defect — a backend that panics
+                    // on device vocabulary is measured rather than hypothetical \[PF:1\] —
+                    // and treating the two alike cost D12's idle close for the life of the
+                    // process, silently, which is the one outcome rubric rule 3 forbids
+                    // outright: the daemon would hold every camera it ever opened and say
+                    // nothing about why.
+                    //
+                    // So a panic is said out loud and the driver **carries on**. The next
+                    // pass is a fresh `spawn_blocking` and the camera whose vocabulary
+                    // caused it is still there, so a deterministic panic repeats this line
+                    // once per `limits::CAMERA_IDLE_SWEEP_MS` — which is the honest
+                    // behaviour for a daemon whose housekeeping is failing, and cheaper
+                    // than a descriptor nobody can get back.
+                    Err(err) if err.is_panic() => {
+                        tracing::error!(
+                            error = %err,
+                            "an idle-camera sweep panicked; this daemon's cameras stay open \
+                             until a later pass closes them"
+                        );
+                    }
                     Err(_) => break,
                 }
             }
@@ -903,6 +950,41 @@ impl Wchd {
             engine::resolve::camera(&cameras, &requested).cloned()
         })
         .await
+    }
+
+    /// Resolve `requested` for the two verbs that are about a **take** rather than a camera.
+    ///
+    /// [`Wchd::resolve`] against the machine first, exactly as every other verb does, because
+    /// D1's prefixes are a property of an enumeration and E2 says the enumeration is live. What
+    /// this adds is the one case where the machine has stopped being the authority on the
+    /// question being asked: **a camera that was unplugged during a take**.
+    ///
+    /// That take is a real thing this daemon is holding — a file on disk, a driver that has
+    /// ended or is ending, and a `RecordingEnd::DeviceFailed` waiting to be collected — and
+    /// before note **N173** it was unreachable: `record_stop` and `record_status` answered
+    /// `CameraUnknown`, which D13 defines as *"a name that never resolved — distinct from
+    /// `DeviceGone`, a camera that was there"*. AGENTS rule 7 is the line being crossed there
+    /// (availability converted into "this name means nothing"), and the consequence for the
+    /// unattended consumer is worse than the wording: `CameraUnknown` reads as *your id is
+    /// wrong*, so an agent whose camera was unplugged mid-take retries with a different name
+    /// instead of reading the refusal that is sitting in the registry with its name on it.
+    ///
+    /// So a `CameraUnknown` is turned back into the take's own id **only when this daemon is
+    /// holding something for exactly that id** — `Recordings::holds`, an exact match rather
+    /// than a second resolver, and the id is the one `record_start` answered with. Every other
+    /// refusal from the enumeration travels unchanged: a backend that cannot enumerate at all
+    /// is not a camera that vanished.
+    async fn recording_camera(&self, requested: CameraId) -> schema::Result<CameraId> {
+        match self.resolve(requested.clone()).await {
+            Ok(info) => Ok(info.id),
+            Err(err)
+                if err.kind() == ErrorKind::CameraUnknown
+                    && self.0.recordings.holds(&requested).await =>
+            {
+                Ok(requested)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Resolve `requested`, then run `work` against its open device (D12).
@@ -1091,6 +1173,100 @@ impl Wchd {
     {
         let inner = Arc::clone(&self.0);
         self.on_resolved_camera_queueing(info, how, move |device| work(&inner, device))
+            .await
+    }
+
+    /// `record_start`'s steps three to five, on the task that owns the camera's stream.
+    ///
+    /// Split from the handler for one reason and it is the whole of note **N177**: from
+    /// `Recordings::reserve` to `Recordings::adopt` this call is holding claims that no `Drop`
+    /// can give back — the recording slot, the camera's frames and, after
+    /// `engine::record::start`, the device's own `VIDIOC_STREAMON` — and a future a client can
+    /// cancel must not be the thing holding them.
+    ///
+    /// # Errors
+    ///
+    /// Whatever refused: the request's own predicates one layer up, [`Error::Busy`] from the
+    /// reservation, the destination's `StorageIo`, the device's refusal of the negotiation or
+    /// the header write. The slot and the camera's frames go back on every one of those paths.
+    async fn begin_recording(
+        &self,
+        info: CameraInfo,
+        request: RecordRequest,
+        path: Utf8PathBuf,
+    ) -> schema::Result<RecordStatus> {
+        // 3. The camera's recording slot, taken **before** any device work — so a second
+        //    `record_start` is refused by this daemon with `Busy` (retry) rather than by the
+        //    kernel's `EBUSY` after a file has been opened, and so two starts arriving together
+        //    cannot both reach `VIDIOC_STREAMON`.
+        let reserved = self.0.recordings.reserve(&info).await?;
+        // 4. The destination, resolved from a name to a **descriptor** exactly once — note
+        //    **N51**'s discharge, and the same call `wch_photo` makes: no open on this path can
+        //    wait, and nothing a client does to the name afterwards can redirect these bytes.
+        //    On the blocking pool, because `open(2)` is fast until the path is on a hung mount.
+        let destination = {
+            let opening = path.clone();
+            match self
+                .offload(move |_| open_destination(&opening, "recording"))
+                .await
+            {
+                Ok(file) => file,
+                Err(err) => {
+                    // The slot goes back on every path out of here, or this camera would
+                    // refuse every later `record_start` with `Busy` for the life of the
+                    // process.
+                    self.0.recordings.withdraw(reserved).await;
+                    return Err(err);
+                }
+            }
+        };
+
+        // Now the device work: negotiate, pair the container against what was negotiated, and
+        // write the header — all inside **one** actor command, because a header written in a
+        // second command could arrive after something else had taken the stream. D12's `wait`
+        // flag chooses what a full command queue means, through the one entry point that owns
+        // the bounded pool of threads a waiting request parks (`Waiters`).
+        let now = schema::time::Stamp::now();
+        let clock = self.0.clock.clone();
+        let opening_path = path.clone();
+        let how = enqueueing(request.wait);
+        let begun = self
+            .on_resolved_camera_queueing(info.clone(), how, move |device| {
+                let opened = engine::record::start(&mut *device, &request)?;
+                let mut files = OpenedAheadFile(Some(destination));
+                match engine::record::Recording::begin(
+                    &opened,
+                    &opening_path,
+                    &mut files,
+                    &clock,
+                    now,
+                ) {
+                    Ok(recording) => Ok((opened, recording)),
+                    Err(refused) => {
+                        // Stopped before the refusal travels, for `engine::record::start`'s
+                        // reason: a camera left streaming for a recording that is not going to
+                        // happen is a camera the next `open` finds busy. The stop's own failure
+                        // is discarded because the caller is already holding the error that
+                        // matters.
+                        let _ = engine::record::stop(device);
+                        Err(refused)
+                    }
+                }
+            })
+            .await;
+        let (info, (opened, recording)) = match begun {
+            Ok(started) => started,
+            Err(err) => {
+                self.0.recordings.withdraw(reserved).await;
+                return Err(err);
+            }
+        };
+
+        // The take is real from here: the container's header is on disk, so a caller that
+        // never polls still has a file both of `imaging::avi::read`'s readers can open.
+        self.0
+            .recordings
+            .adopt(reserved, &info, &opened, recording, &path, now)
             .await
     }
 
@@ -1777,7 +1953,17 @@ impl WchRpcServer for Wchd {
         //     Refused *here* rather than in the engine because this is the layer that knows
         //     what a stream is for: `webcam-handler-cli` opens a camera per invocation and can
         //     never reach the case at all.
-        self.0.recordings.not_recording(&info).await?;
+        //
+        //     **This is the cheap half of the interlock and not the interlock** (note
+        //     **N170**). Asked here, it is a check-then-act: the lock is released, the
+        //     destination is opened on the blocking pool, and only then is the command
+        //     enqueued — so a `record_start` that claims the camera inside that window still
+        //     gets its `VIDIOC_STREAMON` in front of this photo. What this refusal buys is the
+        //     ordinary case answered before anything is created: no descriptor, no
+        //     zero-length file where none was, no seat in the camera's queue. The refusal
+        //     that cannot be raced is the same question asked again from inside the actor
+        //     command below, where the queue has already decided the order.
+        self.0.recordings.not_recording(&info.id).await?;
         // 3. The destination, resolved from a name to a **descriptor** exactly once — which
         //    is note **N51**'s discharge: nothing a client does to the path afterwards can
         //    redirect these bytes, and no open on this path can wait. On the blocking pool,
@@ -1801,8 +1987,22 @@ impl WchRpcServer for Wchd {
         };
         let how = enqueueing(request.wait);
         let now = schema::time::Stamp::now();
+        let camera = info.id.clone();
         let (info, taken) = self
             .on_resolved_camera_with_state_queueing(info, how, move |inner, device| {
+                // 4. **And the same question again, where it cannot be raced** (note
+                //    **N170**). `engine::actor` runs one command per camera at a time in
+                //    arrival order, so by the time this line runs the queue has already
+                //    decided whether this photo or a take's `VIDIOC_STREAMON` goes first: a
+                //    take whose stream exists is in the registry, and a take whose stream does
+                //    not exist yet cannot start it until this command returns. Step 2a is the
+                //    same rule asked one layer up, where it costs nothing and creates nothing;
+                //    this is the one that holds.
+                //
+                //    Before the device work rather than after, so a refused photo neither
+                //    suspends the take's stream nor writes a byte to the destination this
+                //    request already opened.
+                inner.recordings.not_recording_on_this_thread(&camera)?;
                 // Two clocks, because they measure different things and conflating them is
                 // how an NTP step becomes a settle failure: `now` is the wall time that
                 // goes in the EXIF, and `inner.clock` is the monotonic one the settle
@@ -1873,80 +2073,65 @@ impl WchRpcServer for Wchd {
         // 2. Which camera. Before the destination is opened rather than after, so a request
         //    naming a camera this host does not have leaves no file where none was.
         let info = self.resolve(camera).await?;
-        // 3. The camera's recording slot, taken **before** any device work — so a second
-        //    `record_start` is refused by this daemon with `Busy` (retry) rather than by the
-        //    kernel's `EBUSY` after a file has been opened, and so two starts arriving together
-        //    cannot both reach `VIDIOC_STREAMON`.
-        let reserved = self.0.recordings.reserve(&info).await?;
-        // 4. The destination, resolved from a name to a **descriptor** exactly once — note
-        //    **N51**'s discharge, and the same call `wch_photo` makes: no open on this path can
-        //    wait, and nothing a client does to the name afterwards can redirect these bytes.
-        //    On the blocking pool, because `open(2)` is fast until the path is on a hung mount.
-        let destination = {
-            let opening = path.clone();
-            match self
-                .offload(move |_| open_destination(&opening, "recording"))
-                .await
-            {
-                Ok(file) => file,
-                Err(err) => {
-                    // The slot goes back on every path out of here, or this camera would
-                    // refuse every later `record_start` with `Busy` for the life of the
-                    // process.
-                    self.0.recordings.withdraw(reserved).await;
-                    return Err(err.into());
+
+        // **And everything device-shaped from here runs on a task nothing outside can cancel**
+        // (note **N177**; note **N169**'s rule, of which this is the third instance). A
+        // jsonrpsee handler future is *dropped* when its client hangs up, and between
+        // `engine::record::start` reaching `VIDIOC_STREAMON` and `Recordings::adopt` installing
+        // a driver there is a stretch in which a drop would leave the camera **streaming with
+        // nobody driving it**: the actor runs the command it was given whatever became of the
+        // caller, and `Opened` is a value with no `Drop` and no owner left. The daemon would
+        // then report that camera free — `Recordings::reap` gives its slot back, correctly, for
+        // a `record_start` that has gone — while the *kernel* refused the next `record_start`
+        // on it, which is verbatim the outcome `Recordings::claim` exists to prevent. It heals
+        // only at `limits::CAMERA_IDLE_CLOSE_MS`.
+        //
+        // So the two halves of the claim — taking the stream and disposing of it — are in one
+        // future, exactly as note N171 put `Previews::hand_over` on a task of its own. The
+        // answer travels back over a `oneshot`, and **a failed `send` is the race-free fact
+        // that nobody is listening**: at that point the take is real, running and nobody's, so
+        // it is stopped and collected here rather than left for the idle sweep.
+        let (answered, answer) = oneshot::channel::<schema::Result<RecordStatus>>();
+        let starting = self.clone();
+        tokio::spawn(async move {
+            let outcome = starting.begin_recording(info, request, path).await;
+            match answered.send(outcome) {
+                Ok(()) => {}
+                Err(Ok(started)) => {
+                    // The client hung up while its take was being negotiated. The file is
+                    // whole and where it was asked for — `Recordings::collect` closes the
+                    // container — and what is discarded is this daemon's copy of the
+                    // accounting, which is the same trade the module header's second bullet
+                    // makes for an uncollected take.
+                    tracing::warn!(
+                        camera = %started.camera,
+                        "a record_start's client went away after its take began; the take was \
+                         stopped and its report discarded, and the file it wrote is still where \
+                         it was asked for"
+                    );
+                    let _ = starting.0.recordings.collect(&started.camera).await;
+                }
+                Err(Err(refused)) => {
+                    // Nothing was taken, so there is nothing to give back — but a refusal that
+                    // reached nobody is still a fact about this daemon (AGENTS rule 3).
+                    tracing::debug!(
+                        error = %refused,
+                        "a record_start was refused after its client had gone"
+                    );
                 }
             }
-        };
-
-        // Now the device work: negotiate, pair the container against what was negotiated, and
-        // write the header — all inside **one** actor command, because a header written in a
-        // second command could arrive after something else had taken the stream. D12's `wait`
-        // flag chooses what a full command queue means, through the one entry point that owns
-        // the bounded pool of threads a waiting request parks (`Waiters`).
-        let now = schema::time::Stamp::now();
-        let clock = self.0.clock.clone();
-        let opening_path = path.clone();
-        let how = enqueueing(request.wait);
-        let begun = self
-            .on_resolved_camera_queueing(info.clone(), how, move |device| {
-                let opened = engine::record::start(&mut *device, &request)?;
-                let mut files = OpenedAheadFile(Some(destination));
-                match engine::record::Recording::begin(
-                    &opened,
-                    &opening_path,
-                    &mut files,
-                    &clock,
-                    now,
-                ) {
-                    Ok(recording) => Ok((opened, recording)),
-                    Err(refused) => {
-                        // Stopped before the refusal travels, for `engine::record::start`'s
-                        // reason: a camera left streaming for a recording that is not going to
-                        // happen is a camera the next `open` finds busy. The stop's own failure
-                        // is discarded because the caller is already holding the error that
-                        // matters.
-                        let _ = engine::record::stop(device);
-                        Err(refused)
-                    }
-                }
-            })
-            .await;
-        let (info, (opened, recording)) = match begun {
-            Ok(started) => started,
-            Err(err) => {
-                self.0.recordings.withdraw(reserved).await;
-                return Err(err.into());
+        });
+        match answer.await {
+            Ok(outcome) => Ok(outcome?),
+            // The task above panicked, which is this process failing to compose itself — the
+            // variant `Recordings::reserve` already uses for its own spawned half.
+            Err(_) => Err(Error::DeviceIo {
+                operation: "start a recording".to_owned(),
+                errno: None,
+                message: "the task driving this record_start did not finish".to_owned(),
             }
-        };
-
-        // The take is real from here: the container's header is on disk, so a caller that
-        // never polls still has a file both of `imaging::avi::read`'s readers can open.
-        Ok(self
-            .0
-            .recordings
-            .adopt(reserved, &info, &opened, recording, &path, now)
-            .await?)
+            .into()),
+        }
     }
 
     async fn record_status(&self, camera: CameraId) -> Result<RecordStatus, WireError> {
@@ -1959,8 +2144,8 @@ impl WchRpcServer for Wchd {
         // that is E2 rather than an oversight: a camera id is resolved against the machine
         // every time, so a status asked about an id that has stopped resolving is answered
         // about the machine as it is now rather than out of a map that remembers it.
-        let info = self.resolve(camera).await?;
-        Ok(self.0.recordings.status(&info.id).await)
+        let camera = self.recording_camera(camera).await?;
+        Ok(self.0.recordings.status(&camera).await)
     }
 
     async fn record_stop(&self, camera: CameraId) -> Result<RecordReport, WireError> {
@@ -1969,8 +2154,8 @@ impl WchRpcServer for Wchd {
         // stop is a flag it reads between turns, so a stop does not queue behind the recording
         // it is ending — which is the whole reason a recording is a chain of turns (note
         // **N111**).
-        let info = self.resolve(camera).await?;
-        Ok(self.0.recordings.collect(&info).await?)
+        let camera = self.recording_camera(camera).await?;
+        Ok(self.0.recordings.collect(&camera).await?)
     }
 
     // ------------------------------------------------------------ the most dangerous verb
@@ -3234,5 +3419,610 @@ mod tests {
         driver
             .await
             .expect("the idle-sweep driver ended without panicking");
+    }
+
+    #[tokio::test]
+    async fn a_sweep_that_panicked_is_said_out_loud_and_the_next_one_still_closes_a_camera() {
+        // Note **N174**, second half. The driver folded every `JoinError` into `break`, so a
+        // pass that *panicked* ended D12's idle close for the life of the process — and said
+        // nothing, which is the outcome rubric rule 3 exists to forbid: every camera this
+        // daemon ever opened stays open, and the operator's other application is refused a
+        // device with no line anywhere saying why.
+        //
+        // Both halves are asserted and neither implies the other: it is reported, and the
+        // driver **carries on** — the second pass closes the idle camera, which is the
+        // observable that could not exist in a build that broke out of the loop.
+        //
+        // **Nothing here is timed and nothing is polled.** What the test waits on is a
+        // message the pass itself sends once it has swept, so a build that broke out of the
+        // loop drops that sender and the wait ends in a named failure rather than in a hang.
+        // The cadence is the subject's own timer rather than this test's synchronisation,
+        // which is why it runs on the real clock: a paused one cannot advance itself while a
+        // pass is on the blocking pool, and advancing it by hand would be this test choosing
+        // the instant the thing under test is supposed to choose.
+        const CADENCE_MS: Millis = 1;
+        let (backend, closes, _temp, wchd) = announcing_daemon(0);
+        let camera = only_camera(&backend);
+        wchd.info(camera.clone()).await.expect("the fake opens");
+        // Note N45's grace, spent here rather than by a pass, so that the pass after the
+        // panicking one is the pass that closes.
+        assert_eq!(wchd.sweep_idle_cameras(), Vec::new());
+
+        let (ran, mut passes) = tokio::sync::mpsc::unbounded_channel();
+        let (announced, logged) = crate::logging::captured(async {
+            let driver = wchd.spawn_sweeps_every(CADENCE_MS, {
+                let sweeper = wchd.clone();
+                let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                move || {
+                    if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        panic!("a pass that met something it could not handle");
+                    }
+                    let closed = sweeper.sweep_idle_cameras();
+                    // The failing send is a test that has stopped listening, which is not
+                    // this pass's business.
+                    let _ = ran.send(());
+                    closed
+                }
+            });
+            // The sender lives in the driver's own closure, so a build that broke out of the
+            // loop ends this wait with `None` instead of leaving it to nextest's deadline.
+            // Nothing waits for the close on that path, because there will not be one.
+            let survived = passes.recv().await;
+            let closed = match survived {
+                Some(()) => tokio::task::spawn_blocking(move || closes.recv())
+                    .await
+                    .expect("the blocking pool is alive")
+                    .ok(),
+                None => None,
+            };
+            driver.abort();
+            (survived, closed)
+        })
+        .await;
+
+        let (survived, closed) = announced;
+        assert!(
+            survived.is_some(),
+            "the driver ran no pass after one panicked: {logged:?}"
+        );
+        assert_eq!(
+            closed.expect("a later pass closed the idle camera"),
+            camera,
+            "the driver stopped closing cameras after a pass panicked"
+        );
+        assert!(
+            logged.contains("ERROR") && logged.contains("panicked"),
+            "a panicking sweep disabled D12's idle close in silence: {logged:?}"
+        );
+    }
+
+    // ------------------------------------------------- the photo/recording interlock (N170)
+
+    /// A photo that settles immediately, into `path`.
+    ///
+    /// `SkipFrames { frames: 0 }` because nothing below is about settling: the subject is
+    /// *when* the refusal is decided, and a policy that waited for frames would put the
+    /// device work this test is ordering against behind a second one.
+    fn a_photo(path: &camino::Utf8Path) -> PhotoRequest {
+        PhotoRequest {
+            stream: schema::capture::StreamRequest::default(),
+            settle: schema::capture::SettlePolicy {
+                spec: schema::capture::SettleSpec::SkipFrames { frames: 0 },
+                deadline_ms: 5_000,
+            },
+            transform: schema::capture::Transform::None,
+            sink: Sink::ServerPath {
+                path: path.to_owned(),
+            },
+            wait: false,
+        }
+    }
+
+    /// A take of `duration_ms` into `path`.
+    fn a_recording(path: &camino::Utf8Path, duration_ms: u64) -> RecordRequest {
+        RecordRequest {
+            stream: schema::capture::StreamRequest::default(),
+            duration_ms: Some(duration_ms),
+            sink: Sink::ServerPath {
+                path: path.to_owned(),
+            },
+            wait: false,
+        }
+    }
+
+    /// Advance `future` by one poll, and answer what it said.
+    ///
+    /// The whole of how the test below constructs an interleaving instead of racing for one: a
+    /// future that is not polled cannot advance, so "this request is parked between these two
+    /// of its steps" becomes a statement the test makes rather than one it hopes for. Nothing
+    /// here is timed.
+    async fn one_poll<F: std::future::Future>(
+        future: &mut std::pin::Pin<Box<F>>,
+    ) -> std::task::Poll<F::Output> {
+        std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx))).await
+    }
+
+    /// Wait until **everything already handed to the blocking pool has finished**.
+    ///
+    /// The fence the test below is built on, and it works because that test's runtime is built
+    /// with `max_blocking_threads(1)`: one thread taking queued closures in turn means a
+    /// closure submitted now runs after every closure submitted before it, so awaiting an empty
+    /// one is a barrier for the pool. It is not a sleep and not a duration — it ends when the
+    /// pool reaches it.
+    async fn pool_caught_up() {
+        tokio::task::spawn_blocking(|| ())
+            .await
+            .expect("the blocking pool is alive");
+    }
+
+    #[test]
+    fn a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera() {
+        // **Note N118's interlock, at the window note N170 found in it.** `wch_photo` asks
+        // `Recordings::not_recording`, releases the registry lock, opens its destination on
+        // the blocking pool and *then* enqueues its actor command — so a `record_start` that
+        // claims the camera inside that window gets its `VIDIOC_STREAMON` in front of the
+        // photo, and the photo's suspend/resume then stops **the take's** stream. The frames
+        // in that gap are frames the take never gets, and D7's close-time rewrite spreads the
+        // gap over the whole file as a slower mean interval: the one path in this build that
+        // could corrupt a recording's measurement with nothing going red.
+        //
+        // The window is **constructed** rather than raced (docs/11 §4.10 raced for it twice and
+        // missed), and **the construction is the runtime** (note **N178**). One poll of
+        // `wch_photo` can cross both ends of the window — there is no `await` between the
+        // blocking open resolving and `CameraActor::submit` — so a test that asked "does the
+        // destination exist?" and then polled could be preempted between the two and poll a
+        // future that was ready to run straight past it. That is not hypothetical: it failed
+        // twice in ten workspace runs on a loaded host, saying the interlock had let a photo
+        // through when what had happened was that the test never built the window.
+        //
+        // So the pool is given **one thread**, and every poll is followed by a fence. After
+        // each fence, everything this photo handed the pool has finished and nothing is in
+        // flight; the destination's existence is then read with no race under it, and the poll
+        // that would submit the actor command is the one this test declines to make.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("this host can start a tokio runtime");
+        runtime.block_on(the_photo_interlock());
+    }
+
+    async fn the_photo_interlock() {
+        let (backend, _temp, wchd) = daemon(limits::CAMERA_IDLE_CLOSE_MS);
+        let camera = only_camera(&backend);
+        let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+        let photo = scratch.base().join("during-a-take.jpg");
+        let take = scratch.base().join("take.avi");
+
+        let mut photographing = Box::pin(wchd.photo(camera.clone(), a_photo(&photo)));
+        // Bounded by a count of *its own polls*, which is exact here for the reason note N178
+        // gives: with the fence below, one poll is one step of this request and the number of
+        // steps is a property of `wch_photo` rather than of the host. It takes three.
+        let mut steps = 0;
+        while !photo.exists() {
+            assert!(
+                one_poll(&mut photographing).await.is_pending(),
+                "the photo answered before a take could start, so this test constructed \
+                 no window"
+            );
+            pool_caught_up().await;
+            steps += 1;
+            assert!(steps < 64, "the photo never opened its destination");
+        }
+        // The window, and it is now a fact rather than a hope: the destination exists, so the
+        // open has run; the photo has not been polled since, so it has submitted nothing; and
+        // the pool is idle, so nothing is about to change either.
+        assert_eq!(
+            backend.streams_started(),
+            0,
+            "the photo's command reached the camera before this test could start a take, so the \
+             window it constructs was missed"
+        );
+
+        // Inside the window: the check has passed and nothing has been enqueued.
+        let started = wchd
+            .record_start(camera.clone(), a_recording(&take, 60_000))
+            .await
+            .expect("a camera with no take on it");
+        assert!(started.is_running(), "{started:?}");
+
+        let refused = photographing
+            .await
+            .expect_err("a photo whose command lands during a take");
+        assert_eq!(
+            refused.0.kind(),
+            ErrorKind::Busy,
+            "the photo went ahead on a camera that was recording: {refused:?}"
+        );
+        // And the take is untouched, which is the half that says *why* the refusal matters:
+        // nothing suspended its stream and nothing started a second one.
+        assert_eq!(
+            *wchd.watch_preview_interruptions().borrow(),
+            0,
+            "the refused photo suspended the take's stream anyway"
+        );
+        assert_eq!(
+            backend.streams_started(),
+            1,
+            "the refused photo started a stream of its own"
+        );
+
+        // The other direction, so the refusal above is about a running take rather than about
+        // photos: with the take collected, the same request answers a photograph.
+        wchd.record_stop(camera.clone())
+            .await
+            .expect("the take this test started");
+        wchd.photo(camera, a_photo(&photo))
+            .await
+            .expect("a camera whose take has been collected takes photographs");
+    }
+
+    // -------------------------------------------------- a client that hung up mid-start (N177)
+
+    /// What one gated `VIDIOC_STREAMON` is waiting on, and what says it has begun.
+    ///
+    /// **Not a sleep and not a duration** — `tests/support/gated.rs` states the argument for the
+    /// identical shape one directory along: the announcement on the way *in* is what turns "the
+    /// device is inside `start_stream`" from a guess about scheduling into an observation, and
+    /// the hold ends when another thread hands over a token.
+    #[derive(Debug)]
+    struct StreamGate {
+        /// Only the **first** stream is held. A decorator that gated every one would hold the
+        /// take this test starts *afterwards*, which is the half that proves the camera came
+        /// back.
+        armed: std::sync::atomic::AtomicBool,
+        entered: std::sync::mpsc::SyncSender<()>,
+        /// One token lets the held stream through. Buffered, so the test's send does not
+        /// itself wait for the device.
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        /// Every `STREAMOFF`, announced. This is the *device's* answer to "was this camera left
+        /// streaming", which is the question — a daemon that has forgotten the take would
+        /// answer it about itself.
+        stopped: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    }
+
+    /// The fake, held inside its first `VIDIOC_STREAMON`.
+    #[derive(Debug)]
+    struct Halting {
+        inner: Arc<FakeBackend>,
+        gate: Arc<StreamGate>,
+    }
+
+    /// One open camera, forwarding everything and asking the gate before it streams.
+    #[derive(Debug)]
+    struct Held {
+        camera: Box<dyn schema::backend::Camera>,
+        gate: Arc<StreamGate>,
+    }
+
+    impl CameraBackend for Halting {
+        fn kind(&self) -> schema::backend::BackendKind {
+            self.inner.kind()
+        }
+
+        fn enumerate(&self) -> schema::Result<Vec<CameraInfo>> {
+            self.inner.enumerate()
+        }
+
+        fn open(&self, id: &CameraId) -> schema::Result<Box<dyn schema::backend::Camera>> {
+            Ok(Box::new(Held {
+                camera: self.inner.open(id)?,
+                gate: Arc::clone(&self.gate),
+            }))
+        }
+
+        fn watch(&self) -> schema::Result<Box<dyn schema::backend::HotplugWatch>> {
+            self.inner.watch()
+        }
+
+        fn diagnose(&self) -> Vec<schema::report::ListHint> {
+            self.inner.diagnose()
+        }
+    }
+
+    impl schema::backend::Camera for Held {
+        fn info(&self) -> &CameraInfo {
+            self.camera.info()
+        }
+
+        fn formats(&self) -> schema::Result<Vec<schema::camera::FormatInfo>> {
+            self.camera.formats()
+        }
+
+        fn controls(&self) -> schema::Result<Vec<ControlDesc>> {
+            self.camera.controls()
+        }
+
+        fn get(
+            &mut self,
+            id: schema::control::ControlId,
+        ) -> schema::Result<schema::control::ControlValue> {
+            self.camera.get(id)
+        }
+
+        fn set(
+            &mut self,
+            id: schema::control::ControlId,
+            value: schema::control::ControlValue,
+        ) -> schema::Result<schema::control::Applied> {
+            self.camera.set(id, value)
+        }
+
+        fn start_stream(
+            &mut self,
+            request: &schema::capture::StreamRequest,
+        ) -> schema::Result<schema::capture::NegotiatedStream> {
+            if self
+                .gate
+                .armed
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                // Announce first, then wait: the test's next line depends on this camera being
+                // *inside* the call it is about to reason about.
+                let _ = self.gate.entered.send(());
+                let _ = lock(&self.gate.release).recv();
+            }
+            self.camera.start_stream(request)
+        }
+
+        fn streaming(&self) -> Option<schema::capture::NegotiatedStream> {
+            self.camera.streaming()
+        }
+
+        fn next_frame(
+            &mut self,
+            deadline: std::time::Instant,
+        ) -> schema::Result<schema::capture::Frame> {
+            self.camera.next_frame(deadline)
+        }
+
+        fn stop_stream(&mut self) -> schema::Result<()> {
+            let outcome = self.camera.stop_stream();
+            // After the device, so a test told "the stream stopped" is told it about the
+            // fake's own state and not about this decorator's intent.
+            let _ = lock(&self.gate.stopped).send(());
+            outcome
+        }
+    }
+
+    /// The two announcements and the one token, handed to a test as values.
+    struct Gated {
+        entered: std::sync::mpsc::Receiver<()>,
+        release: std::sync::mpsc::SyncSender<()>,
+        stopped: std::sync::mpsc::Receiver<()>,
+    }
+
+    /// A daemon whose first `VIDIOC_STREAMON` waits for this test.
+    fn halting_daemon() -> (Arc<FakeBackend>, Gated, TempStore, Wchd) {
+        let inner = Arc::new(
+            FakeBackend::from_profile(testkit::fixtures::synthetic_basic())
+                .expect("the synthetic profile is this build's version"),
+        );
+        // Buffered by one: an actor is one thread and can only be inside one `start_stream`.
+        let (entered, entries) = std::sync::mpsc::sync_channel(1);
+        let (release, releases) = std::sync::mpsc::sync_channel(1);
+        let (stopped, stops) = std::sync::mpsc::channel();
+        let backend = Arc::new(Halting {
+            inner: Arc::clone(&inner),
+            gate: Arc::new(StreamGate {
+                armed: std::sync::atomic::AtomicBool::new(true),
+                entered,
+                release: std::sync::Mutex::new(releases),
+                stopped: std::sync::Mutex::new(stopped),
+            }),
+        });
+        let temp = TempStore::new().expect("a state directory");
+        let wchd = Wchd::with_idle_timeout(
+            backend as Arc<dyn CameraBackend>,
+            SessionStore::new(temp.root()),
+            lifetime_lock(&temp),
+            crate::shutdown::Shutdown::new(),
+            limits::CAMERA_IDLE_CLOSE_MS,
+        );
+        (
+            inner,
+            Gated {
+                entered: entries,
+                release,
+                stopped: stops,
+            },
+            temp,
+            wchd,
+        )
+    }
+
+    /// Wait for one announcement from a gated backend, off the runtime's own threads.
+    ///
+    /// A blocking `recv` on the blocking pool rather than a loop that yields: what is being
+    /// waited for is an OS thread's progress, and a task that spun for it would burn a core
+    /// for as long as the wait lasted — which on a build with the repair missing is until
+    /// nextest's deadline.
+    async fn announced(waiting: std::sync::mpsc::Receiver<()>) {
+        tokio::task::spawn_blocking(move || {
+            waiting
+                .recv()
+                .expect("the gated backend outlives every announcement this test waits for");
+        })
+        .await
+        .expect("the blocking pool is alive");
+    }
+
+    #[tokio::test]
+    async fn a_record_start_whose_client_hung_up_leaves_no_camera_streaming() {
+        // **Note N177.** A jsonrpsee handler future is *dropped* when its client hangs up, and
+        // `record_start` holds three claims across its device work: the recording slot, the
+        // camera's frames, and — from `engine::record::start` onwards — the device's own
+        // `VIDIOC_STREAMON`. Note N171 gave the first two back with a witness the registry can
+        // test. The third has no witness and no `Drop`: the actor runs the command it was given
+        // whatever became of the caller, so a build that let the handler own that stretch left
+        // the camera **streaming with nobody driving it** — while the daemon, correctly reaping
+        // a reservation whose `record_start` had gone, reported that camera free. The next
+        // `record_start` was then refused by the *kernel*, which is verbatim what
+        // `Recordings::claim` exists to prevent.
+        //
+        // The window is **held open** rather than raced for: the backend announces from inside
+        // `start_stream` and waits there, so "the client hung up after the device streamed on"
+        // is a state this test puts the daemon in. What it then waits for is the device's own
+        // `STREAMOFF` — a build with no repair never issues one, and nothing here spins while
+        // that wait lasts.
+        let (backend, gated, _temp, wchd) = halting_daemon();
+        let camera = only_camera(&backend);
+        let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+        let abandoned = scratch.base().join("hung-up.avi");
+        let after = scratch.base().join("after.avi");
+        let mut finished = wchd.0.recordings.watch_finished();
+
+        let starting = tokio::spawn({
+            let wchd = wchd.clone();
+            let camera = camera.clone();
+            let request = a_recording(&abandoned, 60_000);
+            async move { wchd.record_start(camera, request).await }
+        });
+        announced(gated.entered).await;
+
+        // The client hangs up. An abort is a *request* and the join is the fact (note N174's
+        // words), so both are here.
+        starting.abort();
+        assert!(
+            starting.await.is_err(),
+            "the record_start future answered instead of being dropped, so this test cancelled \
+             nothing"
+        );
+        gated
+            .release
+            .send(())
+            .expect("the gated backend is still there");
+
+        // **The property**, asked of the device rather than of the daemon.
+        announced(gated.stopped).await;
+
+        // The `STREAMOFF` is the first half of the driver's way out; the take is put down after
+        // it, and that is what the slot's own count says. Awaited rather than polled, so the
+        // assertion below is about the camera and not about this test's timing.
+        finished
+            .wait_for(|ended| *ended == 1)
+            .await
+            .expect("the registry outlives its own counter");
+
+        // And the consumer-visible half: the camera takes a new recording, answered by this
+        // daemon rather than refused by the kernel with an `EBUSY` about a stream nobody owns.
+        let again = wchd
+            .record_start(camera.clone(), a_recording(&after, 60_000))
+            .await
+            .expect("a camera whose abandoned take was stopped");
+        assert!(again.is_running(), "{again:?}");
+        assert_eq!(
+            backend.streams_started(),
+            2,
+            "the second take did not reach the device, so its success says nothing"
+        );
+        wchd.record_stop(camera)
+            .await
+            .expect("the take this test started");
+    }
+
+    /// The fake, with the one thing a replayed profile cannot do: go away.
+    ///
+    /// A decorator rather than a fault, for `Announcing`'s reason: what it models is the
+    /// *host*, not the device. An enumeration that stops listing a camera is what an unplug
+    /// looks like to `engine::resolve`, and an already-open descriptor outliving it is what
+    /// an unplug looks like to a take that is running — the two halves that make a take
+    /// uncollectable through a verb that resolves first (note **N173**).
+    #[derive(Debug)]
+    struct Vanishing {
+        inner: Arc<FakeBackend>,
+        gone: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CameraBackend for Vanishing {
+        fn kind(&self) -> schema::backend::BackendKind {
+            self.inner.kind()
+        }
+
+        fn enumerate(&self) -> schema::Result<Vec<CameraInfo>> {
+            if self.gone.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(Vec::new());
+            }
+            self.inner.enumerate()
+        }
+
+        fn open(&self, id: &CameraId) -> schema::Result<Box<dyn schema::backend::Camera>> {
+            self.inner.open(id)
+        }
+
+        fn watch(&self) -> schema::Result<Box<dyn schema::backend::HotplugWatch>> {
+            self.inner.watch()
+        }
+
+        fn diagnose(&self) -> Vec<schema::report::ListHint> {
+            self.inner.diagnose()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_take_whose_camera_was_unplugged_is_still_collected_by_the_name_it_started_with() {
+        // Note **N173**. `record_stop` and `record_status` resolve against a live enumeration
+        // first, so a camera unplugged mid-take made both of them answer `CameraUnknown` —
+        // which D13 defines as *"a name that never resolved — distinct from `DeviceGone`, a
+        // camera that was there"*. The take is still here: a file on disk, a driver ending,
+        // and an ending waiting to be handed over. An unattended agent told `CameraUnknown`
+        // reads it as *your id is wrong* and retries with another name; what it needs is the
+        // refusal sitting in the registry with its own name on it (AGENTS rule 7).
+        let inner = Arc::new(
+            FakeBackend::from_profile(testkit::fixtures::synthetic_basic())
+                .expect("the synthetic profile is this build's version"),
+        );
+        let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let temp = TempStore::new().expect("a state directory");
+        let wchd = Wchd::new(
+            Arc::new(Vanishing {
+                inner: Arc::clone(&inner),
+                gone: Arc::clone(&gone),
+            }) as Arc<dyn CameraBackend>,
+            SessionStore::new(temp.root()),
+            lifetime_lock(&temp),
+            crate::shutdown::Shutdown::new(),
+        );
+        let camera = only_camera(&inner);
+        let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
+        let path = scratch.base().join("unplugged.avi");
+
+        wchd.record_start(camera.clone(), a_recording(&path, 60_000))
+            .await
+            .expect("a camera with no take on it");
+
+        gone.store(true, std::sync::atomic::Ordering::Release);
+
+        let status = wchd
+            .record_status(camera.clone())
+            .await
+            .expect("a take on a camera that has been unplugged is still a take");
+        assert!(
+            status.take.is_some(),
+            "the take stopped being reported the moment its camera stopped enumerating"
+        );
+        let report = wchd
+            .record_stop(camera.clone())
+            .await
+            .expect("the take this test started");
+        assert_eq!(report.path, path);
+
+        // And the other direction, which is what keeps this from being "record_stop stopped
+        // resolving": with the take collected, this daemon holds nothing for that name, and a
+        // name that names nothing is `CameraUnknown` exactly as D13 says.
+        let refused = wchd
+            .record_status(camera.clone())
+            .await
+            .expect_err("this daemon holds nothing for that name any more");
+        assert_eq!(refused.0.kind(), ErrorKind::CameraUnknown);
+        let never = CameraId::parse("cam:nothing-here").expect("a literal id");
+        assert_eq!(
+            wchd.record_stop(never)
+                .await
+                .expect_err("a name this host never had")
+                .0
+                .kind(),
+            ErrorKind::CameraUnknown
+        );
     }
 }

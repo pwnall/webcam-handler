@@ -73,11 +73,15 @@
 //! the write cannot complete and the connection never finishes; `axum::serve`'s graceful
 //! shutdown then waits for a browser to be scrolled back into view. So the second thing is a
 //! **bound on the join** — [`Serving::stopped`], [`limits::WEB_LISTENER_STOP_MS`] — after which
-//! the listener task is aborted and the daemon says so at `warn`. That is AGENTS' own rule for
-//! this case ("open streams are cancelled, never awaited, on shutdown") rather than a
+//! the listener task is aborted, **the connections it was serving are shut down by name**, and
+//! the daemon says so at `warn`. The middle clause is note **N175**'s addition and it is not a
+//! detail: `axum::serve` spawns a task per accepted connection, so aborting the accept loop
+//! ends the *waiting* and leaves the stalled connection holding its socket. That is AGENTS' own
+//! rule for this case ("open streams are cancelled, never awaited, on shutdown") rather than a
 //! concession to it. `crates/daemon/tests/preview.rs` drives the hard version — a tab that has
-//! provably stopped reading, with the writer parked in a send — and asserts the stop inside
-//! `limits::DAEMON_SHUTDOWN_DRAIN_MS`, so both halves are a bound rather than a paragraph.
+//! provably stopped reading, with the writer parked in a send — and asserts both halves: the
+//! stop inside `limits::DAEMON_SHUTDOWN_DRAIN_MS`, and this daemon holding none of that tab's
+//! sockets afterwards, from a reader that never reads again.
 //!
 //! **A WebSocket is not that response, and that is worth being explicit about**, because it
 //! looks like one. An upgraded connection stops belonging to axum the instant hyper hands the
@@ -202,9 +206,12 @@
 //! `?token=` on the WebSocket (note **N74**'s rule, unchanged) and the same parameter on the
 //! preview's `<img src>`.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::os::fd::AsFd;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -345,6 +352,12 @@ pub struct Serving {
     /// fires is an ordering rather than a detail: see [`super::rpc`]'s header.
     ending: ServerHandle,
     serving: tokio::task::JoinHandle<()>,
+    /// Every connection this listener has admitted and not yet lost.
+    ///
+    /// Held here because [`Serving::stopped`]'s bound needs something to *act on*: aborting
+    /// the server task ends the accept loop and nothing else, since `axum::serve` spawns an
+    /// independent task per connection (note **N175**).
+    sockets: Sockets,
 }
 
 impl Serving {
@@ -435,11 +448,28 @@ impl Serving {
     /// to **write**, and a client with a full socket cannot be written to. Without a bound
     /// here, `webcam-handler-daemon` stops when somebody scrolls a browser tab back into view.
     ///
-    /// So on expiry the listener task is **aborted** — its sockets close with it, which is what
-    /// unblocks nothing and ends everything — and the daemon says so at `warn`, naming the
-    /// bound and what was still in flight (AGENTS rule 3: a bounded wait that expires is never
-    /// a silence). That is the rule AGENTS states for exactly this case: open streams are
-    /// "cancelled, never awaited, on shutdown".
+    /// So on expiry the listener task is **aborted** and the daemon says so at `warn`, naming
+    /// the bound (AGENTS rule 3: a bounded wait that expires is never a silence). That is the
+    /// rule AGENTS states for exactly this case: open streams are "cancelled, never awaited,
+    /// on shutdown".
+    ///
+    /// ## What the abort reaches, and the half it does not (note **N175**)
+    ///
+    /// This paragraph used to say that the aborted task's "sockets close with it". They do
+    /// not. `axum::serve` accepts in one task and **spawns a task per connection**, moving the
+    /// socket into it, so aborting the value this type holds ends the accept loop and the
+    /// graceful-shutdown wait — and leaves the stalled connection exactly where it was, parked
+    /// in a write, holding its descriptor. In the shipped daemon the process exits a moment
+    /// later and the kernel closes it, which is why the claim went unnoticed; what it costs is
+    /// that "the listener stopped" and "the listener let go of the camera's viewers" were the
+    /// same sentence and only one of them was true.
+    ///
+    /// So the connections are closed **here**, by name: `Bounded` keeps every socket it
+    /// admits, and `Sockets::close_all` shuts each one down for reading and writing. A
+    /// client that stopped reading is not written to — it is *ended*, which is the only thing
+    /// left that both unblocks hyper's final write and gives the descriptor back. The two
+    /// halves are a pair: the abort ends the task, and this ends what the task could not
+    /// reach.
     ///
     /// It answers `Ok` on expiry, deliberately. A stop that abandoned a stalled browser is a
     /// stop that worked; reporting it as a failure would reach `main`'s exit code and ask a
@@ -456,8 +486,8 @@ impl Serving {
         let _ = self.ending.stop();
         let bound = Duration::from_millis(limits::WEB_LISTENER_STOP_MS);
         // Taken before the join, because `timeout` consumes the handle and a dropped
-        // `JoinHandle` *detaches* a task rather than ending it — which would leave the
-        // connection this bound exists to abandon still holding its socket.
+        // `JoinHandle` *detaches* a task rather than ending it — which would leave the accept
+        // loop this bound exists to abandon still running.
         let abandon = self.serving.abort_handle();
         match tokio::time::timeout(bound, self.serving).await {
             Ok(joined) => joined.map_err(|err| Error::DeviceIo {
@@ -467,14 +497,29 @@ impl Serving {
             }),
             Err(_) => {
                 abandon.abort();
+                let ended = self.sockets.close_all();
                 tracing::warn!(
                     bound_ms = limits::WEB_LISTENER_STOP_MS,
+                    connections = ended,
                     "the web listener still had a response in flight and was ended; \
-                     a client that stopped reading cannot be written to"
+                     a client that stopped reading cannot be written to, so its connection \
+                     was closed"
                 );
                 Ok(())
             }
         }
+    }
+
+    /// How many connections this listener is holding, as something to **await**.
+    ///
+    /// The count `Bounded`'s permits enforce, in the one shape a test can wait on — the pair
+    /// `crate::server::Waiters` and `crate::preview::Previews` both make, and here for note
+    /// **N175**'s claim: after a bounded stop gave up, this daemon holds none of the sockets it
+    /// was serving on. A test that read a counter would be a test that could pass by asking
+    /// early.
+    #[must_use]
+    pub fn connections(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.sockets.watch()
     }
 }
 
@@ -521,8 +566,10 @@ pub fn serve(
     let ending = wire.ending.clone();
     let router = router(posture, token.clone(), wire.route, preview::mount(previews))?;
 
+    let sockets = Sockets::new();
+    let admitting = Bounded::over(listener, sockets.clone());
     let serving = tokio::spawn(async move {
-        let served = axum::serve(Bounded::over(listener), router)
+        let served = axum::serve(admitting, router)
             .with_graceful_shutdown(async move { shutdown.cancelled().await })
             .await;
         if let Err(err) = served {
@@ -543,6 +590,7 @@ pub fn serve(
         token,
         ending,
         serving,
+        sockets,
     })
 }
 
@@ -615,11 +663,13 @@ struct Bounded {
     /// produces a permit with no lifetime, which is the only kind that can ride on a socket
     /// hyper owns.
     connections: Arc<Semaphore>,
+    /// The same connections, as sockets this daemon can still act on. See [`Sockets`].
+    sockets: Sockets,
 }
 
 impl Bounded {
     /// `listener`, with this project's number of permits in front of it.
-    fn over(listener: TcpListener) -> Bounded {
+    fn over(listener: TcpListener, sockets: Sockets) -> Bounded {
         Bounded {
             listener,
             // `unwrap_or` rather than `expect`: the constant is a `u32` and this is a `usize`
@@ -630,7 +680,141 @@ impl Bounded {
             connections: Arc::new(Semaphore::new(
                 usize::try_from(limits::DAEMON_MAX_CONNECTIONS).unwrap_or(usize::MAX),
             )),
+            sockets,
         }
+    }
+}
+
+/// Every connection this listener has admitted and has not yet lost.
+///
+/// **It exists because an abort cannot reach them** (note **N175**). `axum::serve` spawns a
+/// task per accepted connection and moves the socket into it, so the one handle
+/// [`Serving`] holds — the accept loop's — is not a handle on anything a stalled response is
+/// using. Without this, [`Serving::stopped`]'s bound ends the *waiting* and leaves the
+/// connection it was waiting for exactly as it was.
+///
+/// Cheap to clone (an `Arc` bump), and the clone in every [`Admitted`] is what keeps the map
+/// honest: a connection removes itself when its socket is dropped, which is the ordinary end,
+/// the graceful one, and the aborted one alike. That is the same reason the permit rides on
+/// the socket rather than on a task's tail.
+///
+/// Nothing here reads or holds a byte of what a connection carries — a frame may contain a
+/// person (AGENTS), and what this map holds is a descriptor and a number.
+#[derive(Debug, Clone)]
+struct Sockets(Arc<Open>);
+
+/// [`Sockets`]' shared state. One of each, never two.
+#[derive(Debug)]
+struct Open {
+    /// A **duplicate descriptor** for each live connection, by the id its [`Admitted`]
+    /// carries.
+    ///
+    /// A `dup(2)` and not a share of the stream, because tokio implements `AsyncRead` only
+    /// for an owned `TcpStream` and hyper needs that ownership. What a duplicate buys is
+    /// exactly what is needed and nothing more: `shutdown(2)` acts on the **socket**, which
+    /// both descriptors name, and holding one of them is what makes the *number* safe to use —
+    /// a bare `RawFd` remembered from an accept can be closed and handed to the next `open`,
+    /// and shutting that down would be this daemon reaching into an unrelated file.
+    ///
+    /// A `std::sync::Mutex` and not tokio's, because every operation under it is a `BTreeMap`
+    /// insert or removal and one of them runs in a `Drop`, which cannot `await`.
+    live: std::sync::Mutex<BTreeMap<u64, std::os::fd::OwnedFd>>,
+    /// The next id. Ids and not addresses, because two connections from one peer are two
+    /// connections, and a socket that ended and one that arrived can share an address.
+    next: AtomicU64,
+    /// How many are live, as something to **await** ([`Serving::connections`]).
+    count: tokio::sync::watch::Sender<usize>,
+}
+
+impl Sockets {
+    fn new() -> Sockets {
+        Sockets(Arc::new(Open {
+            live: std::sync::Mutex::new(BTreeMap::new()),
+            next: AtomicU64::new(0),
+            count: tokio::sync::watch::Sender::new(0),
+        }))
+    }
+
+    /// Remember `stream`, and answer the id that will forget it again.
+    ///
+    /// A descriptor this daemon cannot duplicate is one this daemon cannot end, and the honest
+    /// answer to that is to serve the connection anyway: `EMFILE` here is a process near its
+    /// limit, and refusing a request over it would turn a bounded stop into a refused client.
+    /// It is counted in neither direction and says so at `debug`, because the one consequence
+    /// is that a stop which gave up leaves this connection to the process's exit — which is
+    /// where every connection was before note **N175**.
+    fn remember(&self, stream: &TcpStream) -> Option<u64> {
+        let duplicate = match stream.as_fd().try_clone_to_owned() {
+            Ok(duplicate) => duplicate,
+            Err(err) => {
+                tracing::debug!(
+                    error = %err,
+                    "this connection's descriptor could not be duplicated; a stop that gives \
+                     up waiting will leave it to the process exiting"
+                );
+                return None;
+            }
+        };
+        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+        let mut live = self.lock();
+        live.insert(id, duplicate);
+        self.publish(&live);
+        Some(id)
+    }
+
+    /// Forget the connection `id` names, closing this side's duplicate with it.
+    fn forget(&self, id: Option<u64>) {
+        let Some(id) = id else { return };
+        let mut live = self.lock();
+        live.remove(&id);
+        self.publish(&live);
+    }
+
+    /// Say how many connections are live, **from the map that says so** (note **N178**).
+    ///
+    /// It takes the guard rather than a number, and that is the whole of it: published outside
+    /// the lock, two connections ending together — which is exactly what [`Sockets::close_all`]
+    /// causes — can compute `1` and `0` and publish them in the other order, leaving this
+    /// daemon's own count saying it holds a connection over an empty map. `send_replace` is
+    /// synchronous, so there was never anything to buy by being outside; and a signature that
+    /// cannot be called without the guard is what stops the next writer paying for it again.
+    fn publish(&self, live: &std::sync::MutexGuard<'_, BTreeMap<u64, std::os::fd::OwnedFd>>) {
+        self.0.count.send_replace(live.len());
+    }
+
+    /// End every connection this listener is holding, and answer how many there were.
+    ///
+    /// `shutdown(2)` and not a close: the descriptor belongs to the connection task hyper is
+    /// running, which this call has no handle on, and shutting the socket down is what makes
+    /// that task's next poll finish — a pending write fails, a pending read ends — so the task
+    /// returns, drops the socket, and the descriptor goes back to the process. Closing the
+    /// number would be closing a descriptor somebody else is still using, which is how a
+    /// daemon comes to write a camera's frames into an unrelated file.
+    ///
+    /// A failure is not reported: this runs on a teardown that has already given up, the
+    /// errno for a socket the peer has already reset is not a fact about this daemon, and
+    /// there is nobody left to tell.
+    fn close_all(&self) -> usize {
+        let live = self.lock();
+        for duplicate in live.values() {
+            let _ = rustix::net::shutdown(duplicate.as_fd(), rustix::net::Shutdown::Both);
+        }
+        live.len()
+    }
+
+    /// The live count, as something to await.
+    fn watch(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.0.count.subscribe()
+    }
+
+    /// A poisoned lock here is a panic while a `BTreeMap` was being edited, and what is behind
+    /// it is a map of sockets that still have to be closable — `crate::record`'s `lock` makes
+    /// the identical choice for the identical reason.
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, std::os::fd::OwnedFd>> {
+        self.0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -654,10 +838,13 @@ impl Listener for Bounded {
                 );
                 continue;
             };
+            let id = self.sockets.remember(&stream);
             return (
                 Admitted {
                     stream,
                     _permit: permit,
+                    sockets: self.sockets.clone(),
+                    id,
                 },
                 peer,
             );
@@ -675,10 +862,32 @@ impl Listener for Bounded {
 /// the socket does**, which is the whole mechanism ([`Bounded`]'s doc argues where that matters,
 /// and the upgrade case is why it is here rather than in a spawned task's tail). Everything else
 /// is delegation to the [`TcpStream`] underneath.
+///
+/// Since note **N175** it also carries an entry in [`Sockets`], which is what lets a teardown
+/// that has given up waiting *end* this connection rather than merely stop waiting for it. The
+/// registry holds a duplicate descriptor rather than this stream, because hyper owns the stream
+/// and tokio's `AsyncRead` is implemented only for an owned `TcpStream`.
 #[derive(Debug)]
 struct Admitted {
     stream: TcpStream,
     _permit: OwnedSemaphorePermit,
+    /// Where to say this connection is over. See [`Admitted`]'s `Drop`.
+    sockets: Sockets,
+    /// `None` when the descriptor could not be duplicated — see [`Sockets::remember`].
+    id: Option<u64>,
+}
+
+impl Drop for Admitted {
+    /// Take this connection out of the registry, however it ended.
+    ///
+    /// A `Drop` and not a line in a task's tail, for the reason the permit is a field: the
+    /// socket outlives the HTTP exchange on an upgraded connection, and the endings are three
+    /// (a client that hung up, a graceful shutdown, and the abort [`Serving::stopped`] falls
+    /// back on). A registry that grew by one entry per connection ever made would be a leak on
+    /// the transport most exposed to a client that reconnects.
+    fn drop(&mut self) {
+        self.sockets.forget(self.id);
+    }
 }
 
 impl AsyncRead for Admitted {
@@ -961,6 +1170,82 @@ mod tests {
             engine::settle::MonotonicClock::new(),
             Shutdown::new(),
         )
+    }
+
+    #[tokio::test]
+    async fn connections_that_end_together_leave_a_count_that_agrees_with_the_map() {
+        // **Note N178.** [`Sockets`] is one map and one published number, and the number is
+        // what `Serving::connections` — the observable note N175's repair is asserted through —
+        // hands a waiter. Read `len()` under the mutex, release it, *then* publish, and two
+        // connections ending together compute `1` and `0` and can publish them in the other
+        // order: the daemon then says it is holding a connection over an empty map, and a
+        // teardown awaiting zero never sees it. Ending together is not a corner — it is what
+        // `Sockets::close_all` does to every live connection at once.
+        //
+        // Endings released together from one barrier, and the assertion is the invariant
+        // itself, taken under the guard so that the map and the number are read as one state.
+        // **Both constants are sized against the window and both were measured**, because an
+        // inversion needs a thread preempted in the few instructions between the unlock and the
+        // publish — which needs many more endings than this host has cores. At eight, a build
+        // with the publish outside the lock passed every run; at 128 it went red inside 750
+        // rounds on four runs out of four. The repaired shape holds all 1 024 rounds, and
+        // cannot fail one, because it has nowhere to put the stale read.
+        //
+        // The threads are made per round and **that is part of the instrument**: reusing them
+        // across rounds costs a quarter of the time and finds the inversion in one run out of
+        // four instead of four, because the thread creation is itself what makes the scheduler
+        // preempt somebody in the window. Measured both ways rather than reasoned about.
+        const ENDINGS: usize = 128;
+        const ROUNDS: usize = 1_024;
+
+        let sockets = Sockets::new();
+        // A real accepted connection, because `remember` duplicates a descriptor and a
+        // duplicate of nothing is not what this map holds. One is enough: many `remember`s of
+        // it are many entries, which is many endings.
+        let listener = tokio::net::TcpListener::bind(address("127.0.0.1:0"))
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("the port the kernel chose");
+        let client = TcpStream::connect(addr)
+            .await
+            .expect("a loopback connection");
+        let (served, _peer) = listener.accept().await.expect("the connection just made");
+
+        // The verdict is carried out of the loop rather than asserted inside it, because a
+        // panic would unwind past a `scope` join and the reader would get a hang where a
+        // failure belongs.
+        let mut disagreed = None;
+        for round in 0..ROUNDS {
+            let ids: Vec<u64> = (0..ENDINGS)
+                .map(|_| {
+                    sockets
+                        .remember(&served)
+                        .expect("this process is nowhere near its descriptor limit")
+                })
+                .collect();
+            let released = std::sync::Barrier::new(ENDINGS);
+            std::thread::scope(|scope| {
+                for id in &ids {
+                    scope.spawn(|| {
+                        released.wait();
+                        sockets.forget(Some(*id));
+                    });
+                }
+            });
+
+            let live = sockets.lock();
+            let published = *sockets.0.count.borrow();
+            if published != live.len() && disagreed.is_none() {
+                disagreed = Some((round, published, live.len()));
+            }
+        }
+
+        assert_eq!(
+            disagreed, None,
+            "this listener's published connection count and the connections it is holding \
+             disagreed, as (round, published, held)"
+        );
+        drop(client);
     }
 
     #[test]

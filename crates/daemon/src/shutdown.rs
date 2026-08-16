@@ -50,14 +50,48 @@
 //!    left of it and no longer. On expiry the daemon says so at `warn`, naming the bound and
 //!    that work was still in flight, and stops anyway (AGENTS rule 3: an auto-skipping wait is
 //!    never a silence).
-//! 6. **Join housekeeping** — the idle-sweep driver observes the same token and ends itself
-//!    (`crate::server::Wchd::spawn_idle_sweeps_every`), and this is where that is *awaited*
-//!    rather than assumed. A detached task's ending is a maybe; a joined one's is a fact
-//!    something waited for, which is the only version of it a test can assert.
+//! 6. **Join housekeeping, under the same deadline** — the idle-sweep driver observes the same
+//!    token and ends itself (`crate::server::Wchd::spawn_idle_sweeps_every`), and this is where
+//!    that is *awaited* rather than assumed. A detached task's ending is a maybe; a joined
+//!    one's is a fact something waited for, which is the only version of it a test can assert.
+//!
+//!    The bound is step 5's, and it is here because **a join is not a bound** (note **N174**):
+//!    a pass that is inside `spawn_blocking` waiting on a camera actor's reply channel, behind
+//!    a command that takes minutes, holds this join open for as long as that command lasts —
+//!    which is the residual the section below states about actors, arriving at the one step
+//!    that had no deadline over it. Sharing the deadline rather than taking a second one is
+//!    the same arithmetic step 5 argues: the bound is on the *stop*, so **this function's**
+//!    worst case is [`limits::DAEMON_SHUTDOWN_DRAIN_MS`] rather than a multiple of it.
+//!    On expiry the driver's *task* is aborted, with a line that says so — and an abort ends a
+//!    task, never a `spawn_blocking` closure, which is why the paragraph below is about the
+//!    process rather than about this function.
 //! 7. **Return.** `main` drops `OwnedState` afterwards, which is the ordered store-lock
 //!    release `crate::state`'s header deferred here — it was always about doing it in an
 //!    *order* rather than about doing it at all, because a killed daemon releases the lock
 //!    too, and this is the order.
+//!
+//! ## What the *process* takes to stop, which is not this function's number (note **N174**)
+//!
+//! Bounding step 6 (note N174) closed the gap it named and it did not make one constant the
+//! answer, because `stop_in_order` is not the whole stop. Four waits happen after a signal
+//! arrives, and only the first is above:
+//!
+//! | Wait | Bound |
+//! | --- | --- |
+//! | steps 3, 5 and 6 of the order above | [`limits::DAEMON_SHUTDOWN_DRAIN_MS`], shared |
+//! | the watchdog task's join (`main`) | none, and none needed: it watches the token this order cancelled at step 3 and has nothing else to do |
+//! | the web listener's stop (`main`) | [`limits::WEB_LISTENER_STOP_MS`], and note **N175** is what makes it end the connections rather than merely stop waiting for them |
+//! | the blocking pool's join, at the runtime's own shutdown | [`limits::DAEMON_SHUTDOWN_DRAIN_MS`] again, and **only since the G6 review**: `Drop for Runtime` waits for it *indefinitely*, so `main` builds the runtime itself and ends it with `shutdown_timeout` |
+//!
+//! The last row is the one that was untrue rather than merely unstated. Step 6's expiry aborts
+//! a **task**; the pass it was waiting for is a `spawn_blocking` closure, and aborting a task
+//! detaches its handle without touching the thread running the closure. So the unbounded term
+//! this order removed from step 6 reappeared at the end of `main`, where nothing named it, and
+//! the abandoning line's "ends with this process" was exactly backwards — the process could
+//! not end until the pass returned. `main`'s own doc carries the repair.
+//!
+//! What is *not* in the table is the wait for the signal itself, which is step 1: a daemon that
+//! has not been asked to stop is a daemon serving, and no bound belongs on that.
 //!
 //! ## SIGTERM ≡ SIGINT
 //!
@@ -528,11 +562,41 @@ async fn stop_in_order<T: Stopping>(
     // 6. The idle-sweep driver observes the same token, so this is a join and not a wait:
     //    it has already been asked to end. Awaited rather than dropped because "housekeeping
     //    ended" is a fact this order claims, and a detached task's ending is a maybe.
-    if let Err(err) = housekeeping.await {
-        // A panicked or aborted driver, which is not a reason to fail the stop — there is
-        // nothing left for it to sweep — but is exactly the kind of thing that must not
-        // disappear because it happened during shutdown.
-        tracing::warn!(error = %err, "the idle-sweep driver did not end cleanly");
+    //
+    //    **Under the same deadline as steps 3 and 5**, which is the repair note **N174**
+    //    records: a join is not a bound, and this one can be held open by a pass that is
+    //    parked in `spawn_blocking` waiting for a camera actor's reply behind a
+    //    minutes-long command — the very residual note **N59** states two paragraphs up in
+    //    this module's header. Sharing the deadline rather than taking a second one keeps
+    //    the promise this file and `limits::DAEMON_SHUTDOWN_DRAIN_MS` both make: the
+    //    daemon's worst-case stop is *that number*, not a multiple of it. A teardown whose
+    //    drain expired therefore gives housekeeping nothing, which is the right answer —
+    //    the whole budget for stopping is already spent.
+    let abandon = housekeeping.abort_handle();
+    match tokio::time::timeout_at(deadline, housekeeping).await {
+        Ok(Err(err)) => {
+            // A panicked or aborted driver, which is not a reason to fail the stop — there is
+            // nothing left for it to sweep — but is exactly the kind of thing that must not
+            // disappear because it happened during shutdown.
+            tracing::warn!(error = %err, "the idle-sweep driver did not end cleanly");
+        }
+        Ok(Ok(())) => {}
+        Err(_elapsed) => {
+            // Never a silence (AGENTS rule 3), and it names the bound for the reason the
+            // drain's line does. **What the abort reaches is stated exactly**, because the
+            // sentence that used to be here had it backwards (note **N174**): this ends the
+            // driver's own *task*, and the `spawn_blocking` pass it is waiting on is a thread
+            // no token and no abort can interrupt. That thread does not end with the process —
+            // the process waits for it, at the runtime's own shutdown, which is where `main`
+            // bounds it and where the header's table puts it.
+            abandon.abort();
+            tracing::warn!(
+                drain_ms = limits::DAEMON_SHUTDOWN_DRAIN_MS,
+                "the idle-sweep driver was still in a pass when the shutdown deadline passed; \
+                 abandoning its task — a pass parked on a camera's actor thread is a thread, \
+                 and this process gives it the same bound again on the way out"
+            );
+        }
     }
 
     // 7. `main` drops `OwnedState` after this returns.
@@ -544,7 +608,7 @@ mod tests {
     use std::sync::Arc;
 
     use schema::ErrorKind;
-    use tokio::sync::watch;
+    use tokio::sync::{oneshot, watch};
 
     use super::*;
 
@@ -735,6 +799,23 @@ mod tests {
             announce.send_replace(true);
         });
         (handle, ended)
+    }
+
+    /// A task that says, at the one moment an abort can be observed, that it has ended.
+    ///
+    /// `JoinHandle::is_finished` is a question asked of a *request*: `abort` marks a task and
+    /// the runtime ends it when it next polls it, so a test that asked immediately would be
+    /// asserting the scheduler's timing rather than the teardown's behaviour. A value dropped
+    /// with the task is the event itself.
+    struct Ending(Option<oneshot::Sender<()>>);
+
+    impl Drop for Ending {
+        fn drop(&mut self) {
+            if let Some(ended) = self.0.take() {
+                // Nobody listening is a test that has already made its point.
+                let _ = ended.send(());
+            }
+        }
     }
 
     /// A teardown driven from a scripted signal and a scripted transport.
@@ -939,6 +1020,78 @@ mod tests {
             *ended.borrow(),
             "the teardown returned before housekeeping had ended"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_housekeeping_pass_that_never_ends_does_not_hold_the_stop_open_for_ever() {
+        // Note **N174**. Step 6 was a bare `await`, and a join is not a bound: the idle-sweep
+        // driver ends itself on the token, but a pass already inside `spawn_blocking` is
+        // waiting on a camera actor's reply channel behind whatever command is in front of it
+        // — a calibration sweep, minutes of camera time — and no token reaches an OS thread.
+        // So the daemon's worst-case stop was `DAEMON_SHUTDOWN_DRAIN_MS` *plus* that, while
+        // two documents said it was that number.
+        //
+        // The housekeeping handle here is a task the token cannot end, which is what a pass
+        // parked on an actor looks like from this function. Three things have to be true and
+        // none implies the others: the stop **ends**, it says why at `warn` naming the bound
+        // (AGENTS rule 3 — never a silence), and the rest of the teardown still happened.
+        //
+        // Nothing waits in wall time: the clock is paused, so the shared deadline fires when
+        // the runtime goes idle. A build that dropped the bound hangs here and becomes a named
+        // nextest TIMEOUT rather than a green test.
+        let shutdown = Shutdown::new();
+        let recorder = Recorder::new(&shutdown, 0);
+        let notify = Recording(Arc::clone(&recorder));
+        let subscriptions = recorder.subscriptions.subscribe();
+        let mut transport = Scriptable::new(Answer::WhenStopped, &recorder);
+        let (ended, was_ended) = tokio::sync::oneshot::channel();
+        let housekeeping = tokio::spawn(async move {
+            let _ending = Ending(Some(ended));
+            std::future::pending::<()>().await
+        });
+
+        let (outcome, logged) = crate::logging::captured(async {
+            stop_in_order(
+                &mut transport,
+                &shutdown,
+                Scripted(Some(Stop::Terminate)),
+                &notify,
+                subscriptions,
+                housekeeping,
+            )
+            .await
+        })
+        .await;
+
+        // Asked to stop, and it stopped: a sweep this daemon could not interrupt is not a
+        // failure of the daemon, and an exit code would ask a service manager to restart it.
+        assert_eq!(outcome, Ok(()));
+        assert!(
+            logged.contains("WARN") && logged.contains("idle-sweep driver"),
+            "a teardown that abandoned its housekeeping said nothing: {logged:?}"
+        );
+        assert!(
+            logged.contains(&limits::DAEMON_SHUTDOWN_DRAIN_MS.to_string()),
+            "the warning did not name the bound: {logged:?}"
+        );
+        assert_eq!(
+            recorder.steps(),
+            vec![
+                Step::Stopping { cancelled: false },
+                Step::TransportStopped {
+                    cancelled: true,
+                    watching: 0,
+                },
+            ],
+            "a stop that waited on housekeeping left the rest of the teardown undone"
+        );
+        // And the task was **abandoned** rather than left running: a dropped `JoinHandle`
+        // detaches, which would leave the thing this bound exists to stop waiting for still
+        // waiting, on a runtime the composition root is about to drop. Awaited rather than
+        // asked, because an abort is a request and the task ending is the fact.
+        was_ended
+            .await
+            .expect("the housekeeping task outlived the stop that gave up on it");
     }
 
     #[tokio::test(start_paused = true)]

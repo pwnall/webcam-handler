@@ -503,7 +503,21 @@ pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 /// ([`CAMERA_ENQUEUE_WAIT_MS`], [`DEFAULT_SETTLE_DEADLINE_MS`]) so that a stop arriving during
 /// ordinary work waits for that work rather than cutting it in half.
 ///
-/// Read by `daemon::shutdown`'s drain, which is the only thing that waits during a stop.
+/// Read by `daemon::shutdown` as **one deadline over three of the teardown's steps** — the
+/// wait for cancelled subscriptions to end, the drain, and the join of the idle-sweep driver.
+/// Three readers and one number, because the bound is on the *stop*: a teardown whose
+/// subscriptions were slow gets that much less drain, and one whose drain expired gets no
+/// housekeeping join at all. The third of those was unbounded until the G6 review (note
+/// **N174**), which is how a `spawn_blocking` sweep parked behind a minutes-long camera command
+/// could hold a stop open past every number written here.
+///
+/// **And once more at the very end, by `webcam-handler-daemon`'s `main`** (note **N174**). The
+/// abort those three steps end on reaches a *task*; a `spawn_blocking` closure is a thread, and
+/// `Drop for Runtime` waits for it with no bound at all — so the same number is handed to
+/// `Runtime::shutdown_timeout` after the ordered teardown has returned. Four readers, one
+/// number, and the process's worst case is therefore twice this plus
+/// [`WEB_LISTENER_STOP_MS`] rather than one of it: still under a fifth of systemd's
+/// `TimeoutStopSec`, which is the comparison that decides this constant.
 pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 20_000;
 
 /// How long the composition root waits for the **web listener** to finish stopping.
@@ -521,10 +535,14 @@ pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 20_000;
 /// never finishes. The daemon is then waiting for a browser to be scrolled back into view.
 ///
 /// So the transport's stop is bounded here, and AGENTS' rule is the one being satisfied: open
-/// streams are "cancelled, never awaited". On expiry the listener task is **aborted** — its
-/// sockets close with it — and the daemon says so at `warn`, naming the bound, because a
-/// bounded wait that expires silently is the skip-that-reads-as-pass this project refuses
-/// (rule 3).
+/// streams are "cancelled, never awaited". On expiry the listener task is **aborted and every
+/// connection it admitted is shut down** — `shutdown(2)` on a duplicate descriptor the listener
+/// kept per connection, which is what makes a parked write finish. The abort alone does not:
+/// `axum::serve` spawns a task per connection with the socket moved into it, so the handle the
+/// daemon holds is the accept loop's and nothing else (note **N175**, which is where that
+/// sentence was found to be untrue and repaired). The daemon says so at `warn`, naming the
+/// bound, because a bounded wait that expires silently is the skip-that-reads-as-pass this
+/// project refuses (rule 3).
 ///
 /// Two seconds, and the two ends it sits between are both real. Below it is the ordinary case,
 /// which is not a wait at all: a page of a few kilobytes is already written, and a preview
