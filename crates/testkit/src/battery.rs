@@ -34,7 +34,8 @@ use std::time::{Duration, Instant};
 
 use schema::backend::{BackendKind, Camera, CameraBackend, HotplugEvent};
 use schema::camera::{
-    CAP_META_CAPTURE, CAP_VIDEO_CAPTURE, CameraFingerprint, CameraInfo, NodeKind, PixelFormat,
+    CAP_META_CAPTURE, CAP_VIDEO_CAPTURE, CameraFingerprint, CameraInfo, FormatInfo, NodeKind,
+    PixelFormat,
 };
 use schema::capture::{Frame, NegotiatedStream, StreamRequest};
 use schema::control::{
@@ -73,6 +74,9 @@ closed_vocabulary! {
         /// Start, take frames, stop, start again; frame bytes agree with the negotiated
         /// format and size.
         StreamLifecycle,
+        /// D5's "an explicit request still wins": a named format or size the device does
+        /// not offer is a typed refusal, never a substitution.
+        ExplicitRequest,
         /// A hotplug watch can be created and polls to a timeout without erroring (E3).
         HotplugWatch,
         /// The backend's scripted fault menu (design §2.9).
@@ -90,6 +94,7 @@ impl BatteryArm {
             BatteryArm::WriteReadBack => "write_read_back",
             BatteryArm::SnapshotRestoreInverse => "snapshot_restore_inverse",
             BatteryArm::StreamLifecycle => "stream_lifecycle",
+            BatteryArm::ExplicitRequest => "explicit_request",
             BatteryArm::HotplugWatch => "hotplug_watch",
             BatteryArm::FaultMenu => "fault_menu",
         }
@@ -106,6 +111,7 @@ impl BatteryArm {
             BatteryArm::WriteReadBack => arm_write_read_back(backend, log),
             BatteryArm::SnapshotRestoreInverse => arm_snapshot_restore_inverse(backend, log),
             BatteryArm::StreamLifecycle => arm_stream_lifecycle(backend, log),
+            BatteryArm::ExplicitRequest => arm_explicit_request(backend, log),
             BatteryArm::HotplugWatch => arm_hotplug_watch(backend, log),
             BatteryArm::FaultMenu => arm_fault_menu(backend, log),
         }
@@ -162,6 +168,20 @@ pub struct BatteryReport {
     pub outcomes: BTreeMap<BatteryArm, ArmOutcome>,
     /// Everything wrong, arm-prefixed. Empty means the run is green.
     pub failures: Vec<String>,
+    /// Every claim an arm that **ran** could not put to a camera, arm-prefixed.
+    ///
+    /// **The gap between `Ran` and `Skipped` that AGENTS rule 3 does not allow.** An arm
+    /// reports one outcome for the whole backend, and until 2026-08-16 a claim it could not
+    /// ask of *one* camera became a note that was rendered only if the arm ended `Skipped` —
+    /// so a backend with two cameras, one of which could not be asked, reported `ran` and
+    /// said nothing about the half that never happened (note **N138**). `Claim` exists
+    /// precisely so "not asked" and "passed" do not collapse; this is where that distinction
+    /// survives the arm boundary.
+    ///
+    /// Not a failure: an unaskable camera is E3's *availability*, and turning it red would
+    /// make a busy device a conformance verdict. Named and counted is what rule 3 asks for,
+    /// and what a reader of a green run needs in order to know what it did not cover.
+    pub notes: Vec<String>,
 }
 
 impl BatteryReport {
@@ -188,6 +208,17 @@ impl BatteryReport {
             .map(String::as_str)
             .collect()
     }
+
+    /// The unasked claims mentioning `arm` — see [`BatteryReport::notes`].
+    #[must_use]
+    pub fn notes_for(&self, arm: BatteryArm) -> Vec<&str> {
+        let prefix = format!("{arm}: ");
+        self.notes
+            .iter()
+            .filter(|note| note.starts_with(&prefix))
+            .map(String::as_str)
+            .collect()
+    }
 }
 
 impl fmt::Display for BatteryReport {
@@ -197,6 +228,14 @@ impl fmt::Display for BatteryReport {
             match outcome {
                 ArmOutcome::Ran => writeln!(f, "  {arm}: ran")?,
                 ArmOutcome::Skipped { reason } => writeln!(f, "  {arm}: skipped — {reason}")?,
+            }
+        }
+        // Counted, and before the verdict: a run whose arms all say "ran" while three
+        // claims went unasked is not the run a reader would otherwise take it for.
+        if !self.notes.is_empty() {
+            writeln!(f, "  {} unasked claim(s):", self.notes.len())?;
+            for note in &self.notes {
+                writeln!(f, "    - {note}")?;
             }
         }
         if self.failures.is_empty() {
@@ -225,18 +264,22 @@ pub fn run(
         backend: backend.kind(),
         outcomes: BTreeMap::new(),
         failures: Vec::new(),
+        notes: Vec::new(),
     };
 
     for &arm in BatteryArm::ALL {
         let mut failures = Vec::new();
+        let mut notes = Vec::new();
         let outcome = {
             let mut log = ArmLog {
                 arm,
                 failures: &mut failures,
+                notes: &mut notes,
             };
             arm.execute(backend, &mut log)
         };
         report.failures.extend(failures);
+        report.notes.extend(notes);
 
         let declared = declared_skips.get(&arm);
         if let Some(reason) = declared
@@ -269,12 +312,26 @@ pub fn run(
 struct ArmLog<'a> {
     arm: BatteryArm,
     failures: &'a mut Vec<String>,
+    notes: &'a mut Vec<String>,
 }
 
 impl ArmLog<'_> {
     fn fail(&mut self, message: impl AsRef<str>) {
         let arm = self.arm;
         self.failures
+            .push(format!("{arm}: {}", message.as_ref().trim()));
+    }
+
+    /// Record a claim this arm could not put to a camera — see [`BatteryReport::notes`].
+    ///
+    /// Separate from [`ArmLog::fail`] because the two are different verdicts and the whole
+    /// point of `Claim` is that they stay apart (AGENTS rule 7, one layer in from where it
+    /// usually applies). Separate from `CameraVisit`'s own notes because those become a
+    /// *skip reason*, which is only rendered when the arm skipped; this channel is what
+    /// carries them out of an arm that ran.
+    fn note(&mut self, message: impl AsRef<str>) {
+        let arm = self.arm;
+        self.notes
             .push(format!("{arm}: {}", message.as_ref().trim()));
     }
 
@@ -725,43 +782,59 @@ fn arm_snapshot_restore_inverse(backend: &dyn CameraBackend, log: &mut ArmLog<'_
         let flags_before: BTreeMap<ControlId, u32> =
             before.iter().map(|d| (d.id, d.flags.raw)).collect();
 
-        for (id, value) in &perturbations {
-            if let Err(error) = camera.set(*id, value.clone()) {
-                visit.log.fail(format!(
-                    "perturbing control {id} to {value} failed: {error}"
-                ));
-            }
-        }
+        // Everything between the first write and the restore happens inside the guard's
+        // scope, so that **no path out of it can skip putting the camera back** — see
+        // [`RestoreGuard`]. The guard's own complaints land here rather than in the log
+        // directly, because `Drop` cannot borrow a log the block is already using.
+        let mut restore_complaints = Vec::new();
+        let perturbed_readable = {
+            let guard = RestoreGuard {
+                camera: camera.as_mut(),
+                snapshot,
+                complaints: &mut restore_complaints,
+            };
 
-        // Non-vacuity: if nothing actually moved, "restore put it back" proves nothing.
-        let Some(perturbed) = read_controls(camera.as_mut(), &info.id.to_string(), visit.log)
-        else {
-            continue;
+            for (id, value) in &perturbations {
+                if let Err(error) = guard.camera.set(*id, value.clone()) {
+                    visit.log.fail(format!(
+                        "perturbing control {id} to {value} failed: {error}"
+                    ));
+                }
+            }
+
+            // Non-vacuity: if nothing actually moved, "restore put it back" proves nothing.
+            match read_controls(&mut *guard.camera, &info.id.to_string(), visit.log) {
+                Some(perturbed) => {
+                    let moved = perturbed
+                        .iter()
+                        .filter(|after| {
+                            before
+                                .iter()
+                                .any(|b| b.id == after.id && b.current != after.current)
+                        })
+                        .count();
+                    visit.log.require(moved > 0, || {
+                        format!(
+                            "{}: {} perturbations left every control where it was, so the \
+                             restore this arm is named for would prove nothing",
+                            info.id,
+                            perturbations.len()
+                        )
+                    });
+                    true
+                }
+                // The early exit this arm used to take *before* the restore, leaving a
+                // real camera perturbed (note **N137**). It still exits — the read failed
+                // and there is nothing left to compare — but the guard has put the camera
+                // back by the time the block ends.
+                None => false,
+            }
         };
-        let moved = perturbed
-            .iter()
-            .filter(|after| {
-                before
-                    .iter()
-                    .any(|b| b.id == after.id && b.current != after.current)
-            })
-            .count();
-        visit.log.require(moved > 0, || {
-            format!(
-                "{}: {} perturbations left every control where it was, so the restore \
-                 below would prove nothing",
-                info.id,
-                perturbations.len()
-            )
-        });
-
-        for entry in snapshot.restore_order() {
-            if let Err(error) = camera.set(entry.id, entry.value.clone()) {
-                visit.log.fail(format!(
-                    "restoring {} to {} failed: {error}",
-                    entry.control, entry.value
-                ));
-            }
+        for complaint in restore_complaints {
+            visit.log.fail(complaint);
+        }
+        if !perturbed_readable {
+            continue;
         }
 
         let Some(after) = read_controls(camera.as_mut(), &info.id.to_string(), visit.log) else {
@@ -771,6 +844,54 @@ fn arm_snapshot_restore_inverse(backend: &dyn CameraBackend, log: &mut ArmLog<'_
     }
 
     visit.finish("no camera offered a control this arm could perturb")
+}
+
+/// Puts the snapshot back when it goes out of scope, however it goes out of scope.
+///
+/// **AGENTS rule 8 is not conditional on the rest of the arm succeeding.** This arm writes
+/// every perturbation it planned and then re-reads the device to prove something moved; the
+/// re-read can fail — a camera unplugged mid-arm, a driver that stopped answering — and
+/// until 2026-08-16 that failure `continue`d to the next camera with the restore still
+/// ahead of it, leaving a real device holding this suite's perturbations. §2.11 step 4
+/// tells the author of every new backend to run this battery **against their device**, so
+/// the population that finding lands on is "somebody else's camera" (note **N137**).
+///
+/// The shape is the tree's own answer to the same question: `capture::grab`'s `StreamGuard`
+/// stops the stream its scope started and `actor::Liveness` marks the actor dead, both on
+/// `Drop`, both for paths a reader cannot enumerate. A `Drop` cannot be skipped by an early
+/// return, a `?`, or a panic, which is exactly the set of exits an arm grows over time.
+///
+/// **What it costs, since a reader meets it here and the G6 re-read asked.** A `Drop` that
+/// runs while the block is already panicking, and itself panics, aborts the process. The
+/// write below can panic — a backend that panics is a *measured* mode in this tree
+/// (\[PF:1\]: the `v4l` crate's `query_controls` panics on modern kernels), and the old
+/// explicit loop would simply have been skipped on that path. It is kept anyway, and
+/// deliberately: `capture::grab`'s `StreamGuard` and `preview::Resuming` carry the identical
+/// exposure for the identical reason, so this is house-consistent rather than novel, and the
+/// trade is a real device left perturbed on *every* early exit against a worse panic message
+/// on one. Catching the unwind here would swallow the finding the arm exists to report; the
+/// answer if it ever bites is a backend that does not panic, which AGENTS' "no
+/// `unwrap`/`expect`/`panic` on device-driven paths" already requires.
+struct RestoreGuard<'a, 'c> {
+    camera: &'a mut dyn Camera,
+    snapshot: Snapshot,
+    /// Where a failed restore is recorded. Not the [`ArmLog`] itself: the block this guard
+    /// wraps is using the log, and a `Drop` that also held it could not compile — so the
+    /// complaints are drained into the log by the caller a line after the guard falls.
+    complaints: &'c mut Vec<String>,
+}
+
+impl Drop for RestoreGuard<'_, '_> {
+    fn drop(&mut self) {
+        for entry in self.snapshot.restore_order() {
+            if let Err(error) = self.camera.set(entry.id, entry.value.clone()) {
+                self.complaints.push(format!(
+                    "restoring {} to {} failed: {error}",
+                    entry.control, entry.value
+                ));
+            }
+        }
+    }
 }
 
 /// The D4 assertion: after snapshot → perturb → restore, the control state is what it
@@ -869,6 +990,292 @@ fn arm_stream_lifecycle(backend: &dyn CameraBackend, log: &mut ArmLog<'_>) -> Ar
     }
 
     visit.finish("no camera could be streamed")
+}
+
+/// D5's explicit-request contract, on whichever backend is in front of us.
+///
+/// **The arm §9.1 of the G6 review says would have caught H1 the day the fake grew its
+/// guard.** Every other streaming arm here constructs `StreamRequest::default()`, so no arm
+/// of this battery could express *any* explicit-request contract — and the two tests that
+/// did pin it both ran over the fake, which honoured it, while the V4L2 backend ranked a
+/// named-but-absent format into another one and photographed that (note **N134**). A rubric
+/// row names a class; only a walked population finds an instance of it, and for this class
+/// the population is every backend that implements T2.
+///
+/// Both halves are asserted per camera because they fail differently: the format half is
+/// answered before a device is touched, and the size half is answered after a format has
+/// been chosen and its size list walked.
+fn arm_explicit_request(backend: &dyn CameraBackend, log: &mut ArmLog<'_>) -> ArmOutcome {
+    let mut visit = CameraVisit::new(backend, log);
+    let Some(cameras) = visit.cameras() else {
+        return visit.into_skip();
+    };
+
+    for info in cameras {
+        if info.capture_node().is_none() {
+            visit.note(
+                "a camera has no capture node, so it enumerates no format to name one absent from",
+            );
+            continue;
+        }
+        let Some(mut camera) = visit.open(&info) else {
+            continue;
+        };
+        let formats = match camera.formats() {
+            Ok(formats) => formats,
+            // **Availability is not capability** (AGENTS rule 7, doctrine E3), and this arm
+            // answered that correctly for `start_stream` and not for the enumeration that
+            // precedes it until 2026-08-16: a camera grabbed by another process between
+            // `open` and `formats` turned a whole battery run red for a fact about who
+            // holds the device (note **N138**). The two halves say the same thing now.
+            Err(error @ (Error::Busy { .. } | Error::PermissionDenied { .. })) => {
+                visit.note(format!(
+                    "{}: could not be asked what it offers ({error})",
+                    info.id
+                ));
+                continue;
+            }
+            Err(error) => {
+                visit
+                    .log
+                    .fail(format!("{}: formats() failed: {error}", info.id));
+                continue;
+            }
+        };
+        if formats.is_empty() {
+            visit.note(format!(
+                "{}: the capture node enumerated no formats, so there is nothing for a \
+                 request to be refused *against*",
+                info.id
+            ));
+            continue;
+        }
+
+        let mut exercised = 0u32;
+        for claim in [
+            refuses_an_absent_format(camera.as_mut(), &info, &formats, visit.log),
+            refuses_an_unfittable_size(camera.as_mut(), &info, &formats, visit.log),
+        ] {
+            match claim {
+                Claim::Asked => exercised += 1,
+                Claim::NotAsked(why) => visit.note(why),
+            }
+        }
+        if exercised == 2 {
+            visit.examined += 1;
+        }
+    }
+
+    visit.finish("no camera enumerated a format list to build an unanswerable request from")
+}
+
+/// A FourCC no device enumerates, because nobody has ever issued it.
+///
+/// Invented rather than borrowed from the D6 set: a real fourcc would make this arm depend
+/// on which formats the camera in front of it happens to lack, and a camera that offered
+/// all of them would turn the arm into a silent pass. The check below still asserts the
+/// enumeration lacks it, because "the fixture cannot exercise the rule it pins" is the
+/// smell this whole battery exists on the other side of.
+const NEVER_ENUMERATED: &str = "WCHX";
+
+/// Whether a claim reached the device at all.
+///
+/// [`StreamAttempt`]'s shape and for its reason: "the contract does not hold" and "the
+/// contract could not be put to this camera" are different facts, and a helper answering a
+/// bare `false` has already collapsed them — which is the conversion AGENTS rule 7 forbids,
+/// one layer in from where it usually happens.
+enum Claim {
+    /// The device was asked and answered; whether the answer was right is in the log.
+    Asked,
+    /// It was not asked, and this is why — a named skip rather than a failure.
+    NotAsked(String),
+}
+
+/// Half one: a named format the device does not enumerate is refused.
+fn refuses_an_absent_format(
+    camera: &mut dyn Camera,
+    info: &CameraInfo,
+    formats: &[FormatInfo],
+    log: &mut ArmLog<'_>,
+) -> Claim {
+    let Some(absent) = PixelFormat::parse(NEVER_ENUMERATED) else {
+        log.fail(format!(
+            "{NEVER_ENUMERATED} is not four characters, so this arm has nothing to ask for"
+        ));
+        return Claim::NotAsked(format!("{NEVER_ENUMERATED} is not a pixel format"));
+    };
+    if formats.iter().any(|f| f.pixel_format == absent) {
+        // A failure and not a skip: the arm's own fixture has stopped being absent, and a
+        // request for a format the camera *has* would pass while proving nothing.
+        log.fail(format!(
+            "{}: enumerates {absent}, which this arm uses precisely because no device \
+             issues it — the request below would prove nothing",
+            info.id
+        ));
+        return Claim::NotAsked(format!("{}: enumerates {absent}", info.id));
+    }
+
+    let request = StreamRequest {
+        pixel_format: Some(absent),
+        ..StreamRequest::default()
+    };
+    match camera.start_stream(&request) {
+        Ok(negotiated) => {
+            // Stopped before complaining: the arm started this stream, and a camera left
+            // streaming for an assertion is a camera the next arm finds busy.
+            let _ = camera.stop_stream();
+            log.fail(format!(
+                "{}: asked for {absent}, which this camera does not enumerate, and got a \
+                 stream in {} at {}x{} — D5's \"an explicit request still wins … or a \
+                 typed refusal\" allows neither substitution nor silence",
+                info.id, negotiated.pixel_format, negotiated.width, negotiated.height
+            ));
+            Claim::Asked
+        }
+        Err(Error::FormatUnsupported {
+            requested,
+            available,
+            size,
+        }) => {
+            log.require(size.is_none(), || {
+                format!(
+                    "{}: refused an absent format with a payload that also names a size — \
+                     the two causes are exclusive, and a refusal naming two levers is one \
+                     an unattended caller has to guess at (note **N138**)",
+                    info.id
+                )
+            });
+            log.require(requested == Some(absent), || {
+                format!(
+                    "{}: refused a request for {absent} while naming {requested:?} as what \
+                     was asked for",
+                    info.id
+                )
+            });
+            log.require(!available.is_empty(), || {
+                format!(
+                    "{}: refused {absent} without naming one format it does have, which is \
+                     the whole remedy an unattended caller has",
+                    info.id
+                )
+            });
+            Claim::Asked
+        }
+        // Availability is not capability (E3): a device somebody else holds, or one this
+        // process may not open, has not told us anything about what it can offer — so this
+        // is a named skip, and the arm's own accounting is what stops a run of them
+        // reading as a pass.
+        Err(error @ (Error::Busy { .. } | Error::PermissionDenied { .. })) => Claim::NotAsked(
+            format!("{}: could not be asked for a format ({error})", info.id),
+        ),
+        Err(error) => {
+            log.fail(format!(
+                "{}: a format this camera does not enumerate was refused with {error} \
+                 rather than FormatUnsupported — collapsing the two makes an unattended \
+                 caller guess which one it is",
+                info.id
+            ));
+            Claim::Asked
+        }
+    }
+}
+
+/// Half two: a named size no enumerated mode can deliver is refused (owner ruling,
+/// 2026-08-16).
+fn refuses_an_unfittable_size(
+    camera: &mut dyn Camera,
+    info: &CameraInfo,
+    formats: &[FormatInfo],
+    log: &mut ArmLog<'_>,
+) -> Claim {
+    // A device that can deliver a 1×1 frame would make the request below answerable, and
+    // an arm that cannot tell "refused" from "there was nothing to refuse" is the vacuity
+    // this file's skip accounting exists to prevent. No camera this project has met is
+    // stepwise, let alone down to one pixel — but the arm asks rather than assuming.
+    //
+    // **The premise is the resolver's own rule**, and saying so is worth a line because for
+    // two days it was not: `StreamRequest::choose` refused when the *chosen* format could
+    // not deliver while this arm required a refusal only when **no** format could, so the
+    // arm passed on the OBSBOT while `--size 640x480` was being refused there — the review's
+    // finding one level in, a premise narrower than the rule it pins (note **N138**). The
+    // two are the same question now: device-wide, across every format.
+    let deliverable = formats
+        .iter()
+        .flat_map(|format| format.sizes.iter())
+        .any(|entry| entry.size.largest_within(1, 1).is_some());
+    if deliverable {
+        return Claim::NotAsked(format!(
+            "{}: offers a mode that fits inside 1x1, so this arm cannot name a size \
+             nothing fits",
+            info.id
+        ));
+    }
+
+    let request = StreamRequest {
+        width: Some(1),
+        height: Some(1),
+        ..StreamRequest::default()
+    };
+    match camera.start_stream(&request) {
+        Ok(negotiated) => {
+            let _ = camera.stop_stream();
+            log.fail(format!(
+                "{}: asked for 1x1, which no mode this camera enumerates can deliver, and \
+                 got {}x{} — the largest thing on offer is not an adjustment of the \
+                 smallest thing asked for",
+                info.id, negotiated.width, negotiated.height
+            ));
+            Claim::Asked
+        }
+        Err(Error::FormatUnsupported {
+            available,
+            size,
+            requested,
+        }) => {
+            log.require(!available.is_empty(), || {
+                format!(
+                    "{}: refused a size while claiming to enumerate no format, which \
+                     contradicts the list this arm read a moment ago",
+                    info.id
+                )
+            });
+            // The half that stops the refusal being a sentence about the wrong thing: a
+            // size refusal must name the size (note **N138**). It rendered "format
+            // (unspecified) is unavailable; MJPG, YUYV would be accepted" until 2026-08-16,
+            // which sends an unattended caller to change its `--pixel-format` and meet the
+            // identical refusal — N129's class, at this variant, one phase later.
+            match size {
+                Some(size) => log.require(
+                    (size.requested_width, size.requested_height) == (1, 1),
+                    || {
+                        format!(
+                            "{}: refused 1x1 while reporting {}x{} as the size that was \
+                             asked for",
+                            info.id, size.requested_width, size.requested_height
+                        )
+                    },
+                ),
+                None => log.fail(format!(
+                    "{}: refused a size with a refusal that names only formats \
+                     ({requested:?}, {available:?}) — a caller repairing its request from \
+                     this payload changes the half that was answerable and loops",
+                    info.id
+                )),
+            }
+            Claim::Asked
+        }
+        Err(error @ (Error::Busy { .. } | Error::PermissionDenied { .. })) => Claim::NotAsked(
+            format!("{}: could not be asked for a size ({error})", info.id),
+        ),
+        Err(error) => {
+            log.fail(format!(
+                "{}: a size nothing fits was refused with {error} rather than \
+                 FormatUnsupported",
+                info.id
+            ));
+            Claim::Asked
+        }
+    }
 }
 
 /// What one start→frames→stop cycle did.
@@ -1943,8 +2350,21 @@ impl<'a, 'l> CameraVisit<'a, 'l> {
 
     /// `Ran` when at least one camera was exercised, else a skip naming every reason the
     /// others were passed over.
-    fn finish(self, fallback: &str) -> ArmOutcome {
+    ///
+    /// **An arm that ran still owes an account of what it did not ask.** The notes were the
+    /// skip reason and nothing else until 2026-08-16, so a backend with two cameras — one
+    /// exercised, one passed over — reported `ran` and dropped the second camera's reason on
+    /// the floor (note **N138**). One camera answering is enough to say the arm ran; it is
+    /// not enough to say the arm covered the backend, and AGENTS rule 3's "a named, counted
+    /// skip — never silence" is about the second claim. So on the `Ran` path the same notes
+    /// go to [`ArmLog::note`], where [`run`] carries them into
+    /// [`BatteryReport::notes`]; on the skip path they are already the reason and are not
+    /// said twice.
+    fn finish(mut self, fallback: &str) -> ArmOutcome {
         if self.examined > 0 {
+            for note in std::mem::take(&mut self.notes) {
+                self.log.note(note);
+            }
             ArmOutcome::Ran
         } else {
             ArmOutcome::skipped(join_notes(&self.notes, fallback))
@@ -1964,7 +2384,7 @@ fn join_notes(notes: &[String], fallback: &str) -> String {
 mod tests {
     use schema::backend::HotplugWatch;
     use schema::camera::CameraId;
-    use schema::control::ControlFlags;
+    use schema::control::{Applied, ControlFlags};
     use schema::error::Result;
 
     use super::*;
@@ -2140,6 +2560,467 @@ mod tests {
         assert!(
             reason.contains("fault-scripting"),
             "the reason must say what is missing: {reason}"
+        );
+    }
+
+    // ------------------------------------------- the restore that cannot be skipped (N137)
+
+    /// A camera whose control read fails once the arm has perturbed it.
+    ///
+    /// The failure is real and is the one AGENTS rule 8 is written for: a camera unplugged
+    /// between the write and the read-back, a driver that stopped answering `QUERY_EXT_CTRL`
+    /// mid-arm. It is scripted here rather than measured because the *arm's* behaviour is
+    /// the subject, and a device that fails on cue is the only way to reach the exit that
+    /// used to skip the restore.
+    #[derive(Debug)]
+    struct ReadFailsAfterTheFirstWrite {
+        controls: Vec<ControlDesc>,
+        writes: usize,
+        reads: usize,
+    }
+
+    impl ReadFailsAfterTheFirstWrite {
+        fn new() -> ReadFailsAfterTheFirstWrite {
+            ReadFailsAfterTheFirstWrite {
+                controls: vec![sweepable("brightness")],
+                writes: 0,
+                reads: 0,
+            }
+        }
+    }
+
+    impl Camera for ReadFailsAfterTheFirstWrite {
+        fn info(&self) -> &CameraInfo {
+            unreachable!("this arm never asks a camera for its own info")
+        }
+
+        fn formats(&self) -> Result<Vec<FormatInfo>> {
+            Ok(Vec::new())
+        }
+
+        fn controls(&self) -> Result<Vec<ControlDesc>> {
+            if self.writes > 0 {
+                return Err(Error::DeviceGone {
+                    path: "/dev/video0".into(),
+                });
+            }
+            Ok(self.controls.clone())
+        }
+
+        fn get(&mut self, _id: ControlId) -> Result<ControlValue> {
+            unreachable!("this arm reads values through controls()")
+        }
+
+        fn set(&mut self, id: ControlId, value: ControlValue) -> Result<Applied> {
+            self.writes += 1;
+            let desc = self
+                .controls
+                .iter_mut()
+                .find(|desc| desc.id == id)
+                .ok_or_else(|| Error::ControlUnknown {
+                    requested: id.to_string(),
+                    did_you_mean: Vec::new(),
+                })?;
+            desc.current = Some(value.clone());
+            Ok(Applied {
+                control: id,
+                slug: desc.slug.clone(),
+                requested: value.clone(),
+                applied: value,
+                warnings: Vec::new(),
+            })
+        }
+
+        fn start_stream(&mut self, _request: &StreamRequest) -> Result<NegotiatedStream> {
+            unreachable!("the snapshot arm does not stream")
+        }
+
+        fn streaming(&self) -> Option<NegotiatedStream> {
+            None
+        }
+
+        fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {
+            unreachable!("the snapshot arm does not stream")
+        }
+
+        fn stop_stream(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A backend handing out one such camera, and keeping a view of what it now holds.
+    #[derive(Debug)]
+    struct OneFragileCamera {
+        camera: std::sync::Arc<std::sync::Mutex<ReadFailsAfterTheFirstWrite>>,
+    }
+
+    impl OneFragileCamera {
+        fn new() -> OneFragileCamera {
+            OneFragileCamera {
+                camera: std::sync::Arc::new(std::sync::Mutex::new(
+                    ReadFailsAfterTheFirstWrite::new(),
+                )),
+            }
+        }
+
+        fn brightness(&self) -> Option<ControlValue> {
+            self.camera
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .controls
+                .first()
+                .and_then(|desc| desc.current.clone())
+        }
+    }
+
+    /// The handle `open` returns: every call forwarded to the one shared camera, so the
+    /// test can see what the arm left behind after the arm has dropped its handle.
+    #[derive(Debug)]
+    struct SharedHandle(std::sync::Arc<std::sync::Mutex<ReadFailsAfterTheFirstWrite>>);
+
+    impl SharedHandle {
+        fn locked(&self) -> std::sync::MutexGuard<'_, ReadFailsAfterTheFirstWrite> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
+
+    impl Camera for SharedHandle {
+        fn info(&self) -> &CameraInfo {
+            unreachable!("this arm never asks a camera for its own info")
+        }
+
+        fn formats(&self) -> Result<Vec<FormatInfo>> {
+            self.locked().formats()
+        }
+
+        fn controls(&self) -> Result<Vec<ControlDesc>> {
+            let mut camera = self.locked();
+            camera.reads += 1;
+            camera.controls()
+        }
+
+        fn get(&mut self, id: ControlId) -> Result<ControlValue> {
+            self.locked().get(id)
+        }
+
+        fn set(&mut self, id: ControlId, value: ControlValue) -> Result<Applied> {
+            self.locked().set(id, value)
+        }
+
+        fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
+            self.locked().start_stream(request)
+        }
+
+        fn streaming(&self) -> Option<NegotiatedStream> {
+            None
+        }
+
+        fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
+            self.locked().next_frame(deadline)
+        }
+
+        fn stop_stream(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CameraBackend for OneFragileCamera {
+        fn kind(&self) -> BackendKind {
+            BackendKind::Fake
+        }
+
+        fn enumerate(&self) -> Result<Vec<CameraInfo>> {
+            let mut info = crate::fixtures::synthetic_basic().invariant.info;
+            info.backend = BackendKind::Fake;
+            Ok(vec![info])
+        }
+
+        fn open(&self, _id: &CameraId) -> Result<Box<dyn Camera>> {
+            Ok(Box::new(SharedHandle(std::sync::Arc::clone(&self.camera))))
+        }
+
+        fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
+            Ok(Box::new(SilentWatch))
+        }
+    }
+
+    #[test]
+    fn a_read_that_fails_after_the_perturbation_still_leaves_the_camera_where_it_was_found() {
+        // AGENTS rule 8, at the one arm that deliberately moves a camera: "snapshot before,
+        // restore after … tests assert restoration". The arm's own early exit sat *between*
+        // the two until 2026-08-16 (note **N137**), so a read that failed after the writes
+        // had landed returned with the perturbation still on the device — and §2.11 step 4
+        // sends the author of every new backend through this suite with their own camera in
+        // front of it.
+        let backend = OneFragileCamera::new();
+        let before = backend
+            .brightness()
+            .expect("the fixture control has a value");
+
+        let mut failures = Vec::new();
+        let mut notes = Vec::new();
+        let outcome = {
+            let mut log = ArmLog {
+                arm: BatteryArm::SnapshotRestoreInverse,
+                failures: &mut failures,
+                notes: &mut notes,
+            };
+            arm_snapshot_restore_inverse(&backend, &mut log)
+        };
+
+        // The read failure is still reported — the restore is a repair, not a cover-up.
+        assert_eq!(outcome, ArmOutcome::Ran, "{failures:?}");
+        assert!(
+            failures.iter().any(|f| f.contains("controls() failed")),
+            "{failures:?}"
+        );
+        // And the camera is where it was found.
+        assert_eq!(
+            backend.brightness(),
+            Some(before),
+            "the arm returned between its perturbation and its restore: {failures:?}"
+        );
+    }
+
+    // --------------------------------- an arm that ran still says what it did not ask (N138)
+
+    /// A camera that resolves every request through the shared resolver, over the format
+    /// list it is given.
+    ///
+    /// The resolver is the subject of the arm this exercises, so the double calls it rather
+    /// than imitating it: a stand-in with its own opinion about what `640x480` resolves to
+    /// would be the E5 divergence the whole `ExplicitRequest` arm exists to catch, built
+    /// into the test that checks the arm.
+    #[derive(Debug)]
+    struct ResolvingCamera {
+        formats: Vec<FormatInfo>,
+        streamed: Option<(u32, u32)>,
+        /// What `formats()` answers instead of the list, when a test needs the enumeration
+        /// itself to be unavailable rather than empty.
+        unavailable: Option<Error>,
+    }
+
+    impl Camera for ResolvingCamera {
+        fn info(&self) -> &CameraInfo {
+            unreachable!("this arm never asks a camera for its own info")
+        }
+
+        fn formats(&self) -> Result<Vec<FormatInfo>> {
+            match &self.unavailable {
+                Some(error) => Err(error.clone()),
+                None => Ok(self.formats.clone()),
+            }
+        }
+
+        fn controls(&self) -> Result<Vec<ControlDesc>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&mut self, _id: ControlId) -> Result<ControlValue> {
+            unreachable!("this camera has no controls")
+        }
+
+        fn set(&mut self, _id: ControlId, _value: ControlValue) -> Result<Applied> {
+            unreachable!("this camera has no controls")
+        }
+
+        fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
+            let chosen = request.choose(&self.formats)?;
+            let interval = schema::camera::FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30,
+            };
+            self.streamed = Some((chosen.width, chosen.height));
+            Ok(NegotiatedStream {
+                pixel_format: chosen.pixel_format,
+                width: chosen.width,
+                height: chosen.height,
+                bytes_per_line: chosen.width * 2,
+                size_image: chosen.width * chosen.height * 2,
+                interval,
+                adjustments: NegotiatedStream::diff(
+                    request,
+                    chosen.pixel_format,
+                    chosen.width,
+                    chosen.height,
+                    interval,
+                ),
+            })
+        }
+
+        fn streaming(&self) -> Option<NegotiatedStream> {
+            None
+        }
+
+        fn next_frame(&mut self, _deadline: Instant) -> Result<Frame> {
+            // A frame that agrees with its own header, because `arm_stream_lifecycle` runs
+            // against this backend too and a double that streams garbage would fail an arm
+            // this test is not about.
+            let (width, height) = self.streamed.ok_or_else(|| Error::DeviceGone {
+                path: "/dev/video0".into(),
+            })?;
+            let stride = width * 2;
+            Ok(Frame {
+                bytes: vec![0x80; (stride * height) as usize],
+                pixel_format: PixelFormat::YUYV,
+                width,
+                height,
+                bytes_per_line: stride,
+                sequence: 0,
+                timestamp_us: 0,
+            })
+        }
+
+        fn stop_stream(&mut self) -> Result<()> {
+            self.streamed = None;
+            Ok(())
+        }
+    }
+
+    /// Two cameras: one this arm can ask everything, and one it cannot.
+    ///
+    /// **The half-exercised backend.** `arm_explicit_request` puts two claims to each camera
+    /// and the *arm* reports one outcome for the backend, so a camera that can answer only
+    /// one of them is the shape that decides whether "not asked" survives the arm boundary
+    /// (note **N138**). Two second cameras are needed because there are two ways to be
+    /// unaskable and the arm answered them differently:
+    ///
+    /// - `stepwise` can deliver a frame of *any* size down to one pixel, so there is no size
+    ///   for it to refuse and the size claim is a named skip.
+    /// - `busy` is held by another process, so its enumeration says nothing about what it
+    ///   can do — availability is not capability (AGENTS rule 7), and this arm failed on it
+    ///   until 2026-08-16.
+    #[derive(Debug)]
+    struct OneCameraDeliversAnySize {
+        second: &'static str,
+    }
+
+    impl OneCameraDeliversAnySize {
+        fn info(slug: &str) -> CameraInfo {
+            let mut info = crate::fixtures::synthetic_basic().invariant.info;
+            info.backend = BackendKind::Fake;
+            info.id = CameraId::parse(slug).expect("a literal slug");
+            info
+        }
+    }
+
+    impl CameraBackend for OneCameraDeliversAnySize {
+        fn kind(&self) -> BackendKind {
+            BackendKind::Fake
+        }
+
+        fn enumerate(&self) -> Result<Vec<CameraInfo>> {
+            Ok(vec![Self::info("discrete"), Self::info(self.second)])
+        }
+
+        fn open(&self, id: &CameraId) -> Result<Box<dyn Camera>> {
+            let size = if id.as_str().contains("stepwise") {
+                schema::camera::FrameSize::Stepwise {
+                    min_width: 1,
+                    max_width: 1_920,
+                    step_width: 1,
+                    min_height: 1,
+                    max_height: 1_080,
+                    step_height: 1,
+                }
+            } else {
+                schema::camera::FrameSize::Discrete {
+                    width: 640,
+                    height: 480,
+                }
+            };
+            Ok(Box::new(ResolvingCamera {
+                formats: vec![FormatInfo {
+                    pixel_format: PixelFormat::YUYV,
+                    description: "YUYV 4:2:2".to_owned(),
+                    flags: 0,
+                    sizes: vec![schema::camera::FrameSizeInfo {
+                        size,
+                        intervals: Vec::new(),
+                    }],
+                }],
+                streamed: None,
+                unavailable: (id.as_str().contains("busy")).then(|| Error::Busy {
+                    path: "/dev/video9".into(),
+                    holders: Vec::new(),
+                }),
+            }))
+        }
+
+        fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
+            Ok(Box::new(SilentWatch))
+        }
+    }
+
+    #[test]
+    fn a_claim_an_arm_could_not_put_to_a_camera_is_named_and_counted_even_when_the_arm_ran() {
+        // **AGENTS rule 3 at the arm boundary**: "every auto-skipping rung reports a named,
+        // counted skip — never silence". `Claim` exists so that "not asked" and "passed" do
+        // not collapse, and until 2026-08-16 they collapsed one line after it was decided —
+        // a `Claim::NotAsked` became a `CameraVisit` note, and notes were rendered only when
+        // the arm ended `Skipped`. So this backend, whose second camera can deliver any size
+        // and therefore cannot be asked for one it cannot deliver, reported `ran` and said
+        // nothing at all about the half that never happened (note **N138**).
+        let backend = OneCameraDeliversAnySize { second: "stepwise" };
+        let declared = BTreeMap::new();
+        let report = run(&backend, &declared);
+
+        // The arm ran — one camera answered both claims — and it found nothing wrong,
+        // because an unaskable camera is availability rather than a conformance verdict (E3).
+        assert_eq!(
+            report.outcome(BatteryArm::ExplicitRequest),
+            Some(&ArmOutcome::Ran),
+            "{report}"
+        );
+        assert!(
+            report.failures_for(BatteryArm::ExplicitRequest).is_empty(),
+            "{report}"
+        );
+
+        // And the claim nobody could put is named, counted, and attributed to its camera.
+        let unasked = report.notes_for(BatteryArm::ExplicitRequest);
+        assert_eq!(unasked.len(), 1, "{report}");
+        assert!(
+            unasked[0].contains("stepwise") && unasked[0].contains("1x1"),
+            "{report}"
+        );
+        // The rendered report says so too, so a person reading a green run learns it — which
+        // is the whole of what "never silence" asks for.
+        assert!(
+            report.to_string().contains("1 unasked claim(s):"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_camera_another_process_holds_is_a_named_skip_rather_than_a_conformance_failure() {
+        // **AGENTS rule 7 / doctrine E3**, at the one call this arm made an exception of.
+        // The arm was careful about `Busy` and `PermissionDenied` from `start_stream` and
+        // then failed unconditionally on any `formats()` error — so a camera grabbed by
+        // another process between `open` and `formats` turned a whole battery run red for a
+        // fact about who holds the device rather than about what it can do (note **N138**).
+        // §2.11 step 4 sends the author of every new backend through this suite with their
+        // own camera, and a webcam somebody's video call has claimed is the ordinary case.
+        let backend = OneCameraDeliversAnySize { second: "busy" };
+        let declared = BTreeMap::new();
+        let report = run(&backend, &declared);
+
+        assert_eq!(
+            report.outcome(BatteryArm::ExplicitRequest),
+            Some(&ArmOutcome::Ran),
+            "{report}"
+        );
+        assert!(
+            report.failures_for(BatteryArm::ExplicitRequest).is_empty(),
+            "a busy camera was reported as a backend that fails D5: {report}"
+        );
+        let unasked = report.notes_for(BatteryArm::ExplicitRequest);
+        assert_eq!(unasked.len(), 1, "{report}");
+        assert!(
+            unasked[0].contains("busy") && unasked[0].contains("could not be asked"),
+            "{report}"
         );
     }
 

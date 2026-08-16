@@ -1343,7 +1343,7 @@
           "type": "object"
         },
         {
-          "description": "The requested pixel format is not one that would be accepted here.\n\n**Whose list `available` is depends on who refused, and the message must not\nguess.** It said \"this camera offers …\" until 2026-08-15, which is true of D6's\nsource-format refusal and false of the other two callers: `engine::preview`\nanswers with the format the negotiation actually produced, and D7's record path\nanswers with what the *container* would have carried. Measured at the Chicony IR\nsensor, which offers GREY and nothing else — a `record -o x.avi` refusal read\n\"format GREY is unavailable; this camera offers MJPG, JPEG\", naming two formats\nthat camera has never had. An unattended caller obeying it would retry\n`--pixel-format MJPG` against a device with no MJPG, which is the defect the D13\nregistry exists to prevent rather than commit (note **N129**).\n\nThe variant itself is right where it is: design D7 names\n`FormatUnsupported { available }` for the container case in so many words, so this\nis a rendering repair and not a re-litigation of which refusal applies. The\nsentence now says only what is true of every caller — these are the formats that\n*would* be accepted — and which lever to pull is the guide's `Do` column, where a\ncontainer mismatch is answered by changing the container rather than the format.",
+          "description": "The requested pixel format is not one that would be accepted here.\n\n**Whose list `available` is depends on who refused, and the message must not\nguess.** It said \"this camera offers …\" until 2026-08-15, which is true of D6's\nsource-format refusal and false of the other two callers: `engine::preview`\nanswers with the format the negotiation actually produced, and D7's record path\nanswers with what the *container* would have carried. Measured at the Chicony IR\nsensor, which offers GREY and nothing else — a `record -o x.avi` refusal read\n\"format GREY is unavailable; this camera offers MJPG, JPEG\", naming two formats\nthat camera has never had. An unattended caller obeying it would retry\n`--pixel-format MJPG` against a device with no MJPG, which is the defect the D13\nregistry exists to prevent rather than commit (note **N129**).\n\nThe variant itself is right where it is: design D7 names\n`FormatUnsupported { available }` for the container case in so many words, so this\nis a rendering repair and not a re-litigation of which refusal applies. The\nsentence now says only what is true of every caller — these are the formats that\n*would* be accepted — and which lever to pull is the guide's `Do` column, where a\ncontainer mismatch is answered by changing the container rather than the format.\n\n**And the same lesson had to be learnt again about the *size*** (note **N138**).\nA request refused because no mode could deliver the size it named had nowhere to\nsay so: it reported `requested: None` and the sentence came out *\"format\n(unspecified) is unavailable; MJPG, YUYV would be accepted\"* — about formats, naming\nthe caller's own format as acceptable, never mentioning size. [`SizeRefusal`] is the\nslot N134 said this variant would need, and `size` is now what distinguishes the two\ncauses; build one through [`Error::format_unsupported`] or\n[`Error::size_unsupported`] rather than by hand, so they stay exclusive.",
           "properties": {
             "available": {
               "description": "What would be accepted — the camera's formats, the negotiated one, or the\ncontainer's, according to which of the three callers refused.",
@@ -1365,7 +1365,18 @@
                   "type": "null"
                 }
               ],
-              "description": "What was asked for, when the caller named something."
+              "description": "The format that was asked for, when the caller named one **and the format is\nwhat could not be met**. `None` when the caller named none, and never a\nstand-in for \"the size was the problem\" — `size` says that outright."
+            },
+            "size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SizeRefusal"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The size that could not be delivered, present **exactly when** the size rather\nthan the format is what this refusal is about.\n\nAbsent for every other producer of this variant — the D6 source-format refusal,\n`engine::preview`'s unrenderable negotiation, and D7's container refusal all\nrefuse a *format* — which is what makes `size.is_some()` a reliable\ndiscriminator rather than a hint. `engine::preview::negotiate` reads it as one:\nits cap can be dropped and retried, and a format it named and the device lacks\ncannot."
             }
           },
           "required": [
@@ -3926,6 +3937,36 @@
           "type": "object"
         }
       ]
+    },
+    "SizeRefusal": {
+      "description": "The size half of a [`Error::FormatUnsupported`]: the frame size a caller named, and\nevery size the device can actually deliver.\n\n**A refusal has to say which knob to turn.** `FormatUnsupported` carried one slot for\n\"what was asked for\" and it held a [`PixelFormat`], so a request refused for its *size*\nhad to report `requested: None` and a list of formats — which rendered as *\"format\n(unspecified) is unavailable; MJPG, YUYV would be accepted\"* and told an unattended\ncaller that the half of its request that was answerable was the problem. Retrying with\none of the formats named produces the identical refusal, so the guide's *\"fix the\nrequest\"* disposition becomes a loop: note **N129**'s misdirection class, at the same\nvariant, one phase later (note **N138**).\n\nSo the size that was refused and the sizes that would be accepted travel together, and\nthe presence of this payload is what says *which* half of the request could not be met.\nSee [`Error::size_unsupported`] for the two constructors that keep the two causes\nmutually exclusive.",
+      "properties": {
+        "available": {
+          "description": "Every size the device can deliver, across **every** format it enumerates — because\nthe resolver's candidate set is device-wide, so \"no mode fits\" is a fact about the\ndevice rather than about whichever format a ranking happened to pick.\n\nA [`FrameSize`] rather than a `(width, height)` pair, so a **stepwise** entry\narrives as the range it is: collapsing it to its maximum corner here would be the\nsame falsehood [`FrameSize::largest_within`] exists to avoid, committed in the\nmessage that is supposed to repair the request.\n\nEntries whose shape this build cannot read (D2's [`FrameSize::Unknown`]) are left\nout: this list is what *would be accepted*, and a size we cannot interpret is not\nsomething a caller can ask for. The device's own enumeration still carries them —\n`info` is where a caller sees that the driver said something we did not understand.",
+          "items": {
+            "$ref": "#/$defs/FrameSize"
+          },
+          "type": "array"
+        },
+        "requested_height": {
+          "description": "The height the caller named.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requested_width": {
+          "description": "The width the caller named.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requested_width",
+        "requested_height",
+        "available"
+      ],
+      "type": "object"
     },
     "Snapshot": {
       "description": "Every writable control's value at one instant.",

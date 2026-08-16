@@ -100,6 +100,21 @@ pub(crate) struct ScriptedCamera {
     /// a JPEG bitstream. Real cameras offer both \[PF:9\], which is why this is one knob and
     /// not a second double.
     offers: PixelFormat,
+    /// What the driver answers with, when a test wants it to differ from what was chosen.
+    ///
+    /// D5's whole premise on the real backend: `S_FMT` may come back carrying a format the
+    /// caller did not ask for, and the answer is the device's. Since 2026-08-16 the shared
+    /// resolver refuses a *named* format the device does not enumerate (note **N134**), so
+    /// this is now the only way to build the shape `crate::preview::start` refuses — a
+    /// negotiation that landed on something a browser cannot render.
+    answers_with: Option<PixelFormat>,
+    /// The one frame size that format offers.
+    ///
+    /// Small by default so a scripted frame is cheap, and a knob for the same reason
+    /// `offers` is one: since 2026-08-16 a request naming a size *no* mode fits is a typed
+    /// refusal (note **N134**), and the only way to reach that arm from here is a double
+    /// whose mode is bigger than the caller's request.
+    size: (u32, u32),
     /// Every request `start_stream` accepted, in order.
     ///
     /// `stops`' twin, and richer than a count for one reason: a resume has to ask for the
@@ -139,6 +154,8 @@ impl ScriptedCamera {
             latched: std::collections::BTreeSet::new(),
             formats: true,
             offers: PixelFormat::YUYV,
+            answers_with: None,
+            size: (32, 16),
             started: Vec::new(),
             stream_start_fault: None,
             frame_fault: None,
@@ -161,6 +178,27 @@ impl ScriptedCamera {
     /// webcam this project has met offers \[PF:9\].
     pub(crate) fn compressed(mut self) -> ScriptedCamera {
         self.offers = PixelFormat::MJPG;
+        self
+    }
+
+    /// A camera whose `S_FMT` answers `format` whatever was asked for and agreed.
+    ///
+    /// Not a lie a fake would be allowed to tell (E5 forbids inventing device behaviour),
+    /// and not one this double tells unasked: it is the *measured* half of D5 — drivers
+    /// adjust silently — expressed at the one seam where a test needs to drive it.
+    pub(crate) fn answers_with(mut self, format: PixelFormat) -> ScriptedCamera {
+        self.answers_with = Some(format);
+        self
+    }
+
+    /// A camera whose one mode is `width`×`height` rather than the default 32×16.
+    ///
+    /// The shape that matters is *bigger than a caller's cap*: the OBSBOT's MJPG list
+    /// starts at 1280×720, so a preview asking for 640×480 asks for something it does not
+    /// have, and since 2026-08-16 a size nothing fits is a refusal rather than the largest
+    /// mode (note **N134**). A double stuck at 32×16 cannot reach that arm at all.
+    pub(crate) fn sized(mut self, width: u32, height: u32) -> ScriptedCamera {
+        self.size = (width, height);
         self
     }
 
@@ -270,8 +308,8 @@ impl Camera for ScriptedCamera {
             flags: u32::from(self.offers.is_compressed()),
             sizes: vec![FrameSizeInfo {
                 size: FrameSize::Discrete {
-                    width: 32,
-                    height: 16,
+                    width: self.size.0,
+                    height: self.size.1,
                 },
                 intervals: vec![FrameInterval::Discrete {
                     numerator: 1,
@@ -395,25 +433,28 @@ impl Camera for ScriptedCamera {
             return Err(error.clone());
         }
         let formats = self.formats()?;
-        let chosen = request
-            .choose(&formats)
-            .ok_or_else(|| Error::FormatUnsupported {
-                requested: request.pixel_format,
-                available: Vec::new(),
-            })?;
+        // The refusal is the shared resolver's, exactly as it is on both real backends
+        // (note **N134**): a double that answered a named-but-absent format with a stream
+        // would let an engine test pass over a request D5 refuses (E5, one level in).
+        let chosen = request.choose(&formats)?;
+        // `S_FMT` is a negotiation and the *driver's* answer is what the stream carries
+        // (D5), so a double has to be able to answer with something nobody asked for —
+        // otherwise the one caller that cannot forward that difference to its client
+        // (`crate::preview::start`) has a guard no test can reach.
+        let pixel_format = self.answers_with.unwrap_or(chosen.pixel_format);
         let interval = FrameInterval::Discrete {
             numerator: 1,
             denominator: 30,
         };
         // Zero for a compressed format, which is what a driver reports and what
         // `NegotiatedStream`'s own field says: a JPEG bitstream has no stride.
-        let bytes_per_line = if chosen.pixel_format.is_compressed() {
+        let bytes_per_line = if pixel_format.is_compressed() {
             0
         } else {
             chosen.width * 2
         };
         let negotiated = NegotiatedStream {
-            pixel_format: chosen.pixel_format,
+            pixel_format,
             width: chosen.width,
             height: chosen.height,
             bytes_per_line,
@@ -421,7 +462,7 @@ impl Camera for ScriptedCamera {
             interval,
             adjustments: NegotiatedStream::diff(
                 request,
-                chosen.pixel_format,
+                pixel_format,
                 chosen.width,
                 chosen.height,
                 interval,

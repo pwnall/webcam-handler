@@ -3456,10 +3456,10 @@ mod tests {
         // The shape of the ruling, at the seam both roots share. Asserted here as well as in
         // the two subprocess suites because this is the function they call: a root that
         // stopped calling it would fail there, and a change to what it emits fails here.
-        let error = Error::FormatUnsupported {
-            requested: Some(PixelFormat::NV12),
-            available: vec![PixelFormat::MJPG, PixelFormat::YUYV],
-        };
+        let error = Error::format_unsupported(
+            Some(PixelFormat::NV12),
+            vec![PixelFormat::MJPG, PixelFormat::YUYV],
+        );
         for &program in Program::ALL {
             let stdout = render::tests::Buffer::default();
             let stderr = render::tests::Buffer::default();

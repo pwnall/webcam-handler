@@ -360,15 +360,14 @@ impl VideoFormat {
     /// the line between them: a capability claim and a malfunction are not the same answer.
     pub fn resolve(requested: Option<Self>, negotiated: PixelFormat) -> Result<Self> {
         match requested {
-            None => Self::for_pixel_format(negotiated).ok_or_else(|| Error::FormatUnsupported {
-                requested: Some(negotiated),
-                available: Self::recordable_pixel_formats(),
+            None => Self::for_pixel_format(negotiated).ok_or_else(|| {
+                Error::format_unsupported(Some(negotiated), Self::recordable_pixel_formats())
             }),
             Some(container) if container.carries_format(negotiated) => Ok(container),
-            Some(container) => Err(Error::FormatUnsupported {
-                requested: Some(negotiated),
-                available: container.carries().to_vec(),
-            }),
+            Some(container) => Err(Error::format_unsupported(
+                Some(negotiated),
+                container.carries().to_vec(),
+            )),
         }
     }
 
@@ -900,6 +899,10 @@ mod tests {
             Error::FormatUnsupported {
                 requested,
                 available,
+                // A container refuses a *format*, never a size — which is what makes
+                // `size.is_some()` a reliable discriminator for the one caller that acts on
+                // it (note **N138**).
+                size: None,
             } => {
                 assert_eq!(requested, Some(PixelFormat::YUYV));
                 assert_eq!(available, vec![PixelFormat::MJPG, PixelFormat::JPEG]);
@@ -942,6 +945,7 @@ mod tests {
             Error::FormatUnsupported {
                 requested,
                 available,
+                size: None,
             } => {
                 assert_eq!(requested, Some(h264));
                 assert_eq!(available, VideoFormat::recordable_pixel_formats());

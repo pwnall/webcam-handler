@@ -290,11 +290,147 @@ fn an_unknown_control_round_trips_its_opaque_payload() {
         ControlValue::Bytes(rewritten)
     );
 
-    // A payload of the wrong size is refused, because a driver checks `elem_size × elems`.
+    // A payload of the wrong size is **adjusted to the shape the control has**, not
+    // refused, because that is what was measured: \[PF:17\] wrote 300 bytes to a `vivid`
+    // compound control that had reshaped to 240 and the write *succeeded* at 240. This
+    // suite asserted the opposite until 2026-08-16, under the reasonable-sounding
+    // justification "a driver checks `elem_size × elems`" — a fake capability no real
+    // device exhibits, which rubric A9 makes a bug in the fake rather than a rule the
+    // engine should be written against (note **N136**).
+    let oversized = vec![0xab; original.len() + 1];
+    let adjusted = camera
+        .set(roi.id, ControlValue::Bytes(oversized.clone()))
+        .expect("PF:17 — a driver applies what fits and reports what it applied");
+    assert_eq!(
+        adjusted.applied,
+        ControlValue::Bytes(vec![0xab; original.len()]),
+        "the applied value is the payload at the control's own length"
+    );
+    assert_eq!(
+        adjusted.warnings,
+        vec![WriteWarning::Adjusted {
+            requested: ControlValue::Bytes(oversized),
+            applied: ControlValue::Bytes(vec![0xab; original.len()]),
+        }],
+        "an unexplained difference is the most interesting kind, and it is reported"
+    );
+    assert_eq!(
+        camera.get(roi.id).expect("read"),
+        ControlValue::Bytes(vec![0xab; original.len()]),
+        "and the read-back is the adjusted payload rather than the requested one"
+    );
+
+    // The *shape* mismatch is still a refusal, and it is a different fact: a scalar handed
+    // to a pointer control contradicts the descriptor, which is §2.3's typed refusal and
+    // not a driver adjustment.
     let error = camera
-        .set(roi.id, ControlValue::Bytes(vec![0; original.len() + 1]))
-        .expect_err("a mis-sized payload must be refused");
+        .set(roi.id, ControlValue::Int(7))
+        .expect_err("an integer at a payload control is a shape the descriptor refuses");
     assert!(matches!(error, Error::DeviceIo { .. }), "{error}");
+}
+
+/// An **array** control: element type `INTEGER`, value a payload behind a pointer.
+///
+/// The one control shape where §2.3's "dispatch belongs to the descriptor" and "dispatch by
+/// the control's type" disagree, and no committed profile has one — every control in
+/// `corpus/` and in `synthetic-basic.json` is a plain scalar or a plain payload, which is
+/// why the fake could dispatch on the wrong one of the two for three phases without a
+/// fixture noticing (note **N135**).
+///
+/// `declared`, not measured on a device this project owns: the V4L2 control framework sets
+/// `V4L2_CTRL_FLAG_HAS_PAYLOAD` for any control with more than one element and leaves the
+/// element type alone, which is what `vivid`'s `Integer 32 Bits Array` (16 elements of 4
+/// bytes) is. The R2 vivid rung is where that becomes measured; this fixture is what makes
+/// the rule fail here first.
+fn integer_array_control() -> ControlDesc {
+    const HAS_PAYLOAD: u32 = 0x0100;
+    ControlDesc {
+        id: schema::control::ControlId(0x0098_19e0),
+        name: "Integer 32 Bits Array".to_owned(),
+        slug: slug("integer_32_bits_array"),
+        control_type: ControlType::Integer,
+        range: schema::control::ControlRange {
+            min: -10,
+            max: 10,
+            step: 1,
+        },
+        default: 0,
+        flags: schema::control::ControlFlags::from_raw(HAS_PAYLOAD),
+        menu: std::collections::BTreeMap::new(),
+        elems: 16,
+        elem_size: 4,
+        dims: vec![16],
+        current: Some(ControlValue::Bytes(vec![0; 64])),
+    }
+}
+
+/// The fixture with one array control added, and its id.
+fn backend_with_an_array_control() -> (FakeBackend, schema::control::ControlId) {
+    let mut profile = fixtures::synthetic_basic();
+    let desc = integer_array_control();
+    profile
+        .invariant
+        .controls
+        .push(schema::profile::invariant_control(&desc));
+    profile
+        .state
+        .values
+        .insert(desc.slug.clone(), desc.current.clone().expect("a payload"));
+    profile
+        .state
+        .flags
+        .insert(desc.slug.clone(), desc.flags.raw);
+    (
+        FakeBackend::from_profile(profile).expect("the fixture replays"),
+        desc.id,
+    )
+}
+
+#[test]
+fn an_array_control_is_written_as_the_payload_its_descriptor_declares_and_not_as_its_type() {
+    // §2.3's contract note — "Dispatch belongs to the descriptor" — which was added
+    // *because of* the P2 review's ioctl-dispatch defect, with the real backend on the
+    // wrong side of it. This is the same note with the fake on the wrong side: it chose the
+    // write path by `control_type`, so a control whose type is `INTEGER` and whose
+    // descriptor says `HAS_PAYLOAD` would have been clamped into `[-10..10]` as a scalar,
+    // while `V4l2Camera::set` sent the same control's bytes through `set_payload`. The two
+    // backends agreeing is E5's whole claim, and it held only because no fixture separated
+    // the rules (note **N135**).
+    let (backend, id) = backend_with_an_array_control();
+    let mut camera = open_first(&backend);
+
+    let desc = descriptor(&camera, "integer_32_bits_array");
+    assert_eq!(
+        desc.control_type,
+        ControlType::Integer,
+        "the fixture's point is that the type says scalar"
+    );
+    assert!(
+        desc.flags.has(KnownFlag::HasPayload),
+        "and that the descriptor says payload"
+    );
+
+    let payload: Vec<u8> = (0..64u8).collect();
+    let applied = camera
+        .set(id, ControlValue::Bytes(payload.clone()))
+        .expect("a 16x4-byte payload is exactly what this control holds");
+    assert_eq!(
+        applied.applied,
+        ControlValue::Bytes(payload.clone()),
+        "an array control takes bytes, byte for byte"
+    );
+    assert!(applied.warnings.is_empty(), "{:?}", applied.warnings);
+    assert_eq!(camera.get(id).expect("read"), ControlValue::Bytes(payload));
+
+    // The other direction, which is what a type-dispatching write would have accepted: an
+    // integer at a pointer control is the typed refusal design §2.3 names, on both
+    // backends. A fake that clamped it into `[-10..10]` and reported success would let the
+    // engine ship a write the kernel turns into a heap address (`V4l2Camera::set`'s own
+    // comment) — the P2 defect, arriving from the other side.
+    let refused = camera
+        .set(id, ControlValue::Int(3))
+        .expect_err("a scalar at a payload control is refused");
+    assert!(matches!(refused, Error::DeviceIo { .. }), "{refused}");
 }
 
 #[test]
@@ -459,6 +595,10 @@ fn negotiation_reports_every_way_it_differed_from_the_request() {
     camera.stop_stream().expect("stop");
 
     // A format the device does not offer at all is a typed refusal naming what it does.
+    // The guard used to be three lines in this crate and is the shared resolver's since
+    // 2026-08-16 (note **N134**), so what this asserts now is that the fake still answers
+    // the same way it always did — which is the *only* reason the divergence with the V4L2
+    // backend was invisible for three phases.
     let error = camera
         .start_stream(&StreamRequest {
             pixel_format: Some(PixelFormat::NV12),
@@ -466,9 +606,33 @@ fn negotiation_reports_every_way_it_differed_from_the_request() {
         })
         .expect_err("NV12 is not on the profile");
     assert!(
-        matches!(&error, Error::FormatUnsupported { available, .. } if !available.is_empty()),
+        matches!(&error, Error::FormatUnsupported { requested, available, size }
+            if *requested == Some(PixelFormat::NV12) && !available.is_empty() && size.is_none()),
         "{error}"
     );
+
+    // And a size nothing on this device fits is the same refusal, which is the half no
+    // backend enforced before the owner's ruling of 2026-08-16: the smallest mode the
+    // fixture offers is 320x240, so 16x16 has nothing to negotiate down to.
+    let error = camera
+        .start_stream(&StreamRequest {
+            width: Some(16),
+            height: Some(16),
+            ..StreamRequest::default()
+        })
+        .expect_err("nothing on this device fits inside 16x16");
+    assert!(
+        matches!(&error, Error::FormatUnsupported { requested, available, size }
+            if requested.is_none() && !available.is_empty()
+                && size.as_ref().is_some_and(|s| (s.requested_width, s.requested_height) == (16, 16))),
+        "{error}"
+    );
+    // And the sentence, because it is the half a caller reads first: it names the size it
+    // could not deliver and offers sizes rather than formats (note **N138**).
+    let sentence = error.to_string();
+    assert!(sentence.contains("16x16"), "{sentence}");
+    assert!(sentence.contains("320x240"), "{sentence}");
+    assert!(!sentence.contains("MJPG"), "{sentence}");
 }
 
 #[test]

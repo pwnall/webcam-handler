@@ -837,11 +837,16 @@ fn disposition(kind: ErrorKind) -> (&'static str, &'static str) {
         ),
         ErrorKind::FormatUnsupported => (
             "fix the request",
-            "The camera cannot deliver what was asked for, and `available` lists what it can. \
-             Two ways to meet it: a `--size` or `--pixel-format` this device does not offer — \
-             ask for one it does, or leave the flag out and let the camera choose; or a \
-             recording container that cannot carry what this camera produces — a `.avi` needs \
-             MJPEG frames, so a camera that delivers raw ones records to `.y4m`.",
+            "The camera cannot deliver what was asked for, and the payload says which half. \
+             When `size` is present the frame size is the problem: `size.requested_width` \
+             and `size.requested_height` are what you asked for and `size.available` lists \
+             every size this camera can deliver — pick one, or leave `--size` out and let \
+             the camera choose. Otherwise the format is the problem: `requested` is what you \
+             asked for and `available` lists what would be taken — either a \
+             `--pixel-format` this device does not offer, or a recording container that \
+             cannot carry what this camera produces, and a `.avi` needs MJPEG frames so a \
+             camera that delivers raw ones records to `.y4m`. The two never both appear: one \
+             refusal names one lever.",
         ),
         ErrorKind::SettleTimeout => (
             "retry once, then stop",
@@ -967,9 +972,14 @@ fn photograph_recipe() -> String {
          ```console\n\
          $ {client} photo <CAMERA> -o <PHOTO> --skip-frames 20 --settle-deadline 8000\n\
          ```\n\n\
-         **Ask for a size and a format, or accept the camera's choice.** `--size 1920x1080` \
-         and `--pixel-format MJPG` are requests; the answer says what was negotiated. A \
-         format this build cannot decode is refused by name rather than silently replaced.\n\n\
+         **Ask for a size and a format, or accept the camera's choice — and an explicit \
+         request is answered or refused, never quietly replaced.** A `--pixel-format` this \
+         camera does not enumerate is `format_unsupported` naming what it does have. A \
+         `--size` no mode can deliver is `format_unsupported` too, and its `size` field \
+         names the size you asked for and every size this camera can deliver. A size the \
+         camera can *fit inside* is answered with the largest mode that does, and the \
+         difference is in `negotiated` and in `adjustments` — so read `negotiated` rather \
+         than assuming you got the number you typed.\n\n\
          ```console\n\
          $ {client} photo <CAMERA> -o <PHOTO> --size 1280x720 --pixel-format MJPG --json\n\
          ```\n\n\

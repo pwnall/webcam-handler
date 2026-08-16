@@ -49,10 +49,10 @@ pub fn frame(image: &GrayImage, format: PixelFormat) -> Result<Frame> {
         // The stride of the *luma* plane; the chroma plane follows it.
         (pack_nv12(image), image.width())
     } else {
-        return Err(Error::FormatUnsupported {
-            requested: Some(format),
-            available: vec![PixelFormat::GREY, PixelFormat::YUYV, PixelFormat::NV12],
-        });
+        return Err(Error::format_unsupported(
+            Some(format),
+            vec![PixelFormat::GREY, PixelFormat::YUYV, PixelFormat::NV12],
+        ));
     };
 
     Ok(Frame {

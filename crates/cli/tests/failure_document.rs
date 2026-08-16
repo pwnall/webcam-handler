@@ -187,6 +187,7 @@ fn the_format_refusal_names_what_the_camera_does_offer_and_not_only_in_prose() {
     let Error::FormatUnsupported {
         requested,
         available,
+        size,
     } = &document.error
     else {
         panic!("{document:?}");
@@ -198,6 +199,11 @@ fn the_format_refusal_names_what_the_camera_does_offer_and_not_only_in_prose() {
     assert!(
         !available.is_empty(),
         "the refusal an agent retries on carries no formats to retry with"
+    );
+    assert!(
+        size.is_none(),
+        "a *format* refusal carrying a size names two levers to a caller that can pull only \
+         one (note **N138**): {document:?}"
     );
 
     // The formats are the camera's own, checked against what `info` says rather than against a
@@ -244,6 +250,150 @@ fn the_format_refusal_names_what_the_camera_does_offer_and_not_only_in_prose() {
             .all(Value::is_string),
         "the formats crossed as something other than their four characters: {}",
         raw["error"]["available"]
+    );
+}
+
+/// The refusal a caller meets when it asks a camera for a size, and the two things the
+/// refusal must not do: refuse a size the camera has, and blame the format when it does.
+///
+/// **Both were true of the shipped binary on 2026-08-16**, over `corpus/profiles/obsbot-tiny3.json`
+/// — one of the two cameras this project is developed against. `photo --size 640x480`
+/// answered `{"kind":"format_unsupported","requested":null,"available":["MJPG","YUYV"]}` and
+/// exit 18, for a size that camera enumerates in YUYV, because `StreamRequest::choose`
+/// ranked MJPG on its 8.3 megapixels and then asked only MJPG's list. And the sentence beside
+/// it read *"format (unspecified) is unavailable; MJPG, YUYV would be accepted"*: about
+/// formats, naming the caller's own format as acceptable, never mentioning size. An agent
+/// obeying `docs/agent-guide.md`'s `format_unsupported` disposition — "fix the request … ask
+/// for one it does" — retries `--pixel-format MJPG`, meets the identical refusal, and loops.
+/// Note **N138** carries both.
+///
+/// So this asserts the *claims* rather than the wording, in N129's shape: it asks the camera
+/// what it enumerates, asks for a size the answer says it has, then asks for one the answer
+/// says it does not, and fails a refusal that attributes one to the other. It runs over the
+/// OBSBOT profile rather than [`PROFILE`] because the shape that matters is two formats whose
+/// size lists disagree — the chicony offers 640×480 in both, so it cannot separate "ranked
+/// then vetoed" from "asked the whole device".
+#[test]
+fn a_size_refusal_names_the_size_and_never_the_format_that_was_answerable() {
+    /// Two formats, one of which stops well below the other. See the doc comment.
+    const SPLIT_SIZES: &str = "obsbot-tiny3";
+
+    let listed = run_replaying(SPLIT_SIZES, &["--json", "list"]);
+    assert_eq!(listed.code, Some(0), "{}", listed.stderr);
+    let document: Value = serde_json::from_str(&listed.stdout).expect("a camera list");
+    let camera = document["cameras"][0]["id"]
+        .as_str()
+        .expect("the replayed camera has an id")
+        .to_owned();
+
+    // What the camera says about itself, which is the only authority on it (AGENTS rule 4).
+    let detail = run_replaying(SPLIT_SIZES, &["--json", "info", &camera]);
+    assert_eq!(detail.code, Some(0), "{}", detail.stderr);
+    let detail: Value = serde_json::from_str(&detail.stdout).expect("a camera detail");
+    let mut enumerated: Vec<(u32, u32)> = Vec::new();
+    for format in detail["formats"].as_array().expect("a format tree") {
+        for entry in format["sizes"].as_array().expect("a size list") {
+            let size = &entry["size"];
+            if size["kind"] == "discrete" {
+                let width = u32::try_from(size["width"].as_u64().expect("a width")).expect("u32");
+                let height =
+                    u32::try_from(size["height"].as_u64().expect("a height")).expect("u32");
+                enumerated.push((width, height));
+            }
+        }
+    }
+    // The premise, asserted rather than assumed: a re-capture that dropped the small YUYV
+    // modes would turn the first half below into a test of a refusal, silently.
+    assert!(
+        enumerated.contains(&(640, 480)),
+        "{SPLIT_SIZES} no longer enumerates 640x480, which is the size this arm asks for: \
+         {enumerated:?}"
+    );
+    assert!(
+        !enumerated.iter().any(|(w, h)| *w <= 320 && *h <= 240),
+        "{SPLIT_SIZES} now has a mode inside 320x240, so the refusal below would be about \
+         something else: {enumerated:?}"
+    );
+
+    let dir = scratch();
+    let out = dir.path().join("sized.jpg");
+    let out = out.to_str().expect("a utf-8 scratch directory");
+
+    // Half one: a size the camera has is answered, whatever the ranking would have preferred.
+    let taken = run_replaying(
+        SPLIT_SIZES,
+        &["--json", "photo", &camera, "-o", out, "--size", "640x480"],
+    );
+    assert_eq!(
+        taken.code,
+        Some(0),
+        "a size this camera enumerates was refused: {} / {}",
+        taken.stdout,
+        taken.stderr
+    );
+    let answer: Value = serde_json::from_str(&taken.stdout).expect("a photo report");
+    assert_eq!(answer["negotiated"]["width"], 640);
+    assert_eq!(answer["negotiated"]["height"], 480);
+
+    // Half two: a size it does not have is refused, and the refusal is about the size.
+    let refused = run_replaying(
+        SPLIT_SIZES,
+        &[
+            "--json",
+            "photo",
+            &camera,
+            "-o",
+            out,
+            "--size",
+            "320x240",
+            "--pixel-format",
+            "MJPG",
+        ],
+    );
+    let failure = refused.refusal();
+    assert_eq!(failure.kind(), schema::ErrorKind::FormatUnsupported);
+    let Error::FormatUnsupported {
+        requested,
+        size: Some(size),
+        ..
+    } = &failure.error
+    else {
+        panic!(
+            "a size nothing fits was refused without saying so: {:?}",
+            failure.error
+        );
+    };
+    assert_eq!(
+        *requested, None,
+        "the caller's format is on this camera and is not what failed: {failure:?}"
+    );
+    assert_eq!((size.requested_width, size.requested_height), (320, 240));
+    // Every size the refusal offers is one the camera really has, and the ones it has are
+    // what a caller repairs its request with — checked against `info` rather than a list
+    // written here, so a re-capture moves both together or neither.
+    assert!(!size.available.is_empty(), "{failure:?}");
+    for offered in &size.available {
+        let schema::camera::FrameSize::Discrete { width, height } = offered else {
+            continue;
+        };
+        assert!(
+            enumerated.contains(&(*width, *height)),
+            "the refusal offers {width}x{height}, which this camera does not: {enumerated:?}"
+        );
+    }
+
+    // And the sentence, which is the half that sent an agent round a loop. It names the size
+    // it could not deliver; it does not name the format the caller asked for, because that
+    // format was answerable and changing it repairs nothing.
+    let message = &failure.message;
+    assert!(
+        message.contains("320x240"),
+        "the refusal never says which size it could not deliver: {message}"
+    );
+    assert!(
+        !message.contains("MJPG"),
+        "the refusal tells a caller its own format is the problem, so an agent following \
+         the guide retries it and meets this again: {message}"
     );
 }
 

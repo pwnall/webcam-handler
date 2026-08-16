@@ -217,10 +217,10 @@ pub fn decode(
     bytes_per_line: u32,
 ) -> Result<Decoded> {
     let Some(source) = SourceFormat::from_pixel_format(pixel_format) else {
-        return Err(Error::FormatUnsupported {
-            requested: Some(pixel_format),
-            available: SourceFormat::all_pixel_formats(),
-        });
+        return Err(Error::format_unsupported(
+            Some(pixel_format),
+            SourceFormat::all_pixel_formats(),
+        ));
     };
     match source {
         SourceFormat::Mjpg | SourceFormat::Jpeg => decode_jpeg(bytes, width, height),
@@ -625,6 +625,9 @@ mod tests {
             Error::FormatUnsupported {
                 requested,
                 available,
+                // A source-format refusal is about the format, so the size slot stays
+                // empty — the discriminator `engine::preview` reads (note **N138**).
+                size: None,
             } => {
                 assert_eq!(requested, Some(h264));
                 assert!(available.contains(&PixelFormat::MJPG), "{available:?}");

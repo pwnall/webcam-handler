@@ -1759,6 +1759,8 @@ mod tests {
         let Error::FormatUnsupported {
             requested,
             available,
+            // A container refuses a format, never a size (note **N138**).
+            size: None,
         } = &refusal
         else {
             panic!("a container that cannot carry the stream is a capability answer: {refusal}");

@@ -13,7 +13,7 @@ use camino::Utf8PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{CameraId, PixelFormat};
+use crate::camera::{CameraId, FrameSize, PixelFormat};
 use crate::control::ControlSlug;
 use crate::vocabulary::closed_vocabulary;
 
@@ -27,6 +27,44 @@ pub struct Holder {
     /// Its `comm`, when `/proc` let us read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comm: Option<String>,
+}
+
+/// The size half of a [`Error::FormatUnsupported`]: the frame size a caller named, and
+/// every size the device can actually deliver.
+///
+/// **A refusal has to say which knob to turn.** `FormatUnsupported` carried one slot for
+/// "what was asked for" and it held a [`PixelFormat`], so a request refused for its *size*
+/// had to report `requested: None` and a list of formats — which rendered as *"format
+/// (unspecified) is unavailable; MJPG, YUYV would be accepted"* and told an unattended
+/// caller that the half of its request that was answerable was the problem. Retrying with
+/// one of the formats named produces the identical refusal, so the guide's *"fix the
+/// request"* disposition becomes a loop: note **N129**'s misdirection class, at the same
+/// variant, one phase later (note **N138**).
+///
+/// So the size that was refused and the sizes that would be accepted travel together, and
+/// the presence of this payload is what says *which* half of the request could not be met.
+/// See [`Error::size_unsupported`] for the two constructors that keep the two causes
+/// mutually exclusive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SizeRefusal {
+    /// The width the caller named.
+    pub requested_width: u32,
+    /// The height the caller named.
+    pub requested_height: u32,
+    /// Every size the device can deliver, across **every** format it enumerates — because
+    /// the resolver's candidate set is device-wide, so "no mode fits" is a fact about the
+    /// device rather than about whichever format a ranking happened to pick.
+    ///
+    /// A [`FrameSize`] rather than a `(width, height)` pair, so a **stepwise** entry
+    /// arrives as the range it is: collapsing it to its maximum corner here would be the
+    /// same falsehood [`FrameSize::largest_within`] exists to avoid, committed in the
+    /// message that is supposed to repair the request.
+    ///
+    /// Entries whose shape this build cannot read (D2's [`FrameSize::Unknown`]) are left
+    /// out: this list is what *would be accepted*, and a size we cannot interpret is not
+    /// something a caller can ask for. The device's own enumeration still carries them —
+    /// `info` is where a caller sees that the driver said something we did not understand.
+    pub available: Vec<FrameSize>,
 }
 
 closed_vocabulary! {
@@ -242,13 +280,35 @@ pub enum Error {
     /// sentence now says only what is true of every caller — these are the formats that
     /// *would* be accepted — and which lever to pull is the guide's `Do` column, where a
     /// container mismatch is answered by changing the container rather than the format.
-    #[error("format {} is unavailable; {} would be accepted", format_requested(.requested), format_formats(.available))]
+    ///
+    /// **And the same lesson had to be learnt again about the *size*** (note **N138**).
+    /// A request refused because no mode could deliver the size it named had nowhere to
+    /// say so: it reported `requested: None` and the sentence came out *"format
+    /// (unspecified) is unavailable; MJPG, YUYV would be accepted"* — about formats, naming
+    /// the caller's own format as acceptable, never mentioning size. [`SizeRefusal`] is the
+    /// slot N134 said this variant would need, and `size` is now what distinguishes the two
+    /// causes; build one through [`Error::format_unsupported`] or
+    /// [`Error::size_unsupported`] rather than by hand, so they stay exclusive.
+    #[error("{}", format_capture_refusal(.requested, .available, .size))]
     FormatUnsupported {
-        /// What was asked for, when the caller named something.
+        /// The format that was asked for, when the caller named one **and the format is
+        /// what could not be met**. `None` when the caller named none, and never a
+        /// stand-in for "the size was the problem" — `size` says that outright.
         requested: Option<PixelFormat>,
         /// What would be accepted — the camera's formats, the negotiated one, or the
         /// container's, according to which of the three callers refused.
         available: Vec<PixelFormat>,
+        /// The size that could not be delivered, present **exactly when** the size rather
+        /// than the format is what this refusal is about.
+        ///
+        /// Absent for every other producer of this variant — the D6 source-format refusal,
+        /// `engine::preview`'s unrenderable negotiation, and D7's container refusal all
+        /// refuse a *format* — which is what makes `size.is_some()` a reliable
+        /// discriminator rather than a hint. `engine::preview::negotiate` reads it as one:
+        /// its cap can be dropped and retried, and a format it named and the device lacks
+        /// cannot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<SizeRefusal>,
     },
 
     /// Frames kept arriving but the settle policy never converged \[PF:11\].
@@ -347,6 +407,52 @@ pub enum Error {
 }
 
 impl Error {
+    /// A refusal about a **format**: what was named, when anything was, and what would be
+    /// accepted instead.
+    ///
+    /// One of the two doors into [`Error::FormatUnsupported`], and the reason they exist is
+    /// that the variant's two causes must not be expressible at once. A payload carrying
+    /// both a `requested` format and a [`SizeRefusal`] would be a refusal that names two
+    /// levers, and an unattended caller pulling the wrong one is the failure this whole
+    /// registry is built to avoid (note **N138**).
+    #[must_use]
+    pub fn format_unsupported(
+        requested: Option<PixelFormat>,
+        available: Vec<PixelFormat>,
+    ) -> Error {
+        Error::FormatUnsupported {
+            requested,
+            available,
+            size: None,
+        }
+    }
+
+    /// A refusal about a **size**: the frame size no mode could deliver, the sizes that
+    /// would be accepted, and the formats the device has.
+    ///
+    /// `requested` is `None` by construction — the caller's *format*, if it named one, is
+    /// on the device and is not what failed, so naming it there would send the caller to
+    /// change the half of its request that was answerable. `available` is still carried
+    /// because the device's formats are true and useful context; what changed is that the
+    /// message no longer offers them as the remedy. See [`SizeRefusal`].
+    #[must_use]
+    pub fn size_unsupported(
+        requested_width: u32,
+        requested_height: u32,
+        available_sizes: Vec<FrameSize>,
+        available: Vec<PixelFormat>,
+    ) -> Error {
+        Error::FormatUnsupported {
+            requested: None,
+            available,
+            size: Some(SizeRefusal {
+                requested_width,
+                requested_height,
+                available: available_sizes,
+            }),
+        }
+    }
+
     /// This error's discriminant.
     ///
     /// The match is exhaustive, so a new variant cannot be added without giving it a
@@ -421,10 +527,10 @@ impl Error {
                     ControlSlug::parse("white_balance_automatic").expect("literal slug"),
                 ),
             },
-            ErrorKind::FormatUnsupported => Error::FormatUnsupported {
-                requested: Some(PixelFormat::NV12),
-                available: vec![PixelFormat::MJPG, PixelFormat::YUYV],
-            },
+            ErrorKind::FormatUnsupported => Error::format_unsupported(
+                Some(PixelFormat::NV12),
+                vec![PixelFormat::MJPG, PixelFormat::YUYV],
+            ),
             ErrorKind::SettleTimeout => Error::SettleTimeout {
                 waited_ms: 5_000,
                 frames_seen: 3,
@@ -705,6 +811,38 @@ fn format_automation(automation: &Option<ControlSlug>) -> String {
     }
 }
 
+/// The one sentence [`Error::FormatUnsupported`] renders, in whichever of its two shapes
+/// the payload says applies.
+///
+/// **The sentence is the part of the payload a caller reads first**, and until 2026-08-16 a
+/// size refusal borrowed the format one: *"format (unspecified) is unavailable; MJPG, YUYV
+/// would be accepted"* for a request whose format was MJPG and whose *size* was the
+/// problem. An agent following `docs/agent-guide.md`'s "fix the request" disposition retries
+/// with a format the sentence just named, meets the identical refusal, and loops — note
+/// **N129**'s class, at the same variant, one phase later (note **N138**).
+///
+/// The two arms name different levers on purpose: one says which formats would be taken,
+/// the other says which sizes would be, and neither mentions the other's.
+fn format_capture_refusal(
+    requested: &Option<PixelFormat>,
+    available: &[PixelFormat],
+    size: &Option<SizeRefusal>,
+) -> String {
+    match size {
+        Some(size) => format!(
+            "no mode delivers {}x{}; {} would be accepted",
+            size.requested_width,
+            size.requested_height,
+            format_sizes(&size.available)
+        ),
+        None => format!(
+            "format {} is unavailable; {} would be accepted",
+            format_requested(requested),
+            format_formats(available)
+        ),
+    }
+}
+
 fn format_requested(requested: &Option<PixelFormat>) -> String {
     match requested {
         Some(f) => f.to_string(),
@@ -714,7 +852,14 @@ fn format_requested(requested: &Option<PixelFormat>) -> String {
 
 fn format_formats(formats: &[PixelFormat]) -> String {
     if formats.is_empty() {
-        "nothing (the capture node enumerated no formats)".to_owned()
+        // Just "nothing": the empty list has two causes and this sentence cannot tell them
+        // apart. A capture node really enumerating no format is one; a caller that filtered
+        // the enumeration down to nothing it could use — the fake, which can synthesise only
+        // a few — is the other, and this string said "the capture node enumerated no
+        // formats" for both until 2026-08-16, which is false for the second (note **N138**).
+        // What a caller needs from it is the same either way: nothing here would be taken,
+        // so stop rather than retry.
+        "nothing".to_owned()
     } else {
         formats
             .iter()
@@ -722,6 +867,36 @@ fn format_formats(formats: &[PixelFormat]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+/// The sizes a caller could ask for, rendered so the answer can be typed back at the
+/// command line.
+///
+/// A stepwise entry is written as the range it is — `32x32..1920x1080` — rather than as its
+/// maximum corner, because a caller told only the corner would ask for the one size in the
+/// range this project has spent a note explaining it does not have to ask for \[PF:26\].
+fn format_sizes(sizes: &[FrameSize]) -> String {
+    if sizes.is_empty() {
+        return "nothing".to_owned();
+    }
+    sizes
+        .iter()
+        .map(|size| match *size {
+            FrameSize::Discrete { width, height } => format!("{width}x{height}"),
+            FrameSize::Stepwise {
+                min_width,
+                max_width,
+                min_height,
+                max_height,
+                ..
+            } => format!("{min_width}x{min_height}..{max_width}x{max_height}"),
+            // Kept renderable rather than unreachable: `SizeRefusal::available` filters
+            // these out, and a `match` on device vocabulary still needs a payload-carrying
+            // arm (AGENTS rule 6) rather than a panic that a future producer would find.
+            FrameSize::Unknown { raw } => format!("a size shape this build cannot read ({raw:#x})"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_errno(errno: &Option<i32>) -> String {
@@ -805,16 +980,85 @@ mod tests {
             );
         }
 
-        // The empty case still says what it means, because a camera whose capture node
-        // enumerated nothing is a different problem from one that lacks the format asked
-        // for, and an empty array is where that distinction would quietly go.
-        let none_at_all = Error::FormatUnsupported {
-            requested: Some(PixelFormat::MJPG),
-            available: Vec::new(),
+        // The empty case still says what it means. It said "nothing (the capture node
+        // enumerated no formats)" until 2026-08-16, which named a cause this variant cannot
+        // know: the fake reaches the same empty list by filtering an enumeration down to
+        // the formats it can synthesise, and for that caller the sentence was false (note
+        // **N138**). What is true either way is that nothing here would be taken, which is
+        // also the only part a caller can act on — stop rather than retry.
+        let none_at_all = Error::format_unsupported(Some(PixelFormat::MJPG), Vec::new());
+        assert_eq!(
+            none_at_all.to_string(),
+            "format MJPG is unavailable; nothing would be accepted"
+        );
+    }
+
+    #[test]
+    fn a_size_refusal_names_the_size_and_never_offers_a_format_as_the_remedy() {
+        // **The sentence is the part of the payload a caller reads first** (note **N138**).
+        // A size refusal rendered "format (unspecified) is unavailable; MJPG, YUYV would be
+        // accepted" for the two days between the two halves of the H1b repair — about
+        // formats, naming the caller's own format as acceptable, never mentioning size — so
+        // an agent obeying the guide's "fix the request" disposition retried the format and
+        // met the identical refusal. This asserts the falsifiable halves: the size the
+        // caller named is in the sentence, the sizes it could ask for are in the sentence,
+        // and no format is.
+        let refusal = Error::size_unsupported(
+            320,
+            240,
+            vec![
+                FrameSize::Discrete {
+                    width: 640,
+                    height: 480,
+                },
+                FrameSize::Stepwise {
+                    min_width: 64,
+                    max_width: 1_920,
+                    step_width: 2,
+                    min_height: 64,
+                    max_height: 1_080,
+                    step_height: 2,
+                },
+            ],
+            vec![PixelFormat::MJPG, PixelFormat::YUYV],
+        );
+        let sentence = refusal.to_string();
+        assert!(sentence.contains("320x240"), "{sentence}");
+        assert!(sentence.contains("640x480"), "{sentence}");
+        // The stepwise entry as the range it is, not as its maximum corner — the same
+        // falsehood `FrameSize::largest_within` exists to avoid.
+        assert!(sentence.contains("64x64..1920x1080"), "{sentence}");
+        for format in ["MJPG", "YUYV"] {
+            assert!(
+                !sentence.contains(format),
+                "the refusal offers {format} as the remedy for a size it cannot deliver: \
+                 {sentence}"
+            );
+        }
+        // And the payload carries the same two facts, so a caller never has to parse the
+        // sentence to get them (AGENTS: "every variant carries what the caller needs to
+        // act on it").
+        let Error::FormatUnsupported {
+            requested,
+            size: Some(size),
+            ..
+        } = &refusal
+        else {
+            panic!("{refusal:?}");
         };
-        assert!(
-            none_at_all.to_string().contains("enumerated no formats"),
-            "{none_at_all}"
+        assert_eq!(*requested, None, "{refusal:?}");
+        assert_eq!((size.requested_width, size.requested_height), (320, 240));
+        assert_eq!(size.available.len(), 2);
+
+        // The other direction, so the assertions above are about the size arm rather than
+        // about a renderer that never names formats.
+        let format_half = Error::format_unsupported(
+            Some(PixelFormat::NV12),
+            vec![PixelFormat::MJPG, PixelFormat::YUYV],
+        );
+        assert_eq!(
+            format_half.to_string(),
+            "format NV12 is unavailable; MJPG, YUYV would be accepted"
         );
     }
 

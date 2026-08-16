@@ -175,11 +175,17 @@ pub enum Delivery {
 /// and here it is what makes a preview cost a daemon almost nothing per frame.
 ///
 /// The width and height are a **cap**, not a size: `StreamRequest::choose` answers with the
-/// largest mode that fits inside them, and falls back to the device's own first entry when
-/// nothing does. So a camera whose only MJPEG mode is 1920×1080 gets a preview at 1920×1080,
-/// with the difference reported as an [`schema::capture::Adjustment`] — because D5's rule is
-/// that the negotiated answer is surfaced whenever it differs from the request, and a preview
-/// is not exempt from it.
+/// largest mode that fits inside them, and the difference is reported as an
+/// [`schema::capture::Adjustment`] — because D5's rule is that the negotiated answer is
+/// surfaced whenever it differs from the request, and a preview is not exempt from it.
+///
+/// A camera *every* one of whose MJPEG modes is over the cap is the case this module's own
+/// `negotiate` exists for — it is private, and it is worth reading before changing either:
+/// the cap cannot be met, the
+/// preview happens anyway, and what it happens at is the format's largest mode — 3840×2160
+/// on the OBSBOT, for a cap of 640×480. That is what this path has always done and the
+/// repair of 2026-08-16 deliberately did not change it (note **N134**); it is a bandwidth
+/// decision nobody has taken, not a bug the refusal introduced.
 #[must_use]
 pub fn request() -> StreamRequest {
     StreamRequest {
@@ -187,6 +193,56 @@ pub fn request() -> StreamRequest {
         width: Some(limits::PREVIEW_MAX_WIDTH),
         height: Some(limits::PREVIEW_MAX_HEIGHT),
         ..StreamRequest::default()
+    }
+}
+
+/// Start the stream for a request whose size is a **cap**, not a demand.
+///
+/// D5's "an explicit request still wins … or a typed refusal" is about a *caller* who named
+/// a size, and since the owner's ruling of 2026-08-16 a named size nothing fits is refused
+/// rather than answered with the format's largest mode (note **N134**). The preview did not
+/// name its size — [`limits::PREVIEW_MAX_WIDTH`] is a bandwidth bound this module imposed —
+/// and the OBSBOT is the camera that makes the difference load-bearing: its MJPG list starts
+/// at 1280×720, so every frame it can send is over a 640×480 cap and refusing would mean the
+/// owner cannot look at the camera at all.
+///
+/// So the cap is asked for first and dropped if nothing fits under it, and the answer is then
+/// compared against the request that *did* name a size — the caller is told what it got and
+/// what it asked for, which is exactly D5's reporting half, untouched. The alternative —
+/// teaching the shared resolver that some sizes are caps — would put a second meaning on two
+/// fields the wire already carries one meaning for.
+///
+/// **The second request is the one this module had before the refusal existed**, so the
+/// stream a preview gets on such a camera is the same one it has always got: the format's
+/// largest mode. Answering with the *smallest* offered mode would be the better preview and
+/// is not this repair's to decide — it is a bandwidth choice for whoever owns the preview's
+/// budget, and it is written down here rather than made quietly.
+fn negotiate(device: OpenCamera<'_>, request: &StreamRequest) -> Result<NegotiatedStream> {
+    match device.start_stream(request) {
+        // A refusal carrying a [`schema::error::SizeRefusal`] is the one a cap can outgrow,
+        // and it says so in the payload rather than being inferred from an empty
+        // `requested` slot beside a request that happened to name a size — which is what
+        // this match did for the two days between the halves of the H1b repair, and is what
+        // note **N134**'s *Retires when* clause said would replace it (note **N138**). A
+        // format this preview named and the device does not have comes back as a format
+        // refusal, and no second request would help.
+        Err(Error::FormatUnsupported { size: Some(_), .. }) => {
+            let uncapped = StreamRequest {
+                width: None,
+                height: None,
+                ..request.clone()
+            };
+            let mut negotiated = device.start_stream(&uncapped)?;
+            negotiated.adjustments = NegotiatedStream::diff(
+                request,
+                negotiated.pixel_format,
+                negotiated.width,
+                negotiated.height,
+                negotiated.interval,
+            );
+            Ok(negotiated)
+        }
+        other => other,
     }
 }
 
@@ -213,17 +269,17 @@ pub fn request() -> StreamRequest {
 /// unchanged: [`Error::Busy`] for a node somebody else is streaming (E3 keeps that distinct
 /// from "the camera cannot"), and the device's own answer for everything else.
 pub fn start(device: OpenCamera<'_>, request: &StreamRequest) -> Result<NegotiatedStream> {
-    let negotiated = device.start_stream(request)?;
+    let negotiated = negotiate(&mut *device, request)?;
     if !negotiated.pixel_format.is_compressed() {
         // Stopped before refusing: this function started the stream, so the refusal must not
         // leave a camera streaming for a preview that is not going to happen. The stop's own
         // failure is discarded for `crate::capture::StreamGuard`'s reason — the caller is
         // already holding the error that matters, and a second one would replace it.
         let _ = device.stop_stream();
-        return Err(Error::FormatUnsupported {
-            requested: request.pixel_format,
-            available: vec![negotiated.pixel_format],
-        });
+        return Err(Error::format_unsupported(
+            request.pixel_format,
+            vec![negotiated.pixel_format],
+        ));
     }
     Ok(negotiated)
 }
@@ -614,11 +670,27 @@ mod tests {
         // labelled `image/jpeg`. Both halves are asserted — the typed refusal, and that the
         // stream this function started does not survive it, because a camera left streaming
         // for a preview that is not happening is a camera the next `open` finds busy.
-        let mut device = ScriptedCamera::new(vec![integer("brightness", 50)]);
-        let refusal = start(&mut device, &request())
-            .expect_err("this camera negotiates YUYV and nothing else");
+        //
+        // The device *offers* MJPG and answers YUYV, which is the only shape that still
+        // reaches this branch: a camera that does not offer MJPG at all is refused by the
+        // shared resolver before a stream is started (note **N134**), and that refusal is
+        // the arm below rather than this one.
+        let mut device = camera(4).answers_with(PixelFormat::YUYV);
+        let refusal =
+            start(&mut device, &request()).expect_err("YUYV bytes cannot be served as JPEG");
         assert_eq!(refusal.kind(), ErrorKind::FormatUnsupported);
         assert_eq!(device.stops, 1, "the refused stream was left running");
+
+        // The neighbouring refusal, so the two are not confused: a camera with no MJPG at
+        // all never starts a stream to stop.
+        let mut device = ScriptedCamera::new(vec![integer("brightness", 50)]);
+        let refusal = start(&mut device, &request())
+            .expect_err("this camera enumerates YUYV and nothing else");
+        assert_eq!(refusal.kind(), ErrorKind::FormatUnsupported);
+        assert_eq!(
+            device.stops, 0,
+            "a request refused before the device was touched stopped a stream"
+        );
 
         // And the other direction, so the assertion above is about the *format* rather than
         // about a function that refuses everything: the same camera, offering what a preview
@@ -627,6 +699,60 @@ mod tests {
         let negotiated = start(&mut device, &request()).expect("MJPG is on offer");
         assert!(negotiated.pixel_format.is_compressed());
         assert_eq!(device.stops, 0);
+    }
+
+    #[test]
+    fn a_camera_whose_smallest_mode_is_bigger_than_the_cap_still_previews_and_says_so() {
+        // The OBSBOT, whose MJPG list starts at 1280×720: every mode it has is over the
+        // 640×480 cap, so since 2026-08-16 the request `request()` builds is one the shared
+        // resolver refuses (note **N134**). A cap that could refuse the only camera in the
+        // room is not a cap, so `negotiate` asks again without it — and the answer is still
+        // reported against the size that *was* asked for, because D5's reporting half is
+        // what tells the owner why the picture is bigger than the preview asked for. The
+        // double offers one mode, so "the largest that fits" and "the only one there is"
+        // are the same answer here; which of them the second request should ask for on a
+        // camera with several is the open decision `negotiate` writes down.
+        let mut device = camera(4).sized(1_280, 720);
+        let negotiated = start(&mut device, &request()).expect("a preview must still happen");
+
+        assert_eq!((negotiated.width, negotiated.height), (1_280, 720));
+        assert_eq!(
+            negotiated.adjustments,
+            vec![schema::capture::Adjustment::Size {
+                requested_width: limits::PREVIEW_MAX_WIDTH,
+                requested_height: limits::PREVIEW_MAX_HEIGHT,
+                negotiated_width: 1_280,
+                negotiated_height: 720,
+            }],
+            "the retry must not lose the difference the first request named"
+        );
+        assert_eq!(device.stops, 0);
+
+        // The inverse, so the arm above is not measuring a function that ignores the cap: a
+        // camera with a mode under it is answered at that mode, with nothing to report.
+        let mut device = camera(4).sized(320, 240);
+        let negotiated = start(&mut device, &request()).expect("320x240 fits under the cap");
+        assert_eq!((negotiated.width, negotiated.height), (320, 240));
+        assert!(
+            negotiated
+                .adjustments
+                .iter()
+                .any(|a| matches!(a, schema::capture::Adjustment::Size { .. })),
+            "320x240 is not 640x480 and D5 reports the difference: {:?}",
+            negotiated.adjustments
+        );
+
+        // And a format the camera does not have is *not* a cap and is not retried: the
+        // refusal names MJPG, and asking a second time without a size cannot help.
+        let mut device = ScriptedCamera::new(vec![integer("brightness", 50)]).sized(1_280, 720);
+        let refusal = start(&mut device, &request()).expect_err("this camera has no MJPG");
+        assert_eq!(refusal.kind(), ErrorKind::FormatUnsupported);
+        assert_eq!(
+            device.started.len(),
+            0,
+            "a format refusal was asked twice: {:?}",
+            device.started
+        );
     }
 
     /// A camera with a preview stream already running, and what it negotiated.

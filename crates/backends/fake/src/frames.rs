@@ -149,10 +149,10 @@ pub(crate) fn encode(image: &GrayImage, format: PixelFormat) -> Result<Vec<u8>> 
     } else if format == PixelFormat::NV12 {
         Ok(pack_nv12(image))
     } else {
-        Err(Error::FormatUnsupported {
-            requested: Some(format),
-            available: SYNTHESIZABLE_FORMATS.to_vec(),
-        })
+        Err(Error::format_unsupported(
+            Some(format),
+            SYNTHESIZABLE_FORMATS.to_vec(),
+        ))
     }
 }
 

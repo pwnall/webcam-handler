@@ -18,6 +18,10 @@
 //! - It does not couple controls the profile never measured. The declared pairing table
 //!   is a *nomination* (E1); a fake that coupled on nominations would be asserting
 //!   behaviour nobody observed on the device it claims to replay.
+//! - It does not refuse a mis-sized compound payload. `vivid` reshapes a compound control
+//!   across a format negotiation and *applies* the payload at its new length, reporting
+//!   success \[PF:17\]; refusing would be a capability no measured driver has, and it
+//!   would hide the adjustment a compound restore really produces (note **N136**).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -228,17 +232,33 @@ impl CameraState {
             return Err(Error::ControlReadOnly { control: desc.slug });
         }
 
-        let applied = if desc.control_type == ControlType::Button {
+        // **Dispatch belongs to the descriptor** (design §2.3), which means the
+        // `HAS_PAYLOAD` flag and not the control's type. The two agree on every control in
+        // `corpus/` and in `synthetic-basic.json`, because each of those is either a plain
+        // scalar or a plain payload — but they separate on an *array* control, where the
+        // kernel keeps the element type (`INTEGER`, say) and sets `HAS_PAYLOAD` because the
+        // value is `elems × elem_size` bytes behind a pointer. This crate dispatched on the
+        // type until 2026-08-16 and would have written such a control as a scalar, which is
+        // the mirror image of the P2 ioctl-dispatch defect that put the contract note in
+        // §2.3 in the first place — the fake on the wrong side of it this time (note
+        // **N135**). `crates/backends/v4l2/src/lib.rs`'s `set` reads the same flag, so the
+        // two backends now decide the shape of a write the same way (E5).
+        let applied = if desc.flags.has(KnownFlag::HasPayload) {
+            payload_write(&desc, requested)?
+        } else if desc.control_type == ControlType::Button {
             // A button has no value; writing it is the whole effect.
             requested.clone()
         } else if desc.control_type.is_menu() {
             menu_write(&desc, requested)?
-        } else if desc.control_type.is_scalar() {
-            scalar_write(&desc, requested, force_clamp)?
         } else if desc.control_type == ControlType::String {
             text_write(&desc, requested)?
         } else {
-            payload_write(&desc, requested)?
+            // Everything the descriptor did not flag as a payload takes a scalar, whatever
+            // its type is called — including a type this build cannot name (D2). That is
+            // what the V4L2 backend does with the same descriptor: `(false, Int)` reaches
+            // `set_scalar` carrying the raw type, and a `Bytes` value at such a control is
+            // the typed refusal `scalar_write` produces here.
+            scalar_write(&desc, requested, force_clamp)?
         };
         // Simulating what the driver did is this crate's business; describing it is the
         // schema's (§2.10), so every arm above lands in the same classifier the V4L2
@@ -345,9 +365,16 @@ fn with_initial_value(mut desc: ControlDesc) -> ControlDesc {
     if desc.current.is_some() {
         return desc;
     }
+    // The descriptor decides the shape here for the same reason it decides it on a write
+    // (§2.3, note **N135**): a control the device flagged `HAS_PAYLOAD` reads back as bytes
+    // whatever its element type is called, and seeding an array control with an `Int` would
+    // hand out a first `get` no driver could produce.
     let initial = match desc.control_type {
         // A button and a class header have no value to read.
         ControlType::Button | ControlType::ControlClass => None,
+        _ if desc.flags.has(KnownFlag::HasPayload) => {
+            Some(ControlValue::Bytes(vec![0; payload_len(&desc)]))
+        }
         ControlType::String => Some(ControlValue::Text(String::new())),
         other if other.is_scalar() => Some(ControlValue::Int(desc.default)),
         _ => Some(ControlValue::Bytes(vec![0; payload_len(&desc)])),
@@ -427,6 +454,22 @@ fn text_write(desc: &ControlDesc, requested: &ControlValue) -> Result<ControlVal
     }
 }
 
+/// PF:17 — a mis-sized payload is *adjusted* to the shape the control currently has, not
+/// refused.
+///
+/// This function refused it until 2026-08-16, on the reasonable-sounding argument that "a
+/// driver checks `elem_size × elems`". \[PF:17\] measured the opposite on `vivid`: a
+/// 300-byte write to a `u8 pixel array` that had reshaped to 240 bytes came back
+/// **applied at 240 bytes**, with no error — the write succeeded and the difference was
+/// visible only in the read-back. Rubric A9 is what settles which side was wrong: a fake
+/// capability no real device exhibits is a bug in the fake, and a refusal here would let
+/// the engine ship a "the device rejected the payload" path nothing can reach, while
+/// hiding the [`WriteWarning::Adjusted`](schema::control::WriteWarning::Adjusted) path that
+/// a compound restore actually takes (note **N136**).
+///
+/// The *shape* mismatch is still a refusal, and is a different fact: a caller handing an
+/// integer to a pointer control has said something the descriptor contradicts, and that is
+/// §2.3's typed refusal rather than a driver adjustment.
 fn payload_write(desc: &ControlDesc, requested: &ControlValue) -> Result<ControlValue> {
     let ControlValue::Bytes(bytes) = requested else {
         return Err(invalid_write(
@@ -435,18 +478,15 @@ fn payload_write(desc: &ControlDesc, requested: &ControlValue) -> Result<Control
         ));
     };
     let expected = payload_len(desc);
-    if expected > 0 && bytes.len() != expected {
-        return Err(invalid_write(
-            desc,
-            format!(
-                "this control's payload is {expected} bytes ({} elements of {}), not {}",
-                desc.elems,
-                desc.elem_size,
-                bytes.len()
-            ),
-        ));
+    if expected == 0 || bytes.len() == expected {
+        return Ok(requested.clone());
     }
-    Ok(requested.clone())
+    // Truncated or zero-extended to the declared shape, which is what a driver writing
+    // into its own `elems × elem_size` buffer leaves behind. `classify` turns the
+    // difference into `Adjusted`, so the caller is told rather than obeyed.
+    let mut applied = bytes.clone();
+    applied.resize(expected, 0);
+    Ok(ControlValue::Bytes(applied))
 }
 
 fn invalid_write(desc: &ControlDesc, message: String) -> Error {
@@ -650,10 +690,7 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
     if state.info.capture_node().is_none() {
         // A metadata-only group is a real shape (D1): it is listed, and streaming it is a
         // typed refusal rather than a surprise.
-        return Err(Error::FormatUnsupported {
-            requested: request.pixel_format,
-            available: Vec::new(),
-        });
+        return Err(Error::format_unsupported(request.pixel_format, Vec::new()));
     }
 
     // The formats this backend can actually synthesize frames for. Filtered *before* the
@@ -665,23 +702,41 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
         .filter(|f| frames::can_synthesize(f.pixel_format) && !f.sizes.is_empty())
         .cloned()
         .collect();
+
     // A format the device offers and this backend cannot synthesize is *adjusted*, not
     // refused: a driver in the same position adjusts and says so (D5), and the shared diff
-    // below reports it. A format the device does not offer at all is a refusal.
-    if let Some(wanted) = request.pixel_format
-        && !formats.iter().any(|f| f.pixel_format == wanted)
-    {
-        return Err(Error::FormatUnsupported {
-            requested: Some(wanted),
-            available: usable.iter().map(|f| f.pixel_format).collect(),
-        });
-    }
-    let Some(chosen) = request.choose(&usable) else {
-        return Err(Error::FormatUnsupported {
-            requested: request.pixel_format,
-            available: formats.iter().map(|f| f.pixel_format).collect(),
-        });
+    // below reports it. So the name is dropped from the request the resolver sees — this
+    // camera *has* the format, and the only thing that cannot produce it is the stand-in.
+    //
+    // A format the device does not offer at all is a refusal, and that guard used to be
+    // three lines here. It is [`StreamRequest::choose`]'s since 2026-08-16, because a rule
+    // D5 states once must not live in the backend that happens to have read it: the V4L2
+    // backend had no such guard and photographed something else for three phases (note
+    // **N134**). Dropping the name is what keeps *this* crate's limitation from arriving
+    // at the shared resolver dressed as the device's.
+    //
+    // **What dropping the name costs when `usable` is empty**, which is the second
+    // behavioural delta of this repair rather than the one it was first credited with (note
+    // **N138**): the resolver then refuses with `available: []`, where the deleted guard
+    // refused naming every format the device has. Unreachable today — every format in the
+    // five committed profiles and in `synthetic-basic.json` is synthesizable — and the
+    // *sentence* is honest either way since `format_formats`' empty arm stopped claiming
+    // "the capture node enumerated no formats", which was false for exactly this caller. A
+    // camera whose whole enumeration this crate cannot draw has nothing to offer a stream,
+    // and "nothing would be accepted" is what it should say.
+    let asked_for_the_unsynthesizable = request.pixel_format.is_some_and(|wanted| {
+        formats.iter().any(|f| f.pixel_format == wanted)
+            && !usable.iter().any(|f| f.pixel_format == wanted)
+    });
+    let to_resolve = if asked_for_the_unsynthesizable {
+        StreamRequest {
+            pixel_format: None,
+            ..request.clone()
+        }
+    } else {
+        request.clone()
     };
+    let chosen = to_resolve.choose(&usable)?;
 
     // The size list of the format that was chosen, for the interval lookup below.
     let sizes = usable

@@ -17318,3 +17318,405 @@ declares and the prose does not naming a **failure** rather than a skip.
 **Amend this note if** the next design revision absorbs the three adoptions and corrects the two
 numbers, and re-run N5's measurement in the same pass — §2.8 asks for it on any jsonrpsee bump, and
 item 3 is the first measurement showing the closure has moved.
+
+## N134 — D5's "an explicit request still wins" was enforced in the stand-in and nowhere else, and the size half was enforced nowhere at all
+
+**Doc:** design **D5** — *"An explicit request still wins: a caller that names a format and a size
+gets them or a typed refusal, and the ranking is only for the request that named neither"* — which
+the 2026-08-13 ranking amendment goes out of its way to leave standing; **§2.10**'s one home per
+law; rubric **A9** and doctrine **E5** (a divergence between the stand-in and the real thing is a
+finding against whichever side is wrong); AGENTS' *"the product is comparability across time, not a
+good picture"*; **§2.11 step 4**, which calls the backend conformance battery "the definition of
+done". Found by the G6 adversarial review (docs/11 §3 H1 and H1b), with the format half confirmed by
+three lenses and the reviewer and the size half **measured through the shipped binary**. The size
+half's answer is an owner ruling of **2026-08-16**. Recorded 2026-08-16.
+
+**Measured, both halves.**
+
+| request | fake | `webcam-handler-v4l2` |
+|---|---|---|
+| `photo --pixel-format NV12` at a camera offering MJPG and YUYV | `{"kind":"format_unsupported","requested":"NV12","available":["MJPG","YUYV"]}`, exit 18 | **a photograph, in MJPG** |
+| `photo --size 320x240` over `corpus/profiles/obsbot-tiny3.json`, whose MJPG list is `[1920×1080, 3840×2160, 1280×720, 1280×960, 1920×1440]` | **3840×2160** — 108× the pixels asked for | the same |
+
+The second row is the more interesting one, because both backends agreed: `StreamRequest::choose`
+ended its `(Some(width), Some(height))` arm with `.map_or(default_size, …)` and `default_size` is
+`max_by_key` over area. So "smaller than everything you have" was answered with the largest thing
+there is, on a request whose whole point was to ask for less — and D5 argues against exactly that
+one paragraph earlier, about stepwise entries: *"never collapsed to its maximum corner first"*.
+
+### Why nothing was red, which is §9.1's finding rather than this one
+
+Both tests that pinned the explicit-request contract ran over the fake, and the fake had a guard the
+real backend lacked — three lines and a comment in `crates/backends/fake/src/camera.rs`. That is E5
+paying in the direction §2.3 already recorded it paying at P2 (*"the fake refused the `Bytes`-at-a-
+scalar write that the real backend mis-dispatched"*), three phases later and by a different method.
+The population that would have caught it is the conformance battery, and `arm_stream_lifecycle`
+constructs only `StreamRequest::default()` — so **no arm of the battery could express any
+explicit-request contract, on any backend**. A rubric row names a class; only a walked population
+finds an instance of it.
+
+### The repair, in one place
+
+`StreamRequest::choose` answers `Result<ChosenFormat>` rather than `Option<ChosenFormat>`, and the
+refusal — `Error::FormatUnsupported { requested, available }`, unchanged in shape — is built there,
+from the format list the caller handed in. `V4l2Camera::negotiate` is one `?`; `engine::double`'s
+`ScriptedCamera` is the same `?`; the fake's pre-filter is **deleted**, because a rule D5 states once
+must not live in whichever backend happened to read it.
+
+What the fake keeps is the thing that was genuinely its own: a format the device offers and this
+crate cannot *synthesise* is an adjustment, not a refusal, so it drops the name from the request
+before the resolver sees it. Its limitation arrives as its own rather than dressed as the device's.
+
+### Which requests now refuse, and which still adjust
+
+- **Refused**: a named `pixel_format` no enumerated format carries; a named `width`×`height` that no
+  size entry of the chosen format can deliver — smaller than every discrete mode, or under a
+  stepwise entry's own minimum; a format list that is empty or lists nothing with readable
+  dimensions.
+- **Still adjusted, and reported**: a size *between* the device's modes (640×480 for a request of
+  800×600); a size above everything (the largest mode for a request of 4096×2160 at a 1080p camera);
+  a stepwise range asked for anything at or above its minimum, which answers with the closest size it
+  can deliver and is not an adjustment at all when it lands exactly; a half-specified size, which
+  names nothing and so cannot fail to fit; and a driver whose `S_FMT` answers with a format nobody
+  asked for, which is D5's reporting half and is untouched.
+
+### The refusal for a size names the size — after two days of naming nothing
+
+The first landing of this repair had `FormatUnsupported` carrying one slot for "what was asked for",
+and it holds a `PixelFormat`, so a size refusal reported `requested: None` and the sentence came out
+*"format (unspecified) is unavailable; MJPG, YUYV would be accepted"*. The reasoning written here at
+the time was that naming the caller's own format would be worse — *"format MJPG is unavailable; MJPG,
+YUYV would be accepted"*, N129's misdirection at the same variant — and that much was right. What it
+missed is that dropping the name does not make the sentence true: it is still about formats, it still
+offers the caller's own format as the remedy, and it still never mentions size. The adversarial review
+measured the loop it produces and the repair landed as **N138**, which is where the payload
+[`SizeRefusal`], the two constructors, and the message now live. A size refusal reads *"no mode
+delivers 320x240; 640x360, 640x480 would be accepted"* and carries the same two facts as data.
+
+The guide's `format_unsupported` row — false when the review found it (§4.7 M18) — is true now, and
+says which half of the payload names which lever.
+
+### What the battery arm buys that the two backends' own tests could not
+
+`BatteryArm::ExplicitRequest` asks *every* backend for a format the enumeration lacks and for a size
+nothing fits, and requires `FormatUnsupported` with a payload that names what the device does have.
+The two backends' own suites could not buy that, and the reason is the finding: each suite asserts
+its own backend, so a contract honoured by the stand-in and skipped by the real one reads as green
+twice. The battery is the one population that runs against both, and against the next backend
+somebody writes — §2.11 step 4 sends its author here with their own device. Run against the
+unrepaired resolver it fails on both halves, naming the camera and the substitution
+(`asked for WCHX … and got a stream in MJPG at 3840x2160`), which is the sentence that would have
+appeared the day the fake grew its guard.
+
+The `#[ignore]`d hardware arm
+(`hw_a_format_the_camera_does_not_offer_is_refused_rather_than_substituted`) is the same claim at the
+backend the finding was about, and it is worth its runtime beside the battery because the battery's
+*population today* is the fake and the five profiles it replays — nothing in `just ci` runs the
+battery against `webcam-handler-v4l2`, which is exactly the gap this finding fell through. The R3
+rung is where that backend answers, and it answers on a machine with a camera.
+
+### The one caller whose size was never a request
+
+`engine::preview` asks for `limits::PREVIEW_MAX_WIDTH`×`PREVIEW_MAX_HEIGHT` as a **cap** — a
+bandwidth bound this engine imposes, not a caller's demand — and the OBSBOT is why that difference is
+load-bearing: its MJPG list starts at 1280×720, so every mode it has is over a 640×480 cap and
+refusing would mean the owner cannot look at the camera at all. `preview::negotiate` asks with the
+cap, and on the size refusal alone (`requested: None`) asks again without it, then reports the answer
+against the request that *did* name a size, so D5's reporting half is unchanged and the operator is
+still told 1280×720 was an adjustment from 640×480. Teaching the shared resolver that some sizes are
+caps was the alternative, and it would have put a second meaning on two fields the wire already
+carries one meaning for.
+
+**The second request is the one this module made before the refusal existed, and it answers with the
+format's largest mode** — 3840×2160 on the OBSBOT, for a cap of 640×480. That is what the preview has
+always streamed on such a camera and this repair deliberately did not change it; a cap answered with
+the *smallest* offered mode would be the better preview and is a bandwidth decision nobody has taken.
+It is written into `preview::negotiate`'s own doc rather than made quietly here.
+
+### Two things this note got wrong, found by the adversarial review two days later (N138)
+
+Recorded here rather than only in **N138**, because a note that states a rule the code does not follow
+is worse than no note: whoever reads this one next must not take its "Which requests now refuse" list
+at face value.
+
+- **The scope.** That list writes the size rule as *"no size entry **of the chosen format** can
+  deliver"*, and the mechanism matched the words: `choose` ranked first and asked the winner second.
+  On `corpus/profiles/obsbot-tiny3.json` — one of the two attached test cameras — MJPG wins the
+  ranking on 8.3 megapixels and starts at 1280×720, so `photo --size 640x480` was refused for a size
+  that camera enumerates in YUYV. The rule is device-wide now: a named size narrows the *candidate
+  set* the ranking chooses from, and the refusal fires only when no format on the device can deliver.
+  D5's sentence is unchanged; what was wrong was reading "an explicit request still wins" as licence
+  for the ranking to veto the half of the request that was explicit.
+- **The fake's delta.** The section above says what the fake keeps and the accompanying report claimed
+  one behavioural delta. There are two: with `usable` empty, dropping the name also turns a refusal
+  that named every format the device has into one carrying `available: []`. Unreachable today and
+  documented at the call site now; the *rendering* that made it a false sentence is repaired in N138.
+
+**Retired 2026-08-16 by N138**, which is the *Retires when* clause below arriving two days after it
+was written: `FormatUnsupported` grew the slot, and the section above is replaced by a payload that
+says what happened instead of a `null` that implies it. `engine::preview::negotiate`, which had to
+infer "the size fitted nothing" from `requested: None` beside a request that named a size, now reads
+`size.is_some()`.
+
+## N135 — The fake dispatched a control write on the control's type, and §2.3's contract note says the descriptor decides
+
+**Doc:** design **§2.3**'s contract note — *"Dispatch belongs to the descriptor"* — which was added
+**because of** the P2 review's ioctl-dispatch defect, with the *real* backend on the wrong side of it;
+rubric **B2**, which states the rule holds "on both backends, and the fake and real backend agree
+(E5)". Found by the G6 adversarial review (docs/11 §4.7 M29). Recorded 2026-08-16.
+
+**Measured by reading the two `set` implementations against each other.**
+`crates/backends/v4l2/src/lib.rs` matches on `(ioctl::has_payload(desc.flags.raw), &value)` and its
+own comment spells out what getting it backwards costs: `set_payload` plants a heap address in
+`v4l2_ext_control`'s union, and for a control the kernel does not treat as a pointer control
+`uvc_ctrl_set` takes the low 32 bits of that address as the value — *"on a PTZ control that is a
+motor driven to its limit by an allocator"*. `crates/backends/fake/src/camera.rs` dispatched on
+`desc.control_type`, with the payload path as the `else` arm.
+
+**The two rules agree on every control this project owns, and that is why nothing was red.** Every
+control in `corpus/` and in `crates/testkit/fixtures/synthetic-basic.json` is either a plain scalar
+(type says scalar, no `HAS_PAYLOAD`) or a plain payload (`region_of_interest_rectangle`: an
+unnameable type *and* the flag). No fixture separates them, so the fake's rule and the descriptor's
+rule could not disagree in a way a test could see — Part C's named smell one level up, where the
+missing fixture is not a parameter of an existing one but a control shape nobody had.
+
+**The shape that separates them is an array control**, and it is ordinary rather than exotic: the
+V4L2 control framework leaves a multi-element control's element type alone and sets
+`V4L2_CTRL_FLAG_HAS_PAYLOAD` because the value is `elems × elem_size` bytes behind a pointer. So
+`vivid`'s `Integer 32 Bits Array` is `V4L2_CTRL_TYPE_INTEGER` with `dims = [16]` and the payload
+flag, and a write to it dispatched by type would have been clamped into `[-10..10]` as a scalar.
+`integer_array_control()` in `crates/backends/fake/tests/resemblance.rs` is that fixture, marked
+`declared` because this desk has no such device attached — the R2 vivid rung is where it becomes
+measured, and the fixture is what makes the rule fail here first.
+
+**The repair** puts `desc.flags.has(KnownFlag::HasPayload)` at the top of the fake's dispatch and
+leaves the type to decide only among the shapes the descriptor did not flag, which is also what
+`with_initial_value` now does when a profile records no current for such a control — an array control
+seeded with an `Int` would hand out a first `get` no driver could produce.
+
+### The second E5 repair the reorder makes, which this note did not record until N138
+
+The reorder does not only move array controls. The V4L2 control framework sets
+`V4L2_CTRL_FLAG_HAS_PAYLOAD` for **every string control** — a string's value is `elems × elem_size`
+bytes behind a pointer, exactly like an array's — so `text_write` is now unreachable for any
+descriptor a real driver produced, and a write to a string control takes `payload_write`. That is the
+same direction as the array case rather than a regression: `V4l2Camera::set` dispatches
+`(has_payload, value)` and a string control there is `(true, _)`, so the fake moved *toward* the real
+backend on a second control shape (E5). The adversarial review of batch B1 enumerated it while
+checking the reorder's blast radius; it is written down here so that the next reader of `text_write`
+knows it is reachable only from a hand-built fixture and does not "repair" the dispatch back.
+
+**Retires when** a committed profile carries an array control, at which point the fixture above is
+replaced by the corpus and the note's `declared` marking goes with it.
+
+## N136 — The fake refused a mis-sized compound payload, and PF:17 measured a driver applying one
+
+**Doc:** rubric **A9** — a fake capability no real device exhibits is a bug in the fake — and \[PF:17\],
+which is the measurement. Found by the G6 adversarial review (docs/11 §5.6 L26). Recorded 2026-08-16.
+
+**The fake's `payload_write` refused any payload whose length was not `elems × elem_size`, and the
+resemblance suite asserted the refusal with the justification "because a driver checks
+`elem_size × elems`".** \[PF:17\] measured the opposite on `vivid` on 2026-08-08, while landing P3c:
+a 300-byte write to a `u8 pixel array` that had reshaped to 240 bytes across a format negotiation
+came back **applied at 240 bytes, warning-free at the ioctl** — the write succeeded and the whole of
+the difference was visible in the read-back, as `WriteWarning::Adjusted` and a `RestoreReport` that
+is not complete.
+
+Two things were wrong with the refusal, and the second is the expensive one. It was a capability no
+measured driver has, which A9 settles on its own. And it hid the path a compound restore actually
+takes: PF:17's second consequence is that *"snapshot/restore of such a control cannot complete across
+a format change"*, and a fake that refuses the write instead of adjusting it means no test above the
+backend can reach that shape at all.
+
+**The repair** truncates or zero-extends the payload to the length the descriptor declares and lets
+`WriteWarning::classify` describe the difference, which is the same division of labour every other
+write in this crate follows: simulating what the driver did is the fake's, describing it is the
+schema's. The *shape* mismatch stays a refusal and is a different fact — a scalar handed to a pointer
+control contradicts the descriptor, which is §2.3's typed refusal rather than a driver adjustment.
+
+**Retires when** a driver is measured refusing a mis-sized payload, which would make this a
+per-driver behaviour the fake has to take from the profile rather than a single rule.
+
+## N137 — The battery's snapshot arm could return between its perturbation and its restore, and §2.11 sends every backend author through it with their own camera
+
+**Doc:** AGENTS rule **8** — *"Leave the camera as you found it. Snapshot before, restore after …
+tests assert restoration"* — which is non-negotiable; **§2.11 step 4**, which instructs the author of
+every new backend to run the conformance battery **against their device**. Found by the G6
+adversarial review (docs/11 §4.7 M31). Recorded 2026-08-16.
+
+**`arm_snapshot_restore_inverse` writes every perturbation it planned, then re-reads the device to
+prove something moved.** That read can fail — a camera unplugged mid-arm, a driver that stopped
+answering `QUERY_EXT_CTRL` \[PF:1 is the neighbouring shape\] — and the arm's `continue` sat between
+the writes and `snapshot.restore_order()`. So the one failure mode the arm is *most* likely to meet
+on somebody else's hardware was also the one that left their camera holding this suite's
+perturbations.
+
+**The repair is the shape this tree already uses twice for the same question**: a guard whose `Drop`
+does the restore, so no exit from the block — an early return, a `?`, a panic — can skip it.
+`capture::grab`'s `StreamGuard` stops the stream its scope started and `actor::Liveness` marks the
+actor dead on the same principle, and both exist because the set of exits a function grows over time
+is not one a reader can enumerate.
+
+One wrinkle is worth recording because it shapes the code: `Drop` cannot borrow the `ArmLog` the
+guarded block is already using, so the guard writes its complaints into a `Vec<String>` the caller
+owns and the caller drains it into the log a line after the guard falls. A restore that fails is
+still reported in the same words it always was — the guard is a repair, not a cover-up.
+
+**The red test is a scripted camera whose `controls()` fails once a write has landed**
+(`a_read_that_fails_after_the_perturbation_still_leaves_the_camera_where_it_was_found`), asserting
+both halves: the read failure is reported, *and* the control is back where it started. Against the
+pre-repair arm it fails with `left: Some(Int(129)), right: Some(Int(128))` — the perturbation, still
+on the device.
+
+**Amend this note if** the hardware rung's standing gap is closed the same way. The bullet under
+note **N72** records it — *"a hardware arm that fails between its sweep and its restore leaves the
+camera moved"* — and says what it wants is "a restoring wrapper around the whole arm". This entry is
+that wrapper, at the one arm the battery owns; the rung's own arms are still written the other way.
+
+## N138 — The size half of the H1b repair refused a size the camera has, and told the caller its format was the problem
+
+**Doc:** design **D5** — *"An explicit request still wins: a caller that names a format and a size
+gets them or a typed refusal, and the ranking is only for the request that named neither"*; the
+owner's ruling of **2026-08-16** approving a refusal document that reads
+`{"kind":"format_unsupported","requested":"320x240","available":[…]}` — *the refusal names the size*;
+**D13**'s "every variant carries what the caller needs to act on it"; AGENTS rule **3** (a named,
+counted skip, never silence) and rule **7** (availability is not capability); note **N129**, whose
+class this is. Found by an adversarial read of batch B1, which is the repair of docs/11 §3 H1/H1b —
+so this is a second reading of a repair, and four of its nine findings are in the repair rather than
+in what the repair touched. Recorded 2026-08-16.
+
+### The regression, measured through the shipped binary
+
+`corpus/profiles/obsbot-tiny3.json` is one of the two cameras this project is developed against. Its
+MJPG list is `[1920×1080, 3840×2160, 1280×720, 1280×960, 1920×1440]` and its YUYV list is
+`[640×360, 640×480]`.
+
+| request | before B1 | after B1 | after this note |
+|---|---|---|---|
+| `photo --size 640x480` | MJPG 3840×2160 with an `Adjustment::Size` — the H1b defect | **exit 18, `format_unsupported`** for a size the camera enumerates | YUYV 640×480, exact |
+| `photo --size 320x240 --pixel-format MJPG` | MJPG 3840×2160 | exit 18, *"format (unspecified) is unavailable; MJPG, YUYV would be accepted"* | exit 18, *"no mode delivers 320x240; … 640x360, 640x480 would be accepted"* |
+
+The same shape on `corpus/profiles/dell-u3224kb.json`: `--size 640x400` refused although NV12 and
+YUYV both offer 640×360.
+
+`StreamRequest::choose` picked the format **first** — by D5's ranking, when the caller named none —
+and only then asked whether the named size fitted, asking only the chosen format's size list. MJPG
+wins the ranking on `max_pixels` whatever the sink, so a request for a small frame was answered by
+the one format that has no small frame. D5's sentence is about a caller who named a format *and* a
+size; here the caller named only a size, and letting the ranking pick a format and then letting that
+format veto the named size is the ranking deciding a request it was explicitly not given. It broke
+exactly the workflow H1b was raised to protect — the agent asking for a small frame to keep the
+fast-diff loop cheap, 15 KB instead of 800 KB per iteration.
+
+**The rule now**: when a size is named, the ranking's candidate set is the formats that can deliver
+it, and the refusal fires only when *no* format on the device can. When a format is named too, that
+format alone is the candidate set and it refuses if it cannot deliver — D5 read literally.
+`rank_formats` is unchanged for the request that named neither: it is a one-line wrapper over
+`rank_within`, whose keys, reversed index and driver-order tiebreak are the 2026-08-13 ruling's,
+untouched. Only the population standing in front of them narrows, and the index it reports is still
+the *device's* enumeration index so `ChoiceReason::FirstOfEqualsInDriverOrder` keeps meaning what it
+says.
+
+### N129's class, fifth firing: the sentence is the part of the payload a caller reads first
+
+`FormatUnsupported` had one slot for "what was asked for" and it holds a `PixelFormat`. A size
+refusal therefore reported `requested: None`, and `#[error("format {} is unavailable; {} would be
+accepted", …)]` rendered:
+
+```
+format (unspecified) is unavailable; MJPG, YUYV would be accepted
+```
+
+for `photo --pixel-format MJPG --size 320x240`. About formats; naming the caller's own format as
+acceptable; never mentioning size. This string is both the human's line on standard error and the
+`message` of the `--json` failure document, so both readers get it, and `docs/agent-guide.md`'s
+disposition for this kind is *"fix the request … ask for one it does"* — an unattended agent obeying
+it retries `--pixel-format MJPG`, meets the identical refusal, and loops. N134 argued the alternative
+(`requested: Some(MJPG)`) was worse, which is true and is not the same as this one being right.
+
+**The payload.** `FormatUnsupported` gains `size: Option<SizeRefusal>`, carrying the width and height
+that were refused and every size the device can deliver — a `Vec<FrameSize>`, so a stepwise entry
+arrives as the range it is rather than as its maximum corner, deduplicated in enumeration order, with
+`FrameSize::Unknown` entries left out because this list is what *would be accepted*. Two constructors,
+`Error::format_unsupported` and `Error::size_unsupported`, are the only doors in, so the two causes
+stay mutually exclusive: one refusal names one lever. Every producer in the workspace goes through
+them; the field is `#[serde(default, skip_serializing_if = "Option::is_none")]`, so the wire is
+unchanged for the D6 source-format refusal, `engine::preview`'s unrenderable negotiation and D7's
+container refusal, all three of which refuse a format.
+
+**Three consequences worth naming.** `engine::preview::negotiate` matched
+`FormatUnsupported { requested: None, .. }` beside `request.width.is_some()` to recognise the refusal
+its *cap* can outgrow; it reads `size: Some(_)` now, which is N134's own *Retires when* clause
+arriving. `capture.rs`'s two refusal sites stopped disagreeing: the `default_size` failure — a chosen
+format whose every size entry is a shape this build cannot read — is now reachable only when no size
+was named, so naming the format there is honest, and its `available` lists only formats that *have* a
+readable size, because offering the caller a format it cannot be given is N129 wearing the other half
+of the sentence. And `format_formats`' empty arm said *"nothing (the capture node enumerated no
+formats)"*, which is false for the fake, whose empty list is an enumeration filtered down to what it
+can synthesise; it says *"nothing"*, which is true either way and is the whole of what a caller can
+act on — stop rather than retry.
+
+### The battery arm's premise was the review's own finding, one level in
+
+`BatteryArm::ExplicitRequest`'s size half establishes its premise device-wide — *no format at all can
+deliver 1×1* — while the resolver refused when the *chosen* format could not. So the arm passed on the
+OBSBOT profile while `--size 640x480` was being refused there, and the battery could not see the
+regression it was landed to catch. The rule is the arm's premise now, which is what dissolves it: the
+two ask the same question. The arm also requires the refusal to carry a `SizeRefusal` naming the size,
+so a backend whose size refusal renders a sentence about formats is red on every backend the battery
+runs against.
+
+Two more things in the same arm, both AGENTS rules read one layer in from where they usually apply:
+
+- **`formats()` answering `Busy` or `PermissionDenied` failed the run.** The arm was careful about E3
+  for `start_stream` and unconditional about the enumeration that precedes it, so a camera grabbed by
+  another process between `open` and `formats` turned a conformance run red for a fact about who
+  holds the device. §2.11 step 4 sends the author of every new backend through this battery with
+  their own camera, and a webcam somebody's video call has claimed is the ordinary case.
+- **A `Claim::NotAsked` disappeared at the arm boundary.** `Claim` exists precisely so that "not
+  asked" and "passed" do not collapse — and one line after it was decided they collapsed anyway: an
+  unasked claim became a `CameraVisit` note, and notes were rendered *only* when the arm ended
+  `Skipped`. A backend with two cameras, one of which cannot be asked, reported `ran` and said
+  nothing. `BatteryReport` grows a `notes` channel, `CameraVisit::finish` drains its notes into it on
+  the `Ran` path, and the rendered report counts them (`1 unasked claim(s):`). Not failures: an
+  unaskable camera is availability, and turning it red would make a busy device a conformance
+  verdict. This was general to every arm that uses `CameraVisit`, and the repair is at `finish`, so
+  all of them get it.
+
+### What went red first
+
+- `a_named_size_narrows_the_ranking_rather_than_being_vetoed_by_it` (schema), against the ranking that
+  ignored the named size: *"this camera enumerates YUYV 640x480: FormatUnsupported { requested: None,
+  … }"*.
+- `a_size_refusal_names_the_size_and_never_the_format_that_was_answerable`
+  (`crates/cli/tests/failure_document.rs`), which drives the **binary**: it asks the camera what it
+  enumerates, asks for a size the answer says it has, then asks for one it does not, and fails a
+  message that attributes either to the other. Against the unrepaired resolver: `left: Some(18)`
+  where `right: Some(0)` for `--size 640x480`. Against the unrepaired message: *"a size nothing fits
+  was refused without saying so: FormatUnsupported { requested: None, available: [MJPG, YUYV], size:
+  None }"*. This is the shape N129's own repair used — test the claim, not the wording — and it is
+  here rather than in the schema because the sentence a caller reads is a property of the process.
+- `a_size_refusal_names_the_size_and_never_offers_a_format_as_the_remedy` (schema), against the old
+  `#[error]`: *"format (unspecified) is unavailable; MJPG, YUYV would be accepted"*.
+- `the_fake_passes_the_battery` against a payload with no `SizeRefusal`: *"explicit_request:
+  cam:synthetic-basic-camera: refused a size with a refusal that names only formats"*.
+- `a_camera_another_process_holds_is_a_named_skip_rather_than_a_conformance_failure` and
+  `a_claim_an_arm_could_not_put_to_a_camera_is_named_and_counted_even_when_the_arm_ran` (testkit),
+  against the pre-repair arm: *"explicit_request: cam:busy: formats() failed: /dev/video9 is busy"*
+  as a **failure**, and an `ExplicitRequest` arm reporting `ran` with zero notes for a backend whose
+  second camera was never asked.
+
+### What was looked at and left
+
+`RestoreGuard::drop` (note **N137**) can abort the process: the restore write can panic — a backend
+that panics is a measured mode \[PF:1\] — and a panic inside a `Drop` that is already unwinding
+aborts. It is kept. `capture::grab`'s `StreamGuard` and `preview::Resuming` carry the identical
+exposure for the identical reason, so it is house-consistent rather than novel, and the trade is a
+real device left perturbed on *every* early exit against a worse panic message on one. Catching the
+unwind would swallow the finding the arm exists to report. The reasoning is on the guard itself,
+where a reader meets it.
+
+**Retires when** a second refusal in the D13 registry needs the same treatment — a variant whose one
+"what was asked for" slot has to hold two kinds of thing. At that point the pattern here (an optional
+payload naming the half that failed, plus constructors that keep the halves exclusive) is either the
+registry's convention or the wrong shape twice, and it is worth deciding which.

@@ -626,7 +626,9 @@ fn every_committed_profile_resolves_an_unspecified_request_to_its_largest_mode()
 
         let chosen = StreamRequest::default()
             .choose(&profile.invariant.formats)
-            .unwrap_or_else(|| panic!("{stem} offers no format with a readable size"));
+            .unwrap_or_else(|error| {
+                panic!("{stem} offers no format with a readable size: {error}")
+            });
         assert_eq!(
             (chosen.pixel_format, chosen.width, chosen.height),
             (PixelFormat(*fourcc), *width, *height),
@@ -682,7 +684,9 @@ fn the_ruling_costs_nothing_on_the_hardware_this_project_has_met() {
         let stem = path.file_stem().expect("a named file");
         let chosen = StreamRequest::default()
             .choose(&profile.invariant.formats)
-            .unwrap_or_else(|| panic!("{stem} offers no format with a readable size"));
+            .unwrap_or_else(|error| {
+                panic!("{stem} offers no format with a readable size: {error}")
+            });
         let offers_compressed = profile
             .invariant
             .formats

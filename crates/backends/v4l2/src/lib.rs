@@ -593,10 +593,7 @@ impl Camera for V4l2Camera {
         // A metadata-only camera is a shape D1 supports on purpose: it is listed, and
         // streaming it is a typed refusal rather than a surprise.
         if self.info.capture_node().is_none() {
-            return Err(Error::FormatUnsupported {
-                requested: request.pixel_format,
-                available: Vec::new(),
-            });
+            return Err(Error::format_unsupported(request.pixel_format, Vec::new()));
         }
 
         let negotiated = self.negotiate(request)?;
@@ -706,14 +703,19 @@ impl V4l2Camera {
     /// same camera, different answer. A photo verb whose resolution depends on what ran
     /// before it is not one anybody can use, and the shared chooser is also what keeps the
     /// fake's answer to the same request identical (E5).
+    ///
+    /// **Including the refusal**, since 2026-08-16. This function used to raise
+    /// [`Error::FormatUnsupported`] only for a device whose whole format list was empty or
+    /// unreadable, because that was the only thing `choose` could not answer — so a caller
+    /// naming a format this camera does not enumerate was ranked into another one and
+    /// photographed, while the fake refused the same request. The refusal is the shared
+    /// resolver's now, on the D5 sentence both backends were supposed to be reading (note
+    /// **N134**), and this line is what makes "a divergence between the stand-in and the
+    /// real thing convicts whichever side is wrong" cost one `?` instead of a guard per
+    /// backend.
     fn negotiate(&self, request: &StreamRequest) -> Result<NegotiatedStream> {
         let formats = self.formats()?;
-        let chosen = request
-            .choose(&formats)
-            .ok_or_else(|| Error::FormatUnsupported {
-                requested: request.pixel_format,
-                available: formats.iter().map(|f| f.pixel_format).collect(),
-            })?;
+        let chosen = request.choose(&formats)?;
         let wanted = ioctl::set_format(
             &self.fd,
             chosen.pixel_format.to_fourcc(),

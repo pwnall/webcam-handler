@@ -92,17 +92,53 @@ impl StreamRequest {
     ///
     /// The rules, and the reason for each:
     ///
-    /// - **Format**: the requested one when the device offers it, else the **best-ranked**
-    ///   one — see [`rank_formats`] for the ranking and the owner ruling that replaced
-    ///   "the device's first" with it on 2026-08-13. An explicit request is untouched by
-    ///   the ranking: a caller who names a format is answered, and the ranking exists only
-    ///   for the request that named none.
-    /// - **Size**: the largest thing the *chosen* format offers that fits inside the
-    ///   request — which is the exact request when the device offers it, and the biggest
-    ///   available frame when a caller asks a 720p camera for 1080p. A **stepwise** entry
-    ///   is asked about as the range it is rather than as its maximum, so a device that
-    ///   can deliver the exact request delivers it. Nothing fitting falls back to the
-    ///   format's largest size, which is also what an unspecified request gets.
+    /// - **Format**: the requested one when the device offers it, the **best-ranked** one
+    ///   when the caller named none — see [`rank_formats`] for the ranking and the owner
+    ///   ruling that replaced "the device's first" with it on 2026-08-13 — and a **typed
+    ///   refusal** when the caller named one this enumeration does not carry. An explicit
+    ///   request is untouched by the ranking: a caller who names a format is answered or
+    ///   told no, and the ranking exists only for the request that named none.
+    /// - **A named size narrows the candidate set the ranking chooses from.** The ranking
+    ///   is D5's answer for "the request that named neither", so it must not be allowed to
+    ///   pick a format and then let that format veto the one thing the caller *did* name.
+    ///   The OBSBOT is why this is not a nicety: its MJPG list starts at 1280×720 and its
+    ///   YUYV list ends at 640×480, so `--size 640x480` ranked into MJPG on `max_pixels`
+    ///   and was refused a size that camera enumerates — the fast-diff loop the whole
+    ///   refusal was raised to protect, broken by the repair (note **N138**). So when a
+    ///   size is named, the candidates are the formats that can deliver it and the refusal
+    ///   fires only when **no** format on the device can. When a *format* is named too,
+    ///   that format alone is the candidate set and it refuses if it cannot deliver, which
+    ///   is D5's sentence read literally.
+    /// - **Size**: the largest thing the *chosen* format can deliver inside the request —
+    ///   which is the exact request when the device offers it, and the biggest available
+    ///   frame when a caller asks a 720p camera for 1080p. A **stepwise** entry is asked
+    ///   about as the range it is rather than as its maximum, so a device that can deliver
+    ///   the exact request delivers it. When *nothing* on the device fits inside the
+    ///   request, that is a refusal too.
+    /// - **Both halves of the refusal are D5's own sentence** — *"an explicit request
+    ///   still wins: a caller that names a format and a size gets them or a typed refusal,
+    ///   and the ranking is only for the request that named neither"* — and neither half
+    ///   was enforced here until 2026-08-16. The format half ranked instead, so a request
+    ///   for a format the camera does not have was answered with a photograph in another
+    ///   one; the size half fell back to the format's largest mode, so `--size 320x240`
+    ///   against a camera whose smallest MJPG mode is 1280×720 negotiated 3840×2160. The
+    ///   owner's ruling of 2026-08-16 settles the size half as a refusal rather than "the
+    ///   smallest offered mode", because the guide already documents that remedy and a
+    ///   substitution 108× the size asked for is not one an unattended caller can see.
+    ///   Note **N134** carries both, and the ruling.
+    /// - **A size refusal says so.** It is
+    ///   [`Error::size_unsupported`](crate::Error::size_unsupported), which names the size
+    ///   that was refused and every size the device can deliver — not a format refusal with
+    ///   an empty `requested` slot, which is what it was for the two days between the two
+    ///   halves of this repair and which rendered as a sentence about formats (note
+    ///   **N138**).
+    /// - **Refusing is not the same as adjusting, and the line is what the entry can
+    ///   deliver.** A discrete 640×480 entry fits inside a request for 800×600 and is
+    ///   answered with an adjustment; a stepwise 32..1920 entry delivers a requested
+    ///   640×480 exactly and is not an adjustment at all. Only a request that *no* entry
+    ///   can deliver — smaller than every discrete mode, or under a stepwise entry's own
+    ///   minimum — is refused, so D5's "never collapsed to its maximum corner" keeps
+    ///   answering for every request a device can serve.
     /// - **Largest, not first.** Until 2026-08-13 an unspecified size took the format's
     ///   *first* size entry at its maximum, on the same "the driver ordered these"
     ///   argument the format rule used. \[PF:26\] measured what that costs: the BRIO's MJPG
@@ -112,36 +148,88 @@ impl StreamRequest {
     /// - **A half-specified size names nothing.** Width alone cannot pick a height without
     ///   inventing an aspect ratio, so the size falls through as though nothing had been
     ///   asked — and [`NegotiatedStream::diff`] then reports no size adjustment, because
-    ///   none was requested in a form the answer could differ from.
+    ///   none was requested in a form the answer could differ from. It cannot be refused
+    ///   either, for the same reason: there is no size to fail to fit.
     ///
-    /// `None` when `formats` is empty or lists nothing with readable dimensions — a
-    /// camera that offers no size is not one this can pick from, and the caller turns that
-    /// into [`crate::Error::FormatUnsupported`] with the list it does have.
-    #[must_use]
-    pub fn choose(&self, formats: &[FormatInfo]) -> Option<ChosenFormat> {
-        let requested = self
-            .pixel_format
-            .and_then(|wanted| formats.iter().find(|f| f.pixel_format == wanted));
-        let (chosen, reason) = match requested {
-            Some(named) => (named, ChoiceReason::Requested),
-            None => rank_formats(formats, self.sink_fidelity)?,
+    /// # Errors
+    ///
+    /// [`crate::Error::FormatUnsupported`], in one of its two shapes and never in both.
+    /// **A format refusal** — [`Error::format_unsupported`](crate::Error::format_unsupported),
+    /// naming what was asked for and every format the device enumerates — for a named
+    /// format this enumeration does not carry, for an empty `formats` list, and for a
+    /// chosen format whose every size entry is a shape this build cannot read.
+    /// **A size refusal** — [`Error::size_unsupported`](crate::Error::size_unsupported),
+    /// naming the size and every size the device can deliver — for a named
+    /// width×height no candidate format can deliver.
+    ///
+    /// The refusal is built here rather than by each backend so that the two of them cannot
+    /// answer the same request differently (E5) — which is exactly what they did while this
+    /// function returned an `Option` and the fake alone carried the guard.
+    pub fn choose(&self, formats: &[FormatInfo]) -> Result<ChosenFormat> {
+        // What the device does offer, for whichever refusal below fires. `available` is
+        // the list this function was handed: a backend that filtered its own limitations
+        // out before calling (the fake can synthesise only a few formats) is answering
+        // about the formats it could actually have delivered.
+        let offered = || formats.iter().map(|f| f.pixel_format).collect::<Vec<_>>();
+
+        // A size is named only when *both* halves are; see "a half-specified size names
+        // nothing" above. Hoisted because it decides the candidate set as well as the
+        // answer, and those two must be the same question or the ranking gets a veto over
+        // the one thing the caller asked for.
+        let named_size = match (self.width, self.height) {
+            (Some(width), Some(height)) => Some((width, height)),
+            _ => None,
+        };
+        let delivers = |format: &FormatInfo, (width, height): (u32, u32)| {
+            format
+                .sizes
+                .iter()
+                .any(|entry| entry.size.largest_within(width, height).is_some())
+        };
+        // Every size on the device a caller could ask for instead, deduplicated in
+        // enumeration order — the payload that lets an unattended caller repair its request
+        // from the refusal alone rather than by re-reading `info`.
+        let size_refusal = |(width, height): (u32, u32)| {
+            let mut available = Vec::new();
+            for entry in formats.iter().flat_map(|format| format.sizes.iter()) {
+                if entry.size.is_interpretable() && !available.contains(&entry.size) {
+                    available.push(entry.size);
+                }
+            }
+            Error::size_unsupported(width, height, available, offered())
         };
 
-        // The chosen format at its largest — what "just give me something" resolves to,
-        // and the fallback when nothing the caller asked for fits. `max_by_key` keeps the
-        // *last* maximum, so the index goes into the key reversed: two entries of equal
-        // area must resolve to the same one on every run, or two photographs an hour apart
-        // differ where the device did not (Expected usage item 2).
-        let default_size = chosen
-            .sizes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| Some((index, entry.size.max_dimensions()?)))
-            .max_by_key(|(index, (w, h))| (area(*w, *h), std::cmp::Reverse(*index)))
-            .map(|(_, size)| size)?;
+        let (chosen, reason) = match self.pixel_format {
+            Some(wanted) => match formats.iter().find(|f| f.pixel_format == wanted) {
+                Some(named) => (named, ChoiceReason::Requested),
+                // Named and absent. Indistinguishable from "named nothing" until
+                // 2026-08-16, which is how a request for GREY became a photograph in
+                // MJPG on every backend but the fake (note **N134**).
+                None => return Err(Error::format_unsupported(Some(wanted), offered())),
+            },
+            // Nothing named: rank — but among the formats that can answer the size the
+            // caller *did* name, when it named one. `rank_within` keeps D5's key and the
+            // driver's enumeration order intact; all that narrows is who is standing.
+            None => {
+                let ranked = match named_size {
+                    Some(size) => rank_within(formats, self.sink_fidelity, |f| delivers(f, size)),
+                    None => rank_formats(formats, self.sink_fidelity),
+                };
+                match (ranked, named_size) {
+                    (Some(ranked), _) => ranked,
+                    // Every format on the device was asked and none can deliver the size.
+                    // That is a fact about the *size*, and saying it as one is what stops
+                    // the caller retrying the format it never got wrong (note **N138**).
+                    (None, Some(size)) if !formats.is_empty() => return Err(size_refusal(size)),
+                    // Nothing to choose from at all — an empty enumeration, which is a
+                    // fact about the device and not about anything the caller wrote.
+                    (None, _) => return Err(Error::format_unsupported(None, offered())),
+                }
+            }
+        };
 
-        let (width, height) = match (self.width, self.height) {
-            (Some(width), Some(height)) => chosen
+        let (width, height) = match named_size {
+            Some((width, height)) => chosen
                 .sizes
                 .iter()
                 .enumerate()
@@ -153,11 +241,43 @@ impl StreamRequest {
                     Some((index, entry.size.largest_within(width, height)?))
                 })
                 .max_by_key(|(index, (w, h))| (area(*w, *h), std::cmp::Reverse(*index)))
-                .map_or(default_size, |(_, size)| size),
-            _ => default_size,
+                .map(|(_, size)| size)
+                // Reachable only when the caller named the format too — the ranking above
+                // already excluded every format that cannot deliver. So this is D5's
+                // sentence at its most literal: the format was named, the size was named,
+                // and this format cannot serve that size.
+                .ok_or_else(|| size_refusal((width, height)))?,
+            // The chosen format at its largest — what "just give me something" resolves
+            // to. `max_by_key` keeps the *last* maximum, so the index goes into the key
+            // reversed: two entries of equal area must resolve to the same one on every
+            // run, or two photographs an hour apart differ where the device did not
+            // (Expected usage item 2).
+            None => chosen
+                .sizes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| Some((index, entry.size.max_dimensions()?)))
+                .max_by_key(|(index, (w, h))| (area(*w, *h), std::cmp::Reverse(*index)))
+                .map(|(_, size)| size)
+                // A format whose every entry is a shape this build cannot read has no size
+                // to ask for, and that is a refusal rather than a guess. It is a *format*
+                // refusal — no size was named, so there is none to report — and `available`
+                // lists only the formats that do have a readable size, because telling a
+                // caller that the very format it cannot be given "would be accepted" is
+                // N129's misdirection wearing the other half of the sentence.
+                .ok_or_else(|| {
+                    Error::format_unsupported(
+                        self.pixel_format,
+                        formats
+                            .iter()
+                            .filter(|f| f.sizes.iter().any(|e| e.size.is_interpretable()))
+                            .map(|f| f.pixel_format)
+                            .collect(),
+                    )
+                })?,
         };
 
-        Some(ChosenFormat {
+        Ok(ChosenFormat {
             pixel_format: chosen.pixel_format,
             width,
             height,
@@ -246,6 +366,28 @@ pub fn rank_formats(
     formats: &[FormatInfo],
     sink: SinkFidelity,
 ) -> Option<(&FormatInfo, ChoiceReason)> {
+    rank_within(formats, sink, |_| true)
+}
+
+/// [`rank_formats`], restricted to the formats that can answer the request.
+///
+/// **The candidate set is the caller's, the ranking is D5's.** A caller that named a size
+/// has already excluded every format that cannot deliver it, and letting the ranking pick
+/// among the rest is a different thing from letting it pick and then veto — which is what
+/// `--size 640x480` met on the OBSBOT for two days (note **N138**). The keys, the reversed
+/// index, and the driver's enumeration order as the last tiebreak are untouched, so the
+/// request that names neither format nor size gets exactly the answer the 2026-08-13 ruling
+/// specified.
+///
+/// The tie counts that pick a [`ChoiceReason`] run over the *candidates* rather than over
+/// the whole enumeration, because the reason has to name the rule that actually decided:
+/// "the most pixels" among formats that were never in the running would be a sentence about
+/// a comparison nobody made.
+fn rank_within(
+    formats: &[FormatInfo],
+    sink: SinkFidelity,
+    eligible: impl Fn(&FormatInfo) -> bool,
+) -> Option<(&FormatInfo, ChoiceReason)> {
     let key = |format: &FormatInfo| {
         let lossiness = Lossiness::of(format.pixel_format);
         let pixels = format
@@ -262,18 +404,26 @@ pub fn rank_formats(
         )
     };
 
+    // The index is the one this format has in the *device's* enumeration, not in the
+    // candidate set: `ChoiceReason::FirstOfEqualsInDriverOrder` names the driver's order
+    // and would be a different claim if it counted from a filtered list.
+    let candidates = || {
+        formats
+            .iter()
+            .enumerate()
+            .filter(|(_, format)| eligible(format))
+    };
+
     // `max_by_key` keeps the last maximum; the reversed index makes it keep the first,
     // which is what leaves the driver's own order as the final tiebreak.
-    let (index, best) = formats
-        .iter()
-        .enumerate()
-        .max_by_key(|(index, format)| (key(format), std::cmp::Reverse(*index)))?;
+    let (index, best) =
+        candidates().max_by_key(|(index, format)| (key(format), std::cmp::Reverse(*index)))?;
 
     // Why it won, decided by how many others reached the same rank — so the answer names
     // the rule that actually fired rather than the rule that usually fires.
     let winning = key(best);
-    let tied_on_size = formats.iter().filter(|f| key(f).2 == winning.2).count();
-    let tied_outright = formats.iter().filter(|f| key(f) == winning).count();
+    let tied_on_size = candidates().filter(|(_, f)| key(f).2 == winning.2).count();
+    let tied_outright = candidates().filter(|(_, f)| key(f) == winning).count();
     let reason = if tied_on_size == 1 {
         ChoiceReason::MostPixels
     } else if tied_outright == 1 {
@@ -1002,6 +1152,8 @@ pub struct PhotoReport {
 
 #[cfg(test)]
 mod tests {
+    use crate::camera::FrameSize;
+
     use super::*;
 
     #[test]
@@ -1244,7 +1396,8 @@ mod tests {
     }
 
     #[test]
-    fn an_offered_size_is_taken_exactly_and_an_unoffered_one_falls_to_the_largest_that_fits() {
+    fn an_offered_size_is_taken_exactly_and_an_unoffered_one_falls_to_the_largest_that_fits_or_is_refused()
+     {
         let formats = seed_formats();
         let exact = StreamRequest {
             pixel_format: Some(PixelFormat::MJPG),
@@ -1266,19 +1419,128 @@ mod tests {
         .expect("resolves");
         assert_eq!((inside.width, inside.height), (640, 480));
 
-        // Nothing fits inside 3x3, so the format's largest entry stands — which is what
-        // makes the answer *different* from the request, and therefore reportable. It was
-        // the format's *first* entry until 2026-08-13; the fallback moved with the default
-        // because they are one rule, and a fallback that stayed on the first entry would
-        // have made "nothing fits" a quieter way of asking for the old behaviour.
+        // Nothing *on the device* fits inside 3x3, and that is a refusal (owner ruling,
+        // 2026-08-16 — note N134). It answered 2592x1944 until then: the format's largest
+        // mode, 560 thousand times the pixels asked for, reported as an adjustment in a
+        // field the agent guide never tells a caller to read.
         let tiny = StreamRequest {
             width: Some(3),
             height: Some(3),
             ..StreamRequest::default()
         }
         .choose(&formats)
-        .expect("resolves");
-        assert_eq!((tiny.width, tiny.height), (2592, 1944));
+        .expect_err("nothing this camera offers fits inside 3x3");
+        let Error::FormatUnsupported {
+            requested,
+            available,
+            size,
+        } = &tiny
+        else {
+            panic!("a size nothing fits is D5's typed refusal: {tiny}");
+        };
+        assert_eq!(
+            *requested, None,
+            "the caller named no format and the format is not what failed: {tiny}"
+        );
+        assert_eq!(
+            available,
+            &vec![PixelFormat::MJPG, PixelFormat::YUYV],
+            "the refusal names what the device does offer, so the next request can be \
+             built from it"
+        );
+        // And the half that says *which* knob to turn (note N138). Every size the device
+        // can deliver, deduplicated — 640x480 is on both formats and appears once — so a
+        // caller repairs its request from the refusal rather than from a second `info`.
+        let size = size.as_ref().unwrap_or_else(|| {
+            panic!("a size refusal that cannot name the size is the sentence N138 removed: {tiny}")
+        });
+        assert_eq!((size.requested_width, size.requested_height), (3, 3));
+        assert_eq!(
+            size.available,
+            vec![
+                FrameSize::Discrete {
+                    width: 1_280,
+                    height: 720
+                },
+                FrameSize::Discrete {
+                    width: 320,
+                    height: 180
+                },
+                FrameSize::Discrete {
+                    width: 640,
+                    height: 480
+                },
+                FrameSize::Discrete {
+                    width: 2_592,
+                    height: 1_944
+                },
+            ]
+        );
+        // The sentence itself, because it is the part of the payload a caller reads first
+        // and the part that sent one round a loop: it must name the size and must not offer
+        // the formats as the remedy.
+        let sentence = tiny.to_string();
+        assert!(sentence.contains("3x3"), "{sentence}");
+        assert!(!sentence.contains("MJPG"), "{sentence}");
+    }
+
+    #[test]
+    fn a_named_size_narrows_the_ranking_rather_than_being_vetoed_by_it() {
+        // **The regression this rule exists to stop** (note N138), in the shape the OBSBOT
+        // has it: one format with the most pixels and no small mode, one format with fewer
+        // pixels and the small mode the caller asked for. Ranking first and asking second
+        // refuses `640x480` on a camera that enumerates it.
+        let formats = vec![
+            format(
+                PixelFormat::MJPG,
+                vec![size(1_280, 720), size(3_840, 2_160)],
+            ),
+            format(PixelFormat::YUYV, vec![size(640, 360), size(640, 480)]),
+        ];
+
+        let small = StreamRequest {
+            width: Some(640),
+            height: Some(480),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect("this camera enumerates YUYV 640x480");
+        assert_eq!(
+            (small.pixel_format, small.width, small.height),
+            (PixelFormat::YUYV, 640, 480),
+            "the ranking chose among formats that cannot deliver the size that was named"
+        );
+
+        // The ranking is intact for the request that named neither, which is the half D5
+        // reserves for it: MJPG at its largest, on `max_pixels`.
+        let anything = StreamRequest::default()
+            .choose(&formats)
+            .expect("a device with formats resolves");
+        assert_eq!(
+            (
+                anything.pixel_format,
+                anything.width,
+                anything.height,
+                anything.reason
+            ),
+            (PixelFormat::MJPG, 3_840, 2_160, ChoiceReason::MostPixels)
+        );
+
+        // And naming the format too puts that format alone in the candidate set, so it
+        // refuses rather than borrowing YUYV's mode — D5's sentence read literally.
+        let refused = StreamRequest {
+            pixel_format: Some(PixelFormat::MJPG),
+            width: Some(640),
+            height: Some(480),
+            ..StreamRequest::default()
+        }
+        .choose(&formats)
+        .expect_err("MJPG starts at 1280x720 on this camera");
+        assert!(
+            matches!(&refused, Error::FormatUnsupported { size: Some(size), .. }
+                if (size.requested_width, size.requested_height) == (640, 480)),
+            "{refused}"
+        );
     }
 
     #[test]
@@ -1355,18 +1617,33 @@ mod tests {
         .expect("resolves");
         assert_eq!((big.width, big.height), (1920, 1080));
 
+        // Below the minimum the range can deliver nothing, and D5's "an explicit request
+        // still wins … or a typed refusal" is what answers. This assertion read
+        // `(1920, 1080)` under the comment "nothing in a 32-pixel-minimum range fits
+        // inside 8x8" until the owner's ruling of 2026-08-16 (note **N134**) — a *cap* of
+        // 8x8 answered with the range's maximum corner is the very inversion this
+        // function's stepwise handling exists to prevent, arriving through the door
+        // marked "nothing fits".
         let tiny = StreamRequest {
             width: Some(8),
             height: Some(8),
             ..StreamRequest::default()
         }
         .choose(&stepwise)
-        .expect("resolves");
-        assert_eq!(
-            (tiny.width, tiny.height),
-            (1920, 1080),
-            "nothing in a 32-pixel-minimum range fits inside 8x8"
-        );
+        .expect_err("a 32-pixel minimum cannot deliver 8x8");
+        assert_eq!(tiny.kind(), crate::ErrorKind::FormatUnsupported, "{tiny}");
+
+        // And the boundary is the entry's own minimum rather than the request's size: the
+        // smallest thing the range *can* deliver is still an answer, so the refusal above
+        // is not this function having stopped adjusting.
+        let smallest = StreamRequest {
+            width: Some(32),
+            height: Some(32),
+            ..StreamRequest::default()
+        }
+        .choose(&stepwise)
+        .expect("32x32 is exactly the declared minimum");
+        assert_eq!((smallest.width, smallest.height), (32, 32));
     }
 
     #[test]
@@ -1402,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn a_requested_format_is_honoured_and_an_absent_one_falls_to_the_ranking() {
+    fn a_requested_format_is_honoured_and_an_absent_one_is_refused_rather_than_substituted() {
         let formats = seed_formats();
         let yuyv = StreamRequest {
             pixel_format: Some(PixelFormat::YUYV),
@@ -1418,46 +1695,75 @@ mod tests {
             "a named format is not a ranked one, and the answer says which happened"
         );
 
-        // A format the device does not list: the chooser ranks, and reporting *that* as an
-        // adjustment is `diff`'s job, not this function's.
-        let absent = StreamRequest {
-            pixel_format: PixelFormat::parse("H264"),
+        // A format the device does not list is a typed refusal, not a ranking. It ranked
+        // until 2026-08-16 (note **N134**), which meant an agent asking a display-driver
+        // camera for GREY — because that is what its comparison pipeline reads — got a
+        // photograph in MJPG and one `adjustments` entry nothing told it to look at.
+        let h264 = PixelFormat::parse("H264").expect("four characters");
+        let refusal = StreamRequest {
+            pixel_format: Some(h264),
             ..StreamRequest::default()
         }
         .choose(&formats)
-        .expect("resolves");
-        assert_eq!(absent.pixel_format, PixelFormat::MJPG);
-        assert_eq!(absent.reason, ChoiceReason::MostPixels);
+        .expect_err("H264 is not on this device");
+        let Error::FormatUnsupported {
+            requested,
+            available,
+            size,
+        } = &refusal
+        else {
+            panic!("D5 names the refusal, and it is this one: {refusal}");
+        };
+        assert_eq!(*requested, Some(h264), "the refusal repeats what was asked");
+        assert_eq!(
+            available,
+            &vec![PixelFormat::MJPG, PixelFormat::YUYV],
+            "and names every format there is, which is the whole remedy an unattended \
+             caller has"
+        );
+        assert!(
+            size.is_none(),
+            "the two causes are mutually exclusive: a format refusal that also carried a \
+             size would name two levers to an unattended caller (N138): {refusal}"
+        );
 
-        // ... and it *is* reported, which is the half the ruling had to leave alone: the
-        // chooser answering something other than what was named is exactly the case D5's
-        // "the negotiated result is always surfaced" exists for, and the two functions are
-        // asserted together here because separately each one looks correct.
+        // The reporting half stands where it still applies: `S_FMT` is a negotiation, so a
+        // driver may answer with a format nobody asked for even after this function agreed
+        // the device has the one that was named — and `diff` is what makes that visible.
+        // It is asserted here, beside the refusal, because separately each looks correct.
         let asked = StreamRequest {
-            pixel_format: PixelFormat::parse("H264"),
+            pixel_format: Some(h264),
             ..StreamRequest::default()
         };
         assert_eq!(
             NegotiatedStream::diff(
                 &asked,
-                absent.pixel_format,
-                absent.width,
-                absent.height,
+                PixelFormat::MJPG,
+                2_592,
+                1_944,
                 FrameInterval::Discrete {
                     numerator: 1,
                     denominator: 30
                 },
             ),
             vec![Adjustment::PixelFormat {
-                requested: PixelFormat::parse("H264").expect("four characters"),
+                requested: h264,
                 negotiated: PixelFormat::MJPG,
             }],
             "a request answered with a different format and told nothing about it is a \
              photograph whose caller believes it is looking at H.264"
         );
 
-        // A device with nothing to offer resolves to nothing rather than to a guess.
-        assert!(StreamRequest::default().choose(&[]).is_none());
+        // A device with nothing to offer is refused rather than guessed at, and the
+        // refusal carries the empty list rather than an invented one.
+        let nothing = StreamRequest::default()
+            .choose(&[])
+            .expect_err("a camera that enumerated no format cannot be asked for one");
+        assert!(
+            matches!(&nothing, Error::FormatUnsupported { requested, available, size }
+                if requested.is_none() && available.is_empty() && size.is_none()),
+            "{nothing}"
+        );
         assert!(rank_formats(&[], SinkFidelity::default()).is_none());
     }
 
@@ -1853,10 +2159,25 @@ mod tests {
             (PixelFormat::YUYV, 320, 240)
         );
 
-        // With nothing else on offer there is no size to ask for, which is the one thing
-        // the chooser answers `None` to — and the caller turns that into
-        // `FormatUnsupported` with the list it does have.
-        assert!(StreamRequest::default().choose(&[unreadable]).is_none());
+        // With nothing else on offer there is no size to ask for, and the chooser refuses
+        // rather than inventing dimensions for a shape it admitted it cannot read.
+        //
+        // `available` is **empty** here, and that is the repair rather than an omission
+        // (note **N138**): this list is what *would be accepted*, and the one format on this
+        // device cannot be asked for at any size. Naming MJPG — which is what this refusal
+        // did until 2026-08-16 — tells an unattended caller to retry with the very thing it
+        // cannot have, which is N129's misdirection wearing the other half of the sentence.
+        // The device's own enumeration is still where a caller sees that MJPG exists and
+        // that its size shape is one this build did not understand.
+        let refusal = StreamRequest::default()
+            .choose(std::slice::from_ref(&unreadable))
+            .expect_err("a format with no readable size cannot be asked for");
+        assert!(
+            matches!(&refusal, Error::FormatUnsupported { available, size, .. }
+                if available.is_empty() && size.is_none()),
+            "{refusal}"
+        );
+        assert!(!refusal.to_string().contains("MJPG"), "{refusal}");
     }
 
     #[test]

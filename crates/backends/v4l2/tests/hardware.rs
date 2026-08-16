@@ -1109,10 +1109,16 @@ fn hw_a_stream_negotiates_delivers_frames_and_stops_twice_over() {
 #[test]
 #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
 fn hw_a_stream_honours_a_size_the_camera_offers_and_reports_one_it_does_not() {
-    // D5 in both directions on real hardware: a size the device lists must come back
-    // exactly and report no adjustment, and a size it does not list must come back
-    // *different* and say so. A negotiator that always reported "exact" would pass the
-    // first arm alone.
+    // D5 in three directions on real hardware: a size the device lists must come back
+    // exactly and report no adjustment, a size *between* its modes must come back smaller
+    // and say so, and a size **nothing** it lists can deliver must be refused rather than
+    // answered with the largest thing there is (owner ruling, 2026-08-16 — note **N134**).
+    // A negotiator that always reported "exact" would pass the first arm alone.
+    //
+    // The third arm asked for 3x3 and asserted an *adjustment* until that ruling: on the
+    // OBSBOT, whose smallest MJPG mode is 1280x720, that answer was 3840x2160 — 921,600
+    // times the pixels asked for, reported in a field the agent guide never tells a caller
+    // to read.
     let Some((backend, cameras)) = attached() else {
         return;
     };
@@ -1164,39 +1170,237 @@ fn hw_a_stream_honours_a_size_the_camera_offers_and_reports_one_it_does_not() {
             exact.adjustments
         );
 
-        // Three pixels wide is not a frame size any UVC camera offers, so the driver must
-        // adjust — and the adjustment must be *reported*, which is the half a silent
-        // negotiator gets wrong.
-        let adjusted = camera
+        // One pixel over a mode the camera has: it cannot deliver that, so the answer is
+        // the largest mode inside the request — smaller than what was asked for, and
+        // *reported*, which is the half a silent negotiator gets wrong. Discrete-only,
+        // because a stepwise entry with a step of one could deliver `width + 1` exactly and
+        // this arm would then be red for being right (no camera this project has met is
+        // stepwise — 34 committed size entries, every one discrete).
+        let all_discrete = formats
+            .iter()
+            .filter(|format| format.pixel_format == pixel_format)
+            .flat_map(|format| format.sizes.iter())
+            .all(|entry| matches!(entry.size, schema::camera::FrameSize::Discrete { .. }));
+        if all_discrete {
+            let adjusted = camera
+                .start_stream(&StreamRequest {
+                    pixel_format: Some(pixel_format),
+                    width: Some(width + 1),
+                    height: Some(height + 1),
+                    ..StreamRequest::default()
+                })
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{}: a size between this camera's modes errored instead of \
+                         adjusting: {error}",
+                        info.id
+                    )
+                });
+            camera.stop_stream().expect("stop");
+            assert!(
+                !adjusted.is_exact(),
+                "{}: {}x{} came back as {}x{} and was reported exact",
+                info.id,
+                width + 1,
+                height + 1,
+                adjusted.width,
+                adjusted.height
+            );
+            assert!(
+                adjusted.width <= width + 1 && adjusted.height <= height + 1,
+                "{}: an adjustment answered {}x{}, which is bigger than the request",
+                info.id,
+                adjusted.width,
+                adjusted.height
+            );
+            println!(
+                "{}: D5 live — {}x{} negotiated to {}x{}, reported as {:?}",
+                info.id,
+                width + 1,
+                height + 1,
+                adjusted.width,
+                adjusted.height,
+                adjusted.adjustments
+            );
+        } else {
+            println!(
+                "SKIP (partial): {} enumerates a non-discrete size, which can deliver a \
+                 request one pixel over a mode exactly",
+                info.id
+            );
+        }
+
+        // One pixel square is a frame no UVC camera can deliver, and since 2026-08-16 that
+        // is a typed refusal rather than the format's largest mode.
+        let refusal = camera
             .start_stream(&StreamRequest {
                 pixel_format: Some(pixel_format),
-                width: Some(3),
-                height: Some(3),
+                width: Some(1),
+                height: Some(1),
                 ..StreamRequest::default()
             })
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{}: a tiny size errored instead of adjusting: {error}",
-                    info.id
-                )
-            });
-        camera.stop_stream().expect("stop");
+            // Stopped on the path where the assertion below is going to fail: an arm that
+            // leaves a node streaming takes every arm after it with it.
+            .inspect(|_| {
+                let _ = camera.stop_stream();
+            })
+            .expect_err("a size nothing this camera has can deliver is refused");
+        assert_eq!(
+            refusal.kind(),
+            schema::ErrorKind::FormatUnsupported,
+            "{}: 1x1 was refused with {refusal} rather than FormatUnsupported",
+            info.id
+        );
+        // And it says the *size* was the problem, on the real device. A refusal that named
+        // the format instead sends an unattended caller to change `--pixel-format`, meet the
+        // identical refusal, and loop (note **N138**).
         assert!(
-            !adjusted.is_exact(),
-            "{}: 3x3 came back as {}x{} and was reported exact",
-            info.id,
-            adjusted.width,
-            adjusted.height
+            matches!(&refusal, schema::Error::FormatUnsupported { size: Some(size), .. }
+                if (size.requested_width, size.requested_height) == (1, 1)
+                    && !size.available.is_empty()),
+            "{}: 1x1 was refused without naming the size or what this camera can deliver: \
+             {refusal:?}",
+            info.id
+        );
+        assert!(
+            camera.streaming().is_none(),
+            "{}: a refused negotiation left the node streaming",
+            info.id
         );
         checked += 1;
-        println!(
-            "{}: D5 live — 3x3 negotiated to {}x{}, reported as {:?}",
-            info.id, adjusted.width, adjusted.height, adjusted.adjustments
-        );
+        println!("{}: D5 live — 1x1 refused with {refusal}", info.id);
     }
 
     if checked == 0 {
         println!("SKIP: no attached camera could be asked to negotiate a size");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_format_the_camera_does_not_offer_is_refused_rather_than_substituted() {
+    // **The arm the G6 review named, at the backend the finding was about.** D5's "an
+    // explicit request still wins: a caller that names a format and a size gets them or a
+    // typed refusal" was enforced in `webcam-handler-fake` and nowhere else, so this
+    // backend answered a request for a format the camera does not enumerate by ranking the
+    // list and photographing something else — measured through the shipped binary, against
+    // a camera offering MJPG and YUYV, on 2026-08-16 (note **N134**).
+    //
+    // Both tests that pinned the contract ran over the fake, which honoured it. That is
+    // what makes this arm worth its runtime even though `explicit_request` in the
+    // conformance battery asserts the same rule: the battery runs over the fake in `just
+    // ci` and over *this* backend only on a machine with a camera, and the whole finding is
+    // that a stand-in agreeing with itself proves nothing about the device.
+    //
+    // Nothing to restore: a refused negotiation never reaches `S_FMT`, so the node's
+    // persistent format is untouched — which the arm asserts rather than assumes, because
+    // "the request was refused" and "the request was refused after moving the device" are
+    // different facts (AGENTS rule 8).
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+
+    let mut checked = 0usize;
+    for info in &cameras {
+        if info.capture_node().is_none() {
+            // Named and counted, not silent (AGENTS rule 3): a metadata-only group is a
+            // real shape (D1) and it has no format list to name something absent from.
+            println!(
+                "SKIP (partial): {} has no capture node, so it enumerates no format",
+                info.id
+            );
+            continue;
+        }
+        let mut camera = backend
+            .open(&info.id)
+            .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
+        let formats = camera
+            .formats()
+            .unwrap_or_else(|error| panic!("{}: formats() failed: {error}", info.id));
+        if formats.is_empty() {
+            println!(
+                "SKIP (partial): {} enumerated no format, so there is nothing for a \
+                 request to be refused against",
+                info.id
+            );
+            continue;
+        }
+
+        // A FourCC no driver has ever issued, so the arm does not depend on which formats
+        // this desk's camera happens to lack — and asserted absent, because a fixture that
+        // cannot exercise the rule it pins is this project's most-found smell.
+        let absent = schema::camera::PixelFormat::parse("WCHX").expect("four characters");
+        assert!(
+            !formats.iter().any(|f| f.pixel_format == absent),
+            "{}: enumerates {absent}, which this arm relies on no device issuing",
+            info.id
+        );
+
+        let refusal = camera
+            .start_stream(&StreamRequest {
+                pixel_format: Some(absent),
+                ..StreamRequest::default()
+            })
+            // Stopped before the assertion, on the path where the assertion is going to
+            // fail: an arm that leaves a node streaming takes every arm after it with it.
+            .inspect(|_| {
+                let _ = camera.stop_stream();
+            })
+            .expect_err("a format this camera does not enumerate must be refused");
+        let schema::Error::FormatUnsupported {
+            requested,
+            available,
+            // A format refusal and a size refusal are exclusive: this one is about the
+            // format, so the size slot is empty (note **N138**).
+            size: None,
+        } = &refusal
+        else {
+            panic!(
+                "{}: {absent} was refused with {refusal} rather than a format-shaped \
+                 FormatUnsupported — the guide's remedy for this refusal is \"ask for one \
+                 it does\", and no other kind carries the list that makes it actionable",
+                info.id
+            );
+        };
+        assert_eq!(*requested, Some(absent), "{}", info.id);
+        assert!(
+            !available.is_empty(),
+            "{}: the refusal named no format this camera does have",
+            info.id
+        );
+        assert!(
+            camera.streaming().is_none(),
+            "{}: a refused negotiation left the node streaming",
+            info.id
+        );
+
+        // The other direction, so the arm is not measuring a backend that refuses
+        // everything: a format the camera *does* enumerate still streams.
+        let offered = formats[0].pixel_format;
+        let negotiated = camera
+            .start_stream(&StreamRequest {
+                pixel_format: Some(offered),
+                ..StreamRequest::default()
+            })
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: {offered} is enumerated and was refused: {error}",
+                    info.id
+                )
+            });
+        camera.stop_stream().expect("stop");
+        assert_eq!(negotiated.pixel_format, offered, "{}", info.id);
+
+        checked += 1;
+        println!(
+            "{}: D5 live — {absent} refused with \"{refusal}\", {offered} negotiated at \
+             {}x{}",
+            info.id, negotiated.width, negotiated.height
+        );
+    }
+
+    if checked == 0 {
+        println!("SKIP: no attached camera enumerated a format list to name one absent from");
     }
 }
 
@@ -1840,12 +2044,14 @@ fn hw_a_grey_only_sensor_records_y4m_and_the_avi_it_cannot_fill_is_refused_for_a
         let schema::Error::FormatUnsupported {
             requested,
             available,
+            // A container refuses a format, never a size (note **N138**).
+            size: None,
         } = &refusal
         else {
             panic!(
-                "{}: a .avi sink was refused with {refusal} rather than FormatUnsupported — \
-                    'this camera cannot' and 'this container cannot' are different findings \
-                    (AGENTS rule 7)",
+                "{}: a .avi sink was refused with {refusal} rather than a format-shaped \
+                    FormatUnsupported — 'this camera cannot' and 'this container cannot' \
+                    are different findings (AGENTS rule 7)",
                 info.id
             );
         };

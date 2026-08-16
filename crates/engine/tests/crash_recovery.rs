@@ -334,10 +334,10 @@ impl Camera for PersistentCamera {
     }
 
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
-        Err(Error::FormatUnsupported {
-            requested: request.pixel_format,
-            available: Vec::<PixelFormat>::new(),
-        })
+        Err(Error::format_unsupported(
+            request.pixel_format,
+            Vec::<PixelFormat>::new(),
+        ))
     }
 
     fn streaming(&self) -> Option<NegotiatedStream> {
