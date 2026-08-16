@@ -44,9 +44,27 @@ pub(crate) async fn get(
     target: &str,
     headers: &[(&str, &str)],
 ) -> std::io::Result<Answer> {
+    request("GET", bound, target, headers).await
+}
+
+/// The same, with the method spelled out.
+///
+/// A parameter rather than a second copy of the lines below, and it exists because the claim
+/// that needs it is a claim about **every** method: the token gate is a `route_layer` over the
+/// camera-bearing routes, so what it refuses is a *route* and not a verb — and a population that
+/// only ever sent `GET` could not tell that arrangement apart from one that gated a single
+/// method (note **N185**). `get` is kept as the name every other caller reads, because "an
+/// anonymous `GET` of the page" is what those tests are about and a method argument at each of
+/// them would be noise.
+pub(crate) async fn request(
+    method: &str,
+    bound: SocketAddr,
+    target: &str,
+    headers: &[(&str, &str)],
+) -> std::io::Result<Answer> {
     let mut stream = TcpStream::connect(bound).await?;
     let mut framed = format!(
-        "GET {target} HTTP/1.1\r\n\
+        "{method} {target} HTTP/1.1\r\n\
          Host: {bound}\r\n\
          Connection: close\r\n"
     );

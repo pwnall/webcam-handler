@@ -42,7 +42,7 @@ _isolated_target_dir() {
 fail_case_the_committed_guide_is_stale() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^List the cameras attached to this machine$/List the cameras, improved by hand/' \
+    gate_seed 's/^List the cameras attached to this machine$/List the cameras, improved by hand/' \
         "$tree/docs/agent-guide.md"
     gate_red_because 'docs/agent-guide.md is stale' \
         env "CARGO_TARGET_DIR=$(_shared_target_dir)" "WCH_GATE_ROOT=$tree" "$GATE"
@@ -72,12 +72,8 @@ fail_case_the_guide_is_emitted_but_not_committed() {
 fail_case_the_command_surface_moved_and_the_guide_did_not() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/value_name = "WxH"/value_name = "WIDTHxHEIGHT"/' \
+    gate_seed 's/value_name = "WxH"/value_name = "WIDTHxHEIGHT"/' \
         "$tree/crates/cli-core/src/lib.rs"
-    if ! grep -q 'WIDTHxHEIGHT' "$tree/crates/cli-core/src/lib.rs"; then
-        printf 'selftest: the value name was not seeded\n' >&2
-        return 0
-    fi
     gate_red_because 'docs/agent-guide.md is stale' \
         env "CARGO_TARGET_DIR=$(_isolated_target_dir agent-guide-surface-drift)" \
         "WCH_GATE_ROOT=$tree" "$GATE"
@@ -117,7 +113,7 @@ fail_case_xtask_no_longer_declares_where_the_guide_goes() {
 fail_case_the_deprecation_pointer_names_no_guide() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's|docs/agent-guide.md|docs/somewhere-else.md|g' "$tree/vendor/README.md"
+    gate_seed 's|docs/agent-guide.md|docs/somewhere-else.md|g' "$tree/vendor/README.md"
     gate_red_because 'does not name docs/agent-guide.md' \
         env "CARGO_TARGET_DIR=$(_shared_target_dir)" "WCH_GATE_ROOT=$tree" "$GATE"
 }

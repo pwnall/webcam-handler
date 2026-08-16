@@ -76,7 +76,7 @@ fail_case_a_shipped_root_kept_three_of_the_four() {
     # branch is the one that fires alongside claim 1 rather than three of them at once.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i '/clippy::panic,$/d' "$tree/crates/api/src/lib.rs"
+    gate_seed '/clippy::panic,$/d' "$tree/crates/api/src/lib.rs"
     gate_red_because 'crates/api/src/lib.rs denies 3 of the 4 lints in the set' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
@@ -87,7 +87,7 @@ fail_case_a_dev_only_root_took_half_the_set() {
     # the reported posture would say "denies 1 of the 4" while nothing went red.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i '/^#!\[forbid(unsafe_code)\]/a #![cfg_attr(not(test), deny(clippy::unwrap_used))]' \
+    gate_seed '/^#!\[forbid(unsafe_code)\]/a #![cfg_attr(not(test), deny(clippy::unwrap_used))]' \
         "$tree/crates/testkit/src/lib.rs"
     gate_red_because 'the set is taken whole or not at all' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
@@ -99,7 +99,7 @@ fail_case_the_wider_lint_taken_without_the_set_it_widens() {
     # evidence about claim 3 alone.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i '/^#!\[forbid(unsafe_code)\]/a #![cfg_attr(not(test), deny(clippy::as_conversions))]' \
+    gate_seed '/^#!\[forbid(unsafe_code)\]/a #![cfg_attr(not(test), deny(clippy::as_conversions))]' \
         "$tree/xtask/src/main.rs"
     gate_red_because 'without the whole panic/indexing set' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
@@ -111,7 +111,7 @@ fail_case_every_root_dropped_the_device_integer_widening() {
     # still carries it has dropped a decision, and no other check in this workspace can see it.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i '/clippy::as_conversions/d' \
+    gate_seed '/clippy::as_conversions/d' \
         "$tree/crates/imaging/src/lib.rs" \
         "$tree/crates/backends/fake/src/lib.rs" \
         "$tree/crates/backends/v4l2/src/lib.rs"
@@ -126,7 +126,7 @@ fail_case_the_set_moved_behind_a_cfg_nobody_enables() {
     # behind for whoever reads the file next.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^    not(test),$/    feature = "paranoid",/' "$tree/crates/engine/src/lib.rs"
+    gate_seed 's/^    not(test),$/    feature = "paranoid",/' "$tree/crates/engine/src/lib.rs"
     gate_red_because 'crates/engine/src/lib.rs is a shipped crate root that does not deny' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
@@ -140,7 +140,7 @@ fail_case_the_block_landed_on_the_next_item_instead_of_the_crate() {
     # why the `#!` is part of the match rather than assumed.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^#!\[cfg_attr($/#[cfg_attr(/' "$tree/crates/engine/src/lib.rs"
+    gate_seed 's/^#!\[cfg_attr($/#[cfg_attr(/' "$tree/crates/engine/src/lib.rs"
     gate_red_because 'crates/engine/src/lib.rs is a shipped crate root that does not deny' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }

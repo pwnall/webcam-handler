@@ -187,12 +187,8 @@ fail_case_the_failure_document_carries_a_payload_the_bundle_does_not_declare() {
 fail_case_an_answering_verb_carries_the_marker_that_says_a_verb_refused() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^pub const FAILURE_MARKER: &str = "failed";$/pub const FAILURE_MARKER: \&str = "cameras";/' \
+    gate_seed 's/^pub const FAILURE_MARKER: &str = "failed";$/pub const FAILURE_MARKER: \&str = "cameras";/' \
         "$tree/crates/schema/src/error.rs"
-    if ! grep -q 'FAILURE_MARKER: &str = "cameras"' "$tree/crates/schema/src/error.rs"; then
-        printf 'selftest: the marker was not re-pointed\n' >&2
-        return 0
-    fi
     gate_red_because 'answered with a document carrying' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
@@ -203,7 +199,7 @@ fail_case_an_answering_verb_carries_the_marker_that_says_a_verb_refused() {
 fail_case_the_tree_no_longer_declares_the_failure_marker() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i '/^pub const FAILURE_MARKER: &str =/d' "$tree/crates/schema/src/error.rs"
+    gate_seed '/^pub const FAILURE_MARKER: &str =/d' "$tree/crates/schema/src/error.rs"
     gate_red_because 'no longer declares FAILURE_MARKER' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }

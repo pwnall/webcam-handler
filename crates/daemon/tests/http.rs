@@ -233,6 +233,13 @@ impl Web {
             .expect("the listener is up")
     }
 
+    /// The same, with the method spelled out: what a stranger sends who is not sending a `GET`.
+    async fn anonymous_with(&self, method: &str, target: &str) -> Answer {
+        tcp::request(method, self.bound(), target, &[])
+            .await
+            .expect("the listener is up")
+    }
+
     /// A `GET` presenting the token the way a client that can set a header does — `curl`, a
     /// script, and this suite, which is who `gate::REFUSAL` recommends it to.
     ///
@@ -347,6 +354,49 @@ fn is_the_refusal(answer: &Answer, about: &str) {
     assert_eq!(answer.body(), gate::REFUSAL, "{about}");
 }
 
+/// Every method a stranger can put on the request line of a camera-bearing path.
+///
+/// **The population is methods and not one method** (note **N185**), and that is what makes the
+/// claim survive the next edit to a route. D11's gate is a `route_layer`, so it wraps the route's
+/// whole `MethodRouter` and refuses a *route* rather than a verb — which means a build that has
+/// grown a second method on `/preview` (G6/M23 added `HEAD`) needs no new assertion here, and a
+/// build that had somehow put one method outside the layer fails without anybody having guessed
+/// which. Every name RFC 9110 §9.3 defines, less `CONNECT`, whose request target is an authority
+/// rather than a path and which is therefore not a request for one of these routes at all.
+const EVERY_METHOD: [&str; 8] = [
+    "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE",
+];
+
+/// Assert an answer is the token gate's refusal to a method that carries no body back.
+///
+/// `HEAD` is the reason this exists: RFC 9110 §9.3.2 forbids content in its answer, so hyper
+/// drops the body and the refusal arrives as its status and its challenge alone. Asserting
+/// [`gate::REFUSAL`] there would fail on a daemon that is behaving exactly as it must, and
+/// dropping the body assertion for *every* method would give up the claim that the two refusals
+/// this listener writes are still distinguishable ([`is_the_cross_origin_refusal`] is the other).
+fn is_the_refusal_to(method: &str, answer: &Answer, about: &str) {
+    assert_eq!(
+        answer.status(),
+        401,
+        "{about}: {method} was not refused: {}",
+        answer.body()
+    );
+    assert_eq!(
+        answer.header("WWW-Authenticate"),
+        Some(gate::BEARER_CHALLENGE),
+        "{about}: a 401 to {method} with no challenge"
+    );
+    if method == "HEAD" {
+        assert!(
+            answer.body().is_empty(),
+            "{about}: a HEAD answer carried content: {}",
+            answer.body()
+        );
+    } else {
+        assert_eq!(answer.body(), gate::REFUSAL, "{about}: to {method}");
+    }
+}
+
 /// Assert an answer is the cross-origin rule's refusal, in full.
 ///
 /// Four claims, and the last two are what stop this being a restatement of [`is_the_refusal`]:
@@ -396,6 +446,14 @@ async fn an_anonymous_asset_is_served_and_an_anonymous_camera_route_is_not() {
     // is the daemon's own, so a route that is on it and lost its gate fails here, and a route
     // that is on it and does not exist fails here too — an unrouted path answers the asset
     // table's 404, not a 401.
+    //
+    // **And over every method, not over `GET`** (note **N185**). What the ruling gated is a set
+    // of routes, and D11's gate is a `route_layer` — it wraps the route's whole `MethodRouter`,
+    // so it has no way to admit one verb and refuse another. That is a property worth asserting
+    // rather than assuming, because the arrangement it rests on is invisible from a request:
+    // until G6 both halves of this pair drove `GET` alone, `HEAD` was added to `/preview` in the
+    // same review (note **N179**), and nothing in this workspace would have noticed a build that
+    // answered it from outside the layer.
     let web = Web::opened(false).await;
 
     is_the_page(&web.anonymous("/").await, "the page, with no credential");
@@ -405,9 +463,19 @@ async fn an_anonymous_asset_is_served_and_an_anonymous_camera_route_is_not() {
         404,
         "a path that names no asset answered something other than the asset table's 404"
     );
+    let mut refused = 0_usize;
     for path in CAMERA_BEARING_PATHS {
         is_the_refusal(&web.anonymous(path).await, path);
+        for method in EVERY_METHOD {
+            is_the_refusal_to(method, &web.anonymous_with(method, path).await, path);
+            refused += 1;
+        }
     }
+    assert_eq!(
+        refused,
+        CAMERA_BEARING_PATHS.len() * EVERY_METHOD.len(),
+        "the method population and the path population did not both quantify over something"
+    );
 
     web.stop().await;
 }

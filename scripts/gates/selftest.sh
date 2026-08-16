@@ -13,6 +13,13 @@
 #                          predicate's documented seam at a doctored input) and run it;
 #                          must exit non-zero
 #
+# An arm that seeds with `sed` seeds through `lib.sh`'s `gate_seed`, which fails loudly when
+# the substitution matched nothing — and reports it *beside* the exit status rather than in it,
+# because a `pass_case_` whose seed died exits 0 and would otherwise be printed as `ok` over an
+# arm that never produced its subject (note **N186**). This file reads that report after every
+# arm and lets it replace the ordinary verdict: the fact is about the seed, so the sentence has
+# to be too.
+#
 # A predicate with no case file fails. A predicate with no green arm fails. A predicate
 # with zero `fail_case_*` functions fails — a gate with only a passing arm is the defect
 # class, not a gate.
@@ -168,6 +175,25 @@ report_problem() {
     printf '  PROBLEM %s\n' "$*" >&2
 }
 
+# The seeding helper, proved both ways before any arm leans on it.
+#
+# The harness cannot be self-tested by the population it drives — that is docs/9's bootstrap
+# limit and this file's header records it — so it is closed here instead, in the one direction
+# that matters: a `gate_seed` that had stopped noticing a dead seed would return every
+# `pass_case_` in `cases/` to reporting `ok` over an unseeded tree, silently, which is the defect
+# note **N186** is about. `gate_seed_selfcheck` lives in `lib.sh` beside the thing it proves, so
+# a person can run it on its own.
+if gate_seed_selfcheck; then
+    printf 'selftest: gate_seed is live on a seed that applies and loud on one that does not\n'
+else
+    report_problem "gate_seed does not report a dead seed; every seeded arm below could be running the predicate against an unmodified tree"
+fi
+
+# Resolved once, and after `$WCH_GATE_SCRATCH` is exported, so this names the same file the
+# arms' `gate_seed` calls write to.
+seed_report="$(gate_seed_report)"
+rm -f "$seed_report"
+
 while IFS= read -r gate; do
     predicates=$((predicates + 1))
     name="$(basename "$gate" .sh)"
@@ -199,12 +225,33 @@ while IFS= read -r gate; do
     for fn in "${cases[@]}"; do
         output="$(run_case "$casefile" "$gate" "$fn")"
         status=$?
+        # Read **before** the reclaim, which is what removes it: `gate_seed` writes into the
+        # run's scratch directory and `reclaim_scratch` empties that between arms, so what is
+        # there now belongs to the arm that just ran and to no other.
+        dead_seed=""
+        if [[ -s "$seed_report" ]]; then
+            dead_seed="$(cat "$seed_report")"
+        fi
         # This arm's verdict is in `$status` and `$output`; its scratch trees are dead
         # weight from here on. See `reclaim_scratch`.
         reclaim_scratch
         case "$fn" in
+        pass_case*) pass_arms=$((pass_arms + 1)) ;;
+        fail_case_*) fail_arms=$((fail_arms + 1)) ;;
+        esac
+
+        # A dead seed **replaces** the verdict rather than joining it. Both of the sentences
+        # below would be about the predicate, and in a `pass_case_` the sentence would be
+        # `ok` — an arm that never produced its subject, reported as proof (note **N186**).
+        if [[ -n "$dead_seed" ]]; then
+            report_problem "$name $fn seeds a spelling this tree no longer has, so the predicate ran against a tree the arm never changed; repair the arm's seed, not the predicate"
+            printf '%s\n' "$dead_seed" | sed 's/^/        /'
+            printf '%s\n' "$output" | sed 's/^/        /'
+            continue
+        fi
+
+        case "$fn" in
         pass_case*)
-            pass_arms=$((pass_arms + 1))
             if ((status == 0)); then
                 printf '  ok    %s\n' "$fn"
             else
@@ -213,7 +260,6 @@ while IFS= read -r gate; do
             fi
             ;;
         fail_case_*)
-            fail_arms=$((fail_arms + 1))
             if ((status != 0)); then
                 printf '  ok    %s (predicate exited %s)\n' "$fn" "$status"
             else

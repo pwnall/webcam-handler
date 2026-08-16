@@ -108,14 +108,14 @@ fail_case_a_rust_test_calls_temp_dir_new() {
 fail_case_the_shell_home_is_deleted() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^gate_scratch_root()/gate_scratch_root_renamed()/' "$tree/scripts/gates/lib.sh"
+    gate_seed 's/^gate_scratch_root()/gate_scratch_root_renamed()/' "$tree/scripts/gates/lib.sh"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_rust_home_is_deleted() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^pub fn scratch_root()/pub fn scratch_root_renamed()/' \
+    gate_seed 's/^pub fn scratch_root()/pub fn scratch_root_renamed()/' \
         "$tree/crates/schema/src/paths.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -126,7 +126,7 @@ fail_case_the_rust_home_is_deleted() {
 fail_case_the_two_languages_name_different_directories() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^pub const SCRATCH_DIR: &str = "[^"]*"/pub const SCRATCH_DIR: \&str = "somewhere-else"/' \
+    gate_seed 's/^pub const SCRATCH_DIR: &str = "[^"]*"/pub const SCRATCH_DIR: \&str = "somewhere-else"/' \
         "$tree/crates/schema/src/paths.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -139,7 +139,7 @@ fail_case_the_two_languages_name_different_directories() {
 fail_case_the_copier_stops_excluding_target() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/local excludes=(--exclude=.git --exclude=target)/local excludes=(--exclude=.git)/' \
+    gate_seed 's/local excludes=(--exclude=.git --exclude=target)/local excludes=(--exclude=.git)/' \
         "$tree/scripts/gates/lib.sh"
     if awk '/^gate_scratch_tree\(\)/, /^}/' "$tree/scripts/gates/lib.sh" |
         grep -q -- '--exclude=target'; then
@@ -153,7 +153,7 @@ fail_case_the_copier_stops_excluding_target() {
 fail_case_the_copier_stops_excluding_the_scratch_root() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i '/excludes+=(--exclude=/d' "$tree/scripts/gates/lib.sh"
+    gate_seed '/excludes+=(--exclude=/d' "$tree/scripts/gates/lib.sh"
     if awk '/^gate_scratch_tree\(\)/, /^}/' "$tree/scripts/gates/lib.sh" |
         grep -q 'excludes+='; then
         printf 'selftest: the seed did not apply — the copier still derives its own exclusion\n' >&2

@@ -17,10 +17,17 @@ pass_case_coverage_by_a_whole_corpus_walk() {
     local tree
     tree="$(gate_scratch_tree)"
     # Strip every mention of the profiles by name, leaving only the walking calls.
-    grep -rl 'chicony-rgb\|chicony-ir\|obsbot-tiny3' "$tree" --include='*.rs' |
-        while IFS= read -r file; do
-            sed -i 's/chicony-rgb//g; s/chicony-ir//g; s/obsbot-tiny3//g' "$file"
-        done
+    #
+    # The whole list in one `gate_seed`, not one call per file inside the loop, and the
+    # difference is what makes this arm say anything at all: a `grep -rl` that matched **nothing**
+    # runs the loop body zero times, and this is a `pass_case_`, so the predicate would then be
+    # run against an untouched tree and reported `ok` over an arm whose subject was never
+    # produced (note **N186**). One call over the whole population turns "the profiles are no
+    # longer named by hand anywhere" from a loop that may not have run into a claim that fails
+    # loudly.
+    local named=()
+    mapfile -t named < <(grep -rl 'chicony-rgb\|chicony-ir\|obsbot-tiny3' "$tree" --include='*.rs')
+    gate_seed 's/chicony-rgb//g; s/chicony-ir//g; s/obsbot-tiny3//g' "${named[@]}"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -47,10 +54,9 @@ fail_case_a_profile_nobody_loads() {
     # that passes for the wrong reason proves nothing about the claim it names, so the
     # tree below keeps claim 3 satisfied by hand: a file that names each surviving profile
     # *and* constructs a backend.
-    grep -rl 'corpus::load_all(\|corpus::profile_paths(' "$tree" --include='*.rs' |
-        while IFS= read -r file; do
-            sed -i 's/corpus::load_all(/corpus_load_all_removed(/g; s/corpus::profile_paths(/corpus_profile_paths_removed(/g' "$file"
-        done
+    local walkers=()
+    mapfile -t walkers < <(grep -rl 'corpus::load_all(\|corpus::profile_paths(' "$tree" --include='*.rs')
+    gate_seed 's/corpus::load_all(/corpus_load_all_removed(/g; s/corpus::profile_paths(/corpus_profile_paths_removed(/g' "${walkers[@]}"
 
     {
         printf '// Seeded by the corpus-floor selftest: names every committed profile and\n'
@@ -84,10 +90,9 @@ fail_case_the_corpus_is_parsed_but_never_replayed() {
     tree="$(gate_scratch_tree)"
     # The corpus still loads and every profile is reachable; nothing turns one back into a
     # device. Claims 1 and 2 stay satisfied, so only claim 3 can produce the red.
-    grep -rl 'FakeBackend::' "$tree" --include='*.rs' |
-        while IFS= read -r file; do
-            sed -i 's/FakeBackend::new(/FakeBackendNewRemoved(/g; s/FakeBackend::from_profile(/FakeBackendFromProfileRemoved(/g' "$file"
-        done
+    local replayers=()
+    mapfile -t replayers < <(grep -rl 'FakeBackend::' "$tree" --include='*.rs')
+    gate_seed 's/FakeBackend::new(/FakeBackendNewRemoved(/g; s/FakeBackend::from_profile(/FakeBackendFromProfileRemoved(/g' "${replayers[@]}"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 

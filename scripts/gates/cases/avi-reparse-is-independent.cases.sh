@@ -38,12 +38,7 @@ fail_case_the_reader_imports_the_writer() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/$avi_dir/read.rs"
-    sed -i 's|^use crate::fault::imaging_failure;|use super::write::FOURCC_MOVI;\nuse crate::fault::imaging_failure;|' "$file"
-    if ! grep -Fq 'use super::write::FOURCC_MOVI;' "$file"; then
-        printf 'the seed did not apply; %s no longer carries the import this arm hangs on\n' \
-            "$file" >&2
-        return 0
-    fi
+    gate_seed 's|^use crate::fault::imaging_failure;|use super::write::FOURCC_MOVI;\nuse crate::fault::imaging_failure;|' "$file"
     gate_red_because "$avi_dir/read.rs names its sibling module" env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -54,17 +49,12 @@ fail_case_the_reader_reaches_a_writer_constant_by_a_fully_qualified_path() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/$avi_dir/read.rs"
-    sed -i '/^#\[cfg(test)\]$/i\
+    gate_seed '/^#\[cfg(test)\]$/i\
 /// Seeded by the gate selftest: the muxer as the authority on its own FourCC.\
 fn seeded_movi_tag() -> [u8; 4] {\
     crate::avi::write::FOURCC_MOVI\
 }\
 ' "$file"
-    if ! grep -Fq 'crate::avi::write::FOURCC_MOVI' "$file"; then
-        printf 'the seed did not apply; %s has no #[cfg(test)] line to hang it above\n' \
-            "$file" >&2
-        return 0
-    fi
     gate_red_because "$avi_dir/read.rs names its sibling module" env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -74,12 +64,7 @@ fail_case_the_writer_imports_the_reader_in_product_code() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/$avi_dir/write.rs"
-    sed -i 's|^use crate::fault::imaging_failure;|use super::read::read_stream;\nuse crate::fault::imaging_failure;|' "$file"
-    if ! grep -Fq 'use super::read::read_stream;' "$file"; then
-        printf 'the seed did not apply; %s no longer carries the import this arm hangs on\n' \
-            "$file" >&2
-        return 0
-    fi
+    gate_seed 's|^use crate::fault::imaging_failure;|use super::read::read_stream;\nuse crate::fault::imaging_failure;|' "$file"
     gate_red_because "$avi_dir/write.rs names its sibling module" env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -92,14 +77,18 @@ pass_case_the_muxers_tests_may_drive_the_reader() {
     tree="$(gate_scratch_tree)"
     file="$tree/$avi_dir/write.rs"
     # Before the file's last line, which is the closing brace of its one `mod tests`.
-    sed -i '$i\
+    #
+    # `$i` is `sed`'s insert-before-the-last-line command and not a shell expansion, so the
+    # single quotes are the point rather than an oversight; the directive is here rather than
+    # in a `.shellcheckrc` because it is true of this argument and of nothing else in the file.
+    # shellcheck disable=SC2016
+    gate_seed '$i\
 \
     #[test]\
     fn seeded_by_the_gate_selftest() {\
         let parsed = crate::avi::read::read_stream(&[]);\
         assert!(parsed.is_err());\
     }' "$file"
-    grep -Fq 'crate::avi::read::read_stream(&[])' "$file" || return 1
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -136,14 +125,9 @@ fail_case_a_third_module_holds_the_shared_layout() {
 pub(super) const FOURCC_MOVI: [u8; 4] = *b"movi";
 pub(super) const FOURCC_IDX1: [u8; 4] = *b"idx1";
 RS
-    sed -i 's|^pub mod read;|mod layout;\n\npub mod read;|' "$tree/crates/imaging/src/avi.rs"
-    sed -i 's|^use crate::fault::imaging_failure;|use super::layout::FOURCC_MOVI;\nuse crate::fault::imaging_failure;|' \
+    gate_seed 's|^pub mod read;|mod layout;\n\npub mod read;|' "$tree/crates/imaging/src/avi.rs"
+    gate_seed 's|^use crate::fault::imaging_failure;|use super::layout::FOURCC_MOVI;\nuse crate::fault::imaging_failure;|' \
         "$tree/$avi_dir/read.rs" "$tree/$avi_dir/write.rs"
-    if ! grep -Fq 'mod layout;' "$tree/crates/imaging/src/avi.rs"; then
-        printf 'the seed did not apply; %s no longer declares its modules the way this arm edits\n' \
-            "$tree/crates/imaging/src/avi.rs" >&2
-        return 0
-    fi
     gate_red_because 'is a third module beside' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -197,11 +181,7 @@ fail_case_a_module_is_no_longer_declared() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/crates/imaging/src/avi.rs"
-    sed -i '/^pub mod read;$/d' "$file"
-    if grep -Fq 'pub mod read;' "$file"; then
-        printf 'the seed did not apply; %s still declares the reader\n' "$file" >&2
-        return 0
-    fi
+    gate_seed '/^pub mod read;$/d' "$file"
     gate_red_because 'crates/imaging/src/avi.rs no longer declares' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -211,11 +191,7 @@ fail_case_the_crate_root_no_longer_declares_the_parent() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/crates/imaging/src/lib.rs"
-    sed -i '/^pub mod avi;$/d' "$file"
-    if grep -Fq 'pub mod avi;' "$file"; then
-        printf 'the seed did not apply; %s still declares the parent module\n' "$file" >&2
-        return 0
-    fi
+    gate_seed '/^pub mod avi;$/d' "$file"
     gate_red_because 'crates/imaging/src/lib.rs no longer declares' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 

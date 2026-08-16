@@ -186,11 +186,40 @@ const NO_CAMERA: &str = "name a camera: /preview?camera=<id>\n";
 ///
 /// `get` and not `any`: unlike the wire route, this endpoint's method policy is *this
 /// module's*, because there is no service behind it with an opinion. A preview is a read of a
-/// live resource and `GET` is what an `<img>` sends; anything else meets axum's own `405`,
-/// which is the honest answer for a route that does exist and does not do that.
+/// live resource and `GET` is what an `<img>` sends; a `POST` or a `PUT` meets axum's own
+/// `405`, which is the honest answer for a route that does exist and does not do that.
+///
+/// **`HEAD` is the method the framework adds, and it needs an endpoint of its own** (note
+/// **N179**). This paragraph used to end at "anything else meets axum's own `405`", which is
+/// true of every method the sentence was thinking of and false of the one it was not:
+/// `axum::routing::get` registers the handler in the `get` slot, and
+/// `MethodRouter::call_with_state` reads
+///
+/// ```text
+/// call!(req, HEAD, head);
+/// call!(req, HEAD, get);
+/// call!(req, GET,  get);
+/// ```
+///
+/// — so a `HEAD` with no `head` endpoint falls through to the `get` one and runs [`stream`] in
+/// full: a camera opened, a [`limits::PREVIEW_MAX_VIEWERS_PER_CAMERA`] slot taken and a capture
+/// started, all of it feeding a body hyper discards, for a request that asked for no bytes.
+/// That is worse than a wasted response on the one route AGENTS calls
+/// "a live view of whatever the camera is pointed at", and an agent polling this URL on a loop is
+/// the caller that would have found it — **which is not the same as saying such a caller is now
+/// served.** [`described`] answers about this route and not about a camera, so a `200` from it
+/// says the daemon is up and serving `/preview` and says nothing whatever about the device; its
+/// doc states the gap exactly and names the two things a caller asks instead.
+///
+/// So [`described`] answers `HEAD` from the route's own knowledge and never reaches a device.
+/// The alternative — `on(MethodFilter::GET, …)`, leaving `HEAD` to the `405` — was rejected
+/// twice over: RFC 9110 §9.1 asks a general-purpose server to support `GET` and `HEAD`, and
+/// axum's own `Allow` header would then read `GET,HEAD` while `HEAD` was being refused, because
+/// `set_endpoint` appends both names when the `GET` filter matches. A refusal that contradicts
+/// the header it ships with is a worse answer than the one this route now gives.
 pub(super) fn mount(previews: Previews) -> Router {
     Router::new()
-        .route(PREVIEW_PATH, get(stream))
+        .route(PREVIEW_PATH, get(stream).head(described))
         .with_state(previews)
 }
 
@@ -201,14 +230,9 @@ pub(super) fn mount(previews: Previews) -> Router {
 /// was busy would have to say so by ending an empty stream, and an `<img>` cannot tell that
 /// apart from a camera that produced no frames.
 async fn stream(State(previews): State<Previews>, request: Request) -> Response {
-    let Some(requested) = camera_of(request.uri().query()) else {
-        return (StatusCode::BAD_REQUEST, NO_CAMERA).into_response();
-    };
-    let requested = match CameraId::parse(&requested) {
-        Some(id) => id,
-        // The grammar is D1's and `CameraId::parse` is its one home; a name that is not an id
-        // names no camera, which is the same fact a name that no camera answers to states.
-        None => return refused(&unknown(&requested)),
+    let requested = match named(request.uri().query()) {
+        Ok(id) => id,
+        Err(why) => return no_camera(&why),
     };
 
     let viewer = match previews.attach(&requested).await {
@@ -220,21 +244,125 @@ async fn stream(State(previews): State<Previews>, request: Request) -> Response 
     tokio::spawn(write(viewer, parts, previews.shutdown().clone()));
 
     (
-        [
-            (
-                header::CONTENT_TYPE,
-                format!("{STREAM_CONTENT_TYPE}; boundary={BOUNDARY}"),
-            ),
-            // A camera frame is served, never stored (design §5: "the web client's preview is
-            // served, never stored, and `webcam-handler-daemon` records nothing it was not
-            // asked to record"). A cache is storage, and it is storage on the operator's disk
-            // with a picture of their room in it, so the response says so rather than relying
-            // on `multipart/x-mixed-replace` being un-cacheable in practice.
-            (header::CACHE_CONTROL, "no-store".to_owned()),
-        ],
+        stream_head(),
         axum::body::Body::from_stream(ReceiverStream::new(body)),
     )
         .into_response()
+}
+
+/// What a `HEAD` of this route is told: the head a stream would carry, and no camera touched.
+///
+/// **A `HEAD` is answered about the route, and deliberately not about the device.** RFC 9110
+/// §9.3.2 asks a server to send the header fields a `GET` would have sent and lets it omit the
+/// ones "for which a value is determined only while generating the content" — and on this route
+/// the status itself is one of those: [`stream`] learns whether the camera is there, busy or
+/// gone by *attaching* to it, which opens the device, takes a viewer slot and starts a capture.
+/// Paying that to answer a request that asked for no bytes is exactly the finding [`mount`]'s
+/// doc records, so what this answers is "this route exists and a `GET` of it is a
+/// `multipart/x-mixed-replace` stream", which is a fact this module holds without asking
+/// anybody.
+///
+/// **So a `200` here is a statement about the route and never about a camera, and the gap is
+/// wider than "cannot say whether it is busy"** (note **N179**, amended). [`named`] is the whole
+/// of what this can decide, and D1's grammar is permissive by design — `CameraId::parse` refuses
+/// an empty body and nothing else, because a caller may name a camera by any unambiguous prefix
+/// and it is the live enumeration that says whether one answers. So the refusals this makes are
+/// `400` for a request carrying no `camera=` at all and `404` for `camera=cam:`; **every other
+/// spelling answers `200`**, including a well-formed name no camera on this machine has, which
+/// a `GET` refuses with `404`. Measured against a live daemon:
+/// `HEAD /preview?camera=cam%3Anope-does-not-exist` → `200`, `GET` of the same → `404`.
+///
+/// **Why it is not closed by resolving the name.** Resolution here is
+/// `crate::preview::Previews::resolve`, and that is `engine::Cameras::enumerate` — "live every
+/// time, never cached" (**E2**), an `open` and a walk of ioctls per node. A `HEAD` that resolved
+/// would do device work on every request, which is the cost this endpoint exists not to pay, and
+/// it could then answer `503` out of the machine's state — reintroducing exactly the dependence
+/// the split removes. There is no registry in this daemon that answers "does this name resolve"
+/// without asking the hardware, so "the refusals decidable without touching the device" is the
+/// two above and no more.
+///
+/// **What a caller that needs to know about a camera asks instead**, stated here because the
+/// alternative is a client inferring it: a `GET` of this route, whose status *is* the device's
+/// answer, or `wch_camera_list` on the wire surface, which is D1's enumeration with a D13 error
+/// beside it. A `HEAD` is a check that this daemon is up and serving this route; it is not a
+/// health check for a camera, and AGENTS rule 7 is why the difference is written down rather
+/// than left as a shape somebody reads off two status codes.
+async fn described(request: Request) -> Response {
+    match named(request.uri().query()) {
+        // **A stream that ends at once, and not an empty body**, because the difference is a
+        // header a client reads. `axum::routing::Route`'s future sets `Content-Length` from the
+        // body's size hint *before* it strips the body for a `HEAD`, so an empty body would put
+        // `content-length: 0` on this answer — and RFC 9110 §8.6 permits that header here only
+        // when it equals what a `GET` would have sent, which on a live camera is a number
+        // nobody has. A body of the same shape as [`stream`]'s has no exact size hint, so this
+        // answer carries the framing a `GET` would and claims no length it cannot keep.
+        Ok(_) => (
+            stream_head(),
+            axum::body::Body::from_stream(tokio_stream::empty::<Part>()),
+        )
+            .into_response(),
+        Err(why) => no_camera(&why),
+    }
+}
+
+/// The response head both methods write, built once.
+///
+/// Two callers and one value, because a `HEAD` whose headers were assembled separately from the
+/// `GET`'s would be this route describing a response it does not send — which is the one thing
+/// a `HEAD` is for.
+fn stream_head() -> [(header::HeaderName, String); 2] {
+    [
+        (
+            header::CONTENT_TYPE,
+            format!("{STREAM_CONTENT_TYPE}; boundary={BOUNDARY}"),
+        ),
+        // A camera frame is served, never stored (design §5: "the web client's preview is
+        // served, never stored, and `webcam-handler-daemon` records nothing it was not asked
+        // to record"). A cache is storage, and it is storage on the operator's disk with a
+        // picture of their room in it, so the response says so rather than relying on
+        // `multipart/x-mixed-replace` being un-cacheable in practice.
+        (header::CACHE_CONTROL, "no-store".to_owned()),
+    ]
+}
+
+/// Why a request names no camera this route could look for.
+///
+/// A value rather than a rendered [`Response`], so [`named`] stays a pure function over a query
+/// string that both handlers can be asserted through without a socket — and so the rendering
+/// stays beside [`refused`], which is this module's one home for turning a refusal into a
+/// status.
+#[derive(Debug)]
+enum Unnamed {
+    /// The request carried no `camera=` at all.
+    NotAsked,
+    /// It carried a value D1's grammar refuses, which is not an id and therefore names nothing.
+    NotAnId(String),
+}
+
+/// The camera this request names, or why it names none — decided from the query alone.
+///
+/// The half of a preview request that needs no device, split out because two methods answer it
+/// identically and a second copy would be the place they came to disagree. Nothing here opens
+/// anything: it is [`camera_of`]'s reading of the query string and D1's grammar in
+/// [`CameraId::parse`], which is its one home.
+fn named(query: Option<&str>) -> Result<CameraId, Unnamed> {
+    let Some(requested) = camera_of(query) else {
+        return Err(Unnamed::NotAsked);
+    };
+    CameraId::parse(&requested).ok_or(Unnamed::NotAnId(requested))
+}
+
+/// What a request that named no camera is answered with.
+///
+/// `400` for a request that asked for nothing — the caller has to name a camera and this route
+/// will not list the ones this machine has ([`NO_CAMERA`] argues that). `404` for a name that is
+/// not an id, because a name no camera can have states the same fact as a name no camera
+/// answers to, and a client fixes both by asking for something else.
+fn no_camera(why: &Unnamed) -> Response {
+    match why {
+        Unnamed::NotAsked => (StatusCode::BAD_REQUEST, NO_CAMERA).into_response(),
+        Unnamed::NotAnId(requested) => refused(&unknown(requested)),
+    }
 }
 
 /// Write `viewer`'s frames into `parts` until something ends the stream.
@@ -540,6 +668,25 @@ mod tests {
             })
             .status(),
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn the_refusals_a_head_can_reach_are_decided_without_a_camera() {
+        // The pure half of a preview request, which is what a `HEAD` of this route answers from
+        // (note **N179**): a name is either an id or it is one of two refusals, and neither of
+        // them needs a device. The third answer — "no camera answers to this id" — is not here
+        // and cannot be, because it is a fact about a live enumeration.
+        let named = named(Some("camera=cam%3Aone")).expect("a well-formed id");
+        assert_eq!(named.as_str(), "cam:one");
+        assert_eq!(
+            no_camera(&super::named(None).expect_err("no camera was named")).status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            no_camera(&super::named(Some("camera=cam%3A")).expect_err("`cam:` is not an id"))
+                .status(),
+            StatusCode::NOT_FOUND
         );
     }
 

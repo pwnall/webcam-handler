@@ -261,7 +261,11 @@ fn backend_for(args: &Args) -> Result<Arc<dyn CameraBackend>> {
 /// is stated there and this is where it becomes true.
 fn main() -> ExitCode {
     let args = Args::parse();
-    logging::install();
+    // The value is held rather than dropped: **which sink this daemon logs into decides how
+    // one of its lines is rendered.** The ready-to-open URL carries this run's bearer token,
+    // and a terminal an operator is reading is not the systemd journal (`daemon::logging::Sink`
+    // carries the ruling and the argument; note **N182**).
+    let logging = logging::install();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -273,7 +277,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let served = runtime.block_on(run(&args));
+    let served = runtime.block_on(run(&args, logging));
     // After `run` has returned, so every ordered step has already happened and this bounds
     // only what those steps could not reach.
     stop_runtime(runtime, limits::DAEMON_SHUTDOWN_DRAIN_MS);
@@ -303,7 +307,7 @@ fn stop_runtime(runtime: tokio::runtime::Runtime, join_ms: u64) {
     runtime.shutdown_timeout(std::time::Duration::from_millis(join_ms));
 }
 
-async fn run(args: &Args) -> Result<()> {
+async fn run(args: &Args, logging: logging::Sink) -> Result<()> {
     let env = SystemEnv;
     let backend = backend_for(args)?;
 
@@ -429,8 +433,16 @@ async fn run(args: &Args) -> Result<()> {
             // this daemon where a secret is written down on purpose (`daemon::http::token`).
             // In the token-less cell it is the plain URL, because a `?token=` with nothing
             // after it reads as a token that failed to render.
+            //
+            // **Written down on purpose is not written down anywhere** (owner ruling,
+            // 2026-08-16; note **N182**). `tracing::info!` is not printing: it hands the event
+            // to whichever layer `logging::install` chose, and under systemd that is a
+            // persistent, `systemd-journal`/`adm`-readable store where `url = %…` lands as an
+            // indexable field. So the rendering asks the sink — full for the operator reading
+            // stderr, redacted for the journal — and the decision lives in `daemon::logging`,
+            // which is the module that made it.
             tracing::info!(
-                url = %web.ready_to_open_url(),
+                url = %logging.url_this_sink_may_keep(&web.ready_to_open_url()),
                 "webcam-handler-daemon is serving the web client"
             );
             Some(web)

@@ -341,11 +341,13 @@ impl Activation {
 
         // `Ok(None)` is "that index holds nothing", which cannot happen for an index this
         // function derived from the count; an `Err` is listenfd having *checked* — it
-        // `fstat`s the descriptor and asks `getsockname`/`SO_TYPE` whether it really is a
-        // listening `AF_UNIX` stream — and that check is most of why this protocol is a
-        // dependency rather than twenty lines here. Both are refusals, and both name what
-        // was passed, because an operator staring at this line is holding a `.socket` unit
-        // with the wrong `ListenDatagram=`/`ListenStream=` in it.
+        // `fstat`s the descriptor and asks `getsockname`/`SO_TYPE`/`sa_family` whether it
+        // really is an `AF_UNIX` stream socket — and that check is most of why this protocol
+        // is a dependency rather than twenty lines here. **Not whether it is *listening***:
+        // `validate_socket` never asks `SO_ACCEPTCONN`, which is why `Activation::adopt` asks
+        // it (note **N181**). Both are refusals, and both name what was passed, because an
+        // operator staring at this line is holding a `.socket` unit with the wrong
+        // `ListenDatagram=`/`ListenStream=` in it.
         let inherited = passed
             .take_unix_listener(index)
             .map_err(|err| Error::DeviceIo {
@@ -378,6 +380,24 @@ impl Activation {
     /// shape of the *socket* is this daemon's, and only the second is worth a unit test
     /// (`scripts/gates/socket-activation.sh` drives the first, under a real
     /// `systemd-socket-activate`, for note **N44**'s reason).
+    ///
+    /// ## The descriptor is asked whether it is *listening*, because nothing else asks
+    ///
+    /// Design §2.8 adopts `listenfd` for the half of socket activation that is not the
+    /// protocol: it "validates that the descriptor really is a listening `AF_UNIX` stream
+    /// socket, which is the check that stops a `from_raw_fd` on a passed-in number being a lie
+    /// this process then serves from". **Three quarters of that sentence was true** (note
+    /// **N181**). `listenfd` 1.0.2's `validate_socket` is four questions —
+    /// `fstat`/`S_ISSOCK`, `getsockname`, `SO_TYPE` and `sa_family` — and `SO_ACCEPTCONN` is
+    /// not among them, so a descriptor that was bound and never listened on passes every one of
+    /// them and arrives here as a `UnixListener` whose `accept(2)` answers `EINVAL` for ever.
+    ///
+    /// So the question is asked here, once, of the descriptor rather than of the crate that
+    /// handed it over — and it is asked **first**, before the address and the directory, because
+    /// "this is not a listening socket" is a fact about the thing itself and the two checks
+    /// below are facts about where it sits. A daemon that adopted a bound-but-silent descriptor
+    /// would log that it is serving, send `READY=1`, and answer nobody: the one failure shape
+    /// that looks exactly like success from inside this process.
     ///
     /// ## What D11 still checks here
     ///
@@ -412,6 +432,28 @@ impl Activation {
     /// detects rather than defeats, says which path it is on at startup so an operator can
     /// see it, and refuses when what it can see is wrong.
     fn adopt(inherited: std::os::unix::net::UnixListener) -> Result<Activation> {
+        // `rustix` and not `libc`, for this crate's reason: it is `#![forbid(unsafe_code)]` and
+        // a `getsockopt` written here would be the one `unsafe` block outside
+        // `crates/backends/v4l2/src/sys/` (AGENTS, rubric B10).
+        let listening =
+            rustix::net::sockopt::socket_acceptconn(&inherited).map_err(|err| Error::DeviceIo {
+                operation: "ask the kernel whether the inherited socket is listening".to_owned(),
+                errno: Some(err.raw_os_error()),
+                message: err.to_string(),
+            })?;
+        if !listening {
+            return Err(Error::DeviceIo {
+                operation: "adopt the socket the service manager passed in".to_owned(),
+                errno: None,
+                message: "its `SO_ACCEPTCONN` is 0, so it was bound and never listened on: \
+                          `accept(2)` on it answers EINVAL and this daemon would announce that \
+                          it is serving and then answer nobody. A `.socket` unit's \
+                          ListenStream= creates a listening socket; a descriptor passed in \
+                          some other way is a number this process has no reason to believe"
+                    .to_owned(),
+            });
+        }
+
         let address = inherited.local_addr().map_err(|err| Error::DeviceIo {
             operation: "ask the kernel where the inherited socket is bound".to_owned(),
             errno: err.raw_os_error(),
@@ -751,6 +793,52 @@ mod tests {
         assert_eq!(where_, socket);
         assert!(logged.contains("passed in"), "{logged:?}");
         assert!(logged.contains("N39"), "{logged:?}");
+    }
+
+    #[tokio::test]
+    async fn a_descriptor_that_is_not_listening_is_refused_rather_than_accepted_on() {
+        // **The check three places said listenfd makes and listenfd does not** (note **N181**).
+        // `listenfd` 1.0.2's `validate_socket` asks `fstat` for `S_ISSOCK`, `getsockname` for an
+        // address, and `getsockopt` for `SO_TYPE` and `sa_family`; it never asks
+        // `SO_ACCEPTCONN`, so a descriptor that was bound and never listened on is handed back
+        // as a `UnixListener` and `accept(2)` on it answers `EINVAL` for ever. A daemon that
+        // adopted one would log that it is serving, notify `READY=1`, and answer nobody.
+        //
+        // The socket is built here rather than described: `socket(2)` and `bind(2)` with no
+        // `listen(2)`, which is the exact shape the four checks above cannot separate from the
+        // real thing. The directory is D11's 0700 so that the refusal below can only be this
+        // one.
+        let runtime = TempRuntimeDir::new().expect("a temporary directory");
+        let directory = runtime.base().join("webcam-handler");
+        std::fs::create_dir(directory.as_std_path()).expect("ours to make");
+        std::fs::set_permissions(
+            directory.as_std_path(),
+            std::os::unix::fs::PermissionsExt::from_mode(crate::uds::SOCKET_DIR_MODE),
+        )
+        .expect("ours to chmod");
+        let socket = directory.join(schema::limits::DAEMON_SOCKET_FILE);
+
+        let descriptor = rustix::net::socket(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::STREAM,
+            None,
+        )
+        .expect("an AF_UNIX stream socket");
+        rustix::net::bind(
+            &descriptor,
+            &rustix::net::SocketAddrUnix::new(socket.as_std_path()).expect("a short path"),
+        )
+        .expect("nothing is in the way");
+        // Everything listenfd checks is now true of this descriptor, and the one thing it does
+        // not check is not.
+        let bound = UnixListener::from(descriptor);
+
+        let refused =
+            Activation::adopt(bound).expect_err("a socket nobody may accept on is not a listener");
+        assert_eq!(refused.kind(), ErrorKind::DeviceIo);
+        let rendered = refused.to_string();
+        assert!(rendered.contains("listen"), "{rendered}");
+        assert!(rendered.contains("ListenStream"), "{rendered}");
     }
 
     #[tokio::test]

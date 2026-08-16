@@ -161,7 +161,7 @@ fail_case_the_fallback_stops_being_the_asset_table() {
     # something other than the embedded assets — which is a handler served to anybody.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/\.fallback(asset)/.fallback(anything_at_all)/' \
+    gate_seed 's/\.fallback(asset)/.fallback(anything_at_all)/' \
         "$tree/crates/daemon/src/http/listener.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -172,7 +172,7 @@ fail_case_the_gate_went_back_over_everything() {
     # camera-bearing route is still gated so the suite's own refusal assertions stay green.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/routes\.route_layer(/routes.layer(/' "$tree/crates/daemon/src/http/listener.rs"
+    gate_seed 's/routes\.route_layer(/routes.layer(/' "$tree/crates/daemon/src/http/listener.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -182,7 +182,7 @@ fail_case_the_gate_is_no_longer_installed_at_all() {
     # that matters most here.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/routes\.route_layer(axum::middleware::from_fn_with_state(token, gate::check))/routes/' \
+    gate_seed 's/routes\.route_layer(axum::middleware::from_fn_with_state(token, gate::check))/routes/' \
         "$tree/crates/daemon/src/http/listener.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -208,7 +208,7 @@ fail_case_the_list_is_empty() {
     # non-zero says so before the comparison does.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/pub const CAMERA_BEARING_PATHS: [\&str; 0] = [];/' \
+    gate_seed 's/pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/pub const CAMERA_BEARING_PATHS: [\&str; 0] = [];/' \
         "$tree/crates/daemon/src/http/mod.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -219,7 +219,7 @@ fail_case_the_list_names_a_literal_instead_of_the_constant() {
     # over a route nothing gates.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/= \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/= ["\/rpc", "\/preview"];/' \
+    gate_seed 's/= \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/= ["\/rpc", "\/preview"];/' \
         "$tree/crates/daemon/src/http/mod.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -230,7 +230,7 @@ fail_case_the_list_names_a_path_nothing_declares() {
     # nothing naming it.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/preview::PREVIEW_PATH\];/preview::SNAPSHOT_PATH];/' \
+    gate_seed 's/preview::PREVIEW_PATH\];/preview::SNAPSHOT_PATH];/' \
         "$tree/crates/daemon/src/http/mod.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -239,7 +239,7 @@ fail_case_the_list_declaration_is_gone() {
     # A rename, which is the ordinary way a named policy stops being the one a gate reads.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/pub const CAMERA_BEARING_PATHS/pub const GATED_PATHS/' \
+    gate_seed 's/pub const CAMERA_BEARING_PATHS/pub const GATED_PATHS/' \
         "$tree/crates/daemon/src/http/mod.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -257,9 +257,59 @@ fail_case_no_route_is_registered_at_all() {
     # a pass: the population every comparison here rests on would be empty.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/\.route(RPC_PATH, any(upgrade))/.with_state(())/' \
+    # The method routers are matched loosely — `get(stream).head(described)` is what the
+    # preview registers since G6/M23 — because what this arm removes is the `.route(` and not
+    # what was behind it. Seeding through `gate_seed` is what makes the looseness safe: a seed
+    # that stopped matching would leave both routes registered and report the gate green for the
+    # one reason this file exists to refuse, and the helper says so about the *seed* rather than
+    # letting the harness say it about the predicate (note **N186**).
+    gate_seed 's/\.route(RPC_PATH,[^;]*)/.with_state(())/' \
         "$tree/crates/daemon/src/http/rpc.rs"
-    sed -i 's/\.route(PREVIEW_PATH, get(stream))/.with_state(())/' \
+    gate_seed 's/\.route(PREVIEW_PATH,[^;]*)/.with_state(())/' \
+        "$tree/crates/daemon/src/http/preview.rs"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_camera_bearing_route_answers_a_method_this_gate_cannot_place() {
+    # Claim 2's method half (note **N185**). The path is right, the list is right, the gate is
+    # installed — and the route answers a second method through a spelling that is not one of
+    # `axum::routing`'s constructors, so the count this gate reports would be a count of
+    # something else. Until G6 the predicate read the path argument and threw the rest away,
+    # which is how `get(stream)` became `get(stream).head(described)` on the one route that
+    # carries camera frames with neither half of the pair able to see it.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's/\.route(PREVIEW_PATH, get(stream)\.head(described))/.route(PREVIEW_PATH, get(stream).also_answer(described))/' \
+        "$tree/crates/daemon/src/http/preview.rs"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all, matched verbatim
+    gate_red_because 'which is not one of `axum::routing`' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_a_camera_bearing_route_has_a_method_router_this_gate_cannot_read() {
+    # The other direction of the same claim, and the price `gate_test_region_start` charges
+    # everywhere else in this suite: a boundary with no answer is a failure and not a pass.
+    #
+    # The seeded shape is an ordinary refactor — the method router bound to a name above the
+    # registration — and not a doctored file, which is what makes it the right subject. The
+    # *path* is still perfectly readable there, so claim 2's existing arms all stay green; what
+    # is gone is any way to say which methods that route answers, and a route whose methods are
+    # whatever the next reader assumes is one nobody is counting.
+    local tree file
+    tree="$(gate_scratch_tree)"
+    file="$tree/crates/daemon/src/http/preview.rs"
+    gate_seed 's/^    Router::new()$/    let camera_methods = get(stream).head(described);\n    Router::new()/' "$file"
+    gate_seed 's/\.route(PREVIEW_PATH, get(stream)\.head(described))/.route(PREVIEW_PATH, camera_methods)/' "$file"
+    gate_red_because 'cannot read the methods it answers' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The green direction for the method half: a third method on a camera-bearing route is a
+# legitimate diff — `route_layer` wraps the whole `MethodRouter`, so it is gated by existing —
+# and this predicate's job is to *count* it, not to refuse it. An arm that could not tell the
+# two apart would be a gate somebody turns off the first time a route grows an `OPTIONS`.
+pass_case_a_camera_bearing_route_may_grow_a_third_method() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's/\.route(PREVIEW_PATH, get(stream)\.head(described))/.route(PREVIEW_PATH, get(stream).head(described).options(described))/' \
         "$tree/crates/daemon/src/http/preview.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -282,9 +332,9 @@ pass_case_a_wrapped_declaration_is_still_a_list() {
     # legitimate shape of the *next* camera-bearing route rather than a doctored file.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's|pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];|pub const CAMERA_BEARING_PATHS: [\&str; 3] =\n    [rpc::RPC_PATH, preview::PREVIEW_PATH, preview::SNAPSHOT_PATH];|' \
+    gate_seed 's|pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];|pub const CAMERA_BEARING_PATHS: [\&str; 3] =\n    [rpc::RPC_PATH, preview::PREVIEW_PATH, preview::SNAPSHOT_PATH];|' \
         "$tree/crates/daemon/src/http/mod.rs"
-    sed -i 's|^pub const CAMERA_QUERY_PARAM: &str = "camera";|pub const CAMERA_QUERY_PARAM: \&str = "camera";\n\n/// A third camera-bearing path, named on the list and gated with the rest.\npub const SNAPSHOT_PATH: \&str = "/snapshot";|' \
+    gate_seed 's|^pub const CAMERA_QUERY_PARAM: &str = "camera";|pub const CAMERA_QUERY_PARAM: \&str = "camera";\n\n/// A third camera-bearing path, named on the list and gated with the rest.\npub const SNAPSHOT_PATH: \&str = "/snapshot";|' \
         "$tree/crates/daemon/src/http/preview.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }

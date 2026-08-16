@@ -511,6 +511,39 @@ mod tests {
     }
 
     #[test]
+    fn the_url_the_journal_keeps_carries_no_token_and_the_one_an_operator_reads_does() {
+        // **The owner's ruling of 2026-08-16, asserted over the real URL** (note **N182**).
+        // `crate::logging::Sink` is where the redaction lives, because which sink a line is
+        // kept in is that module's decision and not this one's — but the *claim* is about this
+        // rendering, so it is asserted here, where the secret is in hand and where a URL form
+        // that changed shape would be noticed. A test written over a literal URL in
+        // `logging.rs` would keep passing against a `ready_to_open_url` that had moved the
+        // credential out of the query string.
+        let token = minted();
+        let secret = token.expose_secret().to_owned();
+        let bound: SocketAddr = "127.0.0.1:34567".parse().expect("a bound address");
+        let url = token.ready_to_open_url(bound);
+
+        let kept = crate::logging::Sink::Journal.url_this_sink_may_keep(&url);
+        assert!(
+            !kept.contains(&secret),
+            "the journal keeps the key to the camera for as long as its retention says: {kept}"
+        );
+        assert!(
+            kept.starts_with("http://127.0.0.1:34567/"),
+            "an operator reading the journal cannot tell which listener this was: {kept}"
+        );
+
+        // The other half of the ruling, and the reason this is not "stop printing the URL":
+        // the operator who started the daemon in a terminal still has a link to open.
+        assert_eq!(
+            crate::logging::Sink::Stderr.url_this_sink_may_keep(&url),
+            url,
+            "the line D11 asks for stopped being a ready-to-open URL"
+        );
+    }
+
+    #[test]
     fn an_ipv6_url_is_bracketed_the_way_a_browser_needs_it() {
         // Free from `SocketAddr`'s own `Display`, and asserted because it is load-bearing:
         // `http://::1:34567/` is not a URL.

@@ -187,7 +187,7 @@ fail_case_the_run_line_the_rung_greps_for_was_reworded() {
     # Green under the transcribed fixtures this predicate shipped with until 2026-08-16.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/{ran} container claim(s) about/{ran} container assertion(s) about/' \
+    gate_seed 's/{ran} container claim(s) about/{ran} container assertion(s) about/' \
         "$tree/crates/testkit/src/oracle.rs"
     gate_red_because 'the run verdict: the runner exited 1 over the recorded log' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
@@ -200,7 +200,7 @@ fail_case_the_decline_line_shape_was_renamed() {
     # answer is a violation rather than a default.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/"SKIP oracles: {oracle} is not on this host ({reason})/"DECLINED oracles: {oracle} is not on this host ({reason})/' \
+    gate_seed 's/"SKIP oracles: {oracle} is not on this host ({reason})/"DECLINED oracles: {oracle} is not on this host ({reason})/' \
         "$tree/crates/testkit/src/oracle.rs"
     gate_red_because 'no decline line shape in crates/testkit/src/oracle.rs' \
         env "WCH_GATE_ROOT=$tree" "$GATE"

@@ -187,7 +187,7 @@ fail_case_the_openrpc_document_is_committed_but_nothing_emits_it() {
 fail_case_the_wire_trait_moved_and_the_openrpc_document_did_not() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/#\[method(name = "profile_capture")\]/#[method(name = "capture_profile")]/' \
+    gate_seed 's/#\[method(name = "profile_capture")\]/#[method(name = "capture_profile")]/' \
         "$tree/crates/api/src/lib.rs"
     gate_red_because 'schemas/webcam-handler-openrpc.json is stale' \
         env "CARGO_TARGET_DIR=$(_isolated_target_dir wire-drift)" \

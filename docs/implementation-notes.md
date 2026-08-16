@@ -20445,3 +20445,486 @@ else's.
 
 **Amend this note if** a second registry gains a published count beside its map, at which point
 the guard-taking `publish` is a shape rather than a repair and belongs in one place.
+
+## N179 — `axum::routing::get` answers `HEAD` too, so the preview opened a camera for a request that asked for no bytes
+
+**Doc:** docs/11 §4.6 M23; design §2.6 and **D11**; AGENTS "Hardware and privacy"; rubric A9's
+second half; note **N70**'s F3. Recorded 2026-08-16, from the B6 repair pass.
+
+`crate::http::preview::mount` registered `get(stream)` under a paragraph arguing the choice:
+*"`GET` is what an `<img>` sends; anything else meets axum's own `405`"*. **True of every method
+the sentence had thought of and false of the one the framework adds.** Measured against a live
+`webcam-handler-daemon --backend fake --http`:
+
+```
+$ curl -sS -I 'http://127.0.0.1:45541/preview?token=…&camera=cam%3A…'
+HTTP/1.1 200 OK
+content-type: multipart/x-mixed-replace; boundary=wchframeboundary
+cache-control: no-store
+content-length: 0
+$ curl -sS -o /dev/null -w '%{http_code}\n' -X POST 'http://…/preview?…'   → 405
+$ curl -sS -o /dev/null -w '%{http_code}\n' -X PUT  'http://…/rpc?…'       → 405
+```
+
+The handler *ran*: `axum-0.8.9/src/routing/method_routing.rs` builds `get` as
+`on(MethodFilter::GET, …)`, and `MethodRouter::call_with_state` dispatches
+
+```text
+call!(req, HEAD, head);
+call!(req, HEAD, get);
+call!(req, GET,  get);
+```
+
+— a `HEAD` with no `head` endpoint falls through to the `get` one. So every `HEAD` opened the
+camera, took a `PREVIEW_MAX_VIEWERS_PER_CAMERA` slot and started a capture, for a body hyper
+then discarded (`Server::can_have_body` is false for `HEAD`, so the encoder is forced to length
+zero). On the one route whose response body *is* a live camera, an agent health-checking the URL
+on a loop was holding the device open against itself.
+
+**Why not `on(MethodFilter::GET, …)` and let `HEAD` meet the `405`.** Two reasons, and the
+second was found by reading the same file. RFC 9110 §9.1 asks a general-purpose server to
+support `GET` and `HEAD`. And `set_endpoint` appends **both** `"GET"` and `"HEAD"` to the
+`Allow` header when the `GET` filter matches, so that build answers `405` with
+`Allow: GET,HEAD` — a refusal contradicting the header it ships with, which is a worse answer
+than either alternative.
+
+So `HEAD` has an endpoint of its own (`described`) that answers **about the route and not about
+the device**: the head a `GET` would carry, plus the two refusals that need no camera (`400`
+for a request naming none, `404` for a name D1's grammar refuses). It cannot say whether the
+camera is available, because learning that *is* the attach — stated in its doc rather than left
+for a client to infer.
+
+**Amended 2026-08-16, the same day, by the adversarial review of this batch.** The sentence
+above was true and the two before it oversold it, in a way worth keeping rather than quietly
+correcting. This note and the handler's doc both reached for *"an agent health-checking this URL
+on a loop"* as the caller the repair was for, and that caller is **not served**: measured against
+a live daemon, `HEAD /preview?token=…&camera=cam%3Anope-does-not-exist` answers `200` where the
+`GET` beside it answers `404`, and a `Busy`, `DeviceGone` or over-cap camera answers `200` too.
+Three D13 answers arriving as OK is AGENTS rule 7's shape — "availability is not capability" —
+on the endpoint whose own paragraph named that caller.
+
+The gap is also wider than "cannot say whether it is busy", because D1's grammar is permissive
+on purpose: `CameraId::parse` refuses an empty body and nothing else, since a caller may name a
+camera by any unambiguous prefix and the live enumeration decides whether one answers. So the
+`404` this endpoint can reach is `camera=cam:` and no other spelling — measured, along with the
+`200`s for `NOT%20AN%20ID` and `%25%25`.
+
+**It is kept, and the claim is narrowed instead**, which is the half a repair pass can get
+wrong in either direction. Closing it means resolving the name, and resolution here is
+`engine::Cameras::enumerate` — "live every time, never cached" (**E2**), an `open` and an ioctl
+walk per node. A `HEAD` that resolved would do device work on every request, which is the cost
+this endpoint exists not to pay, and it could then answer `503` out of the machine's state,
+reintroducing exactly the dependence the split removes. There is no registry in this daemon that
+answers "does this name resolve" without asking the hardware, so *"the refusals decidable without
+touching the device"* is those two and no more. What changed is that `described`'s doc now says
+what a `200` means and what it does not, and names the two places a caller learns about a camera
+instead — a `GET`, whose status is the device's answer, and `wch_camera_list` on the wire — and
+`a_head_answers_for_the_route_where_the_get_beside_it_answers_for_the_camera` pins both halves so
+that a build which started resolving, or stopped answering, has to come and amend the sentence.
+
+`docs/agent-guide.md` is deliberately not the place for that sentence: it is emitted from the
+command surface and its audience is a program running verbs, not one driving the daemon's opt-in
+browser transport. The guide names `--http` once and says it serves the browser client; a
+`/preview` section in it would be the first HTTP route documented in a manual about a CLI.
+
+**The second half is a header nobody wrote.** With an empty body the answer carried
+`content-length: 0`, which RFC 9110 §8.6 permits only when it equals what a `GET` would have
+sent — and what a `GET` sends here has no end. It comes from axum's own `RouteFuture::poll`,
+which sets `Content-Length` from the body's size hint *before* it strips the body for a `HEAD`.
+The answer is therefore framed like the stream it describes — `Body::from_stream` over an empty
+stream, whose size hint is unknown — and carries no length at all.
+
+`a_head_of_the_preview_answers_the_route_and_opens_no_camera` is the test, over a real socket,
+and it is a claim about the *counters*: `backend.opens()`, `backend.streams_started()` and
+`Wchd::previewed_cameras()` are all zero after the `HEAD` and the `GET` beside it opens one. Red
+before the repair with `left: 1, right: 0` under "a HEAD opened a camera".
+
+**Amend this note if** a route in this crate grows a method policy of its own again: the rule
+this cost is that a method policy is a claim about what the *framework* dispatches, and the
+framework is where it has to be read.
+
+## N180 — The authority the whole cross-origin rule is compared against was read first-wins
+
+**Doc:** docs/11 §4.6 M24 and §7.2; notes **N74**, **N93**, **N95**; RFC 9112 §3.2 and §3.2.2.
+Recorded 2026-08-16, from the B6 repair pass.
+
+`http::provenance::admits` spends a paragraph on why it reads `get_all` and folds with `&=`:
+two copies of a header is a well-formed request that no browser sends, and *which* copy a layer
+picks is a disagreement a security answer must not depend on. Ten lines below it,
+`addressed_to` — the authority every `Origin` in that rule is compared against — read
+`headers().get(HOST)`, the **first** line. The same argument, not applied to the anchor.
+
+RFC 9112 §3.2 tells an origin server to answer `400` to a request carrying more than one `Host`
+field line. **hyper does not**, which is what makes this reachable: measured over a raw socket
+against a live daemon, two `Host` lines reach the handler, and before the repair an `Origin`
+matching the *first* was admitted while one matching the second was refused — the answer
+decided by which copy this process happened to read.
+
+The repair is `origin_is_ours`'s fourth failure rather than a fifth rule: several `Host` lines
+naming one authority (compared ASCII-case-insensitively, because host names are) answer that
+authority, and lines that disagree answer **nothing at all** — an unanswerable question refused
+rather than assumed. A request with a disagreeing pair and an `Origin` is now refused whichever
+line the `Origin` matches; one with no `Origin` is admitted exactly as any header-less request
+is, because a duplicated `Host` claims nothing on its own and this module's subject is what a
+*browser* claims. Refusing the shape outright would be this layer inventing a message-syntax
+policy that belongs to the parser, and answering `403` where the RFC asks for `400`.
+
+Measured after the repair, same socket:
+
+```text
+Host: 127.0.0.1:P  + Host: evil.example + Origin: http://127.0.0.1:P → 403
+Host: evil.example + Host: 127.0.0.1:P  + Origin: http://127.0.0.1:P → 403
+Host: 127.0.0.1:P  + Host: 127.0.0.1:P  + Origin: http://127.0.0.1:P → 200
+Host: 127.0.0.1:P  + Host: evil.example (no Origin)                  → 200
+```
+
+`two_host_lines_that_disagree_leave_no_authority_for_an_origin_to_match` (both orders),
+`a_host_line_repeated_with_one_authority_is_still_the_authority_it_names`,
+`a_host_line_that_is_not_text_is_not_an_authority` and
+`an_absolute_form_target_is_the_authority_whatever_the_host_lines_say` are the four tests; the
+first two were red before the repair with `left: Some("127.0.0.1:41927"), right: None`.
+
+**This closes nothing about DNS rebinding.** N93's residual — a name that resolves to this host
+sends a matching `Host` *and* `Origin` and is classified `same-origin` by the browser — is
+untouched, is ruled on, and is not this note's subject.
+
+## N181 — listenfd validates four things about an inherited descriptor, and "is it listening" is not one of them
+
+**Doc:** docs/11 §4.6 M26; design §2.8 (amended in the same commit); note **N44**; AGENTS rule 1.
+Recorded 2026-08-16, from the B6 repair pass.
+
+Design §2.8 adopts `listenfd` "for the half that is *not* the protocol: `take_unix_listener`
+validates that the descriptor really is a listening `AF_UNIX` stream socket, which is the check
+that stops a `from_raw_fd` on a passed-in number being a lie this process then serves from".
+Read in `listenfd-1.0.2/src/unix.rs`, `validate_socket` asks four questions —
+`fstat`/`S_IFSOCK`, `getsockname`, `SO_TYPE` and `sa_family` — and **`SO_ACCEPTCONN` is not
+among them**. `adopt` added a pathname and a directory check and nothing about the descriptor.
+
+A socket that was `bind(2)`-ed and never `listen(2)`-ed passes every one of those four,
+arrives as a `std::os::unix::net::UnixListener`, and answers `EINVAL` to `accept(2)` for ever.
+The daemon would log that it is serving, send `READY=1`, and answer nobody: the one failure
+shape that looks exactly like success from inside this process.
+
+So `Activation::adopt` asks, **first** — before the address and the directory, because "this is
+not a listening socket" is a fact about the thing itself — through
+`rustix::net::sockopt::socket_acceptconn`. `rustix` and not `libc` for this crate's standing
+reason: it is `#![forbid(unsafe_code)]` and a hand-written `getsockopt` would be the one
+`unsafe` block outside `crates/backends/v4l2/src/sys/`. The refusal names `SO_ACCEPTCONN` and
+what a `.socket` unit does about it.
+
+**Three places said the check existed**, and each is now what it should have been: the comment
+in `Activation::from_env` (which described listenfd's four questions as five), `from_env`'s
+`# Errors` (true again, because the *composition* makes the check even though the crate does
+not), and design §2.8's sentence, which now says which four listenfd asks and where the fifth
+lives. This is the same class as **N179** in the same review — a claim about a dependency
+nobody read — and it is why both notes name the file and the function they were read in.
+
+`a_descriptor_that_is_not_listening_is_refused_rather_than_accepted_on` builds exactly that
+descriptor with `socket(2)` + `bind(2)` and no `listen(2)`, in a 0700 directory so the refusal
+can only be this one. Red before the repair by returning
+`Inherited { listener: UnixListener { … }, socket: "…/wchd.sock" }` — the daemon adopting it.
+
+## N182 — "The one place a secret is written down on purpose" named the line and not the sink
+
+**Doc:** docs/11 §4.6 M25; **D11**; note **N94**; AGENTS "Hardware and privacy"; owner ruling,
+2026-08-16. Recorded 2026-08-16, from the B6 repair pass.
+
+Two review lenses raised the daemon's ready-to-open URL as a HIGH credential leak and a verifier
+refuted it. **Neither was right, and the resolution is the finding.** D11 requires the URL to be
+printed — "generated per run and printed as a ready-to-open URL" — and the composition root's own
+comment is right that this is the one place in this daemon where a secret is written down on
+purpose, so the line cannot be deleted. But `tracing::info!` is not printing: it hands an event
+to whichever layer `logging::install` chose, and under `systemd::stderr_is_the_journal()` that is
+the **journald** layer, where `url = %…` lands as an indexable structured field in a store that
+outlives the run and is readable by every member of `systemd-journal` and `adm`. Note **N94**
+removed a *different* producer of the same run-long credential from the same sink three days
+earlier; this was the other producer.
+
+**The owner's ruling is the narrow one: redact in the journal only.** One `tracing::info!`
+stays, an operator at a terminal still gets a URL they can click, and the persistent sink gets a
+URL with nothing in it worth keeping.
+
+`logging::Sink` is where that lives, and three decisions in it are load-bearing.
+
+**It names the destination, not the layer.** When `$JOURNAL_STREAM` matches this process's
+stderr but the journald socket cannot be opened, `install` falls back to the fmt layer — and
+*that stderr is the journal*, which captures the lines as text. A value recording which layer
+was installed would answer `Stderr` there and put the credential in the journal anyway.
+
+**It is a value `install` returns, threaded to the one call site**, rather than a global: a
+process-wide answer would be a second home for it, readable by tests that installed nothing.
+
+**The redaction is by shape and not by value.** Everything after the `?` goes, so this module
+never holds the secret, compares nothing against it, and cannot fail to recognise it; a second
+query parameter added to that URL later is redacted by a rule written before it existed. A URL
+with no query is left alone, because D11's token-less loopback cell prints exactly that and an
+appended `?<redacted>` would invent the reading ("a token that failed to render") that cell's
+plain URL exists to avoid.
+
+**What it costs, stated rather than hidden.** A `webcam-handler-daemon` started from a unit with
+`--http` added publishes no way to reach its own web client, because the journal is the only
+output such a daemon has. `packaging/systemd/wchd.service` ships without `--http`, so reaching
+that cell takes an operator adding a flag — and one who does can read the token from a `--http`
+daemon run in a terminal. A credential file at `0600` beside the socket is the shape that would
+close it properly, and it is the owner's to ask for.
+
+Two tests: `logging`'s four shape claims over a literal URL, and
+`token.rs`'s `the_url_the_journal_keeps_carries_no_token_and_the_one_an_operator_reads_does`,
+which drives a real minted token through the real rendering — a test written only over a literal
+would keep passing against a `ready_to_open_url` that had moved the credential out of the query
+string. Both were red before the repair, printing the whole URL, token and all.
+
+**Amend this note if** the daemon gains a second line that carries a credential: the rule is
+that the *rendering* asks the sink, and a second call site rendering it itself would be the
+first copy of a law that has one home.
+
+## N183 — The token had two renderings that yield it, and the gate holding that claim knew about one
+
+**Doc:** docs/11 §5.2 L13; `scripts/gates/token-comparison-has-one-home.sh` claims 1 and 5;
+notes **N78**, **N82**. Recorded 2026-08-16, from the B6 repair pass.
+
+`token-comparison-has-one-home.sh` is the sole holder of "the secret has one reader" (N78), and
+what it holds is `expose_secret`: the accessor may be named in the home's product code and in
+tests, nowhere else. `Token::ready_to_open_url` reaches the same string by a second name —
+`Serving::ready_to_open_url` delegates to it, `main` renders it — and **every claim in that file
+was true of a tree where anything at all called it.** A caller holding that `String` holds the
+secret with no `expose` in the diff: one `split` from comparing it, one `tracing::info!` from a
+sink that keeps it, which is the pair of defects G6 found together (**N182** is the second).
+
+It cannot be confined the way the accessor is, because D11 *requires* the URL to be printed. So
+claim 6 is claim 5's residual register applied to a call site instead of to a field: three
+product-code sites, each with the reason it is one — the home that builds it, the one delegate
+that holds the bound address and the installed token, and the one line that writes it down on
+purpose — reconciled in **both** directions. A fourth caller is a finding; an entry that has
+stopped calling it is a finding too, because that is either a rendering that moved somewhere this
+gate is not looking or D11's URL having quietly stopped being printed.
+
+**One shared rule had to grow for it, and it was already wrong.** `lib.sh`'s
+`gate_test_region_start` classified a file by its one `#[cfg(test)]` marker, and an integration
+suite has none: cargo compiles `crates/<pkg>/tests/*.rs` only under `cargo test`, so there is no
+product code in one to mark off. Every suite that drives the web listener opens the URL it
+prints, and five of them do; under the marker rule alone each would have been a product-code
+caller. The rule now says so — a file in a `tests/` directory is test code from its first line —
+which is what **both** callers of that helper want (`web-routes-are-gated.sh`'s own header says
+a test that builds a router of its own is not the defect it is about), and which also removes a
+latent false positive in claim 1: an integration test naming `expose_secret` would have failed
+that gate with a message about product code.
+
+Four arms: a fourth module rendering the URL, the composition root's line no longer calling it,
+the rendering renamed out from under all three entries, and — the green one, and the one that
+keeps the gate from being turned off — a seeded integration suite that holds both the secret and
+the URL.
+
+**What claim 6 does not claim.** It is about which *files* name the rendering, not about what
+they do with the string once they have it. The site that leaked it was registered and would stay
+registered; what caught that was reading the sink (N182), and a gate cannot.
+
+**Two corrections, from the adversarial review of this batch (2026-08-16).**
+
+The paragraph above understates what the `lib.sh` change is for, and the understatement is the
+kind that gets a load-bearing line deleted by somebody tidying up. It is **not** "a latent false
+positive in claim 1" with a `tests/` rule as a bonus: claim 6 does not work without it. Five
+integration suites name `ready_to_open_url` — `crates/daemon/tests/{http,preview,web_rpc,
+web_client,web_browser}.rs` — and under the marker rule alone every one of them is product code,
+so claim 6 fails on all five the moment it is switched on. The claim-1 false positive is the
+genuinely latent half: no file under a `tests/` directory names `expose_secret` today, and none
+registers a route or a fallback either, so nothing that was being correctly refused is now
+ignored.
+
+And **"both callers"** was two of six. `gate_test_region_start` is called by
+`token-comparison-has-one-home.sh`, `web-routes-are-gated.sh`, `privileged-helper.sh`,
+`avi-reparse-is-independent.sh`, `oracle-rung-accounting.sh` and
+`claims-come-back-with-their-values.sh`; the sentence was inherited from a header that had said
+"two predicates" through four of them arriving, and restating it is how a stale count survives a
+review. What it cost is **N185**, which is the same paragraph's other half.
+
+## N184 — A seeded arm whose seed stops applying reports the predicate broken, not the seed
+
+**Doc:** AGENTS "Writing tests"; docs/9's both-directions rule; notes **N10**, **N60**.
+Recorded 2026-08-16, from the B6 repair pass — found by this pass rather than by the review.
+
+`web-routes-are-gated.cases.sh`'s `fail_case_no_route_is_registered_at_all` seeds by matching
+the route registration **verbatim**: `sed -i 's/\.route(PREVIEW_PATH, get(stream))/…/'`. N179's
+repair made that line `.route(PREVIEW_PATH, get(stream).head(described))`, the substitution
+matched nothing, the seeded tree kept both its routes — and the arm ran the predicate against an
+unviolated tree and reported it **green**, which for a `fail_case_` is a problem the selftest
+prints.
+
+The harness does go red, which is the good half. What it says is *"the predicate is green on a
+seeded violation"* — a sentence about the predicate, when the fact is about the seed. That is
+N60's cost in its smallest form: a verdict that names the wrong subject is a verdict somebody
+re-runs and then waves through, and the next person to change a line a case file quotes will be
+told their gate is broken.
+
+The repair is the shape the token gate's cases already use for exactly this reason — seed, then
+check the seed applied, and if it did not, say so on standard error and let the arm fail loudly
+rather than quietly. This arm now matches the registration loosely (`\.route(PREVIEW_PATH,[^;]*)`)
+and asserts both files stopped registering routes.
+
+**The residual, counted rather than implied**: 66 `sed -i` seeds across 14 case files.
+
+**Amended 2026-08-16, the same day, by the adversarial review of this batch — and the residual
+above is now closed.** Three things in it were wrong, and the third is the one that matters.
+
+The count of files carrying an applied-check was **7**, and it is **5**:
+`avi-reparse-is-independent`, `cli-parity`, `scratch-has-one-home`, `token-comparison-has-one-home`
+and `web-routes-are-gated`. Recounted with the arms rather than the files: 66 seeds across 14
+files in 63 arms, of which 13 arms guarded and 50 did not.
+
+"The harness does go red, which is the good half" is true of a `fail_case_` and **false of a
+`pass_case_`**, which is where the class actually hides: a dead seed leaves the tree pristine,
+the predicate green, the arm exiting 0 — and for a green arm that is `ok`. Demonstrated on this
+file's own `pass_case_a_wrapped_declaration_is_still_a_list`, whose seed quotes
+`CAMERA_BEARING_PATHS`'s declaration verbatim: reordering its two entries, which is a refactor
+that keeps the predicate green, made the arm report `ok` while its scratch copy still held the
+original. The arm's entire subject was never produced and nothing said so.
+
+And the objection this note raised against a general fix — "an arm's seed is only checkable
+against the line it quotes" — **is answered by asking a smaller question**. Not "did the seed mean
+what its author meant", which does need to know what the seed was for, but "did it edit anything
+at all", which is a fact about bytes and is true of all 66. That is `lib.sh`'s `gate_seed`, and
+**N186** records it. This note's residual paragraph is therefore retired rather than standing:
+every seed in `cases/` goes through it, and the arm above no longer needs its hand-written check
+because the helper is where that law now lives.
+
+## N185 — Four repairs whose guards named the right subject and read something next to it
+
+**Doc:** AGENTS rule 1 and rule 7; docs/9's both-directions rule; notes **N60**, **N179**,
+**N182**, **N183**. Recorded 2026-08-16, from the adversarial review of the B6 repair pass —
+found by reading the repairs rather than the code they repaired.
+
+B6 closed four findings and landed a check with each, as rule 1 asks. Reviewed as a batch, three
+of the four checks and one of the sentences turn out to read a **proxy** for the thing they are
+about — a name instead of a use, one method instead of a route, an absolute path instead of a
+relative one, a set instead of the set. None of them was wrong about the tree it shipped on, and
+all four would have stayed green through the exact regression they exist to catch. Kept as one
+note because the shape repeats and the shape is the finding: *a guard written in the same hour as
+its repair is written by somebody who knows what they meant, and what it ends up asking is
+whichever question was easiest to spell.*
+
+**The redaction that was closed by one line and guarded by nothing.** N182's repair is
+`main.rs`'s `tracing::info!(url = %logging.url_this_sink_may_keep(&web.ready_to_open_url()), …)`,
+and that is its **only** production call site — `logging`'s four tests and `token.rs`'s
+end-to-end one both drive `Sink::url_this_sink_may_keep` directly. Reverting the line to
+`url = %web.ready_to_open_url()` left every test in the workspace green *and* left
+`token-comparison-has-one-home.sh`'s new claim 6 green, because its register asked `main.rs` to
+**name** the rendering, which the un-redacted line does. So the run's bearer token went back into
+a persistent `systemd-journal`/`adm`-readable store with nothing anywhere able to say so. Nothing
+*could* say so from a test, either: the composition root is the binary beside the library, so
+`main::run` is not a name any integration suite can call, which is why the register grew a third
+field instead — a spelling that must appear on the **same product line** as the rendering. The
+arm is `fail_case_the_line_that_prints_the_url_stopped_redacting_it`, and the measurement is
+worth keeping: the B6 gate answered `PASS … 194 items examined` on the reverted tree, the B6b
+gate answers `FAIL … 1 violation`.
+
+**Two populations that proved a route was gated by driving one of its methods.** D11's gate is a
+`Router::route_layer`, so it wraps a route's whole `MethodRouter` — there is no arrangement of
+methods that opens a hole, and `HEAD` was measured gated (`401` + `www-authenticate: Bearer`)
+throughout. But both halves of the pair AGENTS asks for drove `GET` alone —
+`crates/daemon/tests/http.rs`'s `an_anonymous_asset_is_served_and_an_anonymous_camera_route_is_not`
+and `preview.rs`'s `every_camera_bearing_route_is_behind_the_gate` — and
+`web-routes-are-gated.sh` read a registration's path argument and discarded everything after the
+comma. N179 had just added a second method to the one route that carries camera frames, and
+neither half could see it. Both are now method-complete: the two suites drive every method
+RFC 9110 §9.3 defines (less `CONNECT`, whose target is an authority rather than a path) against
+every path on `CAMERA_BEARING_PATHS` and require the `401` and the challenge — with the body
+asserted only where a body is allowed, because a `HEAD` refusal carries none and asserting
+`gate::REFUSAL` there would fail on a daemon behaving exactly as it must. The gate reads the
+method router too, matches each constructor against `axum::routing`'s vocabulary, counts them and
+**names them** (`RPC_PATH any PREVIEW_PATH get PREVIEW_PATH head`), so the next method appears in
+its output on the run that lands it. Red before the repair by registering the `HEAD` half on a
+router merged *after* the `route_layer`: `/preview answered a HEAD with no credential: HTTP/1.1
+400 Bad Request`, and `left: 400, right: 401` in the other suite.
+
+**A shared classifier that answered a question about where somebody cloned the repository.**
+N183's `tests/` rule matched `$1`, and every caller passes an **absolute** path. In a checkout
+whose path has a `tests` component — `~/tests/webcam-handler`, or a harness copy beside a `tests`
+directory — every file in the tree is then test code from line 1, `gate_product_lines` hands back
+zero bytes, and the six callers split: four fail loudly, and two go **vacuously green**, because
+their non-vacuity floors count files rather than lines (`privileged-helper.sh`'s
+caller-named-program claim and `avi-reparse-is-independent.sh`'s import claim). `lib.sh`'s own
+header cites N52, N66 and N68 for *"a verdict that is a function of the checkout path"* as a
+recorded defect class, and the change introduced one into the one classifier all six share. It
+now matches the path relative to `gate_root`; a root that cannot be resolved leaves the path
+alone, which is the marker rule and never a silent reclassification of a whole tree. The arm is
+`privileged-helper.cases.sh`'s
+`fail_case_the_helper_reaches_for_the_exec_trait_in_a_checkout_somebody_cloned_under_tests`, red
+before the repair with *"the predicate stayed green; it was expected to fail with: CommandExt"*.
+The header now names all six callers and says how many there are, because that is the sentence
+whose staleness produced the whole entry.
+
+**And the count that was replaced with another count.** `preview.rs`'s send-buffer constructor
+said "the suite's other seven tests" and there were twenty-one, so B6 replaced it with "every
+other test in this file goes through `open`" — which is false, because that constructor has three
+callers. A count went stale and its replacement quantified over the wrong set. The form that is
+neither is *"every test that does not ask for a send buffer"*: it quantifies over the set the
+constructor itself defines, so it stays true however many tests appear on either side of it.
+
+**Amend this note if** a fifth instance turns up. The cheap habit it argues for is one question
+asked of every guard before it lands: *what edit would this stay green through?* — and it is
+cheap because in all four cases the answer was the edit the repair had just made in reverse.
+
+## N186 — A seed that edited nothing, in a directory whose whole job is to prove things can fail
+
+**Doc:** AGENTS "Writing tests"; docs/9's both-directions rule and its bootstrap limit; notes
+**N10**, **N60**, **N184**. Recorded 2026-08-16, from the adversarial review of the B6 repair
+pass.
+
+Every arm in `scripts/gates/cases/` seeds a violation into a scratch copy, and nearly all of them
+seed it with `sed -i` against a line quoted out of the tree. So an arm's subject is produced by a
+substitution against a spelling somebody else is free to change, and when the spelling moves the
+substitution matches nothing, the copy comes out pristine, and the predicate runs against a tree
+with nothing in it. **What happens next depended on which kind of arm it was, and one of the two
+was silent.**
+
+N184 found the loud half: a `fail_case_` then exits 0 and `selftest.sh` prints *"the seeded
+violation did not turn the predicate red"* — a sentence about the predicate for a fact about the
+seed, which is N60's cost in its smallest form. The half it missed is one arm further down the
+same file. A **`pass_case_`** whose seed dies also leaves the predicate green, also exits 0 — and
+for a green arm 0 is `ok`. Demonstrated on `web-routes-are-gated.cases.sh`'s
+`pass_case_a_wrapped_declaration_is_still_a_list`, which quotes `CAMERA_BEARING_PATHS`'s
+declaration verbatim: reordering its two entries is a refactor that keeps the predicate green,
+and with that done the arm reported `ok` while its scratch copy still held the original
+declaration. The arm's entire subject was never produced. Recounted, the exposure was 66 seeds
+across 14 files in 63 arms, 13 of which guarded.
+
+**The general fix N184 said was unavailable is available, because the question is smaller than it
+looks.** That note's objection is that a seed is only checkable against the line it quotes —
+true of *"did this seed do what its author meant"*, and irrelevant to *"did it edit anything at
+all"*, which is a fact about bytes, needs no knowledge of the arm, and is true of all 66. So
+`lib.sh` grows `gate_seed <sed-expression> <file>…`: it hashes each file's content before and
+after, and fails when **none** of them changed. The population is the whole call rather than each
+file because two callers legitimately seed a list where only some members match
+(`corpus-floor.cases.sh` strips three profile names from every file naming any of them,
+`lint-posture.cases.sh` deletes one attribute from three crate roots) — and those loops were
+rewritten to pass their whole `grep -rl` result in one call, which also closes the case that made
+them worth rewriting: a `grep` that matched nothing runs the loop body zero times, and one call
+over an empty population is a dead seed while a loop that never ran is nothing at all.
+
+**It reports where an arm's exit status cannot, and that is the load-bearing part.** A helper
+that only returned non-zero would be checked by exactly the arms that do not check it, and would
+be invisible in the `pass_case_` half where the class hides. So a dead seed is written to a file
+in the run's own scratch directory, `selftest.sh` reads it after every arm and before its
+per-arm reclaim, and it **replaces** the verdict rather than joining it: both of the sentences
+the harness would otherwise print are about the predicate, and in a `pass_case_` the sentence
+would be `ok`.
+
+**The bootstrap limit, closed as far as it goes.** docs/9 records that the selftest cannot test
+the harness, and a `gate_seed` that had silently stopped noticing would return every seeded arm
+in `cases/` to reporting `ok` over an unmodified tree — the exact defect, one level up.
+`gate_seed_selfcheck` lives in `lib.sh` beside the thing it proves, drives both directions over a
+file of its own, and `selftest.sh` runs it before the first predicate; with the guard removed by
+hand it says *"a seed that changed nothing was reported alive"* and *"a dead seed left nothing
+for the harness to read"*.
+
+**What it costs, and what it does not claim.** Thirteen arms carried a hand-written
+applied-check, and those are gone: they asked the same question one file later, and two of them
+were in `pass_case_`s where the `|| return 1` they ended in made the harness say *"the predicate
+is red on a shape it must allow"* — the wrong subject again. It still says nothing about whether
+a seed produced the violation the arm names; that is what `gate_red_because` is for, and the two
+together are the pair. `shellcheck` no longer recognises the first argument as a `sed`
+expression, so three multi-line seeds carry a narrow `disable=SC2016` with the reason beside it.
+
+**Amend this note if** an arm ever wants a seed that legitimately changes nothing. There is no
+such arm today and it is hard to imagine one — a seed exists to make the tree different — so the
+helper refuses rather than taking a flag for a case nobody has.

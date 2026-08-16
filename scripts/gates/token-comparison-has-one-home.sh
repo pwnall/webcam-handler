@@ -87,6 +87,42 @@
 #      free `fn secret_of(token: &Token) -> &str { &token.hex }` beside the type is the same
 #      second way out with `self` spelled differently, so the match is on the access and not on
 #      the receiver.
+#   6. **The *other* rendering that yields the secret has a register of its own.** Claims 1 and
+#      5 are about `expose_secret` and about the field; `Token::ready_to_open_url` reaches the
+#      same string by a third name. It is the URL D11 asks the daemon to print, the token rides
+#      its query string because a navigation cannot be told to send a header, and until G6 every
+#      claim in this file was true of a tree where anything at all called it (finding L13, note
+#      **N183**). A caller holding that `String` is holding the secret with no `expose` in the
+#      diff — one `split` away from comparing it, one `tracing::info!` away from a sink that
+#      keeps it, which is the pair of defects G6 found together.
+#
+#      It cannot be confined the way the accessor is, because D11 *requires* it to be printed:
+#      the composition root asks for it, and the listener that holds both halves — the bound
+#      address and the token that was actually installed — is what renders it. So the claim is
+#      claim 5's residual register applied to a call site instead of to a field, reconciled in
+#      both directions against a named list with a reason per entry: the home that declares it,
+#      the one delegate, and the one line that writes it down on purpose. A fourth product-code
+#      caller is a finding; an entry that has stopped calling it is a finding too, because a
+#      register with nothing behind it is how a claim comes to quantify over nothing.
+#
+#      Prose does not count here either (see the matching rule), which is what lets six modules
+#      argue about this URL by name without becoming call sites — and a suite may call it
+#      freely, because a test that drives the web listener has to open its URL.
+#
+#      **One entry carries a second requirement, and it is the only thing standing behind the
+#      journal redaction** (note **N185**). The composition root's line is the one that hands the
+#      URL to `tracing`, and under systemd `tracing` is a persistent store readable by two groups
+#      of accounts — which is the defect note **N182** closed by routing that one rendering
+#      through `daemon::logging::Sink::url_this_sink_may_keep`. That repair is **one line**, its
+#      only production call site is `main.rs`, and `main.rs` cannot be driven from an integration
+#      test: it is the binary beside the library, so `main::run` is not a name any suite can
+#      call, and `logging`'s and `token.rs`'s tests both drive the redaction *directly*. Reverting
+#      that line to `url = %web.ready_to_open_url()` therefore left every test in this workspace
+#      green and left this claim green too, because the register asked only that `main.rs` **name**
+#      the rendering — which the un-redacted line does. So an entry may name a spelling that has
+#      to appear on the **same product line** as the rendering, and the composition root's does:
+#      a URL written down on purpose is written down through the sink that decides how much of it
+#      to keep.
 #
 # ## What this does **not** claim
 #
@@ -143,6 +179,9 @@ root="$(gate_root)"
 type_name="Token"
 accessor="expose_secret"
 comparison="verify"
+# The second rendering that yields the secret: D11's ready-to-open URL, with the token in its
+# query string. Claim 6 is about who may call it.
+url_rendering="ready_to_open_url"
 # Traits nothing may implement **for** `Token`: four that compare or print it, and six that
 # convert it into something a `==` accepts. The header argues each family and says why the
 # ordering traits are not here.
@@ -170,6 +209,30 @@ home_rel="$daemon_suffix/src/http/token.rs"
 gate_rel="$daemon_suffix/src/http/gate.rs"
 home="$root/$home_rel"
 gate_module="$root/$gate_rel"
+
+# The redaction the composition root's line has to go through (note **N182**): under systemd
+# `tracing` is a persistent, `systemd-journal`/`adm`-readable store, and this is the one call
+# that decides how much of D11's URL such a store may keep. Named here beside the register that
+# requires it, because it is a *policy* name like every other in this block.
+url_redaction="url_this_sink_may_keep"
+
+# Claim 6's register: the product-code files that may name the URL rendering, each with the
+# reason it is there and, where one applies, a spelling that must appear on the **same line**.
+# Three entries and no fourth, because D11's URL has exactly three jobs — being built, being
+# handed to the composition root by the value that holds both of its halves, and being written
+# down once.
+#
+# The third field is what stops the third job being done into a store nobody meant to write to.
+# `main.rs` renders the URL into a `tracing` event, so the rendering and the redaction are one
+# expression there; a line that names the first and not the second is the un-redacted build, and
+# it is invisible to every test in this workspace because the composition root is a binary no
+# suite can call into (the header's claim 6 argues both halves). An empty third field means the
+# entry is registered on its file alone.
+url_sites_allowed=(
+    "$home_rel|the home, which builds it|"
+    "$daemon_suffix/src/http/listener.rs|the one delegate, which holds the bound address and the installed token|"
+    "$daemon_suffix/src/main.rs|the one line D11 asks for, which writes it down on purpose|$url_redaction"
+)
 
 # ------------------------------------------------------------------ reading the tree
 #
@@ -209,7 +272,8 @@ home_product="$(gate_product_lines "$home" "$home_product_start")"
 for declaration in \
     "pub struct $type_name\b|the type that holds the secret" \
     "pub fn $accessor\(|the one accessor that yields the secret" \
-    "pub fn $comparison\(|the constant-time comparison"; do
+    "pub fn $comparison\(|the constant-time comparison" \
+    "pub fn $url_rendering\(|the URL rendering claim 6 registers the callers of"; do
     pattern="${declaration%%|*}"
     what="${declaration#*|}"
     anchors=$((anchors + 1))
@@ -217,6 +281,18 @@ for declaration in \
         gate_fail "$home_rel no longer declares $what (\`$pattern\`); every claim this gate makes is about that name, so a tree without it is a tree this gate has nothing to say about"
     fi
 done
+
+# The redaction claim 6's third field requires, asserted where it lives rather than only where
+# it is called. Without this, a rename would fail this gate at `main.rs` with a message about a
+# call site, which is a verdict naming the wrong subject — the shape note **N60** charges for.
+redaction_rel="$daemon_suffix/src/logging.rs"
+anchors=$((anchors + 1))
+# `\b` and not `\(`: the declaration carries a lifetime parameter (`<'a>`) between the name and
+# its arguments, and a pattern that assumed the parenthesis followed the name would fail on the
+# tree it is about — which is a gate red on the shipped build, the loudest way to be wrong.
+if ! grep -Eq -- "pub fn $url_redaction\b" "$root/$redaction_rel" 2>/dev/null; then
+    gate_fail "$redaction_rel no longer declares \`pub fn $url_redaction\`; that is the one call deciding how much of D11's URL a persistent sink may keep (note N182), and claim 6 requires the composition root to render through it by that name"
+fi
 
 gate_checked "$anchors" "named declaration(s) and module(s) asserted to exist before anything is counted"
 gate_require_nonzero "$anchors" "named declarations"
@@ -229,6 +305,7 @@ gate_require_nonzero "$anchors" "named declarations"
 scanned=0
 readers=0
 declare -a witnesses=()
+declare -a url_sites=()
 banned_alternation="$(
     IFS='|'
     printf '%s' "${banned_traits[*]}"
@@ -260,20 +337,56 @@ while IFS= read -r -d '' file; do
         fi
     done
 
-    grep -Fq -- "$accessor" <<<"$stripped" || continue
-    readers=$((readers + 1))
-
-    if [[ "$rel" == "$home_rel" ]]; then
+    # Either rendering brings a file into the two claims below; a file that names neither is a
+    # file with no way to hold the secret at all.
+    names_accessor=0
+    if grep -Fq -- "$accessor" <<<"$stripped"; then
+        names_accessor=1
+        readers=$((readers + 1))
+    fi
+    names_url=0
+    if grep -Fq -- "$url_rendering" <<<"$stripped"; then
+        names_url=1
+    fi
+    if ((names_accessor == 0 && names_url == 0)); then
         continue
     fi
 
     start="$(gate_test_region_start "$file")"
     if ((start < 0)); then
-        gate_fail "$rel names \`$accessor\` and this gate cannot tell its product code from its test code: it carries more than one \`#[cfg(test)]\` marker, or its marker does not open a \`mod\`. One trailing test module per file is what makes that readable, and a file nobody can classify is a finding rather than a pass"
+        gate_fail "$rel names a rendering that yields the token and this gate cannot tell its product code from its test code: it carries more than one \`#[cfg(test)]\` marker, or its marker does not open a \`mod\`. One trailing test module per file is what makes that readable, and a file nobody can classify is a finding rather than a pass"
+        continue
+    fi
+    product="$(gate_product_lines "$file" "$start")"
+
+    # ---------------------------------------------------------- claim 6, in the same walk
+    #
+    # The home is a site like any other here — it is on the register because it declares the
+    # rendering — which is the difference from claim 1: the accessor is confined *to* the home,
+    # and the URL is confined to a list the home is merely the first entry of.
+    if ((names_url)) && (($(count_matching "$product" "$url_rendering") > 0)); then
+        url_sites+=("$rel")
+
+        # The register's third field, where the entry has one: **on the same line**, because
+        # what it holds is that this call site does not render the URL raw. A line naming the
+        # rendering without it is the redaction gone (note **N182**), and no test can see that
+        # — this file's claim 6 header says why. Every such line is required to carry it, so a
+        # second render added beside the first is a finding rather than a hole.
+        for entry in "${url_sites_allowed[@]}"; do
+            [[ "${entry%%|*}" == "$rel" ]] || continue
+            required="${entry##*|}"
+            [[ -n "$required" ]] || continue
+            unguarded="$(grep -F -- "$url_rendering" <<<"$product" | grep -Fvc -- "$required" || true)"
+            if ((unguarded > 0)); then
+                gate_fail "$rel renders \`$url_rendering\` on $unguarded product line(s) that do not also name \`$required\`; this is the one line D11 asks the daemon to write a credential down on, \`$required\` is what decides how much of it the sink it is written into may keep, and a build that dropped it puts the run's bearer token into a persistent \`systemd-journal\`/\`adm\`-readable store (note N182). Nothing else in this workspace can go red on it: the composition root is a binary no suite can call into"
+            fi
+        done
+    fi
+
+    if ((names_accessor == 0)) || [[ "$rel" == "$home_rel" ]]; then
         continue
     fi
 
-    product="$(gate_product_lines "$file" "$start")"
     mentions="$(count_matching "$product" "$accessor")"
     if ((mentions > 0)); then
         gate_fail "$rel reads the token's secret outside \`#[cfg(test)]\` ($mentions line(s)); \`$accessor\` is the one rendering that yields it and $home_rel is the one place that may, because a caller holding the secret is one \`==\` away from comparing it itself"
@@ -294,6 +407,50 @@ if ((${#witnesses[@]} > 0)); then
 else
     gate_note "no file outside $home_rel names \`$accessor\` at all"
 fi
+
+# ------------------------------------------------------------------ claim 6: the URL's callers
+#
+# The register reconciled both ways, `unsafe-scope.sh`'s shape and claim 5's, applied to a call
+# site: a caller with no entry is a fourth place holding the secret, and an entry with no caller
+# is a register describing a tree that has moved on.
+
+for site in "${url_sites[@]}"; do
+    permitted=0
+    for entry in "${url_sites_allowed[@]}"; do
+        if [[ "$site" == "${entry%%|*}" ]]; then
+            permitted=1
+        fi
+    done
+    if ((permitted == 0)); then
+        gate_fail "$site names \`$url_rendering\` in its product code and is not one of this gate's ${#url_sites_allowed[@]} registered sites; that rendering is the token in a URL, so a caller holding its answer is holding the secret with no \`$accessor\` in the diff — one \`split\` from comparing it and one log line from a sink that keeps it (note N183)"
+    fi
+done
+
+guarded=0
+for entry in "${url_sites_allowed[@]}"; do
+    expected="${entry%%|*}"
+    # The middle field. Taken as "everything after the first `|`, less everything from the last"
+    # rather than by a split, because a reason is prose and prose is where a `|` would turn up.
+    why="${entry#*|}"
+    why="${why%|*}"
+    [[ -z "${entry##*|}" ]] || guarded=$((guarded + 1))
+    seen=0
+    for site in "${url_sites[@]}"; do
+        if [[ "$site" == "$expected" ]]; then
+            seen=1
+        fi
+    done
+    if ((seen == 0)); then
+        gate_fail "$expected is registered as $why and its product code no longer names \`$url_rendering\`; a register entry with nothing behind it is either a rendering that has moved somewhere this gate is not looking, or D11's ready-to-open URL having quietly stopped being printed"
+    fi
+done
+
+gate_checked "${#url_sites[@]}" "product-code site(s) of \`$type_name::$url_rendering\`, reconciled against ${#url_sites_allowed[@]} registered site(s)"
+gate_require_nonzero "${#url_sites[@]}" "callers of \`$url_rendering\`"
+gate_checked "$guarded" "registered site(s) required to render the URL through \`$url_redaction\` on the same line"
+# A register whose third fields have all been emptied is a register that has stopped holding the
+# redaction, and every claim above would still be green. The count is the claim (note N185).
+gate_require_nonzero "$guarded" "sites required to name \`$url_redaction\`"
 
 # ------------------------------------------------------------------ claim 2: the derive list
 #

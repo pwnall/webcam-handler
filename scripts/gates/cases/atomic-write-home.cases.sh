@@ -188,7 +188,7 @@ fail_case_the_home_stopped_renaming() {
     local tree store
     tree="$(gate_scratch_tree)"
     store="$tree/crates/engine/src/store.rs"
-    sed -i 's/\.persist(/\.keep_but_do_not_rename(/g' "$store"
+    gate_seed 's/\.persist(/\.keep_but_do_not_rename(/g' "$store"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -198,7 +198,7 @@ fail_case_the_home_stopped_locking() {
     local tree store
     tree="$(gate_scratch_tree)"
     store="$tree/crates/engine/src/store.rs"
-    sed -i 's/fd_lock::RwLock/some_other::Thing/g' "$store"
+    gate_seed 's/fd_lock::RwLock/some_other::Thing/g' "$store"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -208,6 +208,6 @@ fail_case_the_home_lost_its_named_function() {
     local tree store
     tree="$(gate_scratch_tree)"
     store="$tree/crates/engine/src/store.rs"
-    sed -i 's/pub fn write_json_atomic/pub fn save_the_json/g' "$store"
+    gate_seed 's/pub fn write_json_atomic/pub fn save_the_json/g' "$store"
     WCH_GATE_ROOT="$tree" "$GATE"
 }

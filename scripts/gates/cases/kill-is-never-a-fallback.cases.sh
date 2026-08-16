@@ -133,14 +133,14 @@ fail_case_the_only_caller_went_away() {
     # signal, which is a different defect and must not read as compliance.
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/v4l2::holders::terminate(pid)/Ok(())/' "$tree/crates/daemon/src/server.rs"
+    gate_seed 's/v4l2::holders::terminate(pid)/Ok(())/' "$tree/crates/daemon/src/server.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_home_no_longer_defines_the_signal() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/pub fn terminate(/fn terminate_disabled(/' "$tree/crates/backends/v4l2/src/holders.rs"
+    gate_seed 's/pub fn terminate(/fn terminate_disabled(/' "$tree/crates/backends/v4l2/src/holders.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 

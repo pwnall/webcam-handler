@@ -46,10 +46,25 @@
 #      `CAMERA_BEARING_PATHS`'s entries are read out of its declaration, and each must be a
 #      named constant that is declared in the daemon's `http` tree. A `"/preview"` typed into
 #      the list would be a second spelling of a path, and the pair that stops matching.
-#   2. **Every route registration names one of them.** `.route(`, `.route_service(`, `.nest(`
-#      and `.nest_service(` take a path; in this workspace's product code every one of them must
-#      pass a constant on the list, from inside the daemon's `http` modules. A route on a string
-#      literal, on a constant nobody listed, or in another crate is the defect this gate is for.
+#   2. **Every route registration names one of them, and every method it registers is one this
+#      gate can read.** `.route(`, `.route_service(`, `.nest(` and `.nest_service(` take a path;
+#      in this workspace's product code every one of them must pass a constant on the list, from
+#      inside the daemon's `http` modules. A route on a string literal, on a constant nobody
+#      listed, or in another crate is the defect this gate is for.
+#
+#      The **method** half arrived with G6 and is a reporting claim rather than a security one,
+#      which is worth saying plainly (note **N185**). D11's gate is a `Router::route_layer`, so it
+#      wraps a route's whole `MethodRouter` and has no way to admit one verb while refusing
+#      another — there is no arrangement of methods that opens a hole here, and what proves *that*
+#      is the behavioural half, which since G6 drives every method RFC 9110 defines against every
+#      path on the list. What this half does is stop the methods being invisible: until G6 the
+#      predicate read a registration's path argument and discarded everything after the comma, so
+#      `get(stream)` becoming `get(stream).head(described)` — a second method on the one route
+#      that carries camera frames — changed nothing anybody could see, in either half. Each method
+#      constructor a camera-bearing registration chains is now matched against `axum::routing`'s
+#      own vocabulary and **counted**, so a new one appears in this gate's output on the run that
+#      introduces it, and a method router this predicate cannot read is a failure rather than a
+#      silent pass — `gate_test_region_start`'s price, charged for a method list.
 #   3. **The ungated half is the asset fallback and nothing else.** `.fallback(` and
 #      `.fallback_service(` appear once, in the listener's composition, and name the asset
 #      handler. A second fallback is a second answer served without the token, which is the same
@@ -72,6 +87,14 @@
 # It is also a `grep`: a route registered through a helper of somebody else's, or a router built
 # by a macro, is invisible to claim 2. What claim 2 rests on is that this workspace registers
 # routes the way axum documents them, in three files a reviewer can hold in their head.
+#
+# The method half inherits that and errs the other way, deliberately: it reads every `name(` after
+# the path argument, so a handler that is itself a call — `get(make_handler())` — is a name it
+# cannot place and a **failure**. That is the same direction claim 2 already takes about a path
+# argument spelled across lines, and for the same reason: on the two routes that carry a camera,
+# a registration this gate has to guess about is one nobody is counting the methods of. The
+# remedy in that diff is a `let` above the registration, which is what the workspace writes
+# anyway.
 #
 # ## The matching rule and the populations
 #
@@ -103,6 +126,15 @@ asset_handler="asset"
 # every path that has none.
 path_verbs='route|route_service|nest|nest_service'
 fallback_verbs='fallback|fallback_service'
+# `axum::routing`'s whole method vocabulary: the nine constructors, the two that take any method,
+# and the
+# `MethodRouter` builders of the same names that chain onto them (`get(a).head(b)`). A `.route(`
+# whose second argument names something outside this list is a method router this gate cannot
+# read, and that is a failure — the alternative is a registration whose methods are whatever the
+# next reader assumes. `on`/`any` are here because they are how a route says "every method", which
+# `rpc.rs` does; `MethodFilter` is not a *name* this matches, because it appears as an argument to
+# `on` rather than as a constructor.
+method_verbs='get|head|post|put|delete|patch|options|trace|connect|any|on|any_service|on_service|get_service|head_service|post_service|put_service|delete_service|patch_service|options_service|trace_service|connect_service'
 
 daemon_dir="$(gate_metadata |
     jq -r '.packages[] | select(.name == "webcam-handler-daemon") | .manifest_path' |
@@ -216,6 +248,8 @@ listed_alternation="$(
 scanned=0
 registrations=0
 fallbacks=0
+methods=0
+declare -a registered_methods=()
 
 while IFS= read -r -d '' file; do
     scanned=$((scanned + 1))
@@ -246,6 +280,33 @@ while IFS= read -r -d '' file; do
         if [[ ! "${argument##*::}" =~ ^($listed_alternation)$ ]]; then
             gate_fail "$rel registers a route on \`$argument\`, which is not one of the paths \`$list_name\` names (${listed[*]}); since D11's 2026-08-12 amendment the token gate is over the routes that list names and over nothing else, so this route is served to anybody who asks"
         fi
+
+        # ------------------------------------------------------------ claim 2's method half
+        #
+        # Everything after the path argument is the method router, and it is read rather than
+        # discarded: a second method on the one route that carries camera frames must appear in
+        # this gate's output on the run that adds it (the header argues why this is a reporting
+        # claim and where the security one lives). `.nest(` takes a `Router` rather than a
+        # `MethodRouter` and has no methods to read, so only the two `route` verbs are asked.
+        case "$registration" in
+        .route\(* | .route_service\(*) ;;
+        *) continue ;;
+        esac
+        methods_here="$(sed -E 's/^[^,]*,//' <<<"$registration" |
+            grep -Eo -- '[A-Za-z_][A-Za-z0-9_]*\(' | sed 's/($//; s/(//' || true)"
+        if [[ -z "$methods_here" ]]; then
+            gate_fail "$rel registers a route on \`$argument\` and this gate cannot read the methods it answers (\`$registration\`); a method router spelled across lines or built by a helper is a registration whose methods are whatever the next reader assumes, and a boundary with no answer is a finding rather than a pass"
+            continue
+        fi
+        while IFS= read -r method; do
+            [[ -n "$method" ]] || continue
+            methods=$((methods + 1))
+            if [[ ! "${method##*::}" =~ ^($method_verbs)$ ]]; then
+                gate_fail "$rel registers \`$method\` on \`$argument\`, which is not one of \`axum::routing\`'s method constructors; this gate reads a camera-bearing route's methods so that a new one is counted and named the day it lands, and a spelling it cannot place is one nobody is counting"
+            else
+                registered_methods+=("${argument##*::} $method")
+            fi
+        done <<<"$methods_here"
     done < <(grep -Eo -- "\.($path_verbs)\([^;]*" <<<"$product" || true)
 
     # ---------------------------------------------------------------- claim 3
@@ -267,6 +328,12 @@ gate_checked "$registrations" "route registration(s) in product code, each check
 # Zero registrations is a listener that serves no routes at all, which is a tree where every
 # claim above holds and the camera is unreachable — a finding either way, and never a pass.
 gate_require_nonzero "$registrations" "route registrations"
+gate_checked "$methods" "method(s) registered on those routes, each checked to be an \`axum::routing\` constructor"
+gate_require_nonzero "$methods" "registered methods"
+# Named and not only counted, because the number's job is to change when somebody adds a method
+# and a number alone does not say *which* (note N185). This is what the behavioural half has to
+# be driving; the two are read together or the pair is one half.
+gate_note "the camera-bearing routes answer: ${registered_methods[*]}"
 gate_checked "$fallbacks" "fallback registration(s), checked to be the asset table's"
 gate_require_nonzero "$fallbacks" "fallback registrations"
 

@@ -93,9 +93,17 @@ impl Preview {
     /// Linux gives an accepted socket the listening socket's `SO_SNDBUF`, which is why this
     /// can be set once here rather than per connection. It is the only reason this constructor
     /// reaches `http::serve` rather than `http::open`: the two differ in exactly the three
-    /// values `open` computes, so this decides the same posture `open` would and mints the
-    /// same kind of token, and the suite's other seven tests go through `open` — the function
-    /// `webcam-handler-daemon` itself calls.
+    /// values `open` computes, so this decides the same posture `open` would and mints the same
+    /// kind of token, and **every test that does not ask for a send buffer** goes through
+    /// `open` — the function `webcam-handler-daemon` itself calls.
+    ///
+    /// That sentence has been wrong twice, in the two ways a sentence like it goes wrong, and
+    /// both are worth one line (docs/11's L12 class). It first said "the suite's other seven
+    /// tests", which was a **count**, and counts go stale every time a file grows. Replacing it
+    /// with "every other test in this file" then made it a **quantifier over the wrong set**:
+    /// this constructor has more than one caller, so "other" read as "other than the one test"
+    /// is simply false. The form above is neither — it quantifies over the set the constructor
+    /// itself defines, so it stays true however many tests on either side there come to be.
     async fn with_send_buffer(bytes: u32) -> Preview {
         Preview::listening(Some(bytes)).await
     }
@@ -659,6 +667,20 @@ impl Part {
     }
 }
 
+/// Every method a stranger can put on the request line of a camera-bearing path.
+///
+/// The population `every_camera_bearing_route_is_behind_the_gate`'s claim 4 quantifies over, and
+/// it is methods rather than one method for the reason that claim states: D11's gate is a
+/// `route_layer`, so what it refuses is a route and never a verb, and only a population can say
+/// so. Every name RFC 9110 §9.3 defines, less `CONNECT`, whose request target is an authority
+/// rather than a path and which is therefore not a request for one of these routes at all.
+/// `http.rs` carries the same list against the same claim; the duplication is deliberate and is
+/// `near_miss`'s — what the two share is a fact about **HTTP**, and each presents it to a
+/// different surface.
+const EVERY_METHOD: [&str; 8] = [
+    "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE",
+];
+
 /// An equal-length, one-digit-different token.
 ///
 /// `http.rs` and `web_rpc.rs` each carry the same six lines, and the duplication is deliberate
@@ -696,9 +718,25 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Send one ordinary `GET` and read the whole answer, for the asset half of the compression
 /// claim.
 async fn get(bound: std::net::SocketAddr, target: &str, headers: &[(&str, &str)]) -> String {
+    request("GET", bound, target, headers).await
+}
+
+/// The same, with the method spelled out.
+///
+/// A parameter rather than a second copy of the eight lines below, because the claim that needs
+/// it is a claim about *which methods reach the handler*: axum's `get()` answers `HEAD` as well
+/// as `GET` (its `MethodRouter::call_with_state` tries the `head` slot and then the `get` one),
+/// so "this route runs on a `GET`" and "this route runs on nothing else" are two different
+/// facts and a helper that could only send one method could only assert the first.
+async fn request(
+    method: &str,
+    bound: std::net::SocketAddr,
+    target: &str,
+    headers: &[(&str, &str)],
+) -> String {
     let mut socket = TcpStream::connect(bound).await.expect("the listener is up");
     let mut request = format!(
-        "GET {target} HTTP/1.1\r\n\
+        "{method} {target} HTTP/1.1\r\n\
          Host: {bound}\r\n\
          Connection: close\r\n"
     );
@@ -1072,7 +1110,7 @@ async fn every_camera_bearing_route_is_behind_the_gate() {
     // of what replaced the property it dissolved, and `scripts/gates/web-routes-are-gated.sh`
     // is the structural half (a route nobody put on the list is a route no test can drive).
     //
-    // Four claims per path, and none implies the others:
+    // Five claims per path, and none implies the others:
     //
     //   1. **nothing is refused** — 401 with RFC 6750's challenge, which is the whole of what
     //      an anonymous client gets;
@@ -1082,7 +1120,14 @@ async fn every_camera_bearing_route_is_behind_the_gate() {
     //   3. **the token gets past, and what is behind is a route** — the answer is neither the
     //      gate's 401 nor the asset table's 404, so a path that is on this list and is *not*
     //      registered fails here rather than passing claim 1 by falling through to the assets;
-    //   4. **the population is not empty**, because every claim above quantifies over it.
+    //   4. **no method gets past either**, which is claim 1 over the other axis and the one G6
+    //      added (note **N185**). D11's gate is a `route_layer`, so it wraps the route's whole
+    //      `MethodRouter` and cannot admit one verb while refusing another — a property that is
+    //      invisible from a request and therefore worth an assertion. Until G6 this test and
+    //      `http.rs`'s drove `GET` alone, and `HEAD` had just become a second method on
+    //      `/preview` (note **N179**) with nothing on either side able to go red on it;
+    //   5. **the population is not empty**, on both axes, because every claim above quantifies
+    //      over them.
     //
     // Claim 3 is the one the ruling sharpened. While the assets were gated, a path on this list
     // that named no route still answered 401 — from the fallback — so the list could name
@@ -1093,22 +1138,26 @@ async fn every_camera_bearing_route_is_behind_the_gate() {
     let wrong = near_miss(&preview.token);
 
     let mut driven = 0_usize;
+    let mut methods_refused = 0_usize;
     for path in http::CAMERA_BEARING_PATHS {
         driven += 1;
 
-        let anonymous = get(bound, path, &[]).await;
-        assert!(
-            anonymous.starts_with("HTTP/1.1 401"),
-            "{path} answered a request with no credential: {anonymous:.64}"
-        );
-        assert!(
-            // Case-insensitively: HTTP field names are, and hyper writes the canonical
-            // lowercase form rather than the one `daemon::http::gate` spells.
-            anonymous
-                .to_ascii_lowercase()
-                .contains("www-authenticate: bearer"),
-            "{path} refused without the challenge RFC 6750 asks for"
-        );
+        for method in EVERY_METHOD {
+            let anonymous = request(method, bound, path, &[]).await;
+            assert!(
+                anonymous.starts_with("HTTP/1.1 401"),
+                "{path} answered a {method} with no credential: {anonymous:.64}"
+            );
+            assert!(
+                // Case-insensitively: HTTP field names are, and hyper writes the canonical
+                // lowercase form rather than the one `daemon::http::gate` spells.
+                anonymous
+                    .to_ascii_lowercase()
+                    .contains("www-authenticate: bearer"),
+                "{path} refused a {method} without the challenge RFC 6750 asks for"
+            );
+            methods_refused += 1;
+        }
 
         for near in [
             get(
@@ -1153,6 +1202,11 @@ async fn every_camera_bearing_route_is_behind_the_gate() {
     assert!(
         driven > 0,
         "the camera-bearing list is empty, so every claim above quantified over nothing"
+    );
+    assert_eq!(
+        methods_refused,
+        driven * EVERY_METHOD.len(),
+        "the method axis did not quantify over every method on every path"
     );
 
     // The other side of the same ruling, asserted against the same listener in the same run:
@@ -1207,6 +1261,157 @@ async fn a_preview_of_a_camera_that_is_not_there_is_refused_before_a_stream_exis
 
     assert_eq!(preview.backend.opens(), 0, "a refusal opened a camera");
     assert_eq!(preview.wchd.previewed_cameras(), 0);
+}
+
+#[tokio::test]
+async fn a_head_of_the_preview_answers_the_route_and_opens_no_camera() {
+    // **The method the framework adds, which the module's own sentence did not know about**
+    // (note **N179**). `axum::routing::get` registers the handler in the `get` slot *and*
+    // answers `HEAD` from it — `MethodRouter::call_with_state` tries `head` and then falls to
+    // `get` — so before this test a `HEAD /preview?camera=…` ran the whole handler: a camera
+    // opened, a `PREVIEW_MAX_VIEWERS_PER_CAMERA` slot was taken and a capture started, for a
+    // response whose body hyper then threw away.
+    //
+    // The repair is a `HEAD` endpoint of this route's own, and the claim is in two halves that
+    // a build can fail separately. **It answers**, with the head a `GET` would carry, because
+    // RFC 9110 §9.1 asks every general-purpose server to support `GET` and `HEAD` and a `405`
+    // here would be this daemon refusing the one read that is defined as the other one without
+    // a body. And **it costs no camera**, which is the whole finding: an agent polling this
+    // route on a loop must not be holding the device open against itself. What such a caller
+    // may conclude from the `200` is the subject of the test below, and it is less than it
+    // looks.
+    let preview = Preview::start().await;
+    let bound = preview.serving.bound();
+
+    let answer = request("HEAD", bound, &preview.target(), &[]).await;
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer:.96}");
+    assert!(
+        answer
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/x-mixed-replace"),
+        "a HEAD of this route did not describe the stream a GET would send: {answer:.256}"
+    );
+    // The same privacy header the streaming answer carries: a HEAD that advertised a cacheable
+    // response would be describing a response this route never sends (design §5).
+    assert!(
+        answer
+            .to_ascii_lowercase()
+            .contains("cache-control: no-store"),
+        "{answer:.256}"
+    );
+    // **And no `Content-Length`.** RFC 9110 §8.6 lets a HEAD response carry one only when it
+    // equals what a GET would have sent, and what a GET sends here has no end — so `0` would be
+    // this route telling a client the stream is empty. It is the header an empty body gets for
+    // free (axum sets it from the body's size hint before it strips the body for HEAD), which
+    // is why the answer is framed like the stream it describes rather than like nothing.
+    assert!(
+        !answer.to_ascii_lowercase().contains("content-length"),
+        "a HEAD claimed a length for a stream that has none: {answer:.256}"
+    );
+    assert_eq!(
+        preview.backend.opens(),
+        0,
+        "a HEAD opened a camera: {answer:.96}"
+    );
+    assert_eq!(preview.backend.streams_started(), 0, "a HEAD streamed");
+    assert_eq!(preview.wchd.previewed_cameras(), 0, "a HEAD took a viewer");
+
+    // The two refusals that are about the *request* rather than about the device answer a HEAD
+    // exactly as they answer a GET, because neither of them needs a camera to reach.
+    let credential = format!(
+        "{token}={secret}",
+        token = http::TOKEN_QUERY_PARAM,
+        secret = preview.token
+    );
+    let unnamed = request(
+        "HEAD",
+        bound,
+        &format!("{path}?{credential}", path = http::PREVIEW_PATH),
+        &[],
+    )
+    .await;
+    assert!(unnamed.starts_with("HTTP/1.1 400"), "{unnamed:.96}");
+    // `cam:` with nothing after it — the one string D1's grammar refuses, and therefore the
+    // only 404 a HEAD can reach: "no camera answers to this name" is a fact about a live
+    // enumeration, and asking for one is the device work a HEAD of this route does not do.
+    let unknown = request(
+        "HEAD",
+        bound,
+        &format!(
+            "{path}?{camera}=cam%3A&{credential}",
+            path = http::PREVIEW_PATH,
+            camera = http::CAMERA_QUERY_PARAM,
+        ),
+        &[],
+    )
+    .await;
+    assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown:.96}");
+    assert_eq!(preview.backend.opens(), 0, "a HEAD refusal opened a camera");
+
+    // The control, in the same run and on the same listener: a `GET` of the same target *does*
+    // open the camera. Without it every assertion above is also true of a route that answers
+    // nothing at all, and of counters that stopped counting.
+    let watching = preview.watching().await;
+    assert_eq!(watching.status(), 200);
+    assert_eq!(
+        preview.backend.opens(),
+        1,
+        "the GET this route exists for opened no camera either"
+    );
+}
+
+#[tokio::test]
+async fn a_head_answers_for_the_route_where_the_get_beside_it_answers_for_the_camera() {
+    // **The deviation this split costs, pinned so it cannot change by accident in either
+    // direction** (note **N179**, amended by the G6 review of B6). A `HEAD` is answered from
+    // `named` alone — the query string and D1's grammar — and D1's grammar is permissive on
+    // purpose, because a caller may name a camera by any unambiguous prefix and it is the live
+    // enumeration that decides whether one answers. So a well-formed name that no camera on this
+    // machine has is a `200` to a `HEAD` and a `404` to the `GET` beside it, on the same
+    // listener, in the same run.
+    //
+    // That is a real gap and it is recorded rather than closed: closing it means resolving the
+    // name, resolution is `engine::Cameras::enumerate` — "live every time, never cached" (E2),
+    // an `open` and an ioctl walk per node — and a `HEAD` that did device work on every request
+    // is the cost this endpoint exists not to pay. What the test buys is that a build which
+    // quietly *did* start resolving, or which stopped answering `HEAD` at all, fails here and
+    // has to come and amend the sentence in `described`'s doc that says what a `200` means.
+    //
+    // AGENTS rule 7 is why this is a test and not a shrug: "availability is not capability", and
+    // a caller reading a `200` as "the camera is there" is exactly the confusion the rule names.
+    // The answer is the last claim below — the `GET` is where a camera's availability is stated,
+    // and it states it as the D13 refusal projected onto a status.
+    let preview = Preview::start().await;
+    let bound = preview.serving.bound();
+    let target = format!(
+        "{path}?{camera}=cam%3Anothing-answers-to-this&{token}={secret}",
+        path = http::PREVIEW_PATH,
+        camera = http::CAMERA_QUERY_PARAM,
+        token = http::TOKEN_QUERY_PARAM,
+        secret = preview.token
+    );
+
+    let described = request("HEAD", bound, &target, &[]).await;
+    assert!(
+        described.starts_with("HTTP/1.1 200"),
+        "a HEAD of a well-formed name stopped answering about the route: {described:.96}"
+    );
+    assert_eq!(
+        preview.backend.opens(),
+        0,
+        "a HEAD resolved the name, which is an enumeration per request"
+    );
+
+    let streamed = get(bound, &target, &[]).await;
+    assert!(
+        streamed.starts_with("HTTP/1.1 404"),
+        "the GET, which is where a camera's availability is answered, did not refuse a name no \
+         camera has: {streamed:.96}"
+    );
+    assert!(
+        streamed.contains("nothing-answers-to-this"),
+        "the refusal did not name what was asked for: {streamed:.256}"
+    );
 }
 
 #[tokio::test]

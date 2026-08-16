@@ -117,7 +117,7 @@ fail_case_a_product_crate_links_the_privileged_helper() {
 fail_case_the_helper_stops_forbidding_unsafe() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^#!\[forbid(unsafe_code)\]//' "$tree/crates/priv/src/main.rs"
+    gate_seed 's/^#!\[forbid(unsafe_code)\]//' "$tree/crates/priv/src/main.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -147,7 +147,7 @@ fail_case_a_verb_takes_a_program_its_caller_names() {
         argv: Vec<String>,
     },
 RUST
-    sed -i -e "/^enum Verb {\$/r $fragment" "$tree/crates/priv/src/main.rs"
+    gate_seed "/^enum Verb {\$/r $fragment" "$tree/crates/priv/src/main.rs"
     gate_red_because 'trailing_var_arg' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -157,9 +157,36 @@ fail_case_the_helper_reaches_for_the_std_exec_trait() {
     # The other route to the same place, and the one clap cannot see: a verb that never declares
     # an argv, reads `std::env::args()` itself and replaces this process with whatever it found.
     # `main.rs`'s own test walks the command tree and would be perfectly green on it.
-    sed -i 's/^mod caps;$/mod caps;\nuse std::os::unix::process::CommandExt as _;/' \
+    gate_seed 's/^mod caps;$/mod caps;\nuse std::os::unix::process::CommandExt as _;/' \
         "$tree/crates/priv/src/main.rs"
     gate_red_because 'CommandExt' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+fail_case_the_helper_reaches_for_the_exec_trait_in_a_checkout_somebody_cloned_under_tests() {
+    # The same violation, from a checkout whose **path** has a `tests` component in it — which
+    # is a fact about where somebody cloned this repository and must decide nothing.
+    #
+    # `lib.sh`'s `gate_test_region_start` reads a file as test code from line 1 when its path
+    # has a `tests/` directory in it (cargo's rule for `crates/<pkg>/tests/*.rs`). Matched
+    # against the *absolute* path, that rule answers "all test code" for every file in a
+    # checkout under `~/tests/`, `gate_product_lines` hands claim 5 zero bytes, and this
+    # predicate goes **vacuously green**: `examined` still counts one file per source, so the
+    # non-vacuity floor is satisfied while the walk reads nothing (note **N185**).
+    #
+    # This arm is here rather than in six case files because the classifier is shared and one
+    # arm over it is what stops it drifting; the other five callers are named in `lib.sh`'s
+    # header. It is `privileged-helper.sh`'s because this is the claim whose failure is silent —
+    # four of the six fail loudly on an empty product half, and the two that do not are this one
+    # and `avi-reparse-is-independent.sh`'s import claim.
+    local scratch tree under
+    tree="$(gate_scratch_tree)"
+    scratch="$(dirname "$tree")"
+    under="$scratch/tests/checkout"
+    mkdir -p "$scratch/tests"
+    mv "$tree" "$under"
+    gate_seed 's/^mod caps;$/mod caps;\nuse std::os::unix::process::CommandExt as _;/' \
+        "$under/crates/priv/src/main.rs"
+    gate_red_because 'CommandExt' env "WCH_GATE_ROOT=$under" "$GATE"
 }
 
 fail_case_the_helper_has_no_source_left() {

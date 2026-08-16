@@ -320,11 +320,21 @@ gate_rust_files() {
 
 # --------------------------------------------------------------- product code vs test code
 #
-# Two predicates make claims about what a *file* says and must not count what its own tests
-# say: `token-comparison-has-one-home.sh` (who may read the token's secret) and
-# `web-routes-are-gated.sh` (what may register a route). A test that builds a router of its
-# own, or holds a secret to construct a near miss with, is not the defect either is about —
-# and a gate that refused those is a gate somebody turns off.
+# **Six predicates** make claims about what a *file* says and must not count what its own tests
+# say, and the count is written down because a change here changes all six:
+# `token-comparison-has-one-home.sh` (who may read the token's secret and who may render its
+# URL), `web-routes-are-gated.sh` (what may register a route), `privileged-helper.sh` (what may
+# hand this binary's capabilities to a caller-named program), `avi-reparse-is-independent.sh`
+# (what the reparser may import), `oracle-rung-accounting.sh` (what the oracle runner may say)
+# and `claims-come-back-with-their-values.sh` (what a claim may be built from). A test that
+# builds a router of its own, holds a secret to construct a near miss with, or writes the very
+# spelling a predicate refuses in order to prove the refusal, is not the defect any of them is
+# about — and a gate that refused those is a gate somebody turns off.
+#
+# This header used to say "two predicates", and it said so through four of the six arriving.
+# That is not a typo worth a line of its own: a shared classifier whose header names a subset of
+# its callers is one somebody edits while reasoning about the subset, which is exactly how the
+# `tests/` rule below landed with two callers considered and six affected (note **N185**).
 #
 # **The rule is one sentence, and it is the shape every module in this workspace writes: test
 # code is everything from a file's one `#[cfg(test)]` marker to the end of it.** A file this
@@ -341,7 +351,39 @@ gate_rust_files() {
 
 # The line where $1's test region begins: 0 for a file with no test module, and -1 for a file
 # whose test region this cannot identify.
+#
+# **A file in a `tests/` directory is test code from its first line**, and that is cargo's rule
+# rather than a convention this file invented: `crates/<pkg>/tests/*.rs` is compiled only by
+# `cargo test`, so there is no product code in one and a `#[cfg(test)]` marker would be
+# redundant — which is why none of them carries one, and why the marker rule alone would read
+# every line of an integration suite as shipped code. All six callers want the same answer about
+# them (a suite that holds the token to build a near miss with, or builds a router of its own,
+# is not the defect any of those predicates is about), so the rule lives here beside the other
+# half of the classification rather than in one of them. The residual is the mirror image and is
+# harmless: a `src/tests/` module directory would be read as test code too, which is what it
+# would be.
+#
+# **Matched against the path relative to `gate_root`, and that is the whole of the rule's
+# correctness** (note **N185**). Callers pass absolute paths — `"$file"` off `gate_rust_files`,
+# `"$root/$module"` — so matching `$1` itself asks a question about *where somebody cloned this
+# repository*: a checkout under `~/tests/`, or a scratch copy a harness put beside a `tests`
+# directory, classifies **every** file in the tree as test code from line 1, `gate_product_lines`
+# answers zero bytes, and four of the six callers fail loudly while two go vacuously green
+# (`privileged-helper.sh`'s caller-named-program claim and `avi-reparse-is-independent.sh`'s
+# import claim both keep a non-zero count while reading nothing). That is a verdict that is a
+# function of the checkout path, which is notes **N52**, **N66** and **N68** for the fifth time,
+# introduced into the one classifier all six share. A root that cannot be resolved leaves the
+# path as it is, which is the marker rule alone — the answer this helper gave before the
+# `tests/` rule existed, and never a silent reclassification of the whole tree.
 gate_test_region_start() {
+    local root rel="$1"
+    if root="$(gate_root 2>/dev/null)"; then
+        rel="${1#"$root"/}"
+    fi
+    if [[ "$rel" == */tests/* || "$rel" == tests/* ]]; then
+        printf '1\n'
+        return 0
+    fi
     awk '
         /^[[:space:]]*#\[cfg\(test\)\]/ {
             markers++
@@ -602,4 +644,134 @@ gate_scratch_tree() {
     excludes+=(--exclude="./${scratch_root#"$src"/}")
     tar -C "$src" -cf - "${excludes[@]}" . | tar -C "$dest" -xf -
     printf '%s\n' "$dest"
+}
+
+# --------------------------------------------------------------- seeding a violation
+#
+# **A seed that stops applying is the one arm failure this harness could not see** (note
+# **N186**). Nearly every case in `cases/` seeds by quoting a line of the tree into a `sed`
+# expression, so an arm's subject is produced by a substitution against a spelling somebody else
+# is free to change. When the spelling moves the substitution matches nothing, the copy is
+# pristine, the predicate is green — and what the harness says next depends on which kind of arm
+# it was:
+#
+#   - a `fail_case_` exits 0, and `selftest.sh` reports *"the seeded violation did not turn the
+#     predicate red"* — loud, and about the wrong subject: the sentence names the predicate when
+#     the fact is about the seed, which is note **N60**'s cost in its smallest form (a verdict
+#     somebody re-runs and then waves through);
+#   - a `pass_case_` exits 0, and the harness prints **`ok`**. The arm's entire subject was never
+#     produced, the predicate was run against an unmodified tree, and nothing said so. That is a
+#     skip that reads as a pass, in the file whose job is to prove things can fail.
+#
+# Note N184 recorded the class and argued no general fix was available, on the ground that a
+# seed is only checkable against the line it quotes. **That objection is answered by asking a
+# smaller question.** This does not ask whether the seed meant what its author meant; it asks
+# whether it *edited anything at all* — a fact about bytes, mechanical, and true of all 66 seeds
+# in this directory. Every one of them exists to change the tree, so "changed nothing" is a
+# broken arm whatever the arm was for.
+#
+#   $1   the `sed` expression, exactly as `sed -i` takes it
+#   $2…  the files to apply it to; **at least one of them must change**
+#
+# The population is the whole call rather than each file, because two callers legitimately seed
+# a list where only some members match — `corpus-floor.cases.sh` strips three profile names from
+# every file that mentions any of them, and `lint-posture.cases.sh` deletes one attribute line
+# from three crate roots. What is broken is a seed that reached *nothing*, and that is the
+# question this asks.
+#
+# **It reports where the arm's exit status cannot.** A dead seed is written to a file
+# `selftest.sh` reads after every arm and before it decides anything, so the verdict names the
+# seed in a `pass_case_` and a `fail_case_` alike. Returning non-zero as well is honest and is
+# not the mechanism: the arms that would have to check it are precisely the arms that do not.
+gate_seed() {
+    local expression="$1"
+    shift
+    if (($# == 0)); then
+        gate_seed_died "no file was named for \`sed -i $expression\`"
+        return 1
+    fi
+
+    local file before after changed=0
+    for file in "$@"; do
+        if [[ ! -f "$file" ]]; then
+            gate_seed_died "\`sed -i $expression\` was given $file, which is not a file"
+            return 1
+        fi
+        # `cksum` off standard input, so the digest is of the bytes and carries no file name to
+        # differ on. Content and not `mtime`: a `sed -i` rewrites the file whether or not the
+        # expression matched, so the timestamp always moves and would answer "changed" to
+        # everything.
+        before="$(cksum <"$file")"
+        if ! sed -i "$expression" "$file"; then
+            gate_seed_died "\`sed -i $expression\` failed on $file"
+            return 1
+        fi
+        after="$(cksum <"$file")"
+        [[ "$before" == "$after" ]] || changed=$((changed + 1))
+    done
+
+    if ((changed == 0)); then
+        gate_seed_died "\`sed -i $expression\` changed nothing in: $*"
+        return 1
+    fi
+    return 0
+}
+
+# Where a dead seed is reported, so a verdict can name it whatever the arm's exit status was.
+#
+# Under `selftest.sh` this is the run's own scratch directory, wiped between arms, so what is
+# there belongs to the arm that just ran. Run by hand — the ordinary move while a gate is being
+# written — it lands under `target/wch-scratch/` where `gate_scratch_sweep` will take it, and
+# the stderr line below is what the person sees.
+gate_seed_report() {
+    printf '%s/wch-dead-seed.report\n' "$(gate_scratch_root)"
+}
+
+# Say a seed did not apply, on standard error and in the report `selftest.sh` reads.
+gate_seed_died() {
+    printf 'gate: the seed did not apply — %s\n' "$1" >&2
+    printf '%s\n' "$1" >>"$(gate_seed_report)" || true
+}
+
+# Prove `gate_seed` both ways, on a file of its own, before any arm relies on it.
+#
+# `selftest.sh` runs this first. The bootstrap limit docs/9 records is that the selftest cannot
+# test the harness, and this is that limit closed as far as it goes: a guard that had silently
+# stopped guarding would leave every `pass_case_` in this directory able to run against a
+# pristine tree and report `ok`, which is the exact defect the helper exists to close. Two
+# directions, because a helper that answered "dead" to everything would also pass a check that
+# only drove the failing one.
+gate_seed_selfcheck() {
+    local dir file report status=0
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-seed-selfcheck.XXXXXXXX")"
+    file="$dir/subject.txt"
+    printf 'the line a seed quotes\n' >"$file"
+    report="$(gate_seed_report)"
+    rm -f "$report"
+
+    if ! gate_seed 's/quotes/moved/' "$file"; then
+        printf 'gate_seed: a seed that applies was reported dead\n' >&2
+        status=1
+    fi
+    if ! grep -Fq 'moved' "$file"; then
+        printf 'gate_seed: the expression was not applied to the file\n' >&2
+        status=1
+    fi
+    if [[ -e "$report" ]]; then
+        printf 'gate_seed: a seed that applied was written to the report\n' >&2
+        status=1
+    fi
+
+    if gate_seed 's/a-spelling-this-file-does-not-have/x/' "$file" 2>/dev/null; then
+        printf 'gate_seed: a seed that changed nothing was reported alive\n' >&2
+        status=1
+    fi
+    if [[ ! -s "$report" ]]; then
+        printf 'gate_seed: a dead seed left nothing for the harness to read\n' >&2
+        status=1
+    fi
+
+    rm -rf "$dir"
+    rm -f "$report"
+    return "$status"
 }

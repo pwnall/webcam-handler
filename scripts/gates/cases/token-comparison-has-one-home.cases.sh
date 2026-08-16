@@ -40,7 +40,11 @@ pass_case_a_test_may_hold_the_secret() {
     tree="$(gate_scratch_tree)"
     file="$tree/crates/daemon/src/http/gate.rs"
     # Before the file's last line, which is the closing brace of its one `mod tests`.
-    sed -i '$i\
+    #
+    # `$i` is `sed`'s insert-before-the-last-line command and not a shell expansion, so the
+    # single quotes are the point rather than an oversight.
+    # shellcheck disable=SC2016
+    gate_seed '$i\
 \
     #[test]\
     fn seeded_by_the_gate_selftest() {\
@@ -56,7 +60,7 @@ pass_case_a_test_may_hold_the_secret() {
 fail_case_the_gate_compares_the_secret_itself() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/every_one_verified &= token\.verify(candidate);/every_one_verified \&= token.expose_secret() == candidate;/' \
+    gate_seed 's/every_one_verified &= token\.verify(candidate);/every_one_verified \&= token.expose_secret() == candidate;/' \
         "$tree/crates/daemon/src/http/gate.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -106,7 +110,7 @@ RS
 fail_case_the_secret_accessor_was_renamed() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/pub fn expose_secret(/pub fn secret(/' "$tree/crates/daemon/src/http/token.rs"
+    gate_seed 's/pub fn expose_secret(/pub fn secret(/' "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -134,7 +138,7 @@ RS
 fail_case_the_token_derives_a_comparison() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^pub struct Token {/#[derive(PartialEq, Eq, Hash)]\npub struct Token {/' \
+    gate_seed 's/^pub struct Token {/#[derive(PartialEq, Eq, Hash)]\npub struct Token {/' \
         "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -269,7 +273,7 @@ fail_case_the_token_converts_into_a_string() {
 fail_case_the_token_derives_its_debug() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^pub struct Token {/#[derive(Debug)]\npub struct Token {/' \
+    gate_seed 's/^pub struct Token {/#[derive(Debug)]\npub struct Token {/' \
         "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -281,7 +285,7 @@ fail_case_the_token_derives_its_debug() {
 fail_case_the_debug_impl_prints_the_field() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/\.field("hex", &Redacted)/.field("hex", \&self.hex)/' \
+    gate_seed 's/\.field("hex", &Redacted)/.field("hex", \&self.hex)/' \
         "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -292,7 +296,7 @@ fail_case_the_debug_impl_prints_the_field() {
 fail_case_the_hand_written_debug_went_away() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/^impl std::fmt::Debug for Token {/impl std::fmt::Debug for TokenRedaction {/' \
+    gate_seed 's/^impl std::fmt::Debug for Token {/impl std::fmt::Debug for TokenRedaction {/' \
         "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -305,7 +309,7 @@ fail_case_the_hand_written_debug_went_away() {
 fail_case_the_gate_no_longer_calls_the_comparison() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/token\.verify(candidate)/!candidate.is_empty()/g' \
+    gate_seed 's/token\.verify(candidate)/!candidate.is_empty()/g' \
         "$tree/crates/daemon/src/http/gate.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -313,7 +317,7 @@ fail_case_the_gate_no_longer_calls_the_comparison() {
 fail_case_the_comparison_is_no_longer_declared() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/pub fn verify(/fn verify_disabled(/' "$tree/crates/daemon/src/http/token.rs"
+    gate_seed 's/pub fn verify(/fn verify_disabled(/' "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -332,12 +336,7 @@ fail_case_the_home_grows_a_second_accessor() {
     # The first `#[must_use]` in the file, which is the one above `expose_secret`: `0,/re/`
     # bounds the substitution to one match, because a seed applied at every accessor would be
     # three copies of one function and a seed nobody can read.
-    sed -i '0,/^    #\[must_use\]$/s||    /// Seeded by the gate selftest.\n    pub fn as_str(\&self) -> \&str {\n        \&self.hex\n    }\n\n\&|' "$file"
-    if ! grep -Fq 'pub fn as_str' "$file"; then
-        printf 'the seed did not apply; there is no `#[must_use]` line in %s to hang it on\n' \
-            "$file" >&2
-        return 0
-    fi
+    gate_seed '0,/^    #\[must_use\]$/s||    /// Seeded by the gate selftest.\n    pub fn as_str(\&self) -> \&str {\n        \&self.hex\n    }\n\n\&|' "$file"
     gate_red_because 'inside `as_str`' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -348,12 +347,7 @@ fail_case_the_home_grows_a_free_reader_of_the_field() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/crates/daemon/src/http/token.rs"
-    sed -i 's|^impl std::fmt::Debug for Token {|/// Seeded by the gate selftest.\npub fn secret_of(token: \&Token) -> \&str {\n    \&token.hex\n}\n\n\&|' "$file"
-    if ! grep -Fq 'pub fn secret_of' "$file"; then
-        printf 'the seed did not apply; %s no longer declares the hand-written Debug\n' \
-            "$file" >&2
-        return 0
-    fi
+    gate_seed 's|^impl std::fmt::Debug for Token {|/// Seeded by the gate selftest.\npub fn secret_of(token: \&Token) -> \&str {\n    \&token.hex\n}\n\n\&|' "$file"
     gate_red_because 'inside `secret_of`' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -366,11 +360,7 @@ fail_case_the_comparison_stops_reading_the_field() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/crates/daemon/src/http/token.rs"
-    sed -i 's/let expected = self\.hex\.as_bytes();/let expected = self.expose_secret().as_bytes();/' "$file"
-    if ! grep -Fq 'let expected = self.expose_secret().as_bytes();' "$file"; then
-        printf 'the seed did not apply; `verify` no longer reads the field the way this arm edits\n' >&2
-        return 0
-    fi
+    gate_seed 's/let expected = self\.hex\.as_bytes();/let expected = self.expose_secret().as_bytes();/' "$file"
     gate_red_because '`verify` in crates/daemon/src/http/token.rs no longer reads' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
@@ -383,14 +373,111 @@ pass_case_a_test_in_the_home_may_read_the_field() {
     local tree file
     tree="$(gate_scratch_tree)"
     file="$tree/crates/daemon/src/http/token.rs"
-    sed -i '$i\
+    # `$i` is `sed`'s insert command, not a shell expansion (see the first green arm above).
+    # shellcheck disable=SC2016
+    gate_seed '$i\
 \
     #[test]\
     fn seeded_by_the_gate_selftest() {\
         let token = minted();\
         assert_eq!(token.hex.len(), TOKEN_BYTES * 2);\
     }' "$file"
-    grep -Fq 'token.hex.len()' "$file" || return 1
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# ------------------------------------------------- claim 6: the URL rendering's callers
+#
+# **The arm this claim exists for** (G6/L13, note **N183**). A fourth module that renders the
+# ready-to-open URL is holding the token in a `String`, with no banned trait, no `expose_secret`
+# and every other claim in this file green — which is exactly the state the tree was in when the
+# review found the daemon writing that URL into the systemd journal.
+# shellcheck disable=SC2016  # the predicate's own message, backticks and all, matched verbatim
+fail_case_a_fourth_module_renders_the_url() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/daemon/src/http/banner.rs" <<'RS'
+//! Seeded by the gate selftest: the URL that carries the token has a register of callers.
+
+use super::token::Token;
+
+pub(crate) fn announce(token: &Token, bound: std::net::SocketAddr) -> String {
+    format!("open {}", token.ready_to_open_url(bound))
+}
+RS
+    gate_red_because 'is not one of this gate' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The register's other direction: an entry with nothing behind it. D11 asks for the URL to be
+# printed, so a composition root that stopped rendering it is either a daemon that no longer
+# tells an operator how to reach its web client, or a rendering that has moved somewhere this
+# gate is not looking.
+# shellcheck disable=SC2016  # the predicate's own message, backticks and all, matched verbatim
+fail_case_the_line_that_prints_the_url_stopped_calling_it() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    file="$tree/crates/daemon/src/main.rs"
+    gate_seed 's/web\.ready_to_open_url()/web.bound().to_string()/' "$file"
+    gate_red_because 'registered as the one line D11 asks for' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# **The revert this claim was widened for** (note **N185**). D11's URL still gets printed, the
+# register still has three entries with three call sites behind them, and every other claim in
+# this file is green — the only thing that changed is that the composition root hands `tracing`
+# the whole URL again, so under systemd the run's bearer token goes back into a persistent
+# `systemd-journal`/`adm`-readable store (note **N182**). Nothing in this workspace could go red
+# on it before: `logging`'s tests and `token.rs`'s drive the redaction directly, and `main.rs` is
+# a binary no integration suite can call into.
+# shellcheck disable=SC2016  # the predicate's own message, backticks and all, matched verbatim
+fail_case_the_line_that_prints_the_url_stopped_redacting_it() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    file="$tree/crates/daemon/src/main.rs"
+    gate_seed 's/logging\.url_this_sink_may_keep(&web\.ready_to_open_url())/web.ready_to_open_url()/' \
+        "$file"
+    gate_red_because 'product line(s) that do not also name' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The same claim from the register's other end: the redaction renamed out from under the entry
+# that requires it. A gate that answered this with a message about `main.rs` would be naming a
+# call site for a fact about a declaration, which is the wrong subject (note N60).
+# shellcheck disable=SC2016  # the predicate's own message, backticks and all, matched verbatim
+fail_case_the_redaction_the_composition_root_renders_through_was_renamed() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's/\burl_this_sink_may_keep\b/url_for_this_sink/g' \
+        "$tree/crates/daemon/src/logging.rs" "$tree/crates/daemon/src/main.rs" \
+        "$tree/crates/daemon/src/http/token.rs"
+    gate_red_because 'no longer declares' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The name itself, which every claim above quantifies over: renamed, the URL has no declaration
+# to be about and the register has three entries naming nothing.
+fail_case_the_url_rendering_was_renamed() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's/pub fn ready_to_open_url(/pub fn printable_url(/' \
+        "$tree/crates/daemon/src/http/token.rs"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The green direction, and the reason claim 6 is a register rather than a confinement: every
+# suite that drives the web listener opens the URL it prints, and an integration test is test
+# code from its first line — cargo compiles `tests/*.rs` only under `cargo test`, so there is no
+# `#[cfg(test)]` marker in one to find (`lib.sh`'s `gate_test_region_start`). A gate that made a
+# suite register itself would be a gate somebody turns off.
+pass_case_a_suite_may_open_the_url_and_hold_the_secret() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    cat >"$tree/crates/daemon/tests/seeded_by_the_gate_selftest.rs" <<'RS'
+//! Seeded by the gate selftest: an integration suite is test code in its entirety.
+
+#[test]
+fn the_url_a_suite_opens_carries_the_secret_it_was_minted_with() {
+    let token = daemon::http::Token::mint().expect("the kernel has a CSPRNG");
+    let bound = "127.0.0.1:34567".parse().expect("a bound address");
+    assert!(token.ready_to_open_url(bound).contains(token.expose_secret()));
+}
+RS
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -401,7 +488,7 @@ pass_case_a_test_in_the_home_may_read_the_field() {
 fail_case_the_token_type_was_renamed() {
     local tree
     tree="$(gate_scratch_tree)"
-    sed -i 's/\bpub struct Token\b/pub struct Bearer/' "$tree/crates/daemon/src/http/token.rs"
+    gate_seed 's/\bpub struct Token\b/pub struct Bearer/' "$tree/crates/daemon/src/http/token.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 

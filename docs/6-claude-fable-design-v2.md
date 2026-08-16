@@ -1129,8 +1129,12 @@ store this daemon does not use — and its `notify` answering `Ok(())` with the 
 what lets the real `Supervisor` run unconditionally instead of behind an "are we under systemd"
 guess. listenfd (Apache-2.0) is the `LISTEN_FDS`/`LISTEN_PID` protocol, taken as a dependency
 for the half that is *not* the protocol: `take_unix_listener` validates that the descriptor
-really is a listening `AF_UNIX` stream socket, which is the check that stops a `from_raw_fd` on
-a passed-in number being a lie this process then serves from. Its `libc` edge is its own — the
+really is an `AF_UNIX` stream **socket** — `fstat`/`S_ISSOCK`, `getsockname`, `SO_TYPE` and
+`sa_family` — which is most of the check that stops a `from_raw_fd` on a passed-in number being
+a lie this process then serves from. This sentence used to say *listening* as well, and
+listenfd's `validate_socket` never asks `SO_ACCEPTCONN` (note **N181**, G6/M26); the daemon
+asks it itself, in `Activation::adopt`, so the composition makes the check the sentence claims
+and the crate makes four fifths of it. Its `libc` edge is its own — the
 daemon stays `#![forbid(unsafe_code)]` and adds none), soketto 0.8.1 (Apache-2.0 OR MIT,
 adopted at P4e-i as a **dev-only** edge of `webcam-handler-daemon` and **a shipping edge of
 `webcam-handler-client` since P4f**: it is jsonrpsee-server's *own* WebSocket implementation

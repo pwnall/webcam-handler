@@ -89,12 +89,8 @@ fail_case_the_two_roots_render_one_document_two_ways() {
 
     # Anchored, and the anchor is checked below: `out.line(Stream::Stdout, &text)` appears
     # three times in that file and only one of them is the `--json` emitter.
-    sed -i 's|^    out\.line(Stream::Stdout, &text)$|    let text = if std::env::args().next().is_some_and(\|a\| a.ends_with("webcam-handler-client")) { format!("{text} ") } else { text };\n    out.line(Stream::Stdout, \&text)|' \
+    gate_seed 's|^    out\.line(Stream::Stdout, &text)$|    let text = if std::env::args().next().is_some_and(\|a\| a.ends_with("webcam-handler-client")) { format!("{text} ") } else { text };\n    out.line(Stream::Stdout, \&text)|' \
         "$tree/crates/cli-core/src/render.rs"
-    if ! grep -q 'ends_with("webcam-handler-client")' "$tree/crates/cli-core/src/render.rs"; then
-        printf 'selftest: the fork was not seeded into the render path\n' >&2
-        return 0
-    fi
 
     if ! (cd "$tree" && CARGO_TARGET_DIR="$target" cargo build --locked --offline \
         -p webcam-handler-cli --bin webcam-handler-cli -p webcam-handler-client --bin webcam-handler-client >/dev/null 2>&1); then

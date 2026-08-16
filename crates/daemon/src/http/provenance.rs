@@ -84,7 +84,9 @@
 //! `Host` header, or the request target's authority when it carries one. A browser sets both
 //! from the URL it was given and a page cannot forge either, which is the only property the
 //! comparison needs. See `origin_is_ours` for the two mechanical details (the scheme, and
-//! absolute-form request targets).
+//! absolute-form request targets), and `addressed_to` for what more than one `Host` line means:
+//! the anchor is read with `get_all` and a non-short-circuiting fold, exactly as the rule it
+//! anchors is, because a first-wins read of the authority is a first-wins rule (note **N180**).
 //!
 //! ## Why `403` and not [`super::gate`]'s `401`
 //!
@@ -236,17 +238,47 @@ fn refusal() -> Response {
 /// That is not a hole this function opens: no browser sends absolute form, and a client that
 /// writes its own request line could as easily send no `Origin` at all — which is admitted, by
 /// design, and is the residual N93 records rather than one introduced here.
+///
+/// ## `get_all` on the `Host` fallback too, and a fold that does not stop early
+///
+/// **This is the authority the whole rule is compared against, so a first-wins read of it is a
+/// first-wins rule** (note **N180**). [`admits`] ten lines below spends a paragraph on why it
+/// reads `get_all` and folds with `&=`: two copies of a header is a well-formed request that no
+/// browser sends, and which copy a layer picks is a disagreement a security answer must not
+/// depend on. The same argument applies here and had not been applied — the anchor was
+/// `headers().get(HOST)`, the *first* line, while a proxy, a smuggled request or anything else
+/// in front of this daemon may have routed on the second.
+///
+/// RFC 9112 §3.2 tells an origin server to answer `400` to a request with more than one `Host`
+/// line; hyper does not, so this layer is where that request arrives intact. What it does about
+/// it is [`origin_is_ours`]'s fourth failure and not a fifth rule: **several lines naming one
+/// authority answer that authority, and lines that disagree answer nothing at all** — an
+/// unanswerable question refused rather than assumed. So a request carrying an `Origin` under
+/// disagreeing `Host` lines is refused whichever of them the `Origin` matches, and a request
+/// carrying no `Origin` is admitted exactly as any header-less request is (this rule is about
+/// what a browser claims, and a duplicated `Host` claims nothing on its own).
+///
+/// The comparison between the copies is ASCII-case-insensitive for [`origin_is_ours`]'s reason:
+/// host names are, so two spellings of one authority are one authority and not a disagreement.
 fn addressed_to(request: &Request) -> Option<&str> {
-    request
-        .uri()
-        .authority()
-        .map(axum::http::uri::Authority::as_str)
-        .or_else(|| {
-            request
-                .headers()
-                .get(header::HOST)
-                .and_then(|value| value.to_str().ok())
-        })
+    if let Some(authority) = request.uri().authority() {
+        return Some(authority.as_str());
+    }
+
+    let mut lines = request.headers().get_all(header::HOST).into_iter();
+    // The first readable value is the candidate; an unreadable one is not "no `Host`", it is a
+    // `Host` nobody can compare, which is the same absence of an answer `origin_is_ours` gives
+    // an unreadable `Origin`.
+    let addressed = lines.next()?.to_str().ok()?;
+    // `&=` rather than `all`, for `admits`'s reason: a later edit must not be able to turn
+    // "stops at the first disagreement" into "stops at the first agreement".
+    let mut agreed = true;
+    for line in lines {
+        agreed &= line
+            .to_str()
+            .is_ok_and(|value| value.eq_ignore_ascii_case(addressed));
+    }
+    agreed.then_some(addressed)
 }
 
 /// The whole policy, over values: does anything in this request say it came from somewhere else?
@@ -544,6 +576,151 @@ mod tests {
             &tagged(&[("origin", "http://evil.example"), ("origin", &ours())]),
             Some(HOST)
         ));
+    }
+
+    /// A request addressed to `target`, carrying `fields` in the order they are written.
+    ///
+    /// It builds a whole [`Request`] rather than a [`HeaderMap`] because the subject of the
+    /// three tests below is [`addressed_to`], which reads the request target as well as the
+    /// headers — and the precedence between those two is RFC 9112 §3.2.2's rather than this
+    /// module's.
+    fn addressed(target: &str, fields: &[(&str, &str)]) -> Request {
+        let mut request = Request::builder().uri(target);
+        for (name, value) in fields {
+            request = request.header(*name, *value);
+        }
+        request
+            .body(axum::body::Body::empty())
+            .expect("a request the test wrote")
+    }
+
+    /// The whole policy over one request, exactly as [`check`] composes it.
+    fn admits_request(request: &Request) -> bool {
+        admits(request.headers(), addressed_to(request))
+    }
+
+    #[test]
+    fn a_host_line_repeated_with_one_authority_is_still_the_authority_it_names() {
+        // Well-formed HTTP that no browser sends, and the green direction of the claim below:
+        // two copies saying the same thing have no precedence to disagree about, so the
+        // request is addressed where both of them say it is and the page's own `Origin` is
+        // admitted. A rule spelled "more than one `Host` is refused outright" fails here, and
+        // would be this listener refusing a request whose authority is not in doubt.
+        let repeated = addressed(
+            "/preview",
+            &[("host", HOST), ("host", HOST), ("origin", &ours())],
+        );
+        assert_eq!(addressed_to(&repeated), Some(HOST));
+        assert!(admits_request(&repeated));
+        // And the same spelled in the case a client chose, because host names are
+        // case-insensitive and two spellings of one authority are one authority.
+        let cased = addressed(
+            "/preview",
+            &[
+                ("host", HOST),
+                ("host", &HOST.to_ascii_uppercase()),
+                ("origin", &ours()),
+            ],
+        );
+        assert!(admits_request(&cased));
+    }
+
+    #[test]
+    fn two_host_lines_that_disagree_leave_no_authority_for_an_origin_to_match() {
+        // **The anchor the whole `Origin` rule rests on, read the way `admits` reads its own
+        // headers** (note **N180**). Two `Host` lines is a well-formed request that no browser
+        // sends and that hyper does not refuse, and which of them any layer in front of this
+        // daemon routed on is not a fact this process can see. So a first-wins read here is the
+        // same defect `super::gate::admits` refuses by name one module along: the answer would
+        // depend on which copy was picked, and an attacker who can add a header picks it.
+        //
+        // Both orders, because a build that read the *last* line instead of the first passes
+        // any test that only writes one of them.
+        for fields in [
+            vec![
+                ("host", HOST),
+                ("host", "evil.example"),
+                ("origin", ours().as_str()),
+            ],
+            vec![
+                ("host", "evil.example"),
+                ("host", HOST),
+                ("origin", ours().as_str()),
+            ],
+        ] {
+            let request = addressed("/preview", &fields);
+            assert_eq!(
+                addressed_to(&request),
+                None,
+                "a request addressed to two authorities answered one of them: {fields:?}"
+            );
+            assert!(
+                !admits_request(&request),
+                "an origin was matched against one of two disagreeing Host lines: {fields:?}"
+            );
+        }
+        // The same shape with the *foreign* authority repeated is refused too, which is what
+        // makes the claim about the disagreement rather than about our own name appearing.
+        assert!(!admits_request(&addressed(
+            "/preview",
+            &[
+                ("host", "evil.example"),
+                ("host", "other.example"),
+                ("origin", "http://evil.example"),
+            ]
+        )));
+    }
+
+    #[test]
+    fn a_host_line_that_is_not_text_is_not_an_authority() {
+        // `HeaderValue` may hold bytes that are not text at all, and an authority nobody can
+        // read is not a second opinion about where the request was addressed — it is the
+        // absence of an answer, which `origin_is_ours` already refuses rather than assumes.
+        let mut unreadable = Request::builder()
+            .uri("/preview")
+            .body(axum::body::Body::empty())
+            .expect("a request the test wrote");
+        let headers = unreadable.headers_mut();
+        headers.append(
+            header::HOST,
+            HeaderValue::from_bytes(&[0xff, 0xfe]).expect("bytes a header value may hold"),
+        );
+        assert_eq!(addressed_to(&unreadable), None);
+        // And beside a readable one, in both orders: a value this build cannot compare leaves
+        // the question unanswered however many readable copies sit next to it.
+        for fields in [
+            vec![("host", HOST)],
+            vec![("host", HOST), ("origin", ours().as_str())],
+        ] {
+            let mut request = addressed("/preview", &fields);
+            request.headers_mut().append(
+                header::HOST,
+                HeaderValue::from_bytes(&[0xff, 0xfe]).expect("bytes a header value may hold"),
+            );
+            assert_eq!(addressed_to(&request), None, "{fields:?}");
+        }
+    }
+
+    #[test]
+    fn an_absolute_form_target_is_the_authority_whatever_the_host_lines_say() {
+        // RFC 9112 §3.2.2: an origin server "MUST ignore the received Host header field" when
+        // the request target carries an authority — which is also what hyper hands this layer
+        // for every HTTP/2 request's `:authority`. So the disagreement rule above is about the
+        // *fallback*, and a request that names its authority in the target answers with it even
+        // when two `Host` lines below it are arguing.
+        let absolute = addressed(
+            &format!("http://{HOST}/preview"),
+            &[("host", "evil.example"), ("host", "other.example")],
+        );
+        assert_eq!(addressed_to(&absolute), Some(HOST));
+        assert!(admits_request(&addressed(
+            &format!("http://{HOST}/preview"),
+            &[
+                ("host", "evil.example"),
+                ("host", "other.example"),
+                ("origin", ours().as_str()),
+            ]
+        )));
     }
 
     #[test]
