@@ -2135,14 +2135,69 @@ impl RestorationClaim {
         &self.owned
     }
 
-    /// Say what this restore was and was not checked on, and refuse a run that checked
-    /// nothing.
+    /// What this arm declines to claim about `camera`, as the lines a rung would count —
+    /// **produced, not emitted**.
+    ///
+    /// Note **N121**'s rule, applied to the second accounting channel in this workspace
+    /// (the G6 review's L34, note **N231**). `scripts/smoke-hw.sh` counts a run's declines
+    /// by grepping `^\s*SKIP` out of its log, so that log is a text channel with no sender
+    /// authentication: anything that prints the sentence is believed, and the thing most
+    /// likely to print it is the unit test written to prove the sentence is right. Both of
+    /// this type's own tests drove [`RestorationClaim::account_for`] with a fabricated
+    /// camera — one of them a `cam:three-read-only-controls` that has never existed — and
+    /// the lines went into the run log looking exactly like a real device declining.
+    ///
+    /// So a test that needs to inspect a decline asks for it here, and only the arm that is
+    /// genuinely declining — [`RestorationClaim::account_for`], with a camera in its hand —
+    /// is allowed to write one out.
     ///
     /// `compared` is what the caller actually asserted against the device, passed in rather
     /// than recomputed here: this type knows what the *report* offered, and only the arm
     /// knows how much of that its own "before" reading could be compared with. Two numbers
     /// that should agree, printed together, is how they stop agreeing loudly instead of
     /// quietly.
+    ///
+    /// A report with **no outcomes at all** gets a line of its own, and it is not a failure:
+    /// a camera with nothing writable on it has nothing to restore, and turning that into a
+    /// red arm would be converting a fact about a device into a fact about the code (AGENTS
+    /// rule 7). It is still counted, because a suite that says nothing about a camera is a
+    /// suite a reader cannot tell from one that passed. The case that *is* a failure —
+    /// outcomes offered and none of them checked — never reaches this function: it is
+    /// [`RestorationClaim::account_for`]'s assertion, one screen down, and the argument for
+    /// it lives there because that is the call that can go red.
+    ///
+    /// Empty means this restore declines nothing: every outcome it carried is one the
+    /// caller may assert against the device.
+    #[must_use]
+    pub fn declines(&self, camera: &str, compared: usize) -> Vec<String> {
+        if self.outcomes == 0 {
+            return vec![format!(
+                "SKIP (partial): {camera} — the restore reported no outcome at all, so this \
+                 arm compared nothing against the device; a camera with no writable control \
+                 has nothing to put back"
+            )];
+        }
+        if self.owned.is_empty() {
+            return Vec::new();
+        }
+        vec![format!(
+            "SKIP (partial): {camera} — {} of {} restored control(s) are left to their \
+             automation [PF:24], so this arm compared {compared} against the device and \
+             claims nothing about these: {}",
+            self.owned.len(),
+            self.outcomes,
+            self,
+        )]
+    }
+
+    /// Say what this restore was and was not checked on, and refuse a run that checked
+    /// nothing.
+    ///
+    /// The emitting half of the N121 split [`RestorationClaim::declines`] describes: this is
+    /// the one call with a real camera in its hand, so it is the one allowed to put a `SKIP`
+    /// line where `scripts/smoke-hw.sh` will count it. `compared` is the caller's own number
+    /// — how many of the report's outcomes its "before" reading could actually be checked
+    /// against — and it is what makes the two claims comparable at all.
     ///
     /// **The empty-claim case fails rather than skips, and that is the choice.** A restore
     /// whose every outcome is [`RestoreOutcome::OwnedByAutomation`] passes
@@ -2156,36 +2211,20 @@ impl RestorationClaim {
     /// comment: an unreachable branch nobody checks is how the next device's finding arrives
     /// as a green run.
     ///
-    /// A report with **no outcomes at all** is the other thing entirely and is not a
-    /// failure: a camera with nothing writable on it has nothing to restore, and turning
-    /// that into a red arm would be converting a fact about a device into a fact about the
-    /// code (AGENTS rule 7). It gets its own counted line, because a suite that says nothing
-    /// about a camera is a suite a reader cannot tell from one that passed.
+    /// A report with **no outcomes at all** is the other thing entirely and passes through
+    /// to a counted decline; [`RestorationClaim::declines`] argues that half.
     ///
     /// # Panics
     ///
-    /// When the report carried outcomes and `compared` is zero.
+    /// When the report carried outcomes and `compared` is zero — the case above, and the
+    /// only one this call refuses.
     pub fn account_for(&self, camera: &str, compared: usize) {
-        if self.outcomes == 0 {
-            println!(
-                "SKIP (partial): {camera} — the restore reported no outcome at all, so this \
-                 arm compared nothing against the device; a camera with no writable control \
-                 has nothing to put back"
-            );
-            return;
-        }
-        if !self.owned.is_empty() {
-            println!(
-                "SKIP (partial): {camera} — {} of {} restored control(s) are left to their \
-                 automation [PF:24], so this arm compared {compared} against the device and \
-                 claims nothing about these: {}",
-                self.owned.len(),
-                self.outcomes,
-                self,
-            );
-        }
+        // **The refusal first, and the declines after it.** A run that checked nothing is a
+        // failure rather than a decline, and printing `SKIP (partial)` on its way out would
+        // put a fabricated decline in the log of a run that is about to go red — the same
+        // sentence, from the one path that has no right to it (note **N231**).
         assert!(
-            compared > 0,
+            self.outcomes == 0 || compared > 0,
             "{camera}: the restore reported {} outcome(s) and this arm checked none of them \
              against the device — {} left to their automation, {} claimed. A restoration \
              claim nobody could check is AGENTS rule 8 reading as a pass",
@@ -2193,6 +2232,9 @@ impl RestorationClaim {
             self.owned.len(),
             self.claimed.len()
         );
+        for line in self.declines(camera, compared) {
+            println!("{line}");
+        }
     }
 }
 
@@ -3714,6 +3756,10 @@ mod tests {
         // compare nothing, print a green line and have said nothing whatever about AGENTS
         // rule 8. This is the assertion that stops the repair from becoming the defect it
         // was written against.
+        //
+        // The one arm here that still calls `account_for`, because the *panic* is what it
+        // is about — and it prints nothing on the way, which is why the refusal comes
+        // before the declines (note **N231**).
         let claim = restoration_claim(&RestoreReport {
             freed: Vec::new(),
             outcomes: vec![
@@ -3729,12 +3775,69 @@ mod tests {
         // The other side of the line above, and AGENTS rule 7 is where it sits: "this
         // restore checked nothing because everything was an algorithm's" is a defect in the
         // suite, and "this restore checked nothing because the device has no writable
-        // control" is a fact about the device. An empty report must not panic — the counted
-        // line it prints instead is what keeps it from reading as a pass.
-        restoration_claim(&RestoreReport {
+        // control" is a fact about the device. An empty report must not fail — the counted
+        // line it produces instead is what keeps it from reading as a pass.
+        //
+        // **Asserted, not printed** (note **N121**, and the G6 review's L34 for this type).
+        // `cam:three-read-only-controls` is a camera that has never existed, and until
+        // 2026-08-17 this arm handed its sentence to `println!` — where `scripts/smoke-hw.sh`
+        // greps for it and cannot tell an invented absence from a real one. Asking for the
+        // value also lets this assert more than printing would have shown: that there is
+        // exactly one line, that it names the camera, and that it says which of the two
+        // reasons it is.
+        let declines = restoration_claim(&RestoreReport {
             freed: Vec::new(),
             outcomes: Vec::new(),
         })
-        .account_for("cam:three-read-only-controls", 0);
+        .declines("cam:three-read-only-controls", 0);
+        assert_eq!(declines.len(), 1, "{declines:?}");
+        let line = &declines[0];
+        assert!(
+            line.starts_with("SKIP (partial): cam:three-read-only-controls "),
+            "{line}"
+        );
+        assert!(line.contains("no outcome at all"), "{line}");
+        assert!(line.contains("nothing to put back"), "{line}");
+    }
+
+    #[test]
+    fn a_restore_that_checked_some_of_what_it_reported_declines_the_rest_by_name() {
+        // The third shape, which neither arm above reaches and which is the one a real
+        // camera produces: outcomes the arm *did* compare, plus controls their automation
+        // owns again \[PF:24\]. The line has to name each excluded control **and its
+        // partner**, because that is what makes the exclusion auditable — a reader can
+        // switch that automation off and watch the control become the arm's business again.
+        let declines = restoration_claim(&RestoreReport {
+            freed: Vec::new(),
+            outcomes: vec![
+                restored("brightness"),
+                owned("white_balance_temperature", Some("white_balance_automatic")),
+                owned("exposure_time_absolute", None),
+            ],
+        })
+        .declines("cam:one-checked-two-owned", 1);
+        assert_eq!(declines.len(), 1, "{declines:?}");
+        let line = &declines[0];
+        assert!(line.contains("2 of 3 restored control(s)"), "{line}");
+        assert!(line.contains("compared 1 against the device"), "{line}");
+        assert!(
+            line.contains("exposure_time_absolute (no partner in this device's pair set)"),
+            "an unnamed owner must say so rather than reading as an omission: {line}"
+        );
+        assert!(
+            line.contains("white_balance_temperature (white_balance_automatic)"),
+            "{line}"
+        );
+
+        // And the inverse: a report this arm compared in full declines nothing at all, so a
+        // rung counting `SKIP` lines does not learn about a run that had nothing to say.
+        assert!(
+            restoration_claim(&RestoreReport {
+                freed: Vec::new(),
+                outcomes: vec![restored("brightness")],
+            })
+            .declines("cam:everything-checked", 1)
+            .is_empty()
+        );
     }
 }

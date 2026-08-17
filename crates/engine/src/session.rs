@@ -64,9 +64,25 @@ pub fn reorder_queue(session: &mut Session, order: &[ControlSlug], now: Stamp) -
 
 /// Record that an automation control was switched off so `manual` can be driven by hand.
 ///
-/// Called once per automation partner, matching the one-write-per-partner shape of
-/// [`crate::pairing::plan`]. Calling it again for the same manual control adds the
-/// second partner rather than replacing the first.
+/// D8's first transition, and **nothing in this build makes it** — which is a ruling rather
+/// than an oversight, and note **N233** is where it is argued. The short form: this build
+/// guards *every* write, so the partner is switched off at the sweep's first sample, by
+/// which time [`begin_sweep`] has already moved the control to [`ControlStatus::Sweeping`]
+/// — and `may_auto_disable` refuses from there for the reason it states. D8 describes a
+/// switch-off phase in front of the sweep; this build has none, and inventing one wrote a
+/// device-fact into an append-only log before any camera had been touched (docs/11's
+/// **L15**, batch B10, reverted). What the sweep records instead is the *event*, from the
+/// write report that proves it happened: `crate::calibrate::record_switch_offs`.
+///
+/// So the state stays reachable-in-principle and unreached-in-fact. It stays because
+/// [`ControlStatus`] is a wire type in `schemas/` whose variants a stored session may carry
+/// and `cli-core`'s renderer already answers, and because the transition here is the one
+/// correct spelling of it for whoever does need it — a verb that parks a control before a
+/// sweep, which D8 imagines and P6 did not build.
+///
+/// Calling it again for the same manual control adds the second partner rather than
+/// replacing the first, matching the one-write-per-partner shape of
+/// [`crate::pairing::plan`].
 ///
 /// # Errors
 ///
@@ -936,9 +952,11 @@ mod tests {
 
     #[test]
     fn a_control_with_two_automation_partners_records_both_and_records_each_once() {
-        // D4 restores what a sweep switched off, and `ControlStatus::AutoDisabled`'s list
-        // is the record it restores from — so a list that is short is a control left under
-        // automation the operator did not choose. Nothing asserted the list's *contents*
+        // `ControlStatus::AutoDisabled`'s list is what the state says a caller switched
+        // off, so a list that is short is a control the document leaves under automation
+        // nobody chose. It is **not** what D4 restores from — the pre-sweep snapshot is,
+        // and this comment claimed otherwise until note **N233** went looking for the
+        // reader. Nothing asserted the list's *contents*
         // until P3f's mutation run found two ways to empty it with the workspace green:
         // dropping the arm that carries the existing list forward (the second partner
         // replaces the first) and deleting the `!` in the contains check (nothing is ever

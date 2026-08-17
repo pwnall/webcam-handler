@@ -1456,7 +1456,14 @@ motors, and the user's privacy:
 - **bindgen at build time** (libclang + kernel headers) — accepted per the owner's
   build-deps-are-fine ruling [PF:10]; CI images and the README must install them; a
   pure-ioctl no-bindgen fallback (`linuxvideo`, 0BSD) exists if this ever becomes
-  untenable.
+  untenable. **The headers have a vintage and the crate's *test target* is what has an
+  opinion about it** (note **N236**, added 2026-08-17): bindgen reads the build host's own
+  `<linux/videodev2.h>`, and since note N228 the tests name the newest control types and
+  flags to compare the schema's hand-copied numbers against the kernel's — so on older
+  headers `cargo build` succeeds and `cargo test -p webcam-handler-v4l2` does not compile.
+  Declared in the README's *Required to build*, and checked by
+  `scripts/gates/uapi-constants-are-declared.sh`, which derives the population from the
+  crate rather than from a list.
 - **jsonrpsee 0.x churn** (0.24→0.26 all broke API): minor pinned workspace-wide; our UDS
   glue is version-coupled and integration-tested so an upgrade PR fails loudly.
 - **Kernel/driver variance dwarfs our test matrix.** The design leans on D2/D3 doctrine

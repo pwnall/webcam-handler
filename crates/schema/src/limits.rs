@@ -386,8 +386,9 @@ const _: () = assert!(CLIENT_WS_HEARTBEAT_MS < CLIENT_REQUEST_TIMEOUT_MS);
 /// number arrives with it.
 ///
 /// It bounds the **last** hop — between the daemon's own subscription task and the socket's
-/// writer — and what happens at it is the law `engine::progress::ChannelSink` already
-/// states one layer in: drop, and count. Blocking there would let a subscriber that stopped
+/// writer — and what happens at it is what happens at the hop in front of it, where
+/// [`SUBSCRIPTION_BROADCAST_DEPTH`] states the law and `daemon::events::Fanout` keeps the
+/// count: drop, and count. Blocking there would let a subscriber that stopped
 /// reading hold a task per stream; growing would let it decide how much memory the daemon
 /// uses. Neither is available to a daemon whose whole story is that nothing a client does
 /// can wedge it.
@@ -443,8 +444,14 @@ pub const RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION: u32 = 8;
 /// events and each subscription's own task — and it exists because the producer must never
 /// be able to wait on a consumer: a hotplug watch that blocked would stop reading the
 /// kernel's socket, and a sweep that blocked would hold a camera at one value because a
-/// progress bar went away, which is exactly what [`PROGRESS_QUEUE_DEPTH`] refuses one crate
-/// down.
+/// progress bar went away.
+///
+/// **What happens at the bound is drop, and count** — never block, never grow — and this is
+/// where that law is stated for both of the daemon's hops, because since note **N230** it is
+/// the only bound left on the path. `daemon::events::Fanout` is what counts: `lagged` for a
+/// subscriber that fell behind this queue, `unheard` for an event nobody was listening to.
+/// An uncounted drop is the silence rubric rule 3 forbids, and a *number* is what turns
+/// "the client missed some" into something an unattended agent can act on.
 ///
 /// **One number for both streams, deliberately.** What it bounds is not a property of
 /// either producer but of a *subscriber*: how far behind the slowest one may fall before it
@@ -1293,15 +1300,6 @@ pub const MAX_SWEEP_SAMPLES: u32 = 256;
 
 /// The most samples a sweep that *moves motors* may take (design §5: motors wear).
 pub const MAX_MOTION_SWEEP_SAMPLES: u32 = 32;
-
-/// How many calibration progress events a channel sink queues for a consumer that has
-/// stopped reading.
-///
-/// Bounded because the alternatives are both worse than dropping: an unbounded queue lets
-/// a stalled subscriber grow the sweep's memory without limit, and a blocking send lets it
-/// *stop the sweep* — a camera held at one value because a progress bar went away. The
-/// events past this bound are dropped and counted, never silently lost (rubric rule 3).
-pub const PROGRESS_QUEUE_DEPTH: usize = 256;
 
 /// The largest control payload we will read back from a device.
 ///

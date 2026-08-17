@@ -1166,9 +1166,41 @@ async fn the_page_can_watch_a_sweep_it_did_not_start() {
             .as_str()
             .expect("every event names what happened")
             .to_owned();
-        if let Some(total) = event["total"].as_u64() {
+        // **Required per discriminant, not read if present** (the G6 review's L24, which
+        // needed no note of its own — the repair is this comment). This used to be `if let Some(total) = …` around `if let Some(index) =
+        // …`, under the sentence above claiming every in-flight variant carries the pair —
+        // so the one failure the sentence is about, a variant that stopped carrying them,
+        // skipped both assertions and the test reported green. Which variant carries what
+        // is `schema::progress::CalibrationProgress`'s decision and it is asserted in both
+        // directions: a `sweep_finished` that grew an `index` is a change to what the view
+        // must paint, and it should be somebody's decision rather than a surprise.
+        let (wants_total, wants_index) = match progress.as_str() {
+            // The bar's first event: how big the sweep is, before any sample exists.
+            "sweep_started" => (true, false),
+            // The in-flight pair, which is what lets a subscriber that connected mid-sweep
+            // paint a truthful bar from the first event it sees.
+            "value_set" | "sample_taken" => (true, true),
+            // The endings. `sweep_finished` carries `samples`, `sweep_interrupted` carries
+            // `taken` alongside the plan's `total` — neither is an index into a bar.
+            "sweep_finished" => (false, false),
+            "sweep_interrupted" => (true, false),
+            other => panic!("the view has no arm for a `{other}` event: {event}"),
+        };
+        let total = event["total"].as_u64();
+        let index = event["index"].as_u64();
+        assert_eq!(
+            total.is_some(),
+            wants_total,
+            "a `{progress}` event and its `total`: {event}"
+        );
+        assert_eq!(
+            index.is_some(),
+            wants_index,
+            "a `{progress}` event and its `index`: {event}"
+        );
+        if let Some(total) = total {
             assert!(total > 0, "{event}");
-            if let Some(index) = event["index"].as_u64() {
+            if let Some(index) = index {
                 assert!(index <= total, "a bar past its own end: {event}");
             }
         }

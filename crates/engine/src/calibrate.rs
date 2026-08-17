@@ -84,6 +84,7 @@ use schema::capture::{PhotoRequest, Sink, Transform};
 use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::pairing::AutomationPair;
 use schema::progress::{CalibrationProgress, ProgressEvent};
+use schema::report::WriteReport;
 use schema::session::{Sample, Session, SessionEvent};
 use schema::time::Stamp;
 use schema::{Applied, Error, Result};
@@ -519,6 +520,9 @@ fn one_sample(
         &[(control.clone(), ControlValue::Int(step.value))],
         stream.at(clock),
     )?;
+    if step.index == 1 {
+        record_switch_offs(cx, session, &report, control, stream)?;
+    }
     let written = applied_value(&report.writes, control)?;
 
     stream.emit(
@@ -615,6 +619,64 @@ fn one_sample(
         },
     );
     Ok(sample)
+}
+
+/// Put the automation partners this sweep switched off on the record (note **N233**).
+///
+/// `SessionEvent::AutomationDisabled` had no producer at all until docs/11's **L15** found
+/// it, and where it goes is the whole of what N233 is about: a guarded write switches
+/// `auto_exposure` off, and the operator who comes back to a camera whose auto-exposure is
+/// gone has nothing on disk that says a sweep did it. The pre-sweep snapshot is how the
+/// camera is *put back*; this is how the switch-off is *explained*.
+///
+/// **After the write, from the write's own report, and only when the write returned one.**
+/// `log.ndjson` is [`crate::lifecycle`]'s record of what happened *to the device* — its own
+/// header says inventing a line for something no camera saw is the thing not to do — so the
+/// producer is on this side of [`lifecycle::sweep_write`], which by then has persisted the
+/// snapshot and driven both controls. A `Busy`, a `DeviceGone`, a `ControlInactive` or an
+/// `ENOSPC` on the way in leaves through the `?` above and writes nothing, which is the
+/// property that made the first attempt at this producer wrong: it ran before `describe`'s
+/// walk had been followed by anything at all, and the log is append-only, so `interrupted`
+/// could not retract it.
+///
+/// **A log line and not a state transition.** D8 runs `Untouched → AutoDisabled → Sweeping`,
+/// and this build's guarded write makes the middle state true only once the control is
+/// already `Sweeping` — `session::may_auto_disable` refuses from there, for the reason it
+/// states. So the *status* keeps no producer and N233 says why; the durable half
+/// is this line, which is what [`lifecycle::note`] exists for: something happened to the
+/// camera and the document already says what it needs to.
+///
+/// **Once per sweep, at the first sample.** The guarded plan re-asserts the switch-off at
+/// every value, so `report.disabled_automation` is the same list sixteen times over, and a
+/// line per sample would make a 256-sample history unreadable for a fact that did not
+/// change. A second pass over the same control records it again, because it happened again.
+///
+/// # Errors
+///
+/// Whatever the store refuses with. Not best effort, and deliberately: this call is inside
+/// [`execute`], so a store that cannot take the line ends the sweep through the one `Result`
+/// [`run`]'s `match` reads and the sweep is announced as interrupted — the same treatment
+/// [`crate::session::record_sample`]'s commit already gets one screen down.
+fn record_switch_offs(
+    cx: &SweepContext<'_>,
+    session: &Session,
+    report: &WriteReport,
+    control: &ControlSlug,
+    stream: &Stream<'_>,
+) -> Result<()> {
+    for automation in &report.disabled_automation {
+        lifecycle::note(
+            cx.store,
+            cx.lock,
+            session,
+            stream.at(cx.clock),
+            SessionEvent::AutomationDisabled {
+                manual: control.clone(),
+                automation: automation.clone(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// What the device took, as an integer.
@@ -1462,6 +1524,230 @@ mod tests {
             started,
             (outcome.plan.adjustments.clone(), outcome.plan.precision),
             "the durable record says nothing about what the planner did"
+        );
+    }
+
+    #[test]
+    fn a_sweep_records_the_partner_it_switched_off_once_and_after_the_write_that_did_it() {
+        // **Note N233**, and the ordering is the whole assertion. `log.ndjson` is
+        // `crate::lifecycle`'s record of what happened *to the device*, so the line saying
+        // `auto_exposure` was switched off may not be written before a camera has been
+        // touched — and in particular not before `arm_pre_snapshot` has put the snapshot on
+        // disk, because the snapshot is the only way back and the log is append-only. The
+        // first attempt at this producer (docs/11's L15, batch B10) committed the line in
+        // front of `begin_sweep`, which is in front of the snapshot, in front of the first
+        // guarded write, and in front of every refusal that can stop a sweep reaching the
+        // camera at all.
+        //
+        // A log line and not a status: D8 runs `Untouched → AutoDisabled → Sweeping`, and
+        // a guarded write makes the middle fact true only once the control is already
+        // `Sweeping`. N233 records that `ControlStatus::AutoDisabled` therefore keeps no
+        // producer in this build.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let backend = backend();
+        let mut camera = open(&backend);
+        let control = slug("exposure_time_absolute");
+        let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
+
+        let clock = FrozenClock;
+        run(
+            &context(&temp, &lock, &clock, &Silent),
+            &mut session,
+            camera.as_mut(),
+            &sweep_request(
+                control.clone(),
+                SweepSpec::Explicit {
+                    values: vec![100, 200],
+                },
+            ),
+        )
+        .expect("a willing camera");
+
+        let log = temp
+            .store()
+            .load_log(&temp.store().session_dir(&session))
+            .expect("readable");
+        let disabled: Vec<&SessionEvent> = log
+            .iter()
+            .map(|entry| &entry.event)
+            .filter(|event| matches!(event, SessionEvent::AutomationDisabled { .. }))
+            .collect();
+        // Once, not once per sample: the guarded plan re-asserts the switch-off at every
+        // value, and a line per value would make a 256-sample history unreadable for a fact
+        // that did not change.
+        assert_eq!(
+            disabled,
+            vec![&SessionEvent::AutomationDisabled {
+                manual: control.clone(),
+                automation: slug("auto_exposure"),
+            }],
+            "the sweep switched auto_exposure off and the history does not say so, once"
+        );
+
+        let at = |wanted: fn(&SessionEvent) -> bool| {
+            log.iter()
+                .position(|entry| wanted(&entry.event))
+                .expect("the sweep recorded this")
+        };
+        let disabled_at = at(|event| matches!(event, SessionEvent::AutomationDisabled { .. }));
+        assert!(
+            at(|event| matches!(event, SessionEvent::SnapshotTaken { .. })) < disabled_at,
+            "the switch-off is on the record before the snapshot that can undo it, which is \
+             `lifecycle`'s ordering inverted: {log:?}"
+        );
+        assert!(
+            at(|event| matches!(event, SessionEvent::SweepStarted { .. })) < disabled_at,
+            "the switch-off is on the record before the sweep that performed it announced \
+             itself: {log:?}"
+        );
+    }
+
+    /// A sink that arms a one-shot fault the moment the sweep announces itself.
+    ///
+    /// The seam exists because the sweep's own walks would otherwise spend the fault before
+    /// it could reach the step under test: `describe` reads the control list first, and a
+    /// one-shot queued from the test body is gone by the time the snapshot asks. The sink is
+    /// called synchronously on the sweeping thread between `begin_sweep` and the first write
+    /// (`run`'s `SweepStarted` emit), which is exactly the window this file needs to script
+    /// and the only place a test can stand in it.
+    #[derive(Debug)]
+    struct ArmAtSweepStart<'a> {
+        backend: &'a FakeBackend,
+        fault: Fault,
+    }
+
+    impl ProgressSink for ArmAtSweepStart<'_> {
+        fn emit(&self, event: &ProgressEvent) {
+            if matches!(event.progress, CalibrationProgress::SweepStarted { .. }) {
+                self.backend.queue_fault(self.fault);
+            }
+        }
+    }
+
+    #[test]
+    fn a_sweep_stopped_before_its_first_write_records_no_switch_off() {
+        // **Note N233's red arm.** The line is a device fact and this sweep's device did
+        // nothing: it is refused by the pre-sweep snapshot — `arm_pre_snapshot` will not let
+        // a write through when a control's value could not be read, because it is about to
+        // move a camera it believes it can put back (note N195) — so nothing was written and
+        // nothing may claim it was. `log.ndjson` is append-only and `interrupted` cannot
+        // retract a line, which is why "write it early and correct it later" was never on
+        // the menu: the first attempt at this producer (docs/11's L15, batch B10) committed
+        // the switch-off in front of `begin_sweep` and every refusal below it left a durable
+        // claim that an automation partner had been switched off on a camera nothing had
+        // touched.
+        //
+        // `Fault::ControlReadDeclined` is the availability fault at control granularity, and
+        // the sink above arms it after the sweep has announced itself so that the walk it
+        // meets is the snapshot's.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let backend = backend();
+        let mut camera = open(&backend);
+        let control = slug("exposure_time_absolute");
+        let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
+
+        let clock = FrozenClock;
+        let arming = ArmAtSweepStart {
+            backend: &backend,
+            fault: Fault::ControlReadDeclined,
+        };
+        let refused = run(
+            &context(&temp, &lock, &clock, &arming),
+            &mut session,
+            camera.as_mut(),
+            &sweep_request(
+                control.clone(),
+                SweepSpec::Explicit {
+                    values: vec![100, 200],
+                },
+            ),
+        )
+        .expect_err("a snapshot that could not record a control");
+        assert_eq!(refused.kind(), schema::ErrorKind::IllegalTransition);
+
+        let log = temp
+            .store()
+            .load_log(&temp.store().session_dir(&session))
+            .expect("readable");
+        assert!(
+            !log.iter()
+                .any(|entry| matches!(entry.event, SessionEvent::AutomationDisabled { .. })),
+            "the sweep never reached the camera and the history says a partner was switched \
+             off: {log:?}"
+        );
+        // And the sweep that failed to happen left nothing on the document either: the
+        // control is back where it started, which is what `abandon_sweep` is for and what
+        // a state written before the first write would have defeated (the H2 class, notes
+        // N139 and N176).
+        assert_eq!(
+            session.controls.get(&control).map(|entry| &entry.status),
+            Some(&ControlStatus::Untouched),
+            "a sweep that never reached the camera left the control somewhere a later run \
+             has to argue its way out of"
+        );
+    }
+
+    #[test]
+    fn a_sweep_refused_because_one_is_already_running_names_the_verb_the_caller_asked_for() {
+        // **Note N233.** The refusal an unattended agent reads is a payload, not just a
+        // kind: `docs/agent-guide.md` dispatches on `IllegalTransition` and the operator
+        // reads `from` and `op` to find out what to do. A control left `Sweeping` by a sweep
+        // that took at least one sample is not freed by recovery — that path wants
+        // `done: 0` and no samples — so retrying it is a refusal a real caller meets, and
+        // `sweep <control>` is what it has always said.
+        //
+        // It was unpinned at this layer until 2026-08-17, and it moved: B10's first
+        // `AutoDisabled` producer ran one commit earlier and answered `auto-disable
+        // exposure_time_absolute` — an operation the caller never asked for — to every
+        // retry of a paired control, which is every control anybody calibrates. Every other
+        // `IllegalTransition` assertion in this file checks `kind()` or a substring, so
+        // nothing went red.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let backend = backend();
+        let mut camera = open(&backend);
+        let control = slug("exposure_time_absolute");
+        let mut session = session_for(temp.store(), &lock, camera.as_mut(), &control);
+
+        let clock = FrozenClock;
+        let cx = context(&temp, &lock, &clock, &Silent);
+        let request = sweep_request(
+            control.clone(),
+            SweepSpec::Explicit {
+                values: vec![100, 200],
+            },
+        );
+        let automation = slug("auto_exposure");
+        let was = camera
+            .controls()
+            .expect("a willing camera")
+            .into_iter()
+            .find(|desc| desc.slug == automation)
+            .and_then(|desc| desc.current)
+            .expect("the fixture's automation control reads back");
+        run(&cx, &mut session, camera.as_mut(), &request).expect("a willing camera");
+        // The sweep finished and left `Sweeping { done: 2 }` behind: `select` is the exit,
+        // and until somebody takes it a second sweep of the same control is refused.
+        //
+        // **The automation goes back on first, and that is the scenario rather than
+        // scenery.** A retry that finds the partner already off has nothing to switch off,
+        // so the refusal it meets is `begin_sweep`'s either way; the case that moved is the
+        // ordinary one — `calibrate restore` put the camera back, or this is a fresh process
+        // against a camera whose automation nobody turned off — where a producer in front of
+        // `begin_sweep` has a partner in hand and refuses first.
+        crate::write::set(camera.as_mut(), &[], &[(automation, was)], false)
+            .expect("the fixture's automation control is writable");
+        let refused = run(&cx, &mut session, camera.as_mut(), &request)
+            .expect_err("one sweep of a control at a time");
+        assert_eq!(
+            refused,
+            Error::IllegalTransition {
+                from: "sweeping".to_owned(),
+                op: format!("sweep {control}"),
+            },
+            "the refusal names an operation this caller did not ask for"
         );
     }
 

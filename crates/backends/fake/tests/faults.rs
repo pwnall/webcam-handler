@@ -113,6 +113,71 @@ fn a_held_fault_keeps_firing_and_a_queued_one_does_not() {
     );
 }
 
+#[test]
+fn a_call_that_reported_one_fault_leaves_the_others_still_scripted() {
+    // **Rubric A9's fault-menu half** (the G6 review's L35, note **N232**). `next_frame`
+    // used to take all three of its faults off the queue at the top, before it knew which
+    // one it would report: a test that scripted a `FrameTimeout` and a
+    // `SettleNeverConverges` got the timeout, and the settle fault was *consumed by the
+    // call that reported the timeout* and never fired. A scripted claim that silently never
+    // happens is worse than one that fails, because the suite that made it reports green.
+    //
+    // Three scripted, one call, one reported — and the other two still on the queue.
+    let backend = backend();
+    let mut camera = backend.open_fake(&first_id(&backend)).expect("open");
+    start(&mut camera);
+
+    backend.queue_faults(&[
+        Fault::FrameTimeout,
+        Fault::SettleNeverConverges,
+        Fault::DeviceGoneMidStream,
+    ]);
+    let error = camera
+        .next_frame(soon())
+        .expect_err("the timeout was scripted");
+    assert!(matches!(error, Error::SettleTimeout { .. }), "{error}");
+    assert_eq!(
+        backend.pending_faults(),
+        vec![Fault::SettleNeverConverges, Fault::DeviceGoneMidStream],
+        "one call reported one fault and ate the two it did not report"
+    );
+
+    // …and the next call reports the next one, which is what makes the queue a script
+    // rather than a bag.
+    let error = camera
+        .next_frame(soon())
+        .expect_err("the device was scripted to go away");
+    assert!(matches!(error, Error::DeviceGone { .. }), "{error}");
+    assert_eq!(
+        backend.pending_faults(),
+        vec![Fault::SettleNeverConverges],
+        "the settle fault is still the one nobody has spent"
+    );
+
+    // The stream is gone with the device, so the fake refuses rather than rendering — and
+    // that refusal must not spend the settle fault either. This is the arm the review's
+    // reading did not reach: three faults were taken before the `state.stream` check, so a
+    // call that could never have produced a frame emptied the queue.
+    let error = camera
+        .next_frame(soon())
+        .expect_err("the stream is not running");
+    assert!(matches!(error, Error::DeviceIo { .. }), "{error}");
+    assert_eq!(
+        backend.pending_faults(),
+        vec![Fault::SettleNeverConverges],
+        "a call that produced no frame at all still spent a frame fault"
+    );
+
+    // And the fault that survived all of it does what it was scripted to do, once, on the
+    // first call that actually renders a frame.
+    start(&mut camera);
+    camera.next_frame(soon()).expect("a frame");
+    assert!(
+        backend.pending_faults().is_empty(),
+        "the settle fault never fired at all"
+    );
+}
+
 // ------------------------------------------------------------------ the observations
 
 fn device_gone_mid_stream() {

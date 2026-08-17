@@ -197,6 +197,19 @@ own, and `node_is_never_a_build_dependency` in `crates/daemon/tests/web_browser.
 that over every member manifest, which is what keeps a bundler from ever becoming part of
 `cargo build`.
 
+**`linux-libc-dev` has a vintage, and the test target is what has an opinion about it.**
+bindgen reads *this host's* `<linux/videodev2.h>`, so the kernel names the V4L2 backend can
+use are whatever the build host defines. The product code names only long-standing struct
+types; the crate's **tests** compare every hand-copied kernel number in
+`webcam-handler-schema` against the header's own (note **N228**), which means naming the
+newest of them — `V4L2_CTRL_TYPE_RECT`, `V4L2_CTRL_TYPE_HDR10_MASTERING_DISPLAY`,
+`V4L2_CTRL_TYPE_AV1_FRAME`, `V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX`. On headers that predate one
+of those, `cargo build --workspace` is fine and `cargo test -p webcam-handler-v4l2` does not
+compile. Rather than a version number this repository cannot verify offline,
+`./scripts/gates/uapi-constants-are-declared.sh` checks the header for **every** kernel name
+that crate asks bindgen for and names the missing one (note **N236**), so the answer arrives
+as a gate with a remedy instead of as `cannot find value … in module uapi`.
+
 ### Required for `just ci`
 
 `just ci` is the floor — fmt, clippy with `-D warnings`, nextest, the doc build,

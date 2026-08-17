@@ -90,9 +90,18 @@ impl WritePlan {
 
     /// The automation controls this plan switches off, in order and without repeats.
     ///
-    /// The caller records these on the session ([`schema::session::ControlStatus::AutoDisabled`])
-    /// and restores them afterwards (D4), so it needs them as a list rather than as a
-    /// filter over the writes.
+    /// It travels on [`schema::report::WriteReport::disabled_automation`], which is how
+    /// every caller of a guarded write learns that the camera changed in a way it did not
+    /// ask for: `webcam-handler-cli set` prints the list, and a sweep puts it in
+    /// `log.ndjson` once the write has come back (`crate::calibrate::record_switch_offs`,
+    /// note **N233**). A list rather than a filter over the writes because the plan is what
+    /// knows — a switch-off that was itself adjusted still switched something off.
+    ///
+    /// **What restores the camera is the pre-sweep snapshot, not this**, and the difference
+    /// is worth one sentence because a doc comment here claimed otherwise until 2026-08-17:
+    /// D4's restore reads [`schema::session::Session::pre_snapshot`], which records every
+    /// control's value as the operator left it, and no code path has ever restored from
+    /// [`schema::session::ControlStatus::AutoDisabled`]'s list.
     #[must_use]
     pub fn disabled_automation(&self) -> Vec<ControlSlug> {
         let mut out: Vec<ControlSlug> = Vec::new();

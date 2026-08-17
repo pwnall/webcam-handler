@@ -778,6 +778,58 @@ mod tests {
     /// here so the assertion below names what it is refusing rather than a number.
     const BUF_TYPE_VIDEO_CAPTURE_MPLANE: u32 = 9;
 
+    /// The kernel's own numbers; see `decode`'s test module for why the alias is here.
+    use v4l::v4l_sys as uapi;
+
+    /// Every kernel ABI number this module writes as a literal, against the bindgen
+    /// constant its doc comment cites — `decode`'s
+    /// `every_kernel_number_this_module_transcribes_equals_the_constant_it_cites`, over the
+    /// other half of the population (the G6 review's L11, note **N228**).
+    ///
+    /// These five are the ones that decide what an ioctl *asks for* rather than what a
+    /// reply means, which is why they are worth their own assertion: a wrong
+    /// `CTRL_FLAG_NEXT_COMPOUND` does not misread a control, it walks past every compound
+    /// one silently, and PF:1 is the note about how long that took to notice the first
+    /// time.
+    #[test]
+    fn every_kernel_number_this_module_transcribes_equals_the_constant_it_cites() {
+        let cases: [(&str, u32, u32); 6] = [
+            (
+                "V4L2_BUF_TYPE_VIDEO_CAPTURE",
+                BUF_TYPE_VIDEO_CAPTURE,
+                uapi::v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            ),
+            (
+                "V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",
+                BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+                uapi::v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+            ),
+            (
+                "V4L2_CTRL_FLAG_NEXT_CTRL",
+                CTRL_FLAG_NEXT_CTRL,
+                uapi::V4L2_CTRL_FLAG_NEXT_CTRL,
+            ),
+            (
+                "V4L2_CTRL_FLAG_NEXT_COMPOUND",
+                CTRL_FLAG_NEXT_COMPOUND,
+                uapi::V4L2_CTRL_FLAG_NEXT_COMPOUND,
+            ),
+            (
+                "V4L2_CTRL_WHICH_CUR_VAL",
+                CTRL_WHICH_CUR_VAL,
+                uapi::V4L2_CTRL_WHICH_CUR_VAL,
+            ),
+            (
+                "V4L2_CTRL_FLAG_HAS_PAYLOAD",
+                CTRL_FLAG_HAS_PAYLOAD,
+                uapi::V4L2_CTRL_FLAG_HAS_PAYLOAD,
+            ),
+        ];
+        for (name, ours, kernel) in cases {
+            assert_eq!(ours, kernel, "{name} is {kernel} in this host's headers");
+        }
+    }
+
     /// A descriptor on a file only this process has open, in the scratch tree.
     ///
     /// `/dev/null` would not do: hundreds of processes hold it and

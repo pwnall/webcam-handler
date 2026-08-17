@@ -637,12 +637,17 @@ impl Camera for FakeCamera {
     }
 
     fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
-        let timed_out = take_fault(&self.faults, Fault::FrameTimeout);
-        let device_gone = take_fault(&self.faults, Fault::DeviceGoneMidStream);
-        let unsettled = take_fault(&self.faults, Fault::SettleNeverConverges);
+        // **Each fault taken where it decides the answer, and never before** (rubric A9's
+        // fault-menu half; the G6 review's L35, note **N232**). All three used to come off
+        // the queue at the top, so a call that reported a `FrameTimeout` also consumed the
+        // `SettleNeverConverges` a test had scripted for the frame *after* it — and a call
+        // that could produce no frame at all, because no stream was running, emptied the
+        // queue on its way to `EINVAL`. A one-shot removed by a call that reported
+        // something else is a scripted claim that silently never fires, which is the one
+        // thing a fault menu may not do.
         let mut state = lock(&self.state);
 
-        if timed_out {
+        if take_fault(&self.faults, Fault::FrameTimeout) {
             // The deadline is reported as spent rather than slept through: a fake that
             // slept would be scheduling a flake (N3), and the caller's clock is the
             // engine's business anyway.
@@ -652,7 +657,7 @@ impl Camera for FakeCamera {
                 frames_seen: state.frames_delivered,
             });
         }
-        if device_gone {
+        if take_fault(&self.faults, Fault::DeviceGoneMidStream) {
             state.stream = None;
             return Err(Error::DeviceGone {
                 path: state.capture_path(),
@@ -667,6 +672,9 @@ impl Camera for FakeCamera {
             });
         };
 
+        // Last, and after the stream check above: this one changes a frame rather than
+        // replacing it, so it is only spent by a call that is going to render one.
+        let unsettled = take_fault(&self.faults, Fault::SettleNeverConverges);
         let scene = Scene {
             width: stream.width,
             height: stream.height,

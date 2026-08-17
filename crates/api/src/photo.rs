@@ -16,6 +16,7 @@
 
 use std::fmt;
 
+use base64::display::Base64Display;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use schema::capture::{PhotoDelivery, PhotoReport};
 use schemars::JsonSchema;
@@ -88,8 +89,26 @@ impl fmt::Debug for Base64Bytes {
 }
 
 impl Serialize for Base64Bytes {
+    /// **Streamed rather than materialised** (docs/11's P3).
+    ///
+    /// This was `serialize_str(&BASE64_STANDARD.encode(&self.0))`, and the encoded `String`
+    /// had exactly one consumer: `serialize_str`, which immediately copies and escapes it
+    /// again into the serializer's own buffer. A `ReturnBytes` photo therefore held the
+    /// frame, a 4/3-sized base64 `String` and serde_json's growing buffer at once — about
+    /// 10.7 MB of transient allocation for the 8 MB 4K frame the type's own size note
+    /// discusses two items down.
+    ///
+    /// `Base64Display` is `base64`'s chunked encoder wearing a [`fmt::Display`], and
+    /// `collect_str` is the serde hook a serializer overrides when it can write a
+    /// `Display` straight out — serde_json does, escaping as it goes. **It is never worse
+    /// than what it replaces**: serde's default `collect_str` formats into a `String` and
+    /// calls `serialize_str`, which is the line this replaced, so a serializer that does
+    /// not specialise pays exactly what it paid before.
+    ///
+    /// The bytes on the wire do not move, and `a_payload_serialises_to_the_same_string_the
+    /// _one_shot_encoder_produces` is what says so over an alphabet-sensitive population.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&BASE64_STANDARD.encode(&self.0))
+        serializer.collect_str(&Base64Display::new(&self.0, &BASE64_STANDARD))
     }
 }
 
@@ -271,6 +290,54 @@ mod tests {
         assert_eq!(nothing.len(), 0);
         assert!(nothing.is_empty());
         assert!(nothing.into_inner().is_empty());
+    }
+
+    #[test]
+    fn a_payload_serialises_to_the_same_string_the_one_shot_encoder_produces() {
+        // The pin under docs/11's P3: `Serialize` streams the encoding
+        // through `Base64Display` now instead of building the whole `String` first, and the
+        // one thing that must not have moved is the bytes on the wire. So the assertion
+        // compares against `BASE64_STANDARD.encode` — the call that was there — rather than
+        // against a literal somebody transcribed.
+        //
+        // **The population is alphabet-sensitive on purpose.** Byte values 62 and 63 are
+        // where standard and URL-safe base64 differ (`+/` against `-_`), and lengths 0..=6
+        // walk every padding case, so a chunked encoder that lost a tail or a swapped
+        // alphabet has nowhere to hide. `0xfb 0xff` alone produces `+/`.
+        let cases: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            vec![0x00],
+            vec![0xff],
+            vec![0xfb, 0xff],
+            vec![0xfb, 0xff, 0xbf],
+            vec![0x01, 0x02, 0x03, 0x04],
+            (0u8..=255).collect(),
+            // Longer than `Base64Display`'s internal chunk, so the streaming path is
+            // exercised across a boundary rather than in one write.
+            (0u8..=255).cycle().take(4_096).collect(),
+        ];
+        for bytes in cases {
+            let streamed =
+                serde_json::to_string(&Base64Bytes::new(bytes.clone())).expect("serialize");
+            let at_once =
+                serde_json::to_string(&BASE64_STANDARD.encode(&bytes)).expect("serialize");
+            assert_eq!(
+                streamed,
+                at_once,
+                "the streamed encoding of {} byte(s) is not the one-shot encoding",
+                bytes.len()
+            );
+            // …and it still decodes back to what went in, which is the property a consumer
+            // actually depends on.
+            let back: Base64Bytes = serde_json::from_str(&streamed).expect("deserialize");
+            assert_eq!(back.as_slice(), bytes.as_slice());
+        }
+
+        // `+` and `/` really are in the output, so the assertion above is about the
+        // alphabet and not only about the length.
+        let alphabet =
+            serde_json::to_string(&Base64Bytes::new(vec![0xfb, 0xff])).expect("serialize");
+        assert_eq!(alphabet, r#""+/8=""#);
     }
 
     #[test]

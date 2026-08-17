@@ -676,7 +676,7 @@ wire_surface! {
         /// self-healing and the next event repaints a correct bar. The alternative,
         /// closing the stream, would end a client's view of a twenty-minute sweep because
         /// it was briefly slow. Nothing a subscriber does reaches the sweep: the camera is
-        /// never held for a progress bar's benefit (note N17, `limits::PROGRESS_QUEUE_DEPTH`).
+        /// never held for a progress bar's benefit (note N17).
         ///
         /// A sweep that *fails* does not fail this stream. The refusal arrives as an
         /// event — `CalibrationProgress::SweepInterrupted`, carrying the D13 discriminant

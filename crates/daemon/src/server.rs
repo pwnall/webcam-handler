@@ -3555,6 +3555,137 @@ mod tests {
             .expect("the blocking pool is alive");
     }
 
+    /// The blocking pool's one thread, held until [`PoolHeld::release`] gives it back.
+    ///
+    /// **What the fence above cannot do on its own** (note **N237**). `Wchd::offload` is
+    /// `spawn_blocking(…).await`, and a `JoinHandle` polled *after* its closure has already
+    /// finished is `Ready` — so a poll of `wch_photo` that queues the destination open can, on
+    /// a machine where the pool thread gets there first, come back from that `await` inside the
+    /// same poll and run straight on into `CameraActor::submit`. The test below then reads a
+    /// destination that exists, concludes nothing has been enqueued, and is wrong. That is what
+    /// made `a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera`
+    /// fail under load with the photo *succeeding*: not the interlock letting one through, but
+    /// the test never building the window — the same defect the fence was added to fix,
+    /// surviving it, because a fence between polls says nothing about what happens inside one.
+    ///
+    /// Holding the single pool thread across each poll is what closes it. Every `await` in
+    /// `wch_photo` before the submit is an `offload`, so with the thread occupied each poll is
+    /// **`Pending` by construction**: the closure it queued cannot have run, and the photo
+    /// cannot be past it. The hold is then released and the queue drained, which is where the
+    /// step actually happens — outside any poll, with nothing in flight.
+    ///
+    /// It is a hold and not a sleep: `entered` is the pool thread announcing it is *on* the
+    /// closure, and the release is a value handed over, so nothing here has a duration in it
+    /// (AGENTS: no `sleep` as synchronisation).
+    struct PoolHeld {
+        release: std::sync::mpsc::SyncSender<()>,
+        done: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl PoolHeld {
+        /// Take the pool's thread, and do not answer until it is taken.
+        async fn take() -> PoolHeld {
+            // The pool has to be idle for this to be able to take it, which is what the
+            // caller's fence at the end of each turn guarantees.
+            pool_caught_up().await;
+            let (entered, arrived) = std::sync::mpsc::sync_channel::<()>(1);
+            let (release, released) = std::sync::mpsc::sync_channel::<()>(1);
+            let done = tokio::task::spawn_blocking(move || {
+                let _ = entered.send(());
+                let _ = released.recv();
+            });
+            // Blocking the runtime's one thread is safe and is the point: the closure above is
+            // on the *pool's* thread, so it makes progress while this waits, and what comes
+            // back is the announcement rather than a guess about scheduling.
+            arrived
+                .recv()
+                .expect("the blocking pool took the closure that holds it");
+            PoolHeld {
+                release,
+                done: Some(done),
+            }
+        }
+
+        /// Give the thread back and wait until everything queued behind the hold has run.
+        async fn release(mut self) {
+            let _ = self.release.try_send(());
+            if let Some(done) = self.done.take() {
+                done.await.expect("the holding closure is alive");
+            }
+            pool_caught_up().await;
+        }
+    }
+
+    /// The runtime this file's constructed-window test needs: one blocking thread, so the pool
+    /// is a queue with a holder rather than a crowd.
+    ///
+    /// **The `1` is load-bearing and there is deliberately no test on it** (note **N237**).
+    /// `PoolHeld`'s guarantee is the runtime's — at most `max_blocking_threads` closures run at
+    /// once — and the thing that would break it is this line changing. A test for it would have
+    /// to assert a *negative about an instant*: that work handed to the held pool has not run
+    /// yet. Driven, with this builder seeded to `2`: a `try_recv` arm and a counter arm both
+    /// stayed green three runs out of three, because a second pool thread that has not been
+    /// scheduled yet looks exactly like a pool that is held. An assertion whose false branch
+    /// cannot go red is the one thing AGENTS forbids of a test, so the claim is stated here,
+    /// once, beside the number it depends on.
+    fn one_blocking_thread() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("this host can start a tokio runtime")
+    }
+
+    #[test]
+    fn a_poll_that_finds_its_blocking_handoff_finished_crosses_the_step_behind_it_too() {
+        // **The assumption the first repair rested on, stated so it can go red** (note
+        // **N237**). `poll → fence` was treated as one step of `wch_photo`, and it is not.
+        // `Wchd::offload` is `spawn_blocking(…).await`, and a `JoinHandle` whose closure has
+        // already run *is* a ready future — so the `async fn` resumes and runs the code behind
+        // that await **inside the same poll**. On the photo path the code behind the
+        // destination's open is `CameraActor::submit`, with no await in between, so one poll
+        // crosses both ends of the window a test believed it was standing in the middle of.
+        // A loaded host preempting the runtime thread between `spawn_blocking` and its first
+        // poll is all it takes, and that is what the constructed-window test's one failure in
+        // ten workspace runs was: not the interlock letting a photo through, but the window
+        // never built.
+        //
+        // The hand-off is `std::future::ready` rather than a `JoinHandle` the pool has finished
+        // with, and the difference is between a deterministic arm and a nearly-deterministic
+        // one: a closure that announces it has returned has not necessarily had its task
+        // marked complete yet, so a `JoinHandle` polled straight afterwards is *usually* ready
+        // — this arm was written that way first and went red on the run after the one that
+        // proved it green. What is under test here is the `async fn`, whose behaviour on a
+        // ready hand-off is the whole hazard; that a finished `spawn_blocking` presents as one
+        // is tokio's own contract, and the CI failure N237 quotes is what says it happens.
+        one_blocking_thread().block_on(async {
+            async fn a_step_a_handoff_and_a_step(
+                crossed: &std::sync::atomic::AtomicUsize,
+                handoff: impl std::future::Future<Output = ()>,
+            ) {
+                crossed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                handoff.await;
+                // No await in front of this one, exactly as `CameraActor::submit` has none in
+                // front of it.
+                crossed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+
+            let crossed = std::sync::atomic::AtomicUsize::new(0);
+            let mut running = Box::pin(a_step_a_handoff_and_a_step(
+                &crossed,
+                std::future::ready(()),
+            ));
+            assert!(one_poll(&mut running).await.is_ready());
+            assert_eq!(
+                crossed.load(std::sync::atomic::Ordering::SeqCst),
+                2,
+                "one poll did not cross a step behind a ready hand-off, so a fence between \
+                 polls would be a step boundary after all and note N237's hold is answering a \
+                 hazard this build no longer has"
+            );
+        });
+    }
+
     #[test]
     fn a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera() {
         // **Note N118's interlock, at the window note N170 found in it.** `wch_photo` asks
@@ -3567,24 +3698,24 @@ mod tests {
         // could corrupt a recording's measurement with nothing going red.
         //
         // The window is **constructed** rather than raced (docs/11 §4.10 raced for it twice and
-        // missed), and **the construction is the runtime** (note **N178**). One poll of
-        // `wch_photo` can cross both ends of the window — there is no `await` between the
-        // blocking open resolving and `CameraActor::submit` — so a test that asked "does the
-        // destination exist?" and then polled could be preempted between the two and poll a
-        // future that was ready to run straight past it. That is not hypothetical: it failed
-        // twice in ten workspace runs on a loaded host, saying the interlock had let a photo
-        // through when what had happened was that the test never built the window.
+        // missed), and **the construction is the runtime** (notes **N178** and **N237**). One
+        // poll of `wch_photo` can cross both ends of the window — there is no `await` between
+        // the blocking open resolving and `CameraActor::submit` — so a test that asked "does
+        // the destination exist?" and then polled could poll a future that was ready to run
+        // straight past it. That is not hypothetical: it failed twice in ten workspace runs on
+        // a loaded host, saying the interlock had let a photo through when what had happened
+        // was that the test never built the window.
         //
-        // So the pool is given **one thread**, and every poll is followed by a fence. After
-        // each fence, everything this photo handed the pool has finished and nothing is in
-        // flight; the destination's existence is then read with no race under it, and the poll
-        // that would submit the actor command is the one this test declines to make.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .max_blocking_threads(1)
-            .build()
-            .expect("this host can start a tokio runtime");
-        runtime.block_on(the_photo_interlock());
+        // The first repair gave the pool **one thread** and put a fence after every poll, and
+        // it was not enough — a fence between polls says nothing about what happens inside one,
+        // and `offload` is `spawn_blocking(…).await`, whose `JoinHandle` is `Ready` on its
+        // first poll whenever the pool thread got there first. So the hold is what the pool's
+        // one thread is for now (`PoolHeld`): it is taken *across* each poll, which makes every
+        // poll before the submit `Pending` by construction, and released between them, which is
+        // where each step actually happens with nothing in flight. The destination's existence
+        // is then read with no race under it, and the poll that would submit the actor command
+        // is the one this test declines to make.
+        one_blocking_thread().block_on(the_photo_interlock());
     }
 
     async fn the_photo_interlock() {
@@ -3595,23 +3726,27 @@ mod tests {
         let take = scratch.base().join("take.avi");
 
         let mut photographing = Box::pin(wchd.photo(camera.clone(), a_photo(&photo)));
-        // Bounded by a count of *its own polls*, which is exact here for the reason note N178
-        // gives: with the fence below, one poll is one step of this request and the number of
-        // steps is a property of `wch_photo` rather than of the host. It takes three.
+        // Bounded by a count of *its own polls*, which is exact here for the reason notes N178
+        // and N237 give: with the pool held across the poll and drained after it, one poll is
+        // one step of this request and the number of steps is a property of `wch_photo` rather
+        // than of the host. It takes three.
         let mut steps = 0;
         while !photo.exists() {
+            let held = PoolHeld::take().await;
             assert!(
                 one_poll(&mut photographing).await.is_pending(),
-                "the photo answered before a take could start, so this test constructed \
-                 no window"
+                "the photo answered while the blocking pool was held, which means it reached \
+                 its answer without opening a destination and this test constructed no window"
             );
-            pool_caught_up().await;
+            held.release().await;
             steps += 1;
             assert!(steps < 64, "the photo never opened its destination");
         }
         // The window, and it is now a fact rather than a hope: the destination exists, so the
-        // open has run; the photo has not been polled since, so it has submitted nothing; and
-        // the pool is idle, so nothing is about to change either.
+        // open has run; the photo has not been polled since, and the poll that queued the open
+        // could not have got past it because the pool's one thread was held for the whole of
+        // it, so it has submitted nothing; and the pool is idle, so nothing is about to change
+        // either.
         assert_eq!(
             backend.streams_started(),
             0,

@@ -1555,6 +1555,17 @@ test that fills the queue and asserts the count, and another that drops the rece
 entirely. The bound is `limits::PROGRESS_QUEUE_DEPTH`, so "how much progress may pile up"
 stays in the one table (rubric A14). A dropped event is a number, not a silence.
 
+**Amended 2026-08-17 (batch B10b, note **N230**): the implementation this note cites is
+gone, and the finding is not.** `ChannelSink`, its two tests and `limits::
+PROGRESS_QUEUE_DEPTH` were deleted at B10 — both composition roots arrived and neither took
+them (docs/11's **L16**). So the paragraph above should be read as: *emitting cannot fail in
+a way a sweep may act on*, which is this note's whole subject and is unchanged, and *the
+lossy bound is counted somewhere a reader can find*, which is now
+`daemon::events::Fanout`'s `unheard`/`lagged` over `limits::SUBSCRIPTION_BROADCAST_DEPTH`
+for the daemon, and nothing at all for `webcam-handler-cli`, which renders on the sweep's
+own thread and has no queue to lose from. Three implementations of the trait are still what
+§2.9 asks for; the real one is now each root's.
+
 **What would change this.** If P4e's subscription needs to distinguish "this client is
 slow" from "this client is gone" — to reap it, say — that is a *query* on the sink, not a
 failure of `emit`, and it lands as another method. The moment `emit` has a failure a sweep
@@ -6370,16 +6381,21 @@ The decision is a fold, `daemon::events::lag_verdict`, with both arms and the pa
 tested — because forcing a real fan-out lag means keeping a subscription's task from running
 while `SUBSCRIPTION_BROADCAST_DEPTH` events go past it, which is a fact about the scheduler
 wearing a fact about the queue. At the *other* two hops there is one answer and it is note
-**N17**'s and `engine::progress::ChannelSink`'s: **drop, and count.** Never block — the
-producers are a camera actor's own thread and the hotplug watch's, and either one waiting on
-a subscriber is the wedge this sub-milestone exists to make unrepresentable.
+**N17**'s: **drop, and count.** Never block — the producers are a camera actor's own thread
+and the hotplug watch's, and either one waiting on a subscriber is the wedge this
+sub-milestone exists to make unrepresentable. (This sentence named
+`engine::progress::ChannelSink` as the second holder of that law until 2026-08-17; note
+**N230** deleted it, and the law's one home at this hop is now `daemon::events` itself.)
 
 **Events emitted with nobody subscribed are dropped and counted**, which is P4e-i's decision
 rather than an accident. `broadcast::Sender::send` answers `Err` exactly when
 `receiver_count() == 0`, and `Fanout::unheard` turns that into a number. Nothing is buffered
 for a client that has not arrived: a parked long-lived `Receiver` would hold a whole sweep's
-events for nobody, which is the unbounded growth `limits::PROGRESS_QUEUE_DEPTH` rejects one
-crate down. The sweep is on disk either way (D9), and `schema::progress` already documented
+events for nobody, which is the unbounded growth every bound on this path exists to reject.
+(This clause cited `limits::PROGRESS_QUEUE_DEPTH` "one crate down" until 2026-08-17; note
+**N230** deleted the constant with the sink that read it, and the bound that rejects the
+growth at this hop is `limits::SUBSCRIPTION_BROADCAST_DEPTH`, in this crate.) The sweep is
+on disk either way (D9), and `schema::progress` already documented
 the posture — an event "is allowed to be dropped when nobody is listening".
 
 ### The hotplug watch runs while somebody is listening, and not before
@@ -23020,3 +23036,896 @@ a close frame that could not be written was reported as a goodbye that was said
 ```
 
 **Retires when:** nothing.
+
+---
+
+## N224 — Every operation in `align_down` saturated except the one that mattered, and its answer was the far end of the range
+
+**Doc:** design **D2** (a device's number is data, and no layer invents one); rubric **B10**
+(device-derived numbers are validated before use). Raised as docs/11 **L1**. Recorded 2026-08-17,
+batch B10.
+
+**Repo:** `schema::control::ControlRange::align_down`.
+
+The method rounds a value down to a whole step counted from the range's minimum, and it is a `pub`
+method of the shared vocabulary crate taking two device-supplied numbers and one caller-supplied
+one — so every `i64` is inside its contract. `value.saturating_sub`, `self.min.saturating_add` and
+`clamp_value` all said so. `offset - offset.rem_euclid(step)` did not.
+
+**The wrong answer is not the panic.** With `{min: 2000, max: 10000, step: 100}` — `White Balance
+Temperature` as `corpus/profiles/obsbot-tiny3.json` committed it — and `value = i64::MIN`, the
+offset saturates to `i64::MIN` and the subtraction has nowhere to go. Compiled with overflow checks
+it aborts; compiled without them, which is what `cargo install` produced until note **N225**, it
+wraps and the aligned value lands *above* the maximum, so `clamp_value` answers **10000**: the
+range's top, for the most negative input a caller can hand it. On a `pan_absolute` that is a motor
+driven to its far limit and reported as success, which is design §2.3's own worked example of the
+ioctl-dispatch defect one layer down.
+
+**Not live, and that is worth writing down rather than leaving to be rediscovered.** Both
+production callers clamp first — `WriteWarning::classify` and the fake's write path both hand
+`align_down` a value `clamp_value` has already pulled into range — and driving the shipped CLI with
+`i64::MIN` and `i64::MAX` at all three step-bearing controls of a committed profile gave correct
+clamped answers. What made it a finding anyway is that the guard is a *documented precondition on a
+public method*, not a type: nothing stops the fourth caller.
+
+**The fixture was one parameter away from the case**, which is docs/11 §9.2's named smell at its
+second instance. `alignment_rounds_down_the_way_a_driver_does_and_never_leaves_the_range` had, under
+the comment *"Saturating at the extremes rather than wrapping into a different answer"*, a range with
+`min: i64::MIN` — the one range where the offset *is* the value and the subtraction cannot
+misbehave. It also asserted `contains(...)`, which the wrong answer satisfies: 10000 is in range.
+
+**What went red first.** `a_value_far_below_a_real_range_aligns_to_its_minimum_and_not_to_its_
+maximum`, over the real range above, in both compilations:
+
+```text
+attempt to subtract with overflow                         (overflow-checks on)
+assertion `left == right` failed: left: 10000, right: 2000 (overflow-checks off)
+```
+
+The second was produced by running the same test under `CARGO_PROFILE_TEST_OVERFLOW_CHECKS=false`,
+which is how a defect that has two faces gets both of them recorded.
+
+**Retires when:** nothing. The comment on the method now states saturation as a rule about it rather
+than as a habit.
+
+---
+
+## N225 — The profile every installed binary is built under was the one this manifest never mentioned
+
+**The decision:** `[profile.release] overflow-checks = true`, with dependencies left at cargo's
+default. **Doc:** AGENTS' "Done means" and "Writing code" (device numbers validated before use, wire
+integers through `try_from` and never `as`); design **D2**; note **N116**, which is the manifest's
+other profile entry and the reason a per-package override cannot be trusted to be exact. Raised as
+docs/11 **L2**. Recorded 2026-08-17, batch B10.
+
+**Repo:** the root `Cargo.toml`, and `scripts/gates/shipped-profile-is-declared.sh`.
+
+Four profiles had a paragraph each — `dev`, `dev.package."*"`, `dev.package.webcam-handler-imaging`
+and `test` — and there was no `[profile.release]`. The README's install line is `cargo install
+--locked --path crates/daemon` and `cargo install` builds `--release`, so three tables described how
+this workspace is *developed* and nothing described how it ships. `dev` and `test` both have
+overflow checks on by default and cargo's release default is off, which means **every assertion this
+suite makes about a number was an assertion about a build nobody installs** — and N224 is what that
+costs when it lands on something: a panic in the tests and a range's maximum in the field.
+
+**What the panic then *is*, at each root, is note N238** and not this one. This note decided that a
+wrong number should stop rather than travel; N238 is what stopping looks like to the three
+binaries — a `DeviceGone` from the daemon, an exit 101 with no `Failure` document from either CLI
+root — because a shipped-behaviour decision that names only one of three consumers is half a
+decision.
+
+### What it costs, measured rather than estimated
+
+**Re-measured 2026-08-17 (batch B10b), and this table is the second measurement rather than the
+first.** The review of B10 reproduced rows 1 and 3 and could not drive row 2 — the build that
+recompiles every dependency with checks is what exhausted the machine — so all three were run
+again together, from three copies of this tree into one target directory, and taken **round-robin**
+so that a drift in the machine lands on all three rather than on the row that happened to run last.
+`webcam-handler-cli photo` over the fake with `corpus/profiles/obsbot-tiny3.json` — a 4K frame
+through eleven JPEG encodes, the most codec-bound path this workspace can run without a camera —
+five runs each on the P4/P5/P6 workstation:
+
+| build | seconds | median |
+|---|---|---|
+| cargo's release default (checks nowhere) | 1.91 1.85 1.84 1.86 1.85 | **1.85** |
+| checks everywhere, dependencies included | 2.18 2.21 2.13 2.27 2.14 | **2.18** (+18%) |
+| checks on the workspace crates only | 1.89 1.84 1.85 1.79 1.80 | **1.84** |
+
+**Each row's build was verified rather than assumed**, which is the half the first measurement did
+not have: `cargo build --release -v -p webcam-handler-cli` in each tree is 176 rustc units, of
+which **0** carry `-C overflow-checks=on` in row 1, **176** in row 2 and **7** in row 3 (`schema`,
+`imaging`, `engine`, `v4l2`, `fake`, `cli_core`, `webcam_handler_cli`). A benchmark row whose build
+was not read is a number about a tree nobody checked, which is the same defect this whole note is
+about one level up.
+
+So the whole of the 18% is third-party codec inner loops and none of it is ours. `[profile.release
+.package."*"] overflow-checks = false` is therefore not a saving bought at the cost of safety; it is
+the same safety for nothing, and it buys one more thing: `zune-jpeg` and `image` are tested and
+fuzzed under the semantics they release with, and a decoder that leans on wrapping in a hot loop —
+none of these have been read for it — would turn a malformed frame from a typed refusal into a dead
+process, which is availability-versus-capability inverted at the worst possible place.
+
+**N116's caveat applies, and the inexactness is now named rather than illustrated.** A per-package
+override cannot reach a dependency's generic that *our* code instantiates: a monomorphisation is
+code-generated into the crate that asks for it and takes that crate's flags. Which ones those are
+was read off the release `.rlib`s with `nm -C` — every dependency-owned symbol defined inside a
+checked workspace unit, 2026-08-17:
+
+| checked unit | dependency symbols codegen'd into it |
+|---|---|
+| `imaging` | `zune_jpeg::headers::parse_{app1,app2,app13,app14,dqt,huffman,sos,start_of_frame}`, `zune_jpeg::idct::scalar::idct_int_1x1`, `zune_jpeg::upsampler::upsample_no_op`, `image::imageops::affine::{flip_horizontal,flip_vertical,rotate90,rotate180,rotate270}` over `Luma<u8>` and `Rgb<u8>`, `png::encoder::write_chunk`, `imageproc::filter::gaussian_blur_f32` |
+| `schema` | `serde_json` (69), `schemars` (4) |
+| `engine` | `serde_json` (8), `tempfile` (2), `serde`, `getrandom` |
+| `cli_core` | `serde_json` (4), `clap_builder` (4), `serde` |
+| `v4l2` | `v4l` (1) |
+
+`image::codecs::jpeg::JpegEncoder::encode_image` — the example this note gave when it was written,
+and the one the review repeated — is **not** among them. What is among them makes the argument
+better rather than worse: the malformed-frame surface, `zune_jpeg`'s eight header parsers, is on
+the *checked* side, which is where a wrapped length wants to be, and what stays outside is the
+decoder's inner loops, which is exactly what row 3 prices at nothing.
+
+**Verified through the command the README gives**, because the whole finding is about a build nobody
+was looking at. `cargo install --locked --offline --path crates/daemon -v` into a cold target
+directory compiles **294** rustc units. Nine carry `-C overflow-checks=on` — `api`, `daemon`,
+`engine`, `fake`, `imaging`, `schema`, `v4l2`, `web`, `webcam_handler_daemon`, the whole of this
+workspace in the daemon's graph — and **285** do not. Of those 285, 29 are build-script units and
+13 are proc-macro units, so 256 are ordinary dependency library units; the graph holds 231 distinct
+dependency package-versions, and `cargo tree` lists 239 packages over `normal,build` edges and 220
+over `normal`.
+
+**The number that used to be here was 137, and it matched nothing** — not units, not packages, not
+either tree walk (found by the review of B10, re-run in B10b: every figure above reproduces to the
+unit). The likeliest way to produce it is counting `Running` lines in a **warm** target directory,
+where a unit that did not need rebuilding prints nothing. That is precisely the measurement artifact
+a note whose entire subject is "a build nobody was looking at" must not contain, and it is why the
+paragraph above now says which directory the count came from.
+
+**What can go red.** `shipped-profile-is-declared.sh`, whose three claims are the declaration, the
+value, and the two ways it gets undone quietly: a `[profile.…]` written into a *member* manifest,
+where cargo ignores it with a warning nobody reads on a green build, and a per-package carve-out
+that takes a workspace crate back out of the checks one name at a time. Its
+`fail_case_the_shipped_profile_is_not_declared_at_all` is the tree exactly as the review found it.
+The third claim was walked around by two ordinary TOML spellings when it first landed; note
+**N234** is the repair and its arms.
+
+**Nothing else departs from cargo's release defaults.** `lto`, `codegen-units` and `panic` are
+performance and behaviour decisions with no finding behind them, and this table exists so the
+shipped profile is visible, not so it can accumulate.
+
+**Retires when:** nothing. Amend it if a measurement ever finds a *product* crate paying for the
+checks on a path the primary consumer runs continuously — the recording path is the candidate
+nobody has measured.
+
+---
+
+## N226 — `camera-1` is a slug a camera can earn, and the card with no name was taking it
+
+**Doc:** design **D1** — *"a natural slug always wins its own name"*. Raised as docs/11 **L3**.
+Recorded 2026-08-17, batch B10.
+
+**Repo:** `schema::camera::assign_ids`.
+
+A card name that slugs to nothing gets `camera-<index>`, derived from enumeration position, under a
+comment asserting it *"cannot collide with a natural slug that is by definition non-empty and
+differently shaped"*. It is differently shaped from nothing: `"Camera 1"` slugs to exactly
+`camera-1`. The fallback was tested against `taken` — what earlier cards have already been given —
+and never against `reserved`, the natural slugs of *every* card in the list, so enumeration order
+decided the outcome. With the nameless card at index 1 and the card named "Camera 1" behind it, the
+nameless one arrived first and took `camera-1`, and the camera that has the name got `camera-1-2`.
+That is D1 inverted, in the function that states D1.
+
+The repair tests the fallback against `reserved` as well and lets the existing ordinal loop move it
+— the loop already checks both sets, which is why the seed-hardware case (`obsbot-tiny-3` being
+somebody's real name) has always worked. A natural base is deliberately *not* tested against
+`reserved`: it is in there, because it put itself there.
+
+**Both halves of the fixture are declared, and the test says so.** No device this project has seen
+reports a card name that slugs to nothing, and none reports "Camera 1" either. The rule is the
+subject, and a fixture built only from cards we have seen cannot state it — the same argument N189
+makes for its divergent card.
+
+**What went red first.** `a_card_that_slugs_to_nothing_does_not_take_the_slug_another_card_earned`:
+
+```text
+left:  ["webcam", "camera-1", "camera-1-2"]
+right: ["webcam", "camera-1-2", "camera-1"]
+```
+
+**Retires when:** nothing.
+
+---
+
+## N227 — The FourCC grammar refused non-ASCII in its documentation and accepted it in its parser
+
+**Doc:** `schema::camera::PixelFormat`'s own doc, which lists what `parse` refuses and names *"any
+non-ASCII character"* among them; note **N109**, the owner ruling that made the four characters the
+wire spelling. Raised as docs/11 **L4**. Recorded 2026-08-17, batch B10.
+
+**Repo:** `schema::camera::PixelFormat::parse`.
+
+`parse` walks `s.as_bytes()`, and its fallback arm took any byte that was not a backslash as
+standing for itself. A `é` is two bytes, so `"éé"` is four of them and decoded to
+`PixelFormat([0xc3, 0xa9, 0xc3, 0xa9])` — a format no device can have and one this build's own
+encoder would never write, since `Display` escapes every byte outside `0x21..=0x7e` as `\xNN`. The
+same arm accepted a raw `0x7f` and a raw NUL, both of which have a `\xNN` spelling and neither of
+which has a literal one. The decoder was not the inverse of the encoder it is documented as
+inverting.
+
+**The refusal test passed for a reason other than the one it named**, which is docs/11 §9.2's smell
+again: its non-ASCII case was `"MJP\u{00e9}"` — three ASCII characters and a two-byte one, so *five*
+bytes, refused for its length by the arm above it. Every genuinely four-byte non-ASCII spelling was
+accepted.
+
+The repair is one arm: a raw byte stands for itself only in `0x20..=0x7e`, which is `Display`'s
+graphic range plus the space that the type's doc argues for as the one input alias (`v4l2-ctl`
+prints the kernel's padded names as `Y16 `). Everything else is refused.
+
+**What went red first.** The four-byte cases added to
+`a_spelling_that_names_no_four_bytes_is_refused_rather_than_padded`:
+
+```text
+"éé" was accepted as a fourcc — left: Some(PixelFormat("\xc3\xa9\xc3\xa9")), right: None
+```
+
+**Retires when:** nothing.
+
+---
+
+## N228 — Thirteen kernel ABI bits were transcribed by hand while the constants they must equal were linked in and never asked
+
+**Doc:** AGENTS rule 4 (the device is the only authority on itself); design **§2.5** and **T6**'s
+purity walls, which are why the transcription is in the schema at all. Raised as docs/11 **L11**.
+Recorded 2026-08-17, batch B10.
+
+**Repo:** `schema::control::KnownFlag` and `schema::control::ControlType`, checked from
+`v4l2::sys::decode` and `v4l2::sys::ioctl`.
+
+`webcam-handler-schema` is the vocabulary crate and `dependency-walls.sh` keeps it clear of the V4L2
+backend, so it cannot name a bindgen constant and every kernel number in it is a hand-copied
+literal. That is the right structure and it has one obligation attached: *somewhere that can see
+both* has to say they are equal. Nowhere did. `webcam-handler-v4l2` links `v4l2-sys-mit`, whose
+bindgen output carries all thirteen `V4L2_CTRL_FLAG_*` and all fourteen named `V4L2_CTRL_TYPE_*`,
+and no assertion had ever compared one.
+
+**A transposed bit is neither a compile error nor a decode error.** It is `Inactive` read as
+`Slider` — an automation partner's ownership of a control going unnoticed \[PF:3\] — or a `Rect`
+read as `Area`, which is the PF:1 control decoded at the wrong width.
+
+**Exhaustive by construction on the half that can be.** `KnownFlag::ALL` is generated by
+`bit_vocabulary!` from the same list the bits are declared in, so a fourteenth flag arrives in the
+loop and does not compile until somebody names the kernel constant it is. `ControlType` has no
+generated `ALL` — `Unknown { raw }` is a payload-carrying arm and does not fit one — so its table is
+driven from the *kernel* side instead, which is AGENTS rule 4 applied to a header: the loop asks
+what `V4L2_CTRL_TYPE_RECT` is and then what this build does with it. The residual is stated in the
+test: a fifteenth variant added to the schema without a row there is not caught, and what is caught
+is the case that matters more, a named variant sitting on the wrong discriminant.
+
+**The population was larger than the finding.** Walking for the flags found the same class in two
+more places, and both are closed by the same pair of tests: `sys::decode`'s ten transcribed numbers
+(`CTRL_TYPE_INTEGER_MENU`, `CTRL_TYPE_INTEGER64`, three `FRMSIZE_TYPE_*`, three `FRMIVAL_TYPE_*`,
+`CAP_TIMEPERFRAME`, `BUF_FLAG_ERROR`) and `sys::ioctl`'s five, which decide what an ioctl *asks
+for* rather than what a reply means — a wrong `CTRL_FLAG_NEXT_COMPOUND` does not misread a control,
+it walks silently past every compound one, and PF:1 is the note about how long that took to notice
+the first time. What is still not derived is `NAME_LEN` and `DRIVER_LEN`: those are array lengths
+rather than constants with a bindgen name, and the module's struct-width assertion is what stands
+behind them.
+
+**What went red first.** Three constants seeded wrong at once — `KnownFlag::Inactive` moved onto
+`Slider`'s bit, `FRMIVAL_TYPE_STEPWISE` to 4, `CTRL_FLAG_NEXT_COMPOUND` to `0x2000_0000`:
+
+```text
+Inactive claims V4L2_CTRL_FLAG_INACTIVE, which this host's headers put at 0x0010 — left: 32, right: 16
+V4L2_FRMIVAL_TYPE_STEPWISE is 3 in this host's headers — left: 4, right: 3
+V4L2_CTRL_FLAG_NEXT_COMPOUND is 1073741824 in this host's headers — left: 536870912, right: 1073741824
+```
+
+**It was not free, and note N236 is the bill.** These tables are the first place in the workspace to
+name `V4L2_CTRL_TYPE_RECT`, `V4L2_CTRL_TYPE_HDR10_MASTERING_DISPLAY`, `V4L2_CTRL_TYPE_AV1_FRAME` and
+`V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX`, and bindgen reads the *build host's* headers — so this crate's
+test target acquired a header vintage it does not compile without, and nothing said so. Declared and
+checked since 2026-08-17; the comparison itself is unchanged.
+
+**Retires when:** nothing. The comparison costs one gate and the transcription cannot go away — T6
+is why it exists.
+
+---
+
+## N229 — D8's first transition had a state machine, four legality matches and a unit suite, and nothing in the product ever made it
+
+**Doc:** design **D8**, whose per-control vocabulary runs `Untouched` → `AutoDisabled` (automation
+partner disabled, value parked) → `Sweeping`; **D3**/**D4** (the guarded write and its ordering);
+rubric **A8**. Raised as docs/11 **L15**. Recorded 2026-08-17, batch B10.
+
+**Repo:** `engine::session::auto_disabled`, and — as of the amendment below —
+`engine::calibrate::record_switch_offs`.
+
+`ControlStatus::AutoDisabled` and `SessionEvent::AutomationDisabled` were fully built and fully
+tested, and `session::auto_disabled` had no caller outside its own test module. This build went
+straight to the third state: every sample's write is guarded, so a sweep of
+`exposure_time_absolute` switched `auto_exposure` off at its first value and the session document
+said so nowhere — while two doc comments (`session.rs`'s *"Called once per automation partner"*,
+`pairing.rs`'s *"The caller records these on the session"*) named a caller that did not exist. A
+third, in `session.rs`'s own test module, said D4 *restores* from that status's list; nothing has
+ever done that either, and the pre-sweep snapshot is what restores.
+
+**Deleting it was considered and refused.** D8's vocabulary is settled design, `ControlStatus` is a
+wire type in `schemas/`, and a session document on disk can already carry `"status":
+"auto_disabled"` — removing the variant would make a stored session unreadable to repair a comment.
+
+**Amended 2026-08-17 the same day, by the adversarial review of this batch, and the producer this
+note described is gone.** Everything above stands as the *finding*; what follows was the repair and
+it was wrong in three ways at once. It committed `session::auto_disabled` for each partner in front
+of `begin_sweep`, and therefore:
+
+- it appended an `AutomationDisabled` line to `log.ndjson` **before the device had done anything** —
+  nothing between `calibrate::run`'s entry and that loop touches the camera — and in particular
+  before `arm_pre_snapshot` had persisted the snapshot that could undo it, which is the inverse of
+  the ordering `lifecycle.rs`'s own header states. The log is append-only and `interrupted` cannot
+  retract a line, so a `Busy`, a `DeviceGone`, a `ControlInactive` or an `ENOSPC` at the first
+  sample left a durable claim about a camera nothing had touched;
+- it introduced a status a transient failure could strand with no verb out — a process that died
+  between the two commits left the control `AutoDisabled`, which `free_stranded_sweeps` does not
+  collect and `abandon_sweep` refuses — which is the **H2** class this same repair pass had already
+  closed once (notes **N139**, **N176**);
+- it changed a refusal an unattended agent reads. `may_auto_disable` also refuses `Sweeping`, so a
+  retry of an interrupted sweep was refused one commit earlier and answered `op: "auto-disable
+  exposure_time_absolute"` where it had always answered `op: "sweep exposure_time_absolute"` —
+  naming a verb the caller never asked for, unconditionally, on exactly the paired controls people
+  calibrate. Nothing pinned it: every `IllegalTransition` assertion in `calibrate.rs` checked
+  `kind()` or a substring.
+
+The repair is note **N233**: the *event* gets a producer where the device produces it, and the
+*status* keeps none, with the reason written beside it. So this entry's finding is closed and its
+answer is N233's.
+
+## N230 — The queue the engine built for the daemon that had not arrived yet, which both roots then declined
+
+**Doc:** rubric **A8**; AGENTS' *"constants live in `webcam-handler-schema::limits` and something
+reads each one"*. Raised as docs/11 **L16**. Recorded 2026-08-17, batch B10.
+
+**Repo:** `engine::progress` — `ChannelSink` and `limits::PROGRESS_QUEUE_DEPTH`, both deleted.
+
+`ChannelSink` was a `std::sync::mpsc::sync_channel` bounded by `PROGRESS_QUEUE_DEPTH`, lossy at the
+bound, counting its drops, with a full unit suite and a paragraph of reasoning. It was built at P4c
+on a sound argument — the engine names no async runtime (N5's wall), so something would have to
+bridge a `Receiver` onto a subscription — and **both consumers then arrived and neither took it**.
+`webcam-handler-cli` implements `ProgressSink` straight onto its own `SweepWatcher`, because an
+in-process sweep runs on the calling thread and has no boundary to cross;
+`daemon::events::ProgressBroadcast` implements it onto a `tokio::sync::broadcast` bounded by
+`SUBSCRIPTION_BROADCAST_DEPTH`, because a fan-out to N subscribers is not a queue of one.
+
+**The seam was right and the default implementation was a guess**, and the lesson is the part worth
+keeping: the bound and the drop policy belong to the root that owns the boundary, because only it
+knows how many consumers there are and what falling behind costs them.
+
+**Doc comments in four crates named it as the precedent** for lossy-bounded delivery — two of them
+saying things that were simply false (`daemon::events`: *"`ChannelSink` stays exactly where it is —
+that one is `webcam-handler-cli`'s, feeding indicatif"*; `engine::progress`: *"P4e's daemon bridges
+this receiver onto whatever its subscription speaks"*). They now cite the law where it actually
+lives, and `engine::progress`'s header keeps a short paragraph on what was here and why it is not,
+because the argument was good and only the implementation was unused.
+
+**Amended 2026-08-17 the same day, by the adversarial review of this batch: the sweep was a
+file-count and not a citation-count, and it stopped at the `.rs` files.** "Five in four crates" was
+five *files*, and five more citations were left standing. Four are in this document — the one place
+AGENTS calls "read before changing anything" — where **N17**'s `Repo:` paragraph and its
+drop-counting argument both named `ChannelSink` and its two now-deleted tests, and **N57** twice
+cited `limits::PROGRESS_QUEUE_DEPTH` "one crate down" for a bound that is now
+`SUBSCRIPTION_BROADCAST_DEPTH` in the daemon itself. The fifth is worse than stale: `daemon::events`'
+header **quoted, approvingly and as authority**, the very sentence from `engine::progress` that this
+note lists among the two outright falsehoods — in a file the same batch edited in four other places.
+All five are repaired, and N17 and N57 carry dated amendments rather than silent edits, because a
+note is case law and rewriting one to match today is how the record stops being one.
+
+The lesson for the next deletion of this shape: **grep the notes, not only the crates.** A doc
+comment that has stopped being true is found by the compiler often enough to feel covered; a
+prose citation in `docs/implementation-notes.md` is found by nothing.
+
+**What can go red.** The compiler, twice over: `limits::PROGRESS_QUEUE_DEPTH` no longer resolves, and
+a rustdoc link to `ChannelSink` is a `just doc` failure rather than a stale sentence. Neither reaches
+prose in this file, which is the gap the amendment above is about and which nothing closes. There is
+also no predicate walking `limits` for readers, and it is worth saying why not: the constant in this
+finding *had* a reader — `ChannelSink::new` — and the dead thing was one level up. A walk for unread
+constants would have reported this tree clean.
+
+**Retires when:** a third composition root needs a queue at this seam, in which case it brings its
+own bound, which is the whole of what this note says.
+
+---
+
+## N231 — The second accounting channel, and the fabricated decline that reached it
+
+**Doc:** note **N121**, whose rule this applies for the second time — *"a decline is data first and a
+line second"*; AGENTS rule 3 (named, counted skips); docs/8 Part C. Raised as docs/11 **L34**.
+Recorded 2026-08-17, batch B10.
+
+**Repo:** `testkit::battery::RestorationClaim`.
+
+`scripts/smoke-hw.sh` counts a hardware run's declined claims by grepping `^\s*SKIP` out of its log,
+which makes that log a text channel with no sender authentication: anything that prints the sentence
+is believed, and the thing most likely to print it is the unit test written to prove the sentence is
+right. `RestorationClaim::account_for` produced its decline and emitted it in one call, and both of
+its unit tests drove it with cameras that have never existed —
+`cam:three-read-only-controls` and `cam:nothing-left-to-check`. N121's repair was applied to
+`OracleReport` at P6d and not to this type, which is the whole of the finding: the *rule* landed and
+the *sweep for other instances* did not.
+
+**Amended 2026-08-17 the same day, twice, by the adversarial review of this batch.**
+
+**The route the fabricated line takes is not the one this note named.** `smoke-hw.sh`'s live
+selection is `test(/(^|::)hw_/)` (`:225`, `:228`), so a unit test in `webcam-handler-testkit` is
+never *selected* by that script and cannot print into the log it is running. The seam that reaches
+the census is the recorded-log one: `$WCH_SMOKE_HW_ACCOUNT` (`:212-222`) accounts over any saved
+log handed to it, including a whole `just ci` log — in which every unit test in the workspace *did*
+run. So the sentence is right and the mechanism is one hop longer: the fabricated line does not
+have to be in a hardware run's own output, it only has to be in a log somebody later asks the
+script to count. The split is the repair either way, and this is the one thing about it that was
+told wrong.
+
+**The argument was attached to the function that cannot make it.** The paragraph beginning "The
+empty-claim case fails rather than skips, and that is the choice" — the reasoning for a *panic* —
+was written as the doc for `declines()`, which returns a `Vec<String>` and refuses nothing, while
+`account_for`, which does the asserting, was left two lines and a bare `# Panics`. The doc split
+now follows the code split: `declines` argues N121's rule and what an empty report means, and
+`account_for` argues the refusal it makes.
+
+**And it was one of two.** `testkit::oracle::OracleReport::print` is the same defect one type over,
+in a file that already states N121's rule in its own words and then emits from a lib crate with no
+host asked. Note **N235** is its repair.
+
+**The split is N121's exactly.** `declines(camera, compared)` returns the lines and emits nothing;
+`account_for` is the two of them going to standard output, and it is the only path with a real
+camera in its hand.
+
+**One thing is new here and is worth the sentence: the refusal now comes first.** `account_for`
+asserts before it prints, because a run that checked nothing is a *failure* rather than a decline,
+and printing `SKIP (partial)` on the way out would put a fabricated decline in the log of a run that
+is about to go red — the same sentence, from the one path that has no right to it.
+
+**Asking for the value bought more than not printing.** The empty-report arm now asserts that there
+is exactly one line, that it names the camera and that it says which of the two reasons it is; and a
+third arm covers the shape a real camera produces and neither of the other two reaches — some
+outcomes compared, some controls owned by their automation again \[PF:24\] — including that an
+owner the pair set could not name says so rather than reading as an omission.
+
+**What went red first.** With the decline dropped from the owned-controls branch,
+`a_restore_that_checked_some_of_what_it_reported_declines_the_rest_by_name`:
+
+```text
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+```
+
+**Retires when:** nothing. The next accounting channel gets the same split, and this note plus N121
+is what says so twice.
+
+---
+
+## N232 — Three faults left the queue before the call knew which one it would report
+
+**Doc:** rubric **A9** (the fake resembles; its fault menu is a script, and a scripted claim that
+never fires is a suite lying to itself); design **§2.9**. Raised as docs/11 **L35**. Recorded
+2026-08-17, batch B10.
+
+**Repo:** `fake::camera::FakeCamera::next_frame`.
+
+The function opened by taking `FrameTimeout`, `DeviceGoneMidStream` and `SettleNeverConverges` off
+the fault queue in three statements, then decided what to do. `FaultQueue::take` consumes a one-shot,
+so **a call that reported one fault spent the other two**: a test scripting a `FrameTimeout` for one
+frame and a `SettleNeverConverges` for the next got the timeout, and the settle fault was gone. It
+is the worst shape a double can have, because the suite that made the claim reports green.
+
+**And a call that could produce no frame at all emptied the queue too** — the three takes were in
+front of the `state.stream` check, so a `next_frame` on a stopped stream spent every frame fault on
+its way to `EINVAL`. That half is not in the review's reading and is the more reachable of the two:
+`DeviceGoneMidStream` clears the stream, so the very next call is exactly that shape.
+
+The repair takes each fault where it decides the answer, in the order the answers are produced, and
+`SettleNeverConverges` last of all — after the stream check, because it *changes* a frame rather
+than replacing it and may only be spent by a call that is going to render one.
+
+**What went red first.** `a_call_that_reported_one_fault_leaves_the_others_still_scripted`, three
+scripted and one call:
+
+```text
+one call reported one fault and ate the two it did not report
+left:  []
+right: [SettleNeverConverges, DeviceGoneMidStream]
+```
+
+**Retires when:** nothing.
+
+---
+
+## N233 — The switch-off is a device fact, so it is written where the device produced it and nowhere earlier
+
+**The decision:** `SessionEvent::AutomationDisabled` is appended by `engine::calibrate` from the
+*write report*, at the sweep's first sample, through `lifecycle::note`; `ControlStatus::AutoDisabled`
+keeps no producer in this build, and the reason is stated on the transition that would make it.
+**Doc:** design **D8**'s per-control vocabulary; **D3**/**D4** and \[PF:6\] (the guarded write, which
+is what makes the fact true); `engine::lifecycle`'s header — *"the snapshot is on disk before the
+camera moves"* and *"`log.ndjson` is the record of what happened **to the device**"*; AGENTS rule 7.
+Raised as the adversarial review of B10, problems 3, 4 and 5. Recorded 2026-08-17, batch B10b.
+Supersedes the repair note **N229** described.
+
+**Repo:** `engine::calibrate::record_switch_offs`, called from `one_sample`;
+`engine::session::auto_disabled`, which now documents its own absence of callers.
+
+### Why the obvious place is the wrong place
+
+D8 reads `Untouched → AutoDisabled → Sweeping`, so the obvious producer sits in front of
+`begin_sweep`. That is where B10 put it, and it is in front of everything else too: in front of
+`arm_pre_snapshot`, in front of the first guarded write, in front of every refusal that can stop a
+sweep reaching the camera at all. Nothing between `calibrate::run`'s entry and that point touches
+the device — the settle bound, `describe`, `sweep::plan` and `pairing::plan` are all pure or
+read-only — so the line said a camera's automation had been switched off on the strength of a
+*plan*. `log.ndjson` is append-only and `interrupted` has no way to retract, so a `Busy`, a
+`DeviceGone`, a `ControlInactive`, an `EPERM` or an `ENOSPC` at the first sample left that claim on
+disk permanently, and it was written before the snapshot that would let anybody undo it.
+
+The general rule, and it is not new here — `lifecycle::commit_state` exists for exactly this
+distinction: **a line in `log.ndjson` is a claim about a camera, so the code that writes one has to
+have finished asking the camera.** A planner's answer is not a camera's.
+
+### Where it goes instead
+
+`lifecycle::sweep_write` is the one door from a sweep to a control write. It arms the snapshot, then
+performs the write guarded, and it hands back a `WriteReport` whose `disabled_automation` names the
+partners the executed plan switched off. On the far side of that `?` the snapshot is on disk, both
+controls have been written, and the fact is true. So the producer is one call later, at
+`step.index == 1`, and `lifecycle::note` — *"a note records something that happened to the camera
+while the document already says what it needs to say"* — is the door that was already there for it.
+
+Once per sweep and not once per sample: the guarded plan re-asserts the switch-off at every value,
+so the list is the same sixteen times over and a line per value would make a 256-sample history
+unreadable for a fact that did not change. A second pass records it again, because it happened
+again — and `free_stranded_sweeps`'s own argument applies, that a duplicated line is recoverable and
+a lost one is not.
+
+**What this deliberately does not record:** a sweep whose first guarded write *fails part-way*
+switched the automation off and then could not drive the manual value, and no report comes back, so
+no line is written. That is the honest side of the trade — the pre-sweep snapshot is what puts such
+a camera back, and it is on disk before either write — and it is stated here rather than left for
+somebody to find as an omission.
+
+### Why the status keeps no producer
+
+`ControlStatus::AutoDisabled` is D8's middle state, and this build's architecture makes it true only
+at a moment when it cannot be written: the guarded write happens *inside* the sweep, by which time
+`begin_sweep` has moved the control to `Sweeping`, and `may_auto_disable` refuses from there for the
+reason it states — changing what governs a control mid-sweep invalidates the samples already taken.
+D8 describes a switch-off phase in front of the sweep; P6 built guarded writes instead, and the two
+are the same law arriving at different times.
+
+So the variant stays and the transition stays, both documented as unproduced. The variant because
+`ControlStatus` is a wire type in `schemas/` that a stored session may carry and `cli-core` already
+renders; the transition because it is the one correct spelling of the state for whoever does need
+it. **What is not added is a recovery arm for it.** The review asked, rightly, for either a way out
+or no producer — and with no producer the strand is unreachable, so a `free_stranded_sweeps` branch
+for it would be speculative code answering a state nothing can create, which is rubric A8's class
+and the thing this whole finding started as.
+
+### And the refusal an unattended agent reads goes back to naming the caller's verb
+
+`may_auto_disable` refuses `Sweeping` as well, so the deleted producer answered `IllegalTransition
+{ from: "sweeping", op: "auto-disable exposure_time_absolute" }` to a caller who typed
+`calibrate sweep` — one commit before `begin_sweep` would have said `op: "sweep
+exposure_time_absolute"`. Same kind, different payload, and `docs/agent-guide.md` sends an agent to
+`from` and `op` to find out what to do. It was unpinned at this layer, so 655 tests stayed green
+while it changed.
+
+**What went red first.** Three arms, against the tree as B10 left it:
+
+```text
+a_sweep_records_the_partner_it_switched_off_once_and_after_the_write_that_did_it
+  the switch-off is on the record before the snapshot that can undo it, which is
+  `lifecycle`'s ordering inverted: [… AutomationDisabled …, SweepStarted …, SnapshotTaken …]
+
+a_sweep_stopped_before_its_first_write_records_no_switch_off
+  the sweep never reached the camera and the history says a partner was switched off:
+  [… AutomationDisabled { manual: exposure_time_absolute, automation: auto_exposure },
+     SweepStarted …, SweepInterrupted { taken: 0, detail: "unrecorded_controls(brightness)…" }]
+
+a_sweep_refused_because_one_is_already_running_names_the_verb_the_caller_asked_for
+  left:  IllegalTransition { from: "sweeping", op: "auto-disable exposure_time_absolute" }
+  right: IllegalTransition { from: "sweeping", op: "sweep exposure_time_absolute" }
+```
+
+The second arm's window is scripted rather than raced: `Fault::ControlReadDeclined` is a one-shot
+that `describe`'s own control walk would spend, so the test arms it from a `ProgressSink` that fires
+on `SweepStarted` — the one point that is synchronously inside the sweep and after the announcement.
+
+**Retires when:** a verb appears that parks a control's automation *before* a sweep — D8 imagines
+one and P6 did not build it. That verb is `session::auto_disabled`'s caller, and it would make the
+status producible with the ordering the right way round.
+
+---
+
+## N234 — A carve-out the manifest's own house style spells, walked past by the check written to catch it
+
+**Doc:** AGENTS rule 1 (*a fix lands with its gate*) and rule 3; note **N225**, whose third claim
+this is. Raised as the adversarial review of B10, problem 1. Recorded 2026-08-17, batch B10b.
+
+**Repo:** `scripts/gates/shipped-profile-is-declared.sh`, claim 3.
+
+The claim was *"no `[profile.release.package.<member>]` turns `overflow-checks` back off for one of
+ours"*, and it was implemented by building the section name from each member's package name and
+comparing it, unquoted, against the raw bracket text of the manifest. Two ordinary TOML spellings of
+the same carve-out are therefore invisible to it, and the review drove both against scratch trees
+and then compiled `webcam-handler-imaging` in each:
+
+```text
+[profile.release.package."webcam-handler-imaging"]     PASS — 16 items examined, 0 named skip(s)
+overflow-checks = false                                rustc: no overflow-checks flag
+
+[profile.release.package]                              PASS — 16 items examined, 0 named skip(s)
+webcam-handler-imaging = { overflow-checks = false }   rustc: no overflow-checks flag
+
+(pristine control)                                     rustc: overflow-checks=on
+```
+
+The quoted form is not exotic: `[profile.release.package."*"]`, two lines above in this very
+manifest, quotes its name. So the spelling a person would copy is the one that got past. And the
+counter could not tell: `overrides_checked` reported **0** on the real tree, which is also exactly
+what a bypass produces, so the census that is supposed to say what the claim rests on said the same
+thing for "there is nothing to find" and "I cannot see what is there".
+
+**The repair is a whitelist, and it is a shorter sentence than what it replaces.** Claim 3 now asks
+*who is carved out at all* and permits exactly `"*"` — the dependency split N225 measured. That
+removes the per-member name matching both bypasses exploited, and it widens the claim in a direction
+worth having: a carve-out for a *named dependency* is also a shipped-behaviour decision, with no
+measurement behind it, and now says so. Table headers and keys are unquoted before comparison
+(`[profile."release"]` and `[profile.release]` are one table to cargo and were two to this walk),
+package tables are read whichever of the three shapes says them, and the two shapes the walk
+declines to decode — an inline `package = { … }` under `[profile.release]`, a `release.…` dotted key
+under a bare `[profile]` — are **findings with a name** rather than silences, because a `sed` walk
+that shrugs at TOML it does not understand is a gate whose green is unearned.
+
+**And the census now distinguishes.** `gate_require_nonzero` moved onto the *release-profile tables*
+— a population that is 2 on the real tree and 0 only if the walk has stopped seeing the profile —
+while the carve-out count is reported plainly, because a manifest that carves nothing out satisfies
+claim 3 honestly. Every bypass raises that count as well as failing, so 0 no longer means two
+things.
+
+**What went red first.** Four new fail arms, each `gate_red_because` its own sentence: the quoted
+name, the key under `[profile.release.package]`, a dependency carved out by name, and the inline
+table the walk refuses to guess at. Plus a green arm — `pass_case_the_same_tables_spelled_with_
+quotes_are_the_same_tables` — so the normalisation cannot have been achieved by no longer looking.
+Twelve arms, all behaving.
+
+**Retires when:** nothing. Widen the whitelist only with a measurement beside it, which is the whole
+of what claim 3 is for.
+
+---
+
+## N235 — The second decline that could be printed by something with no host in its hand
+
+**Doc:** note **N121** (*a decline is data first and a line second*), applied for the third time;
+note **N231**, which applied it for the second; AGENTS rule 3. Raised as the adversarial review of
+B10, problem 12. Recorded 2026-08-17, batch B10b.
+
+**Repo:** `testkit::oracle::OracleReport::print`, `testkit::oracle::Tools`.
+
+N231 repaired `battery::RestorationClaim` and reported one library-code `SKIP` producer. There were
+two. `oracle.rs` already had N121's *split* — `decline_lines()` returns, `print()` emits — and it
+argues the rule in its own words at the top of `decline_lines`: *"Returned rather than printed so
+that a caller can hold one **without emitting it**"*. Then `print()` emitted whatever the report
+held, from a library crate, with no check that a host had ever been asked. The discipline was held
+by a comment in the one test that knew — *"Deliberately **not** `report.print()`: these absences are
+invented"* — and nothing held it for the next test.
+
+**Two censuses read those lines and neither can tell an invented absence from a real one.**
+`scripts/smoke-hw.sh:138` greps `^\s*SKIP` out of a saved run log, and `$WCH_SMOKE_HW_ACCOUNT` will
+account over any log handed to it, including a whole `just ci` log in which every unit test ran;
+`scripts/rung-oracles.sh` greps a narrower anchor out of its own. A `SKIP oracles: ffprobe is not on
+this host` printed by a `HostFault::NoOracles` arm on a machine with ffmpeg installed is a false
+absence wearing the accounting's own words — which has been watched happening once already, and is
+the sentence that paragraph in `decline_lines` was written about.
+
+**The repair puts the provenance on the report.** `Tools` gains `absences_are_this_hosts`, with **no
+default implementation** so a third double has to answer rather than inherit; `OnPath` says yes,
+`ScriptedTools` says no, and `validate_with` records the answer on `OracleReport::
+measured_on_this_host`. `print` asserts before it prints, which is N231's own ordering for its own
+reason: a line already in a log cannot be taken back.
+
+**What went red first.** `a_decline_a_double_invented_cannot_be_printed_into_a_counted_log`, a
+`#[should_panic]` arm, run with the assertion removed:
+
+```text
+SKIP oracles: ffprobe is not on this host (no `ffprobe` on this host's PATH), so 3 claim(s) …
+SKIP oracles: mpv is not on this host (no `mpv` on this host's PATH), so 1 claim(s) …
+test … - should panic ... FAILED
+note: test did not panic as expected
+```
+
+Both oracles are installed on this host, so those two lines are the defect itself, printed into the
+run log by the test that proves the defect exists — which is exactly the shape N121 named.
+
+**The inverse arm is real rather than decorative.** `a_report_with_nothing_absent_prints_whatever_
+asked_for_it` drives a `ScriptedTools` report with `absent` emptied and requires `print` to work:
+without it the assertion could tighten to "no double may print" and nothing would notice. And the
+red arm carries **no `both_oracles_or_decline` guard**, deliberately — `HostFault::NoOracles` hides
+both oracles whatever the host has, so the property is reachable on every machine, and a guard would
+have made this arm stop being reachable exactly on the hosts that need it most.
+
+**Retires when:** nothing. The next accounting channel gets the same split, and N121, N231 and this
+are what say so three times.
+
+---
+
+## N236 — A build precondition that existed in a test table and in no document
+
+**Doc:** design §2.8 and §6's build-dependency row (\[PF:10\], the owner's build-deps-are-fine
+ruling); AGENTS rule 3 (*no auto-skipping rung without a named, counted skip*); note **N228**, which
+created this. Raised as the adversarial review of B10, problem 9. Recorded 2026-08-17, batch B10b.
+
+**Repo:** `scripts/gates/uapi-constants-are-declared.sh`, the README's *Required to build*, design
+§6.
+
+`v4l2-sys-mit`'s build script runs bindgen over **this host's** `<linux/videodev2.h>`, so the kernel
+names `webcam-handler-v4l2` can use are whatever the build host defines. That has always been true
+and never bit: the product code imports long-standing struct types only. N228's tables changed it.
+To compare the schema's hand-copied numbers against the kernel's, they have to name the kernel's —
+and `V4L2_CTRL_TYPE_RECT`, `V4L2_CTRL_TYPE_HDR10_MASTERING_DISPLAY`, `V4L2_CTRL_TYPE_AV1_FRAME` and
+`V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX` are the first mentions of any of those four in this workspace.
+
+On a host whose headers predate one of them, `cargo build --workspace` succeeds and `cargo test -p
+webcam-handler-v4l2` **does not compile**. That is a red build for an environment reason with no
+named skip in front of it, and the message a builder gets — `cannot find value
+v4l2_ctrl_type_V4L2_CTRL_TYPE_RECT in module uapi` — says nothing about headers, nothing about which
+package supplies them, and nothing about what the run therefore did not claim.
+
+**Declared, not avoided**, because the alternative is dropping the newest four rows and leaving the
+newest four control types as the only ones nobody checks — a weaker claim wearing a quieter build.
+The declaration is in the README's *Required to build*, where somebody installing dependencies is
+already reading, and in design §6's bindgen row.
+
+**And the check is a name, not a version.** "Your headers are older than 6.5" is upstream history
+this repository has no offline authority over, so the gate asks the question the compiler asks:
+every `uapi::`/`v4l_sys::` identifier under `crates/backends/v4l2/src/`, turned back into the
+header's own spelling (bindgen prefixes an enum member with its enum's name), looked for in
+`/usr/include/linux/videodev2.h`. **46 names on this tree.** The population is derived from the
+crate, so a constant added to a table next year is a precondition added at the same time and this
+notices without anybody remembering to. A host with no header at all gets a named, counted skip —
+that is a machine that cannot build the crate at all, which `cargo build` reports first and louder.
+
+**What went red first.** Five fail arms, each `gate_red_because` its own sentence: a header with
+`V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX` deleted (the defect exactly as the review found it), one with
+`V4L2_CTRL_TYPE_RECT` deleted (which also proves the enum-prefix rewriting), a scratch tree whose
+code asks for a name no kernel has, a tree whose `sys/` module has stopped naming the kernel at all
+(rule 3's vacuity case), and a tree without the crate. Both doctored headers are the real one minus
+a line, which is `ScriptedTools`' rule for a missing binary applied to a missing constant.
+
+**Retires when:** the workspace stops naming kernel constants outside `crates/backends/v4l2/`'s
+product code — which would mean N228's comparison had gone, and that is a bigger loss than this
+precondition is a cost.
+
+---
+
+## N237 — A fence between polls says nothing about what happens inside one
+
+**Doc:** AGENTS *"no `sleep` as synchronisation"* and *"every test must be able to fail — for the
+reason it names"*; notes **N52**, **N66**, **N68** (a verdict that moves with the machine); note
+**N178**, whose construction this replaces; note **N170**, the interlock being tested. Raised by the
+orchestrator's own measurement during batch B10b. Recorded 2026-08-17.
+
+**Repo:** `daemon::server::tests::PoolHeld`, `one_blocking_thread`, and the constructed window in
+`the_photo_interlock`.
+
+`a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera` builds a
+window: `wch_photo` has passed `Recordings::not_recording`, has opened its destination, and has
+**not** submitted its actor command. N178 built it by giving the runtime one blocking thread,
+polling the request one poll at a time, and fencing the pool after each poll — so that "the
+destination exists" could be read with nothing in flight.
+
+It was not enough, and the reason is one line of tokio semantics. `Wchd::offload` is
+`spawn_blocking(…).await`. A `JoinHandle` whose closure has **already finished** is a ready future,
+so the `async fn` resumes and runs the code behind that await *inside the same poll* — and the code
+behind the destination's open is `CameraActor::submit`, with no await in between. All it takes is
+the runtime thread being preempted between `spawn_blocking` returning and the handle's first poll,
+which is what a loaded machine does. The fence is between polls; the hazard is inside one.
+
+**What it looked like.** Once in ten workspace runs, and it does not look like a flake — it looks
+like the interlock failing:
+
+```text
+FAIL server::tests::a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera
+panicked at crates/daemon/src/server.rs:3631:14:
+a photo whose command lands during a take: PhotoResponse { report: PhotoReport { … delivery:
+Path { path: "/tmp/wchwVQpI/during-a-take.jpg", byte_count: 1703295 } }, bytes: None }
+```
+
+The photo **succeeded**. Its command had been submitted before the take was registered, so it ran
+first and found no recording — which is what "the window was never built" produces, and is
+indistinguishable in the log from the interlock genuinely letting one through. That
+indistinguishability is the real cost: a test that goes red for load is N52/N66/N68's defect wearing
+the other face, and this one goes red *saying a safety property failed*.
+
+**The repair is a hold rather than a fence.** `PoolHeld` takes the pool's one thread and does not
+answer until the pool thread has announced it is inside the holding closure — an announcement, not
+a duration. Every await in `wch_photo` before the submit is an `offload`, so with the thread held
+each poll is `Pending` **by construction**: the closure it queued cannot have run and the request
+cannot be past it. The hold is then released and the queue drained, which is where the step actually
+happens, outside any poll, with nothing in flight.
+
+**Reproduction was attempted and failed, and that is worth recording.** 232 targeted runs of the
+pre-repair test — 40 under sixteen spinners, 72 as three rounds of twenty-four concurrent copies,
+60 pinned to one CPU, 60 pinned to one CPU against two spinners on it — produced **no** failure. The
+window is a handful of instructions wide and wants an involuntary context switch inside it; the
+conditions that produce it are a full 1523-test workspace run's, not a stress loop's. So this repair
+is argued from the mechanism and from one recorded failure, and it is made **structural** rather
+than made less likely — which is the only kind of repair worth making when the red arm is a lottery.
+
+**What can go red.** `a_poll_that_finds_its_blocking_handoff_finished_crosses_the_step_behind_it_
+too` is the hazard stated as a property: a step, a hand-off, and a step with no await in front of
+it, driven with a ready hand-off, must cross both in one poll. Seeded with a `yield_now()` between
+the hand-off and the step, it fails — which is the same thing as saying that if this build ever
+gains an await there, the arm notices and the hold stops being necessary.
+
+Its hand-off is `std::future::ready` rather than a `JoinHandle` the pool has finished with, and the
+first draft was the other way round: a closure that announces it has returned has not necessarily
+had its task marked complete yet, so the `JoinHandle` version went red on the run after the one that
+proved it green. What is under test is the `async fn`; that a finished `spawn_blocking` presents as
+a ready future is tokio's contract, and the failure quoted above is what says it happens.
+
+**There is deliberately no test on the hold itself**, and the reason is in `one_blocking_thread`'s
+doc: the guarantee is the runtime's — at most `max_blocking_threads` closures at once — and the only
+way to test it is to assert a negative about an instant. Driven with the builder seeded to `2`: a
+`try_recv` arm and a counter arm both stayed green three runs out of three, because a second pool
+thread that has not been scheduled yet looks exactly like a pool that is held. An assertion whose
+false branch cannot go red is the one thing AGENTS forbids of a test, so the claim is stated once,
+beside the number it depends on, instead of being restated as a test that would only look like one.
+
+**Retires when:** `wch_photo` gains an await between its destination open and `CameraActor::submit`,
+which would make the window a poll boundary and this whole construction unnecessary. The arm above
+is what would notice.
+
+---
+
+## N238 — The checks stop a wrong number; what stopping *is* differs at each of the three roots
+
+**Doc:** AGENTS rule 7 (availability is not capability, and no layer converts one into the other)
+and the error-vocabulary paragraph of *Who runs this*; notes **N127**/**N128** (a failing `--json`
+run prints a `schema::error::Failure` and exits by kind); note **N225**, which turned the checks on.
+Raised as the adversarial review of B10, problem 10. Recorded 2026-08-17, batch B10b.
+
+**Repo:** the root `Cargo.toml`'s release paragraph; `daemon::actor`; `cli_core::report_failure`.
+Nothing is repaired here — this note is the statement N225 owed and did not make.
+
+N225 turned overflow checks on for the shipped workspace crates, on the argument that a wrong number
+is worse than a stopped one, and priced the change in seconds. It said one sentence about what
+stopping looks like — *"the daemon's actor turns it back into a typed failure for the camera it
+happened to"* — and that sentence covers one of the three binaries and describes it imprecisely.
+
+**The daemon: a typed failure, and the wrong type.** Traced: an actor-thread panic unwinds,
+`Liveness`'s `Drop` marks the actor dead, the caller's `answer()` never runs, the channel
+disconnects, and `TrySendError::Disconnected(_) => Err(self.device_gone())` hands the caller
+**`DeviceGone`**. In this project's own vocabulary that means *stop and tell the human about the
+device* — so an arithmetic bug in workspace code presents to the primary consumer as a camera that
+vanished. It is a capability/availability inversion of exactly the shape rule 7 forbids, arriving
+by a route rule 7 was not written about: not a layer converting one into the other, but a panic
+having only one exit.
+
+**Both CLI roots: no typed failure at all.** `webcam-handler-cli` and `webcam-handler-client` have
+no `catch_unwind`. An overflow panic bypasses `cli_core::report_failure` entirely, so a `--json` run
+prints **no** `schema::error::Failure` on standard output and exits **101** rather than a code from
+`cli_core::exit_code`. The N127/N128 contract — *a failing `--json` run prints a document too* — is
+simply not kept on this path, silently, and an agent parsing standard output gets nothing to
+dispatch on.
+
+**Why neither is repaired here.** Both are behaviour changes to shipped binaries and both want a
+decision this batch does not own. The daemon's wants a D13 kind that means *this process failed*
+rather than *your camera did*, and adding one to the registry is a wire change. The CLI roots' wants
+a `catch_unwind` at each `main`, which is a decision about whether a panic is reported as a
+`Failure` or left to the runtime — and doing it half-way, on one root, would break the byte-for-byte
+parity `cli-parity.sh` holds. Recorded so the next person meets the fact rather than the surprise.
+
+**What can go red:** nothing, and that is stated rather than glossed. There is no test here because
+there is no decision yet; the manifest's release paragraph carries the same three sentences so a
+reader of the profile meets them where the checks are turned on.
+
+**Retires when:** a D13 kind exists for "this process failed at something arithmetic", the daemon's
+actor answers it, and both CLI roots render a `Failure` for a panic. That is one change, not three,
+and it wants an owner ruling on the wire addition.

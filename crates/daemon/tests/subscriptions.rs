@@ -538,8 +538,7 @@ async fn a_subscriber_that_stops_reading_costs_counted_drops_and_never_the_daemo
 
     // The bound did its job on the subscriber that stopped, and it did it *at the bound*:
     // everything past one connection's buffer is dropped, and every drop is **counted**
-    // rather than silently lost (rubric rule 3; `engine::progress::ChannelSink` makes the
-    // same pair of claims one crate down). The itemisation is asserted against the total
+    // rather than silently lost (rubric rule 3). The itemisation is asserted against the total
     // this test just waited on, which is what keeps the two bookkeepings from drifting.
     let hotplug = fixture.wchd.subscriptions().hotplug;
     assert_eq!(
@@ -722,8 +721,8 @@ async fn a_client_that_vanishes_mid_sweep_is_reaped_and_the_sweep_finishes_witho
 async fn a_sweep_with_nobody_watching_drops_its_events_and_counts_them() {
     // **P4e-i's decision, both directions.** Nothing is buffered for a subscriber who has
     // not arrived — keeping a `Receiver` parked so nothing is "lost" would buffer a whole
-    // sweep for nobody, which is the unbounded growth `limits::PROGRESS_QUEUE_DEPTH`'s doc
-    // rejects one crate down — and the drop is a *number*, because a silence is what rubric
+    // sweep for nobody, which is the unbounded growth `limits::SUBSCRIPTION_BROADCAST_DEPTH`'s
+    // doc rejects — and the drop is a *number*, because a silence is what rubric
     // rule 3 forbids.
     //
     // The second half is what makes it a decision rather than a bug: the same sweep, with a

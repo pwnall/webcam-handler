@@ -362,6 +362,12 @@ pub struct OracleReport {
     pub absent: BTreeMap<Oracle, String>,
     /// Everything wrong, arm-prefixed. Empty means the run is green.
     pub failures: Vec<String>,
+    /// Whether [`Self::absent`] is what **this host** is missing, or what a double invented.
+    ///
+    /// Carried on the report because [`Self::print`] is the one call that puts a decline where
+    /// a census will count it, and a decline is only true if a host was actually asked (note
+    /// **N235**). [`Tools::absences_are_this_hosts`] is where each implementation answers.
+    pub measured_on_this_host: bool,
 }
 
 impl OracleReport {
@@ -463,7 +469,32 @@ impl OracleReport {
     /// web_browser.rs`'s arrangement and its reason: **a rung that printed neither is a rung
     /// nobody can tell apart from one that was never invoked**, so the runner treats that as a
     /// failure and this function is what makes one of the two always appear.
+    ///
+    /// **A fabricated decline cannot leave through here** (note **N235**, the G6 review's
+    /// finding 12 against B10). This is the second half of the split
+    /// [`Self::decline_lines`] describes, and until 2026-08-17 the split was held by a comment:
+    /// the fabricated-host arm knew to call `decline_lines()` instead of this, and nothing
+    /// stopped the *next* arm from calling this. Two censuses read these lines —
+    /// `scripts/smoke-hw.sh`'s `^\s*SKIP` grep over a saved run log, which is what
+    /// `$WCH_SMOKE_HW_ACCOUNT` re-reads, and `scripts/rung-oracles.sh`'s narrower anchor — and
+    /// both believe whatever printed the sentence. So the report says whether a host was asked
+    /// and this refuses to emit an absence no host reported. It is the treatment
+    /// `battery::RestorationClaim::account_for` got at the same time (note **N231**), for the
+    /// same reason: the refusal comes before the printing, because a line already in the log
+    /// cannot be taken back.
+    ///
+    /// # Panics
+    ///
+    /// When the report carries absences a [`Tools`] double invented.
     pub fn print(&self) {
+        assert!(
+            self.absent.is_empty() || self.measured_on_this_host,
+            "{}: this report's {} absent oracle(s) were invented by a Tools double, and \
+             printing them would put a decline about a host nobody asked into a log two \
+             censuses count (note N235). Assert `decline_lines()` instead.",
+            self.file,
+            self.absent.len()
+        );
         for line in self.decline_lines() {
             println!("{line}");
         }
@@ -519,6 +550,14 @@ impl fmt::Display for OracleReport {
 pub trait Tools: fmt::Debug {
     /// The program to run for `oracle`, or `None` when this host does not have it.
     fn locate(&self, oracle: Oracle) -> Option<Utf8PathBuf>;
+
+    /// Whether a `None` from [`Self::locate`] is **this host's** absence or an invented one.
+    ///
+    /// No default, so a third implementation has to answer rather than inherit (note
+    /// **N235**). It is the one thing a report cannot work out for itself, and
+    /// [`OracleReport::print`] is where it decides whether a decline may reach a log that two
+    /// censuses count.
+    fn absences_are_this_hosts(&self) -> bool;
 }
 
 /// The real lookup: `$PATH`, in order, first executable wins.
@@ -548,6 +587,11 @@ impl Tools for OnPath {
             }
         }
         None
+    }
+
+    /// Yes: this is the `$PATH` of the process that is running.
+    fn absences_are_this_hosts(&self) -> bool {
+        true
     }
 }
 
@@ -598,6 +642,11 @@ impl Tools for ScriptedTools {
         };
         if hidden { None } else { OnPath.locate(oracle) }
     }
+
+    /// No: every absence this reports is [`HostFault`]'s invention, whatever the host has.
+    fn absences_are_this_hosts(&self) -> bool {
+        false
+    }
 }
 
 // --------------------------------------------------------------------- the harness
@@ -630,6 +679,7 @@ pub fn validate_with(tools: &dyn Tools, file: &Utf8Path, expected: &Expectation)
         outcomes: BTreeMap::new(),
         absent: BTreeMap::new(),
         failures: Vec::new(),
+        measured_on_this_host: tools.absences_are_this_hosts(),
     };
 
     // The file first, and before either tool: "ffprobe could not open it" and "there is nothing
@@ -1677,7 +1727,11 @@ mod tests {
             // Deliberately **not** `report.print()`: these absences are invented, and a
             // fabricated `SKIP oracles:` line in the run log is read by
             // `scripts/rung-oracles.sh` as this host lacking a tool it has. The lines are
-            // asserted instead, which is a stronger claim than printing them anyway.
+            // asserted instead, which is a stronger claim than printing them anyway. Since
+            // note **N235** the discipline is the report's rather than this comment's, and
+            // `a_decline_a_double_invented_cannot_be_printed_into_a_counted_log` is what
+            // holds it for the arm that comes after this one.
+            assert!(!report.measured_on_this_host, "{fault:?}: {report}");
             assert!(report.is_green(), "{fault:?}: {report}");
 
             let hidden: Vec<Oracle> = Oracle::ALL
@@ -1725,6 +1779,44 @@ mod tests {
                 "{fault:?}: a run line and a run disagree"
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "invented by a Tools double")]
+    fn a_decline_a_double_invented_cannot_be_printed_into_a_counted_log() {
+        // **Note N235**, and the inverse of the arm above. That arm keeps its invented declines
+        // out of the run log by *not calling* `print()`, under a comment saying why — which is
+        // the discipline N121 asked for held by a convention rather than by the code. Two
+        // censuses read these lines and neither can tell a real absence from an invented one:
+        // `scripts/smoke-hw.sh:138` greps `^\s*SKIP` out of a saved run log (and
+        // `$WCH_SMOKE_HW_ACCOUNT` re-reads any log, including a whole `just ci`), and
+        // `scripts/rung-oracles.sh` greps a narrower anchor out of its own. So the next arm
+        // written against a `HostFault` gets a panic instead of a green run with a false
+        // absence in it.
+        //
+        // No `both_oracles_or_decline` guard, deliberately: `HostFault::NoOracles` hides both
+        // whatever this host has, so the report carries two invented absences on every machine
+        // and the property is reachable everywhere. A guard here would be a red arm that stops
+        // being reachable on the hosts that need it most.
+        let dir = scratch();
+        let (path, expected) = record(&dir, "invented.avi", &mjpg_frames(2));
+        let report = validate_with(&ScriptedTools::new(HostFault::NoOracles), &path, &expected);
+        assert_eq!(report.absent.len(), Oracle::ALL.len(), "{report}");
+        report.print();
+    }
+
+    #[test]
+    fn a_report_with_nothing_absent_prints_whatever_asked_for_it() {
+        // The other direction, so the refusal above is about a *fabricated absence* and not
+        // about doubles: a report that declines nothing has nothing to fake, so `print()` is
+        // free whoever built it. Without this arm the assertion could tighten to "no double may
+        // print" and nothing would notice.
+        let dir = scratch();
+        let (path, expected) = record(&dir, "nothing-absent.avi", &mjpg_frames(2));
+        let mut report = validate_with(&ScriptedTools::new(HostFault::NoOracles), &path, &expected);
+        report.absent.clear();
+        assert!(!report.measured_on_this_host, "{report}");
+        report.print();
     }
 
     #[test]

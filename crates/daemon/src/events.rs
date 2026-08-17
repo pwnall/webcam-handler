@@ -3,17 +3,17 @@
 //! `webcam-handler-api`'s second generated trait declares `subscribe_events` and
 //! `subscribe_calibration`; `crate::server` implements them; this module is everything
 //! underneath — where the events come from, how one source reaches N subscribers, and what
-//! a subscriber that stops reading costs. It is transport code, which is where
-//! `engine::progress`'s header already said this half belongs: "P4e's daemon bridges this
-//! receiver onto whatever its subscription speaks. That bridge is transport code."
+//! a subscriber that stops reading costs. It is transport code, and the engine leaves it
+//! here on purpose: `engine::progress` declares the seam and names no async runtime (note
+//! N5's wall), so the bound and the drop policy at this hop belong to the root that owns
+//! the boundary, which is this one (note **N230**).
 //!
 //! ## One doctrine, three hops
 //!
 //! The claim P4e-i is named for is *nothing a client does can wedge the daemon*, and it is
 //! made true by there being **no unbounded queue and no blocking send anywhere between a
 //! device and a socket**. Three hops, three bounds, and at every one of them the answer to
-//! "the consumer is behind" is the same as `engine::progress::ChannelSink`'s: drop, and
-//! count.
+//! "the consumer is behind" is the same: drop, and count.
 //!
 //! | Hop | Bound | At the bound |
 //! |---|---|---|
@@ -70,7 +70,7 @@
 //! `Fanout::unheard` is what turns that into a number. Nothing is buffered for a
 //! subscriber who has not arrived: keeping one long-lived `Receiver` parked so that nothing
 //! is "lost" would buffer a whole sweep's events for nobody, which is precisely the
-//! unbounded growth `limits::PROGRESS_QUEUE_DEPTH`'s doc rejects one crate down. It is also
+//! unbounded growth every bound in this chain exists to refuse. It is also
 //! the posture `schema::progress` already documents — a progress event "is allowed to be
 //! dropped when nobody is listening" — and the honest one: a client that was not there did
 //! not miss anything it could have acted on, and the session document has the whole sweep
@@ -391,7 +391,7 @@ impl<T: Clone + Send + 'static> Fanout<T> {
 ///
 /// Every field is a number an operator would want and an integration test asserts, which is
 /// deliberately the same list: a counter that exists only for a test is a counter nobody
-/// maintains, and `engine::progress::ChannelSink::dropped` set the precedent one crate down.
+/// maintains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamActivity {
     /// How many subscriptions are reading this stream right now.
@@ -720,9 +720,12 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// more than one session".
 ///
 /// It replaces the `engine::progress::Silent` the sweep emitted into at P4c, at the seam that
-/// file said was "already the shape P4e needs". `engine::progress::ChannelSink` stays exactly
-/// where it is — that one is `webcam-handler-cli`'s, feeding indicatif over a
-/// `std::sync::mpsc` the engine can name without a runtime.
+/// file said was "already the shape P4e needs". **The bound and the drop policy are this
+/// root's**, not the seam's: `engine::progress` used to ship a `ChannelSink` over a
+/// `std::sync::mpsc` for the daemon that had not arrived yet, and this is the daemon that
+/// arrived and chose a `tokio::sync::broadcast` instead, because a fan-out to N subscribers is
+/// not a queue of one (docs/11's L16, note **N230**). The other root, `webcam-handler-cli`,
+/// implements the same trait straight onto its own `SweepWatcher` and crosses no thread at all.
 #[derive(Debug)]
 pub(crate) struct ProgressBroadcast(Arc<Events>);
 
@@ -780,8 +783,9 @@ impl engine::progress::ProgressSink for ProgressBroadcast {
 /// park this task on a client that stopped reading — and with it, nothing else, because the
 /// fan-out is in front of it. But "nothing a client does can wedge the daemon" is a claim
 /// about a *bound*, and a task parked indefinitely on a socket buffer is an unbounded wait
-/// wearing a task. `engine::progress::ChannelSink` makes the same choice one crate down and
-/// states the reason there.
+/// wearing a task. `Fanout::emit` makes the same choice at the hop in front of this one, and
+/// `engine::progress`'s header states the reason for the whole chain: nothing a subscriber does
+/// may reach the sweep.
 async fn forward<T>(
     pending: PendingSubscriptionSink,
     mut attached: Attached<T>,

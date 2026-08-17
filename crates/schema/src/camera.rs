@@ -127,27 +127,35 @@ pub fn assign_ids(cards: &[String]) -> Vec<CameraId> {
     let mut taken: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::with_capacity(cards.len());
     for (index, natural) in naturals.iter().enumerate() {
-        // A card name that slugs to nothing still needs a handle. `camera-<index>` is
-        // derived from something stable (enumeration position), and cannot collide with
-        // a natural slug that is by definition non-empty and differently shaped.
-        let base = if natural.is_empty() {
-            format!("camera-{index}")
+        // A card name that slugs to nothing still needs a handle, and `camera-<index>` is
+        // derived from something stable (enumeration position). It is **not** out of a
+        // natural slug's reach, which this comment used to claim: "Camera 1" slugs to
+        // exactly `camera-1`, so the fallback is tested against the reserved naturals as
+        // well as against what is already taken. D1 says a natural slug always wins its
+        // own name, and between a card that has one and a card that has none, the one
+        // that must move is the one with nothing to lose (note **N226**).
+        //
+        // A natural base is deliberately *not* tested against `reserved`: it is in there,
+        // because it put itself there.
+        let (base, contest_reserved) = if natural.is_empty() {
+            (format!("camera-{index}"), true)
         } else {
-            natural.clone()
+            (natural.clone(), false)
         };
 
-        let chosen = if taken.contains(&base) {
-            let mut n = 2u32;
-            loop {
-                let candidate = format!("{base}-{n}");
-                if !taken.contains(&candidate) && !reserved.contains(candidate.as_str()) {
-                    break candidate;
+        let chosen =
+            if taken.contains(&base) || (contest_reserved && reserved.contains(base.as_str())) {
+                let mut n = 2u32;
+                loop {
+                    let candidate = format!("{base}-{n}");
+                    if !taken.contains(&candidate) && !reserved.contains(candidate.as_str()) {
+                        break candidate;
+                    }
+                    n += 1;
                 }
-                n += 1;
-            }
-        } else {
-            base
-        };
+            } else {
+                base
+            };
         taken.insert(chosen.clone());
         // The precondition is three branches up and in view: `chosen` is either a natural slug
         // this function has already tested for emptiness, or `camera-<index>`, or one of those
@@ -646,7 +654,16 @@ impl PixelFormat {
                 // A backslash that begins no escape. Refused rather than taken literally,
                 // because taking it literally is the ambiguity this grammar exists to close.
                 (b'\\', _) => return None,
-                (other, _) => (other, 1),
+                // A raw byte stands for itself only where `Display` would have written it
+                // raw — an ASCII graphic — plus the space, which is the one alias the doc
+                // above argues for. Everything else is refused rather than taken, and this
+                // walks *bytes*: a `é` is two of them, so a decoder that took each raw byte
+                // it met accepted `éé` as a four-byte FourCC no device can have and no
+                // encoder here would ever write (the G6 review's L4, note **N227**). The
+                // same arm is what refuses a raw `\x7f` or a raw NUL, both of which have a
+                // `\xNN` spelling and neither of which has a literal one.
+                (0x20..=0x7e, _) => (*first, 1),
+                (_, _) => return None,
             };
             *sink.next()? = byte;
             rest = rest.get(width..)?;
@@ -1224,6 +1241,28 @@ mod tests {
     }
 
     #[test]
+    fn a_card_that_slugs_to_nothing_does_not_take_the_slug_another_card_earned() {
+        // D1's rule, in the direction `a_natural_slug_wins_its_own_name_even_when_a
+        // _collision_wants_it` does not reach: the handle invented for a nameless card is
+        // `camera-<index>`, and that is a *natural* slug too — "Camera 1" slugs to exactly
+        // it. Enumerate the nameless one at index 1 and it arrives first, so before this
+        // was checked the camera that has the name got `camera-1-2` and the one with no
+        // name got `camera-1`, which is D1 inverted.
+        //
+        // Declared, not measured: no device this project has seen reports a card name that
+        // slugs to nothing, and none reports "Camera 1" either. The rule is what is under
+        // test, and a fixture built only from cards we have seen cannot state it.
+        let ids = assign_ids(&cards(&["Webcam", "???", "Camera 1"]));
+        assert_eq!(bodies(&ids), vec!["webcam", "camera-1-2", "camera-1"]);
+
+        // The other order, where the natural slug is taken before the fallback is invented,
+        // has always worked — it goes through `taken` — and is here so the two halves of
+        // the check are visible together.
+        let ids = assign_ids(&cards(&["Camera 1", "???"]));
+        assert_eq!(bodies(&ids), vec!["camera-1", "camera-1-2"]);
+    }
+
+    #[test]
     fn prefixes_resolve_when_unambiguous_and_report_candidates_when_not() {
         let ids = assign_ids(&cards(&[
             "OBSBOT Tiny 3",
@@ -1702,6 +1741,22 @@ mod tests {
             "",                   // nothing at all
             "\\x00\\x00\\x00",    // three escapes
             "\\x00\\x00\\x00\\x", // three escapes and a fragment
+        ] {
+            assert_eq!(
+                PixelFormat::parse(refused),
+                None,
+                "{refused:?} was accepted as a fourcc"
+            );
+        }
+        // The same refusal for the reason it names, which the row above does not reach: a
+        // `\u{e9}` is two UTF-8 bytes, so `MJP\u{e9}` spells *five* and is refused for its
+        // length. These four are exactly four bytes each, so length says nothing about
+        // them and only the grammar can (the G6 review's L4, note **N227**).
+        for refused in [
+            "\u{00e9}\u{00e9}", // four bytes, no ASCII in them at all
+            "MJ\u{00e9}",       // four bytes, two of them a character's halves
+            "MJP\u{007f}",      // DEL — not a graphic, and `Display` escapes it
+            "MJP\u{0000}",      // a raw NUL, which is what a padded C string leaks
         ] {
             assert_eq!(
                 PixelFormat::parse(refused),

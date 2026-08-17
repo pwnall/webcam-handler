@@ -354,6 +354,15 @@ impl ControlRange {
     /// Down is the direction the UVC drivers on the seed hardware round, and rounding is
     /// only ever applied to a value already inside the range — an inverted or unusable
     /// range leaves the value alone rather than inventing a grid for it.
+    ///
+    /// **Every operation here saturates**, and that is a rule about this method rather
+    /// than a defensive habit: it is a `pub` method of the shared vocabulary crate taking
+    /// two device-supplied numbers and one caller-supplied one, so any `i64` it is handed
+    /// is inside its contract. The subtraction was the one that did not, and note
+    /// **N224** records what it answered — for `{min: 2000, max: 10000, step: 100}`, a
+    /// range `corpus/profiles/obsbot-tiny3.json` carries, `align_down(i64::MIN)` wrapped
+    /// to the range's *maximum*. Saturation gives the near end instead, which is what
+    /// [`ControlRange::clamp_value`] would have said about the same value.
     #[must_use]
     pub const fn align_down(&self, value: i64) -> i64 {
         let step = self.effective_step();
@@ -361,7 +370,12 @@ impl ControlRange {
             return value;
         }
         let offset = value.saturating_sub(self.min);
-        let aligned = self.min.saturating_add(offset - offset.rem_euclid(step));
+        // `rem_euclid` is non-negative, so this leans on `saturating_sub` only when the
+        // offset itself saturated — i.e. when the value is further below `min` than an
+        // `i64` reaches. `i64::MIN` stays `i64::MIN` and clamps to `min` below.
+        let aligned = self
+            .min
+            .saturating_add(offset.saturating_sub(offset.rem_euclid(step)));
         self.clamp_value(aligned)
     }
 }
@@ -1300,7 +1314,11 @@ mod tests {
             step: 0,
         };
         assert_eq!(unstepped.align_down(7), 7);
-        // Saturating at the extremes rather than wrapping into a different answer.
+        // Saturating at the extremes rather than wrapping into a different answer. The
+        // range is deliberately the *widest* one, which pins the two saturating calls and
+        // nothing else: with `min == i64::MIN` the offset is whatever the value is, and
+        // the interior subtraction is exercised by the test below instead, on a range a
+        // camera actually declares.
         let wide = ControlRange {
             min: i64::MIN,
             max: i64::MAX,
@@ -1308,6 +1326,41 @@ mod tests {
         };
         assert!(wide.contains(wide.align_down(i64::MAX)));
         assert!(wide.contains(wide.align_down(i64::MIN)));
+    }
+
+    #[test]
+    fn a_value_far_below_a_real_range_aligns_to_its_minimum_and_not_to_its_maximum() {
+        // The range is `White Balance Temperature` as `corpus/profiles/obsbot-tiny3.json`
+        // committed it, and it is here because *this* is the shape that reaches the one
+        // operation in `align_down` that does not saturate: a positive `min` makes the
+        // offset saturate to `i64::MIN`, and `offset - offset.rem_euclid(step)` then has
+        // nowhere to go. `min: i64::MIN` — the range the extremes above use — is the one
+        // range where the subtraction is unreachable, because the offset is the value.
+        //
+        // The wrong answer is not a panic. Compiled without overflow checks, which is what
+        // `cargo install` produces, the subtraction wraps and the aligned value comes back
+        // *above* the maximum, so `clamp_value` returns the range's top. On a
+        // `pan_absolute` that is a motor sent to its far limit for the most negative input
+        // a caller could hand it, which is D2's "a lying number must not become a
+        // movement".
+        let white_balance = ControlRange {
+            min: 2_000,
+            max: 10_000,
+            step: 100,
+        };
+        assert_eq!(white_balance.align_down(i64::MIN), 2_000);
+        assert_eq!(white_balance.align_down(i64::MAX), 10_000);
+
+        // The same shape on a control that moves a motor, from the same profile, and on
+        // the negative side of it: a range straddling zero has headroom below its minimum,
+        // so the saturation is on the other end and the answer is still the near limit.
+        let pan = ControlRange {
+            min: -468_000,
+            max: 468_000,
+            step: 3_600,
+        };
+        assert_eq!(pan.align_down(i64::MIN), -468_000);
+        assert_eq!(pan.align_down(i64::MAX), 468_000);
     }
 
     #[test]

@@ -14,9 +14,10 @@
 //! pre-sweep snapshot on disk. A sink that could refuse would put "the progress bar
 //! failed" on the list of things that can end a calibration, and that is the wrong list.
 //!
-//! What it must not do instead is lose events *quietly*: [`ChannelSink`] counts what it
-//! drops and says so on demand, so "the consumer fell behind" is a number rather than a
-//! silence (rubric rule 3).
+//! What it must not do instead is lose events *quietly*, and that obligation belongs to
+//! whatever a composition root puts behind this trait: `daemon::events::Fanout` counts its
+//! `unheard` and its `lagged`, and `webcam-handler-cli` renders on the sweep's own thread
+//! and can lose nothing at all (rubric rule 3).
 //!
 //! ## Why a trait and not a closure
 //!
@@ -25,12 +26,28 @@
 //! and a closure over a CLI's progress bar is none of those. The trait is object-safe and
 //! takes `&self`, so one sink can be shared by the actor thread that emits and the
 //! transport that forwards.
+//!
+//! ## What used to be here, and why it is not
+//!
+//! A `ChannelSink` — a `std::sync::mpsc::sync_channel` bounded by a
+//! `limits::PROGRESS_QUEUE_DEPTH`, lossy at the bound and counting its drops — was built
+//! at P4c for the daemon that had not arrived yet, on the reasoning that the engine names
+//! no async runtime (note N5's wall) and something would have to bridge a `Receiver` onto
+//! a subscription. **Both consumers arrived and neither took it** (docs/11's L16, note
+//! **N230**): `webcam-handler-cli` implements the trait straight onto its own
+//! `SweepWatcher`, because an in-process sweep runs on the calling thread and has no
+//! boundary to cross, and `daemon::events::ProgressBroadcast` implements it onto a
+//! `tokio::sync::broadcast` bounded by `limits::SUBSCRIPTION_BROADCAST_DEPTH`, because a
+//! fan-out to N subscribers is not a queue of one. The seam was right and the *default*
+//! implementation was a guess, and it sat here with a full test suite and two doc comments
+//! naming readers that did not exist.
+//!
+//! The lesson is the one worth keeping if a third root ever needs a queue here: the bound
+//! and the drop policy belong to the root that owns the boundary, because only it knows
+//! how many consumers there are and what falling behind costs them.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use schema::limits;
 use schema::progress::ProgressEvent;
 
 /// Somewhere for a sweep to report what it is doing.
@@ -49,70 +66,6 @@ pub struct Silent;
 
 impl ProgressSink for Silent {
     fn emit(&self, _event: &ProgressEvent) {}
-}
-
-/// The real one: hands each event to a bounded channel.
-///
-/// Bounded by [`schema::limits::PROGRESS_QUEUE_DEPTH`] and **lossy at the bound**. The
-/// three available behaviours for a full queue are block, grow, and drop; the first stops
-/// the camera for a consumer's benefit and the second lets a consumer that stopped reading
-/// decide how much memory a sweep uses. Dropping is the only one whose worst case is a
-/// repaint — as long as the drop is counted, which is what [`ChannelSink::dropped`] is
-/// for. What gets dropped is the *newest* event, because that is the only end of an
-/// `mpsc` queue a sender can reach: a slow consumer sees an older prefix plus a count of
-/// what it missed, rather than a gap it cannot detect.
-///
-/// `std::sync::mpsc` and not a runtime's channel: the engine names no async runtime (note
-/// N5's wall), and P4e's daemon bridges this receiver onto whatever its subscription
-/// speaks. That bridge is transport code, which is where transport belongs.
-#[derive(Debug)]
-pub struct ChannelSink {
-    tx: SyncSender<ProgressEvent>,
-    dropped: AtomicUsize,
-}
-
-impl ChannelSink {
-    /// A sink and the receiver its events arrive on.
-    ///
-    /// Depth is [`schema::limits::PROGRESS_QUEUE_DEPTH`], not a parameter: "how much
-    /// progress may pile up" is one of the bounds design §2.10 keeps in one table, and a
-    /// caller-supplied depth is how a table stops being the answer.
-    #[must_use]
-    pub fn new() -> (ChannelSink, Receiver<ProgressEvent>) {
-        let (tx, rx) = sync_channel(limits::PROGRESS_QUEUE_DEPTH);
-        (
-            ChannelSink {
-                tx,
-                dropped: AtomicUsize::new(0),
-            },
-            rx,
-        )
-    }
-
-    /// How many events this sink could not deliver.
-    ///
-    /// Both causes count here, and they are different facts a caller may want to tell
-    /// apart later: a full queue means the consumer is slow, and a closed one means it is
-    /// gone. Neither is an error for the sweep, and a caller rendering "N events dropped"
-    /// is telling the truth in both cases.
-    #[must_use]
-    pub fn dropped(&self) -> usize {
-        self.dropped.load(Ordering::Relaxed)
-    }
-}
-
-impl ProgressSink for ChannelSink {
-    fn emit(&self, event: &ProgressEvent) {
-        // `try_send`, so a consumer that stopped reading cannot stop the sweep. The clone
-        // is on this side of the bound rather than before it, so the drop path costs one
-        // allocation and the delivery path costs the one it was always going to cost.
-        match self.tx.try_send(event.clone()) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
 }
 
 /// The double: keeps every event, in order, for a test to walk.
@@ -222,45 +175,6 @@ mod tests {
             })
             .collect();
         assert_eq!(totals, vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn a_channel_sink_delivers_what_a_live_consumer_reads_and_drops_nothing() {
-        let (sink, rx) = ChannelSink::new();
-        sink.emit(&event(7));
-        assert_eq!(
-            sink.dropped(),
-            0,
-            "a delivered event was counted as dropped"
-        );
-        assert_eq!(rx.recv().expect("one event"), event(7));
-    }
-
-    #[test]
-    fn a_consumer_that_stopped_reading_costs_counted_drops_and_never_the_sweep() {
-        // The bound doing its job, in both directions: everything up to
-        // `PROGRESS_QUEUE_DEPTH` is queued for a consumer that has not got to it yet, and
-        // everything past it is dropped *and counted*. A sink that blocked here would
-        // hang this test; one that grew would report zero drops and quietly own the
-        // memory.
-        let (sink, rx) = ChannelSink::new();
-        for index in 0..limits::PROGRESS_QUEUE_DEPTH {
-            sink.emit(&event(u32::try_from(index).unwrap_or(u32::MAX)));
-        }
-        assert_eq!(sink.dropped(), 0, "the queue refused what it had room for");
-
-        sink.emit(&event(u32::MAX));
-        assert_eq!(sink.dropped(), 1, "the overflow was not counted");
-        assert_eq!(
-            rx.recv().expect("the queue is full, so it is not empty"),
-            event(0),
-            "the queue dropped what it had already accepted"
-        );
-
-        // And a consumer that goes away entirely: still counted, still no refusal.
-        drop(rx);
-        sink.emit(&event(1));
-        assert_eq!(sink.dropped(), 2);
     }
 
     #[test]

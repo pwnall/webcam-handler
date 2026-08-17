@@ -219,3 +219,81 @@ opt-level = 3
 
 [profile.test]
 opt-level = 1
+
+# The profile every binary an operator runs is built under, and until 2026-08-17 the one this
+# manifest never mentioned (the G6 review's L2, note **N225**). `cargo install --locked --path
+# crates/daemon` — the README's install line — builds `--release`, so the three paragraphs above
+# describe how this workspace is *developed* and nothing described how it *ships*.
+#
+# `overflow-checks = true` because the alternative is that the arithmetic under test is not the
+# arithmetic that runs. `dev` and `test` both have overflow checks on by default, so every
+# assertion this suite makes about a number is an assertion about a build no operator installs;
+# cargo's release default is off, and an `i64` that wraps there becomes an answer rather than a
+# refusal. This project's whole posture is that a wrong number is worse than a stopped one — a
+# device's answer is validated before use, wire integers go through `try_from` and never `as`,
+# and D2 forbids inventing a value the device did not give. A wrapped subtraction inside
+# `ControlRange::align_down` was measured returning a range's **maximum** for its most negative
+# input (note **N224**); on `pan_absolute` that is a motor at its far limit, delivered as a
+# success. The panic is the honest outcome of the two.
+#
+# **What a panic then looks like differs at each of the three roots, and note N238 is the
+# statement of it**, because "the checks are on" is only half a shipped-behaviour decision. In
+# `webcam-handler-daemon` the camera actor's thread unwinds and the caller is answered
+# `DeviceGone` — a *typed* failure, and the wrong type: an arithmetic bug reads to the primary
+# consumer as a camera that vanished. In `webcam-handler-cli` and `webcam-handler-client` there is
+# no `catch_unwind` at all: the process exits 101, standard output carries no
+# `schema::error::Failure`, and the N127/N128 contract is silently not kept. Neither is repaired
+# here; both are named there.
+#
+# **Dependencies stay at cargo's default, and that is a decision rather than an omission.**
+# Re-measured 2026-08-17 (the review of B10 could not drive the middle row, so all three were run
+# again together): `webcam-handler-cli photo` over the fake with `corpus/profiles/obsbot-tiny3
+# .json` — a 4K frame through eleven JPEG encodes, which is the most codec-bound path this
+# workspace can run without a camera — release binaries built from three copies of this tree, five
+# runs each, taken round-robin so a drift in the machine lands on all three:
+#
+#     cargo's release default (checks nowhere)   1.91 1.85 1.84 1.86 1.85  (median 1.85 s)
+#     checks everywhere, dependencies included   2.18 2.21 2.13 2.27 2.14  (median 2.18 s, +18%)
+#     checks on the workspace crates only        1.89 1.84 1.85 1.79 1.80  (median 1.84 s)
+#
+# Each row's build was verified rather than assumed, with `cargo build --release -v -p
+# webcam-handler-cli`: 176 rustc units in that graph, of which 0 carry `-C overflow-checks=on` in
+# the first row, 176 in the second and 7 in the third (`schema`, `imaging`, `engine`, `v4l2`,
+# `fake`, `cli_core`, `webcam_handler_cli`).
+#
+# So the whole of the 18% is third-party codec inner loops and none of it is ours. It would also
+# be 18% spent shipping a configuration nobody upstream runs: `zune-jpeg` and `image` are tested
+# and fuzzed under the semantics they release with, and a decoder that leans on wrapping in a hot
+# loop — none of these have been read for it — would turn a malformed frame from a typed refusal
+# into a dead process, which is availability-versus-capability inverted at the worst place for it.
+#
+# **The line is not exact, N116 is why, and the inexactness is now named rather than estimated.**
+# A per-package override cannot reach a dependency's generic that *our* code instantiates: a
+# monomorphisation is code-generated into the crate that asks for it and takes that crate's flags.
+# Read off the release `.rlib`s with `nm -C` rather than guessed at — every dependency symbol
+# defined inside a checked workspace unit, 2026-08-17:
+#
+#     imaging   zune_jpeg::headers::parse_{app1,app2,app13,app14,dqt,huffman,sos,start_of_frame},
+#               zune_jpeg::idct::scalar::idct_int_1x1, zune_jpeg::upsampler::upsample_no_op,
+#               image::imageops::affine::{flip_horizontal,flip_vertical,rotate90,rotate180,
+#               rotate270} over Luma<u8> and Rgb<u8>, png::encoder::write_chunk,
+#               imageproc::filter::gaussian_blur_f32
+#     schema    serde_json (69), schemars (4)
+#     engine    serde_json (8), tempfile (2), serde, getrandom
+#     cli_core  serde_json (4), clap_builder (4), serde
+#     v4l2      v4l (1)
+#
+# `image::codecs::jpeg::JpegEncoder::encode_image` is **not** among them, which is worth writing
+# down because it was the example this paragraph used to give. What is among them is better for
+# the argument than the guess was: the malformed-frame surface — `zune_jpeg`'s eight header
+# parsers — is on the *checked* side, which is where a wrapped length wants to be. What is left
+# outside is the decoder's inner loops, which is exactly what the third row prices at nothing.
+#
+# Nothing else here departs from cargo's release defaults. `lto`, `codegen-units` and `panic` are
+# performance and behaviour decisions with no finding behind them, and this table exists because
+# the shipped profile must be visible, not so that it can accumulate.
+[profile.release]
+overflow-checks = true
+
+[profile.release.package."*"]
+overflow-checks = false
