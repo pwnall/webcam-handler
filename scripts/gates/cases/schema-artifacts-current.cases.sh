@@ -79,12 +79,21 @@ fail_case_committed_artifact_nothing_emits() {
 
 # An emitter that cannot run is not evidence that the artifacts are current.
 fail_case_emitter_fails() {
-    WCH_GATE_EMITTER=/bin/false "$GATE"
+    gate_red_because 'the artifact emitter exited 1' \
+        env "WCH_GATE_EMITTER=/bin/false" "$GATE"
 }
 
 # An emitter that runs and produces nothing must not read as "nothing has drifted".
+#
+# The sentence claimed is the *vacuity* one and not either of the two orphan lines beside
+# it, because those are `fail_case_committed_artifact_nothing_emits`'s subject — one file
+# with no generator — and this arm's subject is an emitter that generates none of them, so
+# the comparison has no population at all. Claiming an orphan line here would make two arms
+# assert the same branch and leave the branch that only this arm reaches unclaimed, which is
+# the shape L25 is about.
 fail_case_emitter_produces_nothing() {
-    WCH_GATE_EMITTER=/bin/true "$GATE"
+    gate_red_because 'examined zero generated artifacts' \
+        env "WCH_GATE_EMITTER=/bin/true" "$GATE"
 }
 
 # The branch that used to be a named skip, and the one arm no other seed reaches: every
@@ -105,7 +114,8 @@ fail_case_xtask_no_longer_declares_its_artifact_directory() {
     tree="$(gate_scratch_tree)"
     grep -v '^const ARTIFACT_DIR' "$tree/xtask/src/main.rs" >"$tree/xtask/src/main.rs.seeded"
     mv "$tree/xtask/src/main.rs.seeded" "$tree/xtask/src/main.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'xtask no longer declares ARTIFACT_DIR' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 # ------------------------------------------------- the OpenRPC document, one arm per way

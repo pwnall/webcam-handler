@@ -24381,9 +24381,33 @@ predicates printing one sentence for two opposite defects (**N246**, **N247**), 
 turned a *tranche 1* arm red for naming a sentence the repair had moved, which is the ratchet
 catching the person who moved the predicate.
 
-**Retires when (superseding the clause above):** `schema-artifacts-current`'s three arms are
-converted and the file is registered, at which point the register is the population, the harness can
-require a claim of every arm without a register at all, and N31's clause is discharged.
+**Retired, 2026-08-17, by the tranche that followed this sentence.** `schema-artifacts-current`'s
+three arms are converted and the file is registered: **368 of 368 fail arms name the sentence they
+claim, in 36 of 36 case files.** N31's *Retires when* — *"`selftest.sh` learns to take an expected
+message per arm, at which point the helper moves into the harness and stops being a per-case-file
+convention"* — is discharged, and L25 with it.
+
+The last three were the trickiest in the suite and one of them is worth the paragraph, because it
+is L25's own shape in miniature. `fail_case_emitter_produces_nothing` fires **three** branches — two
+orphan lines, one per artifact, and the vacuity line. The two orphan lines are
+`fail_case_committed_artifact_nothing_emits`'s subject (one file with no generator); this arm's
+subject is an emitter that generates *none* of them, so the comparison has no population at all.
+Claiming an orphan line here would have put two arms on one branch and left the branch only this arm
+reaches unclaimed — a conversion that satisfies the count and loses the property, which is what a
+sweep would have written.
+
+**What the register becomes now.** It was a ratchet over a partial population and it is now the
+whole one, so the honest next step is the one this note argued was too expensive on the day it was
+written: `selftest.sh` can require a claim of **every** `fail_case_*` and drop the register, because
+there is no unconverted file left for the register to protect. That is a simplification rather than
+a repair, and it is left as one — the harness asks the same question either way, and the file
+records which day each answer arrived.
+
+**Still open, and named so it is counted:** N244's eight predicate branches with no arm at all, plus
+the three tranche 2 found (`uds-permissions` claim 1's owner comparison and its `-L` check, and
+claim 2's other-uid branch — the first and third need a second account and non-interactive
+privilege, which this host declines). An arm that names its sentence is not the same claim as a
+branch that has an arm, and this note is only about the first.
 
 ---
 
