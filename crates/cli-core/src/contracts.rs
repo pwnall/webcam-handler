@@ -256,7 +256,14 @@ mod tests {
                 if let Some(text) = text {
                     *seen += 1;
                     let rendered = text.to_string();
-                    if rendered.contains("[`") {
+                    // Two spellings of the same defect. `[`Foo`]` is rustdoc's link, which
+                    // clap prints verbatim; `\[PF:3\]` is rustdoc's *escape*, which this
+                    // repository writes because `-D warnings` reads a bare `[PF:3]` as a link
+                    // to an item of that name — and which clap also prints verbatim, so four
+                    // flags shipped backslashes to a terminal until `Program::command` learned
+                    // to undo them. A ban on the first alone could not see the second, which
+                    // is how the second lasted (note **N249**).
+                    if rendered.contains("[`") || rendered.contains("\\[") {
                         found.push(format!("{path} {what}: {rendered}"));
                     }
                 }

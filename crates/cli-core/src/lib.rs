@@ -171,11 +171,21 @@ impl Program {
     /// `#[command(name = …)]` of its own: a default name on the derive would be a second
     /// answer that a caller reaching for [`clap::Parser::parse`] could get by accident,
     /// and it would be `webcam-handler-cli`'s name in `webcam-handler-client`'s mouth.
+    ///
+    /// **It also undoes rustdoc's bracket escape**, which is the other thing standing between
+    /// a doc comment and a person. This repository cites a probe finding as `\[PF:3\]` in
+    /// prose, escaped because `-D warnings` reads a bare `[PF:3]` as an intra-doc link to an
+    /// item called `PF:3` and refuses it. Rustdoc renders the escape away; clap does not, so
+    /// four flags shipped `\[PF:11\]` to a terminal — an instruction to a documentation tool
+    /// that is not running, which is note **N123**'s defect wearing a backslash. The two
+    /// generated artifacts already undo it (`xtask::unescape_doc_brackets`), and this is the
+    /// third surface a doc comment reaches, so it undoes it here rather than asking four
+    /// strings — and every one written after them — to spell a citation two ways.
     #[must_use]
     pub fn command(self) -> clap::Command {
         use clap::CommandFactory as _;
 
-        Cli::command().name(self.as_str())
+        Program::unescape(Cli::command().name(self.as_str()))
     }
 
     /// Whether this root composes a backend of its own.
@@ -193,6 +203,40 @@ impl Program {
             Program::Cli => true,
             Program::Client => false,
         }
+    }
+
+    /// Undo rustdoc's bracket escape everywhere this tree prints prose.
+    ///
+    /// Walks the same four strings per argument that
+    /// `contracts::no_text_this_surface_prints_carries_a_rustdoc_link` bans links in — about,
+    /// long about, help, long help — because clap prints the first paragraph for `-h` and the
+    /// whole comment for `--help`, and a rule that reached only one would leave the other half
+    /// carrying backslashes. Recursive over subcommands for the same reason the ban is.
+    fn unescape(command: clap::Command) -> clap::Command {
+        fn undo(text: &clap::builder::StyledStr) -> String {
+            text.to_string().replace("\\[", "[").replace("\\]", "]")
+        }
+
+        let mut command = command;
+        if let Some(about) = command.get_about().map(undo) {
+            command = command.about(about);
+        }
+        if let Some(long) = command.get_long_about().map(undo) {
+            command = command.long_about(long);
+        }
+        command = command.mut_args(|arg| {
+            let help = arg.get_help().map(undo);
+            let long_help = arg.get_long_help().map(undo);
+            let mut arg = arg;
+            if let Some(help) = help {
+                arg = arg.help(help);
+            }
+            if let Some(long_help) = long_help {
+                arg = arg.long_help(long_help);
+            }
+            arg
+        });
+        command.mut_subcommands(Program::unescape)
     }
 
     /// The one line a root writes to standard error when a verb fails.

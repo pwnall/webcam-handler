@@ -24760,3 +24760,51 @@ it: `fail_case_no_committed_profile_has_a_control_this_gate_may_write`, which ke
 and sets each control's raw flag word to `V4L2_CTL_FLAG_READ_ONLY`.
 
 **Retires when:** nothing.
+
+---
+
+## N249 — N123's defect wearing a backslash, and the ban that could not see it
+
+**Doc:** note **N123** (a doc comment is printed to a user, so a rustdoc link in one reaches them
+as brackets around an identifier they cannot open); AGENTS' "clap prints those doc comments **to a
+user**"; docs/8 rubric **A15** (a message is payload, and payload goes stale). Found by the G6
+hardware batch while reading `--help` for something else, 2026-08-17, and left open by it as
+outside a hardware batch's business.
+
+**Repo:** `crates/cli-core/src/lib.rs`'s `Program::command` and `Program::unescape`;
+`crates/cli-core/src/contracts.rs`'s `no_text_this_surface_prints_carries_a_rustdoc_link`;
+`xtask/src/main.rs`'s `unescape_doc_brackets`.
+
+**The finding.** This repository cites a probe finding in prose as `\[PF:3\]`. The escape is not
+decoration: `-D warnings` reads a bare `[PF:3]` as an intra-doc link to an item called `PF:3`,
+finds none, and refuses the build. Rustdoc renders the escape away, so a Rust reader sees
+`[PF:3]`. **clap does not**, and five help strings therefore shipped backslashes to a terminal —
+`Discard this many frames before taking one \[PF:11\]` — which is N123's defect exactly: an
+instruction to a documentation tool that is not running, reaching the one consumer AGENTS calls
+primary.
+
+**Why it lasted.** N123's own repair is `no_text_this_surface_prints_carries_a_rustdoc_link`, which
+walks every about/long-about/help/long-help string in the tree and bans `` [` ``. That is the link
+spelling. The escape is the *other* spelling of the same intent and shares no substring with it, so
+the ban was blind to it — a check that names one form of a class and is read ever after as covering
+the class. The two generated artifacts were never affected, because `xtask::unescape_doc_brackets`
+has undone it since P6e; the surface that had no such step is the one a person reads.
+
+**The repair, and why it is not five string edits.** `Program::command` is the one door both
+composition roots build their tree through (T4), so it undoes the escape there, over the same four
+strings per argument the ban walks and recursively over subcommands for the same reason. Editing
+the five strings would have fixed the five and left the convention — every `\[PF:n\]` written after
+them — free to do it again; the escape is the repo's own house spelling and the surface should
+speak it, not each author. `xtask` keeps its own copy of the same undoing because the artifacts are
+a different consumer reached by a different path, and the two are three lines each rather than a
+shared crate: one home per *law*, and the law here is "prose reaches a reader unescaped", stated
+once per surface that reaches one.
+
+**What can go red.** The ban now names both spellings, with the reason beside them, and it goes red
+on five strings the moment `Program::command` stops undoing the escape — measured: *"5 help
+string(s) this surface prints carry a rustdoc link … `controls --discover_pairs: Toggle each
+automation-shaped control and record what it freezes \[PF:3\]`"*. Five, not the four the hardware
+batch counted by eye, which is the ordinary reason to let a walk do the counting.
+
+**Retires when:** nothing. The escape is required by `-D warnings` and the undoing is required by
+every reader who is not rustdoc; both halves stay as long as both readers do.
