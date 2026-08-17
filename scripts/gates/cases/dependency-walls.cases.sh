@@ -4,6 +4,13 @@
 # for real would mean committing the violation the gate exists to reject. The grep arm
 # seeds a real source file in a scratch copy, because that half reads the tree.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**), and a linkage
+# arm needs it more than most: the walls are computed over the *transitive* link graph, so one
+# seeded edge is reported against every crate that reaches through it — `webcam-handler-schema`
+# growing a tokio edge turns all five pure crates red at once — and three of the arms below trip
+# two walls with one edge. The arm claims the crate and the forbidden name it seeded, which is
+# the only thing that says the wall it was written for is the wall that fired.
+#
 # shellcheck shell=bash
 
 # Add a normal dependency edge from one workspace member onto a package already in the
@@ -54,7 +61,8 @@ pass_case() {
 
 # T6: the pure crates carry no runtime.
 fail_case_pure_crate_links_tokio() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-schema tokio)" "$GATE"
+    gate_red_because 'webcam-handler-schema links tokio' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-schema tokio)" "$GATE"
 }
 
 # The engine names no runtime, and that is what lets its camera actor be a blocking OS thread
@@ -63,14 +71,16 @@ fail_case_pure_crate_links_tokio() {
 # that argument false without changing a line of `engine::actor`, which is exactly the kind of
 # silent repeal a wall is for.
 fail_case_the_engine_grows_a_runtime() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-engine tokio)" "$GATE"
+    gate_red_because 'webcam-handler-engine links tokio' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-engine tokio)" "$GATE"
 }
 
 # The wire crate is exempt from the tokio half of wall 1 (note N5) and from nothing else: an
 # axum edge on `webcam-handler-api` would put the web stack in `webcam-handler-client`'s link
 # graph through the shared trait.
 fail_case_wire_crate_links_the_web_stack() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-api axum)" "$GATE"
+    gate_red_because 'webcam-handler-api links axum; only the daemon links the web stack' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-api axum)" "$GATE"
 }
 
 # The asset crate, in both halves of its wall. `webcam-handler-web` embeds a directory and
@@ -80,11 +90,13 @@ fail_case_wire_crate_links_the_web_stack() {
 # the other: `rust-embed`'s `axum-ex` feature is the server half, one line in a manifest away,
 # and the runtime half is what any async convenience added to this crate would bring.
 fail_case_the_asset_crate_grows_a_server() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-web axum)" "$GATE"
+    gate_red_because 'webcam-handler-web links axum;' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-web axum)" "$GATE"
 }
 
 fail_case_the_asset_crate_grows_a_runtime() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-web tokio)" "$GATE"
+    gate_red_because 'webcam-handler-web links tokio;' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-web tokio)" "$GATE"
 }
 
 # The middleware layer specifically, which neither of the lists this crate could have been
@@ -92,21 +104,27 @@ fail_case_the_asset_crate_grows_a_runtime() {
 # tokio. A wall spelled as a union is only worth having if the part that is *only* in the union
 # can turn it red.
 fail_case_the_asset_crate_grows_a_middleware_stack() {
-    WCH_GATE_METADATA="$(_seeded_foreign_edge webcam-handler-web tower-http)" "$GATE"
+    gate_red_because 'webcam-handler-web links tower-http;' \
+        env WCH_GATE_METADATA="$(_seeded_foreign_edge webcam-handler-web tower-http)" "$GATE"
 }
 
 # Only the two composition roots may construct a backend.
 fail_case_non_root_links_a_backend() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-cli-core webcam-handler-fake)" "$GATE"
+    gate_red_because 'webcam-handler-cli-core links the backend webcam-handler-fake' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-cli-core webcam-handler-fake)" "$GATE"
 }
 
 # The thin-client wall: `webcam-handler-client` talks to the daemon and owns no camera.
 fail_case_client_links_the_engine() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-client webcam-handler-engine)" "$GATE"
+    gate_red_because 'webcam-handler-client links webcam-handler-engine; the thin client links no backend and no engine' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-client webcam-handler-engine)" "$GATE"
 }
 
 fail_case_client_links_a_backend() {
-    WCH_GATE_METADATA="$(_seeded_edge webcam-handler-client webcam-handler-v4l2)" "$GATE"
+    # Red under wall 2 as well — the client is not a composition root — and the wall this arm is
+    # for is the thin-client one.
+    gate_red_because 'webcam-handler-client links webcam-handler-v4l2; the thin client links no backend and no engine' \
+        env WCH_GATE_METADATA="$(_seeded_edge webcam-handler-client webcam-handler-v4l2)" "$GATE"
 }
 
 # The other direction of the wall above, and the reason the asset crate is in the named-roles
@@ -117,7 +135,8 @@ fail_case_the_asset_crate_left_the_workspace() {
     md="$(gate_metadata_snapshot)"
     jq '.workspace_members |= map(select(test("webcam-handler-web") | not))' \
         "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'policy names webcam-handler-web, which is not a workspace member' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 # A rule whose subject has been renamed out of the workspace is a rule that cannot fail.
@@ -126,7 +145,8 @@ fail_case_policy_names_a_missing_member() {
     md="$(gate_metadata_snapshot)"
     jq '.workspace_members |= map(select(test("webcam-handler-client") | not))' \
         "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'policy names webcam-handler-client, which is not a workspace member' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 # If nothing lives under crates/backends/, the backend wall quantifies over nothing.
@@ -135,7 +155,11 @@ fail_case_no_backend_crates() {
     md="$(gate_metadata_snapshot)"
     jq '.packages |= map(.manifest_path |= sub("/crates/backends/"; "/crates/elsewhere/"))' \
         "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    # Moving the backend out of `crates/backends/` also moves the directory the grep half
+    # exempts, so every file under `src/sys/` is reported as a leak; the wall with nothing left
+    # to quantify over is what this arm is for.
+    gate_red_because 'no workspace member lives under crates/backends/' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 # The grep half: a V4L2 type escaping the backend that owns the ioctls.
@@ -148,5 +172,6 @@ use v4l::device::Device;
 
 pub fn leak(_device: &Device) {}
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/engine/src/leak.rs names a V4L2 path' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }

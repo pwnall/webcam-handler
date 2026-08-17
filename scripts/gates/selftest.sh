@@ -20,6 +20,14 @@
 # arm and lets it replace the ordinary verdict: the fact is about the seed, so the sentence has
 # to be too.
 #
+# A `fail_case_` also **names the sentence it is claiming**, through `gate_red_because`, because
+# a seeded violation is often red under more than one branch and the exit status cannot say which
+# one fired (note **N31**; finding L25 of the G6 review). That is required of the case files in
+# `named-arm-register.txt` and counted everywhere else — the ratchet note **N243** describes, and
+# the register's own header argues why it is a ratchet rather than a rule for all 36 files at
+# once. `gate_red_because` records its call the way `gate_seed` records a dead seed, so what this
+# file asks is a fact about the arm that just ran and not a guess from its source text.
+#
 # A predicate with no case file fails. A predicate with no green arm fails. A predicate
 # with zero `fail_case_*` functions fails — a gate with only a passing arm is the defect
 # class, not a gate.
@@ -168,12 +176,34 @@ run_case() {
 predicates=0
 pass_arms=0
 fail_arms=0
+named_arms=0
+named_files=0
 problems=0
 
 report_problem() {
     problems=$((problems + 1))
     printf '  PROBLEM %s\n' "$*" >&2
 }
+
+# The case files whose every failing arm is required to name its sentence. See
+# `named-arm-register.txt` for what a ratchet buys over a rule, and note **N243**.
+#
+# Read into an associative array keyed by predicate name, with a value that records whether the
+# run ever saw that predicate — so a row naming a predicate this directory no longer has is a
+# stale register rather than a silent no-op, which is the same "a rule about a thing that is not
+# there" this suite fails everywhere else.
+register_file="$gates_dir/named-arm-register.txt"
+declare -A register_seen=()
+if [[ -f "$register_file" ]]; then
+    while IFS= read -r row; do
+        row="${row%%#*}"
+        row="${row//[[:space:]]/}"
+        [[ -n "$row" ]] || continue
+        register_seen["$row"]=0
+    done <"$register_file"
+else
+    report_problem "no register at ${register_file#"$(gate_root)"/}; the harness has nothing to hold converted case files to, and every arm below would be free to stop naming its sentence"
+fi
 
 # The seeding helper, proved both ways before any arm leans on it.
 #
@@ -189,10 +219,20 @@ else
     report_problem "gate_seed does not report a dead seed; every seeded arm below could be running the predicate against an unmodified tree"
 fi
 
-# Resolved once, and after `$WCH_GATE_SCRATCH` is exported, so this names the same file the
-# arms' `gate_seed` calls write to.
+# And the other helper this file reads a report from, for the same bootstrap reason: a recorder
+# that answered "named" to everything would let every registered arm drop its claim silently.
+if gate_claim_selfcheck; then
+    printf 'selftest: gate_red_because records the arm that named a sentence and nothing else\n'
+else
+    report_problem "gate_red_because does not record which arms named a sentence; the register below would be a list of files nobody is checking"
+fi
+
+# Resolved once, and after `$WCH_GATE_SCRATCH` is exported, so these name the same files the
+# arms' `gate_seed` and `gate_red_because` calls write to.
 seed_report="$(gate_seed_report)"
 rm -f "$seed_report"
+claim_report="$(gate_claim_report)"
+rm -f "$claim_report"
 
 while IFS= read -r gate; do
     predicates=$((predicates + 1))
@@ -208,6 +248,12 @@ while IFS= read -r gate; do
     mapfile -t cases < <(list_cases "$casefile" "$gate")
     have_pass=0
     these_fail_arms=0
+    these_unnamed=0
+    registered=0
+    if [[ -n "${register_seen[$name]+set}" ]]; then
+        registered=1
+        register_seen["$name"]=1
+    fi
     for fn in "${cases[@]}"; do
         case "$fn" in
         pass_case*) have_pass=$((have_pass + 1)) ;;
@@ -232,12 +278,33 @@ while IFS= read -r gate; do
         if [[ -s "$seed_report" ]]; then
             dead_seed="$(cat "$seed_report")"
         fi
+        # The same read, for the other report: did this arm name the sentence it was claiming?
+        # A fact about the arm that just ran, recorded by `gate_red_because` itself, rather than
+        # a guess from the case file's source text — an arm can call it from a helper, and a
+        # source-text rule would count a call in a branch that never ran.
+        claimed=0
+        if [[ -s "$claim_report" ]]; then
+            claimed=1
+        fi
         # This arm's verdict is in `$status` and `$output`; its scratch trees are dead
         # weight from here on. See `reclaim_scratch`.
         reclaim_scratch
         case "$fn" in
         pass_case*) pass_arms=$((pass_arms + 1)) ;;
-        fail_case_*) fail_arms=$((fail_arms + 1)) ;;
+        fail_case_*)
+            fail_arms=$((fail_arms + 1))
+            if ((claimed == 1)); then
+                named_arms=$((named_arms + 1))
+            else
+                these_unnamed=$((these_unnamed + 1))
+                # Required of a registered file, counted everywhere else. The two are one
+                # ratchet: what is converted stays converted, and what is not is a number on
+                # every run rather than a thing nobody counted (notes **N240**, **N243**).
+                if ((registered == 1)); then
+                    report_problem "$name $fn names no sentence, and cases/$name.cases.sh is in named-arm-register.txt; a fail arm's exit status cannot say which of the predicate's branches its seed tripped, so run the predicate against the seed, read what it prints, and assert that line with gate_red_because"
+                fi
+            fi
+            ;;
         esac
 
         # A dead seed **replaces** the verdict rather than joining it. Both of the sentences
@@ -269,11 +336,41 @@ while IFS= read -r gate; do
             ;;
         esac
     done
+
+    # A file whose arms are all converted and which nobody registered is the ratchet's other
+    # direction: it would be free to drift back tomorrow, and the remedy is one line. Reported
+    # here rather than counted, because "add it to the register" is a thing to do and not a
+    # number to watch.
+    if ((these_fail_arms > 0)); then
+        if ((these_unnamed == 0)); then
+            named_files=$((named_files + 1))
+            if ((registered == 0)); then
+                report_problem "every fail arm in cases/$name.cases.sh names its sentence and the file is not in named-arm-register.txt; add it, or the next arm written here may quietly stop naming one"
+            fi
+        elif ((registered == 0)); then
+            printf '  note  %s of %s fail arm(s) here read only the exit status (see named-arm-register.txt)\n' \
+                "$these_unnamed" "$these_fail_arms"
+        fi
+    fi
     printf '\n'
 done < <(gate_predicates)
 
+# A register row naming a predicate this run never saw is a rule about something that is not
+# there, which is the shape this suite fails everywhere else.
+for row in "${!register_seen[@]}"; do
+    if ((register_seen["$row"] == 0)); then
+        report_problem "named-arm-register.txt names '$row', which is not a predicate in this directory; a register that outlives its subject holds nothing to anything"
+    fi
+done
+
 printf 'selftest: %s predicates, %s pass arm(s), %s fail arm(s)\n' \
     "$predicates" "$pass_arms" "$fail_arms"
+# Counted, on every run, never silence (AGENTS.md rule 3). The residual is the number note
+# **N240** accepted and note **N243** is walking down; a run that printed only the registered
+# half would be reporting the part that is finished.
+printf 'selftest: %s of %s fail arm(s) name the sentence they claim, in %s of %s case file(s); %s file(s) registered and held to it, %s arm(s) elsewhere still read only the exit status\n' \
+    "$named_arms" "$fail_arms" "$named_files" "$predicates" \
+    "${#register_seen[@]}" "$((fail_arms - named_arms))"
 
 # The law this harness's header states, checked rather than trusted. See `tree_before`.
 if ((tree_watched == 1)); then

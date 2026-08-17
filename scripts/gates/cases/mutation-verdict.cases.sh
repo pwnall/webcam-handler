@@ -33,6 +33,14 @@
 # and a floor that refuses a tree nobody touched — which is the gate that cries wolf on every
 # run, and N60 records what that costs.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**), and nowhere is
+# that more necessary than here: every stub below is red under the same sentence with a different
+# *label* in front of it, and two of them are red under three of those sentences at once. An arm
+# that read only the exit status would be satisfied by a stub that got some other outcome wrong,
+# which is the whole subject of this predicate happening to its own selftest. The exit code the
+# claim quotes comes from `$GATE_NO_VERDICT` rather than being typed, for the reason the stub
+# gives itself.
+#
 # shellcheck shell=bash
 
 # Write a floor-shaped program: it reads the fixture's one-word `kind` file and answers.
@@ -111,7 +119,9 @@ fail_case_a_floor_that_spells_a_resource_shortfall_as_a_finding() {
     local stub
     stub="$(_stub_path)"
     _stub_floor "$stub" truncated=finding
-    WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+    gate_red_because \
+        "a result set whose rows and summary disagree: the floor exited 1 where 'no-verdict' is exit $GATE_NO_VERDICT" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }
 
 # Note N68, and what the shipped floor did until this commit: the tree it spent an hour
@@ -121,7 +131,9 @@ fail_case_a_floor_that_reports_a_moved_input_as_a_finding() {
     local stub
     stub="$(_stub_path)"
     _stub_floor "$stub" moved=finding
-    WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+    gate_red_because \
+        "a tree that moved while the floor was reading it: the floor exited 1 where 'no-verdict' is exit $GATE_NO_VERDICT" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }
 
 # The other direction, and the worse one. A run that could not answer must never be green:
@@ -130,7 +142,9 @@ fail_case_a_floor_that_is_green_when_it_produced_no_verdict() {
     local stub
     stub="$(_stub_path)"
     _stub_floor "$stub" absent=green
-    WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+    gate_red_because \
+        "a run that left no result set at all: the floor exited 0 where 'no-verdict' is exit $GATE_NO_VERDICT" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }
 
 # The floor weakened by its own repair: a real unaccepted survivor answered with the
@@ -140,7 +154,9 @@ fail_case_a_floor_that_hides_a_survivor_behind_the_third_outcome() {
     local stub
     stub="$(_stub_path)"
     _stub_floor "$stub" unaccepted=no-verdict
-    WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+    gate_red_because \
+        "a survivor with no recorded acceptance: the floor exited $GATE_NO_VERDICT where 'finding' is exit 1" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }
 
 # The register's second direction, silently stopped. An acceptance nobody re-checks is how
@@ -150,7 +166,9 @@ fail_case_a_floor_that_stops_reporting_an_acceptance_that_no_longer_survives() {
     local stub
     stub="$(_stub_path)"
     _stub_floor "$stub" stale=green
-    WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+    gate_red_because \
+        "a recorded acceptance that no longer survives: the floor exited 0 where 'finding' is exit 1" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }
 
 # The tree check that refuses everything. It would pass every arm above that asserts a
@@ -161,7 +179,11 @@ fail_case_a_floor_that_refuses_a_tree_nobody_touched() {
     local stub
     stub="$(_stub_path)"
     _stub_floor "$stub" clean=no-verdict
-    WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+    # Red under all three of the predicate's green expectations, because the clean fixture is
+    # what each of them is driven over. The control arm is the one this is about.
+    gate_red_because \
+        "a tree that did not move: the floor exited $GATE_NO_VERDICT where 'green' is exit 0" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }
 
 # The ambiguity moved one layer out instead of removed. This runner is `phase.sh` as it was
@@ -200,5 +222,7 @@ fi
 printf 'PASS gate-%s — %s items examined\n' "$phase" "$checked"
 RUNNER
     chmod +x "$stub"
-    WCH_GATE_PHASE_RUNNER="$stub" "$GATE"
+    gate_red_because \
+        "a phase whose criterion could not answer: the phase runner exited 1, wanted $GATE_NO_VERDICT" \
+        env WCH_GATE_PHASE_RUNNER="$stub" "$GATE"
 }

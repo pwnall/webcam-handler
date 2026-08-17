@@ -212,8 +212,15 @@ else
     done
     row_blocks=$((row_count - row_impls))
 
-    if ((row_blocks != tree_blocks)); then
-        gate_fail "$register_rel registers $row_blocks \`unsafe\` block(s) and $sys_suffix/ contains $tree_blocks; the register is a claim about the tree, so a block lands with its row or the row goes with the block"
+    # The two directions are two sentences, because they are two defects and a reader acts on
+    # them differently: a block with no row is an obligation nobody has written down, and a row
+    # with no block is a reader believing an obligation is still being discharged somewhere. One
+    # sentence for both also left the selftest unable to say which of its two arms had fired —
+    # they differ only in which number is the larger — which is note **N242**.
+    if ((tree_blocks > row_blocks)); then
+        gate_fail "$sys_suffix/ contains $tree_blocks \`unsafe\` block(s) and $register_rel registers $row_blocks: a block landed without its row, so an obligation is being carried that nothing has written down"
+    elif ((tree_blocks < row_blocks)); then
+        gate_fail "$register_rel registers $row_blocks \`unsafe\` block(s) and $sys_suffix/ contains $tree_blocks: a row outlived the block it names, so a reader is told an obligation is still being discharged somewhere"
     fi
     if ((row_impls != tree_impls)); then
         gate_fail "$register_rel registers $row_impls \`unsafe impl\`(s) and $sys_suffix/ contains $tree_impls"

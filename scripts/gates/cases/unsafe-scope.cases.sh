@@ -6,6 +6,14 @@
 # The second green arm is the one that matters most — a scope gate that fails on the
 # module it is supposed to permit would simply be turned off.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**). The register's
+# two directions are where that bites: a block with no row and a row with no block used to print
+# one sentence with the two counts swapped, so the two arms below were indistinguishable by
+# anything the harness could read, and either could have rotted to unreachable while both stayed
+# non-zero. The predicate now says which way round it is (note **N242**), and each arm claims its
+# own direction. Both of those seeds are also red on the summary sentence, which is the same
+# disagreement written twice and is what the summary arm is for.
+#
 # shellcheck shell=bash
 
 # Add one row to the residual-`unsafe` register and move its summary count with it, which
@@ -77,7 +85,7 @@ pub fn seeded() {
     unsafe { core::hint::unreachable_unchecked() }
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/engine/src/lib.rs uses the token' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_crate_root_without_forbid() {
@@ -86,7 +94,8 @@ fail_case_crate_root_without_forbid() {
     grep -v '^#!\[forbid(unsafe_code)\]' "$tree/crates/schema/src/lib.rs" \
         >"$tree/crates/schema/src/lib.rs.seeded"
     mv "$tree/crates/schema/src/lib.rs.seeded" "$tree/crates/schema/src/lib.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/schema/src/lib.rs is a crate root without #![forbid(unsafe_code)]' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The exception is asserted in both directions: a `forbid` appearing on the V4L2 crate
@@ -100,7 +109,7 @@ fail_case_forbid_on_the_one_crate_that_must_not_have_it() {
         cat "$root_file"
     } >"$root_file.seeded"
     mv "$root_file.seeded" "$root_file"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'is the one crate that must not' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A crate root the manifest declares but the tree does not have. Seeded through the
@@ -117,7 +126,8 @@ fail_case_crate_root_missing_from_the_tree() {
           | select(any(.kind[]; . == "lib"))
           | .src_path ) = "/nonexistent/web/src/lib.rs"
     ' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'declares a crate root at /nonexistent/web/src/lib.rs' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 # ------------------------------------------------- the register, in both directions
@@ -130,7 +140,7 @@ fail_case_an_unsafe_block_the_register_does_not_name() {
     local tree
     tree="$(gate_scratch_tree)"
     seeded_block >"$tree/crates/backends/v4l2/src/sys/seeded.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'a block landed without its row' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The other direction, which matters as much: a row that outlives the block it names
@@ -142,7 +152,7 @@ fail_case_a_register_row_naming_a_block_that_is_not_there() {
     # shellcheck disable=SC2016
     register_row "$tree/crates/backends/v4l2/src/sys/mod.rs" \
         '`seeded::probe` | seeded by the gate selftest, and there is no such block'
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'a row outlived the block it names' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The table and the sentence above it are one claim written twice. A summary that has
@@ -154,7 +164,7 @@ fail_case_the_register_summary_disagrees_with_its_own_table() {
     sed -E "s@^//! ([A-Za-z0-9]+) blocks and ([A-Za-z0-9]+) \`unsafe impl\`@//! 4 blocks and \2 \`unsafe impl\`@" \
         "$register" >"$register.seeded"
     mv "$register.seeded" "$register"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'says "4 blocks and' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A count spelled in a way the reconciliation cannot read is a failure and not a pass:
@@ -167,7 +177,7 @@ fail_case_a_register_summary_no_reader_can_count() {
     sed -E "s@^//! ([A-Za-z0-9]+) blocks and @//! several blocks and @" \
         "$register" >"$register.seeded"
     mv "$register.seeded" "$register"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "spells its totals 'several'" env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The heading is what names the register, so losing it is losing the anchor rather than
@@ -178,5 +188,6 @@ fail_case_the_register_section_lost_its_heading() {
     register="$tree/crates/backends/v4l2/src/sys/mod.rs"
     grep -v 'The residual' "$register" >"$register.seeded"
     mv "$register.seeded" "$register"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'section; that heading is what names the register' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }

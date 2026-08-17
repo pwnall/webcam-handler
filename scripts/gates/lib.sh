@@ -574,11 +574,19 @@ gate_tree_changes() {
 # still byte-identical only because nobody had yet edited either, which is the state every
 # second copy is in right up until it is not.
 #
+# **It records that it was called**, in the file below, because N31's *Retires when* is the
+# harness requiring this rather than a case file remembering it (note **N243**). The record is
+# written on entry and not on success: what `selftest.sh` asks is whether the arm named a
+# sentence at all, and an arm whose named sentence did not fire has already failed loudly two
+# lines down. It is a fact about the arm rather than about the tree, which is why it is recorded
+# where the dead-seed report is and read the same way.
+#
 #   $1  a fixed string the predicate's output must contain while failing
 #   $2… the command to run
 gate_red_because() {
     local pattern="$1"
     shift
+    printf '%s\n' "$pattern" >>"$(gate_claim_report)" || true
     local output status=0
     output="$("$@" 2>&1)" || status=$?
     if ((status == 0)); then
@@ -590,6 +598,47 @@ gate_red_because() {
         printf 'the predicate went red, but not because of: %s\n%s\n' "$pattern" "$output" >&2
         return 0
     fi
+    return "$status"
+}
+
+# Where an arm records the sentence it claimed, so `selftest.sh` can require one.
+#
+# Same home and same lifetime as `gate_seed_report`: under the run's scratch directory, which the
+# harness empties between arms, so what is there belongs to the arm that just ran. Run by hand it
+# lands under `target/wch-scratch/` where `gate_scratch_sweep` will take it.
+gate_claim_report() {
+    printf '%s/wch-arm-claim.report\n' "$(gate_scratch_root)"
+}
+
+# Prove the recording both ways, before the harness decides anything on it.
+#
+# `selftest.sh` runs this beside `gate_seed_selfcheck` and for the same bootstrap reason (docs/9:
+# the selftest cannot test the harness). The direction that matters is the second one: a recorder
+# that answered "named" to everything would let every arm in `cases/` drop its claim and go on
+# reporting `ok`, which is the defect this whole mechanism exists to close — the register in
+# `named-arm-register.txt` would then be a list of files nothing was checking.
+gate_claim_selfcheck() {
+    local report status=0 red
+    report="$(gate_claim_report)"
+    rm -f "$report"
+    # A predicate-shaped command: red, and saying one sentence while it is.
+    red=(bash -c 'printf "the seeded violation is here\n" >&2; exit 3')
+
+    # `|| true` on both drives: these commands are *meant* to be red, and a caller with `set -e`
+    # would otherwise take their exit status as its own.
+    "${red[@]}" >/dev/null 2>&1 || true
+    if [[ -e "$report" ]]; then
+        printf 'gate_red_because: an arm that named nothing was recorded as having named something\n' >&2
+        status=1
+    fi
+
+    gate_red_because 'the seeded violation is here' "${red[@]}" >/dev/null 2>&1 || true
+    if [[ ! -s "$report" ]]; then
+        printf 'gate_red_because: an arm that named its sentence left nothing for the harness to read\n' >&2
+        status=1
+    fi
+
+    rm -f "$report"
     return "$status"
 }
 

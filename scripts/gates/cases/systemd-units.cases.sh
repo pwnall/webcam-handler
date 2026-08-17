@@ -13,6 +13,13 @@
 # green, and the daemon is SIGKILLed halfway through the ordered teardown it was written to
 # perform.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**), and that pair is
+# also where it earns its keep: both arms are red under the *same* sentence, and the only thing
+# that separates "the unit was trimmed" from "the constant was raised" is which of the two
+# numbers in it moved. So each of them claims its own seeded number. Three other seeds here are
+# red under more than one branch — `Type=forking` trips the notify claim and the fork claim, an
+# abstract address trips all three of the listen claims — and the arm names the one it is for.
+#
 # shellcheck shell=bash
 
 # Where the unit files live, relative to a tree — one place, because every arm below has to
@@ -56,7 +63,8 @@ fail_case_a_service_that_claims_to_fork() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.service" Type "forking"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'is Type=forking and nothing in this workspace forks' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The same defect through its other keyword: a pid file is a claim that the process systemd
@@ -66,7 +74,7 @@ fail_case_a_service_that_writes_a_pid_file() {
     tree="$(gate_scratch_tree)"
     service="$(_units "$tree")/wchd.service"
     printf 'PIDFile=%%t/webcam-handler/wchd.pid\n' >>"$service"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'has a PIDFile=' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # systemd's default `DirectoryMode` is 0755, so this is what *leaving the line out* produces —
@@ -77,7 +85,7 @@ fail_case_a_socket_directory_anyone_can_walk_into() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.socket" DirectoryMode "0755"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'has DirectoryMode=0755' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The socket inode itself, left at what `bind(2)` gives it.
@@ -85,7 +93,7 @@ fail_case_a_world_writable_socket_inode() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.socket" SocketMode "0666"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'has SocketMode=0666' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A path that is *almost* right: the app directory is there and the file name is not. systemd
@@ -94,7 +102,8 @@ fail_case_a_socket_unit_listening_where_no_client_looks() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.socket" ListenStream "%t/webcam-handler/daemon.sock"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'listens on %t/webcam-handler/daemon.sock, which does not end in' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The abstract namespace, which is what somebody reaches for to avoid "leaving a file lying
@@ -105,7 +114,8 @@ fail_case_a_socket_unit_listening_in_the_abstract_namespace() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.socket" ListenStream "@wchd"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'listens on the abstract namespace (@wchd)' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Half of the pair this predicate exists for, edited from the unit's side: five seconds is a
@@ -115,7 +125,7 @@ fail_case_a_stop_timeout_shorter_than_the_daemons_drain() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.service" TimeoutStopSec "5s"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'stops the daemon after 5000ms' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The same defect from the *other* side, which is the arm that makes this a pair-argument
@@ -130,7 +140,8 @@ fail_case_a_drain_the_units_stop_timeout_cannot_fit() {
     sed 's/^pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = .*/pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 90_000;/' \
         "$limits" >"$limits.seeded"
     mv "$limits.seeded" "$limits"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "the daemon's own shutdown drain is 90000ms" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A timeout the gate cannot read is a bound nothing is comparing, and it must not read as a
@@ -140,7 +151,8 @@ fail_case_a_stop_timeout_in_units_nothing_can_read() {
     local tree
     tree="$(gate_scratch_tree)"
     _reset_directive "$(_units "$tree")/wchd.service" TimeoutStopSec "quickly"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'has TimeoutStopSec=quickly, which this gate cannot read' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # No units at all. A gate that examined nothing must not report a pass (AGENTS.md rule 3) —
@@ -150,5 +162,7 @@ fail_case_a_tree_with_no_unit_files_to_check() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -rf "$(_units "$tree")"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # Red on all three populations, which is what "no units at all" means; the service units are
+    # the first of them and the one this arm is named for.
+    gate_red_because 'examined zero service units' env WCH_GATE_ROOT="$tree" "$GATE"
 }

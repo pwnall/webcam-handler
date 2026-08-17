@@ -24346,3 +24346,223 @@ point `gate_red_because` moves into the harness and stops being a per-case-file 
 N31's own clause. The cheap first step, if this is taken in pieces, is to refuse it for **new** case
 files only, keyed on the predicate having landed after this note: that costs nothing today and stops
 the ratio drifting back.
+
+**Amended 2026-08-17 (L25, tranche 1), because half of this is now discharged and an acceptance that
+describes a tree it no longer describes is worse than none.** The cheap first step landed, in a
+better shape than the one guessed at above: the harness asks every arm whether it named a sentence,
+**requires** it of the case files listed in `scripts/gates/named-arm-register.txt`, and reports the
+rest as a counted line on every run (note **N243**). Keying it on "landed after this note" was
+rejected — a date is not a property of the file, and nothing would ever have converted an old one.
+Fourteen case files were converted arm by arm against the running predicates, which moves the count
+from **137 of 365 arms in 8 fully-converted files** to **255 of 365 in 22**, and the residual is
+110 arms across 14 files, named and counted rather than accepted in prose.
+
+The objection above stands and was honoured: nothing was swept. Each of the 118 arms was run, its
+predicate's branches read, and the branch its *name* claims asserted — which found five arms that had
+never been red for the reason they claim and one predicate that could not tell its two directions
+apart (notes **N241**, **N242**). That is the argument for doing this by hand rather than the
+argument against doing it at all, and it is why the remaining 110 are a ratchet's next tranches and
+not a `sed`.
+
+---
+
+## N241 — Five arms that went red, and not one of them for the reason its name gives
+
+**Doc:** note **N31** (an arm can go red for the wrong reason and the harness reports that as
+green), note **N240**'s residual, rubric docs/8 rule 6 and its addendum. Finding **L25** of the G6
+review, tranche 1, 2026-08-17.
+
+**Repo:** `scripts/gates/cases/atomic-write-home.cases.sh`,
+`cases/socket-activation.cases.sh` and `scripts/gates/socket-activation.sh`,
+`cases/msrv-sync.cases.sh`, `cases/corpus-floor.cases.sh`, `cases/license-allowlist.cases.sh`.
+
+**What was done, and why it could not be a sweep.** Fourteen case files — 118 failing arms — were
+converted to `gate_red_because` one arm at a time: run the arm, read what the predicate printed,
+work out which of its branches the arm's *name* says the seed should trip, and assert that sentence.
+N240 argued that a sweep which guessed the pattern from the arm's current output would encode
+today's behaviour as the claim. That objection is exactly right, and the five arms below are what it
+buys: on each of them, today's behaviour and the arm's name were different things, and a guessed
+pattern would have written the wrong one down and called it a check.
+
+**The five, with the mechanism in each.**
+
+  - **`atomic-write-home::fail_case_nothing_to_scan`** deleted every `.rs` file in the copy. That is
+    a workspace `cargo metadata` refuses to load — a lib target whose crate root is gone is not a
+    target — so the predicate exited **101** out of `gate_metadata`, three lines before the
+    `gate_require_nonzero "$scanned"` the arm is named for. 101 is non-zero, which is all the
+    harness asked. The graph is now handed in through `$WCH_GATE_METADATA`, a snapshot re-pointed at
+    the copy, which is `unsafe-scope.cases.sh`'s own reasoning for its missing-crate-root arm: what
+    goes red has to be the predicate and not its input. It exits 1 and names *examined zero Rust
+    source files*.
+  - **`socket-activation::fail_case_a_daemon_that_never_serves_leaves_nothing_to_check`** was red on
+    the **journald** claim. The predicate counted "it announced" as either the daemon's `is serving`
+    sentence **or** any line naming the socket path — and `systemd-socket-activate` prints
+    `Listening on <path>` *itself*, before it execs anything. So claim 1 was satisfied by the
+    activator over a daemon that had already exited 1, the vacuity branch never fired, and the arm
+    was reported `ok` on a claim it was not written for. This one needed the predicate, not the
+    seed: announcing is now the daemon's own sentence, and — where there is a path to watch — that
+    sentence naming that path, which also makes the file's stated claim ("binding the right inode
+    and announcing another would be a daemon nobody can find") true rather than merely written.
+  - **`msrv-sync::fail_case_member_declares_its_own_version`** seeded `rust-version = "1.75"` into a
+    member manifest. 1.75 is below the floor edition 2024 imposes, so cargo refused the workspace
+    and the arm was red on *examined zero workspace members* — the vacuity branch — while the
+    member-disagrees branch it exists for had no arm at all. Seeded 1.90 now: above that floor,
+    below the MSRV.
+  - **`corpus-floor::fail_case_the_rust_sources_are_gone`** deleted the sources under `crates/` and
+    `xtask/` and left the four fixture crates under `scripts/gates/fixtures/` standing. The
+    predicate's population is `gate_rust_files`, which walks the whole checkout, so it was never
+    empty: the arm was red on the dead-corpus branch, which `fail_case_a_profile_nobody_loads`
+    already covers, and *no Rust sources found* had no arm. It now takes every `.rs` file.
+  - **`license-allowlist::fail_case_emptied_allowlist`** wrote `allow = []` and deleted the list's
+    closing bracket. The predicate's counter opens on `^allow…[` and closes on `^]`, so with the
+    bracket gone it ran to the end of the file counting every quoted line and reported **28**
+    allowlisted identifiers where the tree has 12 — a seed that made the size check *more* vacuous
+    while looking like the thing that would trip it. The redness came from cargo-deny rejecting a
+    graph against an empty allowlist. Both empty-policy arms now leave the brackets and empty what
+    is between them, so the count really is zero.
+
+**The shape of it.** Four of the five are the same defect: **the seed never reached the branch**,
+because something upstream of it failed first (cargo refusing a manifest, a walk finding files the
+author forgot about, a counter reading past a bracket). One is a predicate that could be satisfied
+by the wrong process's output. None of them would have been visible to a reader of the case file,
+and none of them was visible to the harness, because all five exited non-zero.
+
+**Retires when:** nothing. This is the record of what the conversion cost and what it found, and
+notes N242–N244 carry the pieces that are still open.
+
+---
+
+## N242 — Two defects, one sentence, and two arms nothing could tell apart
+
+**Doc:** rubric docs/8's B11 (a count written in prose is a claim), note **N31**. Found while
+converting `cases/unsafe-scope.cases.sh` at L25, 2026-08-17.
+
+**Repo:** `scripts/gates/unsafe-scope.sh`, claim 3; `scripts/gates/cases/unsafe-scope.cases.sh`.
+
+**The finding.** The residual-`unsafe` register reconciliation printed one sentence for both
+directions — *"registers N block(s) and src/sys/ contains M; … so a block lands with its row or the
+row goes with the block"* — with the two counts swapped depending on which way round it was. Its two
+arms, `fail_case_an_unsafe_block_the_register_does_not_name` and
+`fail_case_a_register_row_naming_a_block_that_is_not_there`, therefore differ in the predicate's
+output only by which of two numbers is the larger. Nothing the harness can read distinguishes them,
+so either direction could have rotted to unreachable with both arms still comfortably non-zero, and
+an arm could name the other's claim without anybody noticing.
+
+**Repo now:** two branches and two sentences. A block with no row is *"a block landed without its
+row, so an obligation is being carried that nothing has written down"*; a row with no block is *"a
+row outlived the block it names, so a reader is told an obligation is still being discharged
+somewhere"*. That is not only for the selftest: they are two different things to do, and a reader
+of a red gate acts on them differently. Each arm now claims its own direction, and both remain red
+on the summary sentence as well — the same disagreement written twice, which is what the summary
+arm is for.
+
+**Retires when:** nothing; but the pattern generalises, and the next predicate that prints one
+sentence for two conditions with the operands swapped should be read as this one was.
+
+---
+
+## N243 — The harness asks every arm what it claimed; a register decides which files must answer
+
+**Doc:** note **N31**'s *Retires when* ("`selftest.sh` learns to take an expected message per arm,
+at which point the helper moves into the harness and stops being a per-case-file convention"), note
+**N240**'s cheap first step, note **N186** (the dead-seed report this is modelled on), AGENTS.md
+rule 3 (*never silence*). L25 tranche 1, 2026-08-17.
+
+**Repo:** `scripts/gates/lib.sh` (`gate_red_because`, `gate_claim_report`, `gate_claim_selfcheck`),
+`scripts/gates/selftest.sh`, `scripts/gates/named-arm-register.txt`.
+
+**Why a register and not a rule.** Requiring a claim of all 365 failing arms on the day the harness
+learned to ask would have turned 228 of them red at once, and N240 accepted the residual precisely
+because the work behind each is a judgement rather than a substitution. N240 guessed the first step
+would be "refuse it for new case files only, keyed on the predicate having landed after this note".
+That was rejected on contact: a date is not a property of a file, nothing would ever have converted
+an old one, and the harness would have needed a clock to decide a question about a text. A register
+of the files that are *done* is the same ratchet without the clock, and it is a list somebody adds
+to rather than a list somebody remembers.
+
+**What it does, in both directions.** `gate_red_because` records the sentence it was given, on
+entry, into a report under the run's scratch directory — the same home and the same per-arm lifetime
+as `gate_seed`'s dead-seed report, read by `selftest.sh` before it reclaims. Recorded on entry and
+not on success, because the question is whether the arm *named* a sentence; an arm whose named
+sentence did not fire has already failed loudly. It is a fact about the arm that ran, not a grep of
+the case file: an arm may call the helper from a local wrapper, and a source-text rule would count a
+call in a branch that never ran.
+
+`selftest.sh` then holds four things, each of which can go red:
+
+  - a `fail_case_*` in a **registered** file that named nothing is a problem, with the remedy in the
+    sentence (*run the predicate against the seed, read what it prints, assert that line*);
+  - a file whose arms are **all** converted and which is **not** registered is a problem too, with
+    "add this line" as the fix — otherwise the ratchet only holds what somebody remembered to list;
+  - a register row naming a predicate this directory does not have is a stale rule about a thing
+    that is not there, which is what this suite fails everywhere else;
+  - and the population is reported on every run: *"255 of 365 fail arm(s) name the sentence they
+    claim, in 22 of 36 case file(s); 22 file(s) registered and held to it, 110 arm(s) elsewhere
+    still read only the exit status"*. A run that printed only the registered half would be
+    reporting the part that is finished.
+
+**Measured, on a three-predicate copy of this tree rather than argued** (a full selftest is hours,
+and the harness cannot be tested by the population it drives — docs/9's bootstrap limit, which is
+why `gate_claim_selfcheck` exists beside `gate_seed_selfcheck` and runs before any arm):
+
+  - control — PASS, and the counted line reads *10 of 13 … in 2 of 3 case file(s)*;
+  - one registered arm with its `gate_red_because` removed — `PROBLEM … names no sentence, and
+    cases/testkit-is-dev-only.cases.sh is in named-arm-register.txt`;
+  - a converted file dropped from the register — `PROBLEM every fail arm in cases/msrv-sync.cases.sh
+    names its sentence and the file is not in named-arm-register.txt`;
+  - a register row naming nothing — `PROBLEM named-arm-register.txt names 'a-predicate-that-left',
+    which is not a predicate in this directory`;
+  - the recorder itself stopped recording — `PROBLEM gate_red_because does not record which arms
+    named a sentence`, from the selfcheck, before a single arm ran, and the counted line collapsed
+    to *0 of 13*, which is the shape a silently broken recorder would have.
+
+**Retires when:** every case file is in the register, at which point the register is the population,
+the two register checks collapse into one, and N31's clause is finally discharged. The residual is
+**110 arms across 14 files** — `agents-md-current`, `claims-come-back-with-their-values`,
+`counted-selections`, `doc-comments-open-with-a-summary`, `json-validates`,
+`kill-is-never-a-fallback`, `no-external-fetch-in-web`, `oracle-rung-accounting`,
+`privileged-helper`, `schema-artifacts-current`, `state-dir-permissions`,
+`token-comparison-has-one-home`, `uds-permissions`, `web-routes-are-gated` — and the number is on
+every run rather than in this paragraph.
+
+---
+
+## N244 — Branches with no arm at all, found by reading the predicates rather than the case files
+
+**Doc:** docs/9's structural rule is *both directions per gate*, which is satisfied by one failing
+arm; nothing says every **branch** has one. Note **N10** is the family (a gate green while checking
+less than it claims). Collected while converting fourteen case files at L25, 2026-08-17.
+
+**The finding, stated as a limit of what this pass fixed.** Converting an arm means reading the
+predicate to find the branch the arm's name claims, and reading a predicate that way makes its
+*unclaimed* branches obvious. These are the ones this tranche walked past. Each is a `gate_fail` no
+arm in `cases/` has ever fired, so each is a sentence that could be deleted, or made unreachable by
+an edit above it, with the whole suite still green:
+
+  - `msrv-sync` — *"…declares no rust-version; it must inherit the workspace one"*. The member arm
+    replaces the inherit line with a value; nothing deletes it.
+  - `no-frame-bytes-in-repo` — *"…is N bytes, over the N-byte fixture cap"*. Every fixture arm is
+    about dimensions, provenance, format or home; the byte cap has no arm.
+  - `unsafe-scope` — the `unsafe impl` count (*"registers N `unsafe impl`(s) and … contains M"*).
+    Both register arms seed *blocks*.
+  - `atomic-write-home` — *"webcam-handler-engine is not a workspace member; the state-dir home has
+    no address"*.
+  - `systemd-units` — `NotifyAccess=main`, `Restart=on-failure`, `Accept=yes` and *"has no
+    ListenStream="*, four directives with arms for none of them.
+  - `scratch-has-one-home` — the `--exclude=.git` half of the copier (the `--exclude=target` half
+    and the derived one both have arms), and the three dynamic claims about the copy itself.
+  - `dependency-walls` — the three `gate_require_nonzero` calls over the wall *pair counts*, which
+    are computed from the policy lists in the predicate and can only be zero if somebody empties
+    those; no arm can reach them through the metadata seam.
+  - `socket-activation` — *"the activator never reported binding …, so this gate has no inode to
+    compare"*, which is the other half of the claim N241 repaired.
+
+**Why they are recorded rather than fixed.** Each is a new arm, and a new arm is the same work an
+L25 conversion is: seed it, run it, read the branch, name the sentence. Writing eight of them into
+a tranche whose subject was the *existing* arms would have been the sweep N240 refused, one level
+up. They are written down because a gap nobody counted is exactly what this note's family is about.
+
+**Retires when:** each named branch has a failing arm that names it, or the branch is shown to be
+unreachable and removed. A later pass may prefer a mechanical population — every `gate_fail` string
+in a predicate against every sentence its arms claim — which this list is the hand-made argument
+for.

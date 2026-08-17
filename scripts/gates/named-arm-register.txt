@@ -1,0 +1,50 @@
+# The case files whose every `fail_case_*` names the sentence it is claiming.
+#
+# One predicate name per line, comments and blank lines ignored. `selftest.sh` reads this and
+# **requires** each listed file to stay that way: an arm in a registered file that ran without
+# calling `gate_red_because` is a problem, in the same words a dead seed gets. It also reports,
+# counted, how many arms elsewhere still read only the exit status — never silence.
+#
+# ## Why a register rather than a rule for everything
+#
+# The rule for everything is where this is going and it is note **N31**'s own *Retires when*.
+# Requiring it of the whole population on the day the harness learned to ask would have turned a
+# hundred and ten arms red at once (note **N240** did the arithmetic and accepted the residual),
+# and the work behind each of them is not mechanical: the pattern an arm claims is a judgement
+# about which of a predicate's branches its seed is supposed to trip, which is exactly the thing
+# nobody wrote down the first time. Guessing it from what the arm prints today would encode
+# today's behaviour as the claim — rubric rule 6's addendum, the stub that agrees with its
+# author, applied at scale.
+#
+# So this is a ratchet. A tranche lands by converting a file's arms, running each of them, and
+# adding the file here; nothing already converted can drift back, because the harness now asks.
+# The register cannot go stale in either direction: a row naming no predicate is a problem, and
+# a file whose arms are *all* converted and which is **not** listed is a problem too, with the
+# remedy being this line.
+#
+# The four files converted at L25 that turned out to be red on a branch other than the one their
+# name claimed are recorded in notes **N241** and **N242**; that is what this register is for.
+
+agent-guide-current
+atomic-write-home
+avi-reparse-is-independent
+browser-pins-sync
+cli-parity
+corpus-floor
+dependency-walls
+feature-posture
+ignored-suites-have-recipes
+license-allowlist
+lint-posture
+msrv-sync
+mutation-verdict
+no-external-fetch-in-web
+no-frame-bytes-in-repo
+scratch-has-one-home
+shipped-profile-is-declared
+socket-activation
+systemd-units
+testkit-is-dev-only
+uapi-constants-are-declared
+unsafe-scope
+wire-surface-sync

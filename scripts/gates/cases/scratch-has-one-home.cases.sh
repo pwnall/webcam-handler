@@ -12,6 +12,13 @@
 # notice; the dynamic half stays pointed at the real function, so a run of this suite never
 # performs the defect.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**). Four of the nine
+# seeds land on one of two shared sentences — "reaches for the platform's temporary directory"
+# for the shell pair and "makes a temporary directory outside the one home" for the Rust pair —
+# so the two Rust arms claim the call they seeded rather than the sentence they share, which is
+# the only thing that tells them apart. The predicate echoes the offending line, so that call is
+# in its output.
+#
 # shellcheck shell=bash
 #
 # The seeds are literal text written into a copy of a script, so the `$`-expressions in
@@ -69,7 +76,8 @@ fail_case_a_script_reaches_for_the_platform_temporary_directory() {
     tree="$(gate_scratch_tree)"
     printf '\nlog="$(mktemp "${TMPDIR:-/tmp}/wch-somewhere.XXXXXXXX")"\n' \
         >>"$tree/scripts/rung-vivid.sh"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "reaches for the platform's temporary directory" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # `mktemp -d` with no template is the same defect wearing no `/tmp` at all: the fallback is
@@ -79,7 +87,8 @@ fail_case_a_script_calls_mktemp_with_no_directory() {
     local tree
     tree="$(gate_scratch_tree)"
     printf '\nwork="$(mktemp -d)"\n' >>"$tree/scripts/rung-web.sh"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'calls mktemp with no directory in its template' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The Rust half — `tempfile::tempdir()` typed out of habit, which is the sentence the ruling
@@ -89,7 +98,7 @@ fail_case_a_rust_test_calls_tempfile_tempdir() {
     tree="$(gate_scratch_tree)"
     printf '\nfn a_habit() { let _dir = tempfile::tempdir().expect("temp dir"); }\n' \
         >>"$tree/crates/engine/src/photo.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'fn a_habit()' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The same defect through the constructor that does not say "temp dir" anywhere in it.
@@ -98,7 +107,7 @@ fail_case_a_rust_test_calls_temp_dir_new() {
     tree="$(gate_scratch_tree)"
     printf '\nfn another_habit() { let _dir = tempfile::TempDir::new().expect("temp dir"); }\n' \
         >>"$tree/crates/testkit/src/corpus.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'fn another_habit()' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # ------------------------------------------------------------------ the homes
@@ -109,7 +118,8 @@ fail_case_the_shell_home_is_deleted() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/^gate_scratch_root()/gate_scratch_root_renamed()/' "$tree/scripts/gates/lib.sh"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'scripts/gates/lib.sh no longer defines ^gate_scratch_root' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_rust_home_is_deleted() {
@@ -117,7 +127,8 @@ fail_case_the_rust_home_is_deleted() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/^pub fn scratch_root()/pub fn scratch_root_renamed()/' \
         "$tree/crates/schema/src/paths.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/schema/src/paths.rs no longer defines ^pub fn scratch_root' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The two languages drifting apart is the defect that makes one sweep reclaim half of what it
@@ -128,7 +139,8 @@ fail_case_the_two_languages_name_different_directories() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/^pub const SCRATCH_DIR: &str = "[^"]*"/pub const SCRATCH_DIR: \&str = "somewhere-else"/' \
         "$tree/crates/schema/src/paths.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'two scratch roots is one sweep that reclaims half of them' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # ------------------------------------------------------------------ the recursion trap
@@ -146,7 +158,8 @@ fail_case_the_copier_stops_excluding_target() {
         printf 'selftest: the seed did not apply — the copier still excludes target\n' >&2
         return 0
     fi
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'gate_scratch_tree no longer excludes target/' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # And the derived one, which is the half that survives an edit to the line above it.
@@ -159,5 +172,6 @@ fail_case_the_copier_stops_excluding_the_scratch_root() {
         printf 'selftest: the seed did not apply — the copier still derives its own exclusion\n' >&2
         return 0
     fi
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no longer derives an exclusion for the scratch root it is copying into' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }

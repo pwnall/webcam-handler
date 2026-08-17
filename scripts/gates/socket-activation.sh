@@ -166,11 +166,20 @@ activated() {
         if [[ "$line" == *"Listening on"* && -n "$watched" ]]; then
             bound_inode="$(stat -c %i "$watched" 2>/dev/null || true)"
         fi
-        # "It announced" is either half: the path this run is watching, or the sentence a
-        # daemon says when it is serving. The second half is what stops a *wrong* daemon from
-        # holding this gate until the watchdog fires — on the two claims below there is no
-        # path to watch, because the correct answer is a refusal and an exit.
-        if { [[ -n "$watched" && "$line" == *"$watched"* ]]; } || [[ "$line" == *"is serving"* ]]; then
+        # "It announced" is the sentence **a daemon** says when it is serving, and — when there
+        # is a path to watch — that sentence naming that path. Both halves, because the daemon
+        # is the subject: `systemd-socket-activate` prints `Listening on <path>` itself, before
+        # it execs anything, so a rule that accepted the path alone was satisfied by the
+        # activator and claim 1 passed over a daemon that had already exited.
+        # `fail_case_a_daemon_that_never_serves_leaves_nothing_to_check` was reported `ok` on
+        # that reading for as long as it had existed, red on the journal claim instead of on
+        # the vacuity it names (note **N241**). Requiring the path as well as the sentence is
+        # also what makes this file's own claim 1 true — "binding the right inode and
+        # announcing another would be a daemon nobody can find" — rather than merely stated.
+        # On the two claims below there is no path to watch, because the correct answer is a
+        # refusal and an exit.
+        if [[ "$line" == *"is serving"* ]] &&
+            { [[ -z "$watched" ]] || [[ "$line" == *"$watched"* ]]; }; then
             announced=1
             [[ -n "$watched" ]] && serving_inode="$(stat -c %i "$watched" 2>/dev/null || true)"
             kill "$pid" 2>/dev/null || true

@@ -18,6 +18,15 @@
 #   * a daemon that renders its log to stderr under a journal that is already its stderr,
 #     which is the same line in the journal twice.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**). Three of these
+# four stubs are red under more than one claim — a daemon that never looks at `LISTEN_FDS` gets
+# every refusal wrong at once — so the exit status alone says nothing about which claim was
+# proved. It is also how `fail_case_a_daemon_that_never_serves_leaves_nothing_to_check` was found
+# to be red on the journal claim rather than on the vacuity it names: the predicate counted the
+# *activator's* `Listening on` line as the daemon announcing itself, so a daemon that had already
+# exited satisfied claim 1. Note **N241** has the account; the predicate now requires the
+# daemon's own sentence.
+#
 # shellcheck shell=bash
 
 # Where a daemon puts its socket, read from the crates that own the two names — the same
@@ -78,7 +87,10 @@ printf 'webcam-handler-daemon is serving socket=%s\n' "\$dir/$socket_file" >&2
 while :; do sleep 1; done
 STUB
     chmod +x "$stub"
-    WCH_GATE_WCHD="$stub" "$GATE"
+    # Wrong about the two refusals and about the journal; right about adoption. The refusal this
+    # arm is named for is the one that asks *what* the descriptor is.
+    gate_red_because 'the daemon served a socket in the abstract namespace' \
+        env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # The real `webcam-handler-daemon` with `LISTEN_FDS` taken away, which is exactly a daemon that
@@ -96,7 +108,8 @@ set -euo pipefail
 exec env -u LISTEN_FDS -u LISTEN_PID "$real" "\$@"
 STUB
     chmod +x "$stub"
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'the daemon replaced the socket it was handed' \
+        env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # A daemon that cannot start at all leaves this gate with nothing to examine, and a gate that
@@ -111,7 +124,7 @@ printf 'webcam-handler-daemon cannot serve\n' >&2
 exit 1
 STUB
     chmod +x "$stub"
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'examined zero activated daemons' env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # The journald half, and the only stub here that is *right* about all three activation claims:
@@ -136,5 +149,5 @@ printf 'webcam-handler-daemon is serving socket=%s\n' "\$dir/$socket_file" >&2
 while :; do sleep 1; done
 STUB
     chmod +x "$stub"
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'rather than _TRANSPORT=journal' env WCH_GATE_WCHD="$stub" "$GATE"
 }

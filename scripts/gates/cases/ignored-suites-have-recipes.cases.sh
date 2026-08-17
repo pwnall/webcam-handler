@@ -4,6 +4,13 @@
 # and a suite declaration whose recipe does not exist or does not run the script that
 # declared it.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**). Three of the
+# arms here seed an unrouted test and are red under one shared sentence, so each claims the test
+# it wrote; and two of the nextest arms take the suites out of the serialising group by different
+# routes, one of which is red under the other's sentence as well. Naming is what keeps the
+# reducer arms honest in particular: they exist to prove a *parser* reads a line the way the
+# comment above them says, and "something went red" is not that.
+#
 # shellcheck shell=bash
 
 pass_case() {
@@ -91,7 +98,8 @@ mod tests {
     fn hidden_in_the_prose_and_nobody_runs_it() {}
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "ignored test 'hidden_in_the_prose_and_nobody_runs_it'" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_an_attribute_sharing_a_line_with_a_block_comment_that_closed() {
@@ -110,7 +118,8 @@ mod tests {
     fn declared_after_a_closed_block_comment() {}
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "ignored test 'declared_after_a_closed_block_comment'" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_ignored_test_no_suite_claims() {
@@ -125,7 +134,8 @@ mod tests {
     fn orphaned_suite_nobody_runs() {}
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "ignored test 'orphaned_suite_nobody_runs'" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_ignored_test_outside_every_package() {
@@ -137,7 +147,8 @@ fail_case_ignored_test_outside_every_package() {
 #[ignore = "unreachable by any selection"]
 fn hw_stray() {}
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "holds the ignored test 'hw_stray' but belongs to no workspace member" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_declaration_names_a_recipe_that_does_not_exist() {
@@ -147,7 +158,8 @@ fail_case_declaration_names_a_recipe_that_does_not_exist() {
     sed 's/^# wch-suite: prefix=hw_ recipe=.*/# wch-suite: prefix=hw_ recipe=no-such-recipe/' \
         "$script" >"$script.seeded"
     mv "$script.seeded" "$script"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "declares recipe 'no-such-recipe', which the justfile does not define" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_recipe_does_not_run_the_script_that_declares_it() {
@@ -156,7 +168,8 @@ fail_case_recipe_does_not_run_the_script_that_declares_it() {
     sed 's|\./scripts/smoke-hw\.sh|echo "not running the suite"|' "$tree/justfile" \
         >"$tree/justfile.seeded"
     mv "$tree/justfile.seeded" "$tree/justfile"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "the justfile recipe 'smoke-hw' does not run smoke-hw.sh" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_no_suite_declarations_at_all() {
@@ -166,14 +179,17 @@ fail_case_no_suite_declarations_at_all() {
         grep -v '^# wch-suite:' "$script" >"$script.seeded"
         mv "$script.seeded" "$script"
     done
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # With no declaration left, every `#[ignore]`d test in the tree is also unrouted — forty of
+    # them — and the population this arm is about is the declarations.
+    gate_red_because 'examined zero wch-suite declarations' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_justfile_deleted() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/justfile"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no justfile; there are no recipes for a suite to be named by' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # --------------------------------------- the exclusive-device test group, both directions
@@ -186,7 +202,8 @@ fail_case_no_nextest_config_to_serialise_the_hardware_suites() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/.config/nextest.toml"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no .config/nextest.toml; nothing stops two hardware suites' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_test_group_does_not_cap_itself_at_one_thread() {
@@ -195,7 +212,8 @@ fail_case_the_test_group_does_not_cap_itself_at_one_thread() {
     sed 's/^max-threads = 1$/max-threads = 4/' "$tree/.config/nextest.toml" \
         >"$tree/.config/nextest.toml.seeded"
     mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'does not cap itself at one thread, so it serialises nothing' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_declared_suite_prefix_is_outside_the_test_group() {
@@ -204,7 +222,7 @@ fail_case_a_declared_suite_prefix_is_outside_the_test_group() {
     sed 's/ + test(\/(^|::)vivid_\/)//' "$tree/.config/nextest.toml" \
         >"$tree/.config/nextest.toml.seeded"
     mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "suite prefix 'vivid_' is not in" env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_group_is_assigned_but_never_defined() {
@@ -213,7 +231,8 @@ fail_case_the_group_is_assigned_but_never_defined() {
     sed 's/^\[test-groups\.exclusive-device\]$/[test-groups.something-else]/' \
         "$tree/.config/nextest.toml" >"$tree/.config/nextest.toml.seeded"
     mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "assigns test-group 'exclusive-device', which it does not define" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_group_is_assigned_under_a_profile_the_recipes_never_use() {
@@ -224,7 +243,10 @@ fail_case_the_group_is_assigned_under_a_profile_the_recipes_never_use() {
     sed 's/^\[\[profile\.default\.overrides\]\]$/[[profile.ci.overrides]]/' \
         "$tree/.config/nextest.toml" >"$tree/.config/nextest.toml.seeded"
     mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # Both prefixes fall out of the group with the override, which is the consequence; the
+    # profile nobody runs is the cause and is what this arm claims.
+    gate_red_because 'no override under [[profile.default.overrides]] assigns' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_filter_subtracts_what_it_appears_to_include() {
@@ -236,5 +258,5 @@ fail_case_the_filter_subtracts_what_it_appears_to_include() {
     sed "s|^filter = .*|filter = 'test(/(^\|::)hw_/) + test(/(^\|::)vivid_/) - test(/(^\|::)hw_/)'|" \
         "$tree/.config/nextest.toml" >"$tree/.config/nextest.toml.seeded"
     mv "$tree/.config/nextest.toml.seeded" "$tree/.config/nextest.toml"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "filter subtracts or negates" env WCH_GATE_ROOT="$tree" "$GATE"
 }

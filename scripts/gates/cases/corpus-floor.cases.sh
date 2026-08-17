@@ -4,6 +4,15 @@
 # parses it" — is the one worth having: a corpus that is merely deserialized would satisfy
 # a weaker gate while proving nothing about the behaviour it was captured for.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**), and this file
+# needed it: three of the six seeds are red under the dead-corpus branch, because anything that
+# removes coverage removes it for every profile at once. `fail_case_the_rust_sources_are_gone` was
+# one of them — it deleted the sources under `crates/` and `xtask/` and left the four fixture
+# crates under `scripts/gates/fixtures/` standing, so the population was never empty, the "no Rust
+# sources found" branch never fired, and the arm went red saying what
+# `fail_case_a_profile_nobody_loads` already says. It now takes every `.rs` file the predicate
+# would have walked.
+#
 # shellcheck shell=bash
 
 pass_case() {
@@ -35,14 +44,15 @@ fail_case_the_corpus_is_empty() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree"/corpus/profiles/*.json
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'examined zero committed device profiles' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_corpus_directory_is_gone() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -rf "$tree/corpus/profiles"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'corpus/profiles/ does not exist' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_profile_nobody_loads() {
@@ -71,7 +81,8 @@ fail_case_a_profile_nobody_loads() {
 
     # …and now the one profile nothing mentions.
     cp "$tree/corpus/profiles/chicony-rgb.json" "$tree/corpus/profiles/nobody-loads-me.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'corpus/profiles/nobody-loads-me.json is loaded by no test' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_profile_buried_where_the_loader_cannot_see_it() {
@@ -82,7 +93,8 @@ fail_case_a_profile_buried_where_the_loader_cannot_see_it() {
     # population would have counted as covered.
     mkdir -p "$tree/corpus/profiles/attic"
     cp "$tree/corpus/profiles/chicony-rgb.json" "$tree/corpus/profiles/attic/hidden.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'live below corpus/profiles/ in a subdirectory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_corpus_is_parsed_but_never_replayed() {
@@ -93,7 +105,8 @@ fail_case_the_corpus_is_parsed_but_never_replayed() {
     local replayers=()
     mapfile -t replayers < <(grep -rl 'FakeBackend::' "$tree" --include='*.rs')
     gate_seed 's/FakeBackend::new(/FakeBackendNewRemoved(/g; s/FakeBackend::from_profile(/FakeBackendFromProfileRemoved(/g' "${replayers[@]}"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no test both reaches the corpus and constructs a backend from it' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_rust_sources_are_gone() {
@@ -101,6 +114,13 @@ fail_case_the_rust_sources_are_gone() {
     tree="$(gate_scratch_tree)"
     # Non-vacuity in the other direction: with no sources at all, "every profile is
     # covered" must not be vacuously true.
-    find "$tree/crates" "$tree/xtask" -name '*.rs' -delete 2>/dev/null || true
-    WCH_GATE_ROOT="$tree" "$GATE"
+    #
+    # Every `.rs` file in the tree, not the ones under `crates/` and `xtask/`: the predicate's
+    # population is `gate_rust_files`, which walks the whole checkout, and the four fixture
+    # crates under `scripts/gates/fixtures/` are Rust sources too. Leaving them standing left
+    # the population non-empty and this arm red on the dead-corpus branch instead — the header
+    # has the account.
+    find "$tree" -name '*.rs' -delete 2>/dev/null || true
+    gate_red_because 'no Rust sources found; nothing could load a profile' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }

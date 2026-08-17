@@ -10,6 +10,14 @@
 # note N10: nothing here stubs the thing under test, so an arm cannot agree with its
 # author's belief about it.
 #
+# Each arm names the sentence it is claiming (`gate_red_because`, note **N31**), and this file is
+# where that rule found a broken arm rather than a weak one: `fail_case_nothing_to_scan` deleted
+# every `.rs` file in the copy, which is a workspace `cargo metadata` will not load, so the
+# predicate exited **101** from `gate_metadata` before it reached the population check the arm is
+# named for — and 101 is non-zero, which is all the harness used to ask. Note **N241** has the
+# account. Six of the arms below also share one sentence with a different file name in it, which
+# is the other half of why the claim is worth writing down.
+#
 # shellcheck shell=bash
 
 pass_case() {
@@ -47,7 +55,8 @@ pub fn save(state_dir: &str, body: &str) {
     let _ = fs::write(format!("{state_dir}/session.json"), body);
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/engine/src/sneaky.rs names the state directory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A composition root writing state itself.
@@ -62,7 +71,8 @@ pub fn save(session: &serde_json::Value) {
     serde_json::to_writer(file, session).unwrap();
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/cli/src/oops.rs names the state directory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The P3a widening, proven: a bypass that never names the state directory and is caught
@@ -79,7 +89,8 @@ pub fn note(dir: &camino::Utf8Path, line: &str) {
     let _ = f.write_all(line.as_bytes());
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/journal.rs names the state directory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The P3-review widening, proven: the same bypass spelled with std's *aliases* for the
@@ -102,7 +113,8 @@ pub fn note(dir: &camino::Utf8Path, line: &str) {
     let _ = f.write_all(line.as_bytes());
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/journal_options.rs names the state directory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_bypass_spelled_with_file_create_new() {
@@ -117,7 +129,8 @@ pub fn note(dir: &camino::Utf8Path, line: &str) {
     let _ = f.write_all(line.as_bytes());
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/journal_new.rs names the state directory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The P4e-i widening, proven: the bypass spelled the way that sub-milestone taught this
@@ -142,7 +155,8 @@ pub fn note(dir: &camino::Utf8Path, line: &str) {
     let _ = std::fs::File::from(fd).write_all(line.as_bytes());
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/journal_rustix.rs names the state directory' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The direction the widening must NOT take with it: `rustix::fs::open` is not itself a
@@ -167,10 +181,20 @@ RS
 }
 
 fail_case_nothing_to_scan() {
-    local tree
+    local tree md
     tree="$(gate_scratch_tree)"
     find "$tree" -name '*.rs' -delete
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The graph is handed in, and that is not convenience. A workspace whose crate roots have
+    # been deleted is one `cargo metadata` refuses to load, so the predicate exited 101 from
+    # `gate_metadata` — three lines before the population check this arm is named for — and the
+    # harness read 101 as "it went red" (note **N241**). Seeding through the documented seam is
+    # `unsafe-scope.cases.sh`'s reasoning for its missing-crate-root arm: what goes red has to be
+    # the predicate and not its input. The snapshot is re-pointed at the copy, so the engine the
+    # metadata names is the engine whose sources are gone.
+    md="$(gate_metadata_snapshot)"
+    sed "s|$(gate_root)|$tree|g" "$md" >"$md.seeded"
+    gate_red_because 'examined zero Rust source files' \
+        env WCH_GATE_ROOT="$tree" WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 # Half two: the home itself is gone. Before P3a this was the tree's actual state, and the
@@ -179,7 +203,8 @@ fail_case_the_home_is_missing() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -rf "$tree/crates/engine/src/store.rs" "$tree/crates/engine/src/store"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'design §2.10 names it as the one home for atomic state writes' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Half two: the home exists and has stopped being atomic — the rename is gone, so a
@@ -189,7 +214,8 @@ fail_case_the_home_stopped_renaming() {
     tree="$(gate_scratch_tree)"
     store="$tree/crates/engine/src/store.rs"
     gate_seed 's/\.persist(/\.keep_but_do_not_rename(/g' "$store"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'the rename is what publishes the document' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Half two: the home stopped taking the one advisory lock, so D9's cross-process safety
@@ -199,7 +225,8 @@ fail_case_the_home_stopped_locking() {
     tree="$(gate_scratch_tree)"
     store="$tree/crates/engine/src/store.rs"
     gate_seed 's/fd_lock::RwLock/some_other::Thing/g' "$store"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'the one advisory lock is taken with fd-lock' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Half two: `write_json_atomic` itself renamed away, which is how the §2.10 home stops
@@ -209,5 +236,5 @@ fail_case_the_home_lost_its_named_function() {
     tree="$(gate_scratch_tree)"
     store="$tree/crates/engine/src/store.rs"
     gate_seed 's/pub fn write_json_atomic/pub fn save_the_json/g' "$store"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'write_json_atomic is defined' env WCH_GATE_ROOT="$tree" "$GATE"
 }
