@@ -22,13 +22,22 @@
 //! plausible, because the recording exists to be measured.
 //!
 //! The one thing this module *asserts* rather than measures is colour convention. Its
-//! samples are BT.601 limited range and its 4:2:0 chroma siting is unstated (`C420` rather
-//! than `C420mpeg2` or `C420jpeg`), because V4L2's `colorspace`/`quantization`/`xfer_func`
-//! signalling is not plumbed through [`schema::capture::NegotiatedStream`] yet —
-//! [`crate::decode`]'s header records the same stated assumption for the same reason. The
-//! header therefore declares what it knows and stays quiet about what it does not: there is
-//! no `A` pixel-aspect field, because V4L2 does not tell us the pixel aspect and `A1:1` would
-//! be a claim rather than a reading (AGENTS rule 6 — represent the unknown, never correct it).
+//! samples are BT.601 limited range, and until 2026-08-16 this paragraph also said its 4:2:0
+//! chroma siting was "unstated (`C420` rather than `C420mpeg2` or `C420jpeg`)". **That was
+//! false, and note N200 carries the measurement**: `ffprobe` and `mpv` both read `C420` as
+//! exactly the siting `C420jpeg` names, so the tag that was chosen for saying nothing was
+//! saying *centred*. There is no spelling of 4:2:0 in this vocabulary that declines to name a
+//! siting, so the siting became a capture-time input — [`Y4mParams::chroma_siting`], derived
+//! by [`schema::capture::ChromaSiting::of`], defaulting to what this writer has always
+//! emitted — rather than a constant under a comment claiming neutrality (owner ruling,
+//! 2026-08-16).
+//!
+//! What the header still declines to state, it declines honestly: there is no `A`
+//! pixel-aspect field, because V4L2 does not tell us the pixel aspect and `A1:1` would be a
+//! claim rather than a reading (AGENTS rule 6 — represent the unknown, never correct it).
+//! And V4L2's `colorspace`/`ycbcr_enc`/`quantization`/`xfer_func` signalling is still not
+//! plumbed through [`schema::capture::NegotiatedStream`], which is why the *range* remains a
+//! stated assumption — [`crate::decode`]'s header records the same one for the same reason.
 //!
 //! ## The rate, which is measured at close since P6d because an oracle said it could be
 //!
@@ -117,7 +126,7 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use schema::camera::PixelFormat;
-use schema::capture::Frame;
+use schema::capture::{ChromaSiting, Frame};
 use schema::error::Result;
 use schema::video::{CapReached, IntervalSource, RecordingSummary};
 
@@ -241,15 +250,27 @@ enum Planar {
 }
 
 impl Planar {
-    /// The header's `C` tag for this colorspace.
-    const fn tag(self) -> &'static str {
+    /// The header's `C` tag for this colorspace, at the siting the recording was opened
+    /// with.
+    ///
+    /// **Only 4:2:0 has a siting to state, and it always states one.** Mono has no chroma at
+    /// all, and 4:2:2's tag carries no siting in this vocabulary — measured, not assumed:
+    /// `ffprobe` 8.0.1 reports `chroma_location=unspecified` for a `C422` file (evidence
+    /// **N200**). So the argument runs out at `C420`, where every spelling names a siting and
+    /// the one this writer used to emit unconditionally is [`ChromaSiting::Centred`]'s
+    /// (note **N200**).
+    const fn tag(self, siting: ChromaSiting) -> &'static str {
         match self {
             Planar::Mono => "mono",
             Planar::C422 => "422",
-            // Plain `420` rather than `420mpeg2` or `420jpeg`: those name a *chroma siting*,
-            // and V4L2's siting is not plumbed through the negotiation (see the module doc).
-            // Naming one would be a claim about the device that nothing here measured.
-            Planar::C420 => "420",
+            // `420` and not `420jpeg` for the same reason `Ip` is written and `A1:1` is not:
+            // the two spell the same siting to every reader measured, and `420` is the one
+            // every file this project has already written carries. Changing it would move
+            // the frozen fixtures for no gain.
+            Planar::C420 => match siting {
+                ChromaSiting::Centred => "420",
+                ChromaSiting::HorizontallyCosited => "420mpeg2",
+            },
         }
     }
 
@@ -272,6 +293,11 @@ struct Layout {
     height: u32,
     pixel_format: PixelFormat,
     planar: Planar,
+    /// The siting the header will state, from [`Y4mParams::chroma_siting`].
+    ///
+    /// Kept beside the colorspace rather than read from the params at the one call site, so
+    /// the header and the refusal that names `C{tag}` cannot spell the same stream two ways.
+    siting: ChromaSiting,
     /// The luma plane, in bytes: `width * height` for every colorspace here.
     y_bytes: usize,
     /// **One** chroma plane, in bytes. Zero for mono, which has neither.
@@ -316,6 +342,16 @@ pub struct Y4mParams {
     pub pixel_format: PixelFormat,
     /// The negotiated frame interval in microseconds, when the negotiation named one.
     pub negotiated_interval_us: Option<u32>,
+    /// Which 4:2:0 chroma siting the header states (owner ruling, 2026-08-16; note
+    /// **N200**).
+    ///
+    /// An input rather than a constant, because there is no `C` tag that declines to name a
+    /// siting: `C420` *is* [`ChromaSiting::Centred`] to every reader measured, so a writer
+    /// with the tag hard-coded was making a claim while its comment said it was not.
+    /// `Default` is `Centred`, which is what this writer has always emitted and what
+    /// [`ChromaSiting::of`] answers for a stream nothing could be asked about. Ignored for
+    /// GREY and YUYV, whose tags carry no siting at all.
+    pub chroma_siting: ChromaSiting,
     /// What the recording is allowed to cost.
     pub caps: RecordingCaps,
 }
@@ -399,7 +435,12 @@ impl<W: Write + Seek> Y4mWriter<W> {
     /// bypassing the pairing rather than a device that cannot oblige — AGENTS rule 7's line,
     /// with the capability claim kept where the capability is decided.
     pub fn begin(mut sink: W, params: Y4mParams) -> Result<Self> {
-        let layout = layout(params.width, params.height, params.pixel_format)?;
+        let layout = layout(
+            params.width,
+            params.height,
+            params.pixel_format,
+            params.chroma_siting,
+        )?;
         if params.caps.max_bytes < MIN_RECORDING_BYTES {
             return Err(imaging_failure(
                 BEGIN_OP,
@@ -806,7 +847,12 @@ impl<W: Write + Seek> Y4mWriter<W> {
 /// refuse rather than to pad the frame with an invented sample or to truncate it and report a
 /// size the caller did not ask for (AGENTS rule 6). Mono subsamples nothing and takes any
 /// extent, which is why the check is per-colorspace rather than blanket.
-fn layout(width: u32, height: u32, pixel_format: PixelFormat) -> Result<Layout> {
+fn layout(
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    siting: ChromaSiting,
+) -> Result<Layout> {
     let Some(planar) = Planar::of(pixel_format) else {
         return Err(imaging_failure(
             BEGIN_OP,
@@ -834,7 +880,7 @@ fn layout(width: u32, height: u32, pixel_format: PixelFormat) -> Result<Layout> 
             BEGIN_OP,
             format!(
                 "a {width}x{height} frame {ODD_EXTENT} {axis}, which C{} subsamples",
-                planar.tag()
+                planar.tag(siting)
             ),
         ));
     }
@@ -855,6 +901,7 @@ fn layout(width: u32, height: u32, pixel_format: PixelFormat) -> Result<Layout> 
         height,
         pixel_format,
         planar,
+        siting,
         y_bytes,
         chroma_bytes,
     })
@@ -909,7 +956,7 @@ fn header_bytes(layout: Layout, interval_us: u32) -> Header {
     // disagree about how long `W64 H48 F1000000:` is.
     let denominator_at = out.len();
     out.extend_from_slice(denominator_digits(interval_us).as_bytes());
-    out.extend_from_slice(format!(" Ip C{}\n", layout.planar.tag()).as_bytes());
+    out.extend_from_slice(format!(" Ip C{}\n", layout.planar.tag(layout.siting)).as_bytes());
     Header {
         bytes: out,
         denominator_at,
@@ -1172,7 +1219,11 @@ mod tests {
         let (chroma_width, chroma_height) = match colorspace.as_str() {
             "mono" => (0, 0),
             "422" => (width.div_ceil(2), height),
-            "420" => (width.div_ceil(2), height.div_ceil(2)),
+            // Every 4:2:0 spelling this writer can emit, and they differ only in the siting
+            // they declare — the plane sizes are identical, which is exactly why the tag was
+            // mistaken for a free choice. The list is written out rather than matched by
+            // prefix so a tag outside it is still refused.
+            "420" | "420jpeg" | "420mpeg2" | "420paldv" => (width.div_ceil(2), height.div_ceil(2)),
             other => return Err(format!("unsupported colorspace {other}")),
         };
         let y_len = width * height;
@@ -1234,6 +1285,7 @@ mod tests {
             height: HEIGHT,
             pixel_format,
             negotiated_interval_us: Some(NEGOTIATED_US),
+            chroma_siting: ChromaSiting::default(),
             caps,
         }
     }
@@ -1320,6 +1372,61 @@ mod tests {
         }
     }
 
+    /// The same frame a driver would deliver with `pad` bytes of stride padding on every
+    /// row, and `last_row_padded` deciding whether the final row of the buffer carries its
+    /// own padding.
+    ///
+    /// **Built by re-padding [`raw_frame`]'s rows rather than by a second generator**, so the
+    /// planes it must produce are still `expected_planes`' and a test comparing the two is
+    /// comparing a padded delivery against an unpadded one rather than against a second
+    /// transcription of the layout.
+    ///
+    /// NV12's two planes are padded to the *same* stride, because that is what V4L2 lays out
+    /// and what `fill_c420` computes the chroma plane's start from. `last_row_padded` is
+    /// meaningful for the packed formats only: `fill_c420` locates the chroma plane at
+    /// `y_stride × height`, so a luma plane missing its final padding is a different frame
+    /// rather than the same one delivered tightly.
+    fn padded_raw_frame(pixel_format: PixelFormat, pad: u32, last_row_padded: bool) -> Frame {
+        let tight = raw_frame(pixel_format, 0, 0);
+        let row_bytes = match pixel_format {
+            PixelFormat::YUYV => WIDTH * 2,
+            _ => WIDTH,
+        };
+        let rows = usize::try_from(match pixel_format {
+            // Luma rows, then the interleaved chroma plane's half-height rows.
+            PixelFormat::NV12 => HEIGHT + HEIGHT / 2,
+            _ => HEIGHT,
+        })
+        .expect("fits");
+        let row_bytes = usize::try_from(row_bytes).expect("fits");
+        let mut bytes = Vec::new();
+        for (index, row) in tight.bytes.chunks(row_bytes).enumerate() {
+            bytes.extend_from_slice(row);
+            if last_row_padded || index + 1 < rows {
+                // 0xff on every padding byte: out of `luma`'s range (0–250) and out of both
+                // chroma ranges, so a fill that let one through lands a value no generator
+                // can produce rather than one that might match by luck.
+                bytes.extend(std::iter::repeat_n(
+                    0xffu8,
+                    usize::try_from(pad).expect("fits"),
+                ));
+            }
+        }
+        Frame {
+            bytes,
+            bytes_per_line: row_bytes_u32(pixel_format) + pad,
+            ..tight
+        }
+    }
+
+    /// One row's *useful* bytes, in the width `bytes_per_line` is stated in.
+    fn row_bytes_u32(pixel_format: PixelFormat) -> u32 {
+        match pixel_format {
+            PixelFormat::YUYV => WIDTH * 2,
+            _ => WIDTH,
+        }
+    }
+
     fn record(
         params: Y4mParams,
         frames: &[Frame],
@@ -1349,7 +1456,8 @@ mod tests {
         // would let `begin` accept a cap the header cannot fit under. 2x2 C420 is the shortest
         // header this writer can produce: the magic, the fixed `F` numerator and the padded
         // denominator's width are all constant, and every other field is at its minimum.
-        let smallest = layout(2, 2, PixelFormat::NV12).expect("2x2 NV12 is a legal extent");
+        let smallest = layout(2, 2, PixelFormat::NV12, ChromaSiting::default())
+            .expect("2x2 NV12 is a legal extent");
         let header = header_bytes(smallest, 1);
         assert_eq!(
             u64::try_from(header.bytes.len()).expect("fits"),
@@ -1372,7 +1480,7 @@ mod tests {
         // would have to move every byte after the rate. The four intervals below are 1, 5, 8
         // and 10 digits unpadded — including `u32::MAX`, which is the number
         // `RATE_DENOMINATOR_DIGITS` is sized for.
-        let extent = layout(64, 48, PixelFormat::GREY).expect("legal");
+        let extent = layout(64, 48, PixelFormat::GREY, ChromaSiting::default()).expect("legal");
         let mut lengths = BTreeSet::new();
         for interval in [1, 33_333, 66_666_666, u32::MAX] {
             let header = header_bytes(extent, interval);
@@ -1862,13 +1970,144 @@ mod tests {
     }
 
     #[test]
+    fn the_header_states_the_chroma_siting_the_recording_was_opened_with() {
+        // **The tag was a constant under a comment saying it asserted nothing, and it
+        // asserted something** (note **N200**). `C420` is `C420jpeg`'s siting to `ffprobe` and
+        // to `mpv` alike (note **N200**), so there was no neutral spelling to have chosen
+        // and the writer was declaring a siting nobody had decided on. The repair makes it an
+        // input, and this is the walk that keeps it one: every member of the vocabulary
+        // reaches the file as its own tag, and a build that ignored the input would put two
+        // members on one tag.
+        //
+        // The walk is over `ChromaSiting::ALL` rather than over a list written here, so a
+        // third siting cannot be added to the schema without deciding what this container
+        // writes for it — the `ALL`-shaped treatment §9.1 of the G6 review says is the one
+        // that works.
+        let mut tags = BTreeSet::new();
+        for &siting in ChromaSiting::ALL {
+            let params = Y4mParams {
+                chroma_siting: siting,
+                ..params(PixelFormat::NV12, generous_caps())
+            };
+            let (file, _, _) = record(params, &[raw_frame(PixelFormat::NV12, 0, 0)]);
+            let parsed = parse_y4m(&file).unwrap_or_else(|err| panic!("{siting:?}: {err}"));
+            assert!(
+                tags.insert(parsed.colorspace.clone()),
+                "{siting:?} writes {}, which another siting already writes — the input is \
+                 being ignored",
+                parsed.colorspace
+            );
+            // The planes are the same bytes whichever siting was declared: a siting is a
+            // statement about where the samples *are*, not a rearrangement of them, so a
+            // build that resampled on the strength of the tag would fail here.
+            let expected = expected_planes(PixelFormat::NV12);
+            let written = parsed.frames.first().expect("one frame");
+            assert_eq!(&written.y, &expected.y, "{siting:?}");
+            assert_eq!(&written.u, &expected.u, "{siting:?}");
+            assert_eq!(&written.v, &expected.v, "{siting:?}");
+        }
+        assert_eq!(tags.len(), ChromaSiting::ALL.len());
+
+        // The default is the tag every file this project has already written carries, which
+        // is what keeps the frozen fixtures frozen and is the owner's ruling of 2026-08-16.
+        assert_eq!(ChromaSiting::default(), ChromaSiting::Centred);
+        let (file, _, _) = record(
+            params(PixelFormat::NV12, generous_caps()),
+            &[raw_frame(PixelFormat::NV12, 0, 0)],
+        );
+        assert_eq!(parse_y4m(&file).expect("parses").colorspace, "420");
+
+        // And the two colorspaces that have no siting to state do not acquire one from the
+        // input — measured, not assumed: `ffprobe` reads `C422` as `chroma_location=
+        // unspecified` (note **N200**), and mono has no chroma at all.
+        for (pixel_format, tag) in [(PixelFormat::GREY, "mono"), (PixelFormat::YUYV, "422")] {
+            for &siting in ChromaSiting::ALL {
+                let params = Y4mParams {
+                    chroma_siting: siting,
+                    ..params(pixel_format, generous_caps())
+                };
+                let (file, _, _) = record(params, &[raw_frame(pixel_format, 0, 0)]);
+                assert_eq!(
+                    parse_y4m(&file).expect("parses").colorspace,
+                    tag,
+                    "{tag} acquired a siting from {siting:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stride_padding_is_dropped_in_every_colorspace_and_not_only_in_mono() {
+        // The test above says the same thing about *mono*, which is one of the three fills
+        // and the only one whose padded-plane arithmetic is a single de-strided copy.
+        // `fill_c422` walks the padded rows itself and `fill_c420` locates the chroma plane
+        // at `y_stride × height` — the offset `decode_nv12`'s own comment warns about and
+        // note **N130** found three surviving mutants in — and neither had an assertion
+        // here (note **N202**). So a driver that pads its rows and one that does not must produce
+        // the same
+        // *file*, in all three, and the comparison is against the planes the tight fixture
+        // is already known to produce.
+        //
+        // The fixture can fail for the right reason because it is `raw_frame`'s: luma, Cb and
+        // Cr have disjoint ranges and every sample is a function of its own position (note
+        // **N108**), so a fill that read a chroma row at the wrong offset, took the padding
+        // as samples, or exchanged the two chroma planes lands values these generators cannot
+        // produce rather than values that happen to match.
+        for (pixel_format, tag) in [
+            (PixelFormat::GREY, "mono"),
+            (PixelFormat::YUYV, "422"),
+            (PixelFormat::NV12, "420"),
+        ] {
+            let expected = expected_planes(pixel_format);
+            for pad in [2, 8, 96] {
+                let frame = padded_raw_frame(pixel_format, pad, true);
+                let (file, outcomes, summary) =
+                    record(params(pixel_format, generous_caps()), &[frame]);
+                assert_eq!(outcomes, vec![FrameOutcome::Written], "{tag} pad {pad}");
+                assert_eq!(summary.frames_written, 1, "{tag} pad {pad}");
+                let parsed =
+                    parse_y4m(&file).unwrap_or_else(|err| panic!("{tag} pad {pad}: {err}"));
+                let written = parsed.frames.first().expect("one frame");
+                assert_eq!(&written.y, &expected.y, "{tag} pad {pad}: luma");
+                assert_eq!(&written.u, &expected.u, "{tag} pad {pad}: Cb");
+                assert_eq!(&written.v, &expected.v, "{tag} pad {pad}: Cr");
+                assert!(
+                    !written.y.contains(&0xff)
+                        && !written.u.contains(&0xff)
+                        && !written.v.contains(&0xff),
+                    "{tag} pad {pad}: a padding byte reached the file"
+                );
+            }
+        }
+
+        // And the shared rule about the *last* row, which `crate::decode::plane_bytes`
+        // states once for this whole crate: its padding "is not something a driver owes us".
+        // The two packed colorspaces are sized through that function, so a final row
+        // delivered without its padding is a whole frame to them as well.
+        for (pixel_format, tag) in [(PixelFormat::GREY, "mono"), (PixelFormat::YUYV, "422")] {
+            let expected = expected_planes(pixel_format);
+            let frame = padded_raw_frame(pixel_format, 8, false);
+            let (file, outcomes, _) = record(params(pixel_format, generous_caps()), &[frame]);
+            assert_eq!(outcomes, vec![FrameOutcome::Written], "{tag}");
+            let parsed = parse_y4m(&file).unwrap_or_else(|err| panic!("{tag}: {err}"));
+            let written = parsed.frames.first().expect("one frame");
+            assert_eq!(
+                &written.y, &expected.y,
+                "{tag}: luma of an unpadded last row"
+            );
+            assert_eq!(&written.u, &expected.u, "{tag}: Cb of an unpadded last row");
+            assert_eq!(&written.v, &expected.v, "{tag}: Cr of an unpadded last row");
+        }
+    }
+
+    #[test]
     fn a_cap_below_the_header_this_geometry_needs_is_the_size_cap_at_frame_zero() {
         // The floor at `begin` catches caps no geometry could satisfy; this catches a cap that
         // *this* header does not fit under. The answer is the size cap rather than an error,
         // because a caller that asked for a bound got one — and the file that exists is a
         // legitimate Y4M of no frames.
         let header_len = header_bytes(
-            layout(WIDTH, HEIGHT, PixelFormat::GREY).expect("legal"),
+            layout(WIDTH, HEIGHT, PixelFormat::GREY, ChromaSiting::default()).expect("legal"),
             NEGOTIATED_US,
         )
         .bytes
@@ -2013,6 +2252,7 @@ mod tests {
             height: 48,
             pixel_format,
             negotiated_interval_us: Some(NEGOTIATED_US),
+            chroma_siting: ChromaSiting::default(),
             caps: RecordingCaps {
                 max_bytes: 1 << 20,
                 max_frames: 64,

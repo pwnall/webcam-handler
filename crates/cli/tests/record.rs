@@ -22,7 +22,9 @@
 //! and `corpus/profiles/chicony-ir.json` is a captured profile of a real **GREY-only** device.
 //! So the Y4M arm here is an answer about hardware rather than about a fixture built to make
 //! the point, and so is the refusal beside it: `.avi` over that camera is
-//! `FormatUnsupported { available: [MJPG, JPEG] }`, naming what AVI *would* have taken.
+//! `FormatUnsupported` carrying a `ContainerRefusal`, naming the `.y4m` that *would* have
+//! taken those frames — a file rather than a format, because the format was the camera's
+//! answer and not the caller's request (note **N211**).
 //!
 //! ## Every take is short, and that is the fixture rather than a shortcut
 //!
@@ -179,9 +181,10 @@ fn wch_record_over_a_grey_camera_writes_y4m_and_refuses_the_container_that_canno
         "a .y4m that is not a YUV4MPEG2 stream is not a recording"
     );
 
-    // The refusal, and it names what AVI *would* have taken rather than only saying no —
-    // since HEAD a `PixelFormat` renders as its FourCC, so the two names are ones an agent
-    // can act on rather than integers it would have to look up.
+    // The refusal, and it names the **file** that would have taken these frames rather than
+    // only saying no. It named AVI's two formats until 2026-08-17 (note **N211**), which is a
+    // list this camera has never had a member of: a person reading that line, or an agent
+    // reading the document beside it, is told to go and ask a GREY-only sensor for MJPG.
     let avi = scratch.path("take.avi");
     let (ok, _, stderr) = record_from(
         &device,
@@ -189,8 +192,9 @@ fn wch_record_over_a_grey_camera_writes_y4m_and_refuses_the_container_that_canno
         &["-o", avi.as_str(), "--duration", "300ms"],
     );
     assert!(!ok, "AVI carries no GREY");
-    assert!(stderr.contains("MJPG"), "{stderr}");
-    assert!(stderr.contains("JPEG"), "{stderr}");
+    assert!(stderr.contains(".y4m"), "{stderr}");
+    assert!(!stderr.contains("MJPG"), "{stderr}");
+    assert!(!stderr.contains("JPEG"), "{stderr}");
     assert!(
         !avi.exists(),
         "a recording refused by the pairing left a file behind"

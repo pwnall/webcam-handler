@@ -92,6 +92,7 @@ use std::fmt;
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use schema::capture::ChromaSiting;
 use schema::video::{RecordingSummary, VideoFormat};
 
 use crate::battery::ArmOutcome;
@@ -248,6 +249,15 @@ pub struct Expectation {
     /// truncated JPEG still decodes, and `pkt_size` is where the 350 bytes of a 1162-byte frame
     /// show up.
     pub payload_bytes: Option<Vec<u32>>,
+    /// The chroma siting the recording was opened with, for a payload that states one.
+    ///
+    /// `None` — the default — for every recording whose container and colorspace name no
+    /// siting: AVI's MJPEG carries its own sampling inside the bitstream, and Y4M's `Cmono` and
+    /// `C422` tags name none at all (measured: `ffprobe` answers `unspecified` for both). `Some`
+    /// only for a 4:2:0 raw recording, where the header *must* state one and this workspace
+    /// chooses which — which is precisely the claim that had no reader (note **N200**, and
+    /// **N210** for why it had none until now).
+    pub chroma_siting: Option<ChromaSiting>,
 }
 
 impl Expectation {
@@ -270,6 +280,7 @@ impl Expectation {
             frames: summary.frames_written,
             declared_interval_us: summary.declared_interval_us,
             payload_bytes: None,
+            chroma_siting: None,
         }
     }
 
@@ -277,6 +288,19 @@ impl Expectation {
     #[must_use]
     pub fn with_payload_bytes(mut self, bytes: Vec<u32>) -> Expectation {
         self.payload_bytes = Some(bytes);
+        self
+    }
+
+    /// Add the chroma siting the recording was opened with, for a 4:2:0 raw take.
+    ///
+    /// The caller's, not derived here, and that is the whole point of the arm it enables: the
+    /// siting is a **capture-time input** (`imaging::video::RecordingParams::chroma_siting`),
+    /// so an expectation that computed it from the file's own colorspace would be this
+    /// workspace comparing its answer against its answer — which is the move that let a tag
+    /// mean something nobody had asked a reader about.
+    #[must_use]
+    pub fn with_chroma_siting(mut self, siting: ChromaSiting) -> Expectation {
+        self.chroma_siting = Some(siting);
         self
     }
 
@@ -300,6 +324,23 @@ impl Expectation {
             VideoFormat::Avi => "mjpeg",
             // Y4M's payload is planes, so there is no codec to name and libavformat says so.
             VideoFormat::Y4m => "rawvideo",
+        }
+    }
+
+    /// The `chroma_location` `ffprobe` reads out of a file written at this siting.
+    ///
+    /// [`Expectation::format_name`]'s shape, for its reason: transcribed from what the third
+    /// party answered rather than accepted from the file, because "it reported *a* siting" is
+    /// not the claim. An exhaustive match over [`ChromaSiting`], so a third member of that
+    /// vocabulary cannot be added without somebody measuring what a reader makes of it.
+    ///
+    /// Measured 2026-08-16 with `ffprobe` 8.0.1 (note **N200**'s table): `C420` and `C420jpeg`
+    /// both read `center`, `C420mpeg2` reads `left`, `C420paldv` reads `topleft`. The two rows
+    /// this build can write are the first and the third.
+    const fn chroma_location(siting: ChromaSiting) -> &'static str {
+        match siting {
+            ChromaSiting::Centred => "center",
+            ChromaSiting::HorizontallyCosited => "left",
         }
     }
 }
@@ -705,7 +746,13 @@ fn run_ffprobe(binary: &Utf8Path, file: &Utf8Path, report: &mut OracleReport) ->
             "v:0",
             "-count_frames",
             "-show_entries",
-            "stream=codec_name,width,height,r_frame_rate,nb_frames,nb_read_frames\
+            // `chroma_location` is here because a header field this workspace *writes* has to
+            // be readable back by somebody who is not us: `imaging::y4m` states a 4:2:0 chroma
+            // siting on every raw recording and there is no `C` tag that declines to (note
+            // **N200**), so "the tag we chose means the siting we meant" was a claim resting on
+            // a table in a note rather than on anything that could go red. One token here is
+            // what turns it into an arm.
+            "stream=codec_name,width,height,r_frame_rate,nb_frames,nb_read_frames,chroma_location\
              :format=format_name,nb_streams\
              :frame=pkt_size,pts",
         ])
@@ -828,6 +875,26 @@ fn arm_demux(probed: &Probed, expected: &Expectation, report: &mut OracleReport)
             )
         },
     );
+    // The one header field this workspace *decides* rather than measures, read back by
+    // somebody who is not us. Only asserted where the caller says a siting was stated: a Y4M
+    // `Cmono` or `C422` file names none, and an AVI's sampling lives inside the MJPEG
+    // bitstream — so a claim made about every file would be a claim about ffprobe's default
+    // rather than about anything this build wrote (note **N210**).
+    if let Some(siting) = expected.chroma_siting {
+        let wanted = Expectation::chroma_location(siting);
+        require(
+            report,
+            OracleArm::Demux,
+            text(&probed.stream, "chroma_location") == Some(wanted),
+            || {
+                format!(
+                    "the recording was opened at {siting:?}, which is written as a header tag \
+                     meaning {wanted:?}, and libavformat read the siting back as {:?}",
+                    text(&probed.stream, "chroma_location").unwrap_or("nothing")
+                )
+            },
+        );
+    }
     ArmOutcome::Ran
 }
 
@@ -1150,6 +1217,28 @@ mod tests {
             .collect()
     }
 
+    /// The only frames in this suite whose container has a chroma siting to state.
+    ///
+    /// NV12 is the 4:2:0 member of D6's raw set, so it is the one that makes `imaging::y4m`
+    /// write a `C420…` tag — which is the tag nothing outside this workspace had ever been
+    /// asked about (note **N210**). GREY writes `Cmono` and YUYV writes `C422`, and `ffprobe`
+    /// answers `unspecified` for both.
+    fn nv12_frames(count: u32) -> Vec<Frame> {
+        let source = imaging::fixtures::gradient(WIDTH, HEIGHT);
+        let bytes = imaging::fixtures::pack_nv12(&source);
+        (0..count)
+            .map(|index| Frame {
+                bytes: bytes.clone(),
+                pixel_format: PixelFormat::NV12,
+                width: WIDTH,
+                height: HEIGHT,
+                bytes_per_line: 0,
+                sequence: index,
+                timestamp_us: i64::from(index) * INTERVAL_US,
+            })
+            .collect()
+    }
+
     /// Write one recording to a real path and answer what it turned out to be.
     ///
     /// A file rather than a buffer because both oracles are separate processes that take a path
@@ -1158,7 +1247,13 @@ mod tests {
     fn record(dir: &tempfile::TempDir, name: &str, frames: &[Frame]) -> (Utf8PathBuf, Expectation) {
         // The pixel format of a take with no frames in it is still the *stream's*, which is why
         // it is a parameter of the recording rather than a property of its first frame.
-        record_in(dir, name, PixelFormat::MJPG, frames)
+        record_in(
+            dir,
+            name,
+            PixelFormat::MJPG,
+            frames,
+            ChromaSiting::default(),
+        )
     }
 
     fn record_in(
@@ -1166,6 +1261,7 @@ mod tests {
         name: &str,
         pixel_format: PixelFormat,
         frames: &[Frame],
+        chroma_siting: ChromaSiting,
     ) -> (Utf8PathBuf, Expectation) {
         let pixel_format = frames
             .first()
@@ -1182,6 +1278,7 @@ mod tests {
                 height: HEIGHT,
                 pixel_format,
                 negotiated_interval_us: Some(u32::try_from(INTERVAL_US).expect("fits")),
+                chroma_siting,
                 caps: RecordingCaps {
                     max_bytes: 1 << 22,
                     max_frames: 1_024,
@@ -1207,6 +1304,13 @@ mod tests {
                     .map(|frame| u32::try_from(frame.bytes.len()).expect("fits"))
                     .collect(),
             );
+        }
+        // Which recordings state a siting: the raw container's 4:2:0 arm and no other. AVI's
+        // sampling is inside the MJPEG bitstream, and `Cmono` and `C422` name none — so the
+        // expectation carries a siting exactly where the file does, and a claim about the other
+        // five would be a claim about ffprobe's default (note **N210**).
+        if container == VideoFormat::Y4m && pixel_format == PixelFormat::NV12 {
+            expected = expected.with_chroma_siting(chroma_siting);
         }
         (path, expected)
     }
@@ -1252,6 +1356,56 @@ mod tests {
             assert_eq!(report.ran(), OracleArm::ALL.len(), "{name}: {report}");
             assert!(report.absent.is_empty(), "{name}: {report}");
         }
+    }
+
+    #[test]
+    fn the_chroma_siting_a_raw_recording_states_is_the_one_a_third_party_reads_back() {
+        // **The claim that had no reader.** `imaging::y4m` states a 4:2:0 chroma siting on
+        // every raw recording — there is no `C` tag that declines to, which is the whole of
+        // note **N200** — and until this arm existed the only thing asserting what the tag
+        // *meant* was a unit test comparing this workspace's string against this workspace's
+        // expectation. That is the move that produced the defect in the first place: a tag
+        // believed to say nothing, with no reader consulted. N200's table is a measurement
+        // somebody took once by hand; this is the same measurement in a check that can go red
+        // (the G6 review's finding 4 against B8; note **N210**).
+        //
+        // Both members of the vocabulary, because a single arm would be satisfied by a writer
+        // that ignored its input and happened to emit the one tag under test — which is
+        // exactly what the pre-repair writer did.
+        if !both_oracles_or_decline("what a reader makes of the 4:2:0 siting we write") {
+            return;
+        }
+        let dir = scratch();
+        for (name, siting) in [
+            ("centred.y4m", ChromaSiting::Centred),
+            ("cosited.y4m", ChromaSiting::HorizontallyCosited),
+        ] {
+            let (path, expected) =
+                record_in(&dir, name, PixelFormat::NV12, &nv12_frames(4), siting);
+            assert_eq!(
+                expected.chroma_siting,
+                Some(siting),
+                "{name}: a 4:2:0 raw take that carries no siting to check is not this arm"
+            );
+            let report = validate(&path, &expected);
+            report.print();
+            assert!(report.is_green(), "{name}: {report}");
+            assert_eq!(report.ran(), OracleArm::ALL.len(), "{name}: {report}");
+        }
+
+        // The other direction, so the arm above is about the siting rather than about a claim
+        // that fires on anything: a colorspace with no siting to state carries none, and the
+        // demux arm asks nothing about it. Without this the two arms above would be satisfied
+        // by an `Expectation` that always said `Centred` and a probe that always said
+        // `center`.
+        let (path, expected) = record(&dir, "mono.y4m", &grey_frames(2));
+        assert_eq!(
+            expected.chroma_siting, None,
+            "Cmono names no siting, so nothing here may claim one"
+        );
+        let report = validate(&path, &expected);
+        report.print();
+        assert!(report.is_green(), "mono.y4m: {report}");
     }
 
     #[test]

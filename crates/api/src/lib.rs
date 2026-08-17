@@ -334,10 +334,13 @@ wire_surface! {
         /// *retry*, and is the honest advice: the take that is running is bounded by its own
         /// duration. It is also what a camera whose one thread is held by something else
         /// answers, unless the request set `wait` (D12).
-        /// [`schema::Error::FormatUnsupported`] when the container the path names cannot carry
-        /// what the device negotiated, naming what that container *would* have taken — D7's
-        /// "non-MJPG `record` requests get Y4M or `FormatUnsupported { available }`" arriving at
-        /// a caller who typed `.avi` over a GREY camera.
+        /// [`schema::Error::FormatUnsupported`] carrying a `container` payload when the file the
+        /// path names cannot carry what the device negotiated — D7's "non-MJPG `record` requests
+        /// get Y4M or `FormatUnsupported`" arriving at a caller who typed `.avi` over a GREY
+        /// camera. The remedy it names is the **extension**, because the format was chosen by
+        /// D5's ranking rather than typed: `container.carried_by` lists every file this build
+        /// writes that would have taken those frames, and it names no pixel format, since a
+        /// format this build records is not a format this camera has (note **N211**).
         /// [`schema::Error::StorageIo`] from the destination, and the device's own answer for
         /// anything it refused.
         #[method(name = "record_start")]

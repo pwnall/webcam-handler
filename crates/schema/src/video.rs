@@ -346,11 +346,20 @@ impl VideoFormat {
     ///
     /// # Errors
     ///
-    /// [`Error::FormatUnsupported`] naming the negotiated format as `requested` and, as
-    /// `available`, the formats that would have worked: everything recordable when no
-    /// container was named, and *that container's* own list when one was. The narrower list
-    /// is deliberate — a caller who asked for `.avi` with a YUYV stream is helped by "AVI
-    /// carries MJPG, JPEG" and misled by a list that includes YUYV.
+    /// [`Error::FormatUnsupported`] carrying a [`crate::error::ContainerRefusal`]: the
+    /// container the path named, the format the device negotiated, and every container this
+    /// build writes that *would* have carried it.
+    ///
+    /// **It answered in pixel formats until 2026-08-16 and that was the misdirection**
+    /// (note **N211**). `requested` held the *negotiated* format, which D5's ranking chooses
+    /// unless a caller typed one, so the refusal told a caller to repair a request it had not
+    /// made; and `available` held `carries()`, a fact about this build, in the slot every
+    /// other producer of this variant fills with a fact about the camera. Over
+    /// `corpus/profiles/chicony-rgb.json` — MJPG and YUYV — a `.y4m` request answered
+    /// `available: ["YUYV", "NV12", "GREY"]`, offering two formats that sensor has never had.
+    /// The lever here is the **file extension**, so that is what the payload names and what
+    /// the sentence says; a caller that wants a different *format* asks the camera for one,
+    /// and `info` is where the camera answers.
     ///
     /// It is [`Error::FormatUnsupported`] rather than [`Error::DeviceIo`] because this is a
     /// statement about what this build *can record*, which is the variant's own subject. The
@@ -360,14 +369,41 @@ impl VideoFormat {
     /// the line between them: a capability claim and a malfunction are not the same answer.
     pub fn resolve(requested: Option<Self>, negotiated: PixelFormat) -> Result<Self> {
         match requested {
-            None => Self::for_pixel_format(negotiated).ok_or_else(|| {
-                Error::format_unsupported(Some(negotiated), Self::recordable_pixel_formats())
-            }),
+            // The unnamed arm refuses only when *nothing* carries the stream, so the refusal
+            // it builds has an empty remedy — which is the honest answer rather than a thin
+            // one: no extension helps, and the caller has to change what the camera delivers.
+            None => Self::for_pixel_format(negotiated)
+                .ok_or_else(|| Error::container_unsupported(None, negotiated)),
             Some(container) if container.carries_format(negotiated) => Ok(container),
-            Some(container) => Err(Error::format_unsupported(
-                Some(negotiated),
-                container.carries().to_vec(),
-            )),
+            Some(container) => Err(Error::container_unsupported(Some(container), negotiated)),
+        }
+    }
+
+    /// What a destination in this container can do with a frame (design D5, amended
+    /// 2026-08-13).
+    ///
+    /// **The map from a container to a destination's capability, beside the containers it
+    /// reads** — [`crate::camera::SinkFidelity::of`]'s counterpart for the verb that writes
+    /// many frames instead of one, and in the same place for the same reason: the question
+    /// is about what *this build's* encodings can carry, so it belongs with them.
+    ///
+    /// - **AVI** is the verbatim path. It carries MJPEG and nothing else, so a camera's own
+    ///   bitstream is remuxed into it byte for byte (E6) and a compressed format is the only
+    ///   candidate that arrives with nothing this program did in it.
+    /// - **Y4M** carries raw planes and cannot take a compressed frame at all
+    ///   ([`VideoFormat::carries`] is the law and [`VideoFormat::resolve`] is the refusal).
+    ///   Whatever samples arrive are written whole, so the format that never met the
+    ///   camera's quantiser is the better one — which is what
+    ///   [`crate::camera::SinkFidelity::EncodesLosslessly`] means.
+    ///
+    /// An exhaustive match, so a third container cannot be added without answering this for
+    /// it, and `every_container_says_what_its_destination_can_do_with_a_frame` walks
+    /// [`Self::ALL`] against [`Self::carries`] so the two cannot drift.
+    #[must_use]
+    pub const fn sink_fidelity(self) -> crate::camera::SinkFidelity {
+        match self {
+            VideoFormat::Avi => crate::camera::SinkFidelity::PassesCompressedThrough,
+            VideoFormat::Y4m => crate::camera::SinkFidelity::EncodesLosslessly,
         }
     }
 
@@ -642,6 +678,34 @@ impl RecordRequest {
             Some(asked) => Ok(asked),
         }
     }
+
+    /// This request's stream, told what the container it named can carry (design D5, amended
+    /// 2026-08-13).
+    ///
+    /// **The one place [`crate::capture::StreamRequest::sink_fidelity`] is written for a
+    /// recording**, and [`crate::capture::PhotoRequest::stream_for_sink`]'s shape one verb
+    /// along: a record request is the only value in this vocabulary holding a stream and a
+    /// destination at once, so it is the only value that can answer the tiebreak's question.
+    /// Deriving it here rather than in each caller is what keeps `webcam-handler-cli` and
+    /// `webcam-handler-daemon` from asking one device two subtly different questions, and it
+    /// costs the wire nothing because the field is derived at the point of use rather than
+    /// sent.
+    ///
+    /// **A request that named no extension gets the default**, and that is the right answer
+    /// rather than a fallback: the negotiated format is what decides the container in that
+    /// case ([`RecordRequest::container`]), so there is no destination to reason about and
+    /// every recordable format is admissible.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`RecordRequest::container`] refuses: a sink that is not a path, a relative
+    /// one, or an extension this build does not write.
+    pub fn stream_for_container(&self) -> Result<crate::capture::StreamRequest> {
+        Ok(self.stream.for_sink(
+            self.container()?
+                .map_or_else(Default::default, VideoFormat::sink_fidelity),
+        ))
+    }
 }
 
 /// What one recording turned out to be (design D7, D10).
@@ -892,27 +956,53 @@ mod tests {
     #[test]
     fn a_named_container_that_cannot_carry_the_stream_is_refused_rather_than_redirected() {
         // The whole point of the refusal: a caller who typed `out.avi` over a YUYV camera
-        // must not silently receive a Y4M, and must be told what AVI would have taken.
+        // must not silently receive a Y4M, and must be told which file would have taken the
+        // frames. **The remedy is the extension** (note **N211**): the format was chosen by
+        // D5's ranking rather than typed, so a payload that named formats would be answering
+        // a question the caller did not ask with facts about a build rather than a camera.
         let refusal = VideoFormat::resolve(Some(VideoFormat::Avi), PixelFormat::YUYV)
             .expect_err("AVI does not carry YUYV");
         match refusal {
             Error::FormatUnsupported {
                 requested,
                 available,
-                // A container refuses a *format*, never a size — which is what makes
+                // A container refuses a *file*, never a size — which is what makes
                 // `size.is_some()` a reliable discriminator for the one caller that acts on
                 // it (note **N138**).
                 size: None,
+                container: Some(container),
             } => {
-                assert_eq!(requested, Some(PixelFormat::YUYV));
-                assert_eq!(available, vec![PixelFormat::MJPG, PixelFormat::JPEG]);
+                assert_eq!(
+                    requested, None,
+                    "the negotiated format is not what the caller asked for, and reporting it \
+                     as `requested` sends the caller to repair a request it never made"
+                );
                 assert!(
-                    !available.contains(&PixelFormat::YUYV),
-                    "the list must not offer the format that was just refused"
+                    available.is_empty(),
+                    "a container refusal that also lists formats offers a caller a lever it \
+                     cannot pull and this build's list where the camera's belongs: {available:?}"
+                );
+                assert_eq!(container.container, Some(VideoFormat::Avi));
+                assert_eq!(container.negotiated, PixelFormat::YUYV);
+                assert_eq!(container.carried_by, vec![VideoFormat::Y4m]);
+                assert!(
+                    !container.carried_by.contains(&VideoFormat::Avi),
+                    "the remedy must not offer the container that was just refused"
                 );
             }
             other => panic!("wrong variant: {other:?}"),
         }
+
+        // And the sentence, which is the half a caller reads first: it names the extension to
+        // type and no pixel format at all.
+        let message = VideoFormat::resolve(Some(VideoFormat::Avi), PixelFormat::YUYV)
+            .expect_err("AVI does not carry YUYV")
+            .to_string();
+        assert!(message.contains(".y4m"), "{message}");
+        assert!(
+            !message.contains("MJPG") && !message.contains("JPEG"),
+            "the refusal offers formats this camera may never have had: {message}"
+        );
 
         // And the honoured direction, so the assertion above is not vacuous.
         assert_eq!(
@@ -936,23 +1026,189 @@ mod tests {
             VideoFormat::Y4m
         );
 
-        // A format outside every container names everything that would have worked, so an
-        // unattended caller can renegotiate rather than guess (AGENTS: the primary consumer
-        // has no hands).
+        // A format outside every container is refused with an **empty** remedy, and that is
+        // the answer rather than a gap in it (note **N211**): no extension helps, so naming
+        // one would be false, and naming the formats this build does record would offer a
+        // caller a list its camera need not intersect — N129's misdirection, which is the
+        // defect this payload exists to stop committing.
         let h264 = PixelFormat::parse("H264").expect("four characters");
         let refusal = VideoFormat::resolve(None, h264).expect_err("no container carries H264");
-        match refusal {
+        match &refusal {
             Error::FormatUnsupported {
                 requested,
                 available,
                 size: None,
+                container: Some(container),
             } => {
-                assert_eq!(requested, Some(h264));
-                assert_eq!(available, VideoFormat::recordable_pixel_formats());
-                assert!(available.contains(&PixelFormat::MJPG), "{available:?}");
-                assert!(available.contains(&PixelFormat::GREY), "{available:?}");
+                assert_eq!(*requested, None);
+                assert!(available.is_empty(), "{available:?}");
+                assert_eq!(
+                    container.container, None,
+                    "the caller named no container, so no extension is the thing it got wrong"
+                );
+                assert_eq!(container.negotiated, h264);
+                assert!(
+                    container.carried_by.is_empty(),
+                    "a container was offered for a format no container carries: {:?}",
+                    container.carried_by
+                );
             }
             other => panic!("wrong variant: {other:?}"),
+        }
+        // The sentence says which frames could not be written and stops, because "stop" is
+        // what a caller with no lever has to do.
+        let message = refusal.to_string();
+        assert!(message.contains("H264"), "{message}");
+        assert!(
+            !message.contains(".avi") && !message.contains(".y4m"),
+            "the refusal offers an extension that would meet the same wall: {message}"
+        );
+    }
+
+    /// A device offering MJPG and YUYV at exactly the same resolution.
+    ///
+    /// **The tie is the fixture's whole job.** D5's ranking asks about a readable size, a
+    /// named FourCC and pixels before it asks about fidelity, so the destination's vote only
+    /// decides candidates nothing else separates — and a fixture whose formats differed on
+    /// resolution would be answered before [`crate::camera::SinkFidelity`] was consulted and
+    /// could not tell a derived one from a defaulted one.
+    fn a_device_whose_formats_tie_on_pixels() -> Vec<crate::camera::FormatInfo> {
+        let sizes = || {
+            vec![crate::camera::FrameSizeInfo {
+                size: crate::camera::FrameSize::Discrete {
+                    width: 1280,
+                    height: 720,
+                },
+                intervals: Vec::new(),
+            }]
+        };
+        [PixelFormat::MJPG, PixelFormat::YUYV]
+            .into_iter()
+            .map(|pixel_format| crate::camera::FormatInfo {
+                pixel_format,
+                description: format!("{pixel_format}"),
+                flags: 0,
+                sizes: sizes(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_recording_asks_the_device_for_what_the_container_it_named_can_carry() {
+        // **`StreamRequest::sink_fidelity` had three producers and the recording path was
+        // not one of them** (the G6 review's L18; note **N206**), so a `.y4m` request reached D5's
+        // ranking
+        // claiming a destination that takes a camera bitstream byte for byte — which is the
+        // one thing the raw container cannot do. On a camera whose MJPG and YUYV modes tie,
+        // that ranked MJPG, and `VideoFormat::resolve` then refused the recording over a
+        // format the file could have carried.
+        //
+        // The derivation is `VideoFormat::sink_fidelity` and the one place it is applied is
+        // `RecordRequest::stream_for_container`, which is `PhotoRequest::stream_for_sink`'s
+        // shape one verb along — the datum derived at the point of use rather than sent, so
+        // both roots reach the same answer with nothing added to the wire.
+        let formats = a_device_whose_formats_tie_on_pixels();
+
+        let raw = to_path("/tmp/take.y4m");
+        let chosen = raw
+            .stream_for_container()
+            .expect("the extension names a container")
+            .choose(&formats)
+            .expect("the device offers something");
+        assert_eq!(
+            chosen.pixel_format,
+            PixelFormat::YUYV,
+            "a Y4M destination was ranked as one that passes a compressed bitstream through"
+        );
+        // And the resolution the caller never named is untouched: the destination's vote is
+        // the tiebreak D5 gives it and not a second opinion about size.
+        assert_eq!((chosen.width, chosen.height), (1280, 720));
+        // The whole point, end to end: the container the caller typed can carry what the
+        // ranking chose.
+        assert_eq!(
+            VideoFormat::resolve(raw.container().expect("an extension"), chosen.pixel_format)
+                .expect("the container carries what was ranked"),
+            VideoFormat::Y4m
+        );
+
+        // The other direction, so the assertion above is about the derivation rather than
+        // about a preference for raw formats: an AVI destination *is* the verbatim path, and
+        // the compressed candidate is the one that reaches it with nothing of ours in it.
+        let avi = to_path("/tmp/take.avi");
+        assert_eq!(
+            avi.stream_for_container()
+                .expect("the extension names a container")
+                .choose(&formats)
+                .expect("the device offers something")
+                .pixel_format,
+            PixelFormat::MJPG
+        );
+
+        // A path with no extension leaves the container to the negotiated format, so there
+        // is no destination to reason about and the default stands — which is the answer
+        // every `record -o /tmp/take` has always had.
+        let unnamed = to_path("/tmp/take");
+        assert_eq!(
+            unnamed
+                .stream_for_container()
+                .expect("no extension is not a refusal")
+                .sink_fidelity,
+            crate::camera::SinkFidelity::default()
+        );
+
+        // An explicit request still wins over all of it (D5), because the destination's vote
+        // is a tiebreak among the formats the ranking is choosing from and a named format is
+        // not chosen at all.
+        let mut named = to_path("/tmp/take.y4m");
+        named.stream.pixel_format = Some(PixelFormat::MJPG);
+        assert_eq!(
+            named
+                .stream_for_container()
+                .expect("the extension names a container")
+                .choose(&formats)
+                .expect("MJPG is on this device")
+                .pixel_format,
+            PixelFormat::MJPG,
+            "the ranking overrode a format the caller named"
+        );
+    }
+
+    #[test]
+    fn every_container_says_what_its_destination_can_do_with_a_frame() {
+        // The map walked over `VideoFormat::ALL`, so a third container cannot be added
+        // without answering the question for it — and the two answers have to differ, or the
+        // datum would be decoration.
+        let answers: Vec<crate::camera::SinkFidelity> = VideoFormat::ALL
+            .iter()
+            .map(|container| container.sink_fidelity())
+            .collect();
+        assert_eq!(answers.len(), VideoFormat::ALL.len());
+        assert_eq!(
+            VideoFormat::Avi.sink_fidelity(),
+            crate::camera::SinkFidelity::PassesCompressedThrough
+        );
+        assert_eq!(
+            VideoFormat::Y4m.sink_fidelity(),
+            crate::camera::SinkFidelity::EncodesLosslessly
+        );
+
+        // Said from the other end, so the map cannot drift from the thing that justifies it:
+        // a container that passes a compressed bitstream through is exactly one that carries
+        // a compressed format, and one that does not carries none.
+        for &container in VideoFormat::ALL {
+            let carries_compressed = container.carries().iter().any(|format| {
+                matches!(
+                    crate::camera::Lossiness::of(*format),
+                    crate::camera::Lossiness::Compressed
+                )
+            });
+            assert_eq!(
+                carries_compressed,
+                container.sink_fidelity() == crate::camera::SinkFidelity::PassesCompressedThrough,
+                "{container} carries {:?} and answers {:?}",
+                container.carries(),
+                container.sink_fidelity()
+            );
         }
     }
 

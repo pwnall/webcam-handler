@@ -1159,6 +1159,56 @@ const _: () = assert!(
         && RECORDING_MAX_EMPTY_TURNS as u64 * FRAME_DEADLINE_MS > DEFAULT_RECORDING_MS
 );
 
+/// The largest payload a JPEG APP1 segment can declare, in bytes.
+///
+/// **The format's ceiling, not a policy of ours**, which is why it is spelled as the
+/// arithmetic rather than as a round number. A JPEG segment header is `FF <marker>` followed
+/// by a 16-bit big-endian length, and that length *counts its own two bytes* — so the most a
+/// segment can carry after the length field is `u16::MAX - 2`, and an EXIF APP1 spends six of
+/// those on the `Exif\0\0` signature that makes it an EXIF one.
+///
+/// It is here rather than in `webcam-handler-imaging` because it bounds what that crate is
+/// allowed to *build*, and because the number it is priced against — [`MAX_EXIF_TEXT_BYTES`]
+/// — is the bound a device's own verbosity meets. `little_exif 0.6.23` computes the length as
+/// `2 + EXIF_HEADER.len() + exif_vec.len() as u16`: a **truncation**, not a refusal, so a
+/// payload past this produces a segment declaring a length modulo 65 536 and a file whose
+/// header walk lands in the middle of the EXIF (the G6 review's L5; note **N203**).
+///
+/// Read by `imaging::exif::stamp_jpeg`, which checks the segment it built declares its own
+/// true length before splicing it — the dependency's arithmetic read back rather than
+/// trusted, which is the posture that module's header already takes towards everything it
+/// writes.
+pub const MAX_EXIF_APP1_BYTES: usize = u16::MAX as usize - 2;
+
+/// The most device-derived text one EXIF tag this build writes may carry, in bytes.
+///
+/// **The bound on the half of the segment nothing else bounds.** `ImageDescription` renders a
+/// camera fingerprint and a negotiated format, whose parts come out of fixed-width kernel
+/// fields; `UserComment` renders **every control the device reported**, and neither the
+/// number of controls nor the length of a `V4L2_CTRL_TYPE_STRING` value has a ceiling on the
+/// way here. `vivid` enumerates 77 controls, which is the shape that gets closest.
+///
+/// Sixteen kibibytes, priced from [`MAX_EXIF_APP1_BYTES`]: the two free-text tags together
+/// can then reach 32 KiB, which leaves the whole of the rest of the segment — the eight fixed
+/// tags, the TIFF header and the IFD entries, together well under 1 KiB — more than thirty
+/// kibibytes of headroom. The relation is asserted below rather than left as this paragraph.
+/// It is generous on purpose: a photograph carrying a description of 77 controls is the case
+/// this exists to serve, not the case it exists to refuse, and 16 KiB is about forty times
+/// what that comes to.
+///
+/// **A description past this is shortened and says so; the photograph is never refused.** The
+/// image is the product and its metadata is not, so an agent gets a photo with a description
+/// naming its own omission rather than a typed error about a device that had a lot to say.
+/// Read by `imaging::exif`, which is the only place either tag is built.
+pub const MAX_EXIF_TEXT_BYTES: usize = 16 * 1024;
+
+// The relation the paragraph above argues, checked where both numbers are —
+// `CAMERA_IDLE_SWEEP_MS`' tradition. Two free-text tags at their bound plus a kibibyte of
+// fixed tags must still fit the segment, or the bound would be one that cannot be honoured
+// and the read-back check would be the only thing standing between a verbose device and a
+// corrupt file.
+const _: () = assert!(2 * MAX_EXIF_TEXT_BYTES + 1024 < MAX_EXIF_APP1_BYTES);
+
 /// The most processes a `Busy` refusal names.
 ///
 /// The walk that finds them reads the whole process table, and a refusal listing four

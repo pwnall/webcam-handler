@@ -570,6 +570,82 @@ pub struct NegotiatedStream {
     pub adjustments: Vec<Adjustment>,
 }
 
+closed_vocabulary! {
+    /// Where a 4:2:0 stream's chroma samples sit relative to the luma samples they cover.
+    ///
+    /// **A capture-time input carried as data** (owner ruling, 2026-08-16), because the raw
+    /// container has to write one and there is no spelling that declines to. `imaging::y4m`
+    /// wrote `C420` under a comment saying that left the siting unstated; it does not.
+    /// **Measured** on 2026-08-16 against the two third parties P6d's oracle rung already
+    /// confronts our files with (note **N200**): `ffprobe` 8.0.1 reports
+    /// `chroma_location=center` for a `C420` file and for a `C420jpeg` one, `left` for
+    /// `C420mpeg2`, and `topleft` for `C420paldv`; `mpv` 0.41.0 agrees, decoding `C420` and
+    /// `C420jpeg` alike as `CL=mpeg1/jpeg` and `C420mpeg2` as `CL=mpeg2/4/h264`. So `C420`
+    /// is not the quiet spelling of the vocabulary — it is [`ChromaSiting::Centred`] under a
+    /// shorter name, and every reader that matters resolves it that way.
+    ///
+    /// **This build cannot ask the device**, and that is a reading of the kernel ABI rather
+    /// than a guess: `v4l2_pix_format` carries `colorspace`, `ycbcr_enc`, `quantization` and
+    /// `xfer_func`, and **no chroma-siting field of any kind**. Nothing a V4L2 driver can say
+    /// answers this question, so the value below is `declared` in this repository's sense and
+    /// stays that way until either the format grows a field or a caller states one — which
+    /// is why it is an input on [`crate::video`]'s recording parameters and not a
+    /// [`NegotiatedStream`] field the wire would carry as if a device had reported it.
+    ///
+    /// The default is [`ChromaSiting::Centred`], which keeps every file this build has
+    /// already written byte-identical and is the ruling's own answer for "when the device
+    /// says nothing".
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum ChromaSiting {
+        /// Chroma centred between the four luma samples it covers — JPEG and MPEG-1 siting,
+        /// spelled `C420` (or `C420jpeg`) in a Y4M header.
+        ///
+        /// The default, and the answer this build has always written.
+        #[default]
+        Centred,
+        /// Chroma co-sited horizontally with the even luma column and centred vertically —
+        /// MPEG-2 siting, spelled `C420mpeg2`.
+        ///
+        /// The other answer a 4:2:0 webcam stream is described by. No device path produces
+        /// it today because nothing in V4L2 can say so (above); it is reachable because a
+        /// caller of `imaging::video::RecordingParams` that knows its camera may state it,
+        /// which is what makes the siting an input rather than a constant.
+        HorizontallyCosited,
+    }
+}
+
+impl ChromaSiting {
+    /// **A constant with a future**, and the honest description is the first half.
+    ///
+    /// This answers [`ChromaSiting::default`] for every stream there is, because the question
+    /// has no answer available: `v4l2_pix_format` carries `colorspace`, `ycbcr_enc`,
+    /// `quantization` and `xfer_func` and **no chroma-siting field of any kind** (see the
+    /// type's own documentation). So it is not a derivation from the negotiation today — it
+    /// ignores its argument, and `the_siting_this_build_derives_is_the_default_for_every_stream`
+    /// is what says so out loud rather than leaving a reader to find the `let _`.
+    ///
+    /// It exists anyway, and the argument is [`crate::camera::SinkFidelity::of`]'s, which had
+    /// the same shape before there was a second answer for it to give: **one place for a
+    /// backend's answer to land**, so the day something can say otherwise the change is one
+    /// function rather than a hunt for every site that wrote a constant. The G6 review's B8b
+    /// pass asked for this paragraph specifically, because describing a constant as "a
+    /// capture-time input carried as data" is a claim about the *field* it feeds
+    /// (`imaging::video::RecordingParams::chroma_siting`, which genuinely is one) borrowed by
+    /// the function that fills it, which genuinely is not.
+    ///
+    /// [`ChromaSiting::HorizontallyCosited`] is therefore unreachable from any product entry
+    /// point — no CLI flag, no RPC field, and this returning it for nothing. What reaches it is
+    /// a caller of `imaging::video::RecordingParams` stating one, which is what
+    /// `testkit::oracle`'s `the_chroma_siting_a_raw_recording_states_is_the_one_a_third_party_reads_back`
+    /// does: the vocabulary has two members and `ffprobe` distinguishes them, so neither the
+    /// type nor the writer's `match` is decoration (note **N210**).
+    #[must_use]
+    pub fn of(negotiated: &NegotiatedStream) -> Self {
+        let _ = negotiated;
+        ChromaSiting::default()
+    }
+}
+
 impl NegotiatedStream {
     /// Whether the device gave us what we asked for.
     #[must_use]
@@ -1518,6 +1594,10 @@ mod tests {
             requested,
             available,
             size,
+            // A capture negotiation names no file, so the container cause cannot apply here
+            // (note **N211**) — spelled out rather than `..` so a third cause arriving in
+            // this payload is a compile error rather than a silent one.
+            container: None,
         } = &tiny
         else {
             panic!("a size nothing fits is D5's typed refusal: {tiny}");
@@ -1794,6 +1874,8 @@ mod tests {
             requested,
             available,
             size,
+            // As above: D5's negotiation refuses a format, never a file (note **N211**).
+            container: None,
         } = &refusal
         else {
             panic!("D5 names the refusal, and it is this one: {refusal}");
@@ -1844,8 +1926,11 @@ mod tests {
             .choose(&[])
             .expect_err("a camera that enumerated no format cannot be asked for one");
         assert!(
-            matches!(&nothing, Error::FormatUnsupported { requested, available, size }
-                if requested.is_none() && available.is_empty() && size.is_none()),
+            matches!(&nothing, Error::FormatUnsupported { requested, available, size, container }
+                if requested.is_none()
+                    && available.is_empty()
+                    && size.is_none()
+                    && container.is_none()),
             "{nothing}"
         );
         assert!(rank_formats(&[], SinkFidelity::default()).is_none());
@@ -2508,5 +2593,57 @@ mod tests {
             ..exact
         };
         assert!(!adjusted.is_exact());
+    }
+
+    #[test]
+    fn the_siting_this_build_derives_is_the_default_for_every_stream() {
+        // **A constant with a future, asserted as a constant.** `ChromaSiting::of` shipped at
+        // B8 with no test anywhere in the workspace, which meant the sentence that mattered
+        // about it — *it answers the same thing for every stream, because V4L2 has no field
+        // that could say otherwise* — was true only in a doc comment. A reader who believed
+        // the surrounding prose ("derived from the negotiated format") had nothing to check it
+        // against, and a build that quietly started answering `HorizontallyCosited` for raw
+        // formats would have changed every Y4M header this project writes with nothing going
+        // red (the G6 review's finding 5 against B8; note **N210**).
+        //
+        // The walk is over the pixel formats a raw container actually carries plus a
+        // compressed one, because "for every stream" is the claim and the plausible wrong
+        // answer is a `match` on the format.
+        let stream = |pixel_format| NegotiatedStream {
+            pixel_format,
+            width: 1920,
+            height: 1080,
+            bytes_per_line: 0,
+            size_image: 1 << 20,
+            interval: FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30,
+            },
+            adjustments: Vec::new(),
+        };
+        for pixel_format in [
+            PixelFormat::NV12,
+            PixelFormat::YUYV,
+            PixelFormat::GREY,
+            PixelFormat::MJPG,
+        ] {
+            assert_eq!(
+                ChromaSiting::of(&stream(pixel_format)),
+                ChromaSiting::default(),
+                "{pixel_format} was answered with something the device never said"
+            );
+        }
+
+        // And the default is `Centred`, which is what keeps every file already written
+        // byte-identical (note **N200**). Stated here rather than left to `#[default]`,
+        // because "the default" and "the tag this project has always emitted" are two facts
+        // and only one of them is in the derive.
+        assert_eq!(ChromaSiting::default(), ChromaSiting::Centred);
+
+        // The vocabulary is walked rather than remembered, so a third siting cannot arrive
+        // without somebody deciding what `of` does about it — the `closed_vocabulary!` half of
+        // the same claim.
+        assert_eq!(ChromaSiting::ALL.len(), 2);
+        assert!(ChromaSiting::ALL.contains(&ChromaSiting::HorizontallyCosited));
     }
 }

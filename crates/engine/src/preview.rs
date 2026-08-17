@@ -755,6 +755,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_cap_that_could_not_be_met_is_dropped_whole_rather_than_half_of_it() {
+        // The retry above asks the device for **no size at all**, and both halves of the cap
+        // have to go for that to be true. [`StreamRequest::choose`] reads a size only when
+        // width *and* height are `Some` — "a half-specified size names nothing" — so a retry
+        // that kept one of them resolves to the format's largest mode identically, and
+        // `negotiate` then overwrites `adjustments` from the request that *did* name a size.
+        // Nothing downstream can tell the two apart.
+        //
+        // Which is exactly why the line needed an assertion of its own rather than an
+        // acceptance. Measured one dropped field at a time, at workspace scope: with either
+        // `None` deleted the whole suite still passed **1494 of 1494** (note **N209**),
+        // because every arm here read what came *back* and none read what was asked. The two
+        // programs stop being the same the day the shared resolver honours half a size, which
+        // is a rule written in `capture.rs` and not a law of arithmetic — and on that day a
+        // preview would be asking a device for the width it had just been refused, silently.
+        //
+        // The double records the requests it accepted, which is the seam this reads; a
+        // request `choose` refused is not among them, so the single entry here is the retry.
+        let mut device = camera(4).sized(1_280, 720);
+        start(&mut device, &request()).expect("a preview must still happen");
+
+        assert_eq!(
+            device.started.len(),
+            1,
+            "the cap was refused and the retry is the request that got through: {:?}",
+            device.started
+        );
+        let retry = device.started.first().expect("the uncapped request");
+        assert_eq!(
+            (retry.width, retry.height),
+            (None, None),
+            "the retry kept half of the cap the device had just refused: {retry:?}"
+        );
+        // Nothing else about the request moved. The retry is the same question with the size
+        // taken out of it, so a preview that named MJPG still names MJPG — without this the
+        // assertion above would be satisfied by a retry that had thrown the request away.
+        assert_eq!(retry.pixel_format, request().pixel_format);
+        assert_eq!(retry.interval, request().interval);
+        assert_eq!(retry.sink_fidelity, request().sink_fidelity);
+
+        // The direction that keeps this arm about the *retry*: a camera with a mode under
+        // the cap is answered on the first request, and that one names the cap in full.
+        let mut device = camera(4).sized(320, 240);
+        start(&mut device, &request()).expect("320x240 fits under the cap");
+        let asked = device.started.first().expect("the capped request");
+        assert_eq!(
+            (asked.width, asked.height),
+            (
+                Some(limits::PREVIEW_MAX_WIDTH),
+                Some(limits::PREVIEW_MAX_HEIGHT)
+            ),
+            "a cap that was met was not the cap: {asked:?}"
+        );
+    }
+
     /// A camera with a preview stream already running, and what it negotiated.
     ///
     /// Every suspension test starts here, because "something was streaming when this command

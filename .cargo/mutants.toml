@@ -282,14 +282,68 @@
 #   crates/imaging/src/exif.rs     the APP1 assembly. A fold over a control list, and the
 #                                  review's L5 says it is unbounded — which is a mutant's
 #                                  question as much as a reviewer's.
-#   crates/imaging/src/photo.rs    **explicitly last**: the review's L21 measures four of its six
-#                                  pixel transforms as unasserted anywhere in the workspace, so a
-#                                  run over it today would report missing *tests* as survivors.
-#                                  Widen it after L21, or the triage is the finding read twice.
+#   crates/imaging/src/photo.rs    **Widened at B8 on 2026-08-16 — see the paragraph below.**
 #   crates/engine/src/resolve.rs   D1's prefix resolution over a whole enumeration — a fold, and
 #                                  the one home two roots share.
 #   crates/engine/src/profile.rs   the T3 invariant/volatile split, which is the whole value of
 #                                  the corpus expressed as a fold over an open camera's answers.
+#
+# ## What B8 widened, and the run that came with it (2026-08-16)
+#
+# `crates/imaging/src/photo.rs` — the E6 pass-through-versus-re-encode decision and the six
+# pixel transforms under it. The paragraph above listed it as owed **explicitly last**, on the
+# argument that a run over it while four of six transforms were unasserted would report missing
+# *tests* as survivors. Note **N207** closed that (the G6 review's L21) with two `Transform::ALL`
+# walks, and the widening landed with its run, which is what this file's precedent asks for
+# (P4d at `:49-59`, P6a at `:149-161`).
+#
+# **The run**: `cargo mutants -F 'imaging/src/photo\.rs'`, 19 mutants in 15 minutes on the P6
+# machine. **10 of 10 viable `photo.rs` mutants caught, no survivor.** Four are `Unviable` and
+# stay that way by construction rather than by a gap — `replace <fn> with Ok(Default::default())`
+# over `render`, `render_with_quality`, `verbatim` and `transform_pixels`, none of whose return
+# types implement `Default`, so cargo-mutants cannot express the mutation at all.
+#
+# **The run also swept in `crates/engine/src/preview.rs`** — the `-F` regex is matched against
+# mutant *names* and reaches more than the file it spells — and found a survivor there:
+# `delete field width from struct StreamRequest expression in negotiate`, the uncapped retry's
+# first `None`. **B8 recorded it as a finding and left it unaccepted, which put a known survivor
+# under a G4 criterion with no register line; B8b closed it with a test.** Both halves of what
+# B8 wrote about it were wrong and are corrected here rather than deleted, because the way they
+# were wrong is the point (note **N209**):
+#
+#   - **The asymmetry it leaned on does not exist.** B8 reported the `height` sibling one line
+#     down as *caught*, and made that the argument for calling the survivor a finding rather than
+#     noise. Measured directly at B8b, one field deleted at a time at workspace scope: **both
+#     survive, 1494 of 1494 each**. The verdict for the sibling came out of the same run that
+#     produced eighteen bogus `Unviable` verdicts from a full disk, which is why a summary line
+#     is not evidence — a "caught" that moved with the machine reads exactly like one that did
+#     not.
+#   - **The production defect it named cannot happen.** `StreamRequest::choose` sets its
+#     `named_size` only when width *and* height are `Some` — "a half-specified size names
+#     nothing" — so a retry keeping the cap's width asks for **no size at all**, resolves to the
+#     format's largest mode identically, and `negotiate` overwrites `adjustments` from the
+#     original request anyway. Nothing downstream can tell the two programs apart, so the
+#     survivor was equivalent *through the product* and an acceptance was the disposition B8's
+#     own evidence pointed at.
+#
+# It is neither, because the double records the request it accepted and a test can therefore
+# read what was asked rather than what came back:
+# `a_cap_that_could_not_be_met_is_dropped_whole_rather_than_half_of_it` kills both mutants and
+# states the property the line exists for — the cap goes whole or not at all, since a half of it
+# is a request nobody meant and stops being harmless the day the shared resolver honours half a
+# size.
+#
+# **This was a narrowed run and therefore not a floor verdict.** `scripts/mutants.sh` is what may
+# answer PASS; this answers only about the mutants it tested. It is recorded because the widening
+# needed a triage and got one, not because it certifies anything wider.
+#
+# **And the first attempt at it produced 18 `Unviable` verdicts that were the machine and not the
+# code** — every mutant's build died on `Disk quota exceeded` in `$TMPDIR`, which is note **N66**'s
+# failure arriving as a *verdict word* rather than as a crash. `Unviable` reads like "cargo-mutants
+# could not express this mutation" and meant "this host ran out of space", and only the per-mutant
+# logs said so. `scripts/mutants.sh` sizes jobs against free space and answers NO VERDICT for
+# exactly this; a raw `cargo mutants` invocation does neither, which is the argument for running
+# the floor through the script even when narrowing.
 #
 # **Out, and each for a stated reason rather than by omission:**
 #
@@ -364,6 +418,7 @@ examine_globs = [
     "crates/imaging/src/avi/read.rs",
     "crates/imaging/src/avi/write.rs",
     "crates/imaging/src/metrics.rs",
+    "crates/imaging/src/photo.rs",
     "crates/imaging/src/video.rs",
     "crates/imaging/src/y4m.rs",
 ]

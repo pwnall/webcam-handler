@@ -188,6 +188,7 @@ fn the_format_refusal_names_what_the_camera_does_offer_and_not_only_in_prose() {
         requested,
         available,
         size,
+        container,
     } = &document.error
     else {
         panic!("{document:?}");
@@ -204,6 +205,11 @@ fn the_format_refusal_names_what_the_camera_does_offer_and_not_only_in_prose() {
         size.is_none(),
         "a *format* refusal carrying a size names two levers to a caller that can pull only \
          one (note **N138**): {document:?}"
+    );
+    assert!(
+        container.is_none(),
+        "a *format* refusal carrying a container sends a caller to rename its file when the \
+         camera is what refused (note **N211**): {document:?}"
     );
 
     // The formats are the camera's own, checked against what `info` says rather than against a
@@ -548,6 +554,12 @@ fn a_failure_without_json_leaves_standard_output_untouched() {
 /// claim the list is the camera's while naming something absent from it. It goes red against
 /// the sentence that shipped and stays green for the D6 refusal, where the list really is the
 /// device's.
+///
+/// **Widened on 2026-08-17** (note **N211**), when the payload was repaired to match: the
+/// arm no longer accepts a sentence that names an absent format without claiming ownership of
+/// it, because that is what the repaired sentence still did for two days. Its sibling
+/// `a_recording_refused_for_its_file_names_a_file_and_no_format_this_camera_lacks` is the same
+/// claim from the other end of D7's pairing, over a camera with the opposite shape.
 #[test]
 fn a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had() {
     const GREY_ONLY: &str = "chicony-ir";
@@ -600,10 +612,11 @@ fn a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had() 
 
     let failure = refused.refusal();
     let message = &failure.message;
-    // The container's list, which is the correct payload and the wrong thing to attribute.
+    // What would be accepted, which since note **N211** is a **file** rather than a format:
+    // these frames are recordable, just not into the container the caller named.
     assert!(
-        message.contains("MJPG"),
-        "the refusal stopped naming what would be accepted: {message}"
+        message.contains(".y4m"),
+        "the refusal stopped naming what would have taken these frames: {message}"
     );
     // The claim itself. Any phrasing that says these belong to the device is false here, and
     // the substring is the one that shipped.
@@ -611,4 +624,155 @@ fn a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had() 
         !message.contains("this camera offers"),
         "the refusal tells a caller the camera offers {offered:?}, which it does not: {message}"
     );
+    // And the generalisation, which is what N211 closed: dropping the *attribution* left the
+    // *list* in place, so the sentence went on naming formats this sensor has never had while
+    // no longer saying whose they were. The population is derived from the containers rather
+    // than written here, so a third container joins this check the day it lands.
+    for absent in schema::video::VideoFormat::recordable_pixel_formats() {
+        let absent = absent.to_string();
+        if offered.contains(&absent) {
+            continue;
+        }
+        assert!(
+            !message.contains(&absent),
+            "the refusal offers {absent} to a camera that enumerates {offered:?}: {message}"
+        );
+    }
+}
+
+/// The refusal a `.y4m` request meets over an MJPG camera, and the two things its **payload**
+/// must not do.
+///
+/// **Measured through the shipped binary on 2026-08-17** (note **N211**), over
+/// `corpus/profiles/chicony-rgb.json`, which enumerates MJPG and YUYV:
+///
+/// ```text
+/// $ webcam-handler-cli … record cam:… -o take.y4m --duration 300ms --json
+/// {"kind":"format_unsupported","requested":"MJPG","available":["YUYV","NV12","GREY"]}
+/// ```
+///
+/// Both halves are false to the caller that reads them. `available` is `Y4m::carries()` — the
+/// **container's** list — so two of the three remedies offered to an unattended agent are
+/// formats this sensor has never had; and `requested` is the format D5's *ranking* chose, not
+/// one the caller typed, so an agent repairing it repairs a request it never made. That is
+/// note **N129**'s misdirection surviving in the payload after commit `c866c58` repaired the
+/// message for it — the same defect one layer along, which is why this arm reads the document
+/// rather than the sentence.
+///
+/// The repair puts the lever in the payload: the file extension. So this asks the binary what
+/// the camera enumerates, asks again for the refusal, and fails any format the refusal names
+/// that the camera does not have — in the message *and* in the JSON, because a caller acts on
+/// the JSON and a person reads the sentence.
+#[test]
+fn a_recording_refused_for_its_file_names_a_file_and_no_format_this_camera_lacks() {
+    let camera = camera();
+
+    let detail = run(&["--json", "info", &camera]);
+    assert_eq!(detail.code, Some(0), "{}", detail.stderr);
+    let detail: Value = serde_json::from_str(&detail.stdout).expect("a camera detail");
+    let offered: Vec<String> = detail["formats"]
+        .as_array()
+        .expect("a format tree")
+        .iter()
+        .map(|format| {
+            format["pixel_format"]
+                .as_str()
+                .expect("a FourCC string")
+                .to_owned()
+        })
+        .collect();
+    // The premise, asserted rather than assumed: this arm needs a camera whose formats a Y4M
+    // cannot take, and a re-capture that added a raw format would turn it into a test of a
+    // successful recording without saying so.
+    assert!(
+        offered.contains(&"MJPG".to_owned()),
+        "{PROFILE} no longer offers MJPG, so a .y4m over it is no longer refused: {offered:?}"
+    );
+
+    let scratch = scratch();
+    let out =
+        Utf8PathBuf::from_path_buf(scratch.path().join("take.y4m")).expect("a UTF-8 scratch path");
+    let refused = run(&[
+        "--json",
+        "record",
+        &camera,
+        "-o",
+        out.as_str(),
+        "--duration",
+        "300ms",
+    ]);
+    let failure = refused.refusal();
+    assert_eq!(failure.kind(), schema::ErrorKind::FormatUnsupported);
+    assert_eq!(
+        refused.code,
+        Some(i32::from(cli_core::exit_code(&failure.error)))
+    );
+
+    let Error::FormatUnsupported {
+        requested,
+        available,
+        size,
+        container: Some(container),
+    } = &failure.error
+    else {
+        panic!(
+            "a file that cannot carry the stream was refused without saying so: {:?}",
+            failure.error
+        );
+    };
+    assert_eq!(
+        *requested, None,
+        "the negotiated format is not the caller's request, and offering it as one sends an \
+         agent to repair something it never typed: {failure:?}"
+    );
+    assert!(
+        available.is_empty(),
+        "the refusal still lists pixel formats as the remedy, which is the container's list \
+         standing where the camera's belongs: {available:?}"
+    );
+    assert!(size.is_none(), "one refusal, one lever: {failure:?}");
+
+    // The payload's own three claims, each checkable against the device rather than against a
+    // list written here.
+    assert_eq!(
+        container.container.map(|format| format.extension()),
+        Some("y4m"),
+        "the refusal names a container the caller did not ask for: {failure:?}"
+    );
+    assert!(
+        offered.contains(&container.negotiated.to_string()),
+        "the refusal says the camera negotiated {}, which it does not enumerate: {offered:?}",
+        container.negotiated
+    );
+    assert_eq!(
+        container
+            .carried_by
+            .iter()
+            .map(|format| format.extension())
+            .collect::<Vec<_>>(),
+        vec!["avi"],
+        "the remedy is the extension that would have taken these frames: {failure:?}"
+    );
+
+    // And the claim N211 is about, over both renderings: no format this camera lacks is
+    // offered anywhere in the refusal. The population is derived from the containers, so a
+    // third container joins this check the day it lands rather than the day somebody
+    // remembers.
+    let document = &refused.stdout;
+    for absent in schema::video::VideoFormat::recordable_pixel_formats() {
+        let absent = absent.to_string();
+        if offered.contains(&absent) {
+            continue;
+        }
+        assert!(
+            !failure.message.contains(&absent),
+            "the refusal's sentence offers {absent} to a camera that enumerates {offered:?}: {}",
+            failure.message
+        );
+        assert!(
+            !document.contains(&absent),
+            "the refusal's document offers {absent} to a camera that enumerates {offered:?}: \
+             {document}"
+        );
+    }
 }

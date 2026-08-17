@@ -1554,6 +1554,7 @@ mod tests {
                 height: negotiated.height,
                 pixel_format: negotiated.pixel_format,
                 negotiated_interval_us: Some(33_333),
+                chroma_siting: schema::capture::ChromaSiting::of(&negotiated),
                 caps: engine::record::caps(),
             },
             budget_ms: limits::DEFAULT_RECORDING_MS,

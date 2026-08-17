@@ -1960,8 +1960,10 @@ async fn every_refusal_the_photo_path_can_make_crosses_the_wire_as_itself() {
     let Error::FormatUnsupported {
         requested,
         available,
-        // The format half, so a size refusal cannot answer for it (note **N138**).
+        // The format half, so neither a size refusal (note **N138**) nor a container one
+        // (note **N211**) can answer for it — and `photo` names no container at all.
         size: None,
+        container: None,
     } = &error
     else {
         panic!("{error:?}");

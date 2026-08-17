@@ -1150,12 +1150,13 @@ fn refuses_an_absent_format(
             requested,
             available,
             size,
+            container,
         }) => {
-            log.require(size.is_none(), || {
+            log.require(size.is_none() && container.is_none(), || {
                 format!(
-                    "{}: refused an absent format with a payload that also names a size — \
-                     the two causes are exclusive, and a refusal naming two levers is one \
-                     an unattended caller has to guess at (note **N138**)",
+                    "{}: refused an absent format with a payload that also names a size or a \
+                     container — the causes are exclusive, and a refusal naming two levers is \
+                     one an unattended caller has to guess at (notes **N138**, **N211**)",
                     info.id
                 )
             });
@@ -1245,11 +1246,22 @@ fn refuses_an_unfittable_size(
             available,
             size,
             requested,
+            container,
         }) => {
             log.require(!available.is_empty(), || {
                 format!(
                     "{}: refused a size while claiming to enumerate no format, which \
                      contradicts the list this arm read a moment ago",
+                    info.id
+                )
+            });
+            // A `start_stream` names no file, so the container cause cannot be what refused
+            // this — and a payload carrying it would be a second lever beside the size
+            // (note **N211**).
+            log.require(container.is_none(), || {
+                format!(
+                    "{}: refused a size with a payload that also names a container, which is \
+                     two levers for a caller that can pull one",
                     info.id
                 )
             });

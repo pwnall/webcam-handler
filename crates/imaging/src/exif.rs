@@ -31,11 +31,20 @@ use schema::camera::CameraFingerprint;
 use schema::capture::{NegotiatedStream, Transform};
 use schema::control::{ControlSlug, ControlValue};
 use schema::error::Result;
+use schema::limits;
 use schema::time::Stamp;
 
 use crate::fault::imaging_failure;
 
 const OP: &str = "stamp EXIF onto JPEG";
+
+/// What a shortened description says about itself, and where the count goes.
+///
+/// **A decline is data first and a line second** (note N121's rule, one surface along): a
+/// reader holding a photo whose control list stops early must be able to tell that from a
+/// camera that reported nothing more. So the sentence names both numbers — what was written
+/// and what there was — rather than trailing off in an ellipsis a reader has to interpret.
+const ELIDED: &str = "(truncated here:";
 
 /// The EXIF character-code prefix that declares a `UserComment` to be plain ASCII.
 ///
@@ -104,7 +113,102 @@ pub fn stamp_jpeg(jpeg: &[u8], metadata: &CaptureMetadata) -> Result<Vec<u8>> {
     let app1 = tags
         .as_u8_vec(FileExtension::JPEG)
         .map_err(|err| imaging_failure(OP, err.to_string()))?;
+    check_segment_length(&app1)?;
     splice_app1(jpeg, &app1)
+}
+
+/// Refuse a segment whose declared length is not the length it has.
+///
+/// **The dependency's arithmetic, read back rather than trusted** — the posture this
+/// module's header already takes towards every field it writes, applied to the one number
+/// `little_exif` computes for us. `encode_metadata_jpg` builds the length as
+/// `2 + EXIF_HEADER.len() + exif_vec.len() as u16`, and that cast **truncates**: a payload
+/// past [`limits::MAX_EXIF_APP1_BYTES`] produces a segment declaring a length modulo 65 536,
+/// which every reader then uses to find the next marker. The file that results is not a JPEG
+/// with bad metadata; it is a JPEG whose header walk lands in the middle of an EXIF payload
+/// and reads it as structure (the G6 review's L5; note **N203**).
+///
+/// The two free-text tags are already bounded by [`limits::MAX_EXIF_TEXT_BYTES`], so this
+/// cannot fire on anything a device can say through the fields above. It exists because that
+/// bound is a *fact about two tags* and this is a *property of the segment*, and a ninth tag
+/// added later would be covered by the second and not the first. A refusal here is therefore
+/// a defect in this module rather than a fact about the camera, which is why it is
+/// `DeviceIo` naming both numbers rather than a shortened description: there is nothing
+/// left to shorten by the time the writer has run.
+///
+/// # Errors
+///
+/// [`schema::Error::DeviceIo`] naming the declared length and the real one.
+fn check_segment_length(app1: &[u8]) -> Result<()> {
+    // `FF E1` then the big-endian length, which counts its own two bytes and everything
+    // after them.
+    let declared = match (app1.get(2), app1.get(3)) {
+        (Some(high), Some(low)) => usize::from(u16::from_be_bytes([*high, *low])),
+        _ => {
+            return Err(imaging_failure(
+                OP,
+                format!(
+                    "the EXIF writer produced {} bytes, which is not even a segment header",
+                    app1.len()
+                ),
+            ));
+        }
+    };
+    // The marker is the two bytes the length does not cover.
+    let actual = app1.len().saturating_sub(2);
+    if declared != actual {
+        return Err(imaging_failure(
+            OP,
+            format!(
+                "the EXIF segment declares {declared} bytes and carries {actual}; a JPEG \
+                 segment length is 16 bits and the largest payload one can name is \
+                 {} bytes",
+                limits::MAX_EXIF_APP1_BYTES
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `text`, shortened to `budget` bytes with a sentence saying it was.
+///
+/// **The photograph is the product and its description is not**, so a device with more to
+/// say than an APP1 segment holds gets a shorter description rather than a refused photo —
+/// and the description says so, with both numbers, so a reader can tell a truncated list
+/// from a camera that reported nothing more (AGENTS rule 6: represent what happened, never
+/// silently correct it).
+///
+/// The cut lands on a `char` boundary because a `String` sliced anywhere else is not one, and
+/// it lands on the last `; ` before the boundary when there is one — both renderings above
+/// are semicolon-delimited `key=value`, and a list ending mid-key reads as a control whose
+/// name this build got wrong.
+fn fit(text: String, budget: usize) -> String {
+    if text.len() <= budget {
+        return text;
+    }
+    // The note is sized against the budget and then written against what was actually kept.
+    // Those are two different numbers and the first attempt printed the first one twice: the
+    // budget is what there was *room* for, and the text that survives is shorter than that by
+    // the note itself and by however far back the last `; ` sits. A reader told "200 of 522
+    // bytes" over a description holding rather less than 200 has been given a number that
+    // describes nothing it can see. Sizing against the budget and printing against the result
+    // is safe in the one direction that matters: `kept <= budget`, so the printed note is never
+    // longer than the one the room was reserved for, and the total stays inside the bound.
+    let note_for = |kept: usize| format!(" {ELIDED} {kept} of {} bytes)", text.len());
+    // The note has to fit inside the budget too, or shortening would be how the bound is
+    // exceeded. A budget below the note is not one this build sets — `MAX_EXIF_TEXT_BYTES` is
+    // sixteen kibibytes — and the honest answer for one that was is the note alone, which is
+    // why this arm is the one place `fit` answers longer than it was asked for.
+    let Some(room) = budget.checked_sub(note_for(budget).len()) else {
+        return note_for(0);
+    };
+    let mut cut = room;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let head = text.get(..cut).unwrap_or_default();
+    let tidy = head.rfind("; ").map_or(head, |at| &head[..at]);
+    format!("{tidy}{}", note_for(tidy.len()))
 }
 
 /// Put `app1` into `jpeg` immediately after the SOI, dropping any EXIF already there.
@@ -231,6 +335,11 @@ fn next_segment(jpeg: &[u8], at: usize) -> Option<Segment> {
 /// something has to impose a shape on it. Absent optional fields are omitted rather than
 /// written empty — PF:8 says a missing serial is the common case, and `serial=` reads as
 /// a serial of the empty string.
+///
+/// Bounded by [`limits::MAX_EXIF_TEXT_BYTES`] like its sibling, and for the sibling's
+/// reason even though every part of it comes out of a fixed-width kernel field today: this
+/// tag and [`describe_controls`] are the segment's two free-text halves, and a bound that
+/// covered one of them would be a bound the arithmetic in `limits` could not state.
 #[must_use]
 pub fn describe_capture(metadata: &CaptureMetadata) -> String {
     let camera = &metadata.camera;
@@ -252,13 +361,19 @@ pub fn describe_capture(metadata: &CaptureMetadata) -> String {
     if let Some(fps) = stream.interval.fps() {
         parts.push(format!("fps={fps}"));
     }
-    parts.join("; ")
+    fit(parts.join("; "), limits::MAX_EXIF_TEXT_BYTES)
 }
 
 /// The control values in effect, as an EXIF `UserComment` payload.
 ///
 /// Returns the eight-byte ASCII character-code prefix followed by the text, which is
 /// what the tag's `UNDEF` type means.
+///
+/// **This is the unbounded half.** Every control the device reported is rendered, and
+/// neither the number of controls nor the length of a `V4L2_CTRL_TYPE_STRING` value is
+/// anything this side of the cable decides — `vivid` enumerates 77 and one of them is a
+/// string. So the text is fitted to [`limits::MAX_EXIF_TEXT_BYTES`] and says so when it did
+/// not all fit; see `fit` for why shortening rather than refusing is the answer.
 #[must_use]
 pub fn describe_controls(metadata: &CaptureMetadata) -> Vec<u8> {
     let body = if metadata.controls.is_empty() {
@@ -272,7 +387,7 @@ pub fn describe_controls(metadata: &CaptureMetadata) -> Vec<u8> {
         format!("controls: {}", rendered.join("; "))
     };
     let mut out = USER_COMMENT_ASCII.to_vec();
-    out.extend_from_slice(body.as_bytes());
+    out.extend_from_slice(fit(body, limits::MAX_EXIF_TEXT_BYTES).as_bytes());
     out
 }
 
@@ -476,6 +591,194 @@ mod tests {
         let text = String::from_utf8_lossy(&comment);
         assert!(text.contains("brightness=128"), "{text}");
         assert!(text.contains("focus_absolute=45"), "{text}");
+    }
+
+    /// A control whose value is `bytes` characters of device-supplied text.
+    ///
+    /// `V4L2_CTRL_TYPE_STRING` is the shape: its length is the *device's* to choose, and
+    /// nothing between the driver and this module bounds it. `vivid` enumerates 77 controls
+    /// and one of them is a string, which is the combination that reaches the ceiling
+    /// fastest.
+    fn a_talkative_control(slug: &str, bytes: usize) -> (ControlSlug, ControlValue) {
+        (
+            ControlSlug::parse(slug).expect("literal slug"),
+            ControlValue::Text("v".repeat(bytes)),
+        )
+    }
+
+    #[test]
+    fn a_device_with_more_to_say_than_the_segment_holds_is_described_shorter_not_corrupted() {
+        // **An APP1 segment's length is a `u16`, and `little_exif` computes it with
+        // `exif_vec.len() as u16`** — a truncation, not a refusal. So a device verbose enough
+        // to push the payload past 65 535 bytes produced a segment declaring a length modulo
+        // 65 536, a header walk that landed in the middle of the EXIF and read its bytes as
+        // markers, and a `stamp_jpeg` that returned `Ok` over it. The photograph is the
+        // product and its metadata is not, so the answer is a *shorter description* naming
+        // its own omission — never a refused photo and never a corrupt one.
+        //
+        // The bound is `schema::limits::MAX_EXIF_TEXT_BYTES` and the ceiling it is priced
+        // against is `schema::limits::MAX_EXIF_APP1_BYTES`; both are read here and the
+        // read-back below is what proves the arithmetic rather than restating it.
+        let controls: BTreeMap<ControlSlug, ControlValue> = (0..12)
+            .map(|index| a_talkative_control(&format!("chatty_{index}"), 8_192))
+            .collect();
+        let verbose = CaptureMetadata {
+            controls,
+            ..metadata(Transform::None)
+        };
+
+        let stamped =
+            stamp_jpeg(&sample_jpeg(), &verbose).expect("a talkative device is stampable");
+        // The independent reader is the assertion: a truncated length field puts it in the
+        // middle of the EXIF payload, where it finds no tags this module wrote.
+        let data = read_back(&stamped);
+        assert_eq!(ascii(&data, Tag::Make).as_deref(), Some("uvcvideo"));
+        let comment = match &data
+            .get_field(Tag::UserComment, In::PRIMARY)
+            .expect("UserComment survived")
+            .value
+        {
+            Value::Undefined(bytes, _) => bytes.clone(),
+            other => panic!("UserComment is {other:?}"),
+        };
+        assert!(
+            comment.len() <= USER_COMMENT_ASCII.len() + limits::MAX_EXIF_TEXT_BYTES,
+            "the comment is {} bytes and the bound is {}",
+            comment.len(),
+            limits::MAX_EXIF_TEXT_BYTES
+        );
+        let text = String::from_utf8_lossy(&comment);
+        assert!(
+            text.contains(ELIDED),
+            "a shortened description must say so: {:?}",
+            &text[..text.len().min(200)]
+        );
+        // What did fit is still the device's own text rather than a placeholder.
+        assert!(
+            text.contains("chatty_0=vvv"),
+            "the first control is missing"
+        );
+
+        // And the segment the file carries declares its own true length — the property the
+        // dependency's `as u16` cannot be trusted with.
+        assert_eq!(
+            stamped.get(..4),
+            Some([0xff, 0xd8, 0xff, 0xe1].as_slice()),
+            "the APP1 goes immediately after the SOI"
+        );
+        let declared = usize::from(u16::from_be_bytes([
+            *stamped.get(4).expect("length high byte"),
+            *stamped.get(5).expect("length low byte"),
+        ]));
+        assert!(
+            declared <= limits::MAX_EXIF_APP1_BYTES,
+            "the segment declares {declared} bytes, past what a u16 length field can mean"
+        );
+        // The scan is where the walk says it is, which a truncated length would move.
+        let original = sample_jpeg();
+        let offset = scan_offset(&original).expect("the fixture has a scan");
+        assert!(
+            stamped.ends_with(original.get(offset..).expect("in range")),
+            "the entropy-coded scan moved under a long description"
+        );
+        assert!(
+            scan_offset(&stamped).is_some(),
+            "the stamped file's header walk no longer reaches SOS"
+        );
+    }
+
+    #[test]
+    fn a_segment_whose_declared_length_is_not_its_own_is_refused_rather_than_spliced() {
+        // The backstop, in both directions, driven directly — the bound above means no
+        // metadata this build can assemble reaches it, and a check nothing can turn red is
+        // the shape rubric rule 2 refuses. Two hand-built segments, one honest and one with
+        // `little_exif`'s truncation applied by hand.
+        let mut honest = vec![0xff, 0xe1, 0x00, 0x00];
+        honest.extend_from_slice(EXIF_SIGNATURE);
+        honest.extend(std::iter::repeat_n(0u8, 40));
+        let length = u16::try_from(honest.len() - 2).expect("small");
+        honest[2..4].copy_from_slice(&length.to_be_bytes());
+        assert!(
+            check_segment_length(&honest).is_ok(),
+            "a segment that declares its own length is fine"
+        );
+
+        // The same segment with the length wrapped, which is exactly what
+        // `2 + EXIF_HEADER.len() + exif_vec.len() as u16` produces for a payload past the
+        // ceiling: the bytes are all still there and the header says there are far fewer.
+        let mut truncated = honest.clone();
+        truncated[2..4].copy_from_slice(&4u16.to_be_bytes());
+        let err =
+            check_segment_length(&truncated).expect_err("a lying length must not reach a file");
+        let rendered = err.to_string();
+        assert!(rendered.contains("declares 4 bytes"), "{rendered}");
+        assert!(
+            rendered.contains(&limits::MAX_EXIF_APP1_BYTES.to_string()),
+            "the refusal must name the ceiling it is about: {rendered}"
+        );
+
+        // And a buffer too short to hold a length field at all is refused rather than read.
+        assert!(check_segment_length(&[0xff, 0xe1]).is_err());
+    }
+
+    #[test]
+    fn a_description_shortened_to_its_budget_stops_on_a_whole_control_and_says_so() {
+        // `fit` is where the bound becomes a *sentence*, and three properties make that
+        // sentence worth anything: it never exceeds the budget, it never cuts a `key=value`
+        // in half, and it names both numbers so a reader can tell a shortened list from a
+        // quiet camera.
+        let long = (0..40)
+            .map(|index| format!("control_{index:02}=0123456789"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let budget = 200;
+        let fitted = fit(long.clone(), budget);
+        assert!(
+            fitted.len() <= budget,
+            "{} bytes exceeds the {budget}-byte budget",
+            fitted.len()
+        );
+        assert!(fitted.contains(ELIDED), "{fitted}");
+        assert!(
+            fitted.contains(&long.len().to_string()),
+            "the note must name what there was: {fitted}"
+        );
+        let kept = fitted.split(ELIDED).next().unwrap_or_default().trim_end();
+        assert!(
+            kept.split("; ").all(|part| part.contains('=')),
+            "a control was cut in half: {kept:?}"
+        );
+        assert!(kept.starts_with("control_00=0123456789"));
+
+        // The first number is the one that was wrong, and asserting the bound could not see
+        // it: the note used to print the *budget*, which is what there was room for, while
+        // the text that survives is shorter by the note itself and by however far back the
+        // last `; ` sits. Both numbers are now read back off the sentence and checked against
+        // the two strings they describe, so a note that names a length nothing in the
+        // description has goes red.
+        let counted = fitted
+            .split(ELIDED)
+            .nth(1)
+            .and_then(|tail| tail.trim().strip_suffix(" bytes)"))
+            .and_then(|pair| pair.split_once(" of "))
+            .map(|(kept, whole)| (kept.trim().to_owned(), whole.trim().to_owned()))
+            .unwrap_or_default();
+        assert_eq!(
+            counted,
+            (kept.len().to_string(), long.len().to_string()),
+            "the note names two numbers and they are what was written and what there was: \
+             {fitted}"
+        );
+
+        // Under the budget nothing is touched at all, which is the arm that keeps every
+        // other test in this module reading the device's own words.
+        assert_eq!(fit(long.clone(), long.len()), long);
+        assert_eq!(fit(long.clone(), long.len() + 1), long);
+
+        // A budget too small even for the note gets the note, because a shortening that
+        // exceeded the bound would be no bound.
+        let squeezed = fit(long, 4);
+        assert!(squeezed.contains(ELIDED), "{squeezed}");
     }
 
     #[test]

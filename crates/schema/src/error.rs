@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::{CameraId, FrameSize, PixelFormat};
 use crate::control::ControlSlug;
+use crate::video::VideoFormat;
 use crate::vocabulary::closed_vocabulary;
 
 /// A process holding a device open, as diagnosed from `/proc/*/fd` — the `fuser`
@@ -65,6 +66,55 @@ pub struct SizeRefusal {
     /// something a caller can ask for. The device's own enumeration still carries them —
     /// `info` is where a caller sees that the driver said something we did not understand.
     pub available: Vec<FrameSize>,
+}
+
+/// The container half of an `Error::FormatUnsupported`: the file a caller named, the format
+/// the camera actually delivered, and the containers that would have taken it.
+///
+/// **The lever this refusal turns is the file extension, and until 2026-08-16 the payload
+/// named a different one.** D7 puts `FormatUnsupported { available }` on the record path in so
+/// many words, so a `record -o take.y4m` against a camera that negotiated MJPG answered
+/// `requested: "MJPG"` with `available: ["YUYV", "NV12", "GREY"]` — the *container's* list.
+/// Both fields mislead an unattended reader, and each in its own way:
+///
+/// - `requested` held the **negotiated** format. The caller never typed MJPG; a ranking chose
+///   it. A reader repairing `requested` repairs a request it did not make.
+/// - `available` held formats that need not exist **on that camera at all**. Measured through
+///   the shipped binary over `corpus/profiles/chicony-rgb.json`, which enumerates MJPG and
+///   YUYV: two of the three offered as remedies are formats that sensor has never had. That is
+///   note **N129**'s misdirection — a refusal telling a caller to retry with something the
+///   device does not have — surviving in the payload after the *message* was repaired for it
+///   (note **N211**).
+///
+/// So the container case carries its own payload, `SizeRefusal`'s shape one cause along, and
+/// what it names is always true and always actionable: this build's containers are a closed set
+/// of two, so "which file extension would have taken these frames" is a question the schema can
+/// answer without knowing anything about the camera. Build one through
+/// `Error::container_unsupported`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerRefusal {
+    /// The container the sink path's extension named.
+    ///
+    /// `None` when the path carried no extension, which means the caller left the container to
+    /// the negotiated format (`crate::video::RecordRequest::container`) and this build writes
+    /// no container that carries it. A different extension is then not the remedy, because the
+    /// caller never named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<VideoFormat>,
+    /// The format the device negotiated — the thing that could not be written.
+    ///
+    /// **Not what the caller asked for**, and that distinction is the whole reason this field
+    /// exists rather than reusing `requested`: a recording's format is chosen by D5's ranking
+    /// unless the caller named one, so the name in a container refusal is usually the device's
+    /// answer and not the caller's question.
+    pub negotiated: PixelFormat,
+    /// Every container this build writes that *would* carry `negotiated`.
+    ///
+    /// The remedy, and it is a fact about this build rather than about the camera — which is
+    /// what makes it safe to act on unattended. Empty when no container carries the format at
+    /// all, and that is the honest answer to "what should I do": nothing, this build cannot
+    /// record these frames, and a second attempt with another extension meets the same wall.
+    pub carried_by: Vec<VideoFormat>,
 }
 
 closed_vocabulary! {
@@ -289,7 +339,20 @@ pub enum Error {
     /// slot N134 said this variant would need, and `size` is now what distinguishes the two
     /// causes; build one through [`Error::format_unsupported`] or
     /// [`Error::size_unsupported`] rather than by hand, so they stay exclusive.
-    #[error("{}", format_capture_refusal(.requested, .available, .size))]
+    ///
+    /// **And a third time about the *container*** (note **N211**), which is where N129's
+    /// repair had stopped: the message stopped saying "this camera offers" but `available`
+    /// went on holding the container's own format list, so `record -o take.y4m` over
+    /// `corpus/profiles/chicony-rgb.json` — a camera enumerating MJPG and YUYV — answered
+    /// `requested: "MJPG"` with `available: ["YUYV", "NV12", "GREY"]`. Two of the three
+    /// remedies are formats that sensor has never had, and the one the caller is told it
+    /// asked for was chosen by D5's ranking rather than typed. `ContainerRefusal` is that
+    /// cause's own payload and `container` is what distinguishes it; the door in is
+    /// `Error::container_unsupported`.
+    ///
+    /// So the variant has three causes and one lever each — a format, a size, a file
+    /// extension — and which one applies is a field rather than a sentence to parse.
+    #[error("{}", format_capture_refusal(.requested, .available, .size, .container))]
     FormatUnsupported {
         /// The format that was asked for, when the caller named one **and the format is
         /// what could not be met**. `None` when the caller named none, and never a
@@ -303,12 +366,22 @@ pub enum Error {
         ///
         /// Absent for every other producer of this variant — the D6 source-format refusal,
         /// `engine::preview`'s unrenderable negotiation, and D7's container refusal all
-        /// refuse a *format* — which is what makes `size.is_some()` a reliable
+        /// refuse a *format* or a file — which is what makes `size.is_some()` a reliable
         /// discriminator rather than a hint. `engine::preview::negotiate` reads it as one:
         /// its cap can be dropped and retried, and a format it named and the device lacks
         /// cannot.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<SizeRefusal>,
+        /// The container that could not carry the stream, present **exactly when** the file
+        /// rather than the camera is what this refusal is about.
+        ///
+        /// Exclusive with `size` for the same reason `size` is exclusive with `requested`:
+        /// a refusal naming two levers is a refusal an unattended caller pulls at random.
+        /// The three doors — `Error::format_unsupported`, `Error::size_unsupported`,
+        /// `Error::container_unsupported` — are what keep them apart, and a value built
+        /// by hand around them is a defect rather than a shortcut.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        container: Option<ContainerRefusal>,
     },
 
     /// Frames kept arriving but the settle policy never converged \[PF:11\].
@@ -410,11 +483,11 @@ impl Error {
     /// A refusal about a **format**: what was named, when anything was, and what would be
     /// accepted instead.
     ///
-    /// One of the two doors into [`Error::FormatUnsupported`], and the reason they exist is
-    /// that the variant's two causes must not be expressible at once. A payload carrying
-    /// both a `requested` format and a [`SizeRefusal`] would be a refusal that names two
+    /// One of the three doors into [`Error::FormatUnsupported`], and the reason they exist is
+    /// that the variant's causes must not be expressible at once. A payload carrying both a
+    /// `requested` format and a [`SizeRefusal`] would be a refusal that names two
     /// levers, and an unattended caller pulling the wrong one is the failure this whole
-    /// registry is built to avoid (note **N138**).
+    /// registry is built to avoid (notes **N138**, **N211**).
     #[must_use]
     pub fn format_unsupported(
         requested: Option<PixelFormat>,
@@ -424,6 +497,7 @@ impl Error {
             requested,
             available,
             size: None,
+            container: None,
         }
     }
 
@@ -449,6 +523,42 @@ impl Error {
                 requested_width,
                 requested_height,
                 available: available_sizes,
+            }),
+            container: None,
+        }
+    }
+
+    /// A refusal about a **container**: the file a caller named, the format the device
+    /// negotiated, and the containers that would have taken it.
+    ///
+    /// `requested` is `None` and `available` is empty by construction, and both are the
+    /// repair note **N211** records. The negotiated format is not the caller's request — D5's
+    /// ranking picks it unless a `--pixel-format` was typed — so reporting it as `requested`
+    /// tells a caller to repair a request it never made. And `available` held whatever the
+    /// *container* carries, which is a claim about this build wearing the label of a claim
+    /// about the camera: measured over `corpus/profiles/chicony-rgb.json`, a `.y4m` refusal
+    /// offered NV12 and GREY to a sensor that has neither, which is N129's misdirection
+    /// surviving in the payload after the message was repaired for it.
+    ///
+    /// `carried_by` is derived here rather than passed, because the question — *which
+    /// extension would have taken these frames* — is answered by [`VideoFormat::carries`]
+    /// alone, and a caller that computed it would be a second copy of D7's pairing (design
+    /// §2.10). Deriving it also means the empty answer is honest by construction: a format
+    /// no container in this build writes yields no remedy rather than a plausible one.
+    #[must_use]
+    pub fn container_unsupported(container: Option<VideoFormat>, negotiated: PixelFormat) -> Error {
+        Error::FormatUnsupported {
+            requested: None,
+            available: Vec::new(),
+            size: None,
+            container: Some(ContainerRefusal {
+                container,
+                negotiated,
+                carried_by: VideoFormat::ALL
+                    .iter()
+                    .copied()
+                    .filter(|candidate| candidate.carries_format(negotiated))
+                    .collect(),
             }),
         }
     }
@@ -826,7 +936,7 @@ fn format_automation(automation: &Option<ControlSlug>) -> String {
     }
 }
 
-/// The one sentence [`Error::FormatUnsupported`] renders, in whichever of its two shapes
+/// The one sentence [`Error::FormatUnsupported`] renders, in whichever of its three shapes
 /// the payload says applies.
 ///
 /// **The sentence is the part of the payload a caller reads first**, and until 2026-08-16 a
@@ -834,28 +944,96 @@ fn format_automation(automation: &Option<ControlSlug>) -> String {
 /// would be accepted"* for a request whose format was MJPG and whose *size* was the
 /// problem. An agent following `docs/agent-guide.md`'s "fix the request" disposition retries
 /// with a format the sentence just named, meets the identical refusal, and loops — note
-/// **N129**'s class, at the same variant, one phase later (note **N138**).
+/// **N129**'s class, at the same variant, one phase later (note **N138**). The container
+/// arm is the third reading of the same lesson (note **N211**): it names an extension,
+/// because an extension is the only thing the caller can change that makes the recording
+/// happen, and it names no format at all, because every format it could name is a claim
+/// about this build that a caller would read as a claim about its camera.
 ///
-/// The two arms name different levers on purpose: one says which formats would be taken,
-/// the other says which sizes would be, and neither mentions the other's.
+/// The arms name different levers on purpose: one says which formats would be taken, one
+/// which sizes, one which files, and none mentions another's.
 fn format_capture_refusal(
     requested: &Option<PixelFormat>,
     available: &[PixelFormat],
     size: &Option<SizeRefusal>,
+    container: &Option<ContainerRefusal>,
 ) -> String {
-    match size {
-        Some(size) => format!(
-            "no mode delivers {}x{}; {} would be accepted",
-            size.requested_width,
-            size.requested_height,
-            format_sizes(&size.available)
+    match (size, container) {
+        // Not reachable through the three constructors, which is exactly why it is written
+        // out: this type deserializes, so a foreign or future producer can hand us both, and
+        // a renderer that dropped one would hide the half it did not choose. AGENTS rule 6 —
+        // a payload-carrying arm rather than a panic or a silent preference.
+        (Some(size), Some(container)) => format!(
+            "{}; and {}",
+            format_size_refusal(size),
+            format_container_refusal(container)
         ),
-        None => format!(
+        (Some(size), None) => format_size_refusal(size),
+        (None, Some(container)) => format_container_refusal(container),
+        (None, None) => format!(
             "format {} is unavailable; {} would be accepted",
             format_requested(requested),
             format_formats(available)
         ),
     }
+}
+
+fn format_size_refusal(size: &SizeRefusal) -> String {
+    format!(
+        "no mode delivers {}x{}; {} would be accepted",
+        size.requested_width,
+        size.requested_height,
+        format_sizes(&size.available)
+    )
+}
+
+/// The container arm's sentence: what could not be written, and which file would have taken
+/// it instead.
+///
+/// Four readings, and each one is a different thing for the caller to do. A named container
+/// with a carrier says *rename the file*; a named container with none says *stop, and change
+/// what the camera is delivering*; an unnamed container is the path that carried no extension
+/// at all, where a different extension is not the remedy because the caller never chose one.
+/// The fourth — no container named but one that carries — is not produced by
+/// [`crate::video::VideoFormat::resolve`], which only reaches its unnamed arm when nothing
+/// carries the stream; it is written because the payload deserializes and a renderer that
+/// cannot say something true about a value it was handed is a renderer that will one day say
+/// something false.
+fn format_container_refusal(refusal: &ContainerRefusal) -> String {
+    let carriers = format_containers(&refusal.carried_by);
+    match (refusal.container, refusal.carried_by.is_empty()) {
+        (Some(named), false) => format!(
+            "a .{} file cannot carry {} frames; {carriers} would take them",
+            named.extension(),
+            refusal.negotiated
+        ),
+        (Some(named), true) => format!(
+            "a .{} file cannot carry {} frames, and no container this build writes would",
+            named.extension(),
+            refusal.negotiated
+        ),
+        (None, true) => format!(
+            "no container this build writes carries {} frames",
+            refusal.negotiated
+        ),
+        (None, false) => format!(
+            "the sink named no container for {} frames; {carriers} would take them",
+            refusal.negotiated
+        ),
+    }
+}
+
+/// Containers as the extensions a caller types, because the extension is the lever this
+/// refusal is about — `.avi`, not `Avi`, so the remedy can be pasted onto a `-o` argument.
+fn format_containers(containers: &[VideoFormat]) -> String {
+    if containers.is_empty() {
+        return "nothing".to_owned();
+    }
+    containers
+        .iter()
+        .map(|container| format!(".{}", container.extension()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_requested(requested: &Option<PixelFormat>) -> String {

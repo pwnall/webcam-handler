@@ -1350,9 +1350,12 @@ fn hw_a_format_the_camera_does_not_offer_is_refused_rather_than_substituted() {
         let schema::Error::FormatUnsupported {
             requested,
             available,
-            // A format refusal and a size refusal are exclusive: this one is about the
-            // format, so the size slot is empty (note **N138**).
+            // A format refusal, a size refusal and a container refusal are exclusive: this
+            // one is about the format, so the other two slots are empty (notes **N138**,
+            // **N211**). A negotiation names no file, so a container here would be a lever
+            // the caller could not pull.
             size: None,
+            container: None,
         } = &refusal
         else {
             panic!(
@@ -2042,22 +2045,35 @@ fn hw_a_grey_only_sensor_records_y4m_and_the_avi_it_cannot_fill_is_refused_for_a
         )
         .expect_err("AVI carries no raw format");
         let schema::Error::FormatUnsupported {
-            requested,
             available,
-            // A container refuses a format, never a size (note **N138**).
+            // A container refuses a file, never a size (note **N138**).
             size: None,
+            container: Some(container),
+            ..
         } = &refusal
         else {
             panic!(
-                "{}: a .avi sink was refused with {refusal} rather than a format-shaped \
+                "{}: a .avi sink was refused with {refusal} rather than a container-shaped \
                     FormatUnsupported — 'this camera cannot' and 'this container cannot' \
                     are different findings (AGENTS rule 7)",
                 info.id
             );
         };
+        // **The remedy is the extension, and it is a claim about this build** (note
+        // **N211**). This camera is GREY-only, so a payload naming pixel formats would be
+        // offering an unattended caller MJPG on a sensor that has never had it — which is
+        // exactly what the arm below refuses to see happen on real hardware.
         assert!(
-            !available.is_empty(),
-            "{}: the refusal named nothing AVI carries",
+            available.is_empty(),
+            "{}: a container refusal offered formats as the remedy: {available:?}",
+            info.id
+        );
+        assert_eq!(container.container, Some(schema::video::VideoFormat::Avi));
+        assert_eq!(container.negotiated, schema::camera::PixelFormat::GREY);
+        assert_eq!(
+            container.carried_by,
+            vec![schema::video::VideoFormat::Y4m],
+            "{}: the refusal named no file that would have taken these frames",
             info.id
         );
         assert!(
@@ -2066,9 +2082,9 @@ fn hw_a_grey_only_sensor_records_y4m_and_the_avi_it_cannot_fill_is_refused_for_a
             info.id
         );
         println!(
-            "{}: a .avi sink over a {requested:?} stream is refused naming {available:?}, and no \
-             file was left behind",
-            info.id
+            "{}: a .avi sink over a {} stream is refused naming {:?}, and no file was left \
+             behind",
+            info.id, container.negotiated, container.carried_by
         );
 
         if missing.is_empty() {

@@ -353,10 +353,11 @@ pub fn decode_yuyv(bytes: &[u8], width: u32, height: u32, bytes_per_line: u32) -
         return Err(short_buffer(YUYV_OP, needed, bytes.len()));
     }
 
+    let plane = packed_422_plane(bytes, stride, h, width, height)?;
     let mut rgb = rgb_buffer(w, h, YUYV_OP)?;
     let rgb_stride = row_stride(w, YUYV_OP)?;
     let packed = YuvPackedImage {
-        yuy: bytes,
+        yuy: plane.as_ref(),
         yuy_stride: as_u32(stride, YUYV_OP)?,
         width,
         height,
@@ -516,6 +517,55 @@ pub(crate) fn plane_bytes(stride: usize, rows: usize, row_bytes: usize) -> Optio
     full.checked_add(row_bytes)
 }
 
+/// The packed 4:2:2 plane `yuv`'s converter will accept, out of the buffer a driver
+/// delivered.
+///
+/// **Where two rules about the same buffer are reconciled, and the one that wins is ours.**
+/// [`plane_bytes`] is this crate's law — full strides for every row but the last, whose
+/// padding "is not something a driver owes us" — and `decode_grey` and `decode_nv12` both
+/// hold callers to exactly that. The `yuv` crate's `check_yuv_packed422` holds them to
+/// something else: it compares the packed buffer's length against `stride × height` with
+/// `!=`, so a final row delivered without its padding is *short* by that comparison and a
+/// `bytesused` covering trailing bytes is *long* by it, and both come back as
+/// `PackedFrameSizeMismatch` — a refusal in a dependency's words for a frame this crate had
+/// already decided was well formed.
+///
+/// So the length the dependency wants is produced here rather than demanded of the driver.
+/// The common case borrows: a tightly packed frame, and a padded one whose last row carries
+/// its padding, are already `stride × height` and are handed straight through. A longer
+/// buffer is borrowed too, at its first `stride × height` bytes. Only the padding-free final
+/// row costs a copy, and what it copies into is the *padding* — bytes the converter walks
+/// past to reach the next row and never reads as a sample, since every row's useful span is
+/// `width` pixels wide. They are zeroed rather than left uninitialised or filled from
+/// anywhere else, because a frame may contain a person (rubric A12) and padding that
+/// borrowed from a neighbouring row would be picture.
+fn packed_422_plane(
+    bytes: &[u8],
+    stride: usize,
+    rows: usize,
+    width: u32,
+    height: u32,
+) -> Result<Cow<'_, [u8]>> {
+    let padded = stride
+        .checked_mul(rows)
+        .ok_or_else(|| overflowed(YUYV_OP, width, height))?;
+    match bytes.len().cmp(&padded) {
+        std::cmp::Ordering::Equal => Ok(Cow::Borrowed(bytes)),
+        // Unreachable while `padded >= bytes.len()` is false, and written as a `get` rather
+        // than an index because a device-derived length decides it (rubric B10).
+        std::cmp::Ordering::Greater => bytes
+            .get(..padded)
+            .map(Cow::Borrowed)
+            .ok_or_else(|| short_buffer(YUYV_OP, padded, bytes.len())),
+        std::cmp::Ordering::Less => {
+            let mut owned = Vec::with_capacity(padded);
+            owned.extend_from_slice(bytes);
+            owned.resize(padded, 0);
+            Ok(Cow::Owned(owned))
+        }
+    }
+}
+
 fn rgb_buffer(width: usize, height: usize, operation: &str) -> Result<Vec<u8>> {
     let len = width
         .checked_mul(height)
@@ -626,8 +676,10 @@ mod tests {
                 requested,
                 available,
                 // A source-format refusal is about the format, so the size slot stays
-                // empty — the discriminator `engine::preview` reads (note **N138**).
+                // empty — the discriminator `engine::preview` reads (note **N138**) — and so
+                // does the container slot, since a decoder names no file (note **N211**).
                 size: None,
+                container: None,
             } => {
                 assert_eq!(requested, Some(h264));
                 assert!(available.contains(&PixelFormat::MJPG), "{available:?}");
@@ -941,6 +993,82 @@ mod tests {
         let rgb = decode_nv12(&padded, 16, 8, u32::try_from(stride).expect("small"))
             .expect("the padded colour fixture decodes");
         assert_decoded_colour_is_what_bt601_says(&rgb, &colour_fixture_triples(16, 8, 2));
+    }
+
+    #[test]
+    fn every_raw_decoder_takes_the_buffer_plane_bytes_says_a_driver_owes_it() {
+        // [`plane_bytes`] is the one law: *full strides for every row but the last, which
+        // needs only its useful bytes* — "padding after the final row is not something a
+        // driver owes us". `decode_grey` and `decode_nv12` obeyed it and `decode_yuyv` did
+        // not, because the `yuv` crate's `check_yuv_packed422` compares the packed buffer's
+        // length against `stride × height` with `!=` rather than with `<`. So one decoder
+        // refused a frame its two siblings accepted, and it refused it with the dependency's
+        // own words rather than with ours (note **N201**).
+        //
+        // Both directions of that equality are asserted here, because the defect is the
+        // equality and not either side of it: a last row delivered without its padding is
+        // *shorter* than `stride × height`, and a driver that reports a `bytesused` covering
+        // trailing bytes hands us one that is *longer*. `decode_grey` and `decode_nv12` take
+        // both today, so this is the shared rule read from all three ends.
+        let width = 16u32;
+        let height = 8u32;
+        let row_bytes = usize::try_from(width).expect("small") * 2;
+        let stride = row_bytes + 8;
+
+        let packed = fixtures::pack_yuyv_colour(width, height);
+        let expected = colour_fixture_triples(width, height, 1);
+
+        let mut clipped = Vec::new();
+        for (index, row) in packed.chunks(row_bytes).enumerate() {
+            clipped.extend_from_slice(row);
+            // Every row but the last is padded out to the stride; the last one stops at its
+            // useful bytes, which is exactly `plane_bytes`' claim about what a driver owes.
+            if index + 1 < usize::try_from(height).expect("small") {
+                clipped.extend(std::iter::repeat_n(0xffu8, stride - row_bytes));
+            }
+        }
+        assert_eq!(
+            clipped.len(),
+            plane_bytes(stride, usize::try_from(height).expect("small"), row_bytes)
+                .expect("the fixture's geometry is addressable"),
+            "the fixture is not the length the shared rule computes"
+        );
+        let rgb = decode_yuyv(
+            &clipped,
+            width,
+            height,
+            u32::try_from(stride).expect("small"),
+        )
+        .expect("a last row without padding is a frame");
+        assert_decoded_colour_is_what_bt601_says(&rgb, &expected);
+
+        // The other side: a buffer longer than the geometry demands is a driver being
+        // generous, not a driver being wrong. `decode_grey` and `decode_nv12` already take
+        // one.
+        let mut generous = clipped.clone();
+        generous.extend(std::iter::repeat_n(0xffu8, stride * 3));
+        let rgb = decode_yuyv(
+            &generous,
+            width,
+            height,
+            u32::try_from(stride).expect("small"),
+        )
+        .expect("trailing bytes are not a defect");
+        assert_decoded_colour_is_what_bt601_says(&rgb, &expected);
+
+        let grey = fixtures::pack_grey(&fixtures::gradient(4, 4));
+        let mut grey_generous = grey.clone();
+        grey_generous.extend_from_slice(&[0xff; 9]);
+        assert!(
+            decode_grey(&grey_generous, 4, 4, 0).is_ok(),
+            "the sibling this rule is shared with"
+        );
+        let mut nv12_generous = fixtures::pack_nv12(&fixtures::gradient(4, 4));
+        nv12_generous.extend_from_slice(&[0xff; 9]);
+        assert!(
+            decode_nv12(&nv12_generous, 4, 4, 0).is_ok(),
+            "the other sibling"
+        );
     }
 
     #[test]

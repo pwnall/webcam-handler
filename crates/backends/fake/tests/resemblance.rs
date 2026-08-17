@@ -606,8 +606,13 @@ fn negotiation_reports_every_way_it_differed_from_the_request() {
         })
         .expect_err("NV12 is not on the profile");
     assert!(
-        matches!(&error, Error::FormatUnsupported { requested, available, size }
-            if *requested == Some(PixelFormat::NV12) && !available.is_empty() && size.is_none()),
+        matches!(&error, Error::FormatUnsupported { requested, available, size, container }
+            if *requested == Some(PixelFormat::NV12)
+                && !available.is_empty()
+                && size.is_none()
+                // A negotiation names no file, so the container cause cannot apply to it
+                // (note **N211**).
+                && container.is_none()),
         "{error}"
     );
 
@@ -622,8 +627,8 @@ fn negotiation_reports_every_way_it_differed_from_the_request() {
         })
         .expect_err("nothing on this device fits inside 16x16");
     assert!(
-        matches!(&error, Error::FormatUnsupported { requested, available, size }
-            if requested.is_none() && !available.is_empty()
+        matches!(&error, Error::FormatUnsupported { requested, available, size, container }
+            if requested.is_none() && !available.is_empty() && container.is_none()
                 && size.as_ref().is_some_and(|s| (s.requested_width, s.requested_height) == (16, 16))),
         "{error}"
     );

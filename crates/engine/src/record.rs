@@ -106,7 +106,7 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use imaging::video::{Recorder, RecordingCaps, RecordingParams};
 use schema::camera::CameraId;
-use schema::capture::{Frame, NegotiatedStream};
+use schema::capture::{ChromaSiting, Frame, NegotiatedStream};
 use schema::error::{Error, Result};
 use schema::limits;
 use schema::time::Stamp;
@@ -193,17 +193,28 @@ pub struct Opened {
 /// # Errors
 ///
 /// [`Error::IllegalTransition`] from the three request predicates.
-/// [`Error::FormatUnsupported`] when the container the path names cannot carry what the
-/// device negotiated — naming what that container *would* have taken, which is D7's
-/// "non-MJPG `record` requests get Y4M or `FormatUnsupported { available }`" arriving at a
-/// caller who typed `.avi` over a GREY camera. Otherwise whatever `start_stream` refused
+/// [`Error::FormatUnsupported`] carrying a `container` payload when the file the path names
+/// cannot carry what the device negotiated — naming the extension that *would* have taken
+/// those frames, which is D7's "non-MJPG `record` requests get Y4M or `FormatUnsupported`"
+/// arriving at a caller who typed `.avi` over a GREY camera. A file rather than a format,
+/// because the format was D5's ranking's answer rather than the caller's question, and
+/// because what a container carries is a fact about this build (note **N211**). Otherwise
+/// whatever `start_stream` refused
 /// with, unchanged: [`Error::Busy`] for a node somebody else is streaming (E3 keeps that
 /// distinct from "the camera cannot"), and the device's own answer for everything else.
 pub fn start(device: OpenCamera<'_>, request: &RecordRequest) -> Result<Opened> {
     let container = request.container()?;
     let budget_ms = request.budget_ms()?;
 
-    let negotiated = device.start_stream(&request.stream)?;
+    // The stream this request asks for, told what the container it named can carry (D5's
+    // 2026-08-13 amendment). `stream_for_container` is the one home for that derivation, and
+    // the reason it is not `request.stream` is the whole of the G6 review's L18 (note **N206**):
+    // a `.y4m`
+    // request that reached the ranking claiming a destination which passes a camera
+    // bitstream through would be answered MJPG on a camera whose modes tie, and then refused
+    // by `VideoFormat::resolve` over a format the file could have carried.
+    let stream = request.stream_for_container()?;
+    let negotiated = device.start_stream(&stream)?;
     let format = match VideoFormat::resolve(container, negotiated.pixel_format) {
         Ok(format) => format,
         Err(refused) => {
@@ -224,6 +235,12 @@ pub fn start(device: OpenCamera<'_>, request: &RecordRequest) -> Result<Opened> 
         // reaching the muxer is honestly reported as `IntervalSource::Provisional` rather
         // than rounded to 30 fps, which is why this is a forward rather than an `unwrap_or`.
         negotiated_interval_us: imaging::avi::interval_micros(&negotiated.interval),
+        // The raw container states a 4:2:0 chroma siting whatever we do — there is no `C`
+        // tag that declines to (note **N200**) — so it is derived here from the answer the
+        // device gave rather than left to the muxer as a constant. `ChromaSiting::of` is the
+        // one home for that derivation, and today it answers the default for every stream
+        // because V4L2 has no field that could say otherwise.
+        chroma_siting: ChromaSiting::of(&negotiated),
         caps: caps(),
     };
     Ok(Opened {
@@ -900,7 +917,7 @@ mod tests {
     use imaging::avi::read;
     use schema::ErrorKind;
     use schema::backend::{Camera, CameraBackend};
-    use schema::camera::PixelFormat;
+    use schema::camera::{PixelFormat, SinkFidelity};
     use schema::capture::{PhotoFormat, Sink, StreamRequest};
     use schema::control::{Applied, ControlDesc, ControlId, ControlValue};
     use schema::video::CapReached;
@@ -1132,6 +1149,119 @@ mod tests {
         let ended = drive(&mut *camera, &mut recording, clock)?;
         stop(&mut *camera).expect("stops");
         recording.finish(ended, clock)
+    }
+
+    /// A camera that keeps the [`StreamRequest`] it was handed.
+    ///
+    /// The only observable that can hold "what this verb actually asked the device for". The
+    /// negotiated answer cannot: no committed profile offers a compressed and a raw format at
+    /// the same resolution (measured — the closest is the Dell, whose MJPG is four times the
+    /// pixels of its raw modes), so on every camera this project has met the ranking is
+    /// decided before the destination gets its vote, and a report alone cannot tell a derived
+    /// `sink_fidelity` from a defaulted one.
+    struct Overheard {
+        inner: Box<dyn Camera>,
+        asked: Option<StreamRequest>,
+    }
+
+    impl std::fmt::Debug for Overheard {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Overheard")
+                .field("asked", &self.asked)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl Camera for Overheard {
+        fn info(&self) -> &schema::camera::CameraInfo {
+            self.inner.info()
+        }
+
+        fn formats(&self) -> Result<Vec<schema::camera::FormatInfo>> {
+            self.inner.formats()
+        }
+
+        fn controls(&self) -> Result<Vec<ControlDesc>> {
+            self.inner.controls()
+        }
+
+        fn get(&mut self, id: ControlId) -> Result<ControlValue> {
+            self.inner.get(id)
+        }
+
+        fn set(&mut self, id: ControlId, value: ControlValue) -> Result<Applied> {
+            self.inner.set(id, value)
+        }
+
+        fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
+            self.asked = Some(request.clone());
+            self.inner.start_stream(request)
+        }
+
+        fn streaming(&self) -> Option<NegotiatedStream> {
+            self.inner.streaming()
+        }
+
+        fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
+            self.inner.next_frame(deadline)
+        }
+
+        fn stop_stream(&mut self) -> Result<()> {
+            self.inner.stop_stream()
+        }
+    }
+
+    #[test]
+    fn the_stream_this_verb_negotiates_carries_the_container_it_is_going_into() {
+        // The call site of `RecordRequest::stream_for_container` (note **N206**), which
+        // the schema's own suite can state as a law but not as a *use*: `start` could go back
+        // to handing the device `request.stream` and every assertion over there would stay
+        // green. `schema::video`'s
+        // `a_recording_asks_the_device_for_what_the_container_it_named_can_carry` is the rule;
+        // this is that the recording path asks it.
+        let scratch = Scratch::new();
+        for (profile, extension, expected) in [
+            ("chicony-ir", "y4m", SinkFidelity::EncodesLosslessly),
+            ("chicony-rgb", "avi", SinkFidelity::PassesCompressedThrough),
+        ] {
+            let mut camera = Overheard {
+                inner: camera_from(profile),
+                asked: None,
+            };
+            let path = scratch.path(&format!("take.{extension}"));
+            let opened = start(&mut camera, &request(&path, Some(1_000)))
+                .unwrap_or_else(|err| panic!("{profile} into .{extension}: {err}"));
+            stop(&mut camera).expect("stops");
+            assert_eq!(
+                camera
+                    .asked
+                    .as_ref()
+                    .expect("the verb negotiated a stream")
+                    .sink_fidelity,
+                expected,
+                "{profile} into .{extension}"
+            );
+            assert_eq!(
+                opened.format,
+                VideoFormat::from_extension(extension).expect("this build writes it")
+            );
+        }
+
+        // And a path with no extension asks for the default, because the negotiated format is
+        // what decides the container in that case — there is no destination to reason about
+        // yet. Without this arm the two above would also pass on a build that set the field
+        // from something other than the container.
+        let mut camera = Overheard {
+            inner: camera_from("chicony-rgb"),
+            asked: None,
+        };
+        let path = scratch.path("take");
+        start(&mut camera, &request(&path, Some(1_000))).expect("no extension is not a refusal");
+        stop(&mut camera).expect("stops");
+        assert_eq!(
+            camera.asked.expect("negotiated").sink_fidelity,
+            SinkFidelity::default()
+        );
     }
 
     #[test]
@@ -1759,14 +1889,22 @@ mod tests {
         let Error::FormatUnsupported {
             requested,
             available,
-            // A container refuses a format, never a size (note **N138**).
+            // A container refuses a file, never a size (note **N138**).
             size: None,
+            container: Some(container),
         } = &refusal
         else {
             panic!("a container that cannot carry the stream is a capability answer: {refusal}");
         };
-        assert_eq!(*requested, Some(PixelFormat::GREY));
-        assert_eq!(*available, vec![PixelFormat::MJPG, PixelFormat::JPEG]);
+        // **The remedy is the extension** (note **N211**). This camera enumerates GREY and
+        // nothing else, so the refusal that shipped — `requested: GREY`, `available: [MJPG,
+        // JPEG]` — told a caller to retry with two formats this sensor has never had, and
+        // named as its request a format D5's ranking had picked for it.
+        assert_eq!(*requested, None);
+        assert!(available.is_empty(), "{available:?}");
+        assert_eq!(container.container, Some(VideoFormat::Avi));
+        assert_eq!(container.negotiated, PixelFormat::GREY);
+        assert_eq!(container.carried_by, vec![VideoFormat::Y4m]);
         assert!(!wrong.exists(), "a refused recording wrote a file");
         assert_eq!(
             backend.streams_started(),

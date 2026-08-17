@@ -74,7 +74,7 @@ use std::io::{Seek, Write};
 use std::time::Duration;
 
 use schema::camera::PixelFormat;
-use schema::capture::Frame;
+use schema::capture::{ChromaSiting, Frame};
 use schema::error::Result;
 use schema::limits;
 use schema::video::{CapReached, IntervalSource, RecordingSummary, VideoFormat};
@@ -231,6 +231,15 @@ pub struct RecordingParams {
     /// happens — see [`PROVISIONAL_INTERVAL_US`] — and the summary says the interval was
     /// provisional.
     pub negotiated_interval_us: Option<u32>,
+    /// Which 4:2:0 chroma siting the raw container's header states.
+    ///
+    /// Carried here rather than only in [`crate::y4m::Y4mParams`] because it is the union of
+    /// what the two containers ask for and this is one of the things one of them asks for —
+    /// AVI carries MJPEG, whose bitstream states its own sampling, so the field reaches only
+    /// the Y4M arm. `Default` is [`ChromaSiting::Centred`] and
+    /// [`ChromaSiting::of`] is the derivation every caller should use; note **N200** carries
+    /// why the tag could not simply stay a constant.
+    pub chroma_siting: ChromaSiting,
     /// What the recording is allowed to cost.
     pub caps: RecordingCaps,
 }
@@ -300,6 +309,7 @@ impl<W: Write + Seek> Recorder<W> {
                     height: params.height,
                     pixel_format: params.pixel_format,
                     negotiated_interval_us: params.negotiated_interval_us,
+                    chroma_siting: params.chroma_siting,
                     caps: params.caps,
                 },
             )
@@ -398,6 +408,7 @@ mod tests {
             height: HEIGHT,
             pixel_format: representative(container),
             negotiated_interval_us: Some(NEGOTIATED_US),
+            chroma_siting: ChromaSiting::default(),
             caps,
         }
     }

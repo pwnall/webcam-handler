@@ -352,6 +352,160 @@ mod tests {
         assert!(err.to_string().contains("SOI"), "{err}");
     }
 
+    /// Where a destination pixel's value comes from in the source, for each orientation.
+    ///
+    /// **Written from the definition of each transform and not from a run of [`oriented`]**,
+    /// which is the whole point: an expectation lifted out of the implementation cannot catch
+    /// the implementation being wrong (note **N108**'s general form). Read it as "the pixel
+    /// at `(x, y)` of the result was at *this* position before":
+    ///
+    /// - a horizontal mirror reverses the column and keeps the row;
+    /// - a vertical mirror reverses the row and keeps the column;
+    /// - a quarter turn **clockwise** sends the source's bottom-left corner to the result's
+    ///   top-left, so the result's column is the source's row and the result's row counts
+    ///   *up* the source's columns;
+    /// - a half turn reverses both;
+    /// - a quarter turn counter-clockwise is the same reading with the two reversals
+    ///   exchanged.
+    ///
+    /// The two quarter turns also swap the extent, which [`expected_extent`] states
+    /// separately so a build that moved the pixels correctly into the wrong-shaped buffer
+    /// cannot pass on the mapping alone.
+    fn source_of(transform: Transform, x: u32, y: u32, width: u32, height: u32) -> (u32, u32) {
+        match transform {
+            Transform::None => (x, y),
+            Transform::HFlip => (width - 1 - x, y),
+            Transform::VFlip => (x, height - 1 - y),
+            Transform::Rot90 => (y, height - 1 - x),
+            Transform::Rot180 => (width - 1 - x, height - 1 - y),
+            Transform::Rot270 => (width - 1 - y, x),
+        }
+    }
+
+    /// The extent each orientation produces from a `width` x `height` source.
+    fn expected_extent(transform: Transform, width: u32, height: u32) -> (u32, u32) {
+        match transform {
+            Transform::Rot90 | Transform::Rot270 => (height, width),
+            Transform::None | Transform::HFlip | Transform::VFlip | Transform::Rot180 => {
+                (width, height)
+            }
+        }
+    }
+
+    #[test]
+    fn every_orientation_moves_the_pixels_its_own_name_describes() {
+        // **`oriented()` is the one place in this product where an orientation moves pixels,
+        // and five of its six arms had no assertion anywhere in the workspace** (the G6
+        // review's L21; note **N207**). `imageops::rotate90` and `rotate270` are one identifier
+        // apart and so
+        // are `flip_horizontal` and `flip_vertical`; either exchange is a photograph mirrored
+        // about the wrong axis in a tool whose product is comparability across time.
+        //
+        // The walk is over `Transform::ALL`, so a seventh orientation cannot join the schema
+        // without an expectation here — §9.1 of that review is blunt about which rows work:
+        // "the rows that work are the ones with an `ALL` behind them".
+        //
+        // **The fixture is 5x3 and every pixel is distinct**, and both properties are
+        // load-bearing (note **N108**'s class: a fixture constant along a dimension cannot
+        // constrain anything that permutes that dimension). A square fixture cannot tell a
+        // transpose from a rotation; a fixture with equal rows cannot tell a vertical flip
+        // from an identity; and odd extents on both axes leave no centre column or row that a
+        // reversal would map onto itself.
+        const WIDTH: u32 = 5;
+        const HEIGHT: u32 = 3;
+        let source = image::GrayImage::from_fn(WIDTH, HEIGHT, |x, y| {
+            image::Luma([u8::try_from(y * WIDTH + x + 1).expect("15 values")])
+        });
+
+        let mut rendered: Vec<(Transform, Vec<u8>)> = Vec::new();
+        for &transform in Transform::ALL {
+            let moved = transform_pixels(&Decoded::Gray(source.clone()), transform);
+            let Decoded::Gray(image) = moved else {
+                panic!("{transform}: a grey image must stay grey through a transform");
+            };
+            assert_eq!(
+                image.dimensions(),
+                expected_extent(transform, WIDTH, HEIGHT),
+                "{transform}: the extent"
+            );
+            let (out_width, out_height) = image.dimensions();
+            for y in 0..out_height {
+                for x in 0..out_width {
+                    let (from_x, from_y) = source_of(transform, x, y, WIDTH, HEIGHT);
+                    assert_eq!(
+                        image.get_pixel_checked(x, y).map(|p| p.0[0]),
+                        source.get_pixel_checked(from_x, from_y).map(|p| p.0[0]),
+                        "{transform}: ({x},{y}) should hold the sample from ({from_x},{from_y})"
+                    );
+                }
+            }
+            // A permutation and nothing else: every sample the sensor produced is still
+            // there, exactly once. A transform that dropped a row or doubled a column would
+            // satisfy a per-pixel check written for the wrong extent and fail this.
+            let mut values = image.as_raw().clone();
+            values.sort_unstable();
+            let mut expected: Vec<u8> = source.as_raw().clone();
+            expected.sort_unstable();
+            assert_eq!(
+                values, expected,
+                "{transform}: samples were lost or invented"
+            );
+            rendered.push((transform, image.as_raw().clone()));
+        }
+
+        // No two orientations agree on this fixture, which is what makes each assertion above
+        // about *its own* transform rather than about a family of them.
+        for (index, (transform, bytes)) in rendered.iter().enumerate() {
+            for (other, other_bytes) in rendered.iter().skip(index + 1) {
+                assert_ne!(
+                    bytes, other_bytes,
+                    "{transform} and {other} produce the same pixels on this fixture, so \
+                     neither is pinned"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_orientation_moves_a_colour_image_the_same_way_and_keeps_its_channels_together() {
+        // `oriented` is generic over `Pixel`, and the walk above drives it at one channel.
+        // The path a camera's frames actually take is three, and a transform that moved
+        // whole pixels in grey while shifting channels in RGB would be a colour defect the
+        // grey walk cannot see.
+        const WIDTH: u32 = 5;
+        const HEIGHT: u32 = 3;
+        let source = image::RgbImage::from_fn(WIDTH, HEIGHT, |x, y| {
+            let base = u8::try_from(y * WIDTH + x + 1).expect("15 values");
+            // Three channels that are distinct at every pixel *and* distinct from each
+            // other, so a rotation that transposed the channels lands values no pixel of
+            // this fixture carries.
+            image::Rgb([base, base + 40, base + 80])
+        });
+
+        for &transform in Transform::ALL {
+            let moved = transform_pixels(&Decoded::Rgb(source.clone()), transform);
+            let Decoded::Rgb(image) = moved else {
+                panic!("{transform}: an RGB image must stay RGB through a transform");
+            };
+            assert_eq!(
+                image.dimensions(),
+                expected_extent(transform, WIDTH, HEIGHT),
+                "{transform}: the extent"
+            );
+            let (out_width, out_height) = image.dimensions();
+            for y in 0..out_height {
+                for x in 0..out_width {
+                    let (from_x, from_y) = source_of(transform, x, y, WIDTH, HEIGHT);
+                    assert_eq!(
+                        image.get_pixel_checked(x, y).map(|p| p.0),
+                        source.get_pixel_checked(from_x, from_y).map(|p| p.0),
+                        "{transform}: ({x},{y}) should hold the pixel from ({from_x},{from_y})"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_pixel_transform_is_the_orientation_it_claims_to_be() {
         // A rot90 that is really a rot270 satisfies every dimension assertion above.

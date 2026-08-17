@@ -21750,3 +21750,542 @@ generated from the blocks rather than reconciled against them by count, which wo
 inherited row impossible rather than checkable. Item 7's source scan retires when `src/sys/` enters
 the mutation floor's examined set, which N188 already marks.
 
+
+## N200 — `C420` is a chroma siting, and the comment saying it was not is the only thing that made it look like a free choice
+
+**Doc:** `crates/imaging/src/y4m.rs`'s module header and `Planar::tag`; design **D7**'s raw
+fallback; AGENTS rule 6 (*represent the unknown, never correct it*). Owner ruling, 2026-08-16,
+closing the G6 review's **M15**.
+
+**Believed:** that writing `C420` rather than `C420jpeg` or `C420mpeg2` left the 4:2:0 chroma
+siting unstated. The comment beside the tag said so in as many words — *"those name a chroma
+siting … naming one would be a claim about the device that nothing here measured"* — and the
+module header repeated it.
+
+**True:** `C420` is a siting, and the two readers this project already confronts its files with
+both resolve it. Measured 2026-08-16 on this host, with six one-frame files differing only in
+their `C` field:
+
+| header field | `ffprobe` 8.0.1 `chroma_location` | `mpv` 0.41.0 decoder format |
+|---|---|---|
+| `C420` | `center` | `CL=mpeg1/jpeg` |
+| `C420jpeg` | `center` | `CL=mpeg1/jpeg` |
+| `C420mpeg2` | `left` | `CL=mpeg2/4/h264` |
+| `C420paldv` | `topleft` | — |
+| `C422` | `unspecified` | — |
+| no `C` field at all | `unspecified` | `CL=unknown` |
+
+So `C420` and `C420jpeg` are one answer under two spellings, and the *unstated* member of the
+vocabulary is the one this writer cannot use: omitting the `C` field drops the subsampling with
+the siting, and `ffprobe` then assumes 4:2:0 — which would make every mono and 4:2:2 file this
+container writes unreadable. `ffmpeg`'s own muxer never emits plain `C420` either; asked for a
+`yuv420p` stream with no chroma location set it writes `C420jpeg XYSCSS=420JPEG`. The tag chosen
+for saying nothing was the JPEG/MPEG-1 siting, written on every 4:2:0 recording this project has
+ever made.
+
+**What was done.** The owner ruled the siting a **capture-time input carried as data**, from the
+negotiated format, defaulting to `C420`. `schema::capture::ChromaSiting` is that datum:
+`Centred` and `HorizontallyCosited`, a `closed_vocabulary!` so the two spellings are walked
+rather than remembered, with `ChromaSiting::of(&NegotiatedStream)` as the one derivation and
+`Y4mParams::chroma_siting` (via `imaging::video::RecordingParams`) as the way it reaches the
+header. It is deliberately **not** a `NegotiatedStream` field and therefore not on the wire: that
+would put it beside numbers a device reported, and no device reported this one — the shape it
+takes instead is `StreamRequest::sink_fidelity`'s, which is derived at the point of use for the
+same reason and says so in its own doc.
+
+**The default is `Centred` and every file this project has written stays byte-identical**, which
+is what makes this a repair to a claim rather than a change to a format. The frozen Y4M fixtures
+did not move.
+
+**What would make it `measured`, and why nothing here can.** `v4l2_pix_format` carries
+`colorspace`, `ycbcr_enc`, `quantization` and `xfer_func` — and **no chroma-siting field of any
+kind**. That is a reading of `/usr/include/linux/videodev2.h`, not an inference: there is nothing
+a V4L2 driver could set that would answer this question, so `ChromaSiting::of` answers the default
+for every stream and the value is `declared` in this repository's sense and will stay that way.
+What would change it is a caller that knows its camera stating one — which is why the field is an
+input and public — or a V4L2 extension. **Not done here, and worth doing:** an `#[ignore]`d
+hardware arm reading the four colorimetry fields off every attached camera would answer the
+*neighbouring* question, which is whether the drivers this project has met populate the fields
+V4L2 does have; `imaging::decode`'s "Colour conventions" section and **N130**'s amendment clause
+both wait on that measurement, and it needs `sys` plumbing this session did not have.
+
+**What went red first.** The tag arm set back to a constant — `HorizontallyCosited => "420"`,
+which is the pre-repair behaviour wearing the new type — turned
+`the_header_states_the_chroma_siting_the_recording_was_opened_with` red: *"HorizontallyCosited
+writes 420, which another siting already writes — the input is being ignored"*.
+
+**Retires when:** never as a finding. The *default* is re-argued the day something can answer the
+question, and this entry's table is what a re-argument starts from.
+
+## N201 — One raw decoder demanded an exact `stride × height` buffer because a dependency did, and its two siblings did not
+
+**Doc:** `crates/imaging/src/decode.rs`'s `plane_bytes` — *"full strides for every row but the
+last, which needs only its useful bytes. Padding after the final row is not something a driver
+owes us"*; AGENTS' "one home per law". Recorded 2026-08-16, closing the G6 review's **M16**.
+
+**Believed:** that the sentence above was this crate's rule, held by all three raw decoders,
+because all three compute their length check through the same two functions.
+
+**True:** `decode_yuyv` computed `needed` through `plane_bytes` and then handed the whole buffer
+to `yuv 0.8.17`'s `yuyv422_to_rgb`, whose `check_yuv_packed422` compares the packed length against
+`stride × height` with `!=`. Not `<` — an **equality**. So the one shape `plane_bytes` exists to
+admit, a final row delivered without its padding, was refused; and so was the opposite shape, a
+`bytesused` covering trailing bytes, which `decode_grey` and `decode_nv12` both take. The refusal
+arrived in the dependency's words rather than ours: *"Packed YUV frame has invalid size, it must
+be 320, but it was 312"*, which is what the red run printed.
+
+The two siblings escape by accident of shape rather than by care. `decode_grey` copies row by row
+into its own buffer and never hands a length to anybody; `decode_nv12` splits the buffer at
+`y_stride × height` and passes the remainder, so the crate's chroma check — a `<`, not a `!=` —
+is the one it meets.
+
+**The repair** is `packed_422_plane`, which produces the length the dependency wants instead of
+demanding it of the driver: borrow when the buffer already is `stride × height`, borrow its first
+`stride × height` bytes when it is longer, and copy into a padded buffer only for the
+padding-free final row. What the copy fills is padding the converter walks past to reach the next
+row and never reads as a sample, and it is zeroed rather than filled from anywhere else — a frame
+may contain a person, and padding borrowed from a neighbouring row would be picture.
+
+**Retires when:** `yuv`'s `check_yuv_packed422` compares with `<`, at which point the whole
+function is a borrow and can go.
+
+## N202 — The Y4M sink's stride arithmetic was asserted for the one colorspace that barely has any
+
+**Doc:** AGENTS' *"Construct the buggy implementation first and watch it fail — at workspace
+scope"*; notes **N108** and **N130**. Recorded 2026-08-16, closing the G6 review's **M17**.
+
+**Believed:** that `stride_padding_is_dropped_rather_than_written_into_the_file` covered the
+claim its name makes. It drives GREY, where the fill is one de-strided copy.
+
+**True:** it covered a third of it, and the two thirds it left were the arithmetic worth
+covering. `fill_c422` walks the padded rows itself; `fill_c420` locates the chroma plane at
+`y_stride × height` — the offset `decode_nv12`'s own comment warns about and **N130** found a
+surviving mutant in, one module along. Three plausible one-line edits, applied one at a time and
+run at **workspace scope with the new test excluded**, each passed **1482 of 1482** tests:
+
+| mutant | what it is on a camera |
+|---|---|
+| `chroma.chunks(y_stride)` → `chunks(chroma_row_bytes)` | every chroma row of a padded NV12 frame read from the wrong offset |
+| the UV plane starting at `width × height` rather than `y_stride × height` | the same, shifted by the luma plane's padding |
+| `bytes.chunks(stride)` → `chunks(row_bytes)` in `fill_c422` | a padded YUYV frame's rows sliding by the padding, cumulatively |
+
+All three are invisible on a tightly packed frame, which is the only frame the suite built. With
+`stride_padding_is_dropped_in_every_colorspace_and_not_only_in_mono` each one goes red. A fourth
+— Cb and Cr exchanged in `fill_c420` — was already caught by the round trip, because N108's
+fixture generators are what this test compares against: disjoint value ranges and every sample a
+function of its own position, so a plane read at the wrong offset is full of numbers no generator
+can produce rather than one that matches by luck.
+
+**Retires when:** nothing. This is the coverage N108's class predicts and N130 closed next door.
+
+## N203 — The EXIF description was unbounded device text in a 16-bit length field, and the dependency truncated rather than refusing
+
+**Doc:** AGENTS' *"Bounded everything … constants live in `webcam-handler-schema::limits` and
+something reads each one"*; `crates/imaging/src/exif.rs`'s "Read back, never assumed"; \[PF:16\].
+Recorded 2026-08-16, closing the G6 review's **L5**.
+
+**Believed:** that `ImageDescription` and `UserComment` were bounded by what a camera has to say.
+
+**True:** neither the number of controls a device reports nor the length of a
+`V4L2_CTRL_TYPE_STRING` value is decided on this side of the cable, and a JPEG APP1 segment's
+length is a `u16`. `little_exif 0.6.23`'s `encode_metadata_jpg` computes it as
+`2 + EXIF_HEADER.len() + exif_vec.len() as u16` — a **truncation**, not a refusal — so a
+sufficiently talkative device produced a segment declaring a length modulo 65 536 and
+`stamp_jpeg` returned `Ok` over it. The file that results is not a JPEG with bad metadata; it is
+a JPEG whose header walk lands inside the EXIF payload and reads it as structure. The red run
+said so through the independent reader: *`InvalidFormat("Truncated field value")`*.
+
+**The repair has two halves, and they answer different questions.**
+`limits::MAX_EXIF_TEXT_BYTES` (16 KiB) bounds each free-text tag, and a description past it is
+**shortened and says so** — `(truncated here: N of M bytes)` — rather than refused. The
+photograph is the product and its metadata is not: an agent whose camera has a lot to say should
+get a photo with a shorter description, never a typed error about a device that was working.
+`limits::MAX_EXIF_APP1_BYTES` (`u16::MAX - 2`) is the format's own ceiling, and
+`check_segment_length` reads the produced segment's declared length back against its real one
+before splicing — the dependency's arithmetic checked rather than trusted, which is the posture
+this module's header already takes towards everything it writes. A `const _: () = assert!` in
+`limits` holds the relation between the two, so a bound that could not be honoured would not
+compile.
+
+The two halves are not redundant: the first is a fact about **two tags**, the second a property
+of the **segment**, and a ninth tag added later is covered by one and not the other.
+
+**Amended 2026-08-17: the sentence printed the wrong one of its two numbers, and the bound could
+not see it.** `(truncated here: N of M bytes)` promised *what was written*, and `N` was the
+**budget** — what there was room for — while the text that actually survives is shorter than the
+budget by the note itself and by however far back the last `; ` sits. A reader told "200 of 522
+bytes" over a description holding rather less than 200 has been handed a number describing
+nothing it can see, which is the decline-as-data rule (**N121**) failing at the one surface it
+was written for. The bound was still honoured, so `fitted.len() <= budget` stayed green
+throughout: an assertion about a *ceiling* cannot see a count inside the sentence. Both numbers
+are now read back off the note itself and checked against the two strings they describe, in
+`a_description_shortened_to_its_budget_stops_on_a_whole_control_and_says_so`. The note is still
+*sized* against the budget and *written* against what was kept — two different numbers, and the
+substitution is safe only in the one direction, since `kept <= budget` keeps the printed note no
+longer than the room reserved for it.
+
+**Retires when:** `little_exif` refuses a payload it cannot describe instead of casting. The
+shortening stays either way — the answer to a verbose device is a shorter sentence, not a
+refusal.
+
+## N204 — One derived size in the AVI close was written through `saturating_sub`, and saturation there is the crash placeholder
+
+**Doc:** `crates/imaging/src/avi/write.rs`'s `SIZE_PLACEHOLDER` — *"a placeholder that survived
+to disk is unambiguous rather than merely unlikely"*. Recorded 2026-08-16, closing the G6
+review's **L6**.
+
+**True:** `finish` derived two sizes by subtracting a structure the file must already contain.
+The `movi` size used `checked_sub` with a refusal naming the field; the `RIFF` size used
+`saturating_sub`. Saturation on that line is not a smaller number — it is **zero**, and zero is
+the value `begin` writes and `finish` patches over to mean *a crash left this file unfinished*.
+So an underflow would have closed a recording **successfully** over a header claiming the `RIFF`
+chunk holds nothing, which every naive reader treats as immediate end-of-data.
+
+It is not reachable through `AviWriter`'s own API — `begin` writes `HEADER_BYTES` first and
+`bytes_written` only grows — and the repair is not about reachability. Both subtractions now go
+through `covered_size`, which is `checked_sub` and a refusal naming the field, the file's length
+and the structure it could not cover. The constants those subtractions use are derived from a
+layout transcription, so "the header is longer than the file" is a claim about *this module's*
+arithmetic, and a claim answered by the crash placeholder is a defect that closes cleanly.
+
+**What went red first.** The extraction landed with the defect preserved — `covered_size` with
+`saturating_sub` — and `a_derived_size_that_underflows_refuses_by_name_rather_than_writing_the_crash_marker`
+said: *"a file shorter than its own header has no size to declare: 0"*.
+
+**Retires when:** nothing.
+
+## N205 — The independent AVI reader parsed a close-time-patched field and nothing ever confronted it
+
+**Doc:** notes **N99**–**N101**, which are what the re-parse path bought; docs/7 P6a's *"an
+independent re-parse path that is **not** the writer's code"*. Recorded 2026-08-16, closing the
+G6 review's **L17**.
+
+**True:** `AviHeaders::max_bytes_per_sec` was parsed, published on a public struct, and read by
+no assertion. Every other field `finish` patches had one — `dwFlags`, `dwTotalFrames`,
+`dwSuggestedBufferSize`, both homes of the rate, both derived sizes. The data rate had an
+assertion against a **byte offset** (`dword(&file, AVIH_MAX_BYTES_PER_SEC_AT)`), which is a
+different claim: it says the writer wrote a number, not that the reader reads the number the
+writer meant.
+
+Measured: `max_bytes_per_sec: u32_at(head, 4)` changed to `u32_at(head, 0)` — the reader taking
+`dwMicroSecPerFrame` for the data rate — passed **1490 of 1490** workspace tests.
+`the_declared_data_rate_is_the_file_over_the_duration_the_file_itself_declares` kills it. Its
+expectation is arithmetic over what the *parsed file* says about itself — its own length, its own
+header's interval, its own header's frame count — and shares nothing with
+`AviWriter::max_bytes_per_sec`, because an expectation lifted out of the function under test
+cannot catch that function being wrong. It also holds the ordering no single file can state: the
+same bytes delivered twice as fast declare twice the rate.
+
+**Retires when:** nothing.
+
+## N206 — The recording path never told the negotiation what container it was writing into
+
+**Doc:** design **D5**'s 2026-08-13 amendment and `StreamRequest::sink_fidelity`'s own doc — *"the
+one bit the re-ranking's tiebreak cannot be written without"*; note **N138**. Recorded 2026-08-16,
+closing the G6 review's **L18**.
+
+**True:** the field had three producers and the recording path was not one of them, so
+`record -o take.y4m` reached D5's ranking claiming a destination that passes a camera bitstream
+through byte for byte — which is the one thing the raw container cannot do at all
+(`VideoFormat::carries`). On a camera whose compressed and raw modes tie on pixels that ranked
+MJPG, and `VideoFormat::resolve` then refused the recording over a format the file could have
+carried.
+
+`VideoFormat::sink_fidelity` is the map, beside the containers it reads and exhaustive over them,
+and `RecordRequest::stream_for_container` is the one place it is applied —
+`PhotoRequest::stream_for_sink`'s shape one verb along, derived at the point of use so the wire
+carries nothing and both roots reach the same answer. A path with no extension gets the default,
+and that is the correct answer rather than a fallback: the negotiated format is what decides the
+container in that case, so there is no destination to reason about.
+
+**The honest scope, because the repair is smaller than it looks.** D5's key asks about a readable
+size, a named FourCC and **pixels** before it asks about fidelity, so the destination's vote only
+decides candidates nothing else separates. On every camera in `corpus/` the compressed mode is
+the largest — the closest is the Dell, whose MJPG is four times the pixels of its raw modes — so
+`record -o take.y4m` against them still negotiates MJPG and still gets a typed
+`FormatUnsupported` naming what Y4M would have taken. That is D5-compliant and it names its own
+remedy (`--format YUYV`), so it is left alone: **narrowing the candidate set to the formats the
+container carries would be N138's shape applied to a container instead of a size**, it would trade
+a 4K mode for a VGA one without the caller asking, and it is the owner's call rather than this
+repair's. The reason no committed profile can exercise the tiebreak is also why the engine's arm
+asserts the *request* the verb hands the device rather than the format it got back.
+
+**What went red first.** `a_recording_asks_the_device_for_what_the_container_it_named_can_carry`,
+against `stream_for_container` returning the request's own stream: *"a Y4M destination was ranked
+as one that passes a compressed bitstream through — left: PixelFormat("MJPG"), right:
+PixelFormat("YUYV")"*. And the call site, against `record::start` handing the device
+`request.stream` again: *"chicony-ir into .y4m — left: PassesCompressedThrough, right:
+EncodesLosslessly"*.
+
+**Retires when:** the owner rules on whether a named container narrows the candidate set, which
+would make the tiebreak's reach a decision rather than a consequence of key order.
+
+## N207 — Four of the six pixel transforms had no assertion, and the mutation floor could not have said so
+
+**Doc:** the G6 review's §9.1 — *"the rows that work are the ones with an `ALL` behind them"*;
+`.cargo/mutants.toml`'s decision section. Recorded 2026-08-16, closing the review's **L21** and the
+widening that entry deferred.
+
+**True:** `oriented()` is the one place in this product where an orientation moves pixels, and
+only `Rot90` was pinned. Measured, one plausible neighbour-swap at a time, at **workspace scope
+with the new walks excluded**:
+
+| mutant | verdict before | verdict after |
+|---|---|---|
+| `HFlip` → `flip_vertical` | 1484 passed | 2 tests red |
+| `VFlip` → `flip_horizontal` | 1484 passed | 2 tests red |
+| `Rot180` → `flip_horizontal` | 1484 passed | 2 tests red |
+| `Rot270` → `rotate90` | 1484 passed | 2 tests red |
+| `Rot90` → `rotate270` | 1 test red | 3 tests red |
+
+`every_orientation_moves_the_pixels_its_own_name_describes` walks `Transform::ALL` and states,
+per destination pixel, which source pixel it must hold — written from each transform's definition
+and not from a run of `oriented`, because an expectation lifted out of the implementation cannot
+catch the implementation. The fixture is **5x3 and every pixel distinct**, and both properties are
+N108's class: a square fixture cannot tell a transpose from a rotation, equal rows cannot tell a
+vertical flip from an identity, and an even extent leaves a centre a reversal maps onto itself.
+Three further properties hold the walk up — the extent each transform produces, that the result is
+a permutation of the source rather than a resampling, and that no two transforms agree on this
+fixture, without which each assertion would be about a family rather than about its own arm. A
+second walk drives the RGB path, because `oriented` is generic and a build that moved whole pixels
+in grey while shifting channels in colour would be a defect the grey walk cannot see.
+
+**The shipped orientations are all correct**, which is worth stating plainly: the derivation
+agreed with every arm on the first run.
+
+**The floor's widening, which L20 deferred to exactly this point.** `.cargo/mutants.toml` recorded
+`crates/imaging/src/photo.rs` as owed-in *after* L21, on the argument that a run over it while four
+of six transforms were unasserted would report missing tests as survivors. It is in
+`examine_globs` now, and the run landed with it — 19 mutants in 15 minutes, **10 of 10 viable
+`photo.rs` mutants caught and no survivor**. The four `Unviable` ones are unviable by
+construction: `replace <fn> with Ok(Default::default())` over `render`, `render_with_quality`,
+`verbatim` and `transform_pixels`, none of whose return types implement `Default`.
+
+**Two things the run found that are not L21's**, and both are recorded rather than repaired here.
+
+The first is a **survivor in `crates/engine/src/preview.rs`**, which the `-F` filter swept in
+because cargo-mutants matches that regex against mutant *names* rather than paths:
+`preview.rs:231:17: delete field width from struct StreamRequest expression in negotiate`
+survives, while its sibling one line down — the `height` — is caught. That asymmetry is what
+makes it a finding: `negotiate`'s uncapped retry sets both to `None`, and a build that kept the
+cap's width would ask the device for the size it had just been refused. It is `engine::preview`'s
+and that module was already in the examined set, so it is neither accepted nor fixed here — an
+acceptance with no argument is what `scripts/mutants-accepted.txt`'s header refuses.
+
+The second is about the tool. **The first attempt produced eighteen `Unviable` verdicts that were
+the machine and not the code**: every mutant's build died on `Disk quota exceeded` in `$TMPDIR`,
+which is note **N66**'s failure arriving as a *verdict word*. `Unviable` reads as "cargo-mutants
+could not express this mutation" and meant "this host ran out of space", and nothing but the
+per-mutant logs said so. `scripts/mutants.sh` sizes jobs against free space and answers NO VERDICT
+for precisely this; a raw `cargo mutants` does neither. **A narrowed run is also not a floor
+verdict** — it answers only about the mutants it tested — and both facts are in
+`.cargo/mutants.toml` beside the widening.
+
+**Retires when:** nothing. The `preview.rs` survivor retires when a test constrains that field or
+an argued acceptance is written for it.
+
+## N208 — A doc comment spliced into another item's left one function wearing its neighbour's summary and the neighbour with none
+
+**Doc:** `scripts/gates/doc-comments-open-with-a-summary.sh` and its cases file; AGENTS' *"A
+doc comment in `webcam-handler-api` or `webcam-handler-schema` is an input to a committed
+artifact, not just prose"*; note **N123**. Recorded 2026-08-17, closing the G6 review's finding
+against B8's `RecordRequest::stream_for_container`.
+
+**Believed:** that a doc comment landing on the wrong item is an editing accident, caught by
+review the way typos are, and not a defect class that needs a predicate.
+
+**True:** it shipped, and it shipped in the crate whose doc comments are inputs to committed
+files. `stream_for_container` was written into the *middle* of `budget_ms`'s doc comment —
+after its prose, before its `# Errors` section — so `stream_for_container` shipped documented
+as *"How long this recording may run, in milliseconds"*, carrying the cap's whole argument
+about why a long take is refused rather than shortened; and `budget_ms` was left holding a bare
+`# Errors` heading and **no summary line at all**. Two facts moved onto the wrong function and
+one destroyed, by one paste.
+
+**Nothing in the workspace could see it**, and that is the half worth keeping. `cargo doc -D
+warnings` is satisfied by a doc comment existing. clippy's `missing_errors_doc` is satisfied by
+an `# Errors` section existing. `schema-artifacts-current.sh` did not move, because methods are
+not in the JSON Schema bundle and the emitted bytes were unchanged. The splice leaves exactly
+one residue in the source: the item whose doc comment now **starts on a markdown heading**.
+That is what `doc-comments-open-with-a-summary.sh` reads — every `///` block in every `*.rs`
+file, and only its first line.
+
+**The rule is worth having on its own account**, which is why it is a gate rather than a
+tripwire wearing one. rustdoc's first paragraph *is* the summary: it is what a module index, a
+search result and a `#[command]` help line show. An item whose doc opens on `# Errors` has no
+summary in any of them — and since P6e the same comments are printed **to a person** by clap
+and emitted into `docs/agent-guide.md` (note **N123**), where a section heading arriving as the
+first line of a verb's help is not a formatting nit. `//!` module headers are deliberately out
+of scope: they document a file rather than an item, clap never prints one, and a module header
+that opens on a heading is a style question rather than a lost sentence.
+
+**Honest limits, stated because a gate that oversells itself is worse than none.** `#[doc =
+"…"]` attributes are not read — nothing here documents an item that way, and a rule that had to
+evaluate a `concat!` would need a Rust parser. And it sees the *shape* of a splice rather than a
+splice: text moved onto the wrong item while both items keep a summary line is invisible to it
+and belongs to review, which is in fact how this one was found. What it buys is that the
+**destroyed half can never again be silent**.
+
+**Retires when:** nothing.
+
+## N209 — Both halves of a mutation survivor's argument were wrong, and the disposition it pointed at was still not the right one
+
+**Doc:** `.cargo/mutants.toml`'s decision section; `crates/engine/src/preview.rs`'s
+`a_cap_that_could_not_be_met_is_dropped_whole_rather_than_half_of_it`; `scripts/mutants-accepted.txt`'s
+header. Recorded 2026-08-17, closing what note **N207** left open.
+
+**Believed** (B8, at the end of the `photo.rs` widening): that
+`preview.rs:231: delete field width from struct StreamRequest expression in negotiate` was a
+**finding** — a real gap in the tests — on the strength of an asymmetry, and that recording it in
+`.cargo/mutants.toml` without a register line was an acceptable place to leave a survivor sitting
+under a G4 criterion.
+
+**True, on both counts, and the way they were wrong is the entry.**
+
+*The asymmetry does not exist.* B8 reported the `height` sibling one line down as **caught**, and
+that contrast was the whole argument for calling the survivor a finding rather than noise.
+Measured at B8b, one field deleted at a time, at workspace scope: **both survive, 1494 of 1494
+each.** The "caught" verdict came out of the same run that produced eighteen bogus `Unviable`
+verdicts from a full `$TMPDIR` — note **N66**'s failure arriving as a verdict *word* — so a
+summary line from that run is not evidence about anything. A "caught" that moved with the machine
+reads exactly like one that did not.
+
+*The production defect it named cannot happen.* `StreamRequest::choose` sets its `named_size`
+only when width **and** height are `Some` — *"a half-specified size names nothing"* — so a retry
+that kept the cap's width asks the device for **no size at all**, resolves to the format's
+largest mode identically, and `negotiate` overwrites `adjustments` from the original request
+anyway. Nothing downstream can tell the two programs apart. On B8's own evidence the disposition
+was an argued acceptance, not a fix.
+
+**It was closed with a test instead, and that is the lesson worth keeping.** An equivalence
+argument and a test are not equal dispositions even when the equivalence holds today: the
+argument rests on a rule written in `capture.rs` — that a half-specified size names nothing —
+which is a decision that crate is free to revisit, and on the day it does, a preview would be
+asking a device for the width it had just been refused, silently, with the acceptance still
+citing this note. `a_cap_that_could_not_be_met_is_dropped_whole_rather_than_half_of_it` reads
+the *request the double accepted* rather than the answer that came back, which is the seam every
+other arm in that module was missing; it kills both mutants and states the property the line
+exists for. Watched red on the mutant: *"the retry kept half of the cap the device had just
+refused … left: (Some(640), None), right: (None, None)"*.
+
+**Retires when:** nothing. A survivor closed by a test does not come back; a survivor closed by
+an acceptance would have had to be re-argued the day `choose` changed its mind.
+
+## N210 — Two claims about the chroma siting this build writes, one with no reader and one with no test at all
+
+**Doc:** note **N200** (the `C420` finding this pair is the sequel to);
+`crates/testkit/src/oracle.rs`'s `the_chroma_siting_a_raw_recording_states_is_the_one_a_third_party_reads_back`;
+`crates/schema/src/capture.rs`'s `the_siting_this_build_derives_is_the_default_for_every_stream`.
+Recorded 2026-08-17, closing the G6 review's findings **4** and **5** against B8.
+
+**Believed:** that N200's repair was finished — the siting had stopped being a constant under a
+comment claiming neutrality, `ChromaSiting` had become a capture-time input carried as data, and
+the Y4M writer had a `match` on it.
+
+**True:** neither half of that had a check that could go red.
+
+*Finding 4 — the tag had no reader.* `imaging::y4m` states a 4:2:0 siting on every raw
+recording, because there is no `C420` variant that declines to (the whole of N200). The only
+thing asserting what the tag *meant* was a unit test comparing this workspace's string against
+this workspace's expectation — which is precisely the move that produced N200 in the first
+place: a tag believed to say nothing, with no third party consulted. N200's own table is a
+measurement somebody took by hand, once. The oracle arm is that measurement as a check that can
+fail: both members of the vocabulary are written and `ffprobe` is asked what it made of them,
+because a single arm would be satisfied by a writer that ignored its input and happened to emit
+the tag under test — which is exactly what the pre-repair writer did.
+
+**Which files carry a siting to assert is itself a claim**, and getting it wrong would have made
+the arm about `ffprobe` instead of about us. Only the raw container's 4:2:0 member states one:
+AVI's sampling lives inside the MJPEG bitstream, and `Cmono` and `C422` name no siting at all —
+measured, `ffprobe` answers `unspecified` for both. So `Expectation::chroma_siting` is `Option`
+and is `Some` exactly where the file says something, and a claim about the other five would have
+been a claim about the oracle's default.
+
+*Finding 5 — `ChromaSiting::of` shipped with no test anywhere.* The sentence that mattered about
+it — *it answers the same thing for every stream, because `v4l2_pix_format` has no chroma-siting
+field of any kind for it to read* — was true only in a doc comment. A build that quietly started
+answering `HorizontallyCosited` for raw formats would have changed every Y4M header this project
+writes with nothing going red. The walk is over the pixel formats a raw container carries plus a
+compressed one, because *"for every stream"* is the claim and the plausible wrong answer is a
+`match` on the format.
+
+**And the prose was repaired with it.** Describing `ChromaSiting::of` as "a capture-time input
+carried as data" is a true statement about the *field* it feeds
+(`imaging::video::RecordingParams::chroma_siting`) borrowed by the function that fills it, which
+today is a constant that ignores its argument. The function keeps its argument for
+`SinkFidelity::of`'s reason — one place for a backend's answer to land — and now says out loud
+that it does not use it.
+
+**Retires when:** V4L2 gains a field a backend can read a siting out of, at which point
+`ChromaSiting::of` stops being a constant and the second test becomes a test of a derivation.
+
+## N211 — The refusal stopped saying the camera offered those formats, and went on offering them
+
+**Doc:** `crates/schema/src/error.rs`'s `ContainerRefusal` and `Error::container_unsupported`;
+`crates/schema/src/video.rs`'s `VideoFormat::resolve`; note **N129**, whose repair this
+finishes, and note **N138**, whose shape it copies. Recorded 2026-08-17.
+
+**Believed:** that commit `c866c58` had closed N129. It had repaired the *sentence* — "this
+camera offers MJPG, JPEG" became "MJPG, JPEG would be accepted", attributing the list to nobody
+— and left the payload exactly as it was.
+
+**True:** the payload was the half a caller acts on, and it was still wrong in both of its
+fields. Measured through the shipped binary over `corpus/profiles/chicony-rgb.json`, a camera
+that enumerates MJPG and YUYV:
+
+```console
+$ webcam-handler-cli --backend fake --profile corpus/profiles/chicony-rgb.json \
+    record cam:… -o take.y4m --duration 300ms --json
+{"kind":"format_unsupported","requested":"MJPG","available":["YUYV","NV12","GREY"]}   exit 18
+```
+
+`available` is `Y4m::carries()`, so two of the three remedies offered to an unattended agent —
+NV12 and GREY — are formats that sensor has never had; and `requested` is the format D5's
+*ranking* chose, not one the caller typed, so an agent repairing it repairs a request it never
+made. `format_unsupported`'s disposition in `docs/agent-guide.md` is *fix the request*, so an
+agent doing exactly as told retries with a format the camera lacks and meets the same wall. That
+is N129's misdirection surviving one layer along, and it survived because N129 was closed by
+changing words rather than by changing what the value says.
+
+**The repair is the third door into one variant, and the shape is N138's.** `ContainerRefusal`
+carries the container the path named, the format the device negotiated, and every container this
+build writes that would have taken it; `Error::container_unsupported` is the only way to build
+one, beside `format_unsupported` and `size_unsupported`, so the three causes stay mutually
+exclusive by construction and `container.is_some()` is a discriminator rather than a hint. The
+lever this refusal turns is the **file extension**, so that is what the payload names and what
+the sentence says — *"a .y4m file cannot carry MJPG frames; .avi would take them"* — and it names
+no pixel format at all.
+
+**`carried_by` is derived rather than passed**, from `VideoFormat::carries` inside the
+constructor, for two reasons: a caller that computed it would be a second copy of D7's pairing
+(design §2.10), and deriving makes the *empty* answer honest by construction. A stream no
+container in this build writes carries — H.264 out of a device that grew a hardware encoder —
+yields no remedy at all, and the sentence says *"no container this build writes carries H264
+frames"* and stops. That is the whole answer: no extension helps, and naming the formats this
+build *does* record would hand a caller a build fact its camera need not intersect, which is the
+defect this payload exists to stop committing.
+
+**What went red first.** `a_recording_refused_for_its_file_names_a_file_and_no_format_this_camera_lacks`
+drives the shipped binary over the committed profile, asks the camera what it enumerates, asks
+again for the refusal, and fails any format either rendering names that the camera does not have.
+Against the unrepaired producer it printed the defect verbatim:
+
+```text
+a file that cannot carry the stream was refused without saying so: FormatUnsupported {
+  requested: Some(PixelFormat("MJPG")),
+  available: [PixelFormat("YUYV"), PixelFormat("NV12"), PixelFormat("GREY")],
+  size: None, container: None }
+```
+
+`a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had` — N129's own arm,
+over the GREY-only `chicony-ir` — was widened in the same commit and went red beside it on
+*"format GREY is unavailable; MJPG, JPEG would be accepted"*. It had been green for two days on a
+sentence naming two formats that camera has never had, because it asked only whether the *claim
+of ownership* was still there. **An assertion aimed at the wording of a defect stops firing when
+the wording changes**; the widened arm derives its forbidden population from
+`VideoFormat::recordable_pixel_formats()` and checks the message and the document alike, so a
+third container joins it the day it lands.
+
+**Retires when:** nothing. A fourth cause for this variant would need a fourth door and a fourth
+arm in `format_capture_refusal`, which is what the exhaustive `match (size, container)` is there
+to insist on.

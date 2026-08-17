@@ -861,16 +861,19 @@ fn disposition_text(kind: ErrorKind) -> (&'static str, &'static str) {
         ),
         ErrorKind::FormatUnsupported => (
             "fix the request",
-            "The camera cannot deliver what was asked for, and the payload says which half. \
-             When `size` is present the frame size is the problem: `size.requested_width` \
-             and `size.requested_height` are what you asked for and `size.available` lists \
-             every size this camera can deliver — pick one, or leave `--size` out and let \
-             the camera choose. Otherwise the format is the problem: `requested` is what you \
-             asked for and `available` lists what would be taken — either a \
-             `--pixel-format` this device does not offer, or a recording container that \
-             cannot carry what this camera produces, and a `.avi` needs MJPEG frames so a \
-             camera that delivers raw ones records to `.y4m`. The two never both appear: one \
-             refusal names one lever.",
+            "What was asked for cannot be delivered, and the payload says which part of the \
+             request to change. When `size` is present the frame size is the problem: \
+             `size.requested_width` and `size.requested_height` are what you asked for and \
+             `size.available` lists every size this camera can deliver — pick one, or leave \
+             `--size` out and let the camera choose. When `container` is present the output \
+             file is the problem: the camera delivered `container.negotiated`, the extension \
+             you typed cannot carry it, and `container.carried_by` lists every extension \
+             that can — write to one of those. An empty `container.carried_by` means no \
+             output file this build writes carries those frames, so change what the camera \
+             delivers rather than the filename. Otherwise the format is the problem: \
+             `requested` is the `--pixel-format` you asked for and `available` lists what \
+             this camera does offer — ask for one of those. Exactly one of the three is \
+             present: one refusal names one lever.",
         ),
         ErrorKind::SettleTimeout => (
             "retry once, then stop",
@@ -1030,9 +1033,9 @@ fn record_recipe() -> String {
          `-o` is required and its extension chooses the container: `.avi` carries the \
          camera's own MJPEG frames, `.y4m` carries raw ones, and a path with no extension \
          lets the camera's negotiated format decide. A camera that cannot deliver MJPEG is \
-         refused an `.avi` by name, listing what it can deliver — record it to `.y4m` \
-         instead. There is no standard-output spelling: a recording goes to a path and \
-         never comes back in the answer.\n\n\
+         refused an `.avi` by name, and the refusal's `container.carried_by` names the \
+         extension to use instead — usually `.y4m`. There is no standard-output spelling: a \
+         recording goes to a path and never comes back in the answer.\n\n\
          **The path is written by whatever holds the camera.** Under \
          `webcam-handler-client` that is the daemon, so `-o` must name somewhere the daemon \
          can write; a relative path is resolved against your working directory before the \

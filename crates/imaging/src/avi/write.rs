@@ -510,29 +510,18 @@ impl<W: Write + Seek> AviWriter<W> {
     pub fn finish(mut self) -> Result<RecordingSummary> {
         self.check_sink(FINISH_OP)?;
         // Before `idx1`: the `movi` list ends where the index begins.
-        let movi_size = self
-            .bytes_written
-            .checked_sub(MOVI_FOURCC_AT)
-            .ok_or_else(|| {
-                imaging_failure(
-                    FINISH_OP,
-                    format!(
-                        "the file is {} bytes, shorter than its own header",
-                        self.bytes_written
-                    ),
-                )
-            })?;
+        let movi_size = covered_size(self.bytes_written, MOVI_FOURCC_AT, "the LIST movi size")?;
         let has_index = self.frames_written > 0;
         if has_index {
             self.write_index()?;
         }
         let (declared_interval_us, interval_source, span_us) = self.declared_interval();
         // What the `RIFF` size field covers is everything after itself.
-        let riff_size = self.bytes_written.saturating_sub(CHUNK_HEADER_BYTES);
+        let riff_size = covered_size(self.bytes_written, CHUNK_HEADER_BYTES, "the RIFF size")?;
         let max_bytes_per_sec = self.max_bytes_per_sec(declared_interval_us);
 
-        self.patch(RIFF_SIZE_AT, size_field(riff_size, "the RIFF size")?)?;
-        self.patch(MOVI_SIZE_AT, size_field(movi_size, "the LIST movi size")?)?;
+        self.patch(RIFF_SIZE_AT, riff_size)?;
+        self.patch(MOVI_SIZE_AT, movi_size)?;
         self.patch(AVIH_MICRO_SEC_AT, declared_interval_us)?;
         self.patch(AVIH_MAX_BYTES_PER_SEC_AT, max_bytes_per_sec)?;
         self.patch(AVIH_FLAGS_AT, if has_index { AVIF_HASINDEX } else { 0 })?;
@@ -811,6 +800,39 @@ fn geometry(width: u32, height: u32) -> Result<Geometry> {
         right,
         bottom,
     })
+}
+
+/// A derived size field: everything in the file past the structure it covers.
+///
+/// **The one home for the two subtractions `finish` performs**, and it exists because they
+/// were not one: the `movi` size was `checked_sub` with a refusal naming the field, and the
+/// `RIFF` size was `saturating_sub`. Saturation on that line is not a smaller number — it is
+/// **zero**, which is [`SIZE_PLACEHOLDER`], the value this muxer writes to mean *a crash left
+/// this file unfinished*. So an underflow would have closed a recording successfully over a
+/// header claiming the `RIFF` chunk holds nothing, which every naive reader treats as
+/// immediate end-of-data (the G6 review's L6; note **N204**).
+///
+/// It is unreachable through this type's own API — `begin` writes [`HEADER_BYTES`] before
+/// anything else and `bytes_written` only grows — and it is checked anyway for the reason
+/// every sibling in `finish` already was: the constants above are derived from a layout
+/// transcription, so "the header is longer than the file" is a claim about *this module's*
+/// arithmetic, and a claim answered by a placeholder is a defect that closes cleanly.
+///
+/// # Errors
+///
+/// [`schema::Error::DeviceIo`] naming the field, the file's length and the structure it
+/// could not cover; then whatever [`size_field`] refuses for a count past 32 bits.
+fn covered_size(bytes_written: u64, covers_from: u64, what: &str) -> Result<u32> {
+    let size = bytes_written.checked_sub(covers_from).ok_or_else(|| {
+        imaging_failure(
+            FINISH_OP,
+            format!(
+                "{what} covers everything past byte {covers_from} and the file is \
+                 {bytes_written} bytes, shorter than its own header"
+            ),
+        )
+    })?;
+    size_field(size, what)
 }
 
 /// A byte count as a `DWORD` size field, or a refusal naming it.
@@ -1163,6 +1185,52 @@ mod tests {
     }
 
     #[test]
+    fn a_derived_size_that_underflows_refuses_by_name_rather_than_writing_the_crash_marker() {
+        // **Zero is not a small size in this container; it is the crash placeholder.**
+        // `SIZE_PLACEHOLDER` is what `begin` writes and `finish` patches over, and its own
+        // paragraph says why it can never be a correct value: the `RIFF` size covers at
+        // least the header list and the `movi` size covers at least its own FourCC. So a
+        // subtraction that saturated on either of them would close a recording *successfully*
+        // over a header that says the file ended before it began — which is exactly what the
+        // `RIFF` size did, alone among the derived sizes in `finish`, until the G6 review's
+        // L6 (`saturating_sub` where every sibling was checked).
+        //
+        // Driven at [`covered_size`] because the condition is unreachable through
+        // `AviWriter`'s own API — `begin` writes `HEADER_BYTES` and `bytes_written` only
+        // grows — and a check nothing can turn red is the shape rubric rule 2 refuses. Both
+        // structures the file derives a size from are named, so neither can quietly go back
+        // to saturating.
+        for (covers_from, what) in [
+            (CHUNK_HEADER_BYTES, "the RIFF size"),
+            (MOVI_FOURCC_AT, "the LIST movi size"),
+        ] {
+            let short = covers_from - 1;
+            let err = covered_size(short, covers_from, what)
+                .expect_err("a file shorter than its own header has no size to declare");
+            let rendered = err.to_string();
+            assert!(rendered.contains(what), "{rendered}");
+            assert!(
+                rendered.contains(&short.to_string()),
+                "the refusal must name the file's length: {rendered}"
+            );
+            assert_ne!(
+                covered_size(short, covers_from, what).ok(),
+                Some(SIZE_PLACEHOLDER),
+                "{what} answered the crash placeholder for an underflow"
+            );
+
+            // The other direction, so the refusal is about the underflow and not about the
+            // field: the exact boundary is a legal zero-length body, and anything above it
+            // is the subtraction.
+            assert_eq!(covered_size(covers_from, covers_from, what).ok(), Some(0));
+            assert_eq!(
+                covered_size(covers_from + 17, covers_from, what).ok(),
+                Some(17)
+            );
+        }
+    }
+
+    #[test]
     fn an_odd_payload_is_padded_outside_its_own_size_field_and_inside_the_lists() {
         // The most common muxer bug there is, in all three of its places: the chunk's size
         // field must exclude the pad, the index entry's length must exclude it, and the
@@ -1509,6 +1577,81 @@ mod tests {
             0,
             "no frames, no data rate"
         );
+    }
+
+    #[test]
+    fn the_declared_data_rate_is_the_file_over_the_duration_the_file_itself_declares() {
+        // **`avih.dwMaxBytesPerSec` is patched at close and was read back by nothing.** The
+        // independent re-parse path exists because it found eleven things this writer had
+        // wrong (notes **N99**–**N101**), and a field it parses without confronting is the
+        // gap in that argument (the G6 review's L17; note **N205**). Every other close-time patch —
+        // `dwFlags`, `dwTotalFrames`, `dwSuggestedBufferSize`, both homes of the rate, both
+        // derived sizes — already had one.
+        //
+        // The expectation is arithmetic over what **the parsed file** says about itself: its
+        // own length, the interval in its own header, and the frame count in its own header.
+        // It shares nothing with `AviWriter::max_bytes_per_sec` — which is the point, since a
+        // check written from that function could not catch it being wrong.
+        let frames: Vec<Frame> = (0..6u32)
+            .map(|index| {
+                frame(
+                    payload(4_000, u64::from(index)),
+                    index,
+                    i64::from(index) * 50_000,
+                )
+            })
+            .collect();
+        let (file, _, summary) = record(params(generous_caps()), &frames);
+        let stream = read_stream(&file).expect("parses");
+
+        let declared_duration_us =
+            u64::from(stream.headers.micro_sec_per_frame) * u64::from(stream.headers.total_frames);
+        assert!(declared_duration_us > 0, "the fixture declares no duration");
+        let expected = u64::try_from(file.len()).expect("fits") * u64::from(MICROS_PER_SECOND)
+            / declared_duration_us;
+        assert_eq!(
+            u64::from(stream.headers.max_bytes_per_sec),
+            expected,
+            "the declared data rate is not this file over its own declared duration"
+        );
+        // Not zero and not the whole file: a field that happened to be either would pass an
+        // equality written from the wrong numbers.
+        assert!(stream.headers.max_bytes_per_sec > 0);
+        assert_eq!(summary.frames_written, 6);
+
+        // The ordering the field is *for*, which no single file can state: the same bytes
+        // delivered twice as fast declare twice the rate, because the rate is bytes per
+        // second and not bytes. A build that patched the file's length in here, or the frame
+        // size, would satisfy every assertion above and fail this.
+        let quick: Vec<Frame> = (0..6u32)
+            .map(|index| {
+                frame(
+                    payload(4_000, u64::from(index)),
+                    index,
+                    i64::from(index) * 25_000,
+                )
+            })
+            .collect();
+        let (quick_file, _, _) = record(params(generous_caps()), &quick);
+        let quick_stream = read_stream(&quick_file).expect("parses");
+        assert_eq!(
+            quick_file.len(),
+            file.len(),
+            "the two recordings must differ only in their timing"
+        );
+        assert!(
+            quick_stream.headers.max_bytes_per_sec > stream.headers.max_bytes_per_sec,
+            "{} bytes in half the time declared {} against {}",
+            file.len(),
+            quick_stream.headers.max_bytes_per_sec,
+            stream.headers.max_bytes_per_sec
+        );
+
+        // And the empty recording's conventional "unstated", read through the same reader
+        // rather than off a byte offset — a recording of nothing has no data rate.
+        let (empty_file, _, _) = record(params(generous_caps()), &[]);
+        let empty = read_stream(&empty_file).expect("an empty recording is still a file");
+        assert_eq!(empty.headers.max_bytes_per_sec, 0);
     }
 
     #[test]
