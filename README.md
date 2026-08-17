@@ -8,12 +8,13 @@ Everything happens in-process. No `v4l2-ctl`, no `ffmpeg`, no external binaries 
 runtime — the tool links Rust libraries and talks to the kernel itself.
 
 **Status: under construction.** The architecture is settled (`docs/6`) and the work is
-phase-gated (`docs/7`): P0–P5 are closed, and P6 (video recording) has landed everything it
-commissioned — its gate `G6` holds as 35 named, counted, re-runnable criteria. `record` is
-here: an AVI muxer and a Y4M sink written in-process, duration and size caps, the three wire
-methods, one verb on both command-line roots, and a preview that is fed the recording's own
-frames. `docs/agent-guide.md` is generated from the command surface it teaches. What remains
-of P6 is its adversarial review, which docs/7 gives a session of its own — not a feature.
+phase-gated (`docs/7`): P0–P6 are closed — P6's gate `G6` holds as 39 named, counted,
+re-runnable criteria. `record` is here: an AVI muxer and a Y4M sink written in-process,
+duration and size caps, the three wire methods, one verb on both command-line roots, and a
+preview that is fed the recording's own frames. `docs/agent-guide.md` is generated from the
+command surface it teaches. P6 closed with an adversarial review of the whole tree
+(`docs/11`), its seventy-nine findings repaired, and the reconciliation those repairs owed the
+rubric (`docs/8`).
 
 ## Deliverables
 
@@ -257,7 +258,7 @@ having still checked the directory mode.
 
 | tool | apt / cargo | what it buys | what the decline costs |
 |---|---|---|---|
-| `nodejs`, `npm` | `sudo apt install nodejs npm` | **R1-web**, the browser rung | ten browser claims, 79 assertions |
+| `nodejs`, `npm` | `sudo apt install nodejs npm` | **R1-web**, the browser rung | 24 browser claims, 206 assertions |
 | pinned Playwright + Chromium | `just rung-web-install` | the same rung's actual browser | as above; node alone is not enough |
 | `ffmpeg` (for `ffprobe`), `mpv` | `sudo apt install ffmpeg mpv` | the container oracles the recording rung uses | the AVI muxer is believed only by readers we wrote |
 | `kmod`, the `vivid` module | `sudo apt install kmod`; see below | **R2**, the virtual-driver rung | 77 controls and compound payloads nothing else reaches |

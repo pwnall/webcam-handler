@@ -101,7 +101,7 @@
 #   what carries it until somebody splits the module for its own reasons.
 # - `crates/schema` — mostly derives and data. Its laws are asserted by the battery.
 # - `crates/api/src/lib.rs` — the T5 trait itself. It is a `wire_surface!` invocation and
-#   nineteen doc comments; there is no expression in it to mutate, and the macro's own
+#   twenty-four doc comments; there is no expression in it to mutate, and the macro's own
 #   expansion is jsonrpsee's. The three modules beside it are where this crate computes.
 #
 # - `crates/daemon`, everything but the three `http` folds below. **This crate appeared

@@ -10,11 +10,16 @@ reconciliation its meta-rule scheduled ("due at the first gate whose defects it 
 to predict, and no later than G4"): it is grounded on the P1 review (four confirmed
 defects) and the P2 review (thirty-one candidates, fifteen confirmed — notes entry E4),
 and Part E's record has since absorbed the G3 reconciliation (P3: thirty-one candidates,
-twelve confirmed over nine distinct defects — notes entry E6) and the G4 one (P4: eight
+twelve confirmed over nine distinct defects — notes entry E6), the G4 one (P4: eight
 confirmed findings, seven fixed and one ruled on — notes N70–N73 and E13's two
-amendments, there being no evidence entry for that review to cite), whose rows are tagged
-[S:E6], [S:N69] and [S:N70] where they landed. Rules that fired now carry local citations;
-rules yet unfired keep their transfer tags — four gates in, nothing has earned deletion.
+amendments, there being no evidence entry for that review to cite) and the G6 one (P6, the
+whole workspace: 290 candidates, 204 killed by the lens that raised them, 86 reported and
+independently verified, 79 findings carried and dispositioned — docs/11, which is its own
+evidence entry), whose rows are tagged [S:E6], [S:N69], [S:N70], [S:N123], [S:N129] and
+[S:G6] where they landed. **The record skips G5** — the P5 web-client review's reconciliation
+was left as P5e's remaining work and never written, and the G6 block says what that cost.
+Rules that fired now carry local citations;
+rules yet unfired keep their transfer tags — six gates in, nothing has earned deletion.
 Part E's closing section is the reconciliation record.*
 
 Provenance tags: **[SB]** transferred from the lm-switchboard rubric (predecessor
@@ -24,7 +29,9 @@ defects, cited inline where the payment matters); **[BP]** best practice, unmatc
 surfaced defect yet; **[PF:n]** surfaced by hardware probes (docs/6 §1.2, continued in
 the notes through PF:23 — measured on real cameras and drivers); **[S:Nn]** / **[S:En]**
 repo-surfaced, citing implementation-note case law and evidence entries — the tags v1
-promised are now live.
+promised are now live; **[S:G6]** the G6 whole-tree review, which is its own evidence entry
+rather than an E-entry (record: docs/11, moving to `docs/historical/` when a later review
+supersedes it).
 
 Governing rules:
 
@@ -52,6 +59,12 @@ Governing rules:
    failing arm used a stub that returned a shape the real tool never produces — the stub
    encoded the author's belief, the predicate agreed with the belief, and the two shook
    hands. Where a stub is unavoidable, one arm still runs the real tool.
+   Counted five times now (G2 twice, G3 twice, G6 once), and the fifth is the one guarding
+   the most consequential of the eight non-negotiable rules: `kill-is-never-a-fallback.sh`
+   stated its claim in its own header as a **call-site** count and appended one element per
+   *file*, so a second `holders::terminate(` in the file that already had one was invisible —
+   and CI printed "1 call sites" for a tree that could have five [S:G6]. A count and the noun
+   it is printed under are two claims; check both.
 
 ### Enforcement legend
 
@@ -135,6 +148,23 @@ impl · `review` human/agent judgment, no mechanical gate yet.
    `jsonrpsee-core` 0.26 sets `is_closed` only on the arm where its receiver yields `None`
    (`src/client/mod.rs:429`), so the collapse the double asserted was a claim about a
    dependency nobody had read.
+   **And two doubles agreeing is evidence only where a fixture could have made them
+   disagree** [S:G6]. B2 states the descriptor rule as holding "on both backends, and the
+   fake and real backend agree (E5)" — at G6 they agreed because the fake dispatched on
+   `control_type` and every control in `corpus/` and `synthetic-basic.json` is either a plain
+   scalar or a plain payload, so no fixture in the tree could separate the two rules; and no
+   committed profile carried a *measured* automation pair, so the fake's PF:3 coupling model
+   had no corpus behind it either. Three instances of the stand-in-versus-real family in one
+   review, all in the seam E5 was written for, and both gaps closed the same way — by adding
+   the fixture that can tell the two rules apart (an array control, N135) and the measurement
+   that can contradict the model (`invariant.measured_pairs`). Ask of every resemblance claim
+   **which fixture would show it false**. The dependency half fires just as often: axum's
+   `get()` also answers `HEAD`, `jsonrpsee-core` 0.26 sets `is_closed` on one arm, and
+   Chromium does not abort a detached `<img>`'s request — three claims about dependencies,
+   none read. **And the claim need not be about a dependency at all**: three paragraphs
+   written to justify G6 repairs — a `cfg_attr` wrapper called load-bearing at three sites, a
+   nextest override whose cost had been measured backwards, and a gate said to match only
+   `#![cfg_attr` — were each refuted by one command against this repository [S:G6].
 
 10. **Requested is not applied, anywhere in the stack.** [PF:6] The pair survives every
     layer: engine, session sample records, RPC DTOs, CLI output. A layer that collapses
@@ -163,6 +193,37 @@ impl · `review` human/agent judgment, no mechanical gate yet.
 14. **Bounded everything.** [BP] Settle loops, sweep sample counts, recording caps,
     frame-channel depths, shutdown drains: every loop over device behavior has a
     deadline or cap from `webcam-handler-schema::limits`, and a test drives the bound.
+
+15. **A message is payload, and payload goes stale.** [S:N123][S:N129] A D13 message is not
+    prose beside the variant's fields — it is the part of the payload the primary consumer
+    reads first, and `docs/agent-guide.md`'s `Do` column is the same claim one surface along.
+    Both go stale exactly where a variant grows a second caller. Five instances in one phase:
+    `control_inactive` told callers to use `--guarded`, a flag the surface has never had, so
+    an unattended caller doing as told earned clap's exit 2 from the registry that exists to
+    stop it guessing [S:N123]; the container refusal told a camera enumerating `GREY` and
+    nothing else that *it* offers `MJPG, JPEG`, because `available` is D7's container list
+    under a sentence written for D6's device one [S:N129]; the guide met `format_unsupported`
+    with `--size`, which no producer of that refusal can be reached from; `busy` rendered "an
+    unidentified process" for a holder this daemon knows precisely and promised `--wait` for a
+    refusal checked before the queue `--wait` waits on; and `IllegalTransition`'s
+    `"cannot {op} from state {from}"` garbled the ten-odd producers whose `op` is a sentence.
+    **The mechanical form is the row, not the illustration: test the claim, not the wording** —
+    and test the claim itself, not something one notch short of it, because N129's own
+    replacement asked whether the refusal carried a claim of ownership rather than whether the
+    claim was true, and was green for two days on the defect it was written to prevent [S:G6].
+    `a_container_refusal_never_says_the_camera_offers_a_format_it_has_never_had` asks the
+    shipped binary what the camera enumerates, asks it again for the refusal, and fails a
+    message that attributes one to the other — driven through the binary over a committed
+    profile, because a hand-built `Error` value cannot disagree with a device. It generalises
+    in both directions: over the registry,
+    `a_refusal_names_the_guard_and_never_a_flag_that_does_not_exist` walks all eighteen
+    samples against the tree's long options, so a flag *renamed in the surface* goes red
+    exactly as a flag *invented in a message* does [S:N123]; over the guide, every `Do` cell
+    that names a flag is an arm — `every_flag_the_failure_table_names_is_one_the_surface_has`
+    for the spelling and `every_flag_the_failure_table_offers_as_a_lever_really_produces_that_failure`
+    for the claim: **drive the flag, require the kind.** A rendering test asserting that a
+    message is non-empty, brace-free and longer than twelve characters asserts that a sentence
+    exists, which is the one thing that was never wrong. `test`
 
 ---
 
@@ -457,6 +518,25 @@ PID 1's stack that tested green because the bytes landed in padding):
       terminal event must not end this one's tail" named the other sweep with a session
       id the filter under test *already rejects*, so it pinned the case that works and
       could not express the case that does not [S:N70].
+      **Five instances now, and the shape is sharper than the smell** [S:G6]. The G6 review
+      found three more, each sitting just outside the case it is named for: H2's SIGKILL
+      suite, whose one write goes through `lifecycle::sweep_write`, so the rung that exists
+      to prove design §6's crash story never puts a control into `Sweeping`; L1's
+      `align_down` extremes test, built with `min: i64::MIN` — the one range where the
+      non-saturating subtraction is unreachable — under a comment claiming to test
+      saturation; and M20's
+      `the_flags_a_client_cannot_honour_are_refused_before_the_socket_is_touched`, which
+      drives exactly the three argument vectors that dodge `required_if_eq`. **The fixture is
+      one parameter away from the case, and the parameter is the one a reader scanning for
+      "does this test the rule" does not look at** — a range's `min`, a session's uuid, an
+      argument vector's length; the costume list is now a profile, an identifier and a
+      scalar. The fourth candidate that review raised **was its own error, and it is the more
+      useful result**: `store_faults.rs` was called wrong for pinning the refusal of a torn
+      interior line, and N12 lists *"a torn last line dropped even when a terminator follows
+      it"* among the nineteen seeded mutants a named test caught — the fixture pins the side
+      the project chose on purpose. A reviewer who dislikes an asserted behaviour and
+      therefore calls its fixture wrong has committed this row one level up, and the defence
+      is Part E's: grep the notes for the subject *before* writing the candidate, not after.
 - [ ] **The fake validating the fake** — a calibration test asserting the fake's optimum
       using the fake's own model as the expectation; the expectation comes from the
       profile/fixture, independently stated.
@@ -482,7 +562,15 @@ PID 1's stack that tested green because the bytes landed in padding):
       would have closed the investigation, and a fifth (a real camera, E13) makes it 2
       of 10. Its mirror is a verdict that moved with the machine and was spelled with
       the word a real finding gets [S:N52][S:N66][S:N68]. One rule, two faces: **a run's
-      resources are part of its result.**
+      resources are part of its result.** **And the mirror has its own mirror, measured at
+      G6** [S:N209]: the mutation floor reported an *equivalent* mutant as **caught**, out of
+      the same run whose full `$TMPDIR` produced eighteen bogus `Unviable` verdicts — and that
+      "caught" was the whole argument for calling its surviving sibling a finding. Re-measured
+      one field at a time at workspace scope, **both survive, 1494 of 1494 each**. Same
+      machine-dependence, pointing at green, and it is the worse direction: a false FAIL gets
+      re-run, a false PASS deletes a correct acceptance and nobody looks again. Ask of any
+      verdict that moved: **which way did the load push it, and would I have re-run it if it
+      had pushed the other way?**
 - [ ] **Restoration by assumption** — an R3 test that restores in teardown but never
       asserts the restoration happened (teardown failures vanish).
 - [ ] **Pixel-content assertions on real hardware** — lighting varies; assert
@@ -501,7 +589,13 @@ PID 1's stack that tested green because the bytes landed in padding):
 
 **Positive requirements:**
 
-- [ ] Every D13 variant: a producer fixture + a mapping test + a rendering test. `test`
+- [ ] Every D13 variant: a producer fixture + a mapping test + a rendering test — and the
+      rendering test asserts the message's **claim**, not its shape [S:N129]. Non-empty,
+      brace-free and longer than twelve characters was satisfied by every one of the five
+      messages A15 lists; the arm that goes red asks the product the same question the
+      sentence answers. Not one notch short of it: N129's own replacement asked whether the
+      refusal carried a claim of ownership and not whether the claim was true, and was green
+      for two days on the defect it was written to prevent. `test`
 - [ ] Every PF finding: a corpus-backed regression representation (the sparse menu, the
       out-of-range default, the clamp, the INACTIVE flip, the unknown type — each exists
       as data a test loads, not as prose). `test`
@@ -525,7 +619,13 @@ defect class surfacing in review without a gate files the gate in the same PR (r
 
 - **Phase preflight**: name the gate in force (G0–G6, docs/7) and what green does not
   prove — the §3.3 structural gaps, and the standing hardware caveat: green on the fake
-  is engine truth, not device truth (rule 5).
+  is engine truth, not device truth (rule 5). **Then name the population each class will be
+  walked over, and what closes it** [S:G6] — an exhaustive `match`, a generated `ALL`, a
+  selection derived from the tree. Three of G6's four HIGH findings sat in populations that
+  existed and were not walked (the conformance battery, the SIGKILL suite, the call sites);
+  in the populations this project closes by construction — `ErrorKind::ALL`,
+  `LockProtocol::ALL`, `wire::SUBSCRIPTIONS`, `Program::ALL`, the corpus loader, every
+  `closed_vocabulary!` — that review found nothing at all.
 - **Ground in the settled registry**: D1–D13, T1–T6, E1–E6, the §7
   considered-and-not-adopted list, and the §1 non-goals are settled; a finding that
   re-litigates them without new evidence is noise. Implementation notes are case law.
@@ -535,8 +635,35 @@ defect class surfacing in review without a gate files the gate in the same PR (r
   entries turn on a quiet machine read as proof (N65, N67, N69, E13) and four on a starved
   one read as a finding (N52, N66, N68, N71). A refutation attempted at the wrong load is
   not a refutation.
-- **Adversarial verification for every Critical/High finding** — attempt the refutation
-  before reporting; a refuted finding teaches the rubric something either way.
+- **Two refutation stages, and they do different jobs — keep them separate** [S:G6]. Every
+  lens attacks its own candidates *before* reporting, and every finding that survives goes to
+  an independent verifier whose default is REFUTED. The G6 run measured the split: **204 of
+  290 candidates died in their author's own pass (70%)**, and of the 86 verdicts the verifiers
+  returned, **38 were confirmed as stated, 35 narrowed and 13 refuted** (44%, 40%, 15%).
+  Against E4's 52% refuted, E6's 61% and P5's 59%, that second figure is the comparable one
+  and lands in the same band; the first figure is what is new. **Self-refutation does most of
+  the filtering and independent verification does most of the sharpening** — the second stage
+  is mainly an *editor*, and it still moved 56% of what reached it (48 of 86 narrowed or
+  refuted), eleven reported HIGHs becoming four. Both earn their place and they earn it differently, which is the argument
+  against collapsing them into one "be careful" instruction. Keep the candidates that died —
+  the count is the harness's own evidence — and report a refuted finding anyway, because it
+  teaches the rubric something either way. Lenses only read, so they run concurrently for
+  free; the repair session that follows wants isolated worktrees (N97, N98).
+- **The repair session is reviewed too, and by somebody other than its author.** *"The session
+  that repairs a review's findings is itself a review"* is G4's sentence [S:E14] and P5's §6a
+  found two more instances of it; what G6 adds is the **measurement and the mechanism**
+  [S:G6]. Rule 1 commissions the gate for *the finding*; nothing commissions the gate for *the
+  fix*, so a repair batch can end on a green `just ci` and still have broken something the
+  suite has no question about. Over G6's eleven repair commits: **three shipped a regression
+  the green run could not see** — a `--size` refused on a camera that offers it, a registry window
+  in which a streaming camera read as free, and a control that declined a read vanishing from a
+  snapshot, so the restore reported success over a camera it had changed. Each was found by an
+  independent reader of the diff. **And three repairs were fresh instances of the class they
+  were repairing** — most sharply the one closing the message-is-payload row, which shipped a
+  remedy naming a verb the surface does not have. So read the repair against the row that
+  commissioned it, and treat every paragraph the repair writes to justify itself as a claim:
+  three of G6's were refuted by one command each, the same shape as A9's unread dependency
+  with this repository in the dependency's place.
 - **Every finding carries** `file:line`, category, the red test or fixture it lacks, and
   a direction. Confirm cited lines before fixing.
 - **The review's own record is a dated evidence entry** — candidate count, confirmed
@@ -545,9 +672,11 @@ defect class surfacing in review without a gate files the gate in the same PR (r
   transcript, each locally well argued; what fell between them was the arithmetic N54
   reads a sub-milestone's sizing from and the absence list the reconciliation below has to
   carry alone. Write the entry before the reconciliation, not after.
-- **Reconciliation at each phase gate** — the meta-rule. This revision is the first
-  reconciliation; the next is due at G3 and each gate after, appended to the record
-  below (a new doc version only when the accumulated deltas warrant one).
+- **Reconciliation at each phase gate** — the meta-rule. This revision was the first
+  reconciliation; G3, G4 and G6 are appended to the record below (a new doc version only when
+  the accumulated deltas warrant one). **G5's is missing and that is a defect, not a cadence**:
+  it was scheduled as P5e's remaining work and never written, so a thirty-two finding review
+  reached no row here. A gate closes when its reconciliation is in this document.
 
 ### The reconciliation record
 
@@ -764,6 +893,156 @@ does not establish" (the bar draws nothing when standard error is not a terminal
 test in this workspace owns one). **Five remain P5's**: the MJPEG route and the four web
 rows. The muxer rows await P6. [BP]-tagged items stay until a gate either pays for them or
 proves them dead — four gates in, nothing qualifies for deletion.
+
+**G6 (P6, the whole workspace — 290 candidates, 204 killed by the lens that raised them, 86
+reported and 86 independently verified: 38 confirmed as stated, 35 narrowed, 13 refuted; 168
+absence claims. Seventy-nine findings recorded — 76 severity-labelled and §8's three costs —
+and every one now carries a disposition. The record is docs/11, which is its own evidence
+entry, written before this reconciliation as Part E now asks.)** Two things go first. **This is
+the first reconciliation over the tree rather than a phase** — fourteen packages, the gate
+suite, the manifests and the generated artifacts — so a row's silence here is a wider claim
+than it was at G1–G4. And **the record skips G5**: the P5 web-client review (thirty-two
+findings, now at `docs/historical/11-claude-web-client-code-review.md`) had its reconciliation
+left as P5e's remaining work and it was never written, so its own three lessons reached no row
+— the settled-list briefing that made its refutation counts trustworthy, N94's *a type can be a
+blind spot*, and "the best findings were where an argument and its code had come apart". The
+last of those is this review's H4, M23, M5, L9 and L37, which is what an unwritten
+reconciliation costs: a class this project had already named, in its own words, one gate before
+it recurred five times.
+
+**Predicted by the rubric — three of the four HIGH findings are classes it already names, and
+every one of those rows was added because of an earlier instance.** H2 is **A4's second half**
+(a state a transient failure strands with no verb out), the sentence E6 added for N24 one layer
+up, now on disk instead of in memory. H1 is **A9 / doctrine E5** (a divergence between stand-in
+and real convicts whichever side is wrong), whose worked example in design §2.3 is the P2
+review's `Bytes`-at-a-scalar finding — same doctrine, same direction, three phases later — and
+it is not alone: M29 is the same §2.3 contract note with the fake on the wrong side, M30 is the
+corpus that would let either be caught, three instances of the family in one review. H3 is
+**rule 6's addendum [S:N10]** for the fifth recorded time (G2 twice, G3 twice, here), guarding
+the most consequential of the eight non-negotiable rules. G4's record answered "why did a
+written row not fire" in three parts, none of them "the row is badly written" — a review
+instrument is read after the fixture is chosen; the row's worked example wore a costume the
+defect did not; and rule 1 wants a named class to become a lint, a job or a test, and this one
+had none. All three apply again, and this review adds a fourth that is **mechanical rather than
+human**: *a rubric row names a class; only a walked* population *finds an instance of it.* Each
+class had a population and none was pointed at it. H1's is the backend conformance battery —
+§2.11 step 4 calls it "the definition of done" — and `arm_stream_lifecycle` constructed only
+`StreamRequest::default()`, so no arm of it could express *any* explicit-request contract on
+either backend; one arm naming a format the enumeration lacks would have caught H1 the day the
+fake grew its guard. H2's is the SIGKILL suite, which exists and drove `lifecycle::sweep_write`
+instead of `calibrate::run`, so it never reached a control the crash story is about. H3's is
+the *call sites*, and the predicate walked files — the population was stated correctly in the
+header and implemented one level too coarse. The contrast is the finding: where this project
+walks a population closed by construction — `ErrorKind::ALL`, `LockProtocol::ALL`,
+`wire::SUBSCRIPTIONS`, `Program::ALL`, the corpus loader, every `closed_vocabulary!` — the
+review found **nothing at all**. **The rows that work are the ones with an `ALL` behind them.**
+So a row earns its space by naming the population it is walked over and what closes that
+population, which Part E's preflight now asks for; a row whose population is "the files a
+reviewer opens" stays worth having and stays, in G4's words, **not** prevention. L21 (four of
+six pixel transforms unasserted) and L26 (a fake capability PF:17 contradicts) were two more
+populations waiting for the treatment, and both got it in the repair pass.
+
+**What the rubric had no row for: the message *is* the payload, and it goes stale.** Five
+instances in one phase — N123's `--guarded`, N129's container list attributed to the camera,
+the guide's `--size` remedy for a refusal no size produces (M18), `busy`'s "unidentified
+process" and its unreachable `--wait` (M19), and `IllegalTransition`'s template against the
+~11 producers whose `op` is a sentence (L29), with M22's 211 published intra-doc links the same
+defect one artifact along. N129 states the law in prose — *a D13 message is not prose beside
+the payload, it is the part of the payload a caller reads first, and it goes stale exactly
+where a variant grew a second caller* — and this document did not carry it. **A15 does now**,
+with the mechanical form N129's own repair used (*test the claim, not the wording*) and with
+the generalisation to the manual: every `Do` cell that names a flag is an arm that drives the
+flag and requires the kind. Part C's positive requirement for D13 moved with it, because "a
+producer fixture + a mapping test + a rendering test" was satisfied throughout — the rendering
+test was checking that a sentence exists, which is the one thing that was never wrong. **The
+repair pass then supplied the sharpest instance of all, against N129's own test**: it had been
+green for two days on the defect it was written to prevent, because it asked whether the
+refusal *carried a claim of ownership* rather than whether the claim was *true*. A test one
+notch away from the claim is the same defect as a message one notch away from the payload, and
+finding it inside the repair for the row is what fixes the row's wording at "test the claim".
+
+**Part C's named smell is at five instances, and the fourth candidate was the reviewer's own.**
+H2, L1 and M20 are three more fixtures one parameter outside the case they are named for, and
+the parameter is the one a reader scanning for "does this test the rule" does not look at; the
+row carries the shape and the costume list now. The candidate that was **refuted** is in the
+row too: `store_faults.rs` was called wrong for pinning the refusal of a torn interior line,
+and N12 lists that exact behaviour among nineteen seeded mutants a named test caught. A
+reviewer who dislikes an asserted behaviour and therefore calls its fixture wrong has committed
+the row one level up, and Part E already prescribes the defence — grep the notes for the
+subject before writing the candidate.
+
+**What the harness did, recorded as method rather than as result.** Each lens was told to
+refute its own candidates before reporting, which no earlier review's harness did: **204 of 290
+died in their author's pass (70%)**, and the 86 that survived produced 38 confirmations, 35
+narrowings and 13 refutations. Against E4's 52% refuted, E6's 61% and P5's 59%, the second
+figure is the comparable one and sits in the same band. **Self-refutation does most of the
+filtering and independent verification does most of the sharpening** — eleven reported HIGHs
+became four — so the two stages are kept separate in Part E rather than collapsed into one "be
+careful" instruction.
+
+**And the repair session needed a reader of its own — G4's sentence, finally with a number
+against it.** *"The session that repairs a review's findings is itself a review"* was written
+into the G4 block above and found twice more at P5; G6 is where it was measured. Eleven repair
+commits over two days closed seventy-eight of the seventy-nine findings and priced the last
+(N240); each ended on a
+green `just ci`, and **three of them shipped a regression that green run could not see** — a
+`--size 640x480` refused on a camera that offers it, a registry window in which a streaming
+camera read as free, and a control that declined a read vanishing from a snapshot so the
+restore reported success over a camera it had changed. Each was found by an independent reader
+of the diff, not by the suite, and for the reason rule 1 does not cover: a fix lands with the
+gate for *the finding*, and nothing commissions the gate for *the fix*. **Three repairs were
+themselves fresh instances of the finding's own class** — most sharply the batch repairing the
+message-is-payload row, which shipped a remedy naming a verb the surface does not have. Part E
+carries both as an instruction. Two smaller results ride with them. **A justification is a
+claim and it is usually one command from a verdict**: a `cfg_attr` wrapper three sites called
+load-bearing, a nextest override whose cost had been measured backwards, and a gate matching
+`#[cfg_attr` as readily as `#![cfg_attr` were each refuted by running the thing once — the same
+shape as A9's unread dependency, with this repository as the dependency. And **the mutation
+floor's verdict moves with the machine in both directions**: N52, N66 and N68 record it moving
+toward FAIL, and N209 measured it moving toward *caught* — an equivalent mutant reported killed
+by the same run whose full `$TMPDIR` produced eighteen bogus `Unviable` verdicts, re-measured as
+surviving 1494 of 1494. That is the direction that deletes a correct acceptance, and the one
+nobody re-runs. N209 draws the second lesson too: **an equivalence argument and a test are not
+equal dispositions even where the equivalence holds**, because the argument rests on a rule
+another crate is free to revisit.
+
+**Rows that fired as written, which is the half a reconciliation forgets.** A8 produced four
+findings by being asked its own question (L15–L18) and a fifth in its converse direction
+(M14's `SweepAdjustment`, built for every sweep and discarded by both roots). A9's dependency
+half fired three times in one review (M23's `HEAD` through axum's `get()`, H4's Chromium, and
+N70's `is_closed` before them). Rule 3's named-counted-skip caught L27, two `crates/priv` tests
+self-skipping in silence, one of them the only executable proof of §2.13's interlock. And
+**what the review did not find** is the load-bearing half: no Critical finding and no
+memory-safety defect of any kind; no unsound `unsafe` block and no aliasing defect in the mmap
+path, every layout still bindgen's — the findings there are two stale *claims* (L9, L10) and
+one untested guard (L22); no new hole in the credential layer over twenty request shapes driven
+at a live daemon, with N93's DNS-rebinding residual still the only way in; no state write
+outside `write_json_atomic` and no path traversal out of a session tree; no second copy of a
+§2.10 law — the two deviations are a bypass (M13) and a false statement (M10); no frame bytes
+in the repository, a log or an error message; no gate predicate that cannot go red, over the 62
+pass arms and 294 fail arms the review watched green. **The caveats are part of the same
+record**: no hardware and no vivid rung ran during the review, so every V4L2 finding — H1
+included — was a code-reading finding; `just mutants` did not run; and H4's cost on real cameras
+was inferred. The repair pass paid the first of those at four cameras and the vivid driver
+(**E18**), which is where H1's refusal became a measurement rather than a reading.
+
+**What the reconciliation itself cost, since a phase's arithmetic is part of its record.** The
+eleven repair commits carry **N134–N239** — a hundred and five notes, N168 never used — and
+evidence entry **E18**, the hardware debt paid at four cameras and the vivid driver. No PF
+entry was taken: E18 says in its own words that PF:29 is still free, because everything it
+measured is a behaviour an existing entry already names. Seven new gate predicates landed:
+`state-dir-permissions.sh`, `lint-posture.sh`,
+`claims-come-back-with-their-values.sh`, `doc-comments-open-with-a-summary.sh`,
+`shipped-profile-is-declared.sh`, `uapi-constants-are-declared.sh` and, with this
+reconciliation, `wire-surface-sync.sh` — taking the suite from 29 predicates, 62 pass arms and
+294 fail arms at the review's baseline to **36 predicates, 82 pass arms and 365 fail arms**,
+over 1529 tests and a browser rung of 24 claims and 206 assertions.
+
+**Not yet fired, retained.** G6 is the first gate at which every B-row has a subject: B6's
+MJPEG and shutdown clauses landed at P5b, B7's four web rows at P5d, B4's muxer rows at P6a —
+and each of those subjects produced a finding here (M23/M27, H4/M32/M33, L6/L17), which is what
+"not yet fired" was holding space for. [BP]-tagged items stay until a gate either pays for them
+or proves them dead; six gates in, nothing qualifies for deletion.
 
 ---
 

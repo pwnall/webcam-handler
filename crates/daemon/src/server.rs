@@ -11,7 +11,7 @@
 //! `calibrate status` and `calibrate list` — and P4c "the mutating half over RPC", which
 //! landed in steps: the five control-shaped verbs (`set`, `snapshot`, `restore`,
 //! `discover_pairs`, `profile_capture`), then `photo`, and finally `terminate_holder` and
-//! the six `calibrate_*` verbs that write. So [`ROUTED`] is the whole nineteen-method
+//! the six `calibrate_*` verbs that write. So [`ROUTED`] is the whole twenty-two-method
 //! surface, and the map of methods answering `Error::Unimplemented` is gone with the
 //! producer that filled it (note **N43**: "P4c cannot land without emptying it").
 //!
@@ -139,7 +139,7 @@ use crate::events::{Events, ProgressBroadcast};
 /// The wire names this build routes.
 ///
 /// A **pin**, in the tradition of `crates/api/fixtures/d13-rpc-codes.tsv` and of the
-/// nineteen spellings `crates/api` asserts: which verbs a build answers is a fact a client
+/// twenty-two spellings `crates/api` asserts: which verbs a build answers is a fact a client
 /// depends on, so widening it has to be a diff somebody wrote on purpose.
 ///
 /// docs/7 P4b named the first six: "read-verb routing (`list`, `info`, `controls`, `get`,
@@ -2905,7 +2905,7 @@ mod tests {
         // This assertion is half of a pair, and the other half is in
         // `tests/method_surface.rs`. docs/9's method-count walk proves every registered
         // method is *driven and answers*; it cannot tell an answer from a refusal that
-        // arrived promptly, so a build where all nineteen answered a "not yet" refusal
+        // arrived promptly, so a build where all twenty-two answered a "not yet" refusal
         // would pass it. What this test proves is that there is no such half of the
         // surface at all. Neither is worth much without the other, which is why each says
         // so.

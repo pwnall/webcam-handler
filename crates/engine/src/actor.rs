@@ -60,8 +60,8 @@
 //!
 //! [`Cameras::activity`] is the status surface docs/7 P4b asks for: which cameras have an
 //! actor, whether each one's device is open right now, and when it was last used. It is a
-//! library accessor rather than a wire method on purpose — T5 is pinned at nineteen
-//! methods and a `wch_status` would be a twentieth (note N42).
+//! library accessor rather than a wire method on purpose — T5 is pinned at twenty-two
+//! methods and a `wch_status` would be a twenty-third (note N42).
 //!
 //! ## D12's `wait` flag, and the one place a caller's own thread waits
 //!

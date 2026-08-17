@@ -34,7 +34,7 @@
 //! ## Subscriptions: one declaration, two traits, two inventories (P4e-i)
 //!
 //! D10 lists `subscribe_events` and `subscribe_calibration` among the T5 trait's methods.
-//! They are declared in the *same* `wire_surface!` invocation as the nineteen calls — so
+//! They are declared in the *same* `wire_surface!` invocation as the twenty-two calls — so
 //! note N28's property is intact, and a subscription still cannot reach a trait and miss
 //! an inventory — but the macro emits them as a **second** `#[rpc(server, client)]` trait,
 //! `WchEvents`, with its own [`crate::SUBSCRIPTIONS`]. Three measured facts force

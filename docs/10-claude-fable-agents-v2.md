@@ -60,10 +60,11 @@ surface via `webcam-handler-cli-core` — a verb exists once; `webcam-handler-cl
 backend and no engine. Packages carry the full `webcam-handler-` prefix; directories are short
 (`crates/engine/`); lib names are bare; and since the owner's ruling of 2026-08-13 (note
 **N90**) **every binary is named after the package it comes from** — no short alias, no second
-`[[bin]]`, no symlink, so `cargo install --path crates/daemon` installs
+`[[bin]]`, no symlink, so `cargo install --locked --path crates/daemon` installs
 `webcam-handler-daemon`. The dev-only helper `webcam-handler-priv` follows the same rule.
 
-Work is phase-gated (docs/7, G0–G6; P0–P3 are closed); each gate is a named, counted,
+Work is phase-gated (docs/7, G0–G6; P0–P6 are closed, G6's review and its reconciliation
+with them); each gate is a named, counted,
 re-runnable `just gate-gN` over `scripts/gates/phase-criteria.tsv` — one row per
 criterion, added in the same commit as the thing it proves. Work lands in
 session-sized sub-milestones (docs/7): each ends at a committed boundary with `just ci`
@@ -257,6 +258,13 @@ green and the notes current, and the phase review gets its own session.
   `no_text_this_surface_prints_carries_a_rustdoc_link` is what keeps it out. And the guide is
   written for an unattended agent: imperative, exact, and free of this repository's argument.
   The reasoning belongs in `xtask/src/guide.rs`, never in the document it emits.
+- **And since G6, `wire_surface!` is an input to design D10.** `wire-surface-sync.sh` reconciles
+  the namespace literal and every `#[method]`/`#[subscription]` name against the sentence in
+  `docs/6-…-v2.md` that a client author is sent to read, in both directions: a declared method
+  D10 does not list is red, and so is a name D10 lists that the macro does not declare. Spell
+  the names out there — a shorthand like `calibrate_*` is a member the reconciler cannot see,
+  which is where the eighth calibrate verb sat for two phases. The namespace itself is a **wire
+  break** and never a spelling (note **N91**).
 - **A failing `--json` run prints a document too** (owner ruling, 2026-08-15; notes **N127**,
   **N128**): `schema::error::Failure` on standard output — the D13 kind in the registry's own
   serde spelling, the variant's payload, and the message — with the one human line on standard

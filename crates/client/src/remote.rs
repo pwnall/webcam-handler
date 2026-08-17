@@ -6,7 +6,7 @@
 //! `webcam-handler-client` will implement it over the generated RPC client at P4, and the
 //! parity gate then proves the two produce identical `--json`."
 //!
-//! ## Sixteen of nineteen are assembly; three are decisions
+//! ## Nineteen of twenty-two are assembly; three are decisions
 //!
 //! Most methods here are one call and one `?`. Three are not, and each is argued where it
 //! is written:

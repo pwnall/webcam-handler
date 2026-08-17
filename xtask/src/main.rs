@@ -759,7 +759,7 @@ mod tests {
         // The population is `webcam-handler-api`'s own inventory, which that crate
         // declares in the same tokens as the trait — so this compares the document with
         // the wire surface rather than with a second opinion about it. A count on its own
-        // would pass a document that described nineteen of the wrong methods.
+        // would pass a document that described twenty-two of the wrong methods.
         let names = d13_wire_names().expect("the registry names itself");
         assert_eq!(methods.len(), api::METHODS.len(), "{methods:?}");
         for (emitted, method) in methods.iter().zip(api::METHODS) {

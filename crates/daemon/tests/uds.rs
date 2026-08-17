@@ -118,7 +118,7 @@ async fn upgrade(socket: &Utf8Path) -> std::io::Result<String> {
 /// The T5 surface is `webcam-handler-api`'s trait and the daemon mounts it with `into_rpc()` —
 /// inventing a second registration path is the thing D10 exists to prevent, and a transport
 /// suite that needed the real surface would be asserting the routing as well as the pipe.
-/// `transport_probe` cannot be mistaken for a wire name: the namespace is `webcam-handler-cli`
+/// `transport_probe` cannot be mistaken for a wire name: the namespace is `wch`
 /// and `crates/api`'s own test pins every registered spelling.
 fn probe_module() -> RpcModule<()> {
     let mut module = RpcModule::new(());

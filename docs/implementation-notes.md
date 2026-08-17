@@ -24303,3 +24303,46 @@ not which automation happened to be engaged. `measured_pairs` sits in the *invar
 correctly and uselessly, and the answer would be the 2026-08-13 ruling's shape applied to a second
 section: a named decline with the measurement behind it. Nothing has been seen doing it; the
 Chicony RGB reproduced both pairs exactly ten days after the document it is compared against.
+
+## N240 — The one G6 finding this reconciliation leaves open, and the arithmetic that decides it
+
+**Doc:** note **N31** (a gate selftest arm can go red for the wrong reason, and the harness reports
+that as green) and its own unmet *Retires when*; note **N186** (`gate_seed`); rubric docs/8 rule 6
+and Part C's *"no skip that reads as pass"*. Raised as finding **L25** of the G6 review. Recorded
+2026-08-17 by the G6 reconciliation, which is where an unclosed finding has to be said out loud or
+it becomes a thing nobody counted.
+
+**Repo:** `scripts/gates/selftest.sh`'s per-arm verdict; `scripts/gates/lib.sh`'s
+`gate_red_because`; every `scripts/gates/cases/*.cases.sh`.
+
+**The finding, restated with today's numbers.** A `fail_case_*`'s verdict is the predicate's exit
+status and nothing else, so an arm whose seeded violation trips a *different* branch — or trips the
+right branch for the wrong reason — is reported `ok`. N31 wrote the remedy as a per-case-file
+convention rather than as a rule of the harness. Measured on this tree, per arm rather than per call
+site: **137 of 365 fail arms name the sentence they claim, across 18 of the 36 case files.** At the
+review's own commit it was **83 of 294**. Every one of the fifty-four arms added since is written in
+the stronger form; **not one pre-existing arm was converted.** The review's own figure ("200 of 294
+do not use it") counted call sites rather than arms and is one of the two readings; on either
+reading the shape is the same, and it is drifting the right way for the wrong reason.
+
+**Why it is not closed here, stated as a cost rather than as a shrug.** Making the harness *require*
+a pattern is one line in `selftest.sh` and two hundred and twenty-eight arms of work behind it, and
+the work is not mechanical: the pattern an arm claims is a judgement about which of a predicate's
+branches its seed is supposed to trip, which is exactly the thing nobody wrote down the first time.
+A sweep that guessed the pattern from the arm's current output would encode today's behaviour as the
+claim — the stub that agrees with its author, rule 6's addendum, applied to two hundred arms at
+once. So the honest disposition is an argued acceptance and not a repair squeezed into a
+documentation batch.
+
+**What did land, and what it does not cover.** N186's `gate_seed` closed the adjacent half in the
+same pass: an arm whose `sed` matched nothing is now reported as a broken *seed* rather than as a
+verdict about the predicate, in a `pass_case_` as well as a `fail_case_`. N186 says in its own words
+that this "still says nothing about whether a seed produced the violation the arm names; that is
+what `gate_red_because` is for". The residual is therefore precise: an arm whose seed applied, whose
+predicate went red, and whose redness is about something else.
+
+**Retires when:** `selftest.sh` refuses a `fail_case_*` that did not name a sentence — at which
+point `gate_red_because` moves into the harness and stops being a per-case-file convention, which is
+N31's own clause. The cheap first step, if this is taken in pieces, is to refuse it for **new** case
+files only, keyed on the predicate having landed after this note: that costs nothing today and stops
+the ratio drifting back.

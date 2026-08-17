@@ -114,7 +114,8 @@ wire_surface! {
     /// `param_kind = map` — and emits [`METHODS`] from the same tokens, so the document
     /// xtask writes cannot describe a surface this trait does not have.
     ///
-    /// The namespace is `webcam-handler-cli` and jsonrpsee's default separator is `_`, so the
+    /// The namespace is `wch` — the literal nine lines above, and a wire break rather than a
+    /// spelling (note **N91**) — and jsonrpsee's default separator is `_`, so the
     /// wire names are `wch_list`, `wch_calibrate_start`, and so on. Every method takes
     /// **named** parameters, and the emitted document says so (`"paramStructure": "by-name"`):
     /// a request object costs nothing on the server, and it buys a legible OpenRPC document

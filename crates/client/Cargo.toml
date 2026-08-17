@@ -30,7 +30,7 @@ camino.workspace = true
 # The generated T5 client, and the runtime that drives it. **`async-client` and nothing
 # else**: it is the one feature that gives `ClientBuilder::build_with_tokio`, which is the
 # only constructor of a `jsonrpsee_core::client::Client` — the single value that implements
-# both `ClientT` (for `WchRpcClient`'s nineteen calls) and `SubscriptionClientT` (for
+# both `ClientT` (for `WchRpcClient`'s twenty-two calls) and `SubscriptionClientT` (for
 # `WchEventsClient`'s two streams), which is what lets one connection carry a sweep and its
 # progress (note **N57**).
 #

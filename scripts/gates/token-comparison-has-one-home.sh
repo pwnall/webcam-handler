@@ -24,7 +24,7 @@
 # the secret is readable in one named place, the type refuses every operator that would
 # short-circuit on it, and the one comparison that exists is still the one being called.
 #
-# ## The five claims
+# ## The six claims
 #
 #   1. **The secret has one reader.** `Token::expose_secret` is the one rendering that yields
 #      the token, and outside the module that defines it the accessor appears only inside

@@ -565,13 +565,21 @@ as a unit. Every JSON file carries `schema_version` from day one.
 client)]` trait in `webcam-handler-api` over `webcam-handler-schema` DTOs. The daemon
 implements the server half; `webcam-handler-client` consumes the generated typed client; the
 direct CLI calls the same methods on the engine through T4's executor abstraction — so a verb
-exists exactly once. Methods (namespace `webcam-handler-cli`): `list`, `info`, `controls`,
+exists exactly once. Methods (namespace `wch`): `list`, `info`, `controls`,
 `discover_pairs` (D3's empirical pass), `get`, `set` (guarded flag), `snapshot`, `restore`,
-`photo`, `record_start/stop/status` (progress by polling `record_status` — no recording
-subscription in v1), `profile_capture` (T3), `terminate_holder { camera, pid }` (the explicit
-kill, §5 — refuses if the pid no longer holds the device), `calibrate_*` (start, plan, sweep,
-status, select, apply, list), `subscribe_events` (hotplug), and `subscribe_calibration`
-(per-session progress). Binary results (photo/record) cross the wire via a two-variant sink DTO
+`photo`, `record_start`, `record_stop`, `record_status` (progress by polling `record_status`
+— no recording subscription in v1), `profile_capture` (T3), `terminate_holder` (the explicit
+kill of `{ camera, pid }`, §5 — refuses if the pid no longer holds the device),
+`calibrate_start`, `calibrate_plan`, `calibrate_sweep`, `calibrate_status`,
+`calibrate_select`, `calibrate_apply`, `calibrate_restore`, `calibrate_list`,
+`subscribe_events` (hotplug), and `subscribe_calibration` (per-session progress). jsonrpsee
+joins the namespace to the name with `_`, so the wire spelling of `list` is `wch_list`; that
+prefix is a wire break and is never renamed in passing (note **N91**, written the day a rename
+sweep took this sentence and left the macro alone). Every name above is written out rather
+than abbreviated because `wire-surface-sync.sh` reconciles this sentence against the
+`wire_surface!` invocation member by member, and a shorthand is a member the reconciler cannot
+see — which is where the eighth calibrate verb sat, declared at P4a and unlisted here until
+G6. Binary results (photo/record) cross the wire via a two-variant sink DTO
 in `webcam-handler-schema`: `ReturnBytes { format }` (base64 in the JSON result) or `ServerPath
 { path }` (absolute UTF-8 camino path; clients resolve relative paths against their own cwd
 *before* sending, so `-o out.jpg` means the caller's directory in both `webcam-handler-cli` and
@@ -983,10 +991,13 @@ webcam-handler/
     web/                # webcam-handler-web     [rust-embed asset crate; vanilla JS inside; links
                         #              neither stack (T6 wall below)]
     testkit/            # webcam-handler-testkit [dev-only: corpus loader, synthetic fixtures, oracles]
-  xtask/                # webcam-handler-xtask: completions (clap_complete), man pages (clap_mangen),
-                        #              schema/openrpc emit
-  corpus/profiles/      # committed device profiles (T3) — the three probe-era cameras seed it; file
-                        #              names are capture-time human-chosen (provenance inside binds
+  xtask/                # webcam-handler-xtask: the JSON Schema bundle, the OpenRPC document and
+                        #              docs/agent-guide.md — three generated artifacts, and no
+                        #              parser (P0 pinned crates for a completions and man-page
+                        #              emitter nobody wrote; removed, note N164)
+  corpus/profiles/      # committed device profiles (T3) — five, the probe era's three plus the
+                        #              Brio and a re-captured Chicony RGB (E18); file names
+                        #              are capture-time human-chosen (provenance inside binds
                         #              them to fingerprints)
   corpus/images/        # synthetic image fixtures ONLY (generated patterns; never camera frames — §5)
   vendor/v4l2-webcam-skill/  # the manual workflow this tool replaces (§1.1); read-only reference
@@ -1109,7 +1120,7 @@ time), rust-embed 8 (MIT; solo maintainer on a self-hosted forge — reviewed on
 `default-features=false, features=["png","jpeg"]` (MIT/Apache; the default `avif` feature drags
 rav1e — never enable by accident), png 0.18, imageproc 0.27 (MIT), little_exif 0.6 (MIT/Apache;
 builds the APP1 bytes only — our splice writes them, and the library's own JPEG writer never
-sees a camera file [PF:16]), y4m 0.8 (MIT), clap 4 + complete + mangen, comfy-table 8 (MIT),
+sees a camera file [PF:16]), y4m 0.8 (MIT), clap 4, comfy-table 8 (MIT),
 indicatif 0.18 (MIT), anstream/anstyle (MIT/Apache), thiserror 2 / anyhow 1, tracing +
 tracing-subscriber + tracing-journald 0.3.2 (MIT, no libsystemd — the journald layer is *this
 crate* rather than the `systemd` bindings, which is how §2.6's "pure-Rust protocol" is met by a
@@ -1389,8 +1400,12 @@ accreted (rubric rule 4):
    plumbing, not device quirks. Executed since P1 with write and streaming arms since P2
    [notes, E2/E3] — the plumbing it proves is materially wider than at v1, and the claim
    about what its green means is unchanged.
-5. **The AVI muxer's player-compatibility claim** rests on ffprobe/mpv oracles in CI plus
-   manual spot checks; "every player" is not a testable population. Relatedly, AVI is
+5. **The AVI muxer's player-compatibility claim** rests on ffprobe/mpv oracles in `just ci`
+   *on a host that has them* plus manual spot checks; "every player" is not a testable
+   population. Upstream CI installs neither (`.github/workflows/ci.yml` installs clang,
+   libclang, the kernel headers, shellcheck and jq), so there the rung declines by name and
+   the claim is not made — which is the same shape the README states about node and R1-web,
+   and it is a gap rather than a failure only because the decline is named and counted. Relatedly, AVI is
    constant-frame-rate and delivery is not (D7): the close-time header rewrite bounds the
    error, and the residual VFR mismatch is accepted and named here.
 6. **Privacy canary limits**: the no-camera-frames-in-repo gate detects committed image
@@ -1399,15 +1414,31 @@ accreted (rubric rule 4):
 7. **The browser rung drives Chromium only** (R1-web, by owner ruling §2.7): Firefox and
    Safari behavior is unexercised by any automated rung, deliberately. Rendering
    fidelity beyond DOM/protocol assertions stays a manual spot check.
-8. **All hardware evidence is one machine, one kernel, three cameras** [notes, E3]. The
-   corpus and the vivid rung stand in for the rest of the world, and neither is a
-   substitute: a new kernel × new device interaction is invisible until someone runs R3
-   somewhere else. A second host would multiply the evidence more than any new suite.
+8. **All hardware evidence is one machine, one kernel, and the cameras attached to it.**
+   Three at E3, five logical cameras over fourteen nodes at E15, four at E17 and four plus
+   the vivid driver at E18; five profiles are committed. The corpus and the vivid rung stand
+   in for the rest of the world, and neither is a substitute: a new kernel × new device
+   interaction is invisible until someone runs R3 somewhere else. **The camera count is the
+   half that has moved and the machine count is the half that has not**, and it is the second
+   that bounds the claim — a second host would multiply the evidence more than any new
+   suite, and no number of cameras on this desk substitutes for it.
 9. **Mid-stream device loss is fake-only on real hardware.** The helper's interlock
    (§2.13) refuses to unload `uvcvideo` under an open node — deliberately — so real
    cycles run with cameras closed (hotplug add/remove events), and `DeviceGone`
    mid-stream is exercised only as the fake's scripted fault. A camera that dies
    mid-stream on a real kernel is therefore modeled, not measured.
+10. **A contract can be asserted over one backend and nowhere else, and nothing says so.**
+   The T1/T2 conformance battery is the population §2.11 step 4 calls "the definition of
+   done", and until G6 every streaming arm in it constructed `StreamRequest::default()` — so
+   no arm could express *any* explicit-request contract, and D5's "an explicit request still
+   wins" was honoured by the fake, violated by `webcam-handler-v4l2`, and green on both
+   (docs/11 **H1**). The same shape put the fake on the wrong side of §2.3's dispatch rule
+   with no fixture able to separate the two rules (**M29**). Both are closed — the battery
+   now drives a format the enumeration lacks, and an array control exists as a fixture — but
+   **the gap is structural and stays named**: a contract asserted only through a stand-in is
+   invisible to a suite that is green on both sides, and the only mechanical defence is a
+   population walked on both backends. Ask of every backend contract which arm of the battery
+   would fail if one side stopped honouring it.
 
 ## 4. Phased plan
 

@@ -13,6 +13,14 @@ E**. `just ci` was green at the start and the tree was clean; the baseline is in
 evidence entry Part E asks for, written before the reconciliation and carrying the census, the
 refutations and the absence lists.
 
+**§12 is the disposition of every finding**, added at the reconciliation on 2026-08-17: seventy-nine
+findings, seventy-eight closed by eleven repair commits and one (**L25**) left with its arithmetic on
+the record. §12.5 keeps what the *repairs* refuted — the places this document was wrong, imprecise
+or understated — and §12.6 keeps what they found that nobody was looking for. Everything above §12 is
+a record of one tree on one day and has been left as it was written, apart from two corrections
+marked in place where they stand — an absence-claim total that disagreed with its own census table,
+and a cross-reference pointing at the wrong section.
+
 **Scope: the entire workspace.** Every crate, every gate, the web client, the manifests and the
 generated artifacts — 126,604 lines of Rust across fourteen packages, plus `scripts/`, the
 `justfile` and `docs/`. The four prior reviews each took a phase; this one takes the tree.
@@ -365,7 +373,9 @@ the camera back and leaves the session unusable.
 to `calibrate::run`, `begin_sweep` or `Sweeping` — its one write goes through `lifecycle::sweep_write`
 directly. The SIGKILL suite that exists to prove design §6's crash story therefore never puts a
 control into the state the crash story is about. That is Part C's named smell — *a test whose
-fixture cannot exercise the rule it pins* — for the fourth recorded time (see §7.2).
+fixture cannot exercise the rule it pins* — again; §9.2 does the counting, and with this
+review's three the row stands at five instances. *(Cross-reference corrected at the
+reconciliation: this sentence pointed at §7.2, which is the credential absence list.)*
 
 **Failure scenario.** `calibrate start --task dut`; `plan`; `sweep focus_absolute --all`; Ctrl-C
 during the first sample's settle. `calibrate restore` puts the camera back. Every subsequent verb
@@ -790,7 +800,9 @@ Stated because an absence claim has to name where it looked.
 
 ## 7. The absence lists — what was checked and found sound
 
-134 absence claims were recorded, each naming where it looked. This is the load-bearing half of a
+168 absence claims were recorded, each naming where it looked. *(Corrected at the
+reconciliation: this said 134, against a census table in §2 whose column sums to its own stated
+total of 168. The table is the arithmetic that can be checked, so it wins.)* This is the load-bearing half of a
 review record, and the ones worth carrying forward are below. Nothing here is a claim that a class is
 *impossible*; each is a claim that a named population was walked and nothing was found in it.
 
@@ -1077,3 +1089,262 @@ its findings.
    say they are. Nothing in this review moves them.
 6. **Concurrency findings are argued from code and, where attempted, from a stated load.** M2 was
    attempted twice and not reproduced (§4.10). No claim here rests on a green run treated as proof.
+---
+
+## 12. Dispositions — every finding, and what happened to it
+
+Written at the **G6 reconciliation, 2026-08-17**, which is the last of the four things P6e
+commissioned and the reason this section exists at all: the P5 review's record carries a
+Fixed/Open column and this one did not, so a reader had seventy-nine findings and no way to learn
+which of them were still true of the tree.
+
+**All seventy-nine are closed but one.** Seventy-six are numbered in §3–§5 and three are §8's
+performance costs. Seventy-eight were repaired, ruled on, or argued down with a measurement; **L25
+is left open with its arithmetic on the record** (note **N240**), and it is named here rather than
+left to be rediscovered.
+
+**The column's five words.** *Fixed* — repaired in the direction §10 named. *Fixed, differently* —
+repaired, by a route this document did not name; §12.5 says which. *Ruled on* — an owner decision
+settled the shape. *Accepted* — deliberately left, with a note pricing it. *Refuted* — wrong or
+materially overstated; §12.5 says what corrected it. No finding in this review was refuted outright
+*after* repair, but two had a premise that was wrong without changing the conclusion, and one (M9)
+had already been half-refuted inside this document at §4.9.
+
+**The repairs are eleven commits**, `8d0bf49` through `52f0b70`, carrying notes **N134–N239** (N168
+never used) and evidence entry **E18**, which paid the hardware debt §11 declared — four attached
+cameras and the vivid driver, where H1's refusal stopped being a code-reading finding. Six gate
+predicates came out of the repairs and a seventh out of this reconciliation.
+
+### 12.1 The HIGH findings
+
+| # | disposition | where it landed | notes | what goes red on it now |
+|---|---|---|---|---|
+| H1 | **Fixed** | `schema::capture::StreamRequest::choose` answers a `Result` rather than an `Option`, the fake's own pre-filter is deleted and `v4l2::negotiate` is one `?`, so both backends inherit one refusal; the conformance battery gained `arm_explicit_request` (`crates/testkit/src/battery.rs:1022`) — `8d0bf49` | N134, N138; E18 | `the_fake_passes_the_battery` over the new arm, and `hw_a_format_the_camera_does_not_offer_is_refused_rather_than_substituted`, run at four cameras in E18 |
+| H1b | **Ruled on** | Owner, 2026-08-16: a `--size` no enumerated mode fits is a typed `FormatUnsupported` refusal naming the *size*, never a substitution. `schema::capture` narrows the ranking's candidate set device-wide; `schema::error::SizeRefusal` is the payload — `8d0bf49` | N134, N138 | `a_named_size_narrows_the_ranking_rather_than_being_vetoed_by_it`; `a_size_refusal_names_the_size_and_never_the_format_that_was_answerable`, driven through the binary |
+| H2 | **Fixed** | `engine::lifecycle::free_stranded_sweeps`, run by `lifecycle::recover` on all three of its outcomes and appending N18's `SweepInterrupted`; `RestoreReport` gained `freed` — `1d9e46a` | N139 | `a_sweep_killed_before_its_first_sample_leaves_the_control_sweepable_again`, in the SIGKILL suite that could not previously reach the state |
+| H3 | **Fixed** | `kill-is-never-a-fallback.sh` sums occurrences across files and reports `file:count` pairs, and gained a third claim banning any `use` naming `terminate` outside the backend crate — `32b77ce` | N161, N167 §5 | gate: `kill-is-never-a-fallback.sh`, arm `fail_case_a_second_caller_in_the_file_that_already_has_one` |
+| H4 | **Fixed** | `crates/web/assets/preview.js:107` — `removeAttribute("src")` on the element that owns the request; the clone stays, for listener hygiene — `185bb6f` | N152 | browser claim *a preview the page walked away from is a preview the daemon stopped*, which opens `PREVIEW_MAX_VIEWERS_PER_CAMERA` readers against both cameras and asserts `[200,200,200,503]` against `[200,200,200,200]` |
+
+### 12.2 The MEDIUM findings
+
+| # | disposition | where it landed | notes | what goes red on it now |
+|---|---|---|---|---|
+| M1 | **Fixed** | `Recordings::not_recording_on_this_thread`, read at the head of the photo's own actor command (`daemon::server`) — `8a03022` | N169, N170, N176 | `a_photo_admitted_before_a_take_began_is_refused_when_its_command_reaches_the_camera`, which constructs the window rather than racing for it |
+| M2 | **Fixed** | `Holding`, an `Arc` whose `Weak` the slot keeps, with `reap` run by every entry point; `Previews::hand_over` on a task of its own — `8a03022` | N169, N171, N176, N177 | `a_record_start_that_went_away_before_its_take_began_leaves_the_camera_free`; gate: `claims-come-back-with-their-values.sh` |
+| M3 | **Fixed** | `Recordings::collect` answers four ways where it answered one; the shutdown sentence survives only for this call's own take, by `Arc::ptr_eq` — `8a03022` | N172 | `a_stop_whose_take_somebody_else_took_says_which_and_never_blames_a_shutdown` |
+| M4 | **Fixed** | `Wchd::recording_camera` turns only a `CameraUnknown` back into the requested id, and only when this daemon holds a take under it — `8a03022` | N173 | `a_take_whose_camera_was_unplugged_is_still_collected_by_the_name_it_started_with` |
+| M5 | **Fixed** | The second-stream refusal names nobody, and the exclusion moved *inside* `holders::others_holding` so it survives `MAX_HOLDERS_REPORTED` — `69c8656` | N191, N197, N217, N221 | `refusing_a_second_stream_names_nobody_rather_than_the_process_making_the_refusal`, with a non-vacuity arm proving the walk would have named this process |
+| M6 | **Fixed** | `walk_controls` takes `wanted: Option<ControlId>`; one control's `EBUSY` is carried as a valueless control instead of ending the walk — `69c8656` | N192, narrowed by N196; N195 | `one_control_the_device_will_not_read_is_carried_valueless_rather_than_ending_the_walk`; `the_only_refusal_a_walk_carries_is_the_one_the_uapi_makes_about_a_control` |
+| M7 | **Fixed** | `listing` remembers the probe that produced it, stamped with the filling thread; `diagnose` *takes* that pass rather than re-reading the device — `69c8656` | N193, N198 | `a_listing_leaves_the_pass_that_produced_it_for_the_diagnosis`; `a_diagnosis_will_not_explain_a_listing_another_thread_asked_for` |
+| M8 | **Fixed** | `FrameInterval::Unstated`, a fourth answer with no payload, decided once in `v4l2::stated_interval` — `69c8656` | N194, N199 | `a_device_that_names_no_frame_interval_is_reported_as_saying_nothing_not_as_shape_zero` |
+| M9 | **Fixed**, narrowed half only | `store::heal_log_tail`, called from `append_log` under the lock it already holds; the refusal at read time is untouched, being settled law — `1d9e46a` | N140 | `a_crash_torn_tail_is_healed_by_the_next_append_rather_than_left_to_refuse_for_ever` |
+| M10 | **Fixed** | `Reach::{Untouched, Published}` classifies what the caller is holding; `publish_session` has exactly one reader and `lifecycle::persist` matches on it — `1d9e46a` | N141 | `a_commit_the_parent_fsync_refused_leaves_the_caller_holding_what_the_disk_holds`, arranged with a real `0300` directory |
+| M11 | **Fixed** | `STATE_DIR_MODE` `0o700` and `STATE_FILE_MODE` `0o600` through `create_private_dir`; a pre-existing wide tree is refused, not repaired (N39's ruling) — `1d9e46a` | N142, corrected by N150 | `every_directory_and_file_this_store_creates_is_private_to_its_owner`; gate: `state-dir-permissions.sh`, which drives the shipped binary and runs the remedy the refusal prints |
+| M12 | **Fixed** | `limits::MAX_SETTLE_DEADLINE_MS`, constrained from both sides by compile-time assertions and asked in the schema so both roots refuse before the request costs anything — `1d9e46a` | N144, extended by N147 | `a_settle_deadline_above_the_cap_is_refused_before_the_camera_is_streamed`, which asserts nothing was started |
+| M13 | **Fixed** | `snapshot::take_in_effect` composes `pairing::in_effect` with the declared table narrowed to this device, and `discover::pairs` calls it — `1d9e46a` | N143 | `the_probes_own_restore_puts_automation_back_first_rather_than_alphabetically` |
+| M14 | **Fixed** | `SweepAdjustment` moved into `schema::session` and written by the one transition onto the answer, the durable log and the live event; rendered on both roots and in the web client — `1d9e46a` | N145, N149 | `a_sweep_the_planner_adjusted_says_so_on_the_answer_the_history_and_the_event`; `a_sweep_the_planner_trimmed_says_so_on_the_line_that_announces_it`, walking `SweepAdjustmentKind::ALL` |
+| M15 | **Ruled on** | Owner, 2026-08-16: chroma siting is a capture-time input carried as data. `schema::capture::ChromaSiting` (a `closed_vocabulary!`) reaches the header through `RecordingParams`; deliberately not a wire field, no device having reported it — `2d5b1aa` | N200, N210 | `the_header_states_the_chroma_siting_the_recording_was_opened_with`; the oracle arm `the_chroma_siting_a_raw_recording_states_is_the_one_a_third_party_reads_back` |
+| M16 | **Fixed** | `decode::packed_422_plane` — borrow when the buffer is exact or longer, copy only for a padding-free final row — `2d5b1aa` | N201 | `every_raw_decoder_takes_the_buffer_plane_bytes_says_a_driver_owes_it`, both directions and over all three decoders |
+| M17 | **Fixed** | Coverage; no production code was wrong — `2d5b1aa` | N202 | `stride_padding_is_dropped_in_every_colorspace_and_not_only_in_mono`, which kills three plausible one-line mutants that each passed 1482 of 1482 tests without it |
+| M18 | **Fixed** | The remedy was made *true* rather than rewritten: `--pixel-format` and `--size` both now produce `FormatUnsupported`, and the guide's row moved with them — `8d0bf49`, `2d5b1aa`, `d5c4177` | N134, N138, N211, N220 | `every_flag_the_failure_table_offers_as_a_lever_really_produces_that_failure`, which drives each flag through the shipped binary and requires the kind |
+| M19 | **Fixed** | `schema::error::Occupation` and `Error::busy_here`; `daemon::record::occupation_of`; the guide's `busy` row and `--wait`'s help — `d5c4177` | N217, corrected by N220 and N221 | `a_photograph_during_a_take_is_told_who_has_the_camera_and_waiting_does_not_change_it`; `a_camera_this_process_is_holding_is_never_reported_as_held_by_a_stranger`, walking `Occupation::ALL` |
+| M20 | **Fixed** | `required_if_eq` removed from the shared tree; `Cli::check` asks `Program::builds_a_backend` instead — `d5c4177` | N214 | `a_fake_backend_needs_its_profiles_on_the_root_that_builds_one_and_nowhere_else`, and the fourth argument vector added to the test the review said could not reach it |
+| M21 | **Fixed, differently** | `codes::Received`, a three-way answer whose middle arm keeps the kind the code names, derived by walking `ErrorKind::ALL` — `d5c4177` | N215 | `a_code_this_registry_owns_keeps_its_kind_even_when_the_payload_is_unreadable`; `a_refusal_this_build_cannot_read_says_the_daemon_answered_and_names_the_kind` |
+| M22 | **Fixed** | `xtask::unlink_citations` and `unqualify_crate_paths` — `d5c4177` | N218, amended by N222; N148 counted the pile | `no_prose_in_a_committed_artifact_speaks_to_a_toolchain_that_is_not_there` |
+| M23 | **Fixed** | A `HEAD` endpoint of its own at `http::preview::described`, answering about the route — `aafc4df` | N179 | `a_head_of_the_preview_answers_the_route_and_opens_no_camera`, asserted on the backend's own open and stream counters |
+| M24 | **Fixed, differently** | `provenance::origin_is_ours` gained a fourth failure: several agreeing `Host` lines answer that authority, disagreeing ones answer nothing — `aafc4df` | N180 | `two_host_lines_that_disagree_leave_no_authority_for_an_origin_to_match`, in both orders |
+| M25 | **Ruled on** | Owner, 2026-08-16: redact in the journald layer only; the one `tracing::info!` stays and a terminal operator still reads the full URL. `logging::Sink` is returned as a value and threaded to the one call site — `aafc4df` | N182 | `the_url_the_journal_keeps_carries_no_token_and_the_one_an_operator_reads_does` |
+| M26 | **Fixed** | `Activation::adopt` asks `socket_acceptconn` before it serves; design §2.8's sentence amended in the same commit — `aafc4df` | N181 | `a_descriptor_that_is_not_listening_is_refused_rather_than_accepted_on`, over a real bound-but-not-listening socket |
+| M27 | **Fixed** | Step 6 under `timeout_at` on the shared deadline, **and** `Runtime::shutdown_timeout` at the composition root, because bounding step 6 alone moved the unbounded term into `Drop for Runtime` — `8a03022` | N174 §1 | `a_housekeeping_pass_that_never_ends_does_not_hold_the_stop_open_for_ever`; `a_blocking_pass_that_will_not_end_does_not_hold_this_process_open` |
+| M28 | **Fixed, differently** | `Output::note` returns `()` and the `Stream` argument is gone, so there is no `?` for a caller to put on a note — `d5c4177` | N216 | `a_sweep_whose_note_cannot_be_printed_still_answers_with_one_document_and_a_zero`, driving the binary with fd 2 on `/dev/full` |
+| M29 | **Fixed** | The fake dispatches on `desc.flags.has(KnownFlag::HasPayload)`, in `set` and in `with_initial_value` — `8d0bf49` | N135 | `integer_array_control()` in the resemblance suite — vivid's `Integer 32 Bits Array`, the shape no fixture in the tree could express |
+| M30 | **Fixed** | `engine::profile::capture_probed` and an opt-in `--discover-pairs` on both roots and the wire; `corpus/profiles/chicony-rgb.json` re-captured with two measured pairs — `52f0b70` | N239; E18 | `the_coupling_a_profile_measured_is_replayed_live_and_in_both_directions`; the rewritten PF:3 row of `every_profile_shaped_probe_finding_is_exhibited_by_a_committed_profile` |
+| M31 | **Fixed** | `RestoreGuard` restores in `Drop`, complaints drained into the `ArmLog` a line later — `8d0bf49` | N137 | `a_read_that_fails_after_the_perturbation_still_leaves_the_camera_where_it_was_found` |
+| M32 | **Fixed** | `app.js`'s `select` and `refreshControls` carry the camera as an argument; `write(camera, …)` reads it at send time; `calibration.js` the same — `185bb6f` | N154 | browser claims *the control panel on screen belongs to the camera on screen* and *a stale session list is not painted under the camera on screen*, asserted synchronously |
+| M33 | **Fixed** | `app.js::listRefused`, called from both the startup path and the hotplug path — `185bb6f` | N155 | browser claim *a refused camera list at startup is a sentence rather than a silence*, with a positive control that withdraws the refusal and reloads |
+
+### 12.3 The LOW findings
+
+| # | disposition | where it landed | notes | what goes red on it now |
+|---|---|---|---|---|
+| L1 | **Fixed** | `ControlRange::align_down`'s subtraction saturates like every other operation on the line — `1ef2222` | N224 | `a_value_far_below_a_real_range_aligns_to_its_minimum_and_not_to_its_maximum`, run in both compilations |
+| L2 | **Fixed** | Root `Cargo.toml` declares `[profile.release] overflow-checks = true`, with `[profile.release.package."*"]` off for dependencies — `1ef2222` | N225, N234, N238 | gate: `shipped-profile-is-declared.sh`, whose `fail_case_the_shipped_profile_is_not_declared_at_all` is the tree exactly as this review found it |
+| L3 | **Fixed** | `assign_ids` tests the `camera-<index>` fallback against `reserved` as well as `taken` — `1ef2222` | N226 | `a_card_that_slugs_to_nothing_does_not_take_the_slug_another_card_earned` |
+| L4 | **Fixed** | `PixelFormat::parse` accepts a raw byte only in `0x20..=0x7e` — `1ef2222` | N227 | the four-byte non-ASCII cases added to `a_spelling_that_names_no_four_bytes_is_refused_rather_than_padded` |
+| L5 | **Fixed** | `exif::check_segment_length` with `limits::MAX_EXIF_TEXT_BYTES`, related to the APP1 bound by a `const _: () = assert!` — `2d5b1aa` | N203 | `a_description_shortened_to_its_budget_stops_on_a_whole_control_and_says_so` |
+| L6 | **Fixed** | `avi::write::covered_size` — `checked_sub` and a refusal naming the field, for both subtractions — `2d5b1aa` | N204 | `a_derived_size_that_underflows_refuses_by_name_rather_than_writing_the_crash_marker` |
+| L7 | **Fixed** | `JoinError::is_panic` consulted; a panicked pass is reported at `error!` and the driver carries on — `8a03022` | N174 §2 | `a_sweep_that_panicked_is_said_out_loud_and_the_next_one_still_closes_a_camera` |
+| L8 | **Fixed, differently** | A duplicated descriptor per live connection, `shutdown(2)`-ed on the expiry arm, bounded by `DAEMON_MAX_CONNECTIONS` — `8a03022` | N175 | `a_stop_that_gave_up_waiting_ends_the_connection_it_gave_up_on`, whose reader never reads again |
+| L9 | **Fixed** | The `call` SAFETY comment restated as the two values `buffer_request` actually builds — `69c8656` | N190, corrected by N199 item 7 | `the_buffer_ioctls_never_hand_the_kernel_a_plane_pointer`; `only_one_place_in_this_module_builds_the_buffer_the_safety_comment_is_about` |
+| L10 | **Fixed** | `sys::decode`'s stepwise arms use nested `offset_of!` paths through the union — `69c8656` | N187 | `a_stepwise_interval_decodes_through_the_stepwise_arm`, whose fixture is an independent transcription so an offset can go red |
+| L11 | **Fixed** | `bit_vocabulary!`/`KnownFlag` and `ControlType` compared against bindgen's constants — `1ef2222` | N228, with N236 for the build precondition it cost | the seeded-constant tests, and gate: `uapi-constants-are-declared.sh` |
+| L12 | **Fixed** | The eight prose sites the review named, plus a ninth it did not (`.cargo/mutants.toml`'s "nineteen doc comments") — this reconciliation | no note; §12.6 | none, and that is the finding's shape: `wire-surface-sync.sh` reconciles D10's namespace and method *names*, not a prose count |
+| L13 | **Fixed** | `token-comparison-has-one-home.sh` grew a sixth claim — a three-entry register of the product-code callers of `ready_to_open_url`, reconciled both ways — and `lib.sh` learned that a file under `tests/` is test code from line 1 — `aafc4df` | N183 | gate: `token-comparison-has-one-home.sh`, four new arms |
+| L14 | **Fixed** | Design §3.3 regenerated: item 5's oracles now say "in `just ci` on a host that has them", item 8 carries the four dated hardware runs, and a **new item 10** names the gap H1 lived in — this reconciliation | no note; §12.6 | none; a structural-gap register is prose by construction |
+| L15 | **Fixed, differently** | `calibrate::record_switch_offs`, called from `one_sample` off the `WriteReport`, so the event is written where the device produced it; `AutoDisabled` keeps no producer and documents why — `1ef2222` | N229, superseded by N233 | `a_sweep_records_the_partner_it_switched_off_once_and_after_the_write_that_did_it` |
+| L16 | **Fixed** | `ChannelSink` and `limits::PROGRESS_QUEUE_DEPTH` deleted, the argument kept as a paragraph — `1ef2222` | N230 | the compiler, twice: the constant no longer resolves and a rustdoc link to `ChannelSink` fails `just doc` |
+| L17 | **Fixed** | `avi::read` parses and asserts `max_bytes_per_sec` — `2d5b1aa` | N205 | `the_declared_data_rate_is_the_file_over_the_duration_the_file_itself_declares`; the seeded mis-offset had passed 1490 of 1490 tests |
+| L18 | **Fixed** | `VideoFormat::sink_fidelity` and `RecordRequest::stream_for_container`, applied in `engine::record::start` — `2d5b1aa` | N206 | `a_recording_asks_the_device_for_what_the_container_it_named_can_carry` |
+| L19 | **Fixed** | The register's last entry re-keyed to `crates/imaging/src/video.rs`, with a comment naming which of two identically-keyed comparisons it means — `32b77ce` | N166 | `scripts/mutants.sh`'s both-ways register comparison; gate: `mutation-verdict.sh` builds its fixtures from the register |
+| L20 | **Fixed, differently** | A dated decision per group in `.cargo/mutants.toml` — nine groups — rather than a widening; `photo.rs` then widened into `examine_globs` and run — `32b77ce`, `2d5b1aa` | N162; N207 | none walks the two lists for coverage, and the residual is stated in the file with `unsafe-scope.sh`'s shape named as its retirement |
+| L21 | **Fixed** | `photo::oriented` asserted over `Transform::ALL` — `2d5b1aa` | N207 | `every_orientation_moves_the_pixels_its_own_name_describes`, plus an RGB twin and three supporting properties; four one-line mutants go red |
+| L22 | **Fixed** | The clamp was already right; the test is the repair, over a real `MAP_SHARED` mapping — `69c8656` | N188 | `a_driver_claiming_more_bytes_than_it_gave_us_gets_the_buffer_and_not_a_read_past_it`, whose inverse is `SIGSEGV` rather than a tidy assertion |
+| L23 | **Fixed** | `enumerate::representative` pinned by a fixture that can tell it from `members.first()` — `69c8656` | N189 | `a_cameras_identity_is_its_capture_nodes_and_does_not_move_when_its_nodes_are_reordered` |
+| L24 | **Fixed** | The index/total pair is now required per event discriminant, in both directions — `1ef2222` | no note; the repair is the comment | `the_page_can_watch_a_sweep_it_did_not_start`, whose `match` has a panicking fallback arm |
+| L25 | **Accepted** | Nothing changed in the harness. Measured per arm: **137 of 365** fail arms name the sentence they claim, against **83 of 294** at this review's own commit — every arm added since is written the stronger way and not one was converted | **N240** | none, stated as the acceptance's own cost; N186's `gate_seed` closed the adjacent half (a seed that edited nothing) |
+| L26 | **Fixed** | The fake truncates or zero-extends a mis-sized compound payload and reports `WriteWarning::Adjusted`; a *shape* mismatch stays a typed refusal — `8d0bf49` | N136 | `an_unknown_control_round_trips_its_opaque_payload`, whose assertion was inverted |
+| L27 | **Fixed** | `priv::modules` writes its census through a `census: &mut dyn Write` seam; `.config/nextest.toml` names the two host-dependent tests — `32b77ce` | N160, corrected by N167 §1 and §2 | `a_host_that_lends_no_camera_declines_by_name_rather_than_printing_nothing`; `the_two_claims_a_host_may_not_be_able_to_make_are_the_ones_nextest_is_told_to_print` |
+| L28 | **Fixed** | `crates/engine` and `crates/schema` roots gained the block, and `lint-posture.sh` walks a population derived from `cargo metadata` — `32b77ce` | N165, with three residuals closed by N167 §3 and §4 | gate: `lint-posture.sh`, eleven arms |
+| L29 | **Fixed** | `IllegalTransition`'s template is `"{from}: cannot {op}"`, so the instruction ends the sentence; no payload moved — `d5c4177` | N212 | `an_illegal_transitions_instruction_is_the_last_thing_it_says`, driving this crate's five real producers; `a_refusal_ends_with_the_instruction_its_payload_carries`, through the binary |
+| L30 | **Fixed** | Two homes: the spelling the caller never wrote is a usage error on the flag, and `Some(0)` is refused in `schema::video` beside the cap so a socket client meets it too — `d5c4177` | N213 | `a_take_too_short_to_hold_a_frame_is_refused_at_both_spellings_and_never_answered` |
+| L31 | **Fixed** | `Transport::Goodbye` and `Remote::close`, called from `Drop`, bounded by `limits::CLIENT_CLOSE_BUDGET_MS` — `d5c4177` | N219, amended by N223 | `a_client_that_is_finished_says_goodbye_before_its_runtime_goes_away`, over a real daemon and a real socket |
+| L32 | **Fixed** | The two pins were removed rather than the emitter written; four prose sites corrected, not three — `32b77ce` | N164 | none, and the note says so: nothing compares the manifest to the design document. Retires when N133's §2.8 reconciler lands |
+| L33 | **Fixed** | `oracle-rung-accounting.sh` reads its line shapes out of `testkit::oracle`'s product half — `32b77ce` | N163 | gate: `oracle-rung-accounting.sh`, three derivation arms in N31's stronger form |
+| L34 | **Fixed** | `RestorationClaim::declines` returns lines and emits nothing; `account_for` is the one path with a real camera in hand, and asserts before it prints — `1ef2222` | N231, with the same defect one type over closed as N235 | `a_restore_that_checked_some_of_what_it_reported_declines_the_rest_by_name` |
+| L35 | **Fixed** | Each fault is taken where it decides the answer, `SettleNeverConverges` last and after the stream check — `1ef2222` | N232 | `a_call_that_reported_one_fault_leaves_the_others_still_scripted` |
+| L36 | **Fixed** | `recording.js` consults `view.stopped` again after the answer arrives, in the success and the refusal arm — `185bb6f` | N156 | browser claim *a recording answer in flight is not written under the next camera's picture*, driven with a stub and no clock |
+| L37 | **Fixed** | Both sentences in `crates/web/src/lib.rs` corrected, and a third stale copy in `crates/daemon/tests/web_client.rs` deleted — `185bb6f` | N153, N158 | `the_prose_at_the_top_of_this_crate_counts_the_directory_underneath_it`, which reconciles both sentences against `paths()` over the file's unwrapped prose |
+| L38 | **Ruled on** | Owner, 2026-08-16: a per-call timeout and an idle heartbeat, not a documented acceptance. `CLIENT_REQUEST_TIMEOUT_MS` bounds one call and leaves the socket alone; `CLIENT_WS_HEARTBEAT_MS` bounds silence and closes on a heartbeat still unanswered when the next falls due — `185bb6f` | N157 | `the_bounds_the_page_runs_on_are_the_ones_this_build_declares`, read through `web::get`; browser claims *a socket severed without a FIN stops reading as connected* and *an idle socket is kept by an answer, and a slow call is not a dead socket* |
+
+### 12.4 The performance costs
+
+| # | disposition | where it landed | notes | what goes red on it now |
+|---|---|---|---|---|
+| P1 | **Fixed** | One shared `walk_controls(wanted)` that skips menu and value reads for controls that are not the target and stops at it — `69c8656`, confirmed at hardware in `52f0b70` | N192, corrected by N196 and N199; E18 §1 | `hw_describing_one_control_says_what_the_whole_walk_says_about_it` — E18 compared 64 controls across four cameras |
+| P2 | **Accepted** | `engine::lifecycle::persist` unchanged; the measurement is the disposition — `1d9e46a` carries the note only | N146 | none |
+| P3 | **Fixed** | `Base64Bytes::serialize` uses `collect_str` over a `Base64Display`, so no second full-size buffer is materialised — `1ef2222` | no note; the argument is the `Serialize` impl's own doc comment | `a_payload_serialises_to_the_same_string_the_one_shot_encoder_produces`, over an alphabet-sensitive population |
+
+### 12.5 Where the repair went somewhere else, and where this document was wrong
+
+Part E asks a review to keep its refutations. These are the ones the *repairs* produced, which is
+the half a review cannot write for itself.
+
+**The repair took another route.**
+
+- **H2** — the review's direction ("after the camera is back, walk the session's controls") could
+  not be followed: the killed-at-sample-1 window leaves no snapshot at all, so `recover` returned
+  `NothingPersisted` before touching anything and the walk had to move out from behind the restore.
+- **H1b** — offered as "smallest offered mode, or refuse"; the owner took refuse.
+- **M10** — the review asked which side of the contract was wrong. The answer was *both, and the
+  contract first*: neither blanket policy for `persist` is right, and the repair is a
+  classification (`Reach`) this document did not name.
+- **M14** — the review asked for a ruling, reader or delete. The answer was a reader, on E6/N23's
+  precedent, and on three surfaces rather than one.
+- **M18** — the row was made **true** by giving the payload the levers it lacked, rather than by
+  rewriting the prose; `agent-guide-current.sh` still cannot read the `Do` column, exactly as this
+  document said, so the check landed as a binary-driving test instead.
+- **M21** — the discriminant is recovered, but the error the client raises for an unreadable payload
+  is still `StorageIo` by decision: answering `busy` with a `holders` list nobody sent would invent
+  the thing that failed to arrive.
+- **M24** — rather than copying `admits`' `get_all` fold, the repair added a fourth failure: several
+  agreeing `Host` lines answer that authority and disagreeing ones answer nothing.
+- **M28** — rather than auditing the `?`s, the repair removed the `Stream` argument so a caller has
+  no `?` to put on a note, holding §2.7's one-document rule in the type system.
+- **L8** — axum gives `serve` no handle on its per-connection tasks, so the mechanism this document's
+  framing implies does not exist; the repair keeps `dup(2)`ed descriptors instead.
+- **L15** — the obvious producer in front of `begin_sweep` landed first and was three defects at
+  once, including the H2 class the same pass had just closed; the event's producer moved to where
+  the device produces it and the *status* deliberately keeps none.
+- **L20** — a dated decision per group rather than a widening, because that is what the file's own
+  header asks for.
+- **L30** — two homes, not one, and no constant joined `limits`: a number that is "the smallest this
+  type can say" is not a bound somebody chose.
+- **L32** — the pins were removed rather than the emitter written. Removing them changed
+  `Cargo.lock` by zero lines, which is the measurement that says what they were worth.
+- **L34** — the mechanism was one hop off: `smoke-hw.sh`'s live selection is `test(/(^|::)hw_/)`, so
+  a `webcam-handler-testkit` unit test is never selected by it; the seam that reaches the census is
+  the recorded-log one.
+
+**This document was wrong, imprecise or understated.**
+
+- **M5** — "caught one layer up by `daemon::server::not_this_daemon`, so it is a contradiction rather
+  than a live hole" is **wrong**: `not_this_daemon` refuses a `terminate_holder` *request*, not the
+  payload, and N197 found the live instance — `wch_set` answering *"held by webcam-handler-dae (pid
+  12345)"*.
+- **M19** — the empty `holders` list is **N48 point 5's deliberate ruling**, not an oversight, and
+  N217 says the argument stands; what changed is the rendering, the guide and `--wait`'s help, plus
+  a new optional `this_process` on the payload, because withholding can only stop reading as
+  ignorance if something else names the work. The population was five in-process producers, not two,
+  and the 207 ms measurement re-measured at 80 ms.
+- **M2** — a `record_start` holds a **third** claim this document never named: the device's own
+  `STREAMON`, with no witness and no `Drop`. §4.10's failure to reproduce is explained rather than
+  excused — over the fake the pre-repair build has no window to cancel in at all.
+- **M16** — the cause is `yuv 0.8.17`'s `check_yuv_packed422` comparing with `!=`, so a *longer*
+  buffer was refused too; the fix produces the length the dependency wants rather than demanding it
+  of the driver.
+- **M20** — understated by one: `the_fake_backend_cannot_be_selected_without_something_to_replay`
+  drove clap's derived `try_parse_from`, which is not the parse either binary performs.
+- **M22** — the count was **227**, not 211 (124 in the OpenRPC document, 103 in the bundle).
+- **M27** — bounding step 6 only *moved* the unbounded term into `Drop for Runtime`, where no
+  document mentioned it; the daemon's worst case is now a four-row table rather than one constant.
+- **M29** — the reorder also moved every **string** control onto the payload path, a second E5
+  convergence this document did not name.
+- **M30** — the mechanism is wider than the sentence: the fake's `apply_coupling` reads *only*
+  `invariant.measured_pairs`, so all five committed profiles replayed a device that couples nothing.
+- **M32** — a third element had the same defect and is not named here: the calibration session list,
+  detail and status.
+- **M33** — wider than stated: the line *after* the throw never ran either, so a page that recovered
+  on a later hotplug had a photo button nothing had wired up.
+- **L2** — the README's install line is `cargo install --locked --path crates/daemon`; the quotation
+  here drops the flag. The argument is untouched — `cargo install` builds `--release` either way —
+  and `AGENTS.md` carried the unflagged spelling, which is probably what was read.
+- **L11** — the population was larger than the finding: thirteen flags, plus `sys::decode`'s ten
+  transcribed numbers, `sys::ioctl`'s five, and fourteen control types.
+- **L16** — five `.rs` sites and five more prose citations, one of them `daemon::events` quoting the
+  false sentence as authority.
+- **L18** — narrower than it reads: D5's key asks about pixels before fidelity, so `record -o
+  take.y4m` still negotiates MJPG on every committed profile and still refuses.
+- **L20** — substantially understated: the headline said three imaging modules and the body named
+  two; the walk found four imaging modules, five whole crates, most of two more, and seven modules
+  of `crates/engine/` this document did not reach.
+- **L25** — "200 of 294 fail arms do not use it" counts call sites; per arm it was 83 of 294 that
+  did. Either reading gives the same shape (N240).
+- **L27** — the module had **six** silent returns, not two.
+- **L32** — four stale prose sites, not three: `justfile:304-305` claims a gate proves the committed
+  copies match, for artifacts that do not exist.
+- **L35** — understated: the three takes sat in front of the `state.stream` check, so `next_frame`
+  on a stopped stream also spent every frame fault on its way to `EINVAL`.
+- **L37** — a third stale copy existed in `crates/daemon/tests/web_client.rs`, and the first version
+  of the test that now holds the counts was not actually driving anything, because `content_type`'s
+  sentence is line-wrapped.
+- **P2** — called here "the one worth acting on". Measured, it is **0.204 s over 256 publish cycles,
+  0.80 ms each**, against 512 s of camera time for a 256-sample sweep: **0.04 %**. The suggested fix
+  is also priced as *costing* crash-safety, because the log's failure mode is refuse-the-whole-file.
+- **P1** — the obvious one-ioctl repair was declined: `QUERY_EXT_CTRL` with `NEXT_CTRL` cleared is a
+  call this build has never made, on the path that feeds `set` and therefore motors, and "the UAPI
+  says" is `declared` data until a probe makes it `measured`.
+
+### 12.6 What the repairs found that this review did not
+
+Recorded here because rubric Part E now asks for it, and because two of the three are the reason
+this section can say "all but one".
+
+- **Three of the eleven repair commits shipped a regression the green `just ci` at their own
+  boundary could not see**, each caught by an independent reader of the diff rather than by the
+  suite: H1b's first refusal fired on a `--size 640x480` the OBSBOT enumerates (N138); M11's mask
+  refused a `2700` directory the tool had just created, because Linux inherits `S_ISGID` on `mkdir`
+  (N150); and M6's first tolerance dropped a control that declined a read from the *snapshot*, so a
+  restore reported success over a camera it had changed (N195). Rule 1 commissions the gate for the
+  finding; nothing commissions the gate for the fix.
+- **Three repairs were fresh instances of the class they were repairing.** The sharpest is the batch
+  closing §9.3: it shipped a refusal whose remedy named a verb the surface does not have (N220).
+  N138 and N147 are the others — a refusal about the wrong subject, and a bound placed after the
+  motor had already moved.
+- **N129's own replacement test was green for two days on the defect it was written to prevent**
+  (N211), because it asked whether the refusal carried a claim of ownership rather than whether the
+  claim was true. That is §9.3's law one notch short of itself, and it is what fixes the rubric row's
+  wording at *test the claim*.
+- **Three paragraphs written to justify repairs were refuted by one command each** (N167): a
+  `cfg_attr` wrapper called load-bearing at three sites, a nextest override whose cost had been
+  measured backwards, and a gate said to match only `#![cfg_attr`. A justification is not checked by
+  the thing it justifies.
+- **The mutation floor's verdict moves toward *caught* as well as toward FAIL** (N209): an
+  equivalent mutant was reported killed by the same run whose full `$TMPDIR` produced eighteen bogus
+  `Unviable` verdicts, and re-measured as surviving 1494 of 1494. N52, N66 and N68 record the other
+  direction; this is the one that deletes a correct acceptance, and the one nobody re-runs.
+- **Seven gate predicates came out of the pass** — `state-dir-permissions.sh`, `lint-posture.sh`,
+  `claims-come-back-with-their-values.sh`, `doc-comments-open-with-a-summary.sh`,
+  `shipped-profile-is-declared.sh`, `uapi-constants-are-declared.sh`, and `wire-surface-sync.sh`
+  with this reconciliation — taking the suite from 29 predicates, 62 pass arms and 294 fail arms at
+  §1.3's baseline to **36 predicates, 82 pass arms and 365 fail arms**, over 1529 tests and a
+  browser rung of 24 claims and 206 assertions.

@@ -33,7 +33,7 @@
 //! surface on the wrong path fails both, at the handshake.
 //!
 //! `method_surface.rs` is the third leg and stays where it is: it walks the call surface with
-//! the *generated client* over two transports and is the file that says nineteen. What this
+//! the *generated client* over two transports and is the file that says twenty-two. What this
 //! file adds is that a third transport reaches the same registration — and its limit 5 names
 //! this suite, because "there is no second registration path" is a claim about the whole
 //! process rather than about one file.

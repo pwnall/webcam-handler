@@ -18,18 +18,28 @@ gets a session of its own. Two work items were also added on standing instructio
 already recorded: the mutation floor docs/9 scheduled "before G4, not after" (P3f), and
 the `webcam-handler-priv` narrowing N8 tied to G6 (P6e).
 
-## Closure ledger — P0–P4
+## Closure ledger — P0–P6
 
 Recorded here so the plan does not restate what the notes and the criteria table
 already prove. Evidence entries live in `docs/implementation-notes.md`.
 
+**The Criteria column is a live count, not a snapshot**, and that is a ruling rather than an
+observation: the numbers were written as live counts from the start — P3's row said 31 where
+the count at its own closing commits was 26 — and a snapshot would be a number nobody can
+check, since `phase-criteria.tsv` gains rows whenever a later phase proves something about an
+earlier one. So each row says what `just gate-gN` runs **today**, which is a claim one command
+settles. Two were stale when this ledger was reconciled at G6: `g0` said 8 with 9 rows in the
+table (the ninth added at `0a60d08`, after P0 closed) and `g3` said 31 against 32 (`ef8748f`).
+
 | Phase | Closing commits | Criteria | Evidence | Review |
 |---|---|---|---|---|
-| P0 — foundations | `ddde6f7` | `g0`: 8 rows | — | gates selftested both directions from day one |
+| P0 — foundations | `ddde6f7` | `g0`: 9 rows | — | gates selftested both directions from day one |
 | P1 — V4L2 read path | `59f8293`, fixes through `b7f84c3` | `g1`: 16 rows | E1 (+ its amendments) | 4 confirmed defects, fixed; PF:14–15 and N7 landed, and PF:13 (recorded while P0 was open) became corpus |
 | P2 — writes + photo | `52ec45c`, fixes in `7181aef` | `g2`: 25 rows | E2, E3, E4 | 31 candidates, 15 confirmed, fixed; PF:16 and N9 landed |
-| P3 — calibration | `abafc25`, `856170a`, fixes in the commit carrying E6 | `g3`: 31 rows | E5, E6, E7 | 31 candidates, 12 confirmed (9 distinct defects), fixed; PF:17–20, N11–N21 landed as the phase ran, N22–N24 with the fixes; the eighth calibrate verb (`calibrate restore`) is the review's one surface change |
+| P3 — calibration | `abafc25`, `856170a`, fixes in the commit carrying E6 | `g3`: 32 rows | E5, E6, E7 | 31 candidates, 12 confirmed (9 distinct defects), fixed; PF:17–20, N11–N21 landed as the phase ran, N22–N24 with the fixes; the eighth calibrate verb (`calibrate restore`) is the review's one surface change |
 | P4 — daemon and daemon client | `06489e3`, `9c8b46a`, `5faa4ee`, fixes through `e69ffba`, closed by the commit carrying this row | `g4`: 42 rows | E8–E14 (+ E13's two amendments) | **E14** holds the review, written last and named in P4g's own list after three of its four items had landed without it; no candidate count was kept, and that one is not recoverable — the refutation ran *inside* the find pass, as docs/8 Part E asks, so a candidate that died left nothing behind, and E14 declines to add a G4 row to N54's table rather than print a 0-of-8 beside four rows counting something else. **8 confirmed**, 7 fixed and 1 ruled on and left (twelve predicates run twice per `just gate-g4`, kept because the named rows carry each criterion's claim and `run-all.sh` says only "22 predicates green"). Two are HIGH and both are in the phase's own newest code, one of them silently deleting its own fix. PF:21–23 and N28–N69 landed as the phase ran, N70–N73 with the fixes. **No surface change** — the review added no verb and no flag; what it changed is `webcam-handler-client`'s sweep tail, a hardware rung's decline vocabulary (fifteen typed disqualifiers where a `SKIP` line had one sentence), and two gates |
+| P5 — the web client | `0cb8fca`, `522f45f`, `482c4d5`, `8de73e0`, review `5c142a6`, fixes `f95bee5`, dispositions `42fd38f` | `g5`: 44 rows | E15, E16 | **82 candidates, 32 confirmed, 48 refuted, 2 folded** — the first review kept as a document rather than as notes, and it is now at `docs/historical/11-claude-web-client-code-review.md`. Notes N74–N98 landed as the phase ran and with the fixes; PF:24–28 came from E15's five cameras. **Its reconciliation was never written**, and that is a gap this ledger names rather than a cadence: P5e commissioned four things and three landed, so the rubric has no G5 block and the review's three transferable lessons reached no row. The G6 reconciliation says what that cost — the class it named in its own words ("an argument and its code have come apart") recurred five times one gate later |
+| P6 — video recording | `44e2f41`, `4425a7d`, `a97bb31`, `ca7fc89`, `e290279`, `ec92eb5`, `474ccc7`, `b1c0491`, review `c35dc6d`, eleven repair commits `8d0bf49`…`52f0b70`, closed by the commit carrying this row | `g6`: 39 rows | E17, E18 | **290 candidates, 204 killed by the lens that raised them, 86 reported and 86 independently verified (38 confirmed as stated, 35 narrowed, 13 refuted); 79 findings recorded, 78 closed and one accepted with its arithmetic on the record; 168 absence claims** — the record is `docs/11`, the first review over the whole tree rather than a phase. Notes N99–N133 landed as the phase ran and N134–N239 (N168 unused) with the repairs; **no PF entry was taken in either half** — E18 says PF:29 is still free, everything it measured being a behaviour an existing entry already names — and E18 paid the hardware debt the review declared, at four cameras and the vivid driver. Six new gate predicates came out of the repairs and a seventh with the reconciliation. **Three repair batches shipped a regression `just ci` could not see**, each caught by an independent reader of the diff — which is the finding the rubric's Part E now carries: rule 1 commissions the gate for the finding and nothing commissions the gate for the fix |
 
 Where E7 and E8 attach was open and is ruled here, because an evidence entry no row
 names is an entry nobody re-reads. **E7 is P3's and E8 is P4's.** The Evidence column
@@ -60,7 +70,9 @@ exist because of it.
   P4c, and the variant itself is gone at P4d.** P4c routed the whole T5 surface, taking
   `daemon::server::unrouted()`, its producer and its phase constant with it; N43 records
   what replaced the assertion (the *partition* over `api::METHODS` became the equality, so
-  a twentieth method still cannot land unrouted and unremarked). P4d's uevent watch emptied
+  a method added later still cannot land unrouted and unremarked — written as "a twentieth"
+  when the surface was nineteen, and the count is left out here because the mechanism does
+  not have one). P4d's uevent watch emptied
   the last row of `webcam-handler-v4l2::unimplemented_surface()`, and the variant, the
   list, its pinned test and D13's lowest RPC code were **deleted** — N6's scheduled death,
   taken by the exhaustive `Error::kind()` match exactly as N6 predicted. The registry is
@@ -816,6 +828,17 @@ gate close records whether it ran or skipped, by name.
 (protocol + browser rung transcript) recorded in the notes. **Then, in its own
 session:** the adversarial review; fixes; evidence entry; reconciliation.
 
+**Landed, three of four.** The review ran 2026-08-13/14 against `784a42d` — 82 candidates, 32
+confirmed, 48 refuted, 2 folded — the fixes landed at `f95bee5` and the dispositions at
+`42fd38f`, and the record is its own document, now at
+`docs/historical/11-claude-web-client-code-review.md`, because Part E asked for a census and
+E14 had already said in one sentence what losing one costs. **The reconciliation was not
+written**, and it is recorded here as an open item discharged elsewhere rather than as a thing
+that quietly did not matter: docs/8 has no G5 block, so the review's three transferable lessons
+— the settled-list briefing that made its refutation counts trustworthy, N94's *a type can be a
+blind spot*, and "the best findings were where an argument and its code had come apart" — reached
+no rubric row. G6's reconciliation says what that cost and carries the last of them.
+
 ## P6 — Video recording
 
 Gate **G6** criteria are v1's, distributed below; the phase ends with the plan's two
@@ -935,13 +958,27 @@ manual had to say so rather than teach a field that is not there (note **N124**)
 document was invented to close the second; that is a design change with an owner — **and the
 owner took it the same day**, which is P6f below.
 
-**G6 close: all criteria rows counted — 35** (36 since P6f added the failure-document row)**.** The seven added at this sub-milestone are the ones
+**G6 close: all criteria rows counted.** The seven added at this sub-milestone are the ones
 every earlier phase gate carries and `g6` did not: clippy, cargo-deny, `run-all.sh`,
 `selftest.sh`, `no-frame-bytes-in-repo.sh`, `privileged-helper.sh`, and the helper's own package.
 That hole is the one P5a named in advance rather than leaving to be rediscovered ("g5 has no
 `run-all.sh`, `selftest.sh`, clippy or cargo-deny row"), and naming it in advance is what made it
 a checklist item here instead of a review finding. **Then, in its own session,** the adversarial
 review; fixes; evidence entry; reconciliation.
+
+**All four landed, and P6 closes here.** The review ran 2026-08-15/16 against `3a7b9fa` and is
+`docs/11` — the first over the whole tree rather than a phase: 290 candidates, 204 killed by the
+lens that raised them, 86 reported and independently verified, 79 findings recorded, 168 absence
+claims. The fixes are eleven commits, `8d0bf49` through `52f0b70`, and every finding now carries
+a disposition in `docs/11` §12 — seventy-eight closed and one, **L25**, left with its arithmetic on the record (note **N240**). The review **is** its own evidence entry, as Part E now asks,
+with **E18** beside it for the hardware debt it declared and could not pay — four cameras and
+the vivid driver, which is where H1's refusal stopped being a reading and became a measurement.
+The reconciliation is the G6 block in `docs/8`, and it carries three things this plan should
+record here as well: the repair pass needed **an independent reader per batch**, because three
+of the eleven commits ended on a green `just ci` with a regression in them that no test asked
+about; **three repairs were fresh instances of the class they repaired**; and the criteria count
+in this section used to be written down, went stale twice in three days, and is now a live count
+in the ledger above, settled by `just gate-g6`.
 
 **The N8 ruling executed** (the owner's recorded trigger), 2026-08-15 — note **N125** carries the
 reckoning and N8 is retired against its own clause. The three answers: `CAP_NET_ADMIN` was spent
