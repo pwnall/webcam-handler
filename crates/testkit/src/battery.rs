@@ -551,6 +551,19 @@ fn check_current_is_replayed_not_corrected(
     log: &mut ArmLog<'_>,
 ) {
     let Some(current) = &desc.current else {
+        // A control with no value has nothing to replay, and the two reasons it can have
+        // none are not the same fact. A declared absence is ordinary and silent; a
+        // *declined* read is the device having refused this pass, and dropping it out of
+        // the PF:4 claim with no line makes the arm's own count a number that quietly
+        // means less than it says (AGENTS rule 3, note **N199**).
+        if desc.value_was_declined() {
+            log.note(format!(
+                "{}: not compared — the device declined to read its current value, which \
+                 is availability rather than a property of the control [PF:4's \
+                 population, minus one]",
+                desc.slug
+            ));
+        }
         return;
     };
     if desc.flags.has(KnownFlag::WriteOnly)
@@ -955,6 +968,7 @@ fn snapshot_of(fingerprint: &CameraFingerprint, controls: &[ControlDesc]) -> Sna
                 })
             })
             .collect(),
+        declined: Vec::new(),
     }
 }
 

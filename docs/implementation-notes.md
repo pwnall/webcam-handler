@@ -20928,3 +20928,825 @@ expression, so three multi-line seeds carry a narrow `disable=SC2016` with the r
 **Amend this note if** an arm ever wants a seed that legitimately changes nothing. There is no
 such arm today and it is hard to imagine one — a seed exists to make the tree different — so the
 helper refuses rather than taking a flag for a case nobody has.
+
+---
+
+## N187 — "Offsets are derived, never transcribed" was true of every field except the ten reached through a union
+
+**Doc:** design **§2.5** (no hand-declared kernel structs; the union-arm decision is made over
+bytes); `crates/backends/v4l2/src/sys/decode.rs`'s own header, which states the rule as a heading.
+Raised as docs/11 **L10**. Recorded 2026-08-16, batch B7.
+
+**Repo:** `sys::decode::{frame_size, frame_interval}`.
+
+The header's claim is the one that makes the rest of the module honest: this build reads kernel
+replies field by field rather than reinterpreting bytes as a struct, and it can only do that
+without `unsafe` because `offset_of!` over the `v4l2-sys-mit` bindgen output says where every
+field is. Ten offsets were not derived. `frame_size`'s stepwise arm read `union_at + 4`, `+ 8`,
+`+ 12`, `+ 16`, `+ 20` and `frame_interval`'s read `+ 4`, `+ 8`, `+ 12` — which is a transcription
+of `v4l2_frmsize_stepwise`'s and `v4l2_frmival_stepwise`'s layouts wearing a derived base. The
+base moving with the bindings is exactly what hid it: the numbers looked like arithmetic on a
+derived value rather than like a copy of a header.
+
+**The mechanism was already in the language.** `offset_of!` takes a nested path and follows it
+through a union, so
+`offset_of!(v4l2_frmivalenum, __bindgen_anon_1.stepwise.max.denominator)` names the whole route —
+struct, union arm, `v4l2_fract`, field — and the bindings decide all four steps. Nothing else
+changed: which arm the `type` word selects is still this module's judgement, made over bytes,
+which is the half design §2.5 wants here.
+
+**What went red first.** `a_stepwise_interval_decodes_through_the_stepwise_arm`, the arm the
+interval half never had — the size half has had `a_continuous_size_decodes_through_the_stepwise_arm`
+since P1. Both write their fixture through an **independent** transcription of what the kernel
+documents the struct to be (`union_at + index * 4`) and read it back through the decoder's derived
+path, because a fixture written through the same `offset_of!` the decoder reads through cannot go
+red for any offset at all. Misderiving `max` as `step` — the neighbouring `v4l2_fract`, and the
+plausible mistake, since the schema drops `step` — gives
+*"left: Stepwise { …, max_denominator: 1 }, right: Stepwise { …, max_denominator: 5 }"*.
+
+**Retires when:** nothing retires it; the header now says what the rule covers, which is what it
+was short of.
+
+---
+
+## N188 — The `bytesused` clamp is the example two documents cite and the one nothing could notice going missing
+
+**Doc:** rubric **B10** ("device-derived numbers … are validated before use"); design **§2.5**,
+which names `bytesused` as its worked example; `.cargo/mutants.toml`, which excludes
+`crates/backends/v4l2/src/sys/` by name. Raised as docs/11 **L22**. Recorded 2026-08-16, batch B7.
+
+**Repo:** `sys::mmap::Mapping::bytes`.
+
+`Mapping::bytes(used)` takes the driver's byte count and turns it into the length of a slice over
+a live `mmap`. It clamps, it has always clamped, and the review's absence list found it correct —
+what it did not have was anything that would go red if the `.min(self.len)` were deleted. The
+mutation floor cannot reach it, by a decision that is right for its own reasons, so the exclusion
+and the missing test compounded: the most safety-critical validation in the workspace was the one
+with the least around it.
+
+**A page of shared anonymous memory through `/dev/zero`.** `MAP_SHARED` over `/dev/zero` is the
+shared anonymous mapping Unix had before `MAP_ANONYMOUS`, so the test builds a **real** mapping of
+a known length through the real `Fd` and the real `Mapping::map`, on every Linux, with no camera —
+the argument `a_device_descriptor_is_not_inherited_by_anything_this_process_execs` already makes
+for `/dev/null` one directory up. Both directions are asserted: `0`, `1`, `len - 1` and `len` come
+back at their own lengths, because a `bytes` that answered `self.len` for everything would hand a
+decoder the previous frame's tail on every short MJPG frame; `len + 1`, `len * 2` and `u32::MAX`
+come back at `len`.
+
+**The sum is not decoration** — *and it was, until B7b put it in front of the length assertion.*
+An unclamped slice has the right pointer and a length past the mapping's last page, so a length
+assertion alone is a claim about a number; touching every byte is what makes it a claim about the
+*region*. With the clamp the read is inside a mapping this test made, and without it the arm
+reaches an unmapped page. As first written the length assertion ran **first**, so in the exact
+failure mode this paragraph names the assert panicked on the number and the region was never
+touched: the sum could not execute, and the paragraph was describing an arm that did not exist.
+The read now happens before the assertion, which is the whole of the repair and is why the red
+below has two forms.
+
+**The precondition is `.expect` and not a `return`.** `a_page()` first answered `Option`, and the
+test opened with `let Some(…) = a_page() else { return }` — so a host where `Fd::open` or
+`Mapping::map` failed for *any* reason, a future regression in `map` included, passed green with
+zero assertions, uncounted and unnamed. That is the skip that reads as a pass, in the file whose
+subject is the workspace's most safety-critical validation. The precedent one directory up
+(`a_device_descriptor_is_not_inherited_by_anything_this_process_execs`) says `.expect("/dev/null
+is on every Linux this crate builds for")`, and this now says the same about `/dev/zero`.
+
+**What went red first.** Deleting `.min(self.len)`, as first written:
+*"a driver claiming 4097 bytes of a 4096-byte buffer must get the buffer — left: 4097, right:
+4096"*. With the read moved in front of it, the same deletion instead ends the process:
+*"SIGSEGV — test aborted with signal 11"*, which is the arm this note claimed all along.
+
+**Retires when:** `src/sys/` enters the mutation floor's examined set, which would make the
+deletion above a mutant somebody has to answer for. The exclusion's own reasons have not changed,
+so this is a marker rather than a plan.
+
+---
+
+## N189 — Every fixture agreed with `members.first()`, so nothing said a camera's identity is its capture node's
+
+**Doc:** design **D1** (the fingerprint and what `calibrate apply` matches against); \[PF:7\]
+(what a node is comes from `device_caps`, never from numbering); \[PF:13\]; \[PF:19\]; \[PF:22\]
+(node numbering is probe-order bookkeeping — one `uvcvideo` reload renumbered three of four
+cameras). Raised as docs/11 **L23**. Recorded 2026-08-16, batch B7.
+
+**Repo:** `v4l2::enumerate::representative`, and the `CameraFingerprint` `info_for` builds from it.
+
+`representative` picks a group's **first capture node**, falling back to its first member, and the
+node it picks supplies the whole of the camera's identity: `card`, `driver`, `serial`, `usb_id`,
+and through `card` the D1 id. Nothing in the file could tell it from `members.first()`. Every
+fixture here has its capture node first — the seed hardware's three cameras and the Dell's four
+nodes alike — and every node of a group carries the same `QUERYCAP` strings, so the two candidate
+implementations return the same value on all of them. Replacing the body with
+`members.first().copied()` left thirteen tests green.
+
+**Neither premise is a rule.** Member order is `/dev/videoN` order, and PF:22 measured what that
+is worth. The one thing standing between a metadata node's answer and a camera's identity is the
+capability test in this function, and D1's consequence for getting it wrong is not cosmetic: a
+fingerprint is what `calibrate apply` compares a stored session against.
+
+**The fixture is declared, and says so.** No device this project has seen reports different
+`QUERYCAP` strings on two nodes of one interface, so the divergent card in
+`a_cameras_identity_is_its_capture_nodes_and_does_not_move_when_its_nodes_are_reordered` is a
+hypothetical — it is there because a fixture where the two candidates agree cannot state which one
+was asked. Beside it is a claim that needs no invented device: the same two nodes in either order
+produce the identical fingerprint and the identical id, which is the property a renumbering would
+break.
+
+**What went red first.** With `representative` reduced to `members.first().copied()`:
+*"left: "Reordered Camera Metadata", right: "Reordered Camera""*.
+
+**Retires when:** a device is measured whose nodes disagree about `QUERYCAP`, which would replace
+the declared half of the fixture with a captured one.
+
+---
+
+## N190 — A SAFETY comment covering ten ioctls discharged an obligation none of them has, and missed the one they do
+
+**Doc:** rubric **B10** ("a false safety claim is a defect even when the code works"; one
+obligation per block); `crates/backends/v4l2/src/sys/mod.rs`'s residual-`unsafe` register.
+Raised as docs/11 **L9**, out of the §7.1 absence list — every `unsafe` block in the workspace was
+read against the ioctl's own kernel contract and none was found unsound. Recorded 2026-08-16,
+batch B7.
+
+**Repo:** `sys::ioctl::call`, and the register row for it.
+
+`call` serves ten ioctls — `QUERYCAP`, `S_FMT`, `S_PARM`, `G_PARM`, `REQBUFS`, `QUERYBUF`, `QBUF`,
+`DQBUF`, `STREAMON`, `STREAMOFF` — and its comment ended *"The struct holds no pointers … so the
+kernel dereferences nothing else."* Three of the ten carry `v4l2_buffer`, whose `m` union holds
+`planes`: a `__user` array the v4l2 core walks, `length` entries of it, for a multi-planar queue.
+The struct does hold a pointer. **The code is right and the sentence is not**, which is the
+distinction B10 exists to make: what discharges the obligation is not the struct's shape but two
+values in it, and the comment named neither.
+
+**The obligation, stated as the two values.** `buffer_request` starts from a zeroed payload and
+writes `V4L2_BUF_TYPE_VIDEO_CAPTURE` — the single-planar queue, where the core reads `m` inline as
+`offset`/`userptr`/`fd` and never follows it — and the union's eight bytes and `length` both stay
+zero, so there is no pointer to follow. That is a fact about a request this build builds, so it is
+asserted rather than remembered: `the_buffer_ioctls_never_hand_the_kernel_a_plane_pointer` reads
+the queue word, the whole union and `length` back out of `buffer_request`'s payload. One builder
+serves all three ioctls, so one assertion covers all three — and `only_one_place_in_this_module_
+builds_the_buffer_the_safety_comment_is_about` is what keeps "one builder" true, since a second
+zeroed `v4l2_buffer` payload two hundred lines away would make this paragraph false with nothing
+to notice (note **N199**).
+
+**The `length` half was stated as a bound and the kernel makes it a refusal.** The comment this
+note landed read *"the zeroed `length` would bound the walk at nothing if it were [followed]"*.
+vb2 does not size a plane walk by the user's `length` — it sizes it by `vb->num_planes`, which is
+the driver's number — and what stands between a null `m.planes` and that walk is
+`__verify_planes_array` answering `-EINVAL` when `b->m.planes` is null or `b->length` is under
+`vb->num_planes`, before anything is dereferenced. Zero is under every `num_planes` a driver can
+report, so the call is refused rather than followed. The outcome is the same and the sentence was
+not, which is the distinction this whole note exists to make; B7b corrected it in place.
+
+**What went red first.** Setting the buffer type to `V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE` (9):
+*"left: Some(9), right: Some(1)"*.
+
+**Retires when:** this build acquires a reason to use the multi-planar API, which would make
+`m.planes` a pointer somebody has to set, own and bound — a different obligation and a different
+comment, and the test above is what would demand both.
+
+---
+
+## N191 — The refusal for a stream this process is running named this process
+
+**Doc:** note **N48** point 5 — *"naming this process's pid would invite a client to kill the
+daemon it is talking to"*; design **D10** and **D13**'s `Busy { holders }`;
+`engine::actor::Actor::busy`, which says the same thing in the same words. Raised as docs/11
+**M5**. Recorded 2026-08-16, batch B7.
+
+**Repo:** `V4l2Camera::start_stream`'s second-stream arm.
+
+The arm refusing a second `start_stream` built `Busy { holders: holders::of(self.fd.path()) }`
+three lines under a comment reading *"The holder list is empty rather than naming this process."*
+The walk runs over a node **this** process holds — it is holding it in order to make the refusal —
+so it found the caller and put its pid in a field `terminate_holder` reads as *the pids that would
+free this camera*. `daemon::server::not_this_daemon` refuses that pid on the `terminate_holder`
+*request* one layer up, which is what kept this a contradiction and a latent invitation rather
+than a hole — it is a refusal of the kill, not of the payload naming us, and the comment this note
+landed in `lib.rs` stated it the other way round. Note **N197** repairs that sentence and the two
+places this arm was the only instance of: `sys::ioctl::device_error`, where the same walk runs
+under every ioctl in the crate.
+
+**Which layer should be right.** `not_this_daemon` is a backstop over a value that should never
+have carried the pid; the layer that knows this stream is ours is this one, and it is now the one
+that answers. The other half of N48's sentence has always been in `engine::actor`, whose queue-full
+`Busy` carries an empty list for the identical reason.
+
+**The test asserts a decision, not an absence.** An empty holder list is only a decision if the
+walk had something to say, so
+`refusing_a_second_stream_names_nobody_rather_than_the_process_making_the_refusal` opens a file in
+`target/wch-scratch` that nothing else on the machine has open, refuses a second stream on it, and
+then — with the camera still alive, holding that descriptor — asserts the `/proc` walk over the
+same path *does* name this process. `/dev/null` would not do: it is held by hundreds of processes
+and `limits::MAX_HOLDERS_REPORTED` is 4, so the non-vacuity arm would be a coin toss.
+
+**What went red first.** With `holders::of(self.fd.path())` restored:
+*"the refusal for a stream this process is running named [Holder { pid: 674905, comm:
+Some("v4l2-…") }]"*.
+
+**Retires when:** nothing retires it.
+
+---
+
+## N192 — The control walk ended on one control it could not read, and ran to the end for one control it was asked about
+
+**Doc:** AGENTS rule **7** (availability is not capability) and rule **6** (represent the
+unknown); design **D2**; **E3**; \[PF:2\] (menus are sparse); \[PF:15\]. Raised as docs/11 **M6**
+and docs/11 §8 **P1** — two findings about one loop, kept as one note because the repair is one
+function. Recorded 2026-08-16, batch B7.
+
+**Repo:** `V4l2Camera::walk_controls`, with `Camera::controls` and `V4l2Camera::describe` as its
+two callers; `v4l2::walked_current`.
+
+### 1. One control the device declined ended the enumeration
+
+`controls()` read each control's current value with `self.read_current(&desc)?`.
+`unreadable_current` folds `EINVAL` and `EACCES` into "no readable value" — argued at length, and
+right — and everything else propagated out of the loop. So a device that declined **one**
+`G_EXT_CTRLS` answered "what can this camera do" with a device error instead of with the other
+seventeen controls, which is E3's conversion at the level D2 exists to protect. `EBUSY` is the
+sharp instance and not a hypothetical one: the UAPI documents it as the answer for a control whose
+device function another application has taken over, and `sys::ioctl::device_error` maps it to
+`Busy { holders }` — so one busy *control* was reported as another process holding the *camera*,
+from a camera that was answering `QUERY_EXT_CTRL` for every control on it.
+
+`walked_current` is the walk's own question, kept separate from the caller's: `get` and `set` were
+handed one id, so an availability fact about that id *is* their answer, and it is passed up
+unchanged. In the walk the control is carried valueless instead.
+
+**Both halves of that sentence were wrong when this note first landed, and B7b repaired them
+(note N196).** The separation was not a separation: `describe` — which is how `get` and `set` read
+the device — went through the shared walk and got the *tolerant* policy, so a `set` proceeded to
+write where it had previously aborted, and the read-back then propagated the refusal the walk had
+swallowed. And the tolerance was far wider than "one error still ends it": everything but
+`DeviceGone` was carried, so `EPERM`, `EIO`, a timeout and this build's own `short_reply` — *the
+kernel's reply was shorter than the bindings describe* — all read as "this control has no value".
+Rule 7 names four things that stay distinct and three of them had been converted.
+
+**What is carried is `EBUSY` and nothing else**, on its own evidence: the UAPI documents it as
+`G_EXT_CTRLS`'s answer for a control whose device function another application has taken over,
+which is a fact about one knob on a camera that is answering every other query put to it.
+`DeviceGone` ends the walk because the subject of the enumeration has stopped existing, every
+remaining read will fail identically, and a full list of valueless controls would describe a
+camera nobody can photograph as one whose knobs happen to have no values — the same conversion
+with the arguments swapped, and worse, because it looks like an answer. `PermissionDenied` and
+`DeviceIo` end it because rule 7 says so and because the second of them is how this build reports
+its own defects. The subject of the walk is now an argument to `walked_current` rather than a
+choice made by which of two functions the loop happened to call.
+
+**What a carried control costs, stated rather than waved at.** The absence is visible and the
+*reason* is not. A reader can tell a predicted absence from an unpredicted one — a `BUTTON`, a
+`CONTROL_CLASS`, a `WRITE_ONLY`, a `DISABLED` control and a compound whose declared payload size
+this build will not fetch each declare their own — so a `None` the descriptor did not predict is
+"the device declined to read this one", which is what `Unverifiable::DeviceDeclinedToRead` names
+on the write side. Whether it declined with `EBUSY` or with something else is lost, and since B7b
+narrowed the tolerance there is exactly one thing it can have been. Carrying the errno means a new
+field on `ControlDesc`, a `webcam-handler-schema` type with 64 construction sites across 21 files,
+and no device has yet been seen doing this — so the cheap half landed and the field did not.
+
+**That predicate was an argument and not code, which is how the trade came to be worth less than
+it claimed.** When this note landed, "a reader can tell" was true of a reader holding the
+descriptor and reasoning about it, and of nothing that shipped: the CLI printed `—` for every
+absence — the same literal it uses for "no meaningful range" and "no flags" — and the web panel
+drew an integer's slider at the declared default and left it live. B7b made the predicate a
+function, `ControlDesc::value_was_declined`, in the crate where control semantics live, and gave
+it the readers this paragraph assumed (notes **N195**, **N199**). It is derived rather than
+stored, so a JSON consumer computes the same answer from the same bytes: the fields it reads —
+`type`, `flags`, `elems`, `elem_size` — are all on the wire beside the absent `current`.
+
+**The menu is deliberately not treated this way.** `read_menu`'s `?` still ends the walk. A
+missing *value* is an absence a reader can see; a missing *menu item* is invisible, because menus
+are legitimately sparse \[PF:2\], so a partially read menu looks exactly like a complete one — and
+D3's pair discovery finds `Manual Mode` by name inside it.
+
+### 2. `describe(id)` ran the whole enumeration to answer about one id
+
+`describe` was `self.controls()?` followed by a `find`: a `QUERY_EXT_CTRL` per control, a
+`QUERYMENU` sweep per menu control and a `G_EXT_CTRLS` per readable one, to answer about a single
+id. `get` and `set` both come through it, so **a guarded write paid that walk once per planned
+write** — on vivid's 77 controls, a sweep's inner loop.
+
+The repair is a `wanted: Option<ControlId>` on one shared walk: the same ioctl in the same order,
+skipping the menu and value reads for controls that are not the one asked for, and stopping at the
+target — or the moment the strictly-increasing ids have gone past it, which also makes an id
+nothing has cheap to refuse.
+
+**Every call it makes is a call the walk was already making**, which is the whole reason this is
+worth doing on a device-driven path with no probe behind it (rule 4): there is no new device
+behaviour to be wrong about. This note first said "a **strict prefix** of what it was already
+being asked", and that is an overstatement in the one direction rule 4 cares about — it is a
+prefix of the `QUERY_EXT_CTRL` walk and a *subsequence* of the whole thing, because the `QUERYMENU`
+sweeps and the `G_EXT_CTRLS` of every control it steps over are dropped, as the sentence two
+clauses earlier says. Both halves matter: nothing new is asked, and less is asked. B7b corrected
+the word here and in both doc comments that carried it (note **N199**).
+
+**The version not taken, and what it would need.** A direct `QUERY_EXT_CTRL` on the id with
+`NEXT_CTRL` cleared costs *one* ioctl rather than a prefix — an order of magnitude more than the
+early stop on a 77-control device. It is also a call this build has never made, on the path that
+feeds `set`, and therefore motors; the UAPI says it answers the same struct, and "the UAPI says"
+is `declared` data until a probe makes it `measured`.
+`hw_describing_one_control_says_what_the_whole_walk_says_about_it` is written and `#[ignore]`d
+against `just smoke-hw`: it compares
+`describe(id)` with the walk's entry for every control on every camera attached, and refuses an id
+past the last control. It is the arm that constrains the early stop today and the measurement the
+targeted query would need tomorrow.
+
+**What went red first.** With `walked_current` reduced to its old pass-through:
+*"the walk ended on /dev/video0 is busy: held by something-else (pid 4321), which is a fact about
+one control — left: Err(Busy { … }), right: Ok(None)"*. B7b's two arms over the same function are
+*"a permission refusal is not a control with no value: left: Ok(None), right: Err(PermissionDenied
+{ … })"* and *"a caller that named one control gets that control's availability answer — left:
+Ok(None), right: Err(Busy { … })"*.
+
+**Retires when:** a device is measured that declines a control read with something other than
+`EBUSY`, `EINVAL` or `EACCES` and where carrying the control valueless is better than ending the
+walk — that is the evidence for the `ControlDesc` field §1 declined, and note **N196** narrowed the
+tolerance to `EBUSY` alone in the meantime. The hardware arm above retires §2's caution.
+
+---
+
+## N193 — The listing and the explanation of what it dropped were two readings of the machine
+
+**Doc:** note **N7** (why T1 has a fifth method at all, and the two alternatives it beat);
+design **D1** ("an empty enumeration is diagnosed, not shrugged at"); **E3**. Raised as docs/11
+**M7**. Recorded 2026-08-16, batch B7.
+
+**Repo:** `V4l2Backend::{enumerate, diagnose}`, `V4l2Backend::last_probe`, `v4l2::unreadable_hints`.
+
+`probe_nodes` produces both halves of one answer on every pass: the nodes that answered `QUERYCAP`
+and, per group, the ones that did not. `enumerate` used the first and threw the second away;
+`diagnose` ran `probe_nodes` again and used the second. So the `NodeUnreadable` hint that explains
+a missing camera could describe a *different moment* than the listing it was attached to — a node
+that recovered between the two passes is explained and not missing, one that went busy between
+them is missing and not explained. N7's argument for the second method is that "the cameras" and
+"why there might be fewer than you expect" are two facts; what it never said, because nothing had
+made it matter, is that they are two facts about the **same** moment.
+
+**The repair is a value, and then a place to keep it.** `unreadable_hints(&Probe)` is the pure
+half: `enumerate::group` reads `Probe::probed`, this reads `Probe::unreadable`, and one `Probe`
+answers both — which is what turns "two halves" from a call order somebody has to keep into a
+property of a function. `enumerate` then keeps its pass in `last_probe` and `diagnose` **takes**
+it. Taking rather than peeking is deliberate: a pass explains one listing, and a `diagnose` a
+minute later reading a minute-old pass would be the staleness this note is about wearing a lock.
+A `diagnose` with nothing to take reads the machine itself, which is the only path left that
+probes twice and is what a caller asking for a diagnosis with no listing behind it wants.
+
+**What it claimed about concurrency was wrong twice, and B7b closed it (note N198).** This note
+said two crossing threads "both then get a whole reading of one machine microseconds apart, which
+is what the second probe was already giving *every* caller". Neither clause held. The loser of a
+crossing does not get a reading — it finds an empty slot and **re-probes**, so a contended
+`wch_list` costs three full node-open passes where it deterministically cost two. And the window
+is not microseconds: it is a whole `probe_nodes`, an `open(2)` plus a `QUERYCAP` per node. Worse
+than the cost, the *winner* is the loser's pass: a `wch_list` could present the reading an
+unrelated `wch_photo`'s `resolve` had just taken as the explanation of a listing it never saw,
+which is this note's own defect arriving through a different door. One `Arc<V4l2Backend>` serves a
+whole daemon and six paths reach `enumerate` from three thread families, so it needs no unusual
+client to happen.
+
+The slot now carries the `ThreadId` that filled it and is taken only by that thread.
+`engine::resolve::list` is the one assembler in the workspace and it calls the two in order on one
+thread, so the pairing it makes is exact; anybody else finds nothing to take and reads the
+machine, which is the answer they had before any of this existed. Losing a pass to an overwrite is
+the safe failure and taking a stranger's is not, so the stamp is checked rather than the slot
+merely being locked.
+
+**What went red first.** With `diagnose` re-probing:
+`diagnose_explains_the_listing_it_was_asked_about_rather_than_reading_the_machine_again` seeds a
+pass naming `/dev/video2` as unreadable and asks the backend to explain itself —
+*"the diagnosis did not carry the pass it was given"*. The second half of the same test asserts
+the pass is spent.
+
+**And that arm proved less than this paragraph claimed.** It seeds the slot by calling `remember`
+directly, so the link it constrains is `diagnose` → slot, never `enumerate` → slot: deleting
+`self.remember(probe)` from `enumerate` moved no assertion and fired only a dead-code lint. B7b
+made the link a function — `V4l2Backend::listing`, which groups *and* remembers — so a test can
+hand it a pass and ask the object what it kept
+(`a_listing_leaves_the_pass_that_produced_it_for_the_diagnosis`, red as *"the listing did not
+leave its pass behind: []"*). The one non-`#[ignore]`d arm that drives a real machine also called
+`diagnose()` **before** `enumerate()`, which is the pairing no caller makes, so it was exercising
+the fallback and asserting the pre-repair behaviour; the order is now the product's.
+
+**Retires when:** T1 gains a way to ask for both halves in one call, which N7 considered and
+rejected for reasons that still hold.
+
+---
+
+## N194 — `Unknown { raw: 0 }` was a kernel discriminant this build made up
+
+**Doc:** design **D2** ("represent the unknown … never 'corrected'"); AGENTS rule **6**;
+`schema::camera::FrameInterval::Unknown::raw`, documented as *"the kernel's `type` discriminant,
+preserved exactly"*. Raised as docs/11 **M8**. Recorded 2026-08-16, batch B7.
+
+**Repo:** `schema::camera::FrameInterval::Unstated`; `v4l2::stated_interval`; the four matches on
+the vocabulary in `imaging::avi`, `fake::camera`, `cli_core::render` and the schema itself.
+
+`sys::decode::capture_interval` gets this exactly right: a driver that cleared
+`V4L2_CAP_TIMEPERFRAME` has said its `timeperframe` field means nothing, and the decoder answers
+`None` rather than reporting the `1/0` in it. One line above the `sys` boundary that `None` became
+`FrameInterval::Unknown { raw: 0 }` — a variant whose payload is documented as the kernel's own
+`type` word, filled with a number the kernel never sent. `0` is the worst available invention: it
+is what a driver that filled in nothing would write, so *"the device described shape 0"* and
+*"the device described nothing"* were the same value. D2 asks for what cannot be interpreted to be
+represented; manufacturing the evidence for it is the one thing D2 forbids.
+
+**A fourth answer rather than a fourth `raw`.** `FrameInterval::Unstated` carries no payload
+because there is nothing to carry. `fps()` is `None` for it and for `Unknown`, which is right —
+neither answers "how fast" — and it is the method a caller wanting a rate should be asking. On the
+wire it is `{"kind": "unstated"}`, with no `raw` field to read a zero out of.
+
+This paragraph originally leaned on `FrameInterval::is_interpretable`, a `#[must_use]` public
+predicate with **no reader anywhere in the workspace**; B7b deleted it rather than documenting it
+further (rubric A8, note **N199**). The doc it had encouraged `if is_interpretable() {
+compute_rate() }`, which for `Unstated` is `true` with `fps()` of `None` — a usage the note was
+recommending and the type could not support. `FrameSize::is_interpretable` stays: it has two
+readers in `schema::capture` that decide which sizes a request may be resolved against.
+
+**And `Unstated` meant one thing too many when it landed.** `sys::decode::capture_interval`
+answered `None` for four reasons and `stated_interval` was `reported.unwrap_or(Unstated)`, so a
+driver that *set* `V4L2_CAP_TIMEPERFRAME` and wrote a degenerate `1/0` — the case
+`sys::decode`'s own test asserts exists — got a value whose committed documentation states as fact
+that it cleared the bit. One invented claim about the device had been traded for another. The
+decoder now answers `NotOffered` and `Offered(fraction)` separately, the degenerate fraction is
+carried verbatim as the `discrete` interval the driver actually sent (D2), and a reply too short
+to read is `short_reply` rather than a fact about the device at all (note **N199**).
+
+**The three consumers, each answering in its own terms.** `imaging::avi::interval_micros` adds it
+to the `None` arm beside `Stepwise` and `Unknown`, so a recording still declares
+`IntervalSource::Provisional` rather than rounding to 30 fps. The fake falls back to its own
+interval rather than inventing one, which is the same refusal it already made for `Unknown`.
+`cli_core::render` prints `(not offered)` and not `(unreadable shape …)`: the device answered, and
+the answer was that it does not negotiate an interval on this node. The web client needed no
+change — it prints `interval.kind` for anything that is not discrete, which is now a word rather
+than a lie.
+
+A fourth consumer was missed and is the one a person reads: `cli_core::render::adjustment_text`
+rendered `Adjustment::Interval` as `fps().unwrap_or(0.0)` on both sides, so on the exact device
+this note is about the D5 line said **"asked 30, got 0"** — a rate nothing measured, printed as a
+measurement. B7b routed every interval a human sees through one `frame_interval_text` (note
+**N199**).
+
+**And it widened the request vocabulary as well as the answer.** `StreamRequest.interval` shares
+this `$ref`, so `{"interval": {"kind": "unstated"}}` became an accepted request meaning nothing,
+and the two backends answered it differently through pre-existing `_` arms — the V4L2 one read the
+device back, the fake picked its first enumerated interval and reported an adjustment for a
+request nobody made. `StreamRequest::stated_interval` is now the one place that says a request
+carrying `Unstated` stated nothing, and both backends go through it (E5, note **N199**).
+
+**The decision has a name now.** It was a `.unwrap_or(…)` on a line nothing could ask about;
+`stated_interval` is a function, and
+`a_device_that_names_no_frame_interval_is_reported_as_saying_nothing_not_as_shape_zero`
+asks it both ways — nothing in becomes `Unstated`, and a shape the
+device *did* name comes through untouched, `Unknown { raw: 99 }` included.
+
+**The schema artifacts moved with it**, as they must (`just generate`), and the variant's doc
+carries no rustdoc link: note **N148** owns that class and its instruction is not to add to the
+pile, which a `$def` description reading ``[`FrameInterval::Unknown`]`` to a consumer with no Rust
+toolchain would have done.
+
+**What went red first.** With `stated_interval` restoring the old value:
+*"left: Unknown { raw: 0 }, right: Unstated"*.
+
+**Retires when:** nothing retires it.
+---
+
+## N195 — The walk stopped ending on a refusal, and the snapshot started dropping the control it carried
+
+**Doc:** AGENTS rule **8** ("leave the camera as you found it … persisted pre-sweep snapshots make
+crashes recoverable; tests assert restoration"); rule **7**; design **D4**; note **N83** (the two
+consumers overlap on one camera as the normal case). Raised as finding 1 of the B7 review.
+Recorded 2026-08-16, batch B7b.
+
+**Repo:** `schema::control::ControlDesc::{declares_no_value, value_was_declined}`;
+`schema::snapshot::{Snapshot::declined, UnrestorableReason::NeverRecorded}`;
+`engine::snapshot::{take, restore}`; `engine::lifecycle::arm_pre_snapshot`;
+`engine::profile::capture`; `fake::Fault::ControlReadDeclined`.
+
+N192's repair is right and it moved a population. Before it, a control the driver declined to read
+ended the enumeration; after it, the control is carried with `current: None` — and `current: None`
+already had two tenants. `engine::snapshot::take` filters on `is_writable()` and then drops
+anything with no value through a `?`, which had been exactly correct for the tenants it knew
+about: a `BUTTON` and a `WRITE_ONLY` control have no value to record and nothing to put back. The
+third tenant is a fully restorable control the device happened to refuse this pass, and it left by
+the same door. No entry, no marker, no log line.
+
+**What made it silent rather than merely lossy.** `RestoreReport::is_complete()` walks `outcomes`,
+and outcomes are one per *entry* — so a control that never became an entry produces no outcome and
+cannot make a report incomplete. `lifecycle::recover` then clears `pre_snapshot`, writes
+`Restored { unrestored: 0 }` and consumes the document; `cli_core::render` prints the "did not come
+back" note only when the report is incomplete. Exit 0, no note, camera changed. The worst instance
+is the one the primary consumer meets: `auto_exposure` declines its read during
+`arm_pre_snapshot`, is dropped, the guarded write switches it to Manual so the sweep can run, and
+restore never switches it back — automation off for every subsequent photo, on a machine where the
+owner's statement says the two consumers overlap on one camera as the normal case.
+
+**The predicate first, because both repairs need the same one.** `declares_no_value` is the list a
+descriptor makes about itself — `BUTTON`, `CONTROL_CLASS`, `WRITE_ONLY`, `DISABLED`, and a
+compound whose declared `elem_size × elems` is zero or past `MAX_CONTROL_PAYLOAD_BYTES`, which is
+this build's own bound rather than the device's and belongs in the same list for the same reason.
+It lives in `webcam-handler-schema` because control semantics do, and because the V4L2 backend's
+`read_current` opens with exactly that list: two copies would drift, and the whole worth of
+`value_was_declined` — `current.is_none() && !declares_no_value()` — is that they cannot.
+
+**Three consumers, three different right answers, and the difference is what each one promises.**
+
+- `snapshot::take` **records**. The document names what it could not read, in
+  `Snapshot::declined`, and `restore` turns each name into an
+  `UnrestorableReason::NeverRecorded` — the one reason decided before any write is attempted. So
+  `is_complete()` is false, `unrestored()` names it, the human line prints, and the exit code
+  moves. `webcam-handler-cli snapshot` still produces the document it could take, which is right:
+  a caller asking for a reading gets the reading plus its own limits.
+- `lifecycle::arm_pre_snapshot` **refuses**. Its doc has always promised *"a failure here means
+  nothing has been written to the camera, which is the point of doing it first"*, and that promise
+  is the whole of rule 8 on the sweep path. A snapshot that cannot record a control cannot promise
+  a restore, so the sweep does not start. This is the pre-N192 behaviour, restored at the one place
+  that was relying on it and nowhere else.
+- `profile::capture` **refuses**, because its own doc already said so: *"a capture that could not
+  read part of the device is not a partial profile — it is not a profile."* A corpus entry is what
+  every resemblance claim is compared against, and one missing value nobody can see is drift with
+  provenance on it. Every control here, not only the writable ones: a profile is a reading.
+- `photo::controls_in_effect` **does neither, deliberately**, and its doc now says why. A photo's
+  control record is a record of a moment, not a promise to put a camera back, and the alternative
+  is refusing a photograph over its metadata. It is also strictly better than what it replaced:
+  before N192, one busy control made `controls()` fail and this map came back **empty**, losing
+  every other control's value with it. Degrading by one row rather than by all of them is the
+  improvement, and there is an arm that says so.
+
+**Nothing in the tree could have gone red on any of it, which is the second half of the finding.**
+Every restoration assertion in the workspace is scoped to the snapshot's own entries — the
+hardware suite iterates `snapshot.entries`, the battery builds from `report.outcomes`, and
+`values_of` repeats the same `filter_map` — so a dropped control was never compared with anything.
+No fixture anywhere set `.current = None` on a writable control. `engine::double::unreadable` is
+now that fixture, in two lines.
+
+**And the walk's own claim had no integration arm at all.** "The enumeration continues" was
+guarded by a direct equality on a free function: the V4L2 backend has no ioctl seam, the fake's
+fault menu had no per-control read failure, and `crates/backends/v4l2/src/lib.rs` is not in
+`.cargo/mutants.toml`'s examined set. `Fault::ControlReadDeclined` is the seam — one control comes
+back valueless and the walk runs to the end — and it is walked by both exhaustive fault matches,
+so the fake's own suite asserts the shape and the engine's asserts what the engine does about it.
+The fake carries no errno, on purpose: the real path loses it too, and a fake capability no real
+device demonstrated is a bug in the fake (E5).
+
+**What went red first.** `a_control_the_device_declined_to_read_is_named_by_the_snapshot_rather_
+than_dropped`: *"…and must be named, or nothing downstream can know it is missing — left: [],
+right: ["auto_exposure"]"*.
+`a_control_the_snapshot_could_not_record_makes_the_restore_incomplete`: *"RestoreReport { outcomes:
+[Restored { … brightness … }], freed: [] }"* — one outcome, for the control that was never in
+danger, and `is_complete()` true.
+`arming_a_pre_snapshot_the_camera_would_not_answer_for_refuses_before_anything_is_written`: *"a
+camera whose state cannot be recorded cannot be swept: Taken { controls: 1 }"*.
+`a_capture_the_device_declined_part_of_is_refused_rather_than_committed_as_a_profile`: the whole
+`DeviceProfile`, with `auto_exposure` in `invariant.controls` and absent from `state.values`.
+
+**Retires when:** a device is measured that declines a control read *permanently* — a control that
+answers `EBUSY` on every pass rather than while something else has it. `arm_pre_snapshot` would
+then refuse that camera every time, which is correct and useless, and the answer would be a
+per-control opt-out with the measurement behind it. Nothing has been seen doing it; every profile
+in `corpus/` records a value for every writable control it enumerates.
+
+---
+
+## N196 — Rule 7 names four answers and the walk was keeping one of them
+
+**Doc:** AGENTS rule **7** ("EBUSY/ENODEV/EPERM/timeout stay distinct from 'the camera can't'; no
+code or test converts one into the other"); rule **5** ("requested is not applied"); **E3**;
+design **D3**. Raised as findings 7 and 18 of the B7 review. Recorded 2026-08-16, batch B7b.
+
+**Repo:** `v4l2::walked_current`, and `V4l2Camera::{walk_controls, describe}`.
+
+`walked_current` landed as *"one error still ends it"*, and the one was `DeviceGone`. Read as a
+table that is the opposite claim: `EBUSY` carried, `EPERM` carried, and everything else — every
+timeout, every `EIO`, and this build's own `short_reply` — carried too. Three of rule 7's four
+classes were being converted into "this control has no value", and the third of them is the one
+that matters most for a crate carrying `unsafe`: `sys::ioctl::short_reply` is a `DeviceIo` with no
+errno reading *the kernel's reply was shorter than the bindings describe*, so a bindgen or offset
+defect in `crates/backends/v4l2/src/sys/` arrived at a caller as an absent control value.
+
+`EBUSY` is the one that belongs, and it belongs on evidence rather than on symmetry: the UAPI
+documents it as `G_EXT_CTRLS`'s answer for *a control whose device function another application
+has taken over*. That is a fact about one knob on a camera that is answering `QUERY_EXT_CTRL` for
+every control on it, which is the whole of N192's argument. The others are facts about the node,
+the process, or us.
+
+**The second half is worse and shares a cause.** `describe` is how `get` and `set` read the
+device, and N192's own text says the caller's question is different from the walk's — but
+`describe` reached the tolerance through the shared walk, so the separation existed in the prose
+and not in the code. The consequence is a rule 5 defect with a device write in it: `set` used to
+abort at `describe` when the target's read failed and write nothing; afterwards it swallowed the
+failure, wrote, and then propagated the same refusal from D3's read-back — so a write the device
+**took** returned `Err` with `{requested, applied}` lost. The subject of the walk is now an
+argument to `walked_current`, so the two policies are one function two arms can drive, and
+"which policy did `describe` get" is a question with a test rather than a call graph.
+
+**What went red first.**
+`the_only_refusal_a_walk_carries_is_the_one_the_uapi_makes_about_a_control`: *"a permission
+refusal is not a control with no value: left: Ok(None), right: Err(PermissionDenied { path:
+"/dev/video0", hint: "join the video group" })"*.
+`a_walk_sent_for_one_control_answers_about_that_control_rather_than_tolerating_it`: *"a caller
+that named one control gets that control's availability answer — left: Ok(None), right:
+Err(Busy { path: "/dev/video0", holders: [] })"*.
+
+**Retires when:** a device is measured that declines a control read with something other than
+`EBUSY`, `EINVAL` or `EACCES` and where carrying the control valueless is better than ending the
+walk. That evidence is also what N192's `ControlDesc` field would need, so the two retire together
+or not at all.
+
+---
+
+## N197 — Every ioctl refusal in this crate is made on a descriptor this process is holding
+
+**Doc:** note **N48** point 5 (*"naming this process's pid would invite a client to kill the daemon
+it is talking to"*); design **D10** and **D13**'s `Busy { holders }`; note **N191**, which repaired
+the first instance. Raised as findings 9 and 10 of the B7 review. Recorded 2026-08-16, batch B7b.
+
+**Repo:** `v4l2::holders::others_holding`; `sys::ioctl::{device_error, control_error, classify}`.
+
+N191 repaired `start_stream`'s second-stream arm and stopped there. The same walk is one layer
+down, in `sys::ioctl::device_error`, where an `EBUSY` from **any** ioctl becomes
+`Busy { holders: holders::of(fd.path()) }` — and every ioctl in that module runs on a descriptor
+this process opened and is currently using, so the walk finds the caller by construction. The live
+instance is a mutating verb: `wch_set` refusing an auto-owned control answered the client *"held by
+webcam-handler-dae (pid 12345)"*, which is N48 point 5 verbatim, after the note that says it was
+fixed. `unwritable_control` folds `EINVAL` and `EACCES` and ends `other => other`, so nothing above
+it intervened.
+
+**And the comment N191 left says the wrong thing about who catches it.** It reads
+*"`daemon::server::not_this_daemon` catches it one layer up"*. It does not: `not_this_daemon`
+refuses a `terminate_holder` **request** naming this process's pid, which is a different value on a
+different verb. A client reading the pid out of a `Busy` payload met no refusal until it went on to
+ask for the kill. `server.rs`'s own doc and N191's body get this right; the line in `lib.rs` did
+not, and now says so.
+
+**Two questions, and the split is where the repair lives.** `holders::of` keeps its raw meaning —
+"who has this node" — because a test needs a walk it can predict, and because N191's non-vacuity
+arm rests on it naming this process. `holders::others_holding` is the question every *refusal*
+asks: "who would I have to ask to let go". The exclusion happens inside the walk rather than as a
+filter over its answer, because the walk stops at `MAX_HOLDERS_REPORTED`, and filtering afterwards
+would silently cost a refusal one of the four names it is allowed whenever this process was among
+them.
+
+**A control ioctl does not walk at all**, which is the second finding and the same sentence read
+the other way. An `EBUSY` from `G_EXT_CTRLS`/`S_EXT_CTRLS` is the device *function*'s and not the
+node's, so the holder list is the wrong question — the only pid a walk over that descriptor can
+produce is our own. Not walking is also what makes N192's tolerant enumeration affordable:
+`controls()` now carries a declined read rather than propagating it, so the refusal's holder list
+was being built and immediately discarded — and `holders::of` with nothing to find walks every
+pid's every fd, because it breaks early only *after* finding four holders. On vivid's 77 controls
+that is up to 77 full process-table scans thrown away, in the same batch as P1, whose whole purpose
+was taking cost off this path. `control_error` and `device_error` differ in exactly that one
+respect, over one shared `classify`, and there is an arm that asserts every other E3 distinction
+survives the split.
+
+**What went red first.** With the walk restored:
+*"a node-level refusal named the process making it: [Holder { pid: 1732313, comm:
+Some("v4l2-7453a77923") }]"* — this process, naming itself, in the field `terminate_holder`
+reads as the pids that would free the camera.
+
+**Retires when:** nothing retires it. A future ioctl whose `EBUSY` really does mean "another
+process has this node" uses `device_error`, which is the walk that excludes us; the question this
+note settles is which walk, not whether.
+
+---
+
+## N198 — A pass with no identity is a mailbox, and the link that filled it had no test
+
+**Doc:** note **N7** (why T1 has a `diagnose` at all); note **N193**, whose repair this completes;
+design **D1**. Raised as findings 3, 4 and 5 of the B7 review. Recorded 2026-08-16, batch B7b.
+
+**Repo:** `V4l2Backend::{listing, remember, take_remembered_probe, enumerate, diagnose}`;
+`v4l2::hints_for`; `Probe::unbound`.
+
+N193 gave the backend a slot to leave one `probe_nodes` pass in, so `diagnose` explains the listing
+it was asked about. Three things were short of that.
+
+**The link had no test.** `remember` had two callers: `enumerate`, and the arm that seeds it
+directly. Deleting the call inside `enumerate` moved no assertion — only a dead-code lint fired —
+so N193's "what went red first" proved that `diagnose` *reads* the slot and never that `enumerate`
+*fills* it. The grouping and the remembering are now one function, `listing`, because that link is
+the whole repair and a link nothing can go red on is a comment. The one non-`#[ignore]`d arm that
+drives a real machine also called `diagnose()` before `enumerate()` — the pairing no caller makes —
+so post-N193 it exercised only the fallback and asserted the pre-repair behaviour.
+
+**The slot had no identity.** One `Arc<V4l2Backend>` serves a whole daemon and six paths reach
+`enumerate` from three thread families: the camera actors through `open`, the tokio blocking pool
+through `Wchd::resolve` on *every* camera-naming RPC, the preview loop, the CLI. The value carried
+no generation and no timestamp, so "this pass belongs to this listing" was not checkable, and a
+`wch_list` could take the reading an unrelated `wch_photo` had just left and present it as the
+explanation of a listing it never saw — N193's defect through a different door, and jsonrpsee
+`tokio::spawn`s each WS message, so one pipelining client is enough. The slot now carries the
+`ThreadId` that filled it and is taken only by that thread. `engine::resolve::list` is the one
+assembler in the workspace and it calls both in order on one thread, so the pairing it makes is
+exact; anybody else re-probes, which is the answer they had before N193 and is the *safe* failure.
+Taking a stranger's pass is the unsafe one, which is why the stamp is checked rather than the slot
+merely locked.
+
+**And half the hints were still a second reading.** `HintKind::DriverlessUsbVideoDevice` came from
+`sysfs::unbound_video_devices()` run freshly at diagnose time, so a camera whose driver bound
+between the listing and the diagnosis was reported driverless by a pass that had already seen it
+working. `probe_nodes` walks sysfs anyway; the list rides on the `Probe` now, and `hints_for` is
+one function over one value producing both halves — which is what makes "two halves of one answer"
+a property rather than a call order.
+
+**What went red first.** With `remember` deleted from `listing`:
+*"the listing did not leave its pass behind: []"*. With the thread stamp removed:
+*"a diagnosis took a pass another thread was holding: [ListHint { kind: NodeUnreadable, subject:
+"/dev/video2: /dev/video2 is busy: held by an unidentified process" }]"*, asserted from a
+`std::thread::spawn`. With the sysfs walk restored:
+*"the driverless device came from somewhere other than the pass: []"*.
+
+**Retires when:** T1 gains a way to ask for both halves in one call, which N7 considered and
+rejected for reasons that still hold. That would delete the slot, the stamp and this note together.
+
+---
+
+## N199 — Eight places where a claim was one word, one ordering or one reader away from being true
+
+**Doc:** rubric **B10** (a false safety claim is a defect even when the code works); rubric **A8**
+(a predicate with no reader); AGENTS rule **3** (no skip that reads as pass), rule **4** (a claim
+about a device without a probe is `declared`), rule **6**, rule **7**; design **D2**, **D5**,
+**E5**. Raised as findings 6, 8, 11–17 and 19 of the B7 review. Recorded 2026-08-16, batch B7b.
+
+**Repo:** eight subjects, kept in one note because each is a sentence rather than a mechanism and
+because what they have in common is the finding: a claim that reads as true from inside the change
+that made it.
+
+1. **`Unstated` meant two device facts.** `sys::decode::capture_interval` answered `None` for four
+   reasons and `stated_interval` was `.unwrap_or(Unstated)`, so a driver that **set**
+   `V4L2_CAP_TIMEPERFRAME` and wrote a degenerate `1/0` — the case `decode.rs`'s own test asserts
+   exists — produced a value whose committed documentation states as fact that it *cleared* the
+   bit. `ReportedInterval` splits `NotOffered` from `Offered(fraction)`, the degenerate fraction is
+   carried verbatim because it is what the device said (D2), and a reply too short to read is
+   `short_reply` rather than a fact about the device at all. `FrameInterval::fps` now answers
+   `None` for a zero *denominator* as well as a zero numerator: `1/0` computed to `Some(0.0)`,
+   which is a rate nothing measured wearing the type of one.
+2. **`FrameInterval::is_interpretable` had no reader.** A `#[must_use]` public predicate nothing in
+   the workspace asked, given a new doc paragraph and a new test rather than a deletion (A8) — and
+   the doc encouraged `if is_interpretable() { compute_rate() }`, which is `true` with `fps()` of
+   `None`. Deleted. `FrameSize::is_interpretable` stays; it has two readers in `schema::capture`.
+   The unprobed *"Several UVC devices do exactly that"* went with it: rule 4 says a device claim
+   with no probe behind it is marked `declared`, and this one had reached both committed schema
+   artifacts.
+3. **`Unstated` widened the *request* vocabulary.** `StreamRequest.interval` shares the `$ref`, so
+   `{"interval":{"kind":"unstated"}}` became an accepted request meaning nothing, and the two
+   backends answered it differently through pre-existing `_` arms — an E5 divergence nobody
+   introduced and nobody could see. `StreamRequest::stated_interval` says once that a request
+   carrying `Unstated` stated nothing, and both backends go through it. `unknown` and `stepwise`
+   are deliberately *not* collapsed: those are things a device said, and what to do with them is
+   each negotiation's decision.
+4. **`adjustment_text` printed a rate that did not exist.** `fps().unwrap_or(0.0)` on both sides,
+   so on the exact devices items 1 and 3 are about the D5 human line read **"asked 30, got 0"**.
+   Every interval a person sees now goes through one `frame_interval_text`, which spells a missing
+   rate as `(not offered)`, `(unreadable shape …)` or `(1/0, not a rate)`.
+5. **Nobody could tell a declined read from a predicted absence.** N192's trade rests on a reader
+   being able to, and no shipped surface could. The CLI printed `—` for every `None` — the literal
+   it already uses for "no meaningful range" and "no flags" — and prints `(declined)` for the
+   unpredicted one now. The web panel drew an integer's slider at `current ?? desc.default` and
+   left it live with `onchange` attached: a slider's gesture is *relative*, so one nudge wrote
+   `default + step` to a control the device never said the position of, under the panel's own note
+   saying *"a widget drawn from a default would be this page asserting a device state nobody told
+   it"*. There is no slider for a control with no current now, only the number field, which was
+   already blank — an operator who types 60 has said 60 rather than been shown it. The JSON claim
+   in the review does **not** hold and is recorded here as refuted: a `BUTTON` and an `EBUSY` are
+   not byte-identical on the wire, because `type` and `flags` are on the same document and are what
+   `value_was_declined` reads. The field's doc now says so, so a consumer with no Rust toolchain
+   has the rule.
+6. **Two SAFETY comments and a register row said things that were not their obligation.**
+   `call_enumerating`'s read *"identical to `call` — … no pointers in the struct"*, which is the
+   framing N190 records as **not** the obligation, applied to a function that carries five
+   enumeration structs and never carries `v4l2_buffer`; the register row inherited the same
+   borrowed claim. Both now state their own. The `sys/mod.rs` heading claimed "one obligation each"
+   where what is *enforced* is one unsafe operation per block — a lint, not a sentence — and two
+   rows take two clauses to state one obligation because the obligation genuinely has two halves.
+   Splitting the sentence would not split the operation.
+7. **L9's stated mechanism was not the kernel's**, and L22's second arm could not run. Both are in
+   the amended N190 and N188; the corrections are `__verify_planes_array` refusing with `-EINVAL`
+   rather than a zeroed `length` bounding a walk, and moving the byte-touching read in front of the
+   length assertion that was panicking before it. A third: `call`'s discharge is a claim about
+   *every* producer of a `Payload<v4l2_buffer>` and the test reads one builder's output, so
+   `only_one_place_in_this_module_builds_the_buffer_the_safety_comment_is_about` reads the module's
+   own source and counts them. It is honest about being a source check — it does not prove a second
+   builder would be wrong, it proves nobody adds one without reading the test's name.
+8. **Two smaller ones, both rule 7 in a message.** `engine::discover` reported a transient refusal
+   as a device property — *"no readable current value, so the toggle could not be undone"*,
+   rendered as a skip reason — and now says which of the two it was. `testkit::battery`'s PF:4 arm
+   returned on a valueless control with no `log.note` and no counter, so a declined control dropped
+   out of the claim in silence and the arm's count meant less than it said. `CameraBackend::diagnose`
+   is order-dependent for one backend since N193 and the trait doc said nothing; it does now, in the
+   place an implementer reads.
+
+**What went red first**, for the four with arms of their own.
+`a_value_the_device_declined_reads_differently_from_one_the_control_never_had`: *"left: "—",
+right: "(declined)""*.
+`an_interval_with_no_rate_in_it_is_never_rendered_as_a_rate`: *"left: "asked 30, got 0", right:
+"asked 30, got (not offered)""*.
+`a scalar whose value the device did not report draws no slider`, in Chromium: *"expect(locator).
+toHaveCount(expected) failed … Expected: 0, Received: 1"* over the range input.
+`a_driver_claiming_more_bytes_than_it_gave_us_gets_the_buffer_and_not_a_read_past_it`, with the
+clamp deleted and the read moved in front of the assertion: *"SIGSEGV — test aborted with signal
+11"*.
+
+**Retires when:** nothing retires items 1–5 or 8. Item 6 retires when the residual register is
+generated from the blocks rather than reconciled against them by count, which would make an
+inherited row impossible rather than checkable. Item 7's source scan retires when `src/sys/` enters
+the mutation floor's examined set, which N188 already marks.
+

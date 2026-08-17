@@ -17,6 +17,7 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::limits;
 use crate::slug::{Separator, slugify};
 use crate::vocabulary::{bit_vocabulary, closed_vocabulary};
 
@@ -431,8 +432,15 @@ pub struct ControlDesc {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dims: Vec<u32>,
     /// The current value **as read, unvalidated** — outside the range is a fact about
-    /// the device, not an error to correct \[PF:4\]. `None` when it was not read (a
-    /// write-only control, or an enumeration that did not fetch values).
+    /// the device, not an error to correct \[PF:4\].
+    ///
+    /// Absent for two different reasons, and telling them apart is `type` and `flags`
+    /// rather than this field. A control that **declares** it has no value — a button, a
+    /// control class, a write-only or a disabled control, or a compound whose declared
+    /// payload size is one no reader will fetch — was never going to have one. Anything
+    /// else with no value here was *asked and did not answer*: the device declined the
+    /// read. The two are one predicate apart on this same document, so a consumer with no
+    /// Rust toolchain can make the distinction from the fields beside this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<ControlValue>,
 }
@@ -492,6 +500,68 @@ impl ControlDesc {
         } else {
             None
         }
+    }
+
+    /// Whether the descriptor itself says there is no current value to read.
+    ///
+    /// Four declarations, and they are the device's rather than ours: a `BUTTON` has no
+    /// value, a `CONTROL_CLASS` is a header rather than a control, a `WRITE_ONLY`
+    /// control's value means nothing, and a `DISABLED` one is permanently unsupported. A
+    /// fifth is this build's own limit rather than the device's, and it belongs here for
+    /// the same reason: a compound control whose declared `elem_size × elems` is zero or
+    /// larger than [`limits::MAX_CONTROL_PAYLOAD_BYTES`] is one no reader will fetch
+    /// (rubric B10 bounds it before it can become an allocation), so its value was never
+    /// going to be present either.
+    ///
+    /// **This is the list a backend's read path must be reading**, not a second copy of
+    /// it: control semantics live here (AGENTS "One home per law"), and the whole worth
+    /// of the predicate below is that the two lists cannot drift apart.
+    #[must_use]
+    pub fn declares_no_value(&self) -> bool {
+        matches!(
+            self.control_type,
+            ControlType::Button | ControlType::ControlClass
+        ) || self.flags.has(KnownFlag::WriteOnly)
+            || self.flags.has(KnownFlag::Disabled)
+            || (self.flags.has(KnownFlag::HasPayload) && !self.payload_is_readable())
+    }
+
+    /// Whether this build would fetch this control's declared payload at all.
+    fn payload_is_readable(&self) -> bool {
+        let Ok(elem_size) = usize::try_from(self.elem_size) else {
+            return false;
+        };
+        let Ok(elems) = usize::try_from(self.elems) else {
+            return false;
+        };
+        let Some(len) = elem_size.checked_mul(elems) else {
+            return false;
+        };
+        len != 0 && len <= limits::MAX_CONTROL_PAYLOAD_BYTES
+    }
+
+    /// Whether the device was asked for this control's value and would not give it.
+    ///
+    /// The predicate AGENTS rule 7 needs a reader to be able to make. A `None`
+    /// [`ControlDesc::current`] has two populations under it: the one the descriptor
+    /// predicted ([`ControlDesc::declares_no_value`]) and the one it did not. The second
+    /// is an **availability** fact — the driver answered `EBUSY`, or answered nothing this
+    /// build could use — and reading it as "this control has no value" is availability
+    /// converted into capability, which is the conversion E3 exists to stop.
+    ///
+    /// It is a derived predicate rather than a field on purpose. Every input is already on
+    /// this document and on the wire, so a JSON consumer computes the same answer from the
+    /// same bytes; a field would be a second place for the fact to live and a migration for
+    /// every stored profile. What it deliberately does **not** carry is *which* refusal:
+    /// `EBUSY` and a short reply are the same value here, and note **N192** records that
+    /// trade and the evidence that would reverse it.
+    ///
+    /// The callers that must not ignore it are the ones that promise to put a camera back:
+    /// `engine::snapshot::take` records it, `engine::lifecycle::arm_pre_snapshot` refuses
+    /// on it, and `engine::profile::capture` refuses on it (note **N195**).
+    #[must_use]
+    pub fn value_was_declined(&self) -> bool {
+        self.current.is_none() && !self.declares_no_value()
     }
 
     /// The menu index whose item name matches `predicate`.
@@ -948,6 +1018,92 @@ mod tests {
             dims: Vec::new(),
             current: Some(ControlValue::Int(0)),
         }
+    }
+
+    #[test]
+    fn a_value_the_device_declined_is_a_different_absence_from_one_it_never_had() {
+        // AGENTS rule 7 as a predicate a reader can reach. `current: None` has two
+        // populations under it and the descriptor says which: the four declarations a
+        // device makes about a control with no value, plus this build's own payload
+        // bound, against everything else — where the absence means the driver was asked
+        // and did not answer (note **N195**).
+        let declared: Vec<ControlDesc> = vec![
+            ControlDesc {
+                control_type: ControlType::Button,
+                current: None,
+                ..scalar(0, 100, 1)
+            },
+            ControlDesc {
+                control_type: ControlType::ControlClass,
+                current: None,
+                ..scalar(0, 100, 1)
+            },
+            ControlDesc {
+                flags: ControlFlags::from_raw(KnownFlag::WriteOnly.bit()),
+                current: None,
+                ..scalar(0, 100, 1)
+            },
+            ControlDesc {
+                flags: ControlFlags::from_raw(KnownFlag::Disabled.bit()),
+                current: None,
+                ..scalar(0, 100, 1)
+            },
+            // The payload this build will not fetch: `elem_size × elems` past
+            // `MAX_CONTROL_PAYLOAD_BYTES` is bounded before it becomes an allocation
+            // (rubric B10), so its value was never going to arrive either.
+            ControlDesc {
+                control_type: ControlType::U8,
+                flags: ControlFlags::from_raw(KnownFlag::HasPayload.bit()),
+                elem_size: 1,
+                elems: u32::MAX,
+                current: None,
+                ..scalar(0, 100, 1)
+            },
+        ];
+        for desc in &declared {
+            assert!(
+                desc.declares_no_value(),
+                "{:?} declares it has no value",
+                desc.control_type
+            );
+            assert!(
+                !desc.value_was_declined(),
+                "{:?} was never asked, so nothing declined",
+                desc.control_type
+            );
+        }
+
+        // The population this predicate exists for: an ordinary writable integer with no
+        // value on it. Nothing about the descriptor predicts the absence, so the device
+        // declined the read — which is what a snapshot must refuse to write against.
+        let declined = ControlDesc {
+            current: None,
+            ..scalar(0, 100, 1)
+        };
+        assert!(!declined.declares_no_value());
+        assert!(declined.value_was_declined());
+        assert!(
+            declined.is_writable(),
+            "the sharp case is a control restore could have put back"
+        );
+
+        // And a control that answered is neither.
+        let answered = scalar(0, 100, 1);
+        assert!(!answered.declares_no_value());
+        assert!(!answered.value_was_declined());
+
+        // A payload this build *would* fetch is not a declaration: an absent value there
+        // is a declined read like any other.
+        let readable_payload = ControlDesc {
+            control_type: ControlType::U8,
+            flags: ControlFlags::from_raw(KnownFlag::HasPayload.bit()),
+            elem_size: 1,
+            elems: 16,
+            current: None,
+            ..scalar(0, 100, 1)
+        };
+        assert!(!readable_payload.declares_no_value());
+        assert!(readable_payload.value_was_declined());
     }
 
     #[test]

@@ -388,7 +388,9 @@ fn call_ext_ctrls(
     // it does not, `size` is 0 and the union holds an inline scalar the kernel
     // dereferences nothing from.
     let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), request, controls.as_mut_ptr()) };
-    ret.map_err(|error| device_error(fd, op, &error))
+    // `control_error`, not `device_error`: this call is about one control, and an `EBUSY`
+    // from it is the device function's, not the node's (note **N197**).
+    ret.map_err(|error| control_error(fd, op, &error))
 }
 
 /// The one-entry `v4l2_ext_controls` header pointing at `control`.
@@ -488,7 +490,7 @@ pub(crate) fn set_interval(
         set_u32(&mut payload, at, value, op)?;
     }
     call(fd, vidioc::VIDIOC_S_PARM, &mut payload, op)?;
-    Ok(decode::capture_interval(payload.bytes()))
+    reported_interval(payload.bytes(), op)
 }
 
 /// `VIDIOC_G_PARM` — the interval the device is running at, when it will say.
@@ -502,7 +504,21 @@ pub(crate) fn get_interval(fd: &Fd) -> Result<Option<schema::camera::FrameInterv
         op,
     )?;
     call(fd, vidioc::VIDIOC_G_PARM, &mut payload, op)?;
-    Ok(decode::capture_interval(payload.bytes()))
+    reported_interval(payload.bytes(), op)
+}
+
+/// A `G_PARM`/`S_PARM` reply's interval, with the three answers kept apart.
+///
+/// `Err` is a reply too short to read — this build's problem, reported as one. `Ok(None)`
+/// is the driver saying it does not negotiate an interval on this node. `Ok(Some(_))` is
+/// the fraction the driver wrote, degenerate or not: a `1/0` is the *device's* answer and
+/// carrying it is D2, where turning it into "the device offered nothing" was an invented
+/// claim about the capability bit (note **N199**).
+fn reported_interval(bytes: &[u8], op: &str) -> Result<Option<schema::camera::FrameInterval>> {
+    match decode::capture_interval(bytes).ok_or_else(|| short_reply(op))? {
+        decode::ReportedInterval::NotOffered => Ok(None),
+        decode::ReportedInterval::Offered(interval) => Ok(Some(interval)),
+    }
 }
 
 /// `VIDIOC_REQBUFS` — ask the driver for `count` mmap buffers, and learn how many it gave.
@@ -612,9 +628,30 @@ fn call<T: Copy>(
     // `_IOR` (QUERYCAP), `_IOW` (STREAMON/STREAMOFF) and `_IOWR` (the rest) alike. Stating
     // one direction would be a safety claim narrower than the calls this function serves,
     // and rubric B10 counts a false safety claim as a defect even when the code works.
-    // The struct holds no pointers — the calls that plant one go through
-    // `call_ext_ctrls`, which documents that separately — so the kernel dereferences
-    // nothing else.
+    //
+    // Nothing is dereferenced *out* of that buffer, and that is a fact about the values in
+    // it rather than about the ten structs it carries. One of them has a `__user` pointer:
+    // `v4l2_buffer`'s `m.planes`, which `QUERYBUF`/`QBUF`/`DQBUF` bring here and which the
+    // v4l2 core walks — `length` entries of it — for a *multi-planar* queue. This build
+    // never asks for one. `buffer_request` starts from a zeroed payload and writes
+    // `V4L2_BUF_TYPE_VIDEO_CAPTURE`, the single-planar queue, whose `m` the core reads
+    // inline as `offset`/`userptr`/`fd`; on that queue `m.planes` is never followed.
+    //
+    // The zeroed `length` is the second half, and it is a *refusal* rather than a bound:
+    // vb2 sizes a plane walk by `vb->num_planes`, which is the driver's number and not
+    // ours, and what stands between a null `m.planes` and that walk is
+    // `__verify_planes_array` answering `-EINVAL` when `b->m.planes` is null or
+    // `b->length` is under `vb->num_planes` — before anything is dereferenced. Zero is
+    // under every `num_planes` a driver can report, so the call is refused rather than
+    // followed (note **N199** corrects the mechanism this comment first claimed).
+    //
+    // The obligation is therefore discharged by two values a test can read back rather
+    // than by a sentence, which is what
+    // `the_buffer_ioctls_never_hand_the_kernel_a_plane_pointer` is for — and by
+    // `buffer_request` being the only thing in this module that builds one, which is what
+    // `only_one_place_in_this_module_builds_the_buffer_the_safety_comment_is_about` holds.
+    // The calls that plant a pointer *on purpose* go through `call_ext_ctrls`, which
+    // discharges that separately.
     let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), request, payload.as_mut_ptr()) };
     ret.map_err(|error| device_error(fd, op, &error))
 }
@@ -626,8 +663,18 @@ fn call_enumerating<T: Copy>(
     payload: &mut Payload<T>,
     op: &str,
 ) -> Result<Enumerated<()>> {
-    // SAFETY: identical to `call` — same borrow, same alignment, same width, no pointers
-    // in the struct. Only the *interpretation* of the error differs.
+    // SAFETY: `payload` is a live, exclusively borrowed `Payload<T>`, correctly aligned
+    // for `T` and valid for `size_of::<T>()` readable and writable bytes — the width every
+    // `_IOWR`-encoded enumeration request here declares. The five structs it carries —
+    // `v4l2_query_ext_ctrl`, `v4l2_querymenu`, `v4l2_fmtdesc`, `v4l2_frmsizeenum`,
+    // `v4l2_frmivalenum` — are plain data the kernel fills in place, and none of them has
+    // a `__user` member for the kernel to follow. That is a **different** discharge from
+    // `call`'s: `call` carries `v4l2_buffer`, whose `m.planes` is a pointer, and its
+    // obligation is about two values rather than about the shape of the struct. Saying
+    // "identical to `call`" inherited a claim about a struct this function never carries
+    // (note **N199**).
+    //
+    // The error handling below is safe code and is not part of this obligation.
     let ret = unsafe { v4l::v4l2::ioctl(fd.raw(), request, payload.as_mut_ptr()) };
     match ret {
         Ok(()) => Ok(Enumerated::Entry(())),
@@ -668,10 +715,42 @@ fn short_reply(op: &str) -> Error {
 /// [`Error::PermissionDenied`] here would tell a user to join the `video` group because a
 /// control had no readable value, and would make the caller's own `EACCES` handling
 /// unreachable — which is exactly what it did before this comment existed.
+/// **`EBUSY` names other processes, never this one.** Every ioctl here runs on a
+/// descriptor this process is holding, so a raw `/proc` walk over `fd.path()` finds the
+/// caller by construction — and D13's `holders` is what `terminate_holder` reads as *the
+/// pids that would free this camera*, so naming ourselves invites a client to kill the
+/// daemon it is talking to (note **N48** point 5, note **N197**).
 fn device_error(fd: &Fd, op: &str, error: &std::io::Error) -> Error {
+    classify(fd, op, error, || crate::holders::others_holding(fd.path()))
+}
+
+/// The same classification for an ioctl about **one control**, with no `/proc` walk at all.
+///
+/// `EBUSY` from `G_EXT_CTRLS`/`S_EXT_CTRLS` is not "somebody else has this node". The UAPI
+/// documents it as the answer for a control whose *device function* another application has
+/// taken over, on a node this process has open and is using — so the holder list is the
+/// wrong question, and the only pid a walk over this descriptor could produce is our own
+/// (note **N197**).
+///
+/// Not walking is also what makes the tolerant control enumeration affordable. `controls()`
+/// carries a declined read rather than propagating it, so the refusal's holder list is
+/// built and immediately discarded — on vivid's 77 controls that was up to 77 full
+/// process-table walks thrown away, in the same change that removed a whole enumeration
+/// from `describe` (note **N197**).
+fn control_error(fd: &Fd, op: &str, error: &std::io::Error) -> Error {
+    classify(fd, op, error, Vec::new)
+}
+
+/// The D13 mapping both of the above share, differing only in who an `EBUSY` names.
+fn classify(
+    fd: &Fd,
+    op: &str,
+    error: &std::io::Error,
+    holders: impl FnOnce() -> Vec<schema::error::Holder>,
+) -> Error {
     match error.raw_os_error() {
         Some(libc::EBUSY) => Error::Busy {
-            holders: crate::holders::of(fd.path()),
+            holders: holders(),
             path: fd.path().to_owned(),
         },
         Some(libc::ENODEV | libc::ENXIO) => Error::DeviceGone {
@@ -692,4 +771,187 @@ fn device_error(fd: &Fd, op: &str, error: &std::io::Error) -> Error {
 /// Whether a control's flag word says its value is a compound payload.
 pub(crate) fn has_payload(flags: u32) -> bool {
     flags & CTRL_FLAG_HAS_PAYLOAD != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE` — the queue this build does not use, spelled
+    /// here so the assertion below names what it is refusing rather than a number.
+    const BUF_TYPE_VIDEO_CAPTURE_MPLANE: u32 = 9;
+
+    /// A descriptor on a file only this process has open, in the scratch tree.
+    ///
+    /// `/dev/null` would not do: hundreds of processes hold it and
+    /// `limits::MAX_HOLDERS_REPORTED` is 4, so the non-vacuity arm below would be a coin
+    /// toss — the same reasoning `refusing_a_second_stream_names_nobody_rather_than_the_
+    /// process_making_the_refusal` gives one crate up (note **N191**).
+    fn a_node_only_this_process_holds(tag: &str) -> (camino::Utf8PathBuf, Fd) {
+        let root = schema::paths::scratch_root().expect("a scratch root under target/");
+        let path = root.join(format!("wch-{tag}-{}.node", std::process::id()));
+        std::fs::File::create(path.as_std_path()).expect("a file this process holds");
+        let fd = Fd::open(&path).expect("a descriptor on a file we just made");
+        (path, fd)
+    }
+
+    #[test]
+    fn only_one_place_in_this_module_builds_the_buffer_the_safety_comment_is_about() {
+        // `call`'s SAFETY discharge is a claim about **every** producer of a
+        // `Payload<v4l2_buffer>` in this module — the union is all-zero and `length` is
+        // zero — and the assertion below it reads one builder's output. A second builder
+        // added later would make the comment false with nothing to notice, because a
+        // sound-looking zeroed `v4l2_buffer` payload two hundred lines away compiles
+        // exactly as well (note **N199**).
+        //
+        // Reading this module's own source is the cheapest thing that can go red on that,
+        // and it is honest about being a source check: it does not prove the second
+        // builder would be wrong, it proves nobody added one without reading this test's
+        // name.
+        let source = include_str!("ioctl.rs");
+        // Assembled rather than written, so this scan does not find *itself* — a needle
+        // spelled whole here would be its own second match and the count would be a
+        // constant 2 whatever the module did.
+        let needle = concat!("Payload::<v4l2_", "buffer>::zeroed()");
+        let built = source.matches(needle).count();
+        assert_eq!(
+            built, 1,
+            "`call`'s SAFETY comment discharges its obligation on the values \
+             `buffer_request` writes, so a second `v4l2_buffer` payload in this module \
+             needs the comment and `the_buffer_ioctls_never_hand_the_kernel_a_plane_pointer` \
+             extended to cover it"
+        );
+        assert!(
+            source.contains("fn buffer_request("),
+            "the one builder is `buffer_request`, and it has been renamed"
+        );
+    }
+
+    #[test]
+    fn a_refusal_about_a_descriptor_this_process_holds_does_not_name_this_process() {
+        // N48 point 5, at the layer that was still getting it wrong after M5 repaired
+        // `start_stream`: every ioctl in this module runs on an fd **this** process holds,
+        // so a `/proc` walk over `fd.path()` finds the caller by construction and puts its
+        // pid in the field `terminate_holder` reads as *the pids that would free this
+        // camera* (note **N197**). `wch_set` refusing an auto-owned control answered
+        // "held by webcam-handler-dae (pid …)" all the way through B7.
+        let (path, fd) = a_node_only_this_process_holds("ioctl-busy");
+        let busy = std::io::Error::from_raw_os_error(libc::EBUSY);
+
+        // A node-level refusal — `S_FMT` on a streaming node, `STREAMON` on a taken one —
+        // still walks, because there really can be another process to name. It just may
+        // not name us.
+        let Error::Busy { holders, path: at } = device_error(&fd, "VIDIOC_STREAMON", &busy) else {
+            panic!("EBUSY is D13's `Busy`");
+        };
+        assert_eq!(at, path);
+        assert!(
+            holders.is_empty(),
+            "a node-level refusal named the process making it: {holders:?}"
+        );
+
+        // A *control* refusal does not walk at all. `EBUSY` from `G_EXT_CTRLS`/`S_EXT_CTRLS`
+        // is the UAPI's answer for a control whose device function another application has
+        // taken over — it is not "somebody else has this node", and the only holder a walk
+        // could find over this descriptor is us.
+        let Error::Busy { holders, .. } = control_error(&fd, "VIDIOC_S_EXT_CTRLS", &busy) else {
+            panic!("EBUSY is D13's `Busy`");
+        };
+        assert!(holders.is_empty(), "{holders:?}");
+
+        // Non-vacuity, and the reason this test opens a file nobody else has: an empty
+        // list is a decision only if the walk had something to say. `fd` is still alive
+        // here on purpose — it is the descriptor the refusals above were made on.
+        let walked = crate::holders::of(&path);
+        let mine = i32::try_from(std::process::id()).expect("a pid fits in an i32");
+        assert!(
+            walked.iter().any(|holder| holder.pid == mine),
+            "the /proc walk over a node this process holds did not name it, so the \
+             assertions above would pass for the wrong reason: {walked:?}"
+        );
+
+        drop(fd);
+        std::fs::remove_file(path.as_std_path()).expect("the scratch node is ours to remove");
+    }
+
+    #[test]
+    fn a_control_refusal_keeps_every_distinction_a_node_refusal_does() {
+        // The inverse of the arm above: `control_error` differs from `device_error` in
+        // *one* respect — it does not walk `/proc` — and a copy that quietly collapsed
+        // E3's other distinctions would be the defect rule 7 names, in the function
+        // written to fix a different one.
+        let (path, fd) = a_node_only_this_process_holds("ioctl-vocabulary");
+        for (errno, kind) in [
+            (libc::ENODEV, schema::ErrorKind::DeviceGone),
+            (libc::ENXIO, schema::ErrorKind::DeviceGone),
+            (libc::EPERM, schema::ErrorKind::PermissionDenied),
+            (libc::EIO, schema::ErrorKind::DeviceIo),
+            (libc::ETIMEDOUT, schema::ErrorKind::DeviceIo),
+            (libc::EBUSY, schema::ErrorKind::Busy),
+        ] {
+            let error = std::io::Error::from_raw_os_error(errno);
+            assert_eq!(
+                control_error(&fd, "VIDIOC_G_EXT_CTRLS", &error).kind(),
+                device_error(&fd, "VIDIOC_G_EXT_CTRLS", &error).kind(),
+                "errno {errno} is classified differently by the two mappers"
+            );
+            assert_eq!(
+                control_error(&fd, "VIDIOC_G_EXT_CTRLS", &error).kind(),
+                kind
+            );
+        }
+
+        // And `EACCES` is still deliberately absent from both: on an fd we already hold it
+        // is a fact about the *operation*, and this module's own doc says why.
+        let denied = std::io::Error::from_raw_os_error(libc::EACCES);
+        assert_eq!(
+            control_error(&fd, "VIDIOC_G_EXT_CTRLS", &denied).kind(),
+            schema::ErrorKind::DeviceIo
+        );
+
+        drop(fd);
+        std::fs::remove_file(path.as_std_path()).expect("the scratch node is ours to remove");
+    }
+
+    #[test]
+    fn the_buffer_ioctls_never_hand_the_kernel_a_plane_pointer() {
+        // `call`'s SAFETY comment says the kernel dereferences nothing out of the payload,
+        // and `v4l2_buffer` — the struct `QUERYBUF`, `QBUF` and `DQBUF` carry through it —
+        // is the one that could make that false: its `m` union holds `planes`, a `__user`
+        // array the v4l2 core walks for a multi-planar queue. The comment used to discharge
+        // the obligation by asserting the struct held no pointers, which is not the
+        // obligation the struct has (note **N190**); it now discharges it on two values,
+        // and these are those two values.
+        //
+        // One request builder serves all three ioctls, so one assertion covers all three.
+        let payload = buffer_request(3, "VIDIOC_QUERYBUF").expect("a one-buffer request");
+        let bytes = payload.bytes();
+
+        // The queue. `V4L2_BUF_TYPE_VIDEO_CAPTURE` is where `m` is read inline; the
+        // `_MPLANE` queue is where it is followed.
+        let queue = fields::read_u32(bytes, offset_of!(v4l2_buffer, type_));
+        assert_eq!(queue, Some(BUF_TYPE_VIDEO_CAPTURE));
+        assert_ne!(queue, Some(BUF_TYPE_VIDEO_CAPTURE_MPLANE));
+
+        // And the union, whole. `offset`, `userptr`, `planes` and `fd` are four readings
+        // of the same bytes, and all-zero is the only value that is none of them — so a
+        // plane pointer cannot be in there whatever the queue word said. `length` bounds
+        // the walk the core would do, and it is zero for the same reason.
+        let m_at = offset_of!(v4l2_buffer, m);
+        let m = bytes
+            .get(m_at..m_at.saturating_add(size_of::<v4l::v4l_sys::v4l2_buffer__bindgen_ty_1>()))
+            .expect("the union lies inside the payload");
+        assert!(m.iter().all(|byte| *byte == 0), "{m:?}");
+        assert_eq!(
+            fields::read_u32(bytes, offset_of!(v4l2_buffer, length)),
+            Some(0)
+        );
+
+        // The index is the one field the caller chose, so the assertions above are about a
+        // request that was actually filled in rather than about a zeroed buffer.
+        assert_eq!(
+            fields::read_u32(bytes, offset_of!(v4l2_buffer, index)),
+            Some(3)
+        );
+    }
 }

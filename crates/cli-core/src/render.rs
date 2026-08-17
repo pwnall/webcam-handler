@@ -371,20 +371,41 @@ fn intervals_text(intervals: &[FrameInterval]) -> String {
     }
     intervals
         .iter()
-        .map(|interval| match interval {
-            FrameInterval::Discrete { .. } => interval
-                .fps()
-                .map_or_else(|| "?".to_owned(), |fps| format!("{}", round2(fps))),
-            FrameInterval::Stepwise {
-                min_numerator,
-                min_denominator,
-                max_numerator,
-                max_denominator,
-            } => format!("{min_numerator}/{min_denominator}-{max_numerator}/{max_denominator}"),
-            FrameInterval::Unknown { raw } => format!("(unreadable shape {raw:#x})"),
-        })
+        .map(frame_interval_text)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// One frame interval from a device's vocabulary, as a human reads it.
+///
+/// Every renderer of a [`FrameInterval`] goes through here, and that is the point rather than
+/// tidiness: [`adjustment_text`] had its own, spelled `fps().unwrap_or(0.0)`, so on the
+/// exact devices the vocabulary's fourth and degenerate answers are about — a driver that
+/// offers no interval, a driver that writes `1/0` — the D5 line a human reads said
+/// **"asked 30, got 0"** (note **N199**). A rate that does not exist has a spelling here,
+/// and it is not a number.
+fn frame_interval_text(interval: &FrameInterval) -> String {
+    match interval {
+        FrameInterval::Discrete {
+            numerator,
+            denominator,
+        } => interval.fps().map_or_else(
+            // The device's own fraction, because there is no rate to print and the
+            // fraction is what it actually said (D2).
+            || format!("({numerator}/{denominator}, not a rate)"),
+            |fps| format!("{}", round2(fps)),
+        ),
+        FrameInterval::Stepwise {
+            min_numerator,
+            min_denominator,
+            max_numerator,
+            max_denominator,
+        } => format!("{min_numerator}/{min_denominator}-{max_numerator}/{max_denominator}"),
+        FrameInterval::Unknown { raw } => format!("(unreadable shape {raw:#x})"),
+        // Not "unreadable": the device answered, and the answer was that it does not
+        // negotiate a frame interval on this node.
+        FrameInterval::Unstated => "(not offered)".to_owned(),
+    }
 }
 
 /// Two decimal places, so 59.9401197… prints as 59.94 rather than as a wall of digits.
@@ -542,6 +563,14 @@ fn current_text(desc: &ControlDesc) -> String {
         Some(ControlValue::Text(text)) => text.clone(),
         // Never the bytes: a payload is opaque and printing it would be noise at best.
         Some(ControlValue::Bytes(bytes)) => format!("<{} bytes>", bytes.len()),
+        // **Two absences, and this column is where a person finds out which.** A button
+        // and a write-only control have no value by their own declaration, and `—` is the
+        // right word for that — it is also what this table already prints for "no
+        // meaningful range" and "no flags", so it has to keep meaning *nothing to say*. A
+        // control the device was asked about and would not answer is a different fact, and
+        // the tolerance that carries it through the walk (rule 7, note **N192**) is only
+        // honest if a reader can see it (note **N199**).
+        None if desc.value_was_declined() => "(declined)".to_owned(),
         None => "—".to_owned(),
     }
 }
@@ -913,6 +942,11 @@ fn outcome_text(outcome: &RestoreOutcome) -> (String, String) {
                     "volatile — the value is the device's to choose".to_owned()
                 }
                 UnrestorableReason::NoLongerWritable => "no longer writable".to_owned(),
+                UnrestorableReason::NeverRecorded => {
+                    "the device would not read it when the snapshot was taken, so there \
+                     is no value to put back"
+                        .to_owned()
+                }
                 UnrestorableReason::WriteFailed { error } => format!("the write failed: {error}"),
             },
         ),
@@ -982,8 +1016,8 @@ fn adjustment_text(adjustment: &Adjustment) -> String {
             negotiated,
         } => format!(
             "asked {}, got {}",
-            requested.fps().unwrap_or(0.0),
-            negotiated.fps().unwrap_or(0.0)
+            frame_interval_text(requested),
+            frame_interval_text(negotiated)
         ),
     }
 }
@@ -1888,6 +1922,77 @@ pub(crate) mod tests {
             &mut out,
         );
         assert!(stdout.text().contains("metadata only"), "{}", stdout.text());
+    }
+
+    #[test]
+    fn a_value_the_device_declined_reads_differently_from_one_the_control_never_had() {
+        // The trade note N192 accepted rests on a reader being able to tell a predicted
+        // absence from an unpredicted one, and this column is where a person makes that
+        // distinction. It printed `—` for both — the same literal this table already uses
+        // for "no meaningful range" and "no flags", so a control the device declined read
+        // exactly like a button (note **N199**).
+        let button = ControlDesc {
+            current: None,
+            ..desc("Reset", ControlType::Button)
+        };
+        assert_eq!(current_text(&button), "—");
+
+        let declined = ControlDesc {
+            current: None,
+            ..desc("Auto Exposure", ControlType::Integer)
+        };
+        assert_eq!(current_text(&declined), "(declined)");
+        assert_ne!(current_text(&declined), current_text(&button));
+
+        // And a value that arrived still prints as itself, including one outside its
+        // declared range [PF:4].
+        assert_eq!(
+            current_text(&desc("Brightness", ControlType::Integer)),
+            "50"
+        );
+    }
+
+    #[test]
+    fn an_interval_with_no_rate_in_it_is_never_rendered_as_a_rate() {
+        // D5's human line, on the two devices the interval vocabulary's fourth and
+        // degenerate answers exist for. `fps().unwrap_or(0.0)` made both of them read
+        // "asked 30, got 0" — a rate nothing measured, printed as a measurement (note
+        // **N199**).
+        let asked = FrameInterval::Discrete {
+            numerator: 1,
+            denominator: 30,
+        };
+        for (got, expected) in [
+            (FrameInterval::Unstated, "(not offered)"),
+            (FrameInterval::Unknown { raw: 9 }, "(unreadable shape 0x9)"),
+            (
+                FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 0,
+                },
+                "(1/0, not a rate)",
+            ),
+        ] {
+            let text = adjustment_text(&Adjustment::Interval {
+                requested: asked,
+                negotiated: got,
+            });
+            assert_eq!(text, format!("asked 30, got {expected}"));
+            assert!(!text.ends_with("got 0"), "{text}");
+        }
+
+        // The ordinary case still reads as a pair of rates, or the line above is a
+        // rendering nobody would keep.
+        assert_eq!(
+            adjustment_text(&Adjustment::Interval {
+                requested: asked,
+                negotiated: FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 15,
+                },
+            }),
+            "asked 30, got 15"
+        );
     }
 
     fn desc(name: &str, control_type: ControlType) -> ControlDesc {

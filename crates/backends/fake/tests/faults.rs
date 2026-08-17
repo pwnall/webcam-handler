@@ -30,6 +30,7 @@ fn every_fault_in_the_menu_is_observable() {
             Fault::Busy => busy(),
             Fault::ClampOnWrite => clamp_on_write(),
             Fault::InactiveFlip => inactive_flip(),
+            Fault::ControlReadDeclined => control_read_declined(),
             Fault::SettleNeverConverges => settle_never_converges(),
             Fault::FrameTimeout => frame_timeout(),
             Fault::HotplugAdd => hotplug_add(),
@@ -60,6 +61,18 @@ fn no_fault_fires_unless_it_was_scripted() {
 
     // InactiveFlip.
     assert_eq!(flag_words(&camera), flag_words(&camera));
+
+    // ControlReadDeclined: an unscripted walk answers for every control it enumerates,
+    // so `value_was_declined` is false everywhere — which is what makes the observation
+    // below a fault rather than the fake's ordinary output.
+    assert!(
+        camera
+            .controls()
+            .expect("an unscripted walk")
+            .iter()
+            .all(|desc| !desc.value_was_declined()),
+        "the fake declined a control nobody scripted"
+    );
 
     // DeviceGoneMidStream, FrameTimeout, SettleNeverConverges.
     let frames = stream_frames(&mut camera, SETTLE_PLUS_TWO);
@@ -200,6 +213,44 @@ fn inactive_flip() {
             assert_eq!(was, now, "{name} moved and is not a measured partner");
         }
     }
+}
+
+fn control_read_declined() {
+    // AGENTS rule 7 through a whole backend, which is the arm the V4L2 half cannot have:
+    // there is no ioctl seam under `crates/backends/v4l2/`, so `walked_current`'s claim —
+    // one control the driver declined is carried valueless and the enumeration runs to
+    // the end — was a direct equality on a free function and nothing else (note **N195**).
+    let backend = backend();
+    let camera = backend.open_fake(&first_id(&backend)).expect("open");
+    let before = camera.controls().expect("a walk");
+    assert!(before.len() > 1, "a one-control fixture proves nothing");
+
+    backend.queue_fault(Fault::ControlReadDeclined);
+    let after = camera.controls().expect("the walk still answers");
+
+    // The whole camera is still described. A backend that ended the walk on the refusal
+    // would answer "what can this camera do" with "something went wrong reading one
+    // knob", which is E3's conversion at the level D2 exists to protect.
+    assert_eq!(
+        after.iter().map(|d| &d.slug).collect::<Vec<_>>(),
+        before.iter().map(|d| &d.slug).collect::<Vec<_>>(),
+        "the walk dropped or reordered controls"
+    );
+
+    // And exactly one control is carried valueless, in the population a reader can name.
+    let declined: Vec<&ControlSlug> = after
+        .iter()
+        .filter(|desc| desc.value_was_declined())
+        .map(|desc| &desc.slug)
+        .collect();
+    assert_eq!(declined.len(), 1, "{declined:?}");
+    let name = declined[0].clone();
+    assert!(
+        before
+            .iter()
+            .any(|desc| desc.slug == name && desc.current.is_some()),
+        "{name} had no value before the fault either, so nothing was declined"
+    );
 }
 
 fn settle_never_converges() {

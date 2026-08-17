@@ -390,6 +390,18 @@ pub fn from_capture(
 /// whether the picture happens. An empty map renders as "(none recorded)", which is the
 /// honest thing to say.
 ///
+/// **A control the device declined to read is absent from this map**, exactly as a button
+/// is, and that is the one place in the workspace where those two are deliberately the
+/// same answer. This map is a *record of a moment*, not a promise to put a camera back —
+/// the two callers that make that promise refuse instead
+/// ([`crate::lifecycle::arm_pre_snapshot`] and [`crate::profile::capture`], note
+/// **N195**). Best effort here is also strictly better than what it replaced: before the
+/// control walk carried a declined read, one busy control made `controls()` fail and this
+/// map came back **empty**, losing every other control's value along with it. Degrading by
+/// one row rather than by all of them is the whole of the improvement, and
+/// `a_photos_record_loses_the_control_the_device_declined_and_keeps_the_rest` is what says
+/// so.
+///
 /// Public because [`from_capture`] takes the answer as a parameter and its callers have to
 /// be able to produce one — and because *when* it is read is the load-bearing part: before
 /// the stream starts, never after.
@@ -877,6 +889,26 @@ mod tests {
             "GREY is not a bitstream; there is nothing to pass through"
         );
         assert!(report.delivery.byte_count() > 0);
+    }
+
+    #[test]
+    fn a_photos_record_loses_the_control_the_device_declined_and_keeps_the_rest() {
+        // The degradation this function accepts, stated so it cannot get worse without
+        // somebody noticing (note **N195**). A photo's control record is a record of a
+        // moment rather than a promise to put the camera back, so a control the device
+        // declined is absent from it — but only that one. Before the control walk carried
+        // a declined read, one busy control made `controls()` fail and this map came back
+        // empty, taking every other control's value with it.
+        let mut camera = crate::double::ScriptedCamera::new(vec![
+            crate::double::unreadable(crate::double::boolean("auto_exposure", 1)),
+            crate::double::integer("brightness", 50),
+        ]);
+        let recorded = controls_in_effect(&mut camera);
+        assert_eq!(
+            recorded.keys().map(ControlSlug::as_str).collect::<Vec<_>>(),
+            vec!["brightness"],
+            "the declined control has no value to record, and the rest still do"
+        );
     }
 
     #[test]

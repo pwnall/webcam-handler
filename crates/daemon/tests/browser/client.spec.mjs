@@ -229,6 +229,20 @@ const MENU_WITH_A_CURRENT = {
   current: { kind: "int", value: 2 },
 };
 
+/** The Chicony's `Brightness`, an ordinary integer, with the one field an enumeration may not fill. */
+const SCALAR_WITH_NO_CURRENT = {
+  id: 0x0098_0900,
+  name: "Brightness",
+  slug: "brightness",
+  type: { kind: "integer" },
+  range: { min: -64, max: 64, step: 1 },
+  default: 0,
+  flags: { raw: 0, known: [], unknown_bits: 0 },
+  menu: {},
+  elems: 1,
+  elem_size: 4,
+};
+
 /** The Chicony's `Region of Interest Auto Ctrls`, a real `BITMASK`, with no current. */
 const BITMASK_WITH_NO_CURRENT = {
   id: 0x0098_1ae2,
@@ -313,6 +327,30 @@ test("a menu whose value the device did not report selects nothing", async ({ pa
   const read = probed(page, "power_line_frequency");
   await expect(read.locator("option")).toHaveText(["0 · Disabled", "1 · 50 Hz", "2 · 60 Hz"]);
   await expect(read.locator("select")).toHaveValue("2");
+});
+
+test("a scalar whose value the device did not report draws no slider", async ({ page }) => {
+  // The same rule as the menu claim above, on the widget where breaking it costs the most.
+  // A `<select>` with no match shows its first option; a range input has no such state —
+  // it has to hold a number, and the only one available is the declared default. So the
+  // panel drew the slider at the default and left it live, and the gesture a slider invites
+  // is *relative*: one nudge writes `default + step` to a control the device never said the
+  // position of (note **N199**).
+  await probePanel(page, [SCALAR_WITH_NO_CURRENT, MENU_WITH_A_CURRENT]);
+
+  const card = probed(page, "brightness");
+  await expect(card.locator('input[type="range"]')).toHaveCount(0);
+  await expect(card.locator('input[type="number"]')).toHaveValue("");
+  await expect(card).toContainText("the device reported no current value for this control");
+  await expect(card).toContainText("type an absolute value to write one");
+
+  // Nothing has been written, and nothing can be written by accident: the panel offers no
+  // control that produces a value on its own.
+  expect(await page.evaluate(() => window.wchWrites)).toEqual([]);
+
+  // The inverse, beside it, or the assertion above would pass for a panel that draws no
+  // sliders at all.
+  await expect(probed(page, "power_line_frequency").locator("select")).toHaveValue("2");
 });
 
 test("the bitmask field refuses what it cannot write, and says when a write is in flight", async ({

@@ -792,10 +792,19 @@ impl PreSnapshot {
 /// Callers do not usually reach for this: [`sweep_write`] calls it, which is how the
 /// ordering stops being something a caller can get wrong.
 ///
+/// **A snapshot that could not record a control is refused here, and only here.** The
+/// document [`snapshot::take`] produces is honest either way — it names what it could not
+/// read — and `webcam-handler-cli snapshot` is welcome to it. This call is the other kind
+/// of caller: it is about to write to the camera *because* it believes it can put the
+/// camera back, and a control the device declined to read is one it cannot. Refusing is
+/// the answer that keeps the promise below, and it is the answer this path gave before the
+/// control walk started carrying declined reads as valueless controls (note **N195**).
+///
 /// # Errors
 ///
 /// Whatever the camera says when asked for its controls, and whatever the store refuses
-/// with. A failure here means **nothing has been written to the camera**, which is the
+/// with; [`schema::Error::IllegalTransition`] naming the controls the snapshot could not
+/// record. A failure here means **nothing has been written to the camera**, which is the
 /// point of doing it first.
 pub fn arm_pre_snapshot(
     store: &SessionStore,
@@ -812,6 +821,15 @@ pub fn arm_pre_snapshot(
     }
 
     let taken = snapshot::take(camera, pairs, now)?;
+    if !taken.declined.is_empty() {
+        // Named rather than counted: "three controls could not be read" is not something
+        // an unattended agent can act on, and `auto_exposure` is.
+        let names: Vec<&str> = taken.declined.iter().map(ControlSlug::as_str).collect();
+        return Err(crate::refusal::illegal(
+            format!("unrecorded_controls({})", names.join(",")),
+            format!("snapshot {}", taken.camera.bus_path),
+        ));
+    }
     let controls = taken.entries.len();
     let mut draft = session.clone();
     draft.pre_snapshot = Some(taken);
@@ -1201,7 +1219,7 @@ mod tests {
     use schema::{limits, session as schema_session};
 
     use super::*;
-    use crate::double::{OnWrite, ScriptedCamera, boolean, flagged, integer};
+    use crate::double::{OnWrite, ScriptedCamera, boolean, flagged, integer, unreadable};
     use crate::session;
     use crate::store::{LockProtocol, StoreFault, TempStore};
 
@@ -1885,6 +1903,48 @@ mod tests {
                 .any(|entry| entry.control.as_str() == "brightness"
                     && entry.value == ControlValue::Int(50)),
             "the snapshot records the value the sweep is about to overwrite: {persisted:?}"
+        );
+    }
+
+    #[test]
+    fn arming_a_pre_snapshot_the_camera_would_not_answer_for_refuses_before_anything_is_written() {
+        // This function's own doc promises "a failure here means **nothing has been
+        // written to the camera**, which is the point of doing it first", and that promise
+        // is the whole of rule 8 on the sweep path. It stopped being true when the control
+        // walk began carrying a declined read as a valueless control: `take` dropped the
+        // control, `arm_pre_snapshot` succeeded, the guarded write switched an automation
+        // partner off, and restore had nothing to switch back (note **N195**).
+        //
+        // `auto_exposure` is the sharp case rather than a decorative one — it is the
+        // control a guarded write turns off so a sweep can run, so a snapshot that cannot
+        // record it is a sweep nobody can undo.
+        let temp = TempStore::new().expect("a temp dir");
+        let lock = temp.store().lock(LockProtocol::PerOperation).expect("free");
+        let mut camera = ScriptedCamera::new(vec![
+            unreadable(boolean("auto_exposure", 1)),
+            integer("brightness", 50),
+        ]);
+        let mut spec = spec(1_000, "brightness");
+        spec.fingerprint = scripted_fingerprint(&camera);
+        let mut session = create(temp.store(), &lock, &spec, later()).expect("free");
+
+        let error = arm_pre_snapshot(temp.store(), &lock, &mut session, &mut camera, &[], later())
+            .expect_err("a camera whose state cannot be recorded cannot be swept");
+        assert_eq!(error.kind(), schema::ErrorKind::IllegalTransition);
+        let rendered = error.to_string();
+        assert!(rendered.contains("auto_exposure"), "{rendered}");
+        assert!(
+            rendered.contains("unrecorded_controls"),
+            "the refusal names the condition a caller branches on: {rendered}"
+        );
+        assert!(
+            camera.writes.is_empty(),
+            "the refusal wrote to the camera: {:?}",
+            camera.writes
+        );
+        assert!(
+            session.pre_snapshot.is_none(),
+            "a snapshot that cannot promise a restore must not be persisted as one"
         );
     }
 

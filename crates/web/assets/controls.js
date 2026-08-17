@@ -255,6 +255,28 @@ function scalar(desc, io, notes) {
     );
     return [number];
   }
+  if (current === null) {
+    // **No slider for a value nobody reported.** A range input has to hold a number, so the
+    // only one available is `desc.default` — and a slider sitting at the default is this
+    // page telling an operator where the control is. It is worse than a wrong label: the
+    // gesture a slider invites is *relative*, so nudging it one notch writes
+    // `default + step` to a control that may be at 245, and the panel's own note two
+    // screens up already says "a widget drawn from a default would be this page asserting a
+    // device state nobody told it" (note **N199**).
+    //
+    // The number field stays, empty, and it is the honest way to write this control: an
+    // operator who types 60 has said 60 rather than been shown it. `readOnlyReason` is not
+    // the place for this — the control is perfectly writable, and it is the *reading* that
+    // failed.
+    notes.push(
+      note(
+        "no slider, because a slider would have to be drawn somewhere and the device did " +
+          "not say where — type an absolute value to write one",
+        null,
+      ),
+    );
+    return [number];
+  }
   const slider = el("input", {
     type: "range",
     min: desc.range.min,
@@ -262,7 +284,7 @@ function scalar(desc, io, notes) {
     step: usableStep(desc.range),
     // Clamped, because the element cannot hold anything else — the note beside it is what
     // keeps that from being a quiet correction (this module's header, point 2).
-    value: clamp(desc.range, current ?? desc.default),
+    value: clamp(desc.range, current),
     oninput: () => {
       number.value = slider.value;
     },

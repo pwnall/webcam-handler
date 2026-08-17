@@ -89,15 +89,117 @@ const SET_CTRL_OP: &str = "VIDIOC_S_EXT_CTRLS";
 /// Real cameras, through V4L2.
 #[derive(Debug, Default)]
 pub struct V4l2Backend {
-    _private: (),
+    /// The reading of the node list the last [`V4l2Backend::enumerate`] answered from,
+    /// waiting for the [`V4l2Backend::diagnose`] that explains it — **stamped with the
+    /// thread that took it**.
+    ///
+    /// T1 has two methods here because N7 argued it should: "the cameras" and "why there
+    /// might be fewer than you expect" are two facts, and folding the second into
+    /// `enumerate`'s return type would put a field almost every caller ignores in the
+    /// signature every backend implements. What N7 did *not* say, and what this field is,
+    /// is that they are two halves of **one answer**. `probe_nodes` computes both on every
+    /// pass; until 2026-08-16 `enumerate` threw the failures away and `diagnose` read the
+    /// machine a second time, so the hint explaining a dropped camera could describe a
+    /// different moment than the listing it explained (note **N193**).
+    ///
+    /// **The thread id is the pass's identity, and without one this was a mailbox.** One
+    /// `Arc<V4l2Backend>` serves a whole daemon, and six paths across three thread
+    /// families reach `enumerate` — the camera actors through `open`, the tokio blocking
+    /// pool through `Wchd::resolve` on *every* camera-naming RPC, the preview loop, the
+    /// CLI. A pass carrying no identity could be taken by a `diagnose` belonging to a
+    /// different call, which is the staleness N193 was raised to fix arriving through a
+    /// different door (note **N198**). `engine::resolve::list` is the one assembler and it
+    /// calls both in order **on one thread**, so keying on the thread makes the pairing
+    /// exact; a `diagnose` from anywhere else finds nothing to take and reads the machine,
+    /// which is the answer it would have got before any of this existed.
+    last_probe: std::sync::Mutex<Option<(std::thread::ThreadId, Probe)>>,
 }
 
 impl V4l2Backend {
     /// A backend reading this machine's devices.
     #[must_use]
     pub fn new() -> V4l2Backend {
-        V4l2Backend { _private: () }
+        V4l2Backend {
+            last_probe: std::sync::Mutex::new(None),
+        }
     }
+
+    /// The listing this pass describes, keeping the pass for the `diagnose` that explains
+    /// it.
+    ///
+    /// The grouping and the remembering are one function because the link between them is
+    /// the whole of note N193's repair and there was nothing that could go red on it: the
+    /// only test drove `remember` directly, so deleting the call from `enumerate` moved no
+    /// assertion (note **N198**). A test can drive this with a pass it built, which is what
+    /// `a_listing_leaves_the_pass_that_produced_it_for_the_diagnosis` does.
+    fn listing(&self, probe: Probe) -> Vec<CameraInfo> {
+        let cameras = enumerate::group(&probe.probed);
+        self.remember(probe);
+        cameras
+    }
+
+    /// Keep one pass's failures for the `diagnose` that will ask about them.
+    fn remember(&self, probe: Probe) {
+        *self
+            .last_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((std::thread::current().id(), probe));
+    }
+
+    /// The remembered pass, **spent**, and only if this thread is the one that took it.
+    ///
+    /// A `diagnose` with nothing to take reads the machine itself, which is what a caller
+    /// asking for a diagnosis without a listing wants — and it is the only path left that
+    /// probes twice, for a pairing no caller in this workspace makes.
+    ///
+    /// The thread check is what makes "this pass explains this listing" a fact rather than
+    /// a hope: a concurrent `enumerate` on another thread can overwrite the slot, and
+    /// without the stamp this `diagnose` would take that stranger's pass and present it as
+    /// an explanation of a listing it has never seen. Losing the pass to an overwrite is
+    /// the safe failure — this call then re-probes, exactly as it did before N193 — and
+    /// taking a pass from another thread is the unsafe one, so the stamp is checked rather
+    /// than the slot merely being locked (note **N198**).
+    fn take_remembered_probe(&self) -> Option<Probe> {
+        let mut slot = self
+            .last_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match slot.as_ref() {
+            Some((took_it, _)) if *took_it == std::thread::current().id() => {
+                slot.take().map(|(_, probe)| probe)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Everything one pass has to say about the cameras it did **not** list.
+///
+/// Pure, and separate from [`V4l2Backend::diagnose`] for the reason T1 has a `diagnose` at
+/// all: the listing and the explanation of what it dropped are one value's two halves, and
+/// a function over that one value is how "two halves" stops being a call order somebody has
+/// to keep. `enumerate::group` reads [`Probe::probed`]; this reads [`Probe::unbound`] and
+/// [`Probe::unreadable`]; the same `Probe` answers all three.
+///
+/// The order is the one `diagnose` has always produced: the driverless USB devices, then
+/// the nodes that would not open. A camera that is plugged in with nothing driving it is a
+/// different problem from a camera whose node is busy, and the first is the one a user can
+/// act on without knowing anything about V4L2.
+fn hints_for(probe: &Probe) -> Vec<ListHint> {
+    let driverless = probe.unbound.iter().map(|device| ListHint {
+        kind: HintKind::DriverlessUsbVideoDevice,
+        subject: device.clone(),
+    });
+    let unreadable = probe
+        .unreadable
+        .values()
+        .flatten()
+        .map(|(path, error)| ListHint {
+            kind: HintKind::NodeUnreadable,
+            subject: format!("{path}: {error}"),
+        });
+    driverless.chain(unreadable).collect()
 }
 
 impl CameraBackend for V4l2Backend {
@@ -106,7 +208,11 @@ impl CameraBackend for V4l2Backend {
     }
 
     fn enumerate(&self) -> Result<Vec<CameraInfo>> {
-        Ok(enumerate::group(&probe_nodes()?.probed))
+        // The other half of the same reading is kept rather than thrown away for
+        // `diagnose` to re-derive from a later one, and `listing` is what keeps it — one
+        // function, so the keeping is not a line somebody can delete without a test
+        // noticing (note **N198**).
+        Ok(self.listing(probe_nodes()?))
     }
 
     fn open(&self, id: &CameraId) -> Result<Box<dyn Camera>> {
@@ -128,26 +234,20 @@ impl CameraBackend for V4l2Backend {
     }
 
     fn diagnose(&self) -> Vec<ListHint> {
-        let mut hints: Vec<ListHint> = sysfs::unbound_video_devices()
-            .into_iter()
-            .map(|device| ListHint {
-                kind: HintKind::DriverlessUsbVideoDevice,
-                subject: device,
-            })
-            .collect();
-
-        // The cameras `enumerate` declined to describe. Without this the drop would be
-        // silent, and a camera vanishing because one of its nodes was busy is exactly the
-        // kind of absence a user needs told rather than left to infer.
-        if let Ok(probe) = probe_nodes() {
-            for (path, error) in probe.unreadable.values().flatten() {
-                hints.push(ListHint {
-                    kind: HintKind::NodeUnreadable,
-                    subject: format!("{path}: {error}"),
-                });
-            }
+        // **Both** halves come out of one pass, and that is the whole of what a hint is
+        // for: it explains a listing, so it has to describe the moment the listing
+        // describes. Note N193 moved the unreadable nodes onto the remembered pass and
+        // left the driverless-device walk reading sysfs freshly, which is the same defect
+        // in the other half (note **N198**).
+        //
+        // From the pass that produced the listing this is explaining, when there is one.
+        // Only a `diagnose` nobody paired with an `enumerate` — on this thread — reads the
+        // machine here, and then it is answering about now because there is no listing for
+        // it to be about.
+        match self.take_remembered_probe() {
+            Some(probe) => hints_for(&probe),
+            None => probe_nodes().as_ref().map(hints_for).unwrap_or_default(),
         }
-        hints
     }
 }
 
@@ -159,6 +259,15 @@ struct Probe {
     /// The nodes that did not, by the group they belong to. Keyed on the sysfs grouping
     /// key, which is readable without opening anything.
     unreadable: BTreeMap<String, Vec<(camino::Utf8PathBuf, Error)>>,
+    /// The USB devices presenting a video-class interface with nothing bound to it.
+    ///
+    /// Read here rather than in [`V4l2Backend::diagnose`] for the reason the field above
+    /// exists: a hint is an explanation *of a listing*, so it has to describe the same
+    /// moment. This half was still a second reading of the machine after note N193 —
+    /// `diagnose` walked sysfs freshly, so a camera whose driver bound between the listing
+    /// and the diagnosis was reported driverless by a pass that had already seen it work
+    /// (note **N198**).
+    unbound: Vec<String>,
 }
 
 /// Read every node's sysfs facts and ask each one what it is.
@@ -178,7 +287,10 @@ struct Probe {
 /// would hide the one message that says what to do about it.
 fn probe_nodes() -> Result<Probe> {
     let nodes = sysfs::nodes()?;
-    let mut probe = Probe::default();
+    let mut probe = Probe {
+        unbound: sysfs::unbound_video_devices(),
+        ..Probe::default()
+    };
     let mut first_failure = None;
 
     for node in &nodes {
@@ -282,15 +394,102 @@ impl V4l2Camera {
     /// Re-queried rather than cached because flags change under us: the INACTIVE bit
     /// tracks whether an automation partner owns the control *right now* \[PF:3\], and a
     /// cached descriptor would report last week's answer.
+    ///
+    /// **Freshly, not exhaustively.** This used to answer by running the whole of
+    /// [`Camera::controls`] and picking one entry out of it — a `QUERY_EXT_CTRL` per
+    /// control, a `QUERYMENU` sweep per menu control and a `G_EXT_CTRLS` per readable one,
+    /// to answer about a single id. `get` and `set` both come through here, so a guarded
+    /// write paid that walk once per planned write, which on vivid's 77 controls is a
+    /// sweep's inner loop (docs/11 §8 P1, note **N192**). The walk now stops the moment the
+    /// question is answered — a **prefix of the `QUERY_EXT_CTRL` walk**, in the same order,
+    /// with the `QUERYMENU` sweeps and `G_EXT_CTRLS` of the controls it steps over left out
+    /// (note **N199**). Every call it makes is a call the old walk made, which is what makes
+    /// this cheap enough to be worth doing on a device-driven path without a probe behind
+    /// it. The targeted `QUERY_EXT_CTRL` that would cost *one* ioctl is a different bet and
+    /// N192 says why it was not taken.
     fn describe(&self, id: ControlId) -> Result<ControlDesc> {
-        let controls = self.controls()?;
-        controls
+        self.walk_controls(Some(id))?
             .into_iter()
             .find(|desc| desc.id == id)
             .ok_or_else(|| Error::ControlUnknown {
                 requested: id.to_string(),
                 did_you_mean: Vec::new(),
             })
+    }
+
+    /// The `QUERY_EXT_CTRL` walk, once, for both questions asked of it.
+    ///
+    /// `wanted: None` is [`Camera::controls`] — every control this node has. `wanted:
+    /// Some(id)` is [`V4l2Camera::describe`], and it is the *same walk*: the same ioctl in
+    /// the same order, stopping the moment the question is answered. That is what makes
+    /// the cheap version of docs/11's P1 safe to land without a probe behind it — **every
+    /// call it makes is a call the walk was already making** (rule 4), so there is no new
+    /// device behaviour to be wrong about.
+    ///
+    /// It is a prefix of the `QUERY_EXT_CTRL` walk and a *subsequence* of the whole thing:
+    /// the `QUERYMENU` sweeps and the `G_EXT_CTRLS` of the controls it steps over are
+    /// dropped. Both halves of that sentence are the point — nothing new is asked, and less
+    /// is asked — and calling the whole thing a "strict prefix" overstated it in the one
+    /// direction that matters for rule 4 (note **N199**). The expensive-to-justify version,
+    /// a direct `QUERY_EXT_CTRL` on the id with `NEXT_CTRL` cleared, is one ioctl instead
+    /// of a prefix and is a claim about how a driver answers a call this build has never
+    /// made; note **N192** carries the judgement and the evidence it would need.
+    ///
+    /// Two things the targeted walk must not lose, and does not: the strictly-increasing
+    /// guard below still bounds a device contradicting itself, and a control whose name
+    /// slugs to nothing is still stepped over rather than answered with.
+    fn walk_controls(&self, wanted: Option<ControlId>) -> Result<Vec<ControlDesc>> {
+        let mut controls = Vec::new();
+        let mut previous: Option<u32> = None;
+
+        for _ in 0..limits::MAX_CONTROLS_PER_DEVICE {
+            let walked = match ioctl::query_ext_ctrl(&self.fd, previous.unwrap_or(0))? {
+                ioctl::Enumerated::Exhausted => break,
+                ioctl::Enumerated::Entry(walked) => walked,
+            };
+            // `NEXT_CTRL` promises strictly increasing ids. A driver that repeats one
+            // would otherwise spin here until the cap, reporting the same control over
+            // and over; stopping is the honest response to a device contradicting itself.
+            //
+            // "Have we seen one yet" is an `Option` rather than `previous != 0`, which
+            // was the same question asked of a value that can legitimately *be* zero: a
+            // driver answering id 0 every time would have skipped the guard on every
+            // iteration and walked to the cap.
+            if previous.is_some_and(|last| walked.id <= last) {
+                break;
+            }
+            previous = Some(walked.id);
+
+            if let Some(ControlId(target)) = wanted {
+                // The same promise, read the other way: a walk that has gone past the id
+                // it was sent for will not meet it later.
+                if walked.id > target {
+                    break;
+                }
+                if walked.id != target {
+                    continue;
+                }
+            }
+
+            // A control whose name slugs to nothing has no handle D2 will invent; the
+            // walk steps past it rather than stopping, so it cannot hide the rest.
+            if let Some(mut desc) = walked.desc {
+                self.read_menu(&mut desc)?;
+                // Not `self.read_current(&desc)?`: a control the device would not read is
+                // carried valueless, and only a device that has *gone* ends the walk. The
+                // whole argument is on [`walked_current`].
+                desc.current = walked_current(wanted, self.read_current(&desc))?;
+                controls.push(desc);
+            }
+
+            // A targeted walk has met its id — with or without a descriptor for it — so
+            // there is nothing further to ask this device.
+            if wanted.is_some() {
+                break;
+            }
+        }
+
+        Ok(controls)
     }
 
     /// Fill in a control's menu items, tolerating the holes \[PF:2\].
@@ -374,6 +573,85 @@ fn unreadable_current(error: Error) -> Result<Option<ControlValue>> {
             Ok(None)
         }
         other => Err(other),
+    }
+}
+
+/// What a negotiation reports for a device that would not name a frame interval.
+///
+/// `sys::decode::capture_interval` answers `None` for a driver that cleared
+/// `V4L2_CAP_TIMEPERFRAME` — the driver saying its `timeperframe` field means nothing —
+/// and one line above the `sys` boundary that `None` used to become
+/// `FrameInterval::Unknown { raw: 0 }`. `raw` is documented as *the kernel's `type`
+/// discriminant, preserved exactly*, and there was no discriminant: `0` was this build's
+/// invention, and not even a spare one, since `0` is what a driver filling in nothing
+/// writes. D2 asks for the unknown to be represented, not for the evidence to be
+/// manufactured, so the vocabulary grew the fourth answer it was short of
+/// ([`FrameInterval::Unstated`], note **N194**).
+///
+/// A function rather than a `.unwrap_or(…)` because that is what the defect was: one
+/// value, chosen once, on a line nothing could ask about.
+fn stated_interval(reported: Option<FrameInterval>) -> FrameInterval {
+    reported.unwrap_or(FrameInterval::Unstated)
+}
+
+/// The same read, asked the question **this walk** is answering.
+///
+/// `wanted` is the walk's subject, and it decides the whole of this function. A walk sent
+/// for one id is [`V4l2Camera::describe`], which is how `get` and `set` read the device:
+/// they were handed one id, so an availability fact about that id *is* their answer and it
+/// is passed up unchanged. A walk with no `wanted` is [`Camera::controls`], which is not
+/// asking about a control at all — it is describing a device, and one control the driver
+/// declined to read says nothing about the other seventeen. Ending the enumeration there
+/// answers "what can this camera do" with "something went wrong reading one knob", which
+/// is availability converted into capability at the level D2 exists to prevent (AGENTS
+/// rule 7, E3); rule 6 gives the shape of the repair, and the control is carried valueless
+/// (note **N192**).
+///
+/// **Passing the subject in is not decoration.** The two policies used to be two
+/// functions, and which one `describe` got was decided by which of them the shared walk
+/// happened to call — so the tolerant one reached `set`, whose write then landed and whose
+/// read-back propagated the refusal the walk had just swallowed, losing D3's
+/// `{requested, applied}` from a write the device had taken (note **N196**). The subject
+/// is now an argument, so both policies are one function two tests can drive.
+///
+/// **Exactly one refusal is carried, and it is the one the UAPI makes about a control.**
+/// `EBUSY` from `G_EXT_CTRLS` is documented as the answer for a control whose *device
+/// function* another application has taken over — a fact about one knob, on a camera that
+/// is answering `QUERY_EXT_CTRL` for every control on it. Everything else propagates:
+///
+/// - [`Error::DeviceGone`], because the subject of the enumeration has stopped existing,
+///   every remaining read will fail the same way, and a full list of valueless controls
+///   would describe a camera nobody can photograph as one whose knobs happen to have no
+///   values — the same conversion with the arguments swapped, and worse, because it looks
+///   like an answer.
+/// - [`Error::PermissionDenied`] and [`Error::DeviceIo`], because rule 7 names `EBUSY`,
+///   `ENODEV`, `EPERM` and a timeout as four things that stay distinct, and the first
+///   version of this tolerance converted three of them into "no value". `DeviceIo` is the
+///   sharp one: `sys::ioctl::short_reply` is a `DeviceIo` with no errno reading *the
+///   kernel's reply was shorter than the bindings describe*, so a bindgen or offset defect
+///   in the one crate that carries `unsafe` was arriving as an absent control value.
+///
+/// **What a carried control costs.** The absence is visible and the reason is not:
+/// [`ControlDesc::value_was_declined`] is the predicate that separates it from an absence
+/// the descriptor predicted, and it is derived from fields that are already on the wire.
+/// *Which* refusal is lost — but the population is now one errno, so there is exactly one
+/// thing it could have been. Note **N192** records the trade and what would reverse it.
+///
+/// **The menu is deliberately not treated this way.** `read_menu`'s `?` still ends the
+/// walk, because the two failures are not alike: a missing *value* is an absence a reader
+/// can see, while a missing *menu item* is invisible — menus are legitimately sparse
+/// \[PF:2\], so a partially read one looks exactly like a complete one, and D3's pair
+/// discovery finds "Manual Mode" by name in it.
+fn walked_current(
+    wanted: Option<ControlId>,
+    read: Result<Option<ControlValue>>,
+) -> Result<Option<ControlValue>> {
+    match read {
+        Ok(current) => Ok(current),
+        // The caller named this control, so this refusal is the answer it asked for.
+        Err(error) if wanted.is_some() => Err(error),
+        Err(Error::Busy { .. }) => Ok(None),
+        Err(other) => Err(other),
     }
 }
 
@@ -464,38 +742,7 @@ impl Camera for V4l2Camera {
     }
 
     fn controls(&self) -> Result<Vec<ControlDesc>> {
-        let mut controls = Vec::new();
-        let mut previous: Option<u32> = None;
-
-        for _ in 0..limits::MAX_CONTROLS_PER_DEVICE {
-            let walked = match ioctl::query_ext_ctrl(&self.fd, previous.unwrap_or(0))? {
-                ioctl::Enumerated::Exhausted => break,
-                ioctl::Enumerated::Entry(walked) => walked,
-            };
-            // `NEXT_CTRL` promises strictly increasing ids. A driver that repeats one
-            // would otherwise spin here until the cap, reporting the same control over
-            // and over; stopping is the honest response to a device contradicting itself.
-            //
-            // "Have we seen one yet" is an `Option` rather than `previous != 0`, which
-            // was the same question asked of a value that can legitimately *be* zero: a
-            // driver answering id 0 every time would have skipped the guard on every
-            // iteration and walked to the cap.
-            if previous.is_some_and(|last| walked.id <= last) {
-                break;
-            }
-            previous = Some(walked.id);
-
-            // A control whose name slugs to nothing has no handle D2 will invent; the
-            // walk steps past it rather than stopping, so it cannot hide the rest.
-            let Some(mut desc) = walked.desc else {
-                continue;
-            };
-            self.read_menu(&mut desc)?;
-            desc.current = self.read_current(&desc)?;
-            controls.push(desc);
-        }
-
-        Ok(controls)
+        self.walk_controls(None)
     }
 
     fn get(&mut self, id: ControlId) -> Result<ControlValue> {
@@ -585,8 +832,26 @@ impl Camera for V4l2Camera {
             // empty rather than naming this process — D13's `holders` is for the
             // `/proc` walk that identifies *other* processes, and inventing a one-entry
             // list here would make "who has it" answerable two different ways.
+            //
+            // It said that and did the opposite until 2026-08-16 (note **N191**). The walk
+            // was run over `self.fd.path()`, a node **this** process holds — it is holding
+            // it to make this refusal — so it found us, and D10's `terminate_holder` reads
+            // a `Busy` holder list as the list of pids that would free the camera. N48
+            // point 5 is the sentence that was broken: "naming this process's pid would
+            // invite a client to kill the daemon it is talking to." The layer that is
+            // right about who holds this stream is this one, so it is the one that
+            // answers, and `engine::actor`'s own `Busy` says the same thing in the same
+            // words for the same reason.
+            //
+            // **Nothing caught it one layer up**, and the comment that landed with note
+            // N191 said `daemon::server::not_this_daemon` did. It does not:
+            // `not_this_daemon` refuses a `terminate_holder` *request* naming this
+            // process's pid, which is a different value on a different verb — a client
+            // reading the pid out of a `Busy` payload got a refusal only when it went on
+            // to ask for the kill (note **N197**). `sys::ioctl::control_error` and
+            // `holders::others_holding` are what hold the rest of this class.
             return Err(Error::Busy {
-                holders: holders::of(self.fd.path()),
+                holders: Vec::new(),
                 path: self.fd.path().to_owned(),
             });
         }
@@ -725,9 +990,12 @@ impl V4l2Camera {
 
         // The interval is a separate negotiation with its own capability bit, and a
         // device that does not implement it has said so rather than failed: `interval`
-        // then reports `Unknown`, which is D2's "represent what you cannot interpret"
-        // rather than a fabricated 30 fps.
-        let interval = match request.interval {
+        // then reports `Unstated`, which is D2's "represent what the device would not
+        // say" rather than a fabricated 30 fps.
+        // `stated_interval`, not `request.interval`: `Unstated` is a document saying the
+        // caller asked for nothing, and the schema collapses it with an omitted field so
+        // the two backends cannot answer it differently (note **N199**).
+        let interval = match request.stated_interval() {
             Some(FrameInterval::Discrete {
                 numerator,
                 denominator,
@@ -738,7 +1006,7 @@ impl V4l2Camera {
             // then visible as an adjustment rather than as a silently ignored field.
             _ => ioctl::get_interval(&self.fd)?,
         };
-        let interval = interval.unwrap_or(FrameInterval::Unknown { raw: 0 });
+        let interval = stated_interval(interval);
 
         Ok(NegotiatedStream {
             pixel_format: wanted.pixel_format,
@@ -1021,6 +1289,424 @@ mod tests {
         assert!(text.to_string().contains("not a string"), "{text}");
     }
 
+    /// A camera whose descriptor is a file this process made, with a stream running.
+    ///
+    /// Not a device, and it does not need to be: `start_stream`'s first act is to refuse a
+    /// second stream, and it must do that without asking the device anything. A file only
+    /// this process has open is also the one node a `/proc` walk can be *predicted* about,
+    /// which the assertion below needs — `/dev/null` would answer with four of the
+    /// hundreds of processes that hold it (`limits::MAX_HOLDERS_REPORTED`).
+    fn streaming_camera(node: &Utf8Path) -> Option<V4l2Camera> {
+        let fd = Fd::open(node).ok()?;
+        Some(V4l2Camera {
+            info: CameraInfo {
+                id: CameraId::parse("cam:already-streaming").expect("literal id"),
+                fingerprint: schema::camera::CameraFingerprint {
+                    bus_path: "1-1:1.0".to_owned(),
+                    usb_id: None,
+                    card: "Already Streaming".to_owned(),
+                    driver: "uvcvideo".to_owned(),
+                    serial: None,
+                },
+                card: "Already Streaming".to_owned(),
+                driver: "uvcvideo".to_owned(),
+                bus_info: "usb-1".to_owned(),
+                nodes: Vec::new(),
+                backend: BackendKind::V4l2,
+            },
+            fd,
+            stream: Some(StreamState {
+                negotiated: NegotiatedStream {
+                    pixel_format: PixelFormat::MJPG,
+                    width: 1280,
+                    height: 720,
+                    bytes_per_line: 0,
+                    size_image: 0,
+                    interval: FrameInterval::Discrete {
+                        numerator: 1,
+                        denominator: 30,
+                    },
+                    adjustments: Vec::new(),
+                },
+                buffers: Vec::new(),
+                frames_delivered: 0,
+            }),
+        })
+    }
+
+    #[test]
+    fn refusing_a_second_stream_names_nobody_rather_than_the_process_making_the_refusal() {
+        // N48 point 5: "naming this process's pid would invite a client to kill the daemon
+        // it is talking to." A `Busy` holder list is what `terminate_holder` reads as the
+        // pids that would free the camera, and the refusal below is for a stream *this*
+        // process is running — so there is no other holder to name, and the one the walk
+        // would find is the caller (note **N191**).
+        let root = schema::paths::scratch_root().expect("a scratch root under target/");
+        let node = root.join(format!("wch-self-busy-{}.node", std::process::id()));
+        std::fs::File::create(node.as_std_path()).expect("a file this process holds");
+
+        let mut camera = streaming_camera(&node).expect("a descriptor on a file we just made");
+        let error = camera
+            .start_stream(&StreamRequest::default())
+            .expect_err("a camera that is already streaming refuses a second stream");
+
+        let Error::Busy { holders, path } = &error else {
+            panic!("a second stream must be refused as Busy, got {error}");
+        };
+        assert_eq!(path, &node);
+        assert!(
+            holders.is_empty(),
+            "the refusal for a stream this process is running named {holders:?}"
+        );
+
+        // Non-vacuity, and the whole reason this test uses a file nobody else has open:
+        // an empty list is a decision only if the walk had something to say. `camera` is
+        // still alive here on purpose — it owns the descriptor the walk looks for, which
+        // is exactly the descriptor the refusal was made while holding.
+        let walked = holders::of(&node);
+        let mine = i32::try_from(std::process::id()).expect("a pid fits in an i32");
+        assert!(
+            walked.iter().any(|holder| holder.pid == mine),
+            "the /proc walk over a node this process holds did not name it, so the \
+             assertion above would pass for the wrong reason: {walked:?}"
+        );
+
+        drop(camera);
+        std::fs::remove_file(node.as_std_path()).expect("the scratch node is ours to remove");
+    }
+
+    /// One pass over a two-camera machine where one camera's capture node would not open.
+    ///
+    /// The `Busy` is the shape that makes the drop matter — an *availability* refusal, so
+    /// the camera exists and is simply not describable right now (E3).
+    fn a_pass_that_lost_a_camera() -> Probe {
+        let node = |dev: &str, key: &str, card: &str, caps: u32| ProbedNode {
+            dev_path: camino::Utf8PathBuf::from(dev),
+            group_key: key.to_owned(),
+            usb_id: None,
+            serial: None,
+            driver: "uvcvideo".to_owned(),
+            card: card.to_owned(),
+            bus_info: "usb-1".to_owned(),
+            capabilities: 0x84a0_0001,
+            device_caps: caps,
+        };
+        let mut probe = Probe {
+            probed: vec![
+                node("/dev/video0", "1-1:1.0", "The Readable One", 0x0420_0001),
+                node("/dev/video1", "1-1:1.0", "The Readable One", 0x04a0_0000),
+            ],
+            unreadable: BTreeMap::new(),
+            unbound: Vec::new(),
+        };
+        probe.unreadable.insert(
+            "1-2:1.0".to_owned(),
+            vec![(
+                camino::Utf8PathBuf::from("/dev/video2"),
+                Error::Busy {
+                    path: camino::Utf8PathBuf::from("/dev/video2"),
+                    holders: Vec::new(),
+                },
+            )],
+        );
+        probe
+    }
+
+    #[test]
+    fn a_listing_and_the_hint_explaining_what_it_dropped_are_one_readings_two_halves() {
+        // T1's whole reason for `diagnose` (note **N7**): "the cameras" and "why there
+        // might be fewer than you expect" are two facts, and they have to be two facts
+        // *about the same moment*. `probe_nodes` produces both on every pass, and this is
+        // that pass answering both questions (note **N193**).
+        let probe = a_pass_that_lost_a_camera();
+        let cameras = enumerate::group(&probe.probed);
+        let hints = hints_for(&probe);
+
+        assert_eq!(cameras.len(), 1, "the group that read is listed");
+        assert_eq!(cameras[0].card, "The Readable One");
+        assert_eq!(hints.len(), 1, "the group that did not is explained");
+        assert_eq!(hints[0].kind, HintKind::NodeUnreadable);
+        assert!(hints[0].subject.contains("/dev/video2"), "{:?}", hints[0]);
+
+        // The halves are complementary rather than merely both present: nothing the hints
+        // name is in the listing, and nothing in the listing is unexplained. A hint about
+        // a node this listing *does* describe would be the two readings disagreeing, which
+        // is the shape the second probe could produce and this one cannot.
+        for camera in &cameras {
+            for node in &camera.nodes {
+                assert!(
+                    !hints
+                        .iter()
+                        .any(|hint| hint.subject.contains(node.path.as_str())),
+                    "{} is both listed and reported unreadable",
+                    node.path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_listing_leaves_the_pass_that_produced_it_for_the_diagnosis() {
+        // The load-bearing half of note N193, and the one nothing could go red on: the
+        // only arm below drove `remember` directly, so deleting the call inside
+        // `enumerate` left every assertion in place and only a dead-code lint to notice
+        // (note **N198**). `listing` is that link as a function, so a test can hand it a
+        // pass and ask the object what it kept.
+        let backend = V4l2Backend::new();
+        let probe = a_pass_that_lost_a_camera();
+        let cameras = backend.listing(probe);
+
+        assert_eq!(cameras.len(), 1, "the group that read is listed");
+        let hints = backend.diagnose();
+        assert!(
+            hints.iter().any(|hint| {
+                hint.kind == HintKind::NodeUnreadable && hint.subject.contains("/dev/video2")
+            }),
+            "the listing did not leave its pass behind: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn a_diagnosis_will_not_explain_a_listing_another_thread_asked_for() {
+        // One `Arc<V4l2Backend>` serves a whole daemon and six paths reach `enumerate`
+        // from three thread families, so a pass with no identity is a mailbox: a `wch_list`
+        // could take the pass a `wch_photo`'s `resolve` had just left and present it as an
+        // explanation of a listing it never saw — N193's own defect through another door
+        // (note **N198**).
+        //
+        // The safe failure is losing the pass, and that is what this asserts: a `diagnose`
+        // on a thread that did not take the pass finds nothing to take. It then reads the
+        // machine, which on this host is whatever this host has — so the assertion is only
+        // about the seeded node, which exists nowhere.
+        let backend = std::sync::Arc::new(V4l2Backend::new());
+        backend.remember(a_pass_that_lost_a_camera());
+
+        let elsewhere = std::sync::Arc::clone(&backend);
+        let hints = std::thread::spawn(move || elsewhere.diagnose())
+            .join()
+            .expect("the diagnosing thread finished");
+        assert!(
+            !hints
+                .iter()
+                .any(|hint| hint.subject.contains("/dev/video2")),
+            "a diagnosis took a pass another thread was holding: {hints:?}"
+        );
+
+        // And the pass is still here for the thread it belongs to — losing it to a
+        // stranger would be the repair costing the thing it was protecting.
+        assert!(
+            backend
+                .diagnose()
+                .iter()
+                .any(|hint| hint.subject.contains("/dev/video2")),
+            "the owning thread lost its own pass"
+        );
+    }
+
+    #[test]
+    fn a_pass_explains_the_cameras_nothing_is_driving_as_well_as_the_nodes_that_would_not_open() {
+        // The other half of a hint, and it was still a second reading of the machine after
+        // N193: `diagnose` walked `/sys/bus/usb/devices` freshly, so a camera whose driver
+        // bound between the listing and the diagnosis was reported driverless by a pass
+        // that had already seen it working (note **N198**).
+        let backend = V4l2Backend::new();
+        let mut probe = a_pass_that_lost_a_camera();
+        probe.unbound = vec!["3-2".to_owned()];
+        backend.listing(probe);
+
+        let hints = backend.diagnose();
+        assert!(
+            hints.iter().any(|hint| {
+                hint.kind == HintKind::DriverlessUsbVideoDevice && hint.subject == "3-2"
+            }),
+            "the driverless device came from somewhere other than the pass: {hints:?}"
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.kind == HintKind::NodeUnreadable),
+            "and both halves still arrive: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn diagnose_explains_the_listing_it_was_asked_about_rather_than_reading_the_machine_again() {
+        // The half above states the property over a value; this states it over the object,
+        // and it is the one that could not be true before. The seeded pass names a node
+        // that is not on any host, so a `diagnose` that probed for itself cannot produce
+        // it — and a `diagnose` that read the pass `enumerate` left must.
+        let backend = V4l2Backend::new();
+        backend.remember(a_pass_that_lost_a_camera());
+
+        let named = |hints: &[ListHint]| {
+            hints.iter().any(|hint| {
+                hint.kind == HintKind::NodeUnreadable && hint.subject.contains("/dev/video2")
+            })
+        };
+        assert!(
+            named(&backend.diagnose()),
+            "the diagnosis did not carry the pass it was given"
+        );
+
+        // And the pass is spent. It explains one listing; a later question with no listing
+        // behind it gets an answer about the machine now, which on a host where every node
+        // reads is no unreadable node at all.
+        let again = backend.diagnose();
+        assert!(
+            !named(&again),
+            "a spent pass explained a second question: {again:?}"
+        );
+    }
+
+    #[test]
+    fn the_only_refusal_a_walk_carries_is_the_one_the_uapi_makes_about_a_control() {
+        // AGENTS rule 7 names four things that stay distinct — `EBUSY`, `ENODEV`, `EPERM`
+        // and a timeout — and says "no code or test converts one into the other". The
+        // first version of this tolerance converted three of the four into "this control
+        // has no value" (note **N196**).
+        //
+        // `EBUSY` is the one that belongs here, and it belongs on its own evidence: the
+        // UAPI documents it as `G_EXT_CTRLS`'s answer for a control whose *device
+        // function* another application has taken over, which is a fact about one knob on
+        // a camera that is answering every other query put to it.
+        for (error, why) in [
+            (
+                Error::PermissionDenied {
+                    path: camino::Utf8PathBuf::from("/dev/video0"),
+                    hint: "join the video group".to_owned(),
+                },
+                "a permission refusal is not a control with no value",
+            ),
+            (
+                Error::DeviceIo {
+                    operation: "VIDIOC_G_EXT_CTRLS".to_owned(),
+                    errno: Some(libc::EIO),
+                    message: "Input/output error".to_owned(),
+                },
+                "an I/O error is not a control with no value",
+            ),
+            (
+                // Our own defect, and the sharp reason the catch-all had to go: this is
+                // what `sys::ioctl::short_reply` produces — "the kernel's reply was
+                // shorter than the bindings describe" — so a bindgen or offset defect in
+                // the one crate that carries `unsafe` used to read as an absent value.
+                Error::DeviceIo {
+                    operation: "VIDIOC_G_EXT_CTRLS".to_owned(),
+                    errno: None,
+                    message: "the kernel's reply was shorter than the bindings describe".to_owned(),
+                },
+                "a short reply is this build's bug, not the device's answer",
+            ),
+            (
+                Error::DeviceGone {
+                    path: camino::Utf8PathBuf::from("/dev/video0"),
+                },
+                "a device that has gone ends the walk",
+            ),
+        ] {
+            assert_eq!(
+                walked_current(None, Err(error.clone())),
+                Err(error.clone()),
+                "{why}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_sent_for_one_control_answers_about_that_control_rather_than_tolerating_it() {
+        // `describe` is `get` and `set`'s reading of the device, and both were handed one
+        // id — so an availability fact about that id *is* their answer (note **N196**).
+        // Tolerating it there is worse than it looks: `set` would proceed to write, the
+        // read-back would then propagate the same refusal, and D3's `{requested, applied}`
+        // pair would be lost from a write the device actually took.
+        let busy = Error::Busy {
+            path: camino::Utf8PathBuf::from("/dev/video0"),
+            holders: Vec::new(),
+        };
+        assert_eq!(
+            walked_current(Some(ControlId(9_963_776)), Err(busy.clone())),
+            Err(busy.clone()),
+            "a caller that named one control gets that control's availability answer"
+        );
+        // The same input, asked the enumeration's question, is carried.
+        assert_eq!(walked_current(None, Err(busy)), Ok(None));
+    }
+
+    #[test]
+    fn one_control_the_device_will_not_read_is_carried_valueless_rather_than_ending_the_walk() {
+        // AGENTS rule 7 at the level D2 exists to protect: `controls()` answers "what can
+        // this camera do", and a driver that declines one `G_EXT_CTRLS` has not said
+        // anything about the other seventeen. Before this, every errno but `EINVAL` and
+        // `EACCES` came out of the walk as the *device's* refusal (note **N192**).
+        //
+        // `EBUSY` is the sharp one and it is why this is not hypothetical: the UAPI's
+        // answer for a control whose device function another application has taken over.
+        // Reported through the walk it read as "another process holds this camera", from
+        // a camera that was answering `QUERY_EXT_CTRL` for every control on it. It is also
+        // the *only* refusal carried — `the_only_refusal_a_walk_carries_is_the_one_the_
+        // uapi_makes_about_a_control` is the arm that holds the other three to rule 7.
+        let busy = Error::Busy {
+            path: camino::Utf8PathBuf::from("/dev/video0"),
+            holders: vec![schema::error::Holder {
+                pid: 4321,
+                comm: Some("something-else".to_owned()),
+            }],
+        };
+        assert_eq!(
+            walked_current(None, Err(busy.clone())),
+            Ok(None),
+            "the walk ended on {busy}, which is a fact about one control"
+        );
+
+        // And a value that was read is still a value: the tolerance is about failures, and
+        // a walk that answered `None` for everything would be the same defect wearing the
+        // other sign.
+        assert_eq!(
+            walked_current(None, Ok(Some(ControlValue::Int(245)))),
+            Ok(Some(ControlValue::Int(245)))
+        );
+        assert_eq!(walked_current(None, Ok(None)), Ok(None));
+    }
+
+    #[test]
+    fn a_device_that_names_no_frame_interval_is_reported_as_saying_nothing_not_as_shape_zero() {
+        // D2's "represent the unknown" and its limit. `Unknown { raw }` is the kernel's own
+        // `type` discriminant preserved exactly, and a device that cleared
+        // `V4L2_CAP_TIMEPERFRAME` gave no discriminant to preserve — so the value that used
+        // to come out of here was a fabricated one (note **N194**). Zero is the worst
+        // available fabrication: it is what a driver that filled in nothing would write, so
+        // "the device said shape 0" and "the device said nothing" were the same answer.
+        assert_eq!(stated_interval(None), FrameInterval::Unstated);
+        assert_ne!(stated_interval(None), FrameInterval::Unknown { raw: 0 });
+
+        // Anything the device *did* say is passed through untouched, including a shape
+        // this build cannot read — that one really is `Unknown`, and it carries the
+        // driver's own number.
+        for said in [
+            FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30,
+            },
+            FrameInterval::Unknown { raw: 99 },
+        ] {
+            assert_eq!(stated_interval(Some(said)), said);
+        }
+    }
+
+    #[test]
+    fn a_camera_that_vanished_mid_walk_ends_it_rather_than_listing_valueless_controls() {
+        // The other direction, and the reason the tolerance above is not "ignore
+        // everything": once the node is gone every remaining read fails the same way, so
+        // the list that came out would describe a camera nobody can photograph as one
+        // whose controls happen to have no values. That is E3's conversion with the
+        // arguments swapped, and it is worse than the refusal because it looks like an
+        // answer.
+        let gone = Error::DeviceGone {
+            path: camino::Utf8PathBuf::from("/dev/video0"),
+        };
+        assert_eq!(walked_current(None, Err(gone.clone())), Err(gone));
+    }
+
     #[test]
     fn the_backend_reports_itself_as_v4l2_so_no_run_can_be_mistaken_for_a_fake_one() {
         let backend = V4l2Backend::new();
@@ -1064,6 +1750,76 @@ mod tests {
                 first.id
             );
         }
+    }
+
+    #[test]
+    #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+    fn hw_describing_one_control_says_what_the_whole_walk_says_about_it() {
+        // The evidence docs/11 §8 P1's repair rests on, taken from the device rather than
+        // reasoned from the UAPI (rule 4). `describe` no longer runs the enumeration to the
+        // end — it stops at the id it was sent for — so "the walk's answer about a control"
+        // and "a targeted walk's answer about that control" have to be the same value, for
+        // every control on every camera this host has. The two things a wrong early stop
+        // would produce are both caught here: a descriptor that differs, and an id the
+        // targeted walk cannot find at all.
+        //
+        // It is also the arm that would price the *next* step. A direct `QUERY_EXT_CTRL`
+        // with `NEXT_CTRL` cleared costs one ioctl instead of a prefix, and note **N192**
+        // declines it because nothing here has ever made that call; this comparison is the
+        // shape the measurement would take.
+        let backend = V4l2Backend::new();
+        let Ok(cameras) = backend.enumerate() else {
+            return;
+        };
+        let mut compared = 0usize;
+        let mut cameras_seen = 0usize;
+
+        for info in &cameras {
+            let Ok(camera) = V4l2Camera::open(info.clone()) else {
+                continue;
+            };
+            let Ok(walked) = camera.controls() else {
+                continue;
+            };
+            if walked.is_empty() {
+                continue;
+            }
+            cameras_seen += 1;
+
+            for desc in &walked {
+                let described = camera.describe(desc.id).unwrap_or_else(|error| {
+                    panic!(
+                        "{}: the walk reports {} and `describe` answered {error}",
+                        info.id, desc.slug
+                    )
+                });
+                assert_eq!(
+                    &described, desc,
+                    "{}: the targeted walk and the whole walk disagree about {}",
+                    info.id, desc.slug
+                );
+                compared += 1;
+            }
+
+            // And the other direction: an id no control has must be `ControlUnknown`
+            // rather than the next control after it, which is what a targeted walk that
+            // forgot to compare ids would answer.
+            let highest = walked.iter().map(|desc| desc.id.0).max().unwrap_or(0);
+            assert!(
+                matches!(
+                    camera.describe(ControlId(highest.saturating_add(1))),
+                    Err(Error::ControlUnknown { .. })
+                ),
+                "{}: an id past every control it has was not ControlUnknown",
+                info.id
+            );
+        }
+
+        assert!(
+            cameras_seen > 0,
+            "no camera on this host reported any control, so nothing was compared"
+        );
+        println!("{compared} control(s) compared across {cameras_seen} camera(s)");
     }
 
     #[test]
@@ -1203,9 +1959,15 @@ mod tests {
         // The other half of refusing the group: the refusal has to be visible. On a host
         // where every node reads, there is nothing to report — which is the case this
         // machine and CI both exercise, so the assertion is written both ways.
+        //
+        // **The order is the product's**, and it was the other way round until 2026-08-16:
+        // `diagnose` before `enumerate` is the one pairing no caller in this workspace
+        // makes, so on the only non-`#[ignore]`d test that drives a real machine this arm
+        // was exercising the fallback that probes for itself and never the path
+        // `engine::resolve::list` takes (note **N198**).
         let backend = V4l2Backend::new();
-        let hints = backend.diagnose();
         let enumerated = backend.enumerate().map(|c| c.len()).unwrap_or(0);
+        let hints = backend.diagnose();
         let unreadable = hints
             .iter()
             .filter(|hint| hint.kind == HintKind::NodeUnreadable)

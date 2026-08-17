@@ -138,4 +138,77 @@ mod tests {
         let error = Mapping::map(&fd, 0, 0).expect_err("a zero-length buffer is not a buffer");
         assert!(error.to_string().contains("zero-length"), "{error}");
     }
+
+    /// A page of shared anonymous memory, through the same [`Fd`] a camera comes through.
+    ///
+    /// `/dev/zero` and not a camera, for the reason
+    /// `a_device_descriptor_is_not_inherited_by_anything_this_process_execs` gives one
+    /// directory up: the claim below is a property of [`Mapping`], and a suite that needed
+    /// a webcam attached would state it on one machine in ten. `MAP_SHARED` over
+    /// `/dev/zero` is the shared anonymous mapping Unix had before `MAP_ANONYMOUS`, so
+    /// this is a real mapping with a real length rather than a stand-in for one — the
+    /// clamp is being asked about a region the kernel really did hand out.
+    fn a_page() -> (Fd, Mapping) {
+        let fd = Fd::open(camino::Utf8Path::new("/dev/zero"))
+            .expect("/dev/zero is on every Linux this crate builds for");
+        let mapping = Mapping::map(&fd, 0, PAGE).expect(
+            "MAP_SHARED over /dev/zero is the shared anonymous mapping Unix had \
+                     before MAP_ANONYMOUS",
+        );
+        (fd, mapping)
+    }
+
+    /// The length of the mapping the tests below take, and of nothing else.
+    const PAGE: u32 = 4096;
+
+    #[test]
+    fn a_driver_claiming_more_bytes_than_it_gave_us_gets_the_buffer_and_not_a_read_past_it() {
+        // Rubric B10's worked example and design §2.5's, by name: `bytesused` arrives from
+        // the device, and it becomes the length of a slice. `src/sys/` is excluded from the
+        // mutation floor by name (`.cargo/mutants.toml`), so until this test existed the
+        // most safety-critical device-derived-number validation in the workspace was the
+        // one nothing in the workspace could notice going missing (note **N188**).
+        // `.expect` and not `if let … else { return }`: a mapping that could not be made
+        // is a *precondition* that failed, and returning green with zero assertions is a
+        // skip that reads as a pass — uncounted, unnamed, and indistinguishable from the
+        // clamp being checked (AGENTS "no skip that reads as pass", note **N199**). The
+        // precedent one directory up is
+        // `a_device_descriptor_is_not_inherited_by_anything_this_process_execs`, which
+        // says the same thing about `/dev/null` in the same words.
+        let (_fd, mapping) = a_page();
+
+        // Under the count is the ordinary case and it must not be clamped *down*: a short
+        // JPEG in a buffer sized for the largest one is what every MJPG stream delivers,
+        // and a `bytes` that answered `self.len` for all of them would hand the decoder
+        // the previous frame's tail.
+        for used in [0u32, 1, PAGE - 1, PAGE] {
+            assert_eq!(
+                mapping.bytes(used).len(),
+                usize::try_from(used).expect("a page fits in a usize"),
+                "a driver reporting {used} of {PAGE} bytes described the frame it wrote"
+            );
+        }
+
+        // Over it is the clamp, and the assertion is about the *region* rather than about
+        // a number: an unclamped `bytesused` produces a slice with the right pointer and a
+        // length past the mapping's last page, so touching every byte is what separates
+        // "the length is wrong" from "the read runs off the end". Summing is how the bytes
+        // get touched; that they are zeros is `/dev/zero`'s doing and is not the claim.
+        //
+        // **The read comes first, and that ordering is the whole of what makes it an arm
+        // rather than decoration.** With the length assertion in front of it the sum can
+        // never execute in the failure mode it exists for — the assert panics on the
+        // *number* and the region is never touched, which is exactly the state this test
+        // shipped in (note **N199**).
+        for over in [PAGE + 1, PAGE * 2, u32::MAX] {
+            let bytes = mapping.bytes(over);
+            let touched = bytes.iter().map(|byte| u32::from(*byte)).sum::<u32>();
+            assert_eq!(
+                bytes.len(),
+                usize::try_from(PAGE).expect("a page fits in a usize"),
+                "a driver claiming {over} bytes of a {PAGE}-byte buffer must get the buffer"
+            );
+            assert_eq!(touched, 0);
+        }
+    }
 }

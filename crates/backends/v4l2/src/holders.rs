@@ -75,6 +75,32 @@ use schema::limits;
 /// that did not see it.
 #[must_use]
 pub fn of(node: &Utf8Path) -> Vec<Holder> {
+    walk(node, None)
+}
+
+/// The processes **other than this one** holding `node` — what a refusal names.
+///
+/// [`of`] answers "who has this node" and this answers "who would I have to ask to let
+/// go", and every [`schema::Error::Busy`] wants the second. Note **N48** point 5 says why:
+/// a `Busy` holder list is what `terminate_holder` reads as *the pids that would free this
+/// camera*, so naming this process's pid invites a client to kill the daemon it is talking
+/// to. It is not a hypothetical shape — an ioctl refusal is made **on a descriptor this
+/// process is holding**, so a raw walk finds the caller every time (note **N197**).
+///
+/// The exclusion happens *inside* the walk rather than as a filter over its answer,
+/// because the walk stops at [`limits::MAX_HOLDERS_REPORTED`]: filtering afterwards would
+/// silently cost a refusal one of the four names it is allowed whenever this process
+/// happened to be among them.
+///
+/// [`of`] keeps its raw meaning because a test needs a walk it can predict, and because
+/// "does this process hold it" is a real question — just not the one a refusal asks.
+#[must_use]
+pub fn others_holding(node: &Utf8Path) -> Vec<Holder> {
+    walk(node, i32::try_from(std::process::id()).ok())
+}
+
+/// The `/proc` walk both questions above are asked through, skipping `exclude`.
+fn walk(node: &Utf8Path, exclude: Option<i32>) -> Vec<Holder> {
     let mut holders = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return holders;
@@ -94,6 +120,9 @@ pub fn of(node: &Utf8Path) -> Vec<Holder> {
             // Not a process directory. `/proc` holds plenty that is not.
             continue;
         };
+        if exclude == Some(pid) {
+            continue;
+        }
         if has_open(&pid_name, node) {
             holders.push(Holder {
                 pid,

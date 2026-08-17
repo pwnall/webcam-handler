@@ -29,6 +29,9 @@ fn every_fault_in_the_menu_has_a_named_engine_behaviour() {
         match fault {
             Fault::ClampOnWrite => clamp_surfaces_as_a_warning(),
             Fault::InactiveFlip => an_inactive_flip_does_not_become_an_unguarded_write(),
+            Fault::ControlReadDeclined => {
+                a_control_the_device_declined_is_named_by_the_snapshot_and_refused_by_the_sweep();
+            }
             Fault::SettleNeverConverges => a_stream_that_never_settles_times_out(),
             Fault::FrameTimeout => a_frame_that_never_arrives_times_out(),
             Fault::DeviceGoneMidStream => a_device_that_vanishes_is_device_gone(),
@@ -223,6 +226,57 @@ fn a_busy_camera_refuses_without_claiming_it_cannot() {
     let error = backend.open(&id).expect_err("somebody else holds it");
     assert_eq!(error.kind(), ErrorKind::Busy);
     assert_ne!(error.kind(), ErrorKind::FormatUnsupported);
+}
+
+fn a_control_the_device_declined_is_named_by_the_snapshot_and_refused_by_the_sweep() {
+    // Finding 1 of the B7 review, end to end through a backend rather than through a
+    // fixture the engine built for itself (note **N195**). One control declines its read;
+    // the walk carries it valueless, which is rule 7 and is right — and every consumer
+    // that promises to put the camera back has to notice.
+    let backend = backend();
+    let id = first_id(&backend);
+    let mut camera = backend.open(&id).expect("open");
+
+    // `take` rather than `take_in_effect`: the latter reads the control set twice — once
+    // for the pair set and once for the snapshot — and a one-shot fault would land on the
+    // reading this test is not about.
+    backend.queue_fault(Fault::ControlReadDeclined);
+    let snapshot = engine::snapshot::take(camera.as_mut(), &[], Stamp::epoch()).expect("snapshots");
+    assert_eq!(
+        snapshot.declined.len(),
+        1,
+        "the snapshot dropped a writable control and said nothing: {snapshot:?}"
+    );
+    let missing = snapshot.declined[0].clone();
+    assert!(
+        !snapshot.entries.iter().any(|e| e.control == missing),
+        "a control with no value cannot also have an entry"
+    );
+
+    // The compounding half: an unrecorded control has to reach the *report*, because
+    // `is_complete()` walks outcomes and an absence is not an outcome. Without this the
+    // camera comes back changed under `Restored { unrestored: 0 }` and exit 0.
+    let report = engine::snapshot::restore(camera.as_mut(), &[], &snapshot)
+        .expect("a restore reports rather than fails");
+    assert!(!report.is_complete(), "{report:?}");
+    assert_eq!(report.unrestored(), vec![&missing]);
+
+    // And a corpus capture refuses outright, which is what its own doc has always claimed:
+    // a capture that could not read part of the device is not a partial profile.
+    backend.queue_fault(Fault::ControlReadDeclined);
+    let error = engine::profile::capture(
+        camera.as_mut(),
+        &engine::profile::CaptureContext {
+            captured_at: Stamp::epoch(),
+            kernel: "test".to_owned(),
+            tool_version: "test".to_owned(),
+            capturer: "test".to_owned(),
+            backend: schema::backend::BackendKind::Fake,
+        },
+    )
+    .expect_err("a profile is not a partial reading");
+    assert_eq!(error.kind(), ErrorKind::IllegalTransition);
+    assert!(error.to_string().contains(missing.as_str()), "{error}");
 }
 
 // ------------------------------------------------------------------------- helpers

@@ -218,7 +218,16 @@ fn probe_one(
         return Err("§5: a motor moves when this control is written".to_owned());
     }
     let Some(resting) = candidate.current.as_ref().and_then(ControlValue::as_int) else {
-        return Err("no readable current value, so the toggle could not be undone".to_owned());
+        // Two reasons, and the skip line says which — rule 7 lives in the *message* as much
+        // as in the type. "This control has no value" is a fact about the device and a
+        // permanent property of the candidate; "the device would not read it this time" is
+        // availability, and a run a minute later may well probe it (note **N199**).
+        return Err(if candidate.value_was_declined() {
+            "the device declined to read its current value this time, so the toggle could              not be undone — an availability answer, not a property of this control"
+                .to_owned()
+        } else {
+            "no readable current value, so the toggle could not be undone".to_owned()
+        });
     };
     let positions = other_positions(candidate, resting);
     if positions.is_empty() {

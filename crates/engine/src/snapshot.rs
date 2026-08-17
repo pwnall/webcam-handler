@@ -78,20 +78,36 @@ use crate::pairing;
 ///
 /// **Only writable controls.** A read-only one cannot be changed, so recording it would
 /// put an entry in the snapshot that restore could never act on — and
-/// [`RestoreReport::is_complete`] would then be false for a camera nobody had touched. A
-/// control with no readable value is skipped for the same reason from the other side:
-/// there is nothing to record.
+/// [`RestoreReport::is_complete`] would then be false for a camera nobody had touched.
 ///
 /// Volatile controls *are* recorded, and marked. Their value is the device's to choose, so
 /// restore will refuse to write them — but a snapshot that omitted them would lose the
 /// fact that the device has one, and a reader comparing two snapshots would see a control
 /// appear and disappear.
 ///
+/// **A writable control with no value is two different facts**, and this is the function
+/// where treating them as one defeats rule 8. A button or a write-only control declares it
+/// has none, and dropping it is right — there is nothing to record and nothing to put
+/// back. A control that was *asked* and declined is a control this snapshot cannot promise
+/// for, and until 2026-08-16 it fell out of the same `?`: no entry, no marker, no line,
+/// and therefore no restore outcome and a complete-looking report for a camera that was
+/// changed and not changed back (note **N195**). It is named in [`Snapshot::declined`]
+/// instead, which is what [`restore`] turns into an
+/// [`UnrestorableReason::NeverRecorded`] and what
+/// [`crate::lifecycle::arm_pre_snapshot`] refuses to write against.
+///
 /// # Errors
 ///
-/// Whatever the camera says when asked for its controls.
+/// Whatever the camera says when asked for its controls. A control the device declined to
+/// read is **not** an error here: `webcam-handler-cli snapshot` still writes the document
+/// it could take, and the document says what is missing from it.
 pub fn take(camera: &mut dyn Camera, pairs: &[AutomationPair], now: Stamp) -> Result<Snapshot> {
     let controls = camera.controls()?;
+    let declined = controls
+        .iter()
+        .filter(|desc| desc.is_writable() && desc.value_was_declined())
+        .map(|desc| desc.slug.clone())
+        .collect();
     let entries = controls
         .iter()
         .filter(|desc| desc.is_writable())
@@ -119,6 +135,7 @@ pub fn take(camera: &mut dyn Camera, pairs: &[AutomationPair], now: Stamp) -> Re
         taken_at: now,
         camera: camera.info().fingerprint.clone(),
         entries,
+        declined,
     })
 }
 
@@ -172,6 +189,18 @@ pub fn restore(
 
     let mut outcomes = Vec::with_capacity(snapshot.entries.len());
     let mut deferred: Vec<&SnapshotEntry> = Vec::new();
+
+    // First, and before anything is written: the controls this snapshot never recorded.
+    // They are outcomes rather than an absence because `is_complete()` walks outcomes —
+    // a control that is missing from the report cannot make the report incomplete, which
+    // is how a camera came back changed under an exit code of 0 (note **N195**). They go
+    // first so the report opens with what this restore already knows it cannot do.
+    for control in &snapshot.declined {
+        outcomes.push(RestoreOutcome::Unrestorable {
+            control: control.clone(),
+            reason: UnrestorableReason::NeverRecorded,
+        });
+    }
 
     // Pass one, in D4's order: automation before manual, and within each group the
     // controls that were active before the ones that were not.
@@ -397,10 +426,11 @@ mod tests {
     use schema::pairing::{AutomationOff, Provenance};
 
     use super::*;
-    use crate::double::{OnWrite, ScriptedCamera, boolean, flagged, integer};
+    use crate::double::{OnWrite, ScriptedCamera, boolean, flagged, integer, unreadable};
 
     const READ_ONLY: u32 = 0x0004;
     const INACTIVE: u32 = 0x0010;
+    const WRITE_ONLY: u32 = 0x0040;
     const VOLATILE: u32 = 0x0080;
 
     fn slug(s: &str) -> ControlSlug {
@@ -448,6 +478,110 @@ mod tests {
             "a control restore could never write must not make a snapshot incomplete"
         );
         assert_eq!(snapshot.camera, camera.info().fingerprint);
+    }
+
+    #[test]
+    fn a_control_the_device_declined_to_read_is_named_by_the_snapshot_rather_than_dropped() {
+        // Rule 8, at the one place it can be defeated without anybody noticing. A
+        // writable control with no readable value used to fall out of `filter_map`'s `?`
+        // beside the buttons — no entry, no marker, no line — and an entry that never
+        // existed produces no restore outcome, so the report for a camera that was
+        // changed and not changed back read `is_complete()` (note **N195**).
+        //
+        // The sharp instance is the automation control: `auto_exposure` declines its read
+        // here, a guarded write switches it to Manual so a sweep can run, and restore has
+        // nothing to switch back. Silently, on the primary consumer's machine, where
+        // AGENTS says the two consumers overlap on one camera as the normal case (N83).
+        let mut camera = ScriptedCamera::new(vec![
+            unreadable(boolean("auto_exposure", 1)),
+            integer("brightness", 50),
+        ]);
+        let snapshot = take(&mut camera, &[], Stamp::epoch()).expect("snapshots");
+
+        assert_eq!(
+            snapshot
+                .entries
+                .iter()
+                .map(|e| e.control.as_str())
+                .collect::<Vec<_>>(),
+            vec!["brightness"],
+            "a control with no value cannot be recorded"
+        );
+        assert_eq!(
+            snapshot
+                .declined
+                .iter()
+                .map(ControlSlug::as_str)
+                .collect::<Vec<_>>(),
+            vec!["auto_exposure"],
+            "…and must be named, or nothing downstream can know it is missing"
+        );
+    }
+
+    #[test]
+    fn a_control_the_snapshot_could_not_record_makes_the_restore_incomplete() {
+        // The compounding half, and the one that reached a caller: `is_complete()` walks
+        // the *outcomes*, which are one per entry, so a control that never became an
+        // entry could not make a restore incomplete. `lifecycle::recover` then cleared the
+        // pre-snapshot, wrote `Restored { unrestored: 0 }` and consumed the document;
+        // `cli_core::render` prints the "did not come back" note only when the report is
+        // incomplete. Exit 0, no note, camera changed (note **N195**).
+        let mut camera = ScriptedCamera::new(vec![
+            unreadable(boolean("auto_exposure", 1)),
+            integer("brightness", 50),
+        ]);
+        let snapshot = take(&mut camera, &[], Stamp::epoch()).expect("snapshots");
+        force(&mut camera, "brightness", ControlValue::Int(9));
+
+        let report = restore(&mut camera, &[], &snapshot).expect("restores what it can");
+        assert!(
+            report.outcomes.contains(&RestoreOutcome::Unrestorable {
+                control: slug("auto_exposure"),
+                reason: UnrestorableReason::NeverRecorded,
+            }),
+            "{report:?}"
+        );
+        assert!(
+            !report.is_complete(),
+            "a camera with a control nobody recorded is not back where it started: {report:?}"
+        );
+        assert_eq!(report.unrestored(), vec![&slug("auto_exposure")]);
+        // And the rest still went back: naming what could not be restored is not a reason
+        // to abandon what could (D4).
+        assert_eq!(camera.value_of("brightness"), Some(ControlValue::Int(50)));
+    }
+
+    #[test]
+    fn a_control_that_declares_it_has_no_value_is_neither_recorded_nor_reported_missing() {
+        // The inverse arm, and the reason the predicate is the descriptor's rather than
+        // "is `current` `None`": a button and a write-only control were never going to
+        // have a value, so naming them would make every camera with a button on it report
+        // an incomplete restore for ever.
+        let mut button = integer("privacy_toggle", 0);
+        button.control_type = schema::control::ControlType::Button;
+        button.current = None;
+        let mut write_only = integer("write_only_thing", 0);
+        write_only.flags = schema::control::ControlFlags::from_raw(WRITE_ONLY);
+        write_only.current = None;
+
+        let mut camera = ScriptedCamera::new(vec![button, write_only, integer("brightness", 50)]);
+        let snapshot = take(&mut camera, &[], Stamp::epoch()).expect("snapshots");
+        assert_eq!(
+            snapshot
+                .entries
+                .iter()
+                .map(|e| e.control.as_str())
+                .collect::<Vec<_>>(),
+            vec!["brightness"]
+        );
+        assert!(
+            snapshot.declined.is_empty(),
+            "a declared absence is not a declined read: {:?}",
+            snapshot.declined
+        );
+
+        let report = restore(&mut camera, &[], &snapshot).expect("restores");
+        assert!(report.is_complete(), "{report:?}");
     }
 
     #[test]

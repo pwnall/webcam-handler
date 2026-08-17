@@ -45,6 +45,11 @@
       "what": "a control with no current renders a selected, disabled placeholder rather than the browser's first option"
     },
     {
+      "title": "a scalar whose value the device did not report draws no slider",
+      "assertions": 8,
+      "what": "N199 — a range input has to hold a number, so a control with no current gets none: no slider, an empty field, and nothing written by a gesture"
+    },
+    {
       "title": "the bitmask field refuses what it cannot write, and says when a write is in flight",
       "assertions": 10,
       "what": "an emptied or unparsable bitmask writes nothing and says so, and an in-flight write is painted rather than only recorded"

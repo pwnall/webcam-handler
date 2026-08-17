@@ -462,7 +462,7 @@
               "type": "null"
             }
           ],
-          "description": "The current value **as read, unvalidated** — outside the range is a fact about\nthe device, not an error to correct [PF:4]. `None` when it was not read (a\nwrite-only control, or an enumeration that did not fetch values)."
+          "description": "The current value **as read, unvalidated** — outside the range is a fact about\nthe device, not an error to correct [PF:4].\n\nAbsent for two different reasons, and telling them apart is `type` and `flags`\nrather than this field. A control that **declares** it has no value — a button, a\ncontrol class, a write-only or a disabled control, or a compound whose declared\npayload size is one no reader will fetch — was never going to have one. Anything\nelse with no value here was *asked and did not answer*: the device declined the\nread. The two are one predicate apart on this same document, so a consumer with no\nRust toolchain can make the distinction from the fields beside this one."
         },
         "default": {
           "description": "The declared default — which may sit outside `range` [PF:5].",
@@ -1871,6 +1871,19 @@
           "required": [
             "kind",
             "raw"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The device names no interval at all: it cleared `V4L2_CAP_TIMEPERFRAME` in its\n`G_PARM` reply, which is the driver saying frame-interval negotiation is not\nsomething this node does.\n\n**The fourth answer, and it exists because the third was being used as one.** The\n`unknown` kind carries *the kernel's own `type` discriminant*, and a device that\nnamed no shape has no discriminant to carry — the `{\"kind\": \"unknown\", \"raw\": 0}`\nthe V4L2 backend used to produce here was a number this build invented, and `0` is\nnot even a spare value: it is what a driver that filled in nothing would write.\nD2 represents what it cannot interpret; manufacturing the evidence for it is the\none thing D2 forbids.\n\n**This means the bit and nothing else.** A driver that *sets* the bit and then\nwrites a fraction with a zero in it has said something, and what it said is carried\nas a `discrete` interval holding that fraction — a rate nobody can compute, which\n`fps` answers `null` for. Reporting that as `unstated` would be a second invented\nclaim about the device where the first one was removed.\n\nDistinct from an *absent* interval, which this vocabulary has no spelling for and\ndoes not need: a negotiated stream always reports one, and this is what it reports\nwhen the device would not say. There is no rate here — the same as `unknown` — so a\nconsumer that wants frames per second has to handle both.\n\n**As a request** it means the caller stated no interval, exactly as omitting the\nfield does; the negotiation reads back whatever the device is running at. It is not\na request for \"no interval\", because there is no such thing to ask a device for.",
+          "properties": {
+            "kind": {
+              "const": "unstated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
           ],
           "type": "object"
         }
@@ -4043,6 +4056,13 @@
           "$ref": "#/$defs/CameraFingerprint",
           "description": "Which camera it came from — restoring a snapshot onto a different camera is a\n[`crate::Error::FingerprintMismatch`], not a surprise."
         },
+        "declined": {
+          "description": "The writable controls this snapshot could **not** record, because the device\ndeclined to read them — a `current` absent from a descriptor that predicted one.\n\nA snapshot's whole promise is that the camera can be put back, and a control with\nno recorded value is one it cannot promise for. Leaving such a control out of\n`entries` and saying nothing would make `is_complete` answer `true` for a camera\nthat was changed and not changed back — outcomes are one per entry, so a control\nthat never became an entry produces no outcome to be incomplete about (note\n**N195**).\n\nEmpty on every device this project has measured, and the ordinary answer. Restore\nturns each name here into an `unrestorable` outcome whose reason is\n`never_recorded`, which is what makes the incompleteness reach a report, an exit\ncode and a human line.",
+          "items": {
+            "$ref": "#/$defs/ControlSlug"
+          },
+          "type": "array"
+        },
         "entries": {
           "description": "The recorded values.",
           "items": {
@@ -4132,7 +4152,7 @@
               "type": "null"
             }
           ],
-          "description": "Preferred frame interval."
+          "description": "Preferred frame interval.\n\nThe vocabulary is shared with the *answer*, which is what makes the `unstated` kind\nreadable here at all — and as a request it means what its name says: the caller\nstated none. Ask for it through `StreamRequest::stated_interval` rather than\nmatching this field, so the two spellings of \"nothing was asked for\" cannot become\ntwo behaviours (note **N199**)."
         },
         "pixel_format": {
           "anyOf": [
@@ -4599,6 +4619,19 @@
           "properties": {
             "kind": {
               "const": "no_longer_writable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The snapshot has no value for it: the device declined to read this control when\nthe snapshot was taken, so there is nothing to write back.\n\nThe one reason here that is decided before any write is attempted, and the reason\nit exists at all: an unrecorded control used to be an absence rather than an\noutcome, and an absence cannot make a report incomplete (note **N195**).",
+          "properties": {
+            "kind": {
+              "const": "never_recorded",
               "type": "string"
             }
           },

@@ -18,6 +18,7 @@
 //! | [`Fault::Busy`] | one shot | `open` → [`schema::Error::Busy`] |
 //! | [`Fault::ClampOnWrite`] | one shot | `set` moves an in-range write to the maximum, reported as [`schema::control::WriteWarning::Adjusted`] \[PF:6\] |
 //! | [`Fault::InactiveFlip`] | one shot | `controls` reports every measured manual partner's INACTIVE bit toggled \[PF:3\] |
+//! | [`Fault::ControlReadDeclined`] | one shot | `controls` reports the first writable control valueless, as a device that declined one `G_EXT_CTRLS` does |
 //! | [`Fault::SettleNeverConverges`] | held | every frame's exposure differs, so no settle policy converges \[PF:11\] |
 //! | [`Fault::FrameTimeout`] | one shot | `next_frame` → [`schema::Error::SettleTimeout`] |
 //! | [`Fault::HotplugAdd`] | one shot | the watch yields [`schema::backend::HotplugEvent::Added`] |
@@ -49,6 +50,26 @@ closed_vocabulary! {
         ClampOnWrite,
         /// INACTIVE flips without anybody writing an automation control \[PF:3\].
         InactiveFlip,
+        /// The device answers one control's `G_EXT_CTRLS` with a refusal, and the rest of
+        /// the walk carries on.
+        ///
+        /// The *availability* fault at control granularity, and the seam it exists for is
+        /// the one the V4L2 backend has no double of: `walked_current` decides that a
+        /// control the driver declined is carried valueless rather than ending the
+        /// enumeration (rule 7, note **N192**), and until this variant existed nothing
+        /// above `crates/backends/v4l2/` could observe the resulting descriptor at all.
+        /// The UAPI documents `EBUSY` as the answer for a control whose device function
+        /// another application has taken over, which is a fact about one knob on a camera
+        /// that is otherwise answering every query on it.
+        ///
+        /// **The fake resembles by carrying the same shape, not by carrying an errno.**
+        /// What reaches a consumer is a [`schema::control::ControlDesc`] with `current:
+        /// None` on a control whose type and flags predict a value — exactly what a real
+        /// walk produces, which is the whole population
+        /// [`schema::control::ControlDesc::value_was_declined`] is about. The errno is
+        /// lost on the real path too, and inventing one here would be a capability the
+        /// backend cannot demonstrate (E5).
+        ControlReadDeclined,
         /// Frames keep arriving and never stabilize \[PF:11\].
         SettleNeverConverges,
         /// A frame does not arrive before the deadline.
@@ -84,6 +105,7 @@ impl Fault {
             Fault::Busy => "busy",
             Fault::ClampOnWrite => "clamp_on_write",
             Fault::InactiveFlip => "inactive_flip",
+            Fault::ControlReadDeclined => "control_read_declined",
             Fault::SettleNeverConverges => "settle_never_converges",
             Fault::FrameTimeout => "frame_timeout",
             Fault::HotplugAdd => "hotplug_add",

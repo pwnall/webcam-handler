@@ -15,6 +15,16 @@
 //! module's tests closes the loop, pinning each struct's width against the fixture
 //! captured from it by an independent probe.
 //!
+//! **Union arms included, since 2026-08-16.** The sentence above was true of every field
+//! reached from a struct's root and false of the ten reached *through* a union: the
+//! stepwise size and interval arms were read at `union_at + 4`, `+ 8`, `+ 12` and so on,
+//! which is a transcription of `v4l2_frmsize_stepwise`'s and `v4l2_frmival_stepwise`'s
+//! layouts wearing a derived base (note **N187**). `offset_of!` takes a nested path, so
+//! `offset_of!(v4l2_frmivalenum, __bindgen_anon_1.stepwise.max.denominator)` names the
+//! whole route and the bindings decide all of it. The arm the `type` word selects is still
+//! this module's decision — that is the union-arm judgement design §2.5 wants made over
+//! bytes — but where the arm's fields *are* is no longer anybody's here.
+//!
 //! ## What "represent, don't correct" means down here
 //!
 //! Out-of-range currents \[PF:4\], out-of-range defaults \[PF:5\], control types nobody
@@ -234,19 +244,46 @@ pub(crate) fn frame_size(bytes: &[u8]) -> Option<FrameSize> {
         return None;
     }
     let kind = fields::read_u32(bytes, offset_of!(v4l2_frmsizeenum, type_))?;
-    let union_at = offset_of!(v4l2_frmsizeenum, __bindgen_anon_1);
+    // Each field is named through the union arm that holds it, so the *arm* decides where
+    // its fields are — see this module's header. `discrete` and `stepwise` overlay the same
+    // bytes, and which of the two is read is the `type` word's decision, exactly as it is
+    // in the kernel.
     match kind {
         FRMSIZE_TYPE_DISCRETE => Some(FrameSize::Discrete {
-            width: fields::read_u32(bytes, union_at)?,
-            height: fields::read_u32(bytes, union_at.checked_add(4)?)?,
+            width: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.discrete.width),
+            )?,
+            height: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.discrete.height),
+            )?,
         }),
         FRMSIZE_TYPE_CONTINUOUS | FRMSIZE_TYPE_STEPWISE => Some(FrameSize::Stepwise {
-            min_width: fields::read_u32(bytes, union_at)?,
-            max_width: fields::read_u32(bytes, union_at.checked_add(4)?)?,
-            step_width: fields::read_u32(bytes, union_at.checked_add(8)?)?,
-            min_height: fields::read_u32(bytes, union_at.checked_add(12)?)?,
-            max_height: fields::read_u32(bytes, union_at.checked_add(16)?)?,
-            step_height: fields::read_u32(bytes, union_at.checked_add(20)?)?,
+            min_width: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.stepwise.min_width),
+            )?,
+            max_width: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.stepwise.max_width),
+            )?,
+            step_width: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.stepwise.step_width),
+            )?,
+            min_height: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.stepwise.min_height),
+            )?,
+            max_height: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.stepwise.max_height),
+            )?,
+            step_height: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmsizeenum, __bindgen_anon_1.stepwise.step_height),
+            )?,
         }),
         raw => Some(FrameSize::Unknown { raw }),
     }
@@ -259,20 +296,39 @@ pub(crate) fn frame_interval(bytes: &[u8]) -> Option<FrameInterval> {
         return None;
     }
     let kind = fields::read_u32(bytes, offset_of!(v4l2_frmivalenum, type_))?;
-    let union_at = offset_of!(v4l2_frmivalenum, __bindgen_anon_1);
     match kind {
         FRMIVAL_TYPE_DISCRETE => Some(FrameInterval::Discrete {
-            numerator: fields::read_u32(bytes, union_at)?,
-            denominator: fields::read_u32(bytes, union_at.checked_add(4)?)?,
+            numerator: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmivalenum, __bindgen_anon_1.discrete.numerator),
+            )?,
+            denominator: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmivalenum, __bindgen_anon_1.discrete.denominator),
+            )?,
         }),
         // `v4l2_frmival_stepwise` is {min, max, step}, each a `v4l2_fract`; the schema
         // keeps min and max and drops the step, which the kernel documents as advisory
-        // for CONTINUOUS.
+        // for CONTINUOUS. Naming `step` here and discarding it would be a field this
+        // build reads and refuses to say it read, so it is simply not named — the two
+        // `v4l2_fract`s below are the whole of what the schema carries.
         FRMIVAL_TYPE_CONTINUOUS | FRMIVAL_TYPE_STEPWISE => Some(FrameInterval::Stepwise {
-            min_numerator: fields::read_u32(bytes, union_at)?,
-            min_denominator: fields::read_u32(bytes, union_at.checked_add(4)?)?,
-            max_numerator: fields::read_u32(bytes, union_at.checked_add(8)?)?,
-            max_denominator: fields::read_u32(bytes, union_at.checked_add(12)?)?,
+            min_numerator: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmivalenum, __bindgen_anon_1.stepwise.min.numerator),
+            )?,
+            min_denominator: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmivalenum, __bindgen_anon_1.stepwise.min.denominator),
+            )?,
+            max_numerator: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmivalenum, __bindgen_anon_1.stepwise.max.numerator),
+            )?,
+            max_denominator: fields::read_u32(
+                bytes,
+                offset_of!(v4l2_frmivalenum, __bindgen_anon_1.stepwise.max.denominator),
+            )?,
         }),
         raw => Some(FrameInterval::Unknown { raw }),
     }
@@ -476,13 +532,34 @@ pub(crate) fn dequeued(bytes: &[u8]) -> Option<Dequeued> {
     })
 }
 
-/// The frame interval a `VIDIOC_G_PARM`/`S_PARM` reply reports, when it reports one.
+/// What a `VIDIOC_G_PARM`/`S_PARM` reply says about the frame interval.
 ///
-/// `None` when the driver does not set `V4L2_CAP_TIMEPERFRAME`, which is the driver saying
-/// its `timeperframe` field means nothing — several UVC devices leave it zeroed. Reading
-/// it anyway would produce a `1/0` interval, and a denominator of zero downstream is a
-/// frame rate nobody can divide by.
-pub(crate) fn capture_interval(bytes: &[u8]) -> Option<FrameInterval> {
+/// Two answers, because the caller has to tell them apart and for a while it could not: a
+/// bare `Option<FrameInterval>` collapsed "the driver said it does not negotiate an
+/// interval on this node" into the same value as "the driver said `1/0`", and one line up
+/// both became [`FrameInterval::Unstated`] — a value whose own documentation states as
+/// fact that the capability bit was cleared (note **N199**).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportedInterval {
+    /// The driver cleared `V4L2_CAP_TIMEPERFRAME`: its `timeperframe` field means
+    /// nothing, whatever is in it.
+    NotOffered,
+    /// The driver set the bit, and this is the fraction it wrote — **verbatim**,
+    /// degenerate or not.
+    ///
+    /// A zero numerator or denominator is not corrected and not dropped: it is the
+    /// device's answer, and D2 asks for what cannot be interpreted to be carried rather
+    /// than tidied away. [`FrameInterval::fps`] answers `None` for it and
+    /// `imaging::avi::interval_micros` refuses it, so nothing downstream divides by it.
+    Offered(FrameInterval),
+}
+
+/// The frame interval a `VIDIOC_G_PARM`/`S_PARM` reply reports.
+///
+/// `None` — the outer one — means the reply was **shorter than the bindings describe**,
+/// which is this build's problem rather than the device's; the caller turns it into
+/// `short_reply`, exactly as every other decoder here does.
+pub(crate) fn capture_interval(bytes: &[u8]) -> Option<ReportedInterval> {
     if !is_whole::<v4l2_streamparm>(bytes) {
         return None;
     }
@@ -491,7 +568,7 @@ pub(crate) fn capture_interval(bytes: &[u8]) -> Option<FrameInterval> {
         capture_parm_field(offset_of!(v4l2_captureparm, capability))?,
     )?;
     if capability & CAP_TIMEPERFRAME == 0 {
-        return None;
+        return Some(ReportedInterval::NotOffered);
     }
     let per_frame = capture_parm_field(offset_of!(v4l2_captureparm, timeperframe))?;
     let numerator = fields::read_u32(
@@ -502,13 +579,10 @@ pub(crate) fn capture_interval(bytes: &[u8]) -> Option<FrameInterval> {
         bytes,
         per_frame.checked_add(offset_of!(v4l2_fract, denominator))?,
     )?;
-    if numerator == 0 || denominator == 0 {
-        return None;
-    }
-    Some(FrameInterval::Discrete {
+    Some(ReportedInterval::Offered(FrameInterval::Discrete {
         numerator,
         denominator,
-    })
+    }))
 }
 
 /// A payload control's bytes, bounded before anything is allocated.
@@ -839,6 +913,46 @@ mod tests {
     }
 
     #[test]
+    fn a_stepwise_interval_decodes_through_the_stepwise_arm() {
+        // The interval half of the test above, and the reason both are written this way:
+        // the *decoder* reaches its fields through `offset_of!` over the bindings, and the
+        // bytes here are laid out by an independent transcription of what the kernel
+        // documents `v4l2_frmival_stepwise` to be — {min, max, step}, each a `v4l2_fract`.
+        // Two derivations of one layout is what makes a wrong one visible; a fixture
+        // written through the same `offset_of!` the decoder reads through could not go red
+        // for any offset at all.
+        //
+        // The `step` fraction is the third one and the schema does not carry it, so the
+        // last pair below is what a decoder reading `max` one field too far would return.
+        let mut bytes = FRAMEINTERVAL_MJPG.to_vec();
+        fields::write_u32(&mut bytes, offset_of!(v4l2_frmivalenum, type_), 3).expect("fits");
+        let union_at = offset_of!(v4l2_frmivalenum, __bindgen_anon_1);
+        for (index, value) in [1u32, 30, 1, 5, 1, 1].into_iter().enumerate() {
+            fields::write_u32(&mut bytes, union_at + index * 4, value).expect("fits");
+        }
+        assert_eq!(
+            frame_interval(&bytes),
+            Some(FrameInterval::Stepwise {
+                min_numerator: 1,
+                min_denominator: 30,
+                max_numerator: 1,
+                max_denominator: 5,
+            })
+        );
+
+        // CONTINUOUS reads the same arm — the kernel documents its `step` as advisory,
+        // not as a second shape.
+        fields::write_u32(&mut bytes, offset_of!(v4l2_frmivalenum, type_), 2).expect("fits");
+        assert!(matches!(
+            frame_interval(&bytes),
+            Some(FrameInterval::Stepwise {
+                min_denominator: 30,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn a_step_too_wide_for_the_schema_saturates_toward_doing_less_not_more() {
         // The direction matters more than the value. Mapping an unrepresentable step to 0
         // would send it through `effective_step`'s "no usable step" path, which
@@ -1033,10 +1147,14 @@ mod tests {
     }
 
     #[test]
-    fn an_interval_is_only_reported_when_the_driver_says_the_field_means_something() {
-        // Several UVC devices leave `timeperframe` zeroed and clear `TIMEPERFRAME`.
-        // Reading it anyway produces a `1/0` interval, and a zero denominator downstream
-        // is a frame rate nobody can divide by.
+    fn what_the_driver_said_about_the_interval_and_what_it_said_nothing_about_are_two_answers() {
+        // Three replies, three answers, and until 2026-08-16 the first and the third were
+        // the same value — a bare `None` that one line up became `FrameInterval::Unstated`,
+        // whose committed documentation states as fact that the driver *cleared*
+        // `V4L2_CAP_TIMEPERFRAME` (note **N199**). A driver that set the bit and wrote
+        // `1/0` therefore got a value asserting the opposite of what it did, a CLI line
+        // reading `(not offered)`, and a "did we misread anything" predicate answering no
+        // for the one case where the answer was yes.
         let mut bytes = vec![0u8; size_of::<v4l2_streamparm>()];
         let per_frame = capture_parm_field(offset_of!(v4l2_captureparm, timeperframe))
             .expect("inside the struct");
@@ -1051,7 +1169,7 @@ mod tests {
 
         assert_eq!(
             capture_interval(&bytes),
-            None,
+            Some(ReportedInterval::NotOffered),
             "without the capability bit the field is not an interval, however it reads"
         );
 
@@ -1060,21 +1178,36 @@ mod tests {
         fields::write_u32(&mut bytes, capability, CAP_TIMEPERFRAME).expect("fits");
         assert_eq!(
             capture_interval(&bytes),
-            Some(FrameInterval::Discrete {
+            Some(ReportedInterval::Offered(FrameInterval::Discrete {
                 numerator: 1,
                 denominator: 30
-            })
+            }))
         );
 
-        // And a degenerate fraction is refused even with the bit set: a driver saying
-        // "1/0 seconds per frame" has said nothing usable.
+        // A degenerate fraction with the bit *set* is the device's own answer and is
+        // carried verbatim (D2): the driver said something, and it is not this build's to
+        // replace with "the driver said nothing". Nothing downstream divides by it —
+        // `FrameInterval::fps` answers `None` and `imaging::avi::interval_micros` refuses
+        // it — which is what makes carrying it safe as well as honest.
         fields::write_u32(
             &mut bytes,
             per_frame + offset_of!(v4l2_fract, denominator),
             0,
         )
         .expect("fits");
-        assert_eq!(capture_interval(&bytes), None);
+        let degenerate = capture_interval(&bytes).expect("a whole reply");
+        assert_eq!(
+            degenerate,
+            ReportedInterval::Offered(FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 0
+            })
+        );
+        assert_ne!(degenerate, ReportedInterval::NotOffered);
+
+        // And a reply this build could not read at all is neither: it is our defect, and
+        // the caller turns it into `short_reply` rather than into a fact about the device.
+        assert_eq!(capture_interval(&bytes[..4]), None);
     }
 
     #[test]

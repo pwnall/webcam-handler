@@ -45,12 +45,30 @@ pub struct CaptureContext {
 ///
 /// # Errors
 ///
-/// Whatever the camera says when asked for its formats or controls. A capture that could
-/// not read part of the device is not a partial profile — it is not a profile.
+/// Whatever the camera says when asked for its formats or controls, and
+/// [`schema::Error::IllegalTransition`] naming any control the device declined to read. A
+/// capture that could not read part of the device is not a partial profile — it is not a
+/// profile, and until 2026-08-16 that sentence was true only because the control walk
+/// stopped on the first declined read. Now that the walk carries such a control valueless
+/// (rule 7, note **N192**), the refusal has to be made here or a corpus entry silently
+/// records a state nobody measured (note **N195**).
 pub fn capture(camera: &mut dyn Camera, context: &CaptureContext) -> Result<DeviceProfile> {
     let info = camera.info().clone();
     let formats = camera.formats()?;
     let controls = camera.controls()?;
+    // Every control, not only the writable ones: `state.values` records the read-only ones
+    // too, and a corpus entry is a *reading*, not a plan to write.
+    let declined: Vec<&str> = controls
+        .iter()
+        .filter(|desc| desc.value_was_declined())
+        .map(|desc| desc.slug.as_str())
+        .collect();
+    if !declined.is_empty() {
+        return Err(crate::refusal::illegal(
+            format!("unread_controls({})", declined.join(",")),
+            format!("profile capture {}", info.id),
+        ));
+    }
 
     Ok(DeviceProfile {
         schema_version: limits::PROFILE_SCHEMA_VERSION,
@@ -326,6 +344,40 @@ mod tests {
             capturer: "test".to_owned(),
             backend: BackendKind::V4l2,
         }
+    }
+
+    #[test]
+    fn a_capture_the_device_declined_part_of_is_refused_rather_than_committed_as_a_profile() {
+        // This function's own doc: "a capture that could not read part of the device is
+        // not a partial profile — it is not a profile." It stopped being true when the
+        // control walk began carrying a declined read as a valueless control: the control
+        // kept its `invariant` row and quietly dropped out of `state.values`, so a corpus
+        // entry captured while another process held one control's device function would
+        // be committed as the device's measured state (note **N195**).
+        //
+        // The corpus is what every `resemblance` claim is compared against, so a profile
+        // that is missing a value nobody can tell was missing is drift with provenance on
+        // it.
+        let mut camera = stub(vec![ControlDesc {
+            current: None,
+            ..control("auto_exposure", 0, 1)
+        }]);
+        let error = capture(&mut camera, &context())
+            .expect_err("a device that would not answer for a control was not fully read");
+        assert_eq!(error.kind(), schema::ErrorKind::IllegalTransition);
+        assert!(error.to_string().contains("auto_exposure"), "{error}");
+
+        // The inverse, and the reason the predicate is the descriptor's: a control that
+        // *declares* it has no value was fully read, and a device with a button on it must
+        // still be capturable.
+        let mut with_a_button = stub(vec![ControlDesc {
+            control_type: ControlType::Button,
+            current: None,
+            ..control("reset", 0, 0)
+        }]);
+        let profile = capture(&mut with_a_button, &context()).expect("captures");
+        assert_eq!(profile.invariant.controls.len(), 1);
+        assert!(profile.state.values.is_empty());
     }
 
     #[test]

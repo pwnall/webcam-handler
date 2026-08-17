@@ -30,6 +30,12 @@ pub struct StreamRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
     /// Preferred frame interval.
+    ///
+    /// The vocabulary is shared with the *answer*, which is what makes the `unstated` kind
+    /// readable here at all — and as a request it means what its name says: the caller
+    /// stated none. Ask for it through `StreamRequest::stated_interval` rather than
+    /// matching this field, so the two spellings of "nothing was asked for" cannot become
+    /// two behaviours (note **N199**).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<FrameInterval>,
     /// How many buffers to queue.
@@ -80,6 +86,30 @@ impl Default for StreamRequest {
 }
 
 impl StreamRequest {
+    /// The interval this request actually asks for, with the two ways of asking for
+    /// nothing collapsed into one.
+    ///
+    /// `interval` shares its `$ref` with the negotiated answer, so the wire accepts
+    /// `{"interval": {"kind": "unstated"}}` — a document saying *the caller stated no
+    /// interval*, which is exactly what omitting the field says. Both backends had a
+    /// pre-existing `_` arm underneath, and they fell through it to different answers:
+    /// the V4L2 one read the device back, the fake picked its first enumerated interval
+    /// and reported an adjustment for a request nobody made. One request, two backends,
+    /// two answers, which is the E5 divergence the battery exists to prevent (note
+    /// **N199**).
+    ///
+    /// The other two payload-free kinds are *not* collapsed. `unknown` carries a
+    /// discriminant a device sent, and `stepwise` is a range rather than a rate; a caller
+    /// handing either of those back as a request has asked for something the negotiation
+    /// has to decide about, and each backend's own match is where that decision belongs.
+    #[must_use]
+    pub fn stated_interval(&self) -> Option<FrameInterval> {
+        match self.interval {
+            Some(FrameInterval::Unstated) | None => None,
+            Some(stated) => Some(stated),
+        }
+    }
+
     /// Resolve this request against the formats a device enumerates (design D5).
     ///
     /// **The one home for "what should I ask the device for".** Every backend has the same

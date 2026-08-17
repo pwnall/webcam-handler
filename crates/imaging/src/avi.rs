@@ -106,9 +106,11 @@ pub struct AviParams {
 /// [`FrameInterval::Stepwise`] range describes what a device *could* do, not what it agreed
 /// to do, and picking its minimum would put a number in a CFR header that no frame was
 /// delivered at; a [`FrameInterval::Unknown`] carries a `v4l2_frmivaltypes` discriminant
-/// this build cannot interpret, and interpreting it anyway is the defect rule 6 is about.
-/// Both are `None`, and a `None` reaching [`AviParams::negotiated_interval_us`] is honestly
-/// reported as [`IntervalSource::Provisional`] rather than silently rounded to 30 fps.
+/// this build cannot interpret, and interpreting it anyway is the defect rule 6 is about;
+/// a [`FrameInterval::Unstated`] is a device that cleared `V4L2_CAP_TIMEPERFRAME`, so
+/// there is nothing to interpret at all. All three are `None`, and a `None` reaching
+/// [`AviParams::negotiated_interval_us`] is honestly reported as
+/// [`IntervalSource::Provisional`] rather than silently rounded to 30 fps.
 ///
 /// A degenerate discrete interval — a zero numerator or denominator, or one that works out
 /// to zero microseconds or to more than a `u32` holds — is `None` for the same reason.
@@ -129,7 +131,9 @@ pub fn interval_micros(interval: &FrameInterval) -> Option<u32> {
         }
         // Named rather than `_`, so a new arm in the kernel's vocabulary stops the build
         // here instead of quietly becoming "no interval".
-        FrameInterval::Stepwise { .. } | FrameInterval::Unknown { .. } => None,
+        FrameInterval::Stepwise { .. }
+        | FrameInterval::Unknown { .. }
+        | FrameInterval::Unstated => None,
     }
 }
 

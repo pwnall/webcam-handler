@@ -36,17 +36,22 @@
 //!
 //! ## The residual `unsafe`, counted
 //!
-//! Eleven blocks and one `unsafe impl`, one obligation each
-//! (`clippy::multiple_unsafe_ops_per_block` is denied, so that is enforced rather than
-//! claimed):
+//! Eleven blocks and one `unsafe impl`. Each block performs **one unsafe operation** —
+//! `clippy::multiple_unsafe_ops_per_block` is denied, so that half is enforced rather than
+//! claimed — and each row below states what that operation's obligation is, which is a
+//! sentence and not a lint. Two rows take two clauses to state one obligation, and that is
+//! the honest shape: `ioctl::call`'s pointer is valid *and* the one struct it carries with
+//! a `__user` member is only ever filled for the queue that does not follow it, and both
+//! halves have to hold for the same single call to be sound. Splitting the sentence would
+//! not split the operation (note **N199**).
 //!
 //! | Where | Obligation |
 //! |---|---|
 //! | [`Fd::as_fd`] | the descriptor is open for the whole of the borrow, which elision ties to `&self` |
 //! | [`payload::Payload::bytes`] | every byte of the buffer is initialized |
 //! | [`payload::Payload::bytes_mut`] | the same, with the exclusive borrow the mutable slice needs |
-//! | `ioctl::call` | the pointer is valid and correctly sized for the request's declared width |
-//! | `ioctl::call_enumerating` | the same; only the *interpretation* of the error differs |
+//! | `ioctl::call` | the pointer is valid and correctly sized for the request's declared width, and the one struct it carries with a `__user` pointer is only ever filled for the queue that does not follow it |
+//! | `ioctl::call_enumerating` | the same pointer obligation as `ioctl::call`, over five enumeration structs that carry no `__user` member at all — so it is a *shorter* discharge, not the same one |
 //! | `ioctl::call_ext_ctrls` | the same, plus the one-entry control array — and its payload pointer, when it has one — that the kernel dereferences |
 //! | `mmap::Mapping::map` | a null hint address and a descriptor the region belongs to |
 //! | `mmap::Mapping::bytes` | the slice lies inside a region that is still mapped |

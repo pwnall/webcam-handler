@@ -57,6 +57,22 @@ pub struct Snapshot {
     pub camera: CameraFingerprint,
     /// The recorded values.
     pub entries: Vec<SnapshotEntry>,
+    /// The writable controls this snapshot could **not** record, because the device
+    /// declined to read them — a `current` absent from a descriptor that predicted one.
+    ///
+    /// A snapshot's whole promise is that the camera can be put back, and a control with
+    /// no recorded value is one it cannot promise for. Leaving such a control out of
+    /// `entries` and saying nothing would make `is_complete` answer `true` for a camera
+    /// that was changed and not changed back — outcomes are one per entry, so a control
+    /// that never became an entry produces no outcome to be incomplete about (note
+    /// **N195**).
+    ///
+    /// Empty on every device this project has measured, and the ordinary answer. Restore
+    /// turns each name here into an `unrestorable` outcome whose reason is
+    /// `never_recorded`, which is what makes the incompleteness reach a report, an exit
+    /// code and a human line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined: Vec<ControlSlug>,
 }
 
 impl Snapshot {
@@ -100,6 +116,13 @@ pub enum UnrestorableReason {
     Volatile,
     /// The control has gone read-only, or vanished, since the snapshot.
     NoLongerWritable,
+    /// The snapshot has no value for it: the device declined to read this control when
+    /// the snapshot was taken, so there is nothing to write back.
+    ///
+    /// The one reason here that is decided before any write is attempted, and the reason
+    /// it exists at all: an unrecorded control used to be an absence rather than an
+    /// outcome, and an absence cannot make a report incomplete (note **N195**).
+    NeverRecorded,
     /// The write failed. The error rides along so the caller can act on it.
     WriteFailed {
         /// What went wrong.
@@ -230,6 +253,7 @@ mod tests {
                 serial: None,
             },
             entries,
+            declined: Vec::new(),
         }
     }
 

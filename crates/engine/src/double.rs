@@ -573,6 +573,21 @@ pub(crate) fn boolean(slug: &str, current: i64) -> ControlDesc {
     }
 }
 
+/// The same control, with the device having declined to read its value.
+///
+/// Two lines, and until 2026-08-16 nothing in this workspace wrote them: every fixture
+/// gave every writable control a value, so the population D4 silently dropped had no
+/// shape here at all (note **N195**). The descriptor is otherwise untouched — an
+/// ordinary, writable, restorable control — which is the whole point: nothing about it
+/// predicts the absence, so [`schema::control::ControlDesc::value_was_declined`] answers
+/// `true` for it.
+pub(crate) fn unreadable(desc: ControlDesc) -> ControlDesc {
+    ControlDesc {
+        current: None,
+        ..desc
+    }
+}
+
 /// The same control with extra raw flag bits set.
 pub(crate) fn flagged(desc: ControlDesc, bits: u32) -> ControlDesc {
     ControlDesc {

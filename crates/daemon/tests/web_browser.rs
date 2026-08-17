@@ -175,9 +175,15 @@ struct Floor {
 /// **N157**'s correction); and the calibration view's reorder was argued closed in prose rather than driven at
 /// all (note **N154**'s correction). A rung that only asks whether a thing stops cannot see a
 /// thing that stops when it should not.
+///
+/// Raised once more by the B7 repair pass, for the claim that closes the last widget in this
+/// panel that could put a number in front of an operator the device never sent. The menu with
+/// no current had a claim; the *slider* with no current did not, and a range input cannot hold
+/// "nothing" — it held the declared default, live, one relative gesture from a write (note
+/// **N199**).
 const FLOOR: Floor = Floor {
-    claims: 23,
-    assertions: 198,
+    claims: 24,
+    assertions: 206,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.

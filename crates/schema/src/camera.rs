@@ -1071,6 +1071,33 @@ pub enum FrameInterval {
         /// The kernel's `type` discriminant, preserved exactly.
         raw: u32,
     },
+    /// The device names no interval at all: it cleared `V4L2_CAP_TIMEPERFRAME` in its
+    /// `G_PARM` reply, which is the driver saying frame-interval negotiation is not
+    /// something this node does.
+    ///
+    /// **The fourth answer, and it exists because the third was being used as one.** The
+    /// `unknown` kind carries *the kernel's own `type` discriminant*, and a device that
+    /// named no shape has no discriminant to carry — the `{"kind": "unknown", "raw": 0}`
+    /// the V4L2 backend used to produce here was a number this build invented, and `0` is
+    /// not even a spare value: it is what a driver that filled in nothing would write.
+    /// D2 represents what it cannot interpret; manufacturing the evidence for it is the
+    /// one thing D2 forbids.
+    ///
+    /// **This means the bit and nothing else.** A driver that *sets* the bit and then
+    /// writes a fraction with a zero in it has said something, and what it said is carried
+    /// as a `discrete` interval holding that fraction — a rate nobody can compute, which
+    /// `fps` answers `null` for. Reporting that as `unstated` would be a second invented
+    /// claim about the device where the first one was removed.
+    ///
+    /// Distinct from an *absent* interval, which this vocabulary has no spelling for and
+    /// does not need: a negotiated stream always reports one, and this is what it reports
+    /// when the device would not say. There is no rate here — the same as `unknown` — so a
+    /// consumer that wants frames per second has to handle both.
+    ///
+    /// **As a request** it means the caller stated no interval, exactly as omitting the
+    /// field does; the negotiation reads back whatever the device is running at. It is not
+    /// a request for "no interval", because there is no such thing to ask a device for.
+    Unstated,
 }
 
 impl FrameInterval {
@@ -1082,20 +1109,22 @@ impl FrameInterval {
                 numerator,
                 denominator,
             } => {
-                if numerator == 0 {
+                // **Both** halves, and the second one matters more than it looks. A
+                // driver that sets `V4L2_CAP_TIMEPERFRAME` and writes `1/0` is carried
+                // here verbatim (D2), and `denominator / numerator` for it is `0.0` — a
+                // rate nothing measured, arriving as a number a caller would print. The
+                // fraction is the device's; the *rate* is an interpretation, and there
+                // isn't one (note **N199**).
+                if numerator == 0 || denominator == 0 {
                     None
                 } else {
                     Some(f64::from(denominator) / f64::from(numerator))
                 }
             }
-            FrameInterval::Stepwise { .. } | FrameInterval::Unknown { .. } => None,
+            FrameInterval::Stepwise { .. }
+            | FrameInterval::Unknown { .. }
+            | FrameInterval::Unstated => None,
         }
-    }
-
-    /// Whether this build can interpret the shape the driver described.
-    #[must_use]
-    pub const fn is_interpretable(&self) -> bool {
-        !matches!(*self, FrameInterval::Unknown { .. })
     }
 }
 
@@ -1783,9 +1812,15 @@ mod tests {
             .is_interpretable()
         );
 
+        // The interval half has no `is_interpretable` beside it, and that is deliberate:
+        // `FrameSize::is_interpretable` has two readers in `capture.rs` that decide which
+        // sizes a request may be resolved against, and the interval one had none in the
+        // whole workspace — a `#[must_use]` public predicate nothing asked, with a
+        // documented usage (`if is_interpretable() { compute_rate() }`) that would have
+        // been wrong for `Unstated` (rubric A8, note **N199**). `fps` is the question
+        // callers actually ask, and it answers for every variant.
         let interval = FrameInterval::Unknown { raw: 9 };
         assert_eq!(interval.fps(), None);
-        assert!(!interval.is_interpretable());
 
         // And both survive the wire with their discriminant.
         for value in [
@@ -1798,6 +1833,48 @@ mod tests {
             serde_json::from_str::<FrameSize>(&serde_json::to_string(&size).expect("serialize"))
                 .expect("deserialize"),
             size
+        );
+    }
+
+    #[test]
+    fn a_device_that_named_no_interval_and_one_that_named_an_unreadable_shape_are_two_answers() {
+        // The fourth `FrameInterval`, and why it is a variant rather than a spelling of
+        // the third (note **N194**). "The driver said `type = 0`" and "the driver said it
+        // does not negotiate an interval on this node" are different facts, and until
+        // 2026-08-16 the V4L2 backend spelled the second one as the first — a `raw` the
+        // doc comment promises is *the kernel's discriminant, preserved exactly*, with a
+        // number the kernel never sent.
+        let unstated = FrameInterval::Unstated;
+        let invented = FrameInterval::Unknown { raw: 0 };
+        assert_ne!(unstated, invented);
+
+        // Neither has a rate, and a caller asking "how fast" cannot tell them apart —
+        // which is right, because neither answers that question.
+        assert_eq!(unstated.fps(), None);
+        assert_eq!(invented.fps(), None);
+
+        // A degenerate fraction the device really did send is a third thing again, and it
+        // is neither of these: the driver said something, it is carried verbatim, and the
+        // rate it implies does not exist (note **N199**).
+        let degenerate = FrameInterval::Discrete {
+            numerator: 1,
+            denominator: 0,
+        };
+        assert_ne!(degenerate, unstated);
+        assert_eq!(
+            degenerate.fps(),
+            None,
+            "a zero denominator is not zero frames per second"
+        );
+
+        // And on the wire they are two documents, with no `raw` on the one that has no
+        // discriminant to carry.
+        let rendered = serde_json::to_string(&unstated).expect("serialize");
+        assert_eq!(rendered, r#"{"kind":"unstated"}"#);
+        assert!(!rendered.contains("raw"), "{rendered}");
+        assert_eq!(
+            serde_json::from_str::<FrameInterval>(&rendered).expect("deserialize"),
+            unstated
         );
     }
 

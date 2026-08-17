@@ -123,6 +123,19 @@ pub trait CameraBackend: fmt::Debug + Send + Sync {
     /// would have to ask which backend it is holding (design §2.10: a second `match` on
     /// `BackendKind` is a second home). Defaulted to empty, because "I have nothing to
     /// add" is the honest answer for a backend replaying a document. See note N7.
+    ///
+    /// **Call it after [`CameraBackend::enumerate`], on the same thread**, and read it as
+    /// *why that listing said what it did*. A hint explains a listing, so an implementation
+    /// is entitled to answer from the reading its own `enumerate` just took rather than by
+    /// reading the machine a second time — the V4L2 backend does exactly that, because two
+    /// readings a moment apart can disagree about which cameras are there and a hint that
+    /// describes the second one is attached to the first (note **N193**). Called with no
+    /// listing behind it, or from a different thread, an implementation answers about now,
+    /// which is a weaker answer and never a wrong one.
+    ///
+    /// `engine::resolve::list` is the one caller in this workspace and it makes the paired
+    /// call; a caller that wants a diagnosis on its own gets the unpaired answer, which is
+    /// what it asked for.
     fn diagnose(&self) -> Vec<crate::report::ListHint> {
         Vec::new()
     }

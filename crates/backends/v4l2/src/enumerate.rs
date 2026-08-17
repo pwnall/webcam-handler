@@ -119,6 +119,15 @@ pub(crate) fn group(nodes: &[ProbedNode]) -> Vec<CameraInfo> {
 /// "First" is load-bearing on a device with two capture nodes \[PF:19\]: they carry
 /// identical `device_caps` and identical `QUERYCAP` strings, so nothing here can rank
 /// them, and the choice is the node order's — numeric, from `sysfs.rs`.
+///
+/// **"Capture" is load-bearing everywhere else**, and until 2026-08-16 nothing said so:
+/// every fixture in this file has its capture node first and every node of a group
+/// reporting the same strings, so this function and `members.first()` agreed on all of
+/// them (note **N189**). They are not the same answer. Node order is `/dev/videoN` order
+/// and PF:22 measured what that is worth, while `info_for` reads this node's `QUERYCAP`
+/// answer for the whole of `CameraFingerprint` — the value `calibrate apply` matches a
+/// session against. `a_cameras_identity_is_its_capture_nodes_and_does_not_move_when_its_nodes_are_reordered`
+/// is the arm that can go red on it.
 fn representative<'a>(members: &[&'a ProbedNode]) -> Option<&'a ProbedNode> {
     members
         .iter()
@@ -403,6 +412,65 @@ mod tests {
             cameras.iter().map(|c| c.nodes.len()).collect::<Vec<_>>(),
             vec![2, 2, 2, 4]
         );
+    }
+
+    #[test]
+    fn a_cameras_identity_is_its_capture_nodes_and_does_not_move_when_its_nodes_are_reordered() {
+        // What [`representative`] is *for*, and until now nothing could tell it from
+        // `members.first()`: on the seed hardware every group's capture node happens to
+        // come first, and every node in a group reports the same `QUERYCAP` strings, so
+        // both answers agree on every fixture in this file (note **N189**).
+        //
+        // Neither of those is a rule. Node order is `/dev/videoN` order, and PF:22
+        // measured what that is worth — one `uvcvideo` reload renumbered three of four
+        // cameras and changed nothing about any of them, so which member of a group comes
+        // first is probe-order bookkeeping. And the identity `info_for` builds — the whole
+        // of `CameraFingerprint`, which is what `calibrate apply` matches a session
+        // against (D1, PF:13) — is read off one member's `QUERYCAP` answer.
+        //
+        // The divergent card below is **declared, not measured**: no device this project
+        // has seen reports different `QUERYCAP` strings on two nodes of one interface. It
+        // is here because a fixture where the two candidates agree cannot state which one
+        // was asked, which is the property, and because a metadata node's answer standing
+        // in for a camera's identity is the failure that would follow.
+        let capture = node(
+            "/dev/video1",
+            "5-2:1.0",
+            "Reordered Camera",
+            "usb-5",
+            CAPTURE_CAPS,
+            Some("the-capture-nodes-serial"),
+        );
+        let metadata = node(
+            "/dev/video0",
+            "5-2:1.0",
+            "Reordered Camera Metadata",
+            "usb-5",
+            METADATA_CAPS,
+            Some("the-metadata-nodes-serial"),
+        );
+
+        // Metadata first, which is the order `members.first()` gets wrong.
+        let cameras = group(&[metadata.clone(), capture.clone()]);
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].card, "Reordered Camera");
+        assert_eq!(cameras[0].fingerprint.card, "Reordered Camera");
+        assert_eq!(
+            cameras[0].fingerprint.serial.as_deref(),
+            Some("the-capture-nodes-serial")
+        );
+        assert_eq!(cameras[0].id.as_str(), "cam:reordered-camera");
+        // Both nodes still belong to it: the choice is about whose answer describes the
+        // camera, never about which nodes it has.
+        assert_eq!(cameras[0].nodes.len(), 2);
+
+        // And the property that needs no invented device: the identity is the same one
+        // whichever order the kernel hands the nodes over in. A fingerprint that moved
+        // under a renumbering would make `calibrate apply` refuse a session it recorded
+        // itself, one reload later.
+        let reordered = group(&[capture, metadata]);
+        assert_eq!(reordered[0].fingerprint, cameras[0].fingerprint);
+        assert_eq!(reordered[0].id, cameras[0].id);
     }
 
     #[test]

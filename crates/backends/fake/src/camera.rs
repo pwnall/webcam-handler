@@ -570,7 +570,20 @@ impl Camera for FakeCamera {
         if take_fault(&self.faults, Fault::InactiveFlip) {
             lock(&self.state).flip_measured_partners();
         }
-        Ok(lock(&self.state).descriptors())
+        let mut descriptors = lock(&self.state).descriptors();
+        if take_fault(&self.faults, Fault::ControlReadDeclined) {
+            // One control, and the walk carries on — which is the claim
+            // `v4l2::walked_current` makes and the fake had no way to exhibit. The first
+            // writable one that *would* have a value: a control the descriptor already
+            // predicts is valueless would make the fault unobservable.
+            if let Some(desc) = descriptors
+                .iter_mut()
+                .find(|desc| desc.is_writable() && desc.current.is_some())
+            {
+                desc.current = None;
+            }
+        }
+        Ok(descriptors)
     }
 
     fn get(&mut self, id: ControlId) -> Result<ControlValue> {
@@ -784,7 +797,12 @@ fn choose_interval(
     let Some(entry) = at_size else {
         return FALLBACK_INTERVAL;
     };
-    match request.interval {
+    // `stated_interval`, not `request.interval`: a request carrying `Unstated` said the
+    // caller asked for nothing, and the fake reading it as "an interval that is not on the
+    // list" would report an adjustment for a request nobody made — while the V4L2 backend
+    // read the device back and reported none. Same document, two backends, two answers
+    // (E5, note **N199**).
+    match request.stated_interval() {
         Some(wanted) if entry.intervals.contains(&wanted) => wanted,
         _ => entry
             .intervals
@@ -832,10 +850,11 @@ fn interval_micros(interval: FrameInterval) -> i64 {
             min_denominator: denominator,
             ..
         } => (i64::from(numerator), i64::from(denominator)),
-        // An interval whose shape this build cannot read cannot drive a clock. The fake
-        // falls back rather than inventing a rate — and a fake that invented one would be
-        // claiming a capability no real device demonstrated (E5).
-        FrameInterval::Unknown { .. } => match FALLBACK_INTERVAL {
+        // An interval whose shape this build cannot read cannot drive a clock, and neither
+        // can one the device declined to name. The fake falls back rather than inventing a
+        // rate — and a fake that invented one would be claiming a capability no real device
+        // demonstrated (E5).
+        FrameInterval::Unknown { .. } | FrameInterval::Unstated => match FALLBACK_INTERVAL {
             FrameInterval::Discrete {
                 numerator,
                 denominator,
