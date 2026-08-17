@@ -66,7 +66,8 @@ fail_case_a_daemon_that_serves_from_a_world_traversable_directory() {
     local stub
     stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0755 bind serve
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'at mode 755; D11 makes filesystem permissions the whole auth model and requires 700' \
+        env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # The non-vacuity arm. A daemon that announces a socket it never bound would leave the
@@ -76,7 +77,8 @@ fail_case_a_daemon_that_announces_a_socket_it_never_bound() {
     local stub
     stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0700 announce-only serve
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'and there is nothing there; the directory checked above is not one anything served from' \
+        env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # The repair. This daemon's fresh directory is impeccable — so the first claim passes —
@@ -87,7 +89,8 @@ fail_case_a_daemon_that_repairs_a_widened_directory_instead_of_refusing() {
     local stub
     stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0700 bind serve
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'from 0755 to 700; a wrong mode is refused rather than repaired' \
+        env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # The symlink. This daemon does everything the shipped one does *except* look at the
@@ -95,6 +98,16 @@ fail_case_a_daemon_that_repairs_a_widened_directory_instead_of_refusing() {
 # 0755 directory (claim 3 passes) and happily serves from a link to a 0700 one. Whoever
 # owns the parent can then re-point that link, which on a host with a synthesised
 # `$XDG_RUNTIME_DIR` under `/tmp` need not be us.
+#
+# **The stub creates its own directory at 0700 and only *then* reads the mode**, and that
+# ordering is the arm rather than a detail (note **N245**). It used to `mkdir -p` and read
+# the mode of whatever that produced, which is `0777 & ~umask` — so on a `umask 002`
+# workstation the fresh directory came out 775, this stub refused to start, and claim 1 went
+# red with *"the daemon never announced a socket"* and *"examined zero socket directories"*
+# beside the symlink sentence this arm is named for. On a `umask 077` runner it did not. An
+# arm whose set of red branches is a function of the runner's umask is N52/N66/N68's shape
+# in a case file, and `gate_red_because` below is what would have caught it had the branch
+# it names been the one that stopped firing.
 fail_case_a_daemon_that_serves_through_a_symlinked_socket_directory() {
     local stub app_dir socket_file
     { read -r app_dir; read -r socket_file; } < <(_socket_names)
@@ -103,7 +116,14 @@ fail_case_a_daemon_that_serves_through_a_symlinked_socket_directory() {
 #!/usr/bin/env bash
 set -euo pipefail
 dir="\$XDG_RUNTIME_DIR/$app_dir"
-mkdir -p "\$dir"
+# A directory of its own is created private, exactly as the shipped daemon creates one; a
+# directory that is already there is inspected and never repaired. Both halves are what makes
+# this stub wrong in *one* way. \`-d\` follows the link, so the symlinked case takes the second
+# path and finds a 0700 target — which is the defect.
+if [[ ! -d "\$dir" ]]; then
+    mkdir -p "\$dir"
+    chmod 0700 "\$dir"
+fi
 # By path, following whatever the name leads to — which is the whole defect.
 mode="\$(stat -Lc %a "\$dir")"
 if [[ "\$mode" != 700 ]]; then
@@ -114,7 +134,8 @@ fi
 printf 'webcam-handler-daemon is serving socket=%s\\n' "\$dir/$socket_file" >&2
 STUB
     chmod +x "$stub"
-    WCH_GATE_WCHD="$stub" "$GATE"
+    gate_red_because 'the mode it checked was the target'"'"'s and the link can be re-pointed before the bind' \
+        env WCH_GATE_WCHD="$stub" "$GATE"
 }
 
 # A daemon that cannot start at all leaves this gate with nothing to examine, and a gate
@@ -123,5 +144,8 @@ fail_case_a_daemon_that_never_serves_leaves_nothing_to_check() {
     local stub
     stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchd.XXXXXXXX")"
     _stub_daemon "$stub" 0700 bind refuse
-    WCH_GATE_WCHD="$stub" "$GATE"
+    # The vacuity sentence rather than the "never announced" one above it: the two are one
+    # condition here — `directories` is only ever left at zero by the branch that reports the
+    # missing announcement — and the name of this arm is about what was left to check.
+    gate_red_because 'examined zero socket directories' env WCH_GATE_WCHD="$stub" "$GATE"
 }

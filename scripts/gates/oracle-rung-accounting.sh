@@ -239,6 +239,17 @@ checked=0
 # either half wrong would be believed: the exit status, the word the transcript ends on, and —
 # for the two `FAIL` arms — that the word went to standard error, where a reader skimming for it
 # will find it.
+#
+# ## Why the word and the code are reported together rather than one after the other
+#
+# Until 2026-08-17 a wrong exit status `return`ed before the word was ever looked at, so **two of
+# the case file's arms printed the same sentence with the same numbers** — a runner that calls a
+# silent rung a run, and a runner that says `FAIL` and exits 0 anyway — and nothing the harness
+# reads could tell them apart (note **N246**; note **N242** is the same finding one predicate
+# along). They are not the same defect and they are not the same thing to do: the first has lost
+# the accounting, the second has kept it and lost the *consequence*, which is the one a phase gate
+# walks past. So the word is established first, and the three sentences below say which of the
+# two halves disagreed.
 expect_verdict() {
     local label="$1" log="$2" recorded_status="$3" want_status="$4" want_word="$5"
     checked=$((checked + 1))
@@ -247,12 +258,22 @@ expect_verdict() {
     out="$(WCH_RUNG_ORACLES_ACCOUNT="$log" WCH_RUNG_ORACLES_STATUS="$recorded_status" \
         "$runner" 2>&1)" || status=$?
 
-    if ((status != want_status)); then
-        gate_fail "$label: the runner exited $status over the recorded log and should have exited $want_status"
+    local said=0
+    if grep -qE "rung-oracles: $want_word" <<<"$out"; then
+        said=1
+    fi
+
+    if ((status != want_status)) && ((said == 1)); then
+        gate_fail "$label: the runner printed '$want_word' and then exited $status, where $want_status is that verdict's exit code; a rung whose word and whose code disagree is read by a person as the word and by every gate above it as the code"
         printf '%s\n' "$out" | sed 's/^/        /' >&2
         return
     fi
-    if ! grep -qE "rung-oracles: $want_word" <<<"$out"; then
+    if ((status != want_status)); then
+        gate_fail "$label: the runner exited $status where $want_status was the verdict, and did not print '$want_word' either; it is answering some other question about this log"
+        printf '%s\n' "$out" | sed 's/^/        /' >&2
+        return
+    fi
+    if ((said == 0)); then
         gate_fail "$label: the runner exited $status without saying '$want_word'; a verdict nobody can read is a verdict nobody can act on"
         printf '%s\n' "$out" | sed 's/^/        /' >&2
         return

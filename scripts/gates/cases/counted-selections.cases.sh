@@ -119,7 +119,11 @@ fail_case_selection_matches_no_tests() {
     _stub_lister "$lister"
     printf 'g0\ttests\ttest(no_such_test_exists)\ta criterion whose filter has rotted\n' \
         >>"$tree/scripts/gates/phase-criteria.tsv"
-    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+    # The seeded row by name. The stub answers `mismatch` for every row it was not written for,
+    # so this arm is loudly red about the whole table as well; what it is *named* for is the one
+    # row it added, and that is the sentence it claims.
+    gate_red_because "g0 selection 'test(no_such_test_exists)' selects zero tests" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
 }
 
 # The arm the stub cannot provide: the *real* tool, and a filter that matches nothing.
@@ -132,13 +136,15 @@ fail_case_a_real_selection_that_matches_nothing_counts_zero() {
     tree="$(gate_scratch_tree)"
     printf 'g0\ttests\tpackage(webcam-handler-schema) and test(/^zzz_no_such_module::/)\ta filter that has rotted\n' \
         >>"$tree/scripts/gates/phase-criteria.tsv"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "g0 selection 'package(webcam-handler-schema) and test(/^zzz_no_such_module::/)' selects zero tests" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_lister_cannot_answer() {
     local tree
     tree="$(gate_scratch_tree)"
-    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST=/bin/false "$GATE"
+    gate_red_because 'a selection that cannot be listed is not a selection that was checked' \
+        env WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST=/bin/false "$GATE"
 }
 
 fail_case_no_selections_at_all() {
@@ -149,7 +155,8 @@ fail_case_no_selections_at_all() {
     grep -v '	tests	' "$tree/scripts/gates/phase-criteria.tsv" \
         >"$tree/scripts/gates/phase-criteria.tsv.seeded"
     mv "$tree/scripts/gates/phase-criteria.tsv.seeded" "$tree/scripts/gates/phase-criteria.tsv"
-    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+    gate_red_because 'examined zero phase-gate test selections' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
 }
 
 fail_case_criterion_runs_a_missing_script() {
@@ -159,12 +166,14 @@ fail_case_criterion_runs_a_missing_script() {
     _stub_lister "$lister"
     printf 'g0\tcommand\t./scripts/gates/not-a-real-gate.sh\ta criterion that names a script nobody wrote\n' \
         >>"$tree/scripts/gates/phase-criteria.tsv"
-    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+    gate_red_because 'g0 criterion runs ./scripts/gates/not-a-real-gate.sh, which is missing or not executable' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
 }
 
 fail_case_criteria_table_deleted() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/scripts/gates/phase-criteria.tsv"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because '/scripts/gates/phase-criteria.tsv; there are no selections to count' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }

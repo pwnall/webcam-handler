@@ -22,29 +22,44 @@
 # a file whose arms are *all* converted and which is **not** listed is a problem too, with the
 # remedy being this line.
 #
-# The four files converted at L25 that turned out to be red on a branch other than the one their
-# name claimed are recorded in notes **N241** and **N242**; that is what this register is for.
+# The files converted at L25 that turned out to be red on a branch other than the one their name
+# claimed are recorded in notes **N241**, **N242** and **N245**–**N248**; that is what this register
+# is for. Since tranche 2 the list is one file short of being the population: the residual is three
+# arms in `schema-artifacts-current`, and note **N240**'s second amendment says what closing that
+# last gap retires.
 
 agent-guide-current
+agents-md-current
 atomic-write-home
 avi-reparse-is-independent
 browser-pins-sync
+claims-come-back-with-their-values
 cli-parity
 corpus-floor
+counted-selections
 dependency-walls
+doc-comments-open-with-a-summary
 feature-posture
 ignored-suites-have-recipes
+json-validates
+kill-is-never-a-fallback
 license-allowlist
 lint-posture
 msrv-sync
 mutation-verdict
 no-external-fetch-in-web
 no-frame-bytes-in-repo
+oracle-rung-accounting
+privileged-helper
 scratch-has-one-home
 shipped-profile-is-declared
 socket-activation
+state-dir-permissions
 systemd-units
 testkit-is-dev-only
+token-comparison-has-one-home
 uapi-constants-are-declared
+uds-permissions
 unsafe-scope
+web-routes-are-gated
 wire-surface-sync

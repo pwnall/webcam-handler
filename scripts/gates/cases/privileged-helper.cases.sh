@@ -89,15 +89,16 @@ fail_case_the_blessed_copy_is_group_or_world_executable() {
     # 0755: exactly what a careless `chmod -R a+rX` or a restore-from-backup produces, and
     # on a real blessed copy it is a local root escalation for every user on the box.
     chmod 0755 "$tree/.wch-bin/webcam-handler-priv"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'is mode 755; a root-capable binary must be 0700 (owner only)' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_blessed_directory_is_not_gitignored() {
     local tree
     tree="$(gate_scratch_tree)"
-    grep -v '^/\.wch-bin/$' "$tree/.gitignore" >"$tree/.gitignore.tmp"
-    mv "$tree/.gitignore.tmp" "$tree/.gitignore"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_seed '/^\/\.wch-bin\/$/d' "$tree/.gitignore"
+    gate_red_because '.wch-bin/ is not in .gitignore; a capability-carrying binary must never be committable' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_product_crate_links_the_privileged_helper() {
@@ -111,14 +112,16 @@ fail_case_a_product_crate_links_the_privileged_helper() {
         | ( .resolve.nodes[] | select(.id | test("webcam-handler-cli[^-]")) | .deps )
             += [ { "pkg": $priv, "name": "webcam_handler_priv", "dep_kinds": [ { "kind": null, "target": null } ] } ]
     ' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'depends on webcam-handler-priv; the privileged helper must reach no shipped link graph' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 fail_case_the_helper_stops_forbidding_unsafe() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/^#!\[forbid(unsafe_code)\]//' "$tree/crates/priv/src/main.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'does not carry #![forbid(unsafe_code)]; a root-capable binary is the last place to hand-roll a pointer cast' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_helper_left_the_workspace() {
@@ -127,7 +130,8 @@ fail_case_the_helper_left_the_workspace() {
     # Non-vacuity: with no subject, every claim above is trivially true, and a gate that
     # reports PASS over a helper that is no longer there is the worst kind of green.
     jq 'del(.packages[] | select(.name == "webcam-handler-priv"))' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'webcam-handler-priv is not a workspace member; this gate has no subject' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 # ------------------------------------------------------------------ claim 5
@@ -148,7 +152,9 @@ fail_case_a_verb_takes_a_program_its_caller_names() {
     },
 RUST
     gate_seed "/^enum Verb {\$/r $fragment" "$tree/crates/priv/src/main.rs"
-    gate_red_because 'trailing_var_arg' env "WCH_GATE_ROOT=$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'names `trailing_var_arg` in product code; that is how a verb hands this binary'"'"'s capabilities to a program its caller chose' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 fail_case_the_helper_reaches_for_the_std_exec_trait() {
@@ -159,7 +165,9 @@ fail_case_the_helper_reaches_for_the_std_exec_trait() {
     # `main.rs`'s own test walks the command tree and would be perfectly green on it.
     gate_seed 's/^mod caps;$/mod caps;\nuse std::os::unix::process::CommandExt as _;/' \
         "$tree/crates/priv/src/main.rs"
-    gate_red_because 'CommandExt' env "WCH_GATE_ROOT=$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'names `CommandExt` in product code; that is how a verb hands this binary'"'"'s capabilities to a program its caller chose' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 fail_case_the_helper_reaches_for_the_exec_trait_in_a_checkout_somebody_cloned_under_tests() {
@@ -186,7 +194,9 @@ fail_case_the_helper_reaches_for_the_exec_trait_in_a_checkout_somebody_cloned_un
     mv "$tree" "$under"
     gate_seed 's/^mod caps;$/mod caps;\nuse std::os::unix::process::CommandExt as _;/' \
         "$under/crates/priv/src/main.rs"
-    gate_red_because 'CommandExt' env "WCH_GATE_ROOT=$under" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'names `CommandExt` in product code; that is how a verb hands this binary'"'"'s capabilities to a program its caller chose' \
+        env "WCH_GATE_ROOT=$under" "$GATE"
 }
 
 fail_case_the_helper_has_no_source_left() {

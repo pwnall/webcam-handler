@@ -92,7 +92,12 @@ fail_case_a_new_route_module_nobody_put_on_the_list() {
     local tree
     tree="$(gate_scratch_tree)"
     seed_route_module "$tree" '"/snapshot"' crates/daemon/src/http/snapshot.rs
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The path as the predicate echoes it back, which is what separates this arm from the one
+    # below: both trip claim 2's comparison, and the only thing in the sentence that says which
+    # spelling was seeded is the argument it quotes.
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'registers a route on `"/snapshot"`, which is not one of the paths' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_new_route_on_a_constant_the_list_does_not_name() {
@@ -102,7 +107,9 @@ fail_case_a_new_route_on_a_constant_the_list_does_not_name() {
     local tree
     tree="$(gate_scratch_tree)"
     seed_route_module "$tree" SNAPSHOT_PATH crates/daemon/src/http/snapshot.rs
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'registers a route on `SNAPSHOT_PATH`, which is not one of the paths' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_route_registered_outside_the_listener_module() {
@@ -112,7 +119,9 @@ fail_case_a_route_registered_outside_the_listener_module() {
     local tree
     tree="$(gate_scratch_tree)"
     seed_route_module "$tree" '"/snapshot"' crates/engine/src/snapshot_route.rs
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'registers a route (`"/snapshot"`) outside crates/daemon/src/http' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_file_that_registers_a_route_and_cannot_be_classified() {
@@ -134,7 +143,8 @@ pub(super) fn mount() -> axum::Router {
 #[cfg(test)]
 mod second {}
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'registers a route or a fallback and this gate cannot tell its product code from its test code' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_second_fallback_answers_beside_the_assets() {
@@ -153,7 +163,9 @@ async fn snapshot() -> Vec<u8> {
     Vec::new()
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'answers a request that matched no route (`.fallback(snapshot)`)' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_fallback_stops_being_the_asset_table() {
@@ -163,7 +175,9 @@ fail_case_the_fallback_stops_being_the_asset_table() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/\.fallback(asset)/.fallback(anything_at_all)/' \
         "$tree/crates/daemon/src/http/listener.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'falls back to `anything_at_all` rather than to `asset`' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_gate_went_back_over_everything() {
@@ -173,7 +187,13 @@ fail_case_the_gate_went_back_over_everything() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/routes\.route_layer(/routes.layer(/' "$tree/crates/daemon/src/http/listener.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The `route_layer` sentence and **not** the `gate::check` one: this seed leaves the gate
+    # installed exactly once and only changes what it is installed over, which is the whole
+    # difference between it and the arm below — a tree that 401s the client's own source code
+    # against one that serves the camera to anybody.
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'calls `route_layer(` 0 time(s), not once' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_gate_is_no_longer_installed_at_all() {
@@ -184,7 +204,9 @@ fail_case_the_gate_is_no_longer_installed_at_all() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/routes\.route_layer(axum::middleware::from_fn_with_state(token, gate::check))/routes/' \
         "$tree/crates/daemon/src/http/listener.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'names `gate::check` 0 time(s), not once' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_route_installs_a_gate_of_its_own() {
@@ -199,7 +221,8 @@ pub(super) fn mount(token: std::sync::Arc<super::token::Token>) -> axum::Router 
     axum::Router::new().layer(axum::middleware::from_fn_with_state(token, gate::check))
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'is installed from crates/daemon/src/http/scratch.rs as well as from' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_list_is_empty() {
@@ -210,7 +233,9 @@ fail_case_the_list_is_empty() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/pub const CAMERA_BEARING_PATHS: [\&str; 0] = [];/' \
         "$tree/crates/daemon/src/http/mod.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'examined zero paths on `CAMERA_BEARING_PATHS`' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_list_names_a_literal_instead_of_the_constant() {
@@ -221,7 +246,9 @@ fail_case_the_list_names_a_literal_instead_of_the_constant() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/= \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/= ["\/rpc", "\/preview"];/' \
         "$tree/crates/daemon/src/http/mod.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'names `"/rpc"`, which is not a constant' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_list_names_a_path_nothing_declares() {
@@ -232,7 +259,9 @@ fail_case_the_list_names_a_path_nothing_declares() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/preview::PREVIEW_PATH\];/preview::SNAPSHOT_PATH];/' \
         "$tree/crates/daemon/src/http/mod.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'names `SNAPSHOT_PATH` and nothing in crates/daemon/src/http declares it' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_list_declaration_is_gone() {
@@ -241,7 +270,9 @@ fail_case_the_list_declaration_is_gone() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/pub const CAMERA_BEARING_PATHS/pub const GATED_PATHS/' \
         "$tree/crates/daemon/src/http/mod.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'no longer declares `pub const CAMERA_BEARING_PATHS`' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_composition_module_is_missing() {
@@ -249,7 +280,8 @@ fail_case_the_composition_module_is_missing() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/crates/daemon/src/http/listener.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/http/listener.rs is missing; the list of gated paths and the composition that gates them' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_no_route_is_registered_at_all() {
@@ -267,7 +299,10 @@ fail_case_no_route_is_registered_at_all() {
         "$tree/crates/daemon/src/http/rpc.rs"
     gate_seed 's/\.route(PREVIEW_PATH,[^;]*)/.with_state(())/' \
         "$tree/crates/daemon/src/http/preview.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The registrations, not the methods below them: both vacuity branches fire when the last
+    # `.route(` goes, and this arm's name is about the routes.
+    gate_red_because 'examined zero route registrations' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_camera_bearing_route_answers_a_method_this_gate_cannot_place() {
@@ -321,7 +356,8 @@ fail_case_the_daemon_left_the_workspace() {
     local md
     md="$(gate_metadata_snapshot)"
     jq 'del(.packages[] | select(.name == "webcam-handler-daemon"))' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'webcam-handler-daemon is not a workspace member; the web listener, its routes and the list that says which of them are gated have no home' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 
 pass_case_a_wrapped_declaration_is_still_a_list() {

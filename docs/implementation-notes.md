@@ -24364,6 +24364,27 @@ apart (notes **N241**, **N242**). That is the argument for doing this by hand ra
 argument against doing it at all, and it is why the remaining 110 are a ratchet's next tranches and
 not a `sed`.
 
+**Amended again 2026-08-17 (L25, tranche 2), and this is where the acceptance ends.** Twelve more
+case files were converted the same way — 95 arms run one at a time against their predicates — and
+four more arms landed for branches the conversions separated out or found unclaimed. That moves the
+count to **365 of 368 arms in 35 of 36 case files**, with **35 files registered** and the residual
+**three arms in one file**: `schema-artifacts-current`'s `fail_case_emitter_fails`,
+`fail_case_emitter_produces_nothing` and
+`fail_case_xtask_no_longer_declares_its_artifact_directory`, which were outside this tranche's
+list. The number is on every selftest run and not in this paragraph.
+
+The yield held up, which is the part worth recording rather than the arithmetic. Tranche 1 found
+five arms red about something else; tranche 2 found **four** predicates or arms that could not say
+what their names claimed — an arm whose red branches moved with the runner's umask (**N245**), two
+predicates printing one sentence for two opposite defects (**N246**, **N247**), and an arm reported
+`ok` on a sentence about profiles that were no longer there (**N248**). One of those repairs then
+turned a *tranche 1* arm red for naming a sentence the repair had moved, which is the ratchet
+catching the person who moved the predicate.
+
+**Retires when (superseding the clause above):** `schema-artifacts-current`'s three arms are
+converted and the file is registered, at which point the register is the population, the harness can
+require a claim of every arm without a register at all, and N31's clause is discharged.
+
 ---
 
 ## N241 — Five arms that went red, and not one of them for the reason its name gives
@@ -24525,6 +24546,15 @@ the two register checks collapse into one, and N31's clause is finally discharge
 `token-comparison-has-one-home`, `uds-permissions`, `web-routes-are-gated` — and the number is on
 every run rather than in this paragraph.
 
+**Amended 2026-08-17 (L25, tranche 2).** Twelve of those fourteen were converted and registered in
+the second tranche — the list above minus `no-external-fetch-in-web`, which was already registered
+and names its sentences through a local wrapper, and `schema-artifacts-current`, which was outside
+the tranche and is now the whole residual: **three arms in one file** against 365 named in 35. The
+ratchet held in the direction it was built for while that happened: a repair to
+`oracle-rung-accounting.sh` moved a sentence a tranche-1 arm was claiming, and the arm went `0` with
+*"the predicate went red, but not because of…"* on the next run (note **N246**). Nothing else in the
+mechanism changed; the two register checks and the counted line are as measured above.
+
 ---
 
 ## N244 — Branches with no arm at all, found by reading the predicates rather than the case files
@@ -24566,3 +24596,143 @@ up. They are written down because a gap nobody counted is exactly what this note
 unreachable and removed. A later pass may prefer a mechanical population — every `gate_fail` string
 in a predicate against every sentence its arms claim — which this list is the hand-made argument
 for.
+
+---
+
+## N245 — An arm whose set of red branches was a function of the runner's umask
+
+**Doc:** design D11 (filesystem permissions are the whole auth model for the UDS), note **N39**
+(the socket directory checked by name rather than as an object), note **N31**. Found while
+converting `cases/uds-permissions.cases.sh` at L25 tranche 2, 2026-08-17.
+
+**Repo:** `scripts/gates/cases/uds-permissions.cases.sh`,
+`fail_case_a_daemon_that_serves_through_a_symlinked_socket_directory`.
+
+**The finding.** That arm's stub is described in its own comment as doing "everything the shipped
+one does *except* look at the object rather than the name". It did not. It ran `mkdir -p "$dir"`
+and then read the mode of whatever that produced — which is `0777 & ~umask`, so **775 on this
+workstation** (`umask 002`) and 700 on a `umask 077` runner. On the first kind of host the stub
+refused to start, and claim 1 went red with *"the daemon never announced a socket"* and *"examined
+zero socket directories"* beside the symlink sentence the arm is named for. On the second kind it
+did not. The arm was comfortably non-zero either way, which is all the harness asked.
+
+Nothing was *hidden* by this — the symlink branch fired on both kinds of host — so it is a
+weaker finding than N241's five. What makes it worth an entry is the shape: **which branches an
+arm is red on moved with the machine**, which is notes N52, N66 and N68 for the fifth time and the
+first time in a case file rather than in a verdict. An arm that is red in three places for two
+different reasons is also an arm nobody can read: the next person to touch this predicate would
+have had to work out, from a transcript, that two of the three failures were the stub's own
+umask.
+
+**Repo now:** the stub creates a directory of its own private (`mkdir` then `chmod 0700`, exactly
+as the shipped daemon does) and inspects a directory that is already there without repairing it —
+so claim 1 and claim 3 pass, and the two symlink sentences are the whole of what is red. Verified
+by driving the predicate against the repaired stub: `2 violation(s) over 3 examined items`, both
+of them claim 4's.
+
+**Retires when:** nothing. The general lesson is in the tranche's own method — run the arm, read
+what the predicate printed, and ask whether *everything* it printed is the arm's subject.
+
+---
+
+## N246 — The rung's word and the rung's exit code are two answers, and one sentence reported both
+
+**Doc:** AGENTS.md rule 3 (*every auto-skipping rung reports a named, counted skip — never
+silence*), note **N242** (two defects, one sentence, and two arms nothing could tell apart), note
+**N31**. L25 tranche 2, 2026-08-17.
+
+**Repo:** `scripts/gates/oracle-rung-accounting.sh`'s `expect_verdict`;
+`scripts/gates/cases/oracle-rung-accounting.cases.sh`.
+
+**The finding.** `expect_verdict` compared the exit status, `return`ed on a mismatch, and only
+then looked at the word the transcript ended on. So the two arms named
+`fail_case_a_silent_run_reported_as_a_run` and `fail_case_a_silent_run_named_but_exiting_zero`
+printed **the same sentence with the same two numbers** — *"the said-nothing verdict: the runner
+exited 0 over the recorded log and should have exited 1"* — and nothing the harness reads could
+tell them apart. That is N242 one predicate along, and the case file's own header already argued
+the two are different defects: the first has lost the accounting, the second has kept it and lost
+the *consequence*.
+
+The consequence is the half that matters more here, because it is the half that travels. A rung
+that prints `FAIL` and exits 0 is read correctly by a person and as success by `just gate-g6`,
+`run-all.sh` and every pipeline above them — the same asymmetry `GATE_NO_VERDICT` exists to keep
+straight one level up.
+
+**Repo now:** the word is established first and three sentences follow, one per disagreement: the
+word right and the code wrong (*"printed 'X' and then exited N, where M is that verdict's exit
+code"*), both wrong (*"exited N where M was the verdict, and did not print 'X' either"*), and the
+code right with the word missing. Each arm claims its own. The third had no arm — it was
+unreachable while a wrong status returned first — so one landed with it:
+`fail_case_a_run_that_exits_zero_without_naming_its_verdict`, a runner that validated files, is
+happy about it, and dropped the line that says so.
+
+**It also caught a conversion in the act.** `fail_case_the_run_line_the_rung_greps_for_was_reworded`
+was converted in tranche 1 and claimed the old sentence; the repair above moved it, the arm went
+`0` with *"the predicate went red, but not because of…"*, and the claim was corrected. That is the
+ratchet doing exactly what it was built for, on the person who moved the predicate.
+
+**Retires when:** nothing.
+
+---
+
+## N247 — Three ways to fail a schema are three things to do, and the gate printed one
+
+**Doc:** design §2.7 (`--json` emits schema DTOs verbatim), note **N127** (a failing `--json` run
+prints a document too), note **N242**. L25 tranche 2, 2026-08-17.
+
+**Repo:** `scripts/gates/json-validates.sh` (`why_it_does_not_validate`, formerly
+`validates_against`); `scripts/gates/cases/json-validates.cases.sh`.
+
+**The finding.** The bundle check was a boolean, so every mismatch printed *"… does not match
+`#/$defs/X` in the committed bundle"* and stopped. Two arms —
+`fail_case_the_bundle_requires_a_property_the_answer_does_not_have` and
+`fail_case_the_answer_carries_a_property_the_bundle_does_not_declare` — seed **opposite** defects
+and were indistinguishable; two more, over `$defs/Failure`, were in the same position.
+
+The direction matters to a reader more than it does to the harness, which is the argument for
+fixing it rather than for accepting two arms with one claim. A **missing required property** is
+the document falling behind the schema: something stopped emitting a field the bundle still
+declares. An **undeclared property** is the schema falling behind the document, which on this tree
+has one overwhelmingly likely cause — a doc comment or a type moved and `just generate` was not
+run, which is `schema-artifacts-current.sh`'s own sentence. *"Run `just generate`"* and *"your
+`--json` answer lost a field"* are not the same message, and the gate was printing neither.
+
+**Repo now:** the helper answers with a reason or with nothing — *"the bundle defines no such
+type"*, *"the answer carries no captured_at, which the bundle requires"*, *"the answer carries
+cameras, which the bundle does not declare"* — appended to the sentence the verb rows and the
+refusal rows already print, through the one jq both go through. Four arms now claim four different
+things.
+
+**Retires when:** the offline toolchain gains a real JSON Schema validator, at which point the
+reasons come from it and this helper is the thing being replaced rather than the thing being
+described.
+
+---
+
+## N248 — "There are no profiles" and "none of these profiles will do" are one condition and two facts
+
+**Doc:** docs/9's derived-population rule; note **N241**'s shape (*the seed never reached the
+branch the arm's name claims*). L25 tranche 2, 2026-08-17.
+
+**Repo:** `scripts/gates/json-validates.sh`'s profile selection;
+`scripts/gates/cases/json-validates.cases.sh`,
+`fail_case_the_corpus_has_no_profile_to_replay`.
+
+**The finding.** The predicate picked *the first committed profile with a writable integer
+control* — it needs one to drive the `get`/`set` rows — and had a single refusal for coming out of
+that loop empty: *"no committed profile exposes a writable integer control"*. The arm named for an
+**empty corpus** deleted `corpus/profiles/*.json` and was reported `ok` on that sentence, which is
+true about profiles that are no longer there and says nothing about the fact the arm seeded.
+
+They are two facts with two remedies. No profiles at all is the corpus floor gone, which is
+`corpus-floor.sh`'s subject and a `git` problem; profiles present with nothing writable among them
+is a re-capture that landed a fixed-function camera, and the remedy is a capture rather than a
+checkout. A gate that says the second when the first is true sends a reader to the wrong place.
+
+**Repo now:** two branches and two sentences, and the second names the population it walked
+(*"none of the N committed profile(s) exposes…"*) so the count is in the refusal. The
+unusable-profile branch had no arm of its own while the two shared a sentence, so one landed with
+it: `fail_case_no_committed_profile_has_a_control_this_gate_may_write`, which keeps every profile
+and sets each control's raw flag word to `V4L2_CTL_FLAG_READ_ONLY`.
+
+**Retires when:** nothing.

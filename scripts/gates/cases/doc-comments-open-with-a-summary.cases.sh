@@ -54,7 +54,12 @@ fail_case_the_summary_was_taken_by_the_item_above_it() {
     tree="$(gate_scratch_tree)"
     gate_seed 's|^    /// How long this recording may run, in milliseconds\.$|    /// # Errors|' \
         "$tree/crates/schema/src/video.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The heading the seed leaves behind is quoted back by the predicate, which is what makes
+    # this claim about *this* arm rather than about any block anywhere opening on a heading —
+    # the line number cannot be named, because it is a property of where `video.rs` happens to
+    # say that sentence today.
+    gate_red_because 'opens a doc comment on a section heading (/// # Errors)' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The same violation under a deeper heading, so the check is about "the block opens on a
@@ -70,14 +75,33 @@ fail_case_a_deeper_heading_is_still_a_missing_summary() {
 /// The argument survived the edit and the sentence naming the function did not.
 pub fn beheaded() {}
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The quoted opening is what separates this arm from the one above it: both trip the same
+    # branch, and the only thing in the predicate's output that says which seed did it is the
+    # heading it echoes back.
+    gate_red_because "opens a doc comment on a section heading (/// ## Why this is ours and not the writer's)" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The non-vacuity arm: a walk that reads no doc comments proves nothing, and this claim would
 # otherwise be true of a tree with none.
+#
+# Both vacuity branches fire here — no files means no doc comment lines either — so the sentence
+# claimed is the one this arm's *seed* is about: the population of files.
 fail_case_nothing_to_read() {
     local tree
     tree="$(gate_scratch_tree)"
     find "$tree" -name '*.rs' -delete
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'examined zero Rust source files' env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The other vacuity branch, which the arm above cannot reach on its own: a tree that still has
+# every Rust file and no `///` in any of them. A rule about doc comments over a tree that has
+# none is the same vacuity as a walk that found no files, and until this arm the only thing that
+# could fire it also emptied the file count — so the second `gate_require_nonzero` could have
+# rotted to unreachable with the suite green (the shape note **N244** collects).
+fail_case_the_doc_comments_all_became_ordinary_comments() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    find "$tree" -name '*.rs' -exec sed -i 's|///|//|g' {} +
+    gate_red_because 'examined zero doc comment lines' env WCH_GATE_ROOT="$tree" "$GATE"
 }

@@ -62,7 +62,11 @@ fail_case_the_gate_compares_the_secret_itself() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/every_one_verified &= token\.verify(candidate);/every_one_verified \&= token.expose_secret() == candidate;/' \
         "$tree/crates/daemon/src/http/gate.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The file the reach is *from*, which is what separates this arm from the one below it:
+    # claim 1's sentence is the same for every module that reads the secret, and the only thing
+    # in it that says which module did is the name it opens with.
+    gate_red_because "crates/daemon/src/http/gate.rs reads the token's secret outside" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The same reach from a module that has no test module at all, which is the other branch of
@@ -80,7 +84,8 @@ pub(crate) fn is_the_token(token: &Token, presented: &str) -> bool {
     token.expose_secret() == presented
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "crates/daemon/src/http/leak.rs reads the token's secret outside" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A file this predicate cannot classify is a failure and not a pass — `unsafe-scope.sh` already
@@ -102,7 +107,8 @@ mod more_tests {
     }
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'names a rendering that yields the token and this gate cannot tell its product code from its test code' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The accessor is what claim 1 counts readers of. Renamed, it has no readers, and a
@@ -111,7 +117,8 @@ fail_case_the_secret_accessor_was_renamed() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/pub fn expose_secret(/pub fn secret(/' "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no longer declares the one accessor that yields the secret' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # ------------------------------------------------- claim 2: the type refuses `==`
@@ -131,7 +138,8 @@ impl PartialEq for Token {
     }
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because 'implements `PartialEq` for `Token`' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The one-word version of the same thing.
@@ -140,7 +148,11 @@ fail_case_the_token_derives_a_comparison() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/^pub struct Token {/#[derive(PartialEq, Eq, Hash)]\npub struct Token {/' \
         "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # `derives` and not `implements`: the two are separate branches with separate sentences, and
+    # an arm that claimed the hand-written one would have gone on passing over a predicate that
+    # had stopped reading `#[derive(...)]` at all.
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because 'derives `PartialEq` for `Token`' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A `Display` is a secret that reaches a log line, a format string or a comparison without
@@ -157,7 +169,8 @@ impl std::fmt::Display for Token {
     }
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because 'implements `Display` for `Token`' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The conversion family, one arm per name. Each of these hands out a `&str`, a `String` or a
@@ -275,7 +288,8 @@ fail_case_the_token_derives_its_debug() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/^pub struct Token {/#[derive(Debug)]\npub struct Token {/' \
         "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because 'derives `Debug` for `Token`' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A hand-written impl that prints the field is the derive's behaviour typed out by hand. The
@@ -287,7 +301,9 @@ fail_case_the_debug_impl_prints_the_field() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/\.field("hex", &Redacted)/.field("hex", \&self.hex)/' \
         "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because 'the hand-written `Debug` for `Token` in crates/daemon/src/http/token.rs names `self.hex`' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The impl moved somewhere this gate is not looking, which reads exactly like a type that never
@@ -298,7 +314,9 @@ fail_case_the_hand_written_debug_went_away() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/^impl std::fmt::Debug for Token {/impl std::fmt::Debug for TokenRedaction {/' \
         "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because 'has no hand-written `impl … Debug for Token`' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # ------------------------------------------------- claim 4: something still compares
@@ -311,14 +329,17 @@ fail_case_the_gate_no_longer_calls_the_comparison() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/token\.verify(candidate)/!candidate.is_empty()/g' \
         "$tree/crates/daemon/src/http/gate.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all
+    gate_red_because "nothing in crates/daemon/src/http/gate.rs's product code calls \`.verify(\`" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_comparison_is_no_longer_declared() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/pub fn verify(/fn verify_disabled(/' "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no longer declares the constant-time comparison' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # ------------------------------------------------- claim 5: the field's readers are registered
@@ -457,7 +478,8 @@ fail_case_the_url_rendering_was_renamed() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/pub fn ready_to_open_url(/pub fn printable_url(/' \
         "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no longer declares the URL rendering claim 6 registers the callers of' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The green direction, and the reason claim 6 is a register rather than a confinement: every
@@ -489,7 +511,8 @@ fail_case_the_token_type_was_renamed() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/\bpub struct Token\b/pub struct Bearer/' "$tree/crates/daemon/src/http/token.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no longer declares the type that holds the secret' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_token_module_moved() {
@@ -497,7 +520,8 @@ fail_case_the_token_module_moved() {
     tree="$(gate_scratch_tree)"
     http="$tree/crates/daemon/src/http"
     mv "$http/token.rs" "$http/bearer.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "crates/daemon/src/http/token.rs is missing; the token's home and the gate that calls its comparison" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The module this confinement is chiefly about. Without it in the tree, the walk finds no
@@ -507,7 +531,8 @@ fail_case_the_token_gate_module_moved() {
     tree="$(gate_scratch_tree)"
     http="$tree/crates/daemon/src/http"
     mv "$http/gate.rs" "$http/policy.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "crates/daemon/src/http/gate.rs is missing; the token's home and the gate that calls its comparison" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Seeded through the metadata rather than by deleting the crate, because deleting it makes
@@ -517,5 +542,6 @@ fail_case_the_daemon_left_the_workspace() {
     local md
     md="$(gate_metadata_snapshot)"
     jq 'del(.packages[] | select(.name == "webcam-handler-daemon"))' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'webcam-handler-daemon is not a workspace member; the token, its comparison and the gate that calls it have no home' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }

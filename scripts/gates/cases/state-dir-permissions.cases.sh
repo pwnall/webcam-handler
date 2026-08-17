@@ -143,7 +143,8 @@ fail_case_a_tool_that_creates_its_tree_at_the_umask_and_writes_a_session_into_it
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-umask.$$"
     _stub_cli "$script" umask accept bits session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'was created at mode 755; D9'"'"'s session tree holds calibration photographs and must be 700' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # The same wrong creation with the check bolted on afterwards: it makes the directory 0775,
@@ -154,7 +155,8 @@ fail_case_a_tool_that_refuses_the_wide_tree_it_created_itself() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-umask-refuse.$$"
     _stub_cli "$script" umask refuse bits session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'could not start a session under a state directory it created itself' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # The tempting fix, and the one note N39 forbids: a wide directory silently tightened. An
@@ -164,7 +166,8 @@ fail_case_a_tool_that_repairs_a_wide_tree_instead_of_refusing_it() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-repair.$$"
     _stub_cli "$script" private repair bits session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'from 0755 to 700; a wrong mode is refused rather than repaired' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # A refusal with no way out in it. The tool stops working and the operator is told a mode.
@@ -172,7 +175,8 @@ fail_case_a_refusal_that_names_no_remedy() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-silent.$$"
     _stub_cli "$script" private refuse-silently bits session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'the refusal over a world-traversable state directory names no way out' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # A remedy that runs cleanly and fixes something else — the shape a refusal acquires when the
@@ -183,7 +187,8 @@ fail_case_a_remedy_that_names_a_directory_other_than_the_one_refused() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-elsewhere.$$"
     _stub_cli "$script" private refuse-elsewhere bits session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'the refusal'"'"'s way out is not a chmod of the directory it refused' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # **The compatibility break this gate was written for** (note N150): a check that compares the
@@ -194,7 +199,8 @@ fail_case_a_tool_that_refuses_the_setgid_directory_it_just_created() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-setgid.$$"
     _stub_cli "$script" private refuse exact session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'a directory it had just created itself under a setgid parent' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # The non-vacuity arm. A tool that answers "session one" over an empty tree leaves the
@@ -205,7 +211,8 @@ fail_case_a_tool_that_reports_a_session_it_never_wrote() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-empty.$$"
     _stub_cli "$script" private refuse bits nothing
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'so the mode checked above is a mode on an empty directory' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }
 
 # The link. This tool creates a directory that is genuinely 0700 and genuinely this user's —
@@ -218,5 +225,6 @@ fail_case_a_tool_that_puts_a_symlink_where_its_state_tree_belongs() {
     local script
     script="$WCH_GATE_SCRATCH/wch-cli-symlink.$$"
     _stub_cli "$script" symlink refuse bits session
-    WCH_GATE_WCH="$script" "$GATE"
+    gate_red_because 'is a symlink; D9'"'"'s tree is the directory itself' \
+        env WCH_GATE_WCH="$script" "$GATE"
 }

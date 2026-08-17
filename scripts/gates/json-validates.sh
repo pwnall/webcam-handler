@@ -118,20 +118,45 @@ fi
 #
 # A function since P6f, because the failure rows below validate exactly as the answers do and a
 # second copy of this jq would be a second opinion about what "matches the bundle" means.
-validates_against() {
+#
+# ## It answers with a reason and not with a boolean, since 2026-08-17
+#
+# The three ways a document can fail this are three different things to do, and until L25's second
+# tranche they printed one sentence: *"… does not match #/$defs/X in the committed bundle"*, with
+# nothing in it to say which. Two of the case file's arms — a bundle that requires a property the
+# answer has not got, and an answer carrying a property the bundle does not declare — were
+# therefore indistinguishable to the harness, which is note **N242**'s finding one predicate along
+# and is recorded as note **N247**.
+#
+# The direction matters to a reader more than it does to the selftest. *Missing a required
+# property* is the **document** falling behind the schema: a serializer stopped emitting a field
+# somebody still declares. *Carrying an undeclared one* is the **schema** falling behind the
+# document, which on this tree has one overwhelmingly likely cause — a doc comment or a type
+# changed and `just generate` was not run, which `schema-artifacts-current.sh` says in its own
+# words. Telling an author "run `just generate`" and telling them "your `--json` answer lost a
+# field" are not the same message.
+#
+# Empty output means it validated; anything else is the reason it did not. Printed rather than
+# returned, because a `gate_fail` inside a command substitution is a violation that prints and
+# does not count — the trap `oracle-rung-accounting.sh` names beside its own `SHAPE` variable.
+why_it_does_not_validate() {
     local document="$1" def="$2"
-    jq -e --slurpfile doc <(printf '%s' "$document") '
+    jq -r --slurpfile doc <(printf '%s' "$document") '
         .["$defs"][$ARGS.named.d] as $schema
         | ($doc[0]) as $value
-        | if $schema == null then false
+        | if $schema == null then "the bundle defines no such type"
           else
-            (($schema.required // []) | all(. as $k | ($value | has($k))))
-            and
-            (if ($schema.properties // null) == null then true
-             else ($value | keys) | all(. as $k | ($schema.properties | has($k)))
-             end)
+            (($schema.required // []) - ($value | keys)) as $missing
+            | (if ($schema.properties // null) == null then []
+               else ($value | keys) - ($schema.properties | keys)
+               end) as $undeclared
+            | if ($missing | length) > 0 then
+                "the answer carries no \($missing | join(", ")), which the bundle requires"
+              elif ($undeclared | length) > 0 then
+                "the answer carries \($undeclared | join(", ")), which the bundle does not declare"
+              else "" end
           end
-    ' --arg d "$def" "$bundle" >/dev/null 2>&1
+    ' --arg d "$def" "$bundle" 2>/dev/null
 }
 
 # Every verb and the `$defs` name its answer must validate against. Three tokens are
@@ -199,15 +224,28 @@ json_contract() {
 # `get` and `set` need a control to name, and the corpus's first entry alphabetically
 # (`chicony-ir`) exposes three controls, none of them writable. Still deterministic, and
 # still derived from the tree rather than transcribed.
+#
+# **Two sentences and not one** (note **N248**). "There are no profiles" and "there are profiles
+# and none of them can be written to" are one condition to this loop and two facts about the
+# tree, with two different things to do about them: the first is the corpus floor gone, which is
+# `corpus-floor.sh`'s subject, and the second is a re-capture that landed a device with nothing
+# writable on it. They were one branch until 2026-08-17, and the arm named for the first of them
+# was reported `ok` on the sentence belonging to the second — which is the L25 finding in its own
+# case file.
+mapfile -t candidates < <(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\n' | sort)
+if ((${#candidates[@]} == 0)); then
+    gate_fail "there are no committed device profiles under corpus/profiles/; this gate replays a device rather than asking for one to be attached, and there is nothing left to replay"
+    gate_finish
+fi
 profile=""
-for candidate in $(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\n' | sort); do
+for candidate in "${candidates[@]}"; do
     if [[ -n "$(writable_control "$candidate")" ]]; then
         profile="$candidate"
         break
     fi
 done
 if [[ -z "$profile" ]]; then
-    gate_fail "no committed profile exposes a writable integer control, so the write verbs cannot be exercised against a replayed device"
+    gate_fail "none of the ${#candidates[@]} committed profile(s) exposes a writable integer control, so the write verbs cannot be exercised against a replayed device"
     gate_finish
 fi
 
@@ -295,8 +333,9 @@ for row in "${verbs[@]}"; do
         continue
     fi
 
-    if ! validates_against "$output" "$def"; then
-        gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/$def in the committed bundle"
+    reason="$(why_it_does_not_validate "$output" "$def")"
+    if [[ -n "$reason" ]]; then
+        gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/$def in the committed bundle: $reason"
         continue
     fi
 
@@ -354,8 +393,9 @@ for row in "${refusals[@]}"; do
         gate_fail "webcam-handler-cli --json $argv printed no parseable document on standard output; a caller that redirected stdout would have lost the failure entirely (note N124)"
         continue
     fi
-    if ! validates_against "$output" Failure; then
-        gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/Failure in the committed bundle"
+    reason="$(why_it_does_not_validate "$output" Failure)"
+    if [[ -n "$reason" ]]; then
+        gate_fail "webcam-handler-cli --json $argv does not match #/\$defs/Failure in the committed bundle: $reason"
         continue
     fi
     if ! printf '%s' "$output" | jq -e --arg m "$marker" '.[$m] == true' >/dev/null 2>&1; then

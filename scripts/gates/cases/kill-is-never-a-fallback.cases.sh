@@ -38,7 +38,11 @@ fn free_the_device_the_easy_way(pid: i32) -> schema::Result<()> {
     v4l2::holders::terminate(pid)
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The file list, not just the count: the three second-caller arms all print *"called from 2
+    # places"*, and the only thing in the sentence that says which of them ran is the file it
+    # names beside the one legitimate call site.
+    gate_red_because 'outside crates/backends/v4l2 (crates/engine/src/photo.rs:1' \
+        env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 fail_case_a_second_caller_in_the_daemon() {
@@ -50,7 +54,7 @@ fn retry_by_making_room(pid: i32) -> schema::Result<()> {
     v4l2::holders::terminate(pid)
 }
 RS
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/uds.rs:1)' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 fail_case_a_second_caller_in_the_file_that_already_has_one() {
@@ -69,7 +73,10 @@ fn make_room_for_the_retry(pid: i32) -> schema::Result<()> {
     v4l2::holders::terminate(pid)
 }
 RS
-    gate_red_because 'is called from 2 places outside' \
+    # `server.rs:2` and not merely *"2 places"*: a count of **files** would report this tree as
+    # one call site, which is precisely the defect N161 found, and an arm claiming only the
+    # total would have gone on passing over a predicate that had regressed to counting files.
+    gate_red_because '(crates/daemon/src/server.rs:2)' \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -134,26 +141,30 @@ fail_case_the_only_caller_went_away() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/v4l2::holders::terminate(pid)/Ok(())/' "$tree/crates/daemon/src/server.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'the explicit command design §5 requires has no implementation' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_home_no_longer_defines_the_signal() {
     local tree
     tree="$(gate_scratch_tree)"
     gate_seed 's/pub fn terminate(/fn terminate_disabled(/' "$tree/crates/backends/v4l2/src/holders.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'no longer defines terminate(); half two would be counting call sites of nothing' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_syscall_module_is_gone() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/crates/backends/v4l2/src/sys/signal.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'src/sys/signal.rs is missing; the one home for signalling a camera'"'"'s holder has no address' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_backend_left_the_workspace() {
     local md
     md="$(gate_metadata_snapshot)"
     jq 'del(.packages[] | select(.name == "webcam-handler-v4l2"))' "$md" >"$md.seeded"
-    WCH_GATE_METADATA="$md.seeded" "$GATE"
+    gate_red_because 'webcam-handler-v4l2 is not a workspace member; the signal has no home to be confined to' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }

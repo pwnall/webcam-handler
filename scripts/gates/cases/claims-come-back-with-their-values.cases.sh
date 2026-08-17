@@ -67,7 +67,11 @@ fail_case_a_new_claim_value_with_neither_a_drop_nor_a_must_use() {
     local tree
     tree="$(gate_scratch_tree)"
     seeded_claim '#[derive(Debug)]' >>"$tree/crates/daemon/src/preview.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The type name is in the sentence, which is what separates this arm from the three below
+    # it: all four trip the same branch, and the only thing in the predicate's output that says
+    # which claim went unreleased is the name it opens with.
+    gate_red_because 'SeededClaim is answered by a claim constructor in crates/daemon/src/preview.rs and has neither' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The two `Drop`s the tree has now, each removed on its own, because they discharge different
@@ -76,18 +80,18 @@ fail_case_the_drop_that_gives_a_recording_slot_back_is_gone() {
     local tree record
     tree="$(gate_scratch_tree)"
     record="$tree/crates/daemon/src/record.rs"
-    sed 's/^impl Drop for Reserved {/impl Reserved {/' "$record" >"$record.seeded"
-    mv "$record.seeded" "$record"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_seed 's/^impl Drop for Reserved {/impl Reserved {/' "$record"
+    gate_red_because 'Reserved is answered by a claim constructor in crates/daemon/src/record.rs and has neither' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_drop_that_gives_a_cameras_frames_back_is_gone() {
     local tree preview
     tree="$(gate_scratch_tree)"
     preview="$tree/crates/daemon/src/preview.rs"
-    sed 's/^impl Drop for Watchers {/impl Watchers {/' "$preview" >"$preview.seeded"
-    mv "$preview.seeded" "$preview"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_seed 's/^impl Drop for Watchers {/impl Watchers {/' "$preview"
+    gate_red_because 'Watchers is answered by a claim constructor in crates/daemon/src/preview.rs and has neither' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # And the `#[must_use]` in the other direction, so the second green arm above is a permission
@@ -96,9 +100,9 @@ fail_case_the_must_use_on_the_witness_that_owes_a_stream_is_gone() {
     local tree preview
     tree="$(gate_scratch_tree)"
     preview="$tree/crates/daemon/src/preview.rs"
-    grep -v '^#\[must_use = "a Starting nobody acts on' "$preview" >"$preview.seeded"
-    mv "$preview.seeded" "$preview"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_seed '/^#\[must_use = "a Starting nobody acts on/d' "$preview"
+    gate_red_because 'Starting is answered by a claim constructor in crates/daemon/src/preview.rs and has neither' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Non-vacuity, and it is the arm this gate would otherwise be quietly wrong in: "every claim
@@ -108,11 +112,13 @@ fail_case_no_claim_constructor_is_left_to_ask_about() {
     local tree file
     tree="$(gate_scratch_tree)"
     for file in "$tree/crates/daemon/src/record.rs" "$tree/crates/daemon/src/preview.rs"; do
-        sed -E 's/\bfn (reserve|claim|hand_over|watchers|attach)\b/fn renamed_away/g' \
-            "$file" >"$file.seeded"
-        mv "$file.seeded" "$file"
+        gate_seed 's/\bfn \(reserve\|claim\|hand_over\|watchers\|attach\)\b/fn renamed_away/g' \
+            "$file"
     done
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The constructor population, not the claim-type one below it: both vacuity branches fire
+    # here — no constructors means nothing answered with a claim type — and this arm's name is
+    # about the constructors a rename took away.
+    gate_red_because 'examined zero claim-shaped constructors' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A module the rule is about that is not in the tree at all. Seeded rather than assumed,
@@ -121,5 +127,6 @@ fail_case_a_claim_module_left_the_tree() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/crates/daemon/src/preview.rs"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'crates/daemon/src/preview.rs is not in the tree under test; this rule has no subject' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }

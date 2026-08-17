@@ -32,6 +32,9 @@
 #     shape note **N71** found in `smoke-hw.sh` from the other end.
 #   - **missing-log=green** — a seam handed a path that is not there, answering 0. A typo in a
 #     fixture path would then read as a green rung.
+#   - **ran=wordless** — the run happened, the exit code says so, and the line that says which
+#     files were validated is gone. The verdict a person reads and the verdict a phase gate reads
+#     are two different channels, and this is the one where only the second still carries it.
 #
 # Since 2026-08-16 the fixtures are derived from `testkit::oracle`'s own `format!` strings rather
 # than transcribed (note **N163**), so there is a second subject and it is a *tree* rather than a
@@ -47,7 +50,7 @@
 #   $1        where to write it
 #   $2..      `<situation>=<answer>` overrides of the correct answer, from:
 #               silent=ran | silent=exit0 | declined=ran | redrun=ran
-#               quiet-decline | missing-log=green
+#               quiet-decline | missing-log=green | ran=wordless
 #
 # The shipped runner works out which situation it is in; a stub does the same, because the four
 # situations are distinguished by two `grep`s and a variable — writing a stub that had to be
@@ -118,19 +121,41 @@ STUB
     fi
     cat >>"$script" <<'STUB'
 fi
+STUB
+    if [[ "$overrides" == *" ran=wordless "* ]]; then
+        printf 'exit 0\n' >>"$script"
+    fi
+    cat >>"$script" <<'STUB'
 printf 'rung-oracles: RAN — %s file(s) validated:\n' "$ran"
 exit 0
 STUB
     chmod +x "$script"
 }
 
-# Run the predicate against a stub runner written into a scratch directory.
+# Run the predicate against a **correct** stub runner in a scratch directory — no overrides, and
+# none to take: since `_with_stub_red` below arrived, every wrong runner goes through that instead,
+# and this one exists to prove the predicate passes a correct runner it did not ship.
 _with_stub() {
-    local dir
+    local dir status=0
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-oracle-cases.XXXXXXXX")"
+    _stub_runner "$dir/runner.sh"
+    WCH_GATE_ORACLE_RUNNER="$dir/runner.sh" "$GATE" || status=$?
+    rm -rf "$dir"
+    return $status
+}
+
+# The same for a failing arm, with the sentence that arm is claiming out in front of it.
+#
+# A local wrapper rather than a `gate_red_because` in each arm because every failing arm here
+# builds its stub the same way and differs only in the one override and the one sentence; the
+# harness reads what `gate_red_because` recorded rather than the source text of this file, so a
+# claim made through a wrapper counts exactly as one made in the arm (note **N243**).
+_with_stub_red() {
+    local pattern="$1" dir status=0
+    shift
     dir="$(mktemp -d "$(gate_scratch_root)/wch-oracle-cases.XXXXXXXX")"
     _stub_runner "$dir/runner.sh" "$@"
-    WCH_GATE_ORACLE_RUNNER="$dir/runner.sh" "$GATE"
-    local status=$?
+    gate_red_because "$pattern" env "WCH_GATE_ORACLE_RUNNER=$dir/runner.sh" "$GATE" || status=$?
     rm -rf "$dir"
     return $status
 }
@@ -148,27 +173,47 @@ pass_case_a_correct_runner_however_it_is_spelled() {
 }
 
 fail_case_a_silent_run_reported_as_a_run() {
-    _with_stub silent=ran
+    # The accounting is gone: this runner sees neither line, calls it a run and exits 0. Until
+    # 2026-08-17 the predicate returned on the exit status alone, so this arm and the one below
+    # it printed the same sentence with the same two numbers and nothing could tell them apart
+    # (note **N246**).
+    _with_stub_red 'the said-nothing verdict: the runner exited 0 where 1 was the verdict, and did not print' \
+        silent=ran
 }
 
 fail_case_a_silent_run_named_but_exiting_zero() {
-    _with_stub silent=exit0
+    # The accounting is *kept* and the consequence is dropped: the word is right, on standard
+    # error, and the exit code says the rung was fine. A person reads the word; `just gate-g6`
+    # reads the code.
+    _with_stub_red "the said-nothing verdict: the runner printed 'FAIL — the suites passed but said neither' and then exited 0" \
+        silent=exit0
 }
 
 fail_case_a_decline_reported_as_a_run() {
-    _with_stub declined=ran
+    _with_stub_red 'the decline verdict: the runner exited 1 where 0 was the verdict, and did not print' \
+        declined=ran
 }
 
 fail_case_a_red_nextest_swallowed_into_a_green_rung() {
-    _with_stub redrun=ran
+    _with_stub_red 'the nextest-was-red verdict: the runner exited 0 where 3 was the verdict' \
+        redrun=ran
 }
 
 fail_case_a_decline_counted_without_its_reasons() {
-    _with_stub quiet-decline
+    _with_stub_red 'the decline verdict did not reprint the lines it counted' quiet-decline
 }
 
 fail_case_a_recorded_log_that_is_not_there_answering_green() {
-    _with_stub missing-log=green
+    _with_stub_red 'the runner accounted for a log that does not exist and exited 0' missing-log=green
+}
+
+# The third branch the repair above separated out, which no arm could reach while a wrong exit
+# status returned first: a runner whose **code** is right and whose **word** is missing. This one
+# accounts for a real run, is genuinely happy about it and exits 0 without a line saying so —
+# what dropping the summary `printf` leaves behind — so a reader is told nothing and every gate
+# above it is told everything is well.
+fail_case_a_run_that_exits_zero_without_naming_its_verdict() {
+    _with_stub_red "the run verdict: the runner exited 0 without saying 'RAN'" ran=wordless
 }
 
 fail_case_no_runner_to_drive_at_all() {
@@ -189,7 +234,7 @@ fail_case_the_run_line_the_rung_greps_for_was_reworded() {
     tree="$(gate_scratch_tree)"
     gate_seed 's/{ran} container claim(s) about/{ran} container assertion(s) about/' \
         "$tree/crates/testkit/src/oracle.rs"
-    gate_red_because 'the run verdict: the runner exited 1 over the recorded log' \
+    gate_red_because "the run verdict: the runner exited 1 where 0 was the verdict, and did not print 'RAN' either" \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 

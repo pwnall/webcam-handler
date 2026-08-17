@@ -54,7 +54,14 @@ fail_case_the_deployed_copy_drifted() {
     tree="$(gate_scratch_tree)"
     printf '\n9. A ninth non-negotiable rule that the doc has never heard of.\n' \
         >>"$tree/AGENTS.md"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # This arm and the one below it claim the **same** sentence, and that is a decision rather
+    # than an oversight (note **N242** is the shape it would otherwise be): the predicate has one
+    # drift branch on purpose, because AGENTS.md's own rule is *"when they drift, reconcile
+    # deliberately and record which side was wrong"* — a gate that named a winner would be
+    # answering the question the ruling reserves for a person. One branch cannot rot in one
+    # direction, so two seeds against one sentence is the whole of what there is to claim.
+    gate_red_because '; the deployment is one-directional — the doc is the source and the root copy tracks it' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The same defect from the other side: the docs series is edited and the deployed copy is
@@ -64,14 +71,16 @@ fail_case_the_source_moved_and_the_copy_did_not() {
     tree="$(gate_scratch_tree)"
     doc="$tree/docs/10-claude-fable-agents-v2.md"
     printf '\n9. A ninth non-negotiable rule that the root copy has never heard of.\n' >>"$doc"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because '; the deployment is one-directional — the doc is the source and the root copy tracks it' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_deployed_copy_is_missing() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/AGENTS.md"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'and there is no such file; the copy every agent in this tree actually reads is missing' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # A rebase that drops the docs half, or a series renumbering that loses a file. The gate
@@ -80,7 +89,12 @@ fail_case_the_source_document_is_gone() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/docs/10-claude-fable-agents-v2.md"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The same sentence the reworded-declaration arm below claims, for the same reason the two
+    # drift arms share one: "the series lost the document" and "the document lost the sentence"
+    # are one branch by construction — the predicate looks for a *declaration*, and both seeds
+    # take it away.
+    gate_red_because 'no document under docs/ says where it deploys' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The sentence the whole predicate is derived from is reworded away. Applied to both files
@@ -89,11 +103,10 @@ fail_case_the_source_document_is_gone() {
 fail_case_the_source_no_longer_says_where_it_deploys() {
     local tree file
     tree="$(gate_scratch_tree)"
-    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
-        sed 's/Deploy at the repository$/Keep this at the repository/' "$file" >"$file.seeded"
-        mv "$file.seeded" "$file"
-    done
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_seed 's/Deploy at the repository$/Keep this at the repository/' \
+        "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"
+    gate_red_because 'no document under docs/ says where it deploys' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # Two documents claiming the same deployment is two answers to "which side was wrong", and
@@ -102,7 +115,7 @@ fail_case_a_second_document_claims_the_deployment() {
     local tree
     tree="$(gate_scratch_tree)"
     cp "$tree/docs/10-claude-fable-agents-v2.md" "$tree/docs/11-claude-fable-agents-v3.md"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'each claim to deploy a copy' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The deploy target is given as a path rather than a name at the root. Seeded in both
@@ -113,12 +126,11 @@ fail_case_a_second_document_claims_the_deployment() {
 fail_case_the_deploy_target_is_not_a_name_at_the_root() {
     local tree file
     tree="$(gate_scratch_tree)"
-    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
-        # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
-        sed 's|^root as `AGENTS\.md`|root as `../AGENTS.md`|' "$file" >"$file.seeded"
-        mv "$file.seeded" "$file"
-    done
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
+    gate_seed 's|^root as `AGENTS\.md`|root as `../AGENTS.md`|' \
+        "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"
+    gate_red_because 'which is not a plain file name at the repository root' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The comparison made unfalsifiable. Nothing here differs, the tree looks right, and a
@@ -130,7 +142,7 @@ fail_case_the_deployed_copy_is_a_link_rather_than_a_copy() {
     tree="$(gate_scratch_tree)"
     rm -f "$tree/AGENTS.md"
     ln -s docs/10-claude-fable-agents-v2.md "$tree/AGENTS.md"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'are the same file (a link, not a copy)' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # --------------------------------------------------------------------- the redirect
@@ -140,8 +152,8 @@ fail_case_the_deployed_copy_is_a_link_rather_than_a_copy() {
 # them. Every seeded declaration change is applied to **both** copies of the source document,
 # for the reason the reworded-sentence arm above gives: the doc is one of the two files the
 # predicate compares, so an edit to the doc alone drags a drift in behind it and the arm goes
-# red for the wrong sentence. And every arm here but the missing-file one names the sentence it
-# claims, through `gate_red_because`, because these branches crowd each other: delete the link
+# red for the wrong sentence. And every arm here names the sentence it claims, through
+# `gate_red_because`, because these branches crowd each other: delete the link
 # check and its arm falls through to the wrong-reference message, delete that one and its arm
 # falls through to the byte comparison, and each of them stays comfortably non-zero while the
 # branch it was written for has stopped existing. Only the last in the chain announces itself
@@ -169,7 +181,8 @@ fail_case_the_redirect_is_missing() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/CLAUDE.md"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "holds '@AGENTS.md', and there is no such file" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The defect class the ruling creates, in the shape it will actually arrive in: somebody has

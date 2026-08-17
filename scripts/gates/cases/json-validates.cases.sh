@@ -20,7 +20,12 @@ fail_case_the_bundle_requires_a_property_the_answer_does_not_have() {
     jq '.["$defs"].CameraList.required += ["captured_at"]' \
         "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
     mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # The **direction**, not just the mismatch: this arm and the one below it seed opposite
+    # defects and printed the same sentence until 2026-08-17 (note **N247**). A document behind
+    # its schema is a serializer that stopped emitting a field; the other way round is a schema
+    # behind its document, which on this tree means `just generate` was not run.
+    gate_red_because 'the answer carries no captured_at, which the bundle requires' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_answer_carries_a_property_the_bundle_does_not_declare() {
@@ -34,7 +39,8 @@ fail_case_the_answer_carries_a_property_the_bundle_does_not_declare() {
     jq 'del(.["$defs"].CameraList.properties.cameras)' \
         "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
     mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'the answer carries cameras, which the bundle does not declare' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_verb_answers_with_a_type_the_bundle_does_not_define() {
@@ -43,7 +49,9 @@ fail_case_a_verb_answers_with_a_type_the_bundle_does_not_define() {
     jq 'del(.["$defs"].ControlReport)' \
         "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
     mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'does not match #/$defs/ControlReport in the committed bundle: the bundle defines no such type' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_a_calibration_answer_stops_matching_the_bundle() {
@@ -57,14 +65,17 @@ fail_case_a_calibration_answer_stops_matching_the_bundle() {
     jq 'del(.["$defs"].SessionStatus.properties.session)' \
         "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
     mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'does not match #/$defs/SessionStatus in the committed bundle: the answer carries session' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_bundle_is_missing() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/schemas/webcam-handler-schema.json"
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because "no schema bundle at schemas/webcam-handler-schema.json; 'just generate' writes it" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 fail_case_the_corpus_has_no_profile_to_replay() {
@@ -72,8 +83,31 @@ fail_case_the_corpus_has_no_profile_to_replay() {
     tree="$(gate_scratch_tree)"
     # Without a profile the gate would have to fall back to attached hardware, which is
     # exactly the dependency it exists to avoid — so it must refuse rather than adapt.
+    #
+    # **This arm was red on the wrong sentence until 2026-08-17** (note **N248**): the predicate
+    # had one branch for an empty corpus and for a corpus with nothing writable in it, so an
+    # emptied `corpus/profiles/` was reported as *"no committed profile exposes a writable
+    # integer control"* — true, and about the profiles that were no longer there.
     rm -f "$tree"/corpus/profiles/*.json
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'there are no committed device profiles under corpus/profiles/' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The branch the split above separated out, which had no arm of its own while the two shared a
+# sentence: every profile still committed, and not one of them with a control this gate may
+# write. That is what a re-capture of a fixed-function camera would leave behind, and the write
+# rows would then have nothing to name — so it is a refusal rather than a shorter run.
+fail_case_no_committed_profile_has_a_control_this_gate_may_write() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    for file in "$tree"/corpus/profiles/*.json; do
+        # `4` is V4L2_CTL_FLAG_READ_ONLY, which is the flag `writable_control` reads: every
+        # control kept, every one of them refusing a write.
+        jq '.invariant.controls = [ .invariant.controls[] | .flags.raw = 4 ]' \
+            "$file" >"$file.seeded" && mv "$file.seeded" "$file"
+    done
+    gate_red_because 'exposes a writable integer control, so the write verbs cannot be exercised' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # The completeness half, and the only arm whose seam is the predicate's own row table rather
@@ -96,7 +130,10 @@ fail_case_a_calibrate_subverb_loses_its_validation_row() {
         printf 'selftest: the calibrate-sweep row was not removed\n' >&2
         return 0
     fi
-    bash "$mutant"
+    # The completeness sentence and not one of the validation ones: a mutant with a row missing
+    # still validates every verb it kept, so what must go red here is the count of verbs the
+    # table covers against the count `--help` offers.
+    gate_red_because 'calibrate sweep' bash "$mutant"
 }
 
 # The other half of the completeness claim, and since docs/7 P6e it has a seam in the *tree*
@@ -139,7 +176,8 @@ fail_case_a_verb_stops_answering() {
     for f in "$tree"/corpus/profiles/*.json; do
         jq '.schema_version = 99' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
     done
-    WCH_GATE_ROOT="$tree" "$GATE"
+    gate_red_because 'a verb that cannot answer cannot be validated' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
 # ------------------------------------------------------------------ the failure document
@@ -158,7 +196,7 @@ fail_case_the_bundle_does_not_define_the_failure_document() {
     jq 'del(.["$defs"].Failure)' \
         "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
     mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
-    gate_red_because "does not match #/\$defs/Failure" \
+    gate_red_because "does not match #/\$defs/Failure in the committed bundle: the bundle defines no such type" \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -175,7 +213,7 @@ fail_case_the_failure_document_carries_a_payload_the_bundle_does_not_declare() {
     jq 'del(.["$defs"].Failure.properties.error)' \
         "$tree/schemas/webcam-handler-schema.json" >"$tree/schemas/bundle.tmp"
     mv "$tree/schemas/bundle.tmp" "$tree/schemas/webcam-handler-schema.json"
-    gate_red_because "does not match #/\$defs/Failure" \
+    gate_red_because "does not match #/\$defs/Failure in the committed bundle: the answer carries error, which the bundle does not declare" \
         env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
