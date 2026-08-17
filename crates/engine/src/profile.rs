@@ -19,10 +19,13 @@
 use schema::backend::{BackendKind, Camera};
 use schema::error::Result;
 use schema::limits;
+use schema::pairing::AutomationPair;
 use schema::profile::{
     DeviceProfile, ProfileInvariant, ProfileProvenance, ProfileState, invariant_control,
 };
 use schema::time::Stamp;
+
+use crate::discover::Discovery;
 
 /// Who and what took a capture. Supplied by the caller because none of it is the engine's
 /// to know: the clock, the tool's version, and the person are all facts about the run.
@@ -53,6 +56,71 @@ pub struct CaptureContext {
 /// (rule 7, note **N192**), the refusal has to be made here or a corpus entry silently
 /// records a state nobody measured (note **N195**).
 pub fn capture(camera: &mut dyn Camera, context: &CaptureContext) -> Result<DeviceProfile> {
+    assemble(camera, context, Vec::new())
+}
+
+/// Ask the device which controls it pairs, then capture it \[PF:3\].
+///
+/// **This writes to the camera**, which is the whole of why it is a second function rather
+/// than a flag on [`capture`]. That distinction is load-bearing at the call site: a corpus
+/// entry is the document every resemblance claim is compared against, and "was this device
+/// perturbed to produce it" is a fact a reader of `corpus/` must be able to establish from
+/// the verb that was run rather than by reading the profile and guessing.
+///
+/// ## The decision this function is, recorded where it was taken
+///
+/// [`ProfileInvariant::measured_pairs`] has been in the schema since T3 and no committed
+/// profile carried one until **2026-08-17**, because [`capture`] is a read and D3's probe is
+/// a write. The comment that used to sit on the empty `Vec` said the choice belonged "to
+/// whoever needs measured pairs in a profile", and the G6 review's finding **M30** is that
+/// party: design §3.2 requires every profile-shaped PF finding to be *representable in and
+/// asserted from* at least one committed profile, it names PF:3, and PF:3's finding is that
+/// INACTIVE tracks pairing **live, in both directions**. A flag word captured with one bit
+/// set is not that claim — it is a photograph of one moment — and the only field in the
+/// document that can carry the claim is this one. So the answer to "may a corpus entry
+/// perturb its subject" is *yes, when the caller says so and the probe puts it back*, and
+/// the two halves of that sentence are the two things this function does.
+///
+/// It is **not** what `webcam-handler-cli profile capture` does by default, for the reason
+/// above and one more: the probe walks every automation-shaped control on the device, and a
+/// capture is the one operation somebody runs on hardware they have just met.
+///
+/// ## What the caller gets back besides the profile
+///
+/// The whole [`Discovery`], because the restore is a promise and a promise nobody checked is
+/// docs/8 Part C's subject. A caller that discards it has captured a profile without
+/// establishing that the camera came back, and [`Discovery::left_the_camera_alone`] is the
+/// one question worth asking of it. The pairs are in the profile; `skipped` and `restored`
+/// are facts about the run and belong to the run.
+///
+/// The probe runs **first**, for [`crate::discover::report`]'s reason: it writes, so the
+/// control set read afterwards is the one the camera is actually in. `context.captured_at`
+/// is the clock for both — the engine reads none, and a capture that dated its snapshot from
+/// a second reading would be one document with two times in it.
+///
+/// # Errors
+///
+/// Whatever [`crate::discover::pairs`] says — including a refusal to begin, when the
+/// pre-probe snapshot could not be taken — and then whatever [`capture`] says.
+pub fn capture_probed(
+    camera: &mut dyn Camera,
+    context: &CaptureContext,
+) -> Result<(DeviceProfile, Discovery)> {
+    let found = crate::discover::pairs(camera, context.captured_at)?;
+    let profile = assemble(camera, context, found.pairs.clone())?;
+    Ok((profile, found))
+}
+
+/// The T3 split itself, over a control set read now and a pair set measured or not.
+///
+/// One home for the assembly, so the read-only verb and the probing one cannot disagree
+/// about which fields are invariant — the whole value of the corpus rests on that being one
+/// answer, and it is the reason this module exists rather than each root building a document.
+fn assemble(
+    camera: &mut dyn Camera,
+    context: &CaptureContext,
+    measured_pairs: Vec<AutomationPair>,
+) -> Result<DeviceProfile> {
     let info = camera.info().clone();
     let formats = camera.formats()?;
     let controls = camera.controls()?;
@@ -83,17 +151,12 @@ pub fn capture(camera: &mut dyn Camera, context: &CaptureContext) -> Result<Devi
             info,
             formats,
             controls: controls.iter().map(invariant_control).collect(),
-            // Always empty, and the comment used to say `--discover-pairs` would fill it.
-            // It does not: the probe answers a `controls` report, and `profile capture`
-            // does not run one — a capture that wrote to the camera would stop being the
-            // read-only operation the corpus is built from, and every committed profile
-            // would then depend on a probe having been run first.
-            //
-            // Empty is therefore the honest answer here: it says "this capture measured
-            // nothing", not "this device has no pairs". Wiring a probe into `capture`
-            // needs a decision about whether a corpus entry may perturb its subject, and
-            // that decision belongs to whoever needs measured pairs in a profile.
-            measured_pairs: Vec::new(),
+            // Empty when the caller came through `capture`, which reads and does not write:
+            // it says "this capture measured nothing", never "this device has no pairs".
+            // `capture_probed` is the caller that fills it, and its doc carries the decision
+            // that let it — a corpus entry may perturb its subject when the verb that took
+            // it said so out loud and the probe put the camera back (note **N239**).
+            measured_pairs,
         },
         state: ProfileState {
             values: controls

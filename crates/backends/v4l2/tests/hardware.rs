@@ -434,20 +434,48 @@ fn hw_profile_capture_reproduces_the_committed_invariant_section() {
             .open(&info.id)
             .unwrap_or_else(|error| panic!("{}: could not be opened: {error}", info.id));
 
-        let fresh = engine::profile::capture(
-            camera.as_mut(),
-            &engine::profile::CaptureContext {
-                captured_at: schema::time::Stamp::now(),
-                kernel: std::fs::read_to_string("/proc/sys/kernel/osrelease")
-                    .map(|t| t.trim().to_owned())
-                    .unwrap_or_else(|_| "(unknown)".to_owned()),
-                tool_version: env!("CARGO_PKG_VERSION").to_owned(),
-                capturer: "hw_profile_capture_reproduces_the_committed_invariant_section"
-                    .to_owned(),
-                backend: backend.kind(),
-            },
-        )
-        .unwrap_or_else(|error| panic!("{name}: capture failed: {error}"));
+        let context = engine::profile::CaptureContext {
+            captured_at: schema::time::Stamp::now(),
+            kernel: std::fs::read_to_string("/proc/sys/kernel/osrelease")
+                .map(|t| t.trim().to_owned())
+                .unwrap_or_else(|_| "(unknown)".to_owned()),
+            tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+            capturer: "hw_profile_capture_reproduces_the_committed_invariant_section".to_owned(),
+            backend: backend.kind(),
+        };
+        // **The fresh capture is taken the same way the committed one was**, and the
+        // committed document is what says which way that is. A profile carrying measured
+        // pairs was captured with D3's probe (note **N239**); comparing it against a
+        // read-only re-capture would report `measured_pairs` as drift on every run, and the
+        // difference would be between two *methods* rather than between the corpus and the
+        // device — which is the one thing this arm exists to tell apart.
+        //
+        // So the probe runs here when, and only when, the corpus says it ran before. That
+        // makes this arm write to the camera for those profiles, which is exactly what the
+        // capture that produced them did; the probe snapshots and restores, and
+        // `left_the_camera_alone` is asserted below rather than assumed, because AGENTS
+        // rule 8 is this file's subject as much as the comparison is.
+        let probed = !committed.invariant.measured_pairs.is_empty();
+        let fresh = if probed {
+            let (fresh, found) = engine::profile::capture_probed(camera.as_mut(), &context)
+                .unwrap_or_else(|error| panic!("{name}: probing capture failed: {error}"));
+            assert!(
+                found.left_the_camera_alone(),
+                "{name}: the probe did not put the camera back, so this run left a device \
+                 changed: {:#?}",
+                found.restored
+            );
+            println!(
+                "{name}: re-captured with D3's probe because the committed profile carries \
+                 {} measured pair(s); the probe declined {} and restored what it touched",
+                committed.invariant.measured_pairs.len(),
+                found.skipped.len()
+            );
+            fresh
+        } else {
+            engine::profile::capture(camera.as_mut(), &context)
+                .unwrap_or_else(|error| panic!("{name}: capture failed: {error}"))
+        };
 
         // Provenance first, and unconditionally: it is a fact about the two documents
         // rather than about the device, so the branch below must not be able to skip it.

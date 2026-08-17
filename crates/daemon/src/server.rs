@@ -1875,6 +1875,7 @@ impl WchRpcServer for Wchd {
         &self,
         camera: CameraId,
         capturer: String,
+        discover_pairs: bool,
     ) -> Result<DeviceProfile, WireError> {
         // The provenance is assembled off the runtime, because reading it blocks:
         // `kernel_release` reads a pseudo-file, and work that blocks and needs no camera goes
@@ -1896,9 +1897,18 @@ impl WchRpcServer for Wchd {
                 })
             })
             .await?;
+        // The probe's other two answers have nowhere to go on this method — the wire's reply
+        // is the document — so a caller who needs to know what was declined or what the
+        // restore achieved calls `wch_discover_pairs`, and the method's doc says so. What is
+        // *not* dropped is a probe that failed: `capture_probed` propagates it, so a capture
+        // asked to measure and unable to does not come back as a profile with no pairs in it.
         Ok(self
             .on_camera(camera, move |device| {
-                engine::profile::capture(device, &context)
+                if discover_pairs {
+                    engine::profile::capture_probed(device, &context).map(|(profile, _)| profile)
+                } else {
+                    engine::profile::capture(device, &context)
+                }
             })
             .await?
             .1)

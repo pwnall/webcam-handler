@@ -326,7 +326,7 @@ async fn every_method<C: WchRpcClient + Sync>(
         .await
         .expect("the probe writes and puts the camera back");
     let profile_capture = client
-        .profile_capture(camera.clone(), capturer(named_for))
+        .profile_capture(camera.clone(), capturer(named_for), false)
         .await
         .expect("a capture reads the whole device");
     let restore = client

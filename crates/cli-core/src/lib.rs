@@ -1369,6 +1369,18 @@ pub enum ProfileCommand {
         /// Who to record as having taken the capture (T3 provenance).
         #[arg(long, value_name = "WHO", default_value = "unattributed")]
         capturer: String,
+
+        /// Also probe which controls this device pairs, and record what it demonstrated.
+        ///
+        /// **This writes to the camera**, which a capture otherwise never does. It
+        /// snapshots first and restores after, and the restore's outcome is reported on
+        /// standard error — but the document it produces is a document of a device that was
+        /// perturbed to make it, and the flag is what puts that in the caller's hands.
+        ///
+        /// Without it the profile's measured pairs are empty, which means "this capture
+        /// measured none" and never "this device has none".
+        #[arg(long)]
+        discover_pairs: bool,
     },
 }
 
@@ -1482,10 +1494,24 @@ pub trait Executor {
 
     /// One camera's full device profile (T3).
     ///
+    /// `discover_pairs` runs D3's empirical probe first, which **writes to the camera** and
+    /// restores it afterwards, and folds what it measured into the document's
+    /// `invariant.measured_pairs`. It is a parameter rather than a second method for
+    /// [`Executor::controls`]' reason — the answer has the same shape either way, and the
+    /// difference is data in it — with one thing extra riding on this one: the document is a
+    /// corpus entry, so whether the device was perturbed to produce it has to be the
+    /// caller's decision and not a default (note **N239**).
+    ///
     /// # Errors
     ///
-    /// As [`Executor::info`].
-    fn capture_profile(&mut self, camera: &CameraId, capturer: &str) -> Result<DeviceProfile>;
+    /// As [`Executor::info`], plus the probe's own refusals when it was asked for — chiefly
+    /// a snapshot that could not be taken, which stops the probe before it writes anything.
+    fn capture_profile(
+        &mut self,
+        camera: &CameraId,
+        capturer: &str,
+        discover_pairs: bool,
+    ) -> Result<DeviceProfile>;
 
     /// Open a calibration session for a camera and a task (D8).
     ///
@@ -1699,8 +1725,9 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             camera,
             out: destination,
             capturer,
+            discover_pairs,
         }) => {
-            let profile = executor.capture_profile(&camera.id()?, capturer)?;
+            let profile = executor.capture_profile(&camera.id()?, capturer, *discover_pairs)?;
             render::profile(&profile, destination.as_deref(), out)
         }
     }
@@ -2170,11 +2197,25 @@ mod tests {
             "p.json",
         ])
         .expect("parses");
-        let Command::Profile(ProfileCommand::Capture { out, capturer, .. }) = &cli.command else {
+        let Command::Profile(ProfileCommand::Capture {
+            out,
+            capturer,
+            discover_pairs,
+            ..
+        }) = &cli.command
+        else {
             panic!("expected profile capture");
         };
         assert_eq!(out.as_deref(), Some(camino::Utf8Path::new("p.json")));
         assert_eq!(capturer, "unattributed");
+        // The same opt-in the `controls` probe has, and here it decides something more than
+        // whether a camera is written to: a profile is a corpus entry, and a capture that
+        // probed by default would make every committed document one taken from a perturbed
+        // device without the verb ever having said so (note **N239**).
+        assert!(
+            !discover_pairs,
+            "a capture reads; the probe that writes is asked for"
+        );
     }
 
     #[test]

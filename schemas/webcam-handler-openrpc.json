@@ -6310,7 +6310,7 @@
       "summary": "End `camera`'s recording and hand over what it turned out to be (D7, D10)."
     },
     {
-      "description": "One camera's full device profile (T3).\n\n`capturer` is provenance: a profile records who took it, because a transcription\nand a probe are different claims about a device (E1, E2).\n\n# Errors\n\nAs `wch_info`.",
+      "description": "One camera's full device profile (T3).\n\n`capturer` is provenance: a profile records who took it, because a transcription\nand a probe are different claims about a device (E1, E2).\n\n`discover_pairs` runs D3's empirical probe before the reading and folds what it\nmeasured into `invariant.measured_pairs`. It **writes to the camera** — every\nautomation-shaped control is toggled through its positions and put back — which is\nwhy it is a parameter a caller supplies rather than something this method decides.\nA profile is a corpus entry, and whether the device was perturbed to produce one is\na fact the document's own reader needs, so it belongs to the call (note **N239**).\n`false` leaves the pair set empty, which means *this capture measured none* and\nnever *this device has none*. The probe's other two answers — what it declined, and\nwhat the restore achieved — are `wch_discover_pairs`', and a caller that needs them\nasks that verb.\n\n# Errors\n\nAs `wch_info`, plus, when the probe was asked for, its refusal to begin: a camera\nwhose state cannot be recorded is not probed, so nothing is written to it.",
       "errors": [
         {
           "$ref": "#/components/errors/device_gone"
@@ -6382,6 +6382,13 @@
           "required": true,
           "schema": {
             "type": "string"
+          }
+        },
+        {
+          "name": "discover_pairs",
+          "required": true,
+          "schema": {
+            "type": "boolean"
           }
         }
       ],

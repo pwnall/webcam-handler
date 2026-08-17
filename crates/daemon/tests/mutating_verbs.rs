@@ -291,7 +291,11 @@ async fn mutating_verbs<C: WchRpcClient + Sync>(
         .await
         .expect("the probe writes and puts the camera back");
     let profile = client
-        .profile_capture(ask.camera.clone(), "the mutating-verbs suite".to_owned())
+        .profile_capture(
+            ask.camera.clone(),
+            "the mutating-verbs suite".to_owned(),
+            false,
+        )
         .await
         .expect("a capture reads the whole device");
 
@@ -498,7 +502,7 @@ async fn every_mutating_verb_answers_what_the_engine_answers() {
     // schema crate's tool version, and the backend the registry is over — which is what
     // makes "a profile captured from the fake backend would be circular corpus" visible.
     let captured: DeviceProfile = wire
-        .profile_capture(ask.camera.clone(), "a parity check".to_owned())
+        .profile_capture(ask.camera.clone(), "a parity check".to_owned(), false)
         .await
         .expect("a capture reads the whole device");
     assert_eq!(
@@ -520,6 +524,38 @@ async fn every_mutating_verb_answers_what_the_engine_answers() {
     )
     .expect("the engine reads the same device");
     assert_eq!(captured, engine_captured);
+    // …and the capture the caller asked to be *measured* is `capture_probed`, whole. Two
+    // claims in one comparison, and the second is the one worth spelling out: the flag has
+    // to change the document, or a caller that asked for the probe would get an unprobed
+    // profile with no way to tell — the shape a `bool` that is accepted and dropped always
+    // has. So the pair set is asserted non-empty first, against the profile the very same
+    // fixture just captured without it (note **N239**).
+    let measured: DeviceProfile = wire
+        .profile_capture(ask.camera.clone(), "a parity check".to_owned(), true)
+        .await
+        .expect("the probe writes and puts the camera back");
+    assert!(
+        captured.invariant.measured_pairs.is_empty(),
+        "a capture that was not asked to probe must measure nothing"
+    );
+    assert!(
+        !measured.invariant.measured_pairs.is_empty(),
+        "the fixture this suite runs against couples controls, so a probing capture over \
+         the wire must come back carrying pairs: {:#?}",
+        measured.invariant.measured_pairs
+    );
+    let (engine_measured, _) = engine::profile::capture_probed(
+        handle.as_mut(),
+        &engine::profile::CaptureContext {
+            captured_at: measured.provenance.captured_at,
+            kernel: measured.provenance.kernel.clone(),
+            tool_version: measured.provenance.tool_version.clone(),
+            capturer: measured.provenance.capturer.clone(),
+            backend: measured.provenance.backend,
+        },
+    )
+    .expect("the engine probes the same device");
+    assert_eq!(measured, engine_measured);
 
     // And `restore` is `engine::snapshot::restore` — run over the wire, which is also what
     // puts this test's own writes back. The engine's copy is given the *same* starting

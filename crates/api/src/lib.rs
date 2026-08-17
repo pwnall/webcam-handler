@@ -419,14 +419,27 @@ wire_surface! {
         /// `capturer` is provenance: a profile records who took it, because a transcription
         /// and a probe are different claims about a device (E1, E2).
         ///
+        /// `discover_pairs` runs D3's empirical probe before the reading and folds what it
+        /// measured into `invariant.measured_pairs`. It **writes to the camera** — every
+        /// automation-shaped control is toggled through its positions and put back — which is
+        /// why it is a parameter a caller supplies rather than something this method decides.
+        /// A profile is a corpus entry, and whether the device was perturbed to produce one is
+        /// a fact the document's own reader needs, so it belongs to the call (note **N239**).
+        /// `false` leaves the pair set empty, which means *this capture measured none* and
+        /// never *this device has none*. The probe's other two answers — what it declined, and
+        /// what the restore achieved — are `wch_discover_pairs`', and a caller that needs them
+        /// asks that verb.
+        ///
         /// # Errors
         ///
-        /// As `wch_info`.
+        /// As `wch_info`, plus, when the probe was asked for, its refusal to begin: a camera
+        /// whose state cannot be recorded is not probed, so nothing is written to it.
         #[method(name = "profile_capture")]
         async fn profile_capture(
             &self,
             camera: CameraId,
             capturer: String,
+            discover_pairs: bool,
         ) -> Result<DeviceProfile, WireError>;
 
         /// Signal the process holding a camera's node (design §5).
@@ -783,6 +796,7 @@ mod tests {
             &self,
             _camera: CameraId,
             _capturer: String,
+            _discover_pairs: bool,
         ) -> Result<DeviceProfile, WireError> {
             Err(nothing("profile_capture"))
         }

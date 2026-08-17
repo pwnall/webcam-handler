@@ -241,14 +241,29 @@ const PF_FINDINGS: &[PfFinding] = &[
     },
     PfFinding {
         id: "PF:3",
-        claim: "INACTIVE set on a control an automation partner owned at capture time",
-        // In the *state* block, not the invariant one: INACTIVE is volatile by
-        // definition, and T3 masks it out of the part that compares exactly.
+        claim: "a measured automation pair, whose two controls this document both carries",
+        // **Not** "some captured flag word has the INACTIVE bit set", which is what this
+        // row asked for until 2026-08-17 and is what the G6 review's finding **M30** is
+        // about. That bit is a photograph of one moment — it says an automation held a
+        // control while somebody took a capture — and PF:3's finding is that INACTIVE
+        // tracks pairing *live, in both directions*. A static bit cannot carry a claim
+        // about what happens when something changes.
+        //
+        // `measured_pairs` is the field that can, and it is the field the fake's whole
+        // coupling model reads (`fake::camera::apply_coupling`): a profile with an empty
+        // pair set replays as a device that couples nothing, so before this row moved,
+        // every `--backend fake` run in the workspace was against a device exhibiting none
+        // of the behaviour three attached cameras were measured exhibiting the same day
+        // \[E18\]. The *assertion* half §3.2 asks for is the test below; this predicate is
+        // the *representability* half, and it requires both ends of the pair to be present
+        // because a pair naming a control the document does not carry is a recipe nothing
+        // can follow.
         exhibited_by: |p| {
-            p.state
-                .flags
-                .values()
-                .any(|raw| raw & KnownFlag::Inactive.bit() != 0)
+            p.invariant.measured_pairs.iter().any(|pair| {
+                pair.provenance == schema::pairing::Provenance::Measured
+                    && p.control(&pair.manual).is_some()
+                    && p.control(&pair.automation).is_some()
+            })
         },
     },
     PfFinding {
@@ -376,6 +391,130 @@ fn every_profile_shaped_probe_finding_is_exhibited_by_a_committed_profile() {
         uncovered.len(),
         uncovered.join("\n  ")
     );
+}
+
+#[test]
+fn the_coupling_a_profile_measured_is_replayed_live_and_in_both_directions() {
+    // PF:3's finding, asserted from the corpus rather than from prose — the second half of
+    // what §3.2 asks of a profile-shaped finding, and the half the G6 review's **M30** found
+    // missing. The row above establishes that a committed document *carries* a measured
+    // pair; this establishes that replaying that document produces the behaviour the pair
+    // describes, which is the only thing that makes the fake resemble the devices it stands
+    // in for (AGENTS: "its claims … are asserted against the probe record of the profile it
+    // replays").
+    //
+    // **Both directions, and the second one is not decoration.** A model that set INACTIVE
+    // when automation engaged and never cleared it would pass a one-directional check and
+    // would strand every guarded write in the workspace: D3's whole plan is *switch the
+    // automation off, then write the manual control*, and a partner whose bit never clears
+    // is a control the planner can free and the device still refuses. The three cameras
+    // measured on 2026-08-17 all cleared it \[E18\].
+    //
+    // The `off` recipe comes from the pair the device itself produced, so this test knows no
+    // control names: a corpus whose pairs are spelled differently on the next device is
+    // still driven correctly, and a recipe that resolves to nothing is a red test rather
+    // than a silently skipped one.
+    let profiles = corpus::load_all().expect("the corpus parses");
+    let mut asserted = 0usize;
+
+    for (path, profile) in &profiles {
+        for pair in &profile.invariant.measured_pairs {
+            let backend = FakeBackend::from_profile(profile.clone()).expect("replays");
+            let id = backend
+                .enumerate()
+                .expect("enumerates")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("{path} replayed no camera"))
+                .id;
+            let mut camera = backend.open(&id).expect("opens");
+
+            let describe = |camera: &dyn schema::backend::Camera, slug| {
+                camera
+                    .controls()
+                    .expect("the fake enumerates")
+                    .into_iter()
+                    .find(|desc| &desc.slug == slug)
+                    .unwrap_or_else(|| panic!("{path}: {slug} is named by a pair and absent"))
+            };
+
+            let automation = describe(camera.as_ref(), &pair.automation);
+            let off = pair.off.resolve(&automation).unwrap_or_else(|| {
+                panic!(
+                    "{path}: the recipe {:?} resolves to nothing against the very control it \
+                     was measured on, so this document cannot describe its own device",
+                    pair.off
+                )
+            });
+            // Any position that is not "off". Taken from the control's own vocabulary — its
+            // menu, or its range — rather than assumed to be 1, because `auto_exposure` is a
+            // menu whose engaged positions are 1 and 3 on this hardware and a boolean's are
+            // 0 and 1 (design D3's third probe rule, PF:2).
+            let engaged = engaged_position(&automation, off).unwrap_or_else(|| {
+                panic!(
+                    "{path}: {} has no position other than its measured off value {off}, so \
+                     nothing here could ever engage",
+                    pair.automation
+                )
+            });
+
+            camera
+                .set(automation.id, ControlValue::Int(engaged))
+                .expect("the fake takes a write to a control its own profile carries");
+            assert!(
+                describe(camera.as_ref(), &pair.manual).is_inactive(),
+                "{path}: {} engaged at {engaged} and {} did not go INACTIVE — PF:3 says a \
+                 device's automation takes its partner over, and a replay that does not is a \
+                 fake claiming a capability no real device lacks",
+                pair.automation,
+                pair.manual
+            );
+
+            camera
+                .set(automation.id, ControlValue::Int(off))
+                .expect("the fake takes the off value its own pair names");
+            assert!(
+                !describe(camera.as_ref(), &pair.manual).is_inactive(),
+                "{path}: {} switched off at {off} and {} stayed INACTIVE — the direction D3's \
+                 guarded write depends on, so a partner that never comes back is a control \
+                 nothing can drive by hand",
+                pair.automation,
+                pair.manual
+            );
+
+            asserted += 1;
+        }
+    }
+
+    // Not vacuous, and it fails for the reason M30 named rather than for a missing file: a
+    // corpus in which no document carries a measured pair leaves the fake's coupling model
+    // — the thing every guarded-write test in this workspace runs against — asserted by
+    // nothing at all.
+    assert!(
+        asserted > 0,
+        "no committed profile carries a measured automation pair, so PF:3's coupling is \
+         replayed by nothing and the fake's model has no corpus behind it (§3.2)"
+    );
+    println!("PF:3: {asserted} measured pair(s) driven both ways through the fake");
+}
+
+/// A position for `automation` that is not its measured `off` value, in the control's own
+/// vocabulary.
+///
+/// A menu's alternatives are its indices — "a menu is not a switch" is D3's third probe rule
+/// and PF:2 says the indices have holes — and a plain integer's are its range. `None` means
+/// the control has exactly one position, which the caller reports as the finding it is.
+fn engaged_position(automation: &schema::control::ControlDesc, off: i64) -> Option<i64> {
+    if !automation.menu.is_empty() {
+        return automation
+            .menu
+            .keys()
+            .map(|index| i64::from(*index))
+            .find(|index| *index != off);
+    }
+    [automation.range.min, automation.range.max]
+        .into_iter()
+        .find(|candidate| *candidate != off)
 }
 
 #[test]

@@ -997,10 +997,15 @@ impl Executor for Remote {
     /// them is the wire." This line is the entire cost of that, and it is here rather than in
     /// a rename because a wire name is a compatibility contract and a trait method name is
     /// not.
-    fn capture_profile(&mut self, camera: &CameraId, capturer: &str) -> Result<DeviceProfile> {
+    fn capture_profile(
+        &mut self,
+        camera: &CameraId,
+        capturer: &str,
+        discover_pairs: bool,
+    ) -> Result<DeviceProfile> {
         self.on(self
             .client()
-            .profile_capture(camera.clone(), capturer.to_owned()))
+            .profile_capture(camera.clone(), capturer.to_owned(), discover_pairs))
     }
 
     fn calibrate_start(

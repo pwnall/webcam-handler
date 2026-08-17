@@ -485,23 +485,46 @@ impl Executor for InProcess {
         lifecycle::list(&store, fingerprint.as_ref())
     }
 
-    fn capture_profile(&mut self, requested: &CameraId, capturer: &str) -> Result<DeviceProfile> {
+    fn capture_profile(
+        &mut self,
+        requested: &CameraId,
+        capturer: &str,
+        discover_pairs: bool,
+    ) -> Result<DeviceProfile> {
         let (_, mut camera) = self.open(requested)?;
         // The T3 split lives in the engine, so this verb, the hardware rung's comparison,
         // and P4's `profile_capture` method all produce the same document.
-        engine::profile::capture(
-            camera.as_mut(),
-            &engine::profile::CaptureContext {
-                captured_at: schema::time::Stamp::now(),
-                // Both host facts read where they have one home: the kernel release moved
-                // beside the field it fills when `webcam-handler-daemon` acquired this verb,
-                // and the tool version is the schema crate's, so a profile captured over a
-                // socket and one captured on a command line carry the same provenance.
-                kernel: engine::profile::kernel_release(),
-                tool_version: schema::TOOL_VERSION.to_owned(),
-                capturer: capturer.to_owned(),
-                backend: self.backend.kind(),
-            },
-        )
+        let context = engine::profile::CaptureContext {
+            captured_at: schema::time::Stamp::now(),
+            // Both host facts read where they have one home: the kernel release moved
+            // beside the field it fills when `webcam-handler-daemon` acquired this verb,
+            // and the tool version is the schema crate's, so a profile captured over a
+            // socket and one captured on a command line carry the same provenance.
+            kernel: engine::profile::kernel_release(),
+            tool_version: schema::TOOL_VERSION.to_owned(),
+            capturer: capturer.to_owned(),
+            backend: self.backend.kind(),
+        };
+        if !discover_pairs {
+            return engine::profile::capture(camera.as_mut(), &context);
+        }
+
+        // The probe wrote to the camera, so what the restore achieved goes to standard
+        // error the way `controls --discover-pairs` sends it there — beside the document
+        // rather than inside it. A profile is a reading of a device; whether the run that
+        // took it put the device back is a fact about the run, and a caller who never hears
+        // it has been handed a promise (docs/8 Part C).
+        let (profile, found) = engine::profile::capture_probed(camera.as_mut(), &context)?;
+        eprintln!(
+            "{}: probe measured {} pair(s), declined {}, left the camera alone: {}",
+            requested.as_str(),
+            profile.invariant.measured_pairs.len(),
+            found.skipped.len(),
+            found.left_the_camera_alone()
+        );
+        for skip in &found.skipped {
+            eprintln!("  declined {}: {}", skip.control.as_str(), skip.reason);
+        }
+        Ok(profile)
     }
 }

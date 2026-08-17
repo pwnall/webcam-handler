@@ -23929,3 +23929,377 @@ reader of the profile meets them where the checks are turned on.
 **Retires when:** a D13 kind exists for "this process failed at something arithmetic", the daemon's
 actor answers it, and both CLI roots render a `Failure` for a panic. That is one change, not three,
 and it wants an owner ruling on the wire addition.
+
+---
+
+## E18 — The hardware debt of the G6 review, paid at four cameras and one virtual driver, 2026-08-17
+
+E15 and E17 are the shape this follows: a dated run against something this project does not
+control, recorded once and not amended. What makes it worth its own entry is *why* it was run.
+The G6 adversarial review (docs/11) closes with §11, "What this review did not reach", and its
+first item is a debt in so many words:
+
+> No hardware rung was run beyond what `just ci` ran. R3 is `#[ignore]`d by design and R2 loads
+> kernel modules; neither was executed. Every finding about the V4L2 backend is therefore a
+> code-reading finding, and **H1 in particular is confirmed by reading and by the fake's
+> contradicting guard, not by a camera**.
+
+Seventy-nine findings were repaired against a tree nothing had pointed a lens at. This is the run
+that pointed one.
+
+### The fixture
+
+**Host:** `pwnblet`, Ubuntu 26.04 LTS, kernel `7.0.0-29-generic` (x86_64) — the P4/P5/P6
+workstation, on the tree at `1ef2222` plus this sub-milestone's working tree.
+
+**Attached: four logical cameras**, all `uvcvideo`, ten nodes between them. The Logitech BRIO of
+E15 is still off the bus, and the rung says so out loud rather than leaving it to be noticed:
+
+```
+SKIP (partial): 1 committed profile(s) match no camera attached to this host, so this arm did
+not check them against a device: logitech-brio
+```
+
+| camera | USB id | bus path | controls | nodes |
+|---|---|---|---|---|
+| Chicony RGB (`Integrated Camera: Integrated C`) | `04f2:b83c` | `3-4:1.0` | 18 | video0, video1 |
+| Chicony IR (`Integrated Camera: Integrated I`) | `04f2:b83c` | `3-4:1.2` | 3 | video2, video3 |
+| OBSBOT Tiny 3 | `3560:ff02` | `3-1:1.0` | 24 | video4, video5 |
+| Dell U3224KB/A 4K Webcam | `413c:c03d` | `2-3.4.1.1:1.0` | 19 | video6–video9 |
+
+Neither Chicony reports a distinguishing serial beyond `0001`, which both report; the OBSBOT
+reports none at all \[PF:8\]. The **firmware revision is not among the facts this tool reports** —
+`CameraFingerprint` carries vendor, product, card, driver and serial, and `bcdDevice` is not
+enumerated — so this entry cannot date these devices' firmware and does not pretend to.
+
+**Oracles:** `ffprobe` `8.0.1-3ubuntu2` and `mpv` `v0.41.0`, the same pair and the same shared
+FFmpeg build E17 recorded, so N119 still applies and `mpv` still corroborates playability rather
+than a demux.
+
+**The privileged helper**, `just priv-doctor`, before anything loaded a module:
+
+```
+webcam-handler-priv 0.1.0
+  blessing:    cap_sys_module+ep
+  permitted:   CAP_SYS_MODULE
+  can delegate to a child:   yes (ambient raise verified)
+```
+
+That is P6e's reckoning holding: one capability over a closed verb vocabulary, `CAP_NET_ADMIN`
+gone \[PF:21\], and it is what let R2 run without a hand-written `modprobe`.
+
+### 1. R3 — `just smoke-hw`, 22 of 22 tests run, 22 passed
+
+Twenty-three claims declined by tests that ran, every one named, census complete. Motors were
+**included** — the 2026-08-08 ruling's default, and this rig has no person in front of it. The
+suite has grown four arms since E17's twenty.
+
+The headline is the debt in §11's own words:
+
+```
+cam:integrated-camera-integrated-c: D5 live — WCHX refused with "format WCHX is unavailable;
+  MJPG, YUYV would be accepted", MJPG negotiated at 2592x1944
+cam:integrated-camera-integrated-i: D5 live — WCHX refused with "format WCHX is unavailable;
+  GREY would be accepted", GREY negotiated at 640x360
+cam:obsbot-tiny-3-obsbot-tiny-3-st: D5 live — WCHX refused with "format WCHX is unavailable;
+  MJPG, YUYV would be accepted", MJPG negotiated at 3840x2160
+cam:dell-u3224kb-a-4k-webcam: D5 live — WCHX refused with "format WCHX is unavailable;
+  NV12, YUYV, MJPG would be accepted", NV12 negotiated at 1920x1080
+```
+
+**H1 is now a camera's answer.** Four real devices, four different format trees, and a fourcc none
+of them has is a typed `FormatUnsupported` naming what each one *does* offer — not a substitution,
+not a silent fall-back to the largest mode. The refusal also lists only formats the camera really
+enumerates, which is N211's repair arriving at the hardware that could have contradicted it. The
+review confirmed this by reading and by the fake's contradicting guard; it is confirmed by a device
+now, and §11's first item is discharged.
+
+The second owed arm, `hw_describing_one_control_says_what_the_whole_walk_says_about_it`, answered
+**"64 control(s) compared across 4 camera(s)"** — every control on every attached camera describes
+identically through the targeted path and through the full walk. That is the constraint on the
+targeted walk that the one-ioctl alternative was declined against, and it is now `measured` rather
+than `declared`.
+
+The rest of what the run measured, in its own words:
+
+```
+cam:integrated-camera-integrated-c: PF:6 live — brightness took 255 for a write of 1255,
+  warnings [Clamped { requested: 1255, applied: 255, range: 0..=255 step 1 }]
+cam:obsbot-tiny-3-obsbot-tiny-3-st: PF:6 live — brightness took 100 for a write of 1100
+cam:dell-u3224kb-a-4k-webcam: PF:6 live — brightness took 255 for a write of 1255
+```
+
+```
+cam:integrated-camera-integrated-c: PF:3 live — switching white_balance_automatic off freed
+  white_balance_temperature
+cam:obsbot-tiny-3-obsbot-tiny-3-st: PF:3 live — switching white_balance_automatic off freed
+  blue_balance, red_balance, white_balance_temperature
+cam:dell-u3224kb-a-4k-webcam: PF:3 live — switching white_balance_automatic off freed
+  white_balance_temperature
+```
+
+Rule 5 and PF:3, three devices each, unchanged since E15 measured them — which is the point of
+re-running rather than citing.
+
+**The motors moved and came back.** Both PTZ devices, bounded by `limits::MAX_MOTION_SWEEP_SAMPLES`
+exactly as design §5 requires:
+
+```
+cam:obsbot-tiny-3-obsbot-tiny-3-st: pan_absolute declares -468000..=468000 step 3600 — 261
+  samples at full stride, bounded to 29 by the motion cap
+cam:obsbot-tiny-3-obsbot-tiny-3-st: moved pan_absolute through [-7200, -3600, 0, 3600, 7200]
+  — 5 sample(s), 14400 units of travel (4 step(s)), and back to 0
+cam:dell-u3224kb-a-4k-webcam: pan_absolute declares -144000..=144000 step 3600 — 81 samples at
+  full stride, bounded to 27 by the motion cap
+cam:dell-u3224kb-a-4k-webcam: moved pan_absolute through [-7200, -3600, 0, 3600, 7200] — 5
+  sample(s), 14400 units of travel (4 step(s)), and back to 0
+```
+
+Every requested position was the applied one on both devices — `-7200->-7200 -3600->-3600 0->0
+3600->3600 7200->7200` — so neither motor clamped or snapped inside the range this sweep used.
+
+**The hotplug arm cycled `uvcvideo`**, saw 8 removals and 8 arrivals through the real watch, and
+found all four cameras back on the same four bus paths with no control changed by the cycle. It
+also renumbered the OBSBOT: `/dev/video8 → /dev/video4`, `/dev/video9 → /dev/video5`, which is
+\[PF:22\] happening again and being declined again rather than read as drift. \[PF:25\] warns that
+this cycle also re-parks the OBSBOT's gimbal and that no arm of the suite can see it; that is
+expected and it happened, and the gimbal's rest position after this run is the driver's, not the
+one it had before.
+
+The recordings, one second from each camera, all oracle-validated, all `IntervalSource::Measured`:
+
+| camera | container | frames | mean interval | file | driver span | wall clock | declared − wall |
+|---|---|---|---|---|---|---|---|
+| Chicony RGB | AVI 2592×1944 | 18 | 57 648 µs | 1102 ms | 980 ms | 1017 ms | **+20 ms** |
+| Chicony IR | Y4M 640×360 | 15 | 73 430 µs | 1101 ms | 1028 ms | 1065 ms | **+36 ms** |
+| OBSBOT Tiny 3 | AVI 3840×2160 | 21 | 33 720 µs | 708 ms | 674 ms | 1025 ms | **−317 ms** |
+| Dell U3224KB | AVI 3840×2160 | 10 | 84 443 µs | 844 ms | 759 ms | 1030 ms | **−186 ms** |
+
+N120's two-sided bound holds again, and the numbers sit where E17 left them: at most one frame
+period above, and the largest overhang below is 317 ms against a `MAX_WALL_CLOCK_OVERHANG_MS` of
+640. The Chicony RGB negotiated a faster mode than it did on 2026-08-15 — 18 frames at 57 ms rather
+than 9 at 122 — which is the same D5 ranking meeting a device that was advertising something
+different, and is exactly the licence the 2026-08-13 ruling grants.
+
+### 2. R2 — `just rung-vivid-managed`, 9 of 9 tests run, 9 passed, 0 skips
+
+```
+vivid: loaded (1 instance(s)); 4 node(s) appeared: video10, video11, video12, video13
+cam:vivid: 77 control(s) enumerated
+cam:vivid: 83 format(s), 747 size entr(ies)
+cam:vivid: probe measured 1 pair(s), declined 0, restore complete: true
+cam:vivid: recorded YUYV 3840x2160 to Y4M — 4 frame(s), 66355274 bytes, declared 201617
+  us/frame (Measured)
+vivid: unloaded; 4 node(s) went away: video10, video11, video12, video13
+```
+
+Seventy-seven controls against the real cameras' 3, 18, 19 and 24, and eighty-three formats against
+their two or three: this is the rung that reaches the compound payloads and the control types no
+attached device has. The module loaded and unloaded through the blessed helper and nothing was
+`modprobe`d by hand.
+
+**One thing was specifically looked for here and was not found.** A repair earlier in this pass made
+`lifecycle::arm_pre_snapshot` **refuse** a camera carrying any writable control it could not record
+(note **N195**), and vivid's 77 controls are by a wide margin the largest population this project
+can put in front of that rule. `vivid_a_calibration_sweep_sets_settles_captures_and_scores_through_
+the_real_ioctl_path` drives `arm_pre_snapshot` over that device and passed: **no writable control on
+vivid declines its read**, so the refusal did not fire and N195's "Retires when" clause — a device
+that declines a control read *permanently* — is still waiting for its first instance. That is a
+negative result and it is recorded as one: it says nothing about devices this host has not met.
+
+### 3. The oracle rung — `just rung-oracles`, 14 of 14 tests run, 14 passed
+
+It ran rather than declining, both oracles being installed, and the N121 defect it was written after
+stayed fixed: no fabricated-host arm printed a decline into the accounting. Both containers, both
+chroma sitings and the mono fixture were read back by `ffprobe` and `mpv`.
+
+### 4. What this run bought that reading could not — the corpus gap, closed
+
+The review's finding **M30** is that *no committed profile carries a measured automation pair*, so
+the fake's PF:3 coupling model has zero corpus coverage. It is worse than the sentence sounds. The
+fake's `apply_coupling` is driven **only** by `invariant.measured_pairs`, so a profile with an empty
+pair set replays as a device that couples nothing at all — and every one of the five committed
+profiles had an empty pair set. On the same day three attached cameras were measured coupling live,
+every `--backend fake` run in this workspace was against a device exhibiting none of it.
+
+`webcam-handler-cli profile capture --discover-pairs` is new here and note **N239** carries the
+decision it is. Run against the Chicony RGB:
+
+```
+cam:integrated-camera-integrated-c: probe measured 2 pair(s), declined 0, left the camera
+alone: true
+```
+
+The two pairs, as the device produced them:
+
+| manual | automation | how to switch it off |
+|---|---|---|
+| `exposure_time_absolute` | `auto_exposure` | menu item named `manual mode` |
+| `white_balance_temperature` | `white_balance_automatic` | value `0` |
+
+Both `Provenance::Measured`, and the two recipes are the *two different shapes* `AutomationOff`
+has — a menu item found by name and a plain value — which is D3's "a menu is not a switch" arriving
+in one document. The `hw_switching_an_automation_control_moves_its_partners_inactive_bit` arm sees
+only the second of them, because it toggles boolean automation controls and `auto_exposure` is a
+menu; the probe walks every alternative and found both.
+
+**Restoration was checked from outside the tool as well as inside it.** A `snapshot --json` before
+and after the probing capture: 15 entries each, and no control's value differs. The probe's own
+`left the camera alone: true` and an independent reading of the device agree.
+
+The re-captured document differs from the one committed on 2026-08-08 in **exactly two things** —
+its provenance, and the pair set:
+
+```
+info: SAME    formats: SAME    controls: SAME    measured_pairs: DIFFERS
+state values: SAME    state flags: SAME
+```
+
+That is the strongest thing this entry can say about the re-capture: nothing was refreshed under
+cover of adding a measurement, and the ten days between the two captures moved nothing about this
+device. `hw_profile_capture_reproduces_the_committed_invariant_section` then re-measured the pairing
+at the device and reproduced the committed measurement exactly:
+
+```
+chicony-rgb: re-captured with D3's probe because the committed profile carries 2 measured
+  pair(s); the probe declined 0 and restored what it touched
+chicony-rgb: a fresh capture reproduces the committed invariant section
+```
+
+### 5. What this run does not establish
+
+**No firmware is dated.** The tool does not enumerate `bcdDevice`, so "the cameras and their
+firmware" is answered only to the depth of vendor, product and card. Every claim here is against
+whatever firmware these four devices were carrying on 2026-08-17.
+
+**The Logitech BRIO is untouched.** One of five committed profiles was compared against no device on
+this run, and nothing here is evidence about it.
+
+**One camera carries the corpus's only measured pairs.** PF:3 is now asserted from the Chicony RGB
+and from nothing else. The OBSBOT's four pairs and the Dell's two were measured by the motion arm's
+probe on this run and were *not* committed, so the corpus's coupling coverage is one device wide.
+Widening it is a re-capture per camera and each is a decision, not a chore.
+
+**A gimbal was moved by something no test watched.** \[PF:25\] again: the `uvcvideo` cycle re-parks
+the OBSBOT, and this run cycled it. The suite restored every control it wrote and asserted it; the
+re-park is outside that promise and is recorded here because it is outside it.
+
+**No new PF entry was taken.** PF:29 is still free. Everything measured here is a device behaviour
+the registry already names — PF:3, PF:6, PF:8, PF:22, PF:25 — observed again on a dated run, and a
+registry entry for "we saw it once more" would make the registry a log.
+
+---
+
+## N239 — A corpus entry may perturb its subject, when the verb that took it said so
+
+**Doc:** design **§3.2** ("every profile-shaped PF finding is representable in *and asserted from*
+at least one committed profile"), **D3**, **T3**; AGENTS *"the fake resembles: its claims —
+clamping, INACTIVE coupling, frame response — are asserted against the probe record of the profile
+it replays"*, and rule 4 (*the device is the only authority on itself*). Raised as finding **M30**
+of the G6 review. Recorded 2026-08-17, batch B11, with the run behind it in **E18**.
+
+**Repo:** `engine::profile::{capture, capture_probed}`; `cli_core::ProfileCommand::Capture`'s
+`--discover-pairs` and `Executor::capture_profile`; `api::WchRpc::profile_capture`;
+`daemon::server`; `client::remote`; `corpus/profiles/chicony-rgb.json`;
+`fake/tests/corpus_replay.rs`; `v4l2/tests/hardware.rs`.
+
+**This note exists because the code asked for it by name.** The empty `Vec` in
+`engine::profile::capture` carried this comment, and it was right about everything except who
+would answer:
+
+> Empty is therefore the honest answer here: it says "this capture measured nothing", not "this
+> device has no pairs". Wiring a probe into `capture` needs a decision about whether a corpus entry
+> may perturb its subject, and that decision belongs to whoever needs measured pairs in a profile.
+
+§3.2 is that party, and it had been asking since T3. The review states the gap narrowly — no
+committed profile carries a measured pair — and the mechanism is wider than the sentence. The
+fake's `apply_coupling` reads **only** `invariant.measured_pairs`, so a profile with an empty pair
+set replays as a device that couples **nothing**. Five committed profiles, five empty pair sets:
+every `--backend fake` run in this workspace — every guarded-write test, every planner test that
+uses a real device shape — ran against a device exhibiting none of the INACTIVE coupling that three
+of the four attached cameras were measured exhibiting on the day this was written \[E18\]. AGENTS
+forbids *a fake capability no real device exhibits*; this was the inverse, and it is the more
+dangerous direction, because a fake that is *missing* behaviour makes tests pass.
+
+### The ruling, and why it is a verb rather than a default
+
+**A corpus entry may be taken from a perturbed device when the caller asked for the probe and the
+probe put the device back.** Both halves are load-bearing and neither is a default:
+
+- **Asked for.** `profile capture` still reads. `--discover-pairs` is the same opt-in
+  `controls --discover-pairs` has, spelled the same way for the same reason, and it decides one
+  thing more here than it does there: a profile is the document every `resemblance` claim is
+  compared against, and *was this device written to in order to produce this?* is a question its
+  reader must be able to answer from the verb rather than by inspecting the file. A capture that
+  probed by default would make every committed document one taken from a perturbed device with
+  nothing anywhere saying so.
+- **Put back.** The probe snapshots first and restores last, and `Discovery::left_the_camera_alone`
+  is the answer. `webcam-handler-cli` prints it on standard error beside the document, never inside
+  it — a profile is a reading of a device, and whether the run that took it behaved is a fact about
+  the run. E18 checked it a second way, from outside the tool: a `snapshot --json` either side of
+  the capture, 15 entries, nothing moved.
+
+**Two functions rather than a `bool` on one**, and this is not style. `capture` is named in four
+places as the read-only operation the corpus is built from, and a reader who finds
+`capture(camera, ctx, false)` has to know what the third argument means to know whether the camera
+was written to. `capture_probed` says it at the call site. They share one private `assemble`, so the
+T3 split still has exactly one home — the whole value of the corpus rests on "which fields are
+invariant" being one answer, and it would have been cheap to grow a second here.
+
+**The wire took the parameter too**, because a rule on the shared tree is a rule for both roots
+(note **N214**): `webcam-handler-client profile capture --discover-pairs` reaches
+`wch_profile_capture`'s new `discover_pairs`, so the two binaries offer one surface rather than one
+and a half. The probe's other two answers — what it declined, what the restore achieved — are
+`wch_discover_pairs`', and the method's doc sends a caller who needs them there rather than growing
+this reply a second shape.
+
+### What the corpus gained, and what it did not
+
+`corpus/profiles/chicony-rgb.json` is re-captured — wholesale, as T3 requires — and differs from the
+2026-08-08 document in **its provenance and its pair set and in nothing else**: `info`, `formats`,
+`controls`, `state.values` and `state.flags` all compare equal. That is deliberate and it is the
+evidence that this was a measurement added rather than a corpus refreshed. Two pairs, both
+`Measured`, and between them the two shapes `AutomationOff` has — `auto_exposure` off by the menu
+item named *manual mode*, `white_balance_automatic` off by the value `0`.
+
+**One camera, not four.** The OBSBOT's four pairs and the Dell's two were measured on the same run
+and were not committed. PF:3's corpus coverage is one device wide, which is what §3.2 asks for and
+less than the hardware could support; widening it is a re-capture per camera and each is its own
+decision.
+
+### What can go red
+
+- `the_coupling_a_profile_measured_is_replayed_live_and_in_both_directions` — the *assertion* half
+  §3.2 wants. Every measured pair in the corpus is driven through the fake: engage the automation
+  and the partner must go INACTIVE, switch it off by the pair's own recipe and the bit must clear.
+  **Both directions, and the second is the one D3 depends on** — a model that set the bit and never
+  cleared it would strand every guarded write, since the whole plan is *switch the automation off,
+  then write the manual control*. It knows no control names: the `off` recipe and the engaged
+  position come from the document, so the next device's spelling drives it unchanged. Measured red
+  on the corpus as it stood: *"no committed profile carries a measured automation pair, so PF:3's
+  coupling is replayed by nothing and the fake's model has no corpus behind it (§3.2)"*.
+- `every_profile_shaped_probe_finding_is_exhibited_by_a_committed_profile`'s **PF:3 row**, rewritten.
+  It asked for "some captured flag word has the INACTIVE bit set", which is a photograph of one
+  moment and not PF:3's finding; it now asks for a measured pair whose two controls the document
+  both carries. Measured red on the old corpus: *"the corpus no longer exhibits 1 probe finding(s)
+  … PF:3 — a measured automation pair, whose two controls this document both carries"*.
+- `every_mutating_verb_answers_what_the_engine_answers` gained the wire's half: the probing capture
+  over the socket equals `engine::profile::capture_probed`, and the pair set is asserted non-empty
+  against the unprobed capture the same fixture just took — which is what catches a `bool` that is
+  accepted and dropped. Measured red with the daemon ignoring the flag: *"the fixture this suite
+  runs against couples controls, so a probing capture over the wire must come back carrying pairs:
+  []"*.
+- `the_read_verbs_parse_the_way_the_agent_guide_will_teach_them` asserts the flag is **off** by
+  default, which is the ruling's first half as a test rather than as this paragraph.
+- `hw_profile_capture_reproduces_the_committed_invariant_section` re-measures the pairing at the
+  device whenever the committed profile carries one, and asserts the probe restored. Without that
+  it would compare a probed document against a read-only re-capture and report `measured_pairs` as
+  drift on every run — a difference between two *methods*, dressed as a difference between the
+  corpus and the device, which is the one thing that arm exists to tell apart.
+
+**Retires when:** a device is measured whose pairing changes between captures — the coupling itself,
+not which automation happened to be engaged. `measured_pairs` sits in the *invariant* section and
+`invariant_difference` compares it exactly, so such a device would make the R3 arm red every run,
+correctly and uselessly, and the answer would be the 2026-08-13 ruling's shape applied to a second
+section: a named decline with the measurement behind it. Nothing has been seen doing it; the
+Chicony RGB reproduced both pairs exactly ten days after the document it is compared against.

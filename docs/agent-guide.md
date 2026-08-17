@@ -424,7 +424,7 @@ webcam-handler-client calibrate list [<CAMERA>]
 Capture a camera's profile: everything enumerable about it, as one document
 
 ```text
-webcam-handler-client profile capture <CAMERA> [--out <PATH>] [--capturer <WHO>]
+webcam-handler-client profile capture <CAMERA> [--out <PATH>] [--capturer <WHO>] [--discover-pairs]
 ```
 
 `--json` answers with one `DeviceProfile` document.
@@ -437,6 +437,7 @@ webcam-handler-client profile capture <CAMERA> [--out <PATH>] [--capturer <WHO>]
 |---|---|---|---|
 | `--out`, `-o` | `<PATH>` | — | Where to write it. Standard output when omitted |
 | `--capturer` | `<WHO>` | `unattributed` | Who to record as having taken the capture (T3 provenance) |
+| `--discover-pairs` | — | — | Also probe which controls this device pairs, and record what it demonstrated |
 
 ## The words a flag takes
 
