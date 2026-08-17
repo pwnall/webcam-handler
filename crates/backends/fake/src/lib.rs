@@ -253,10 +253,7 @@ impl FakeBackend {
         // Resolved first, so the busy refusal names the node the caller asked for rather
         // than whichever camera happened to be listed first.
         if take_fault(&self.faults, Fault::Busy) {
-            return Err(Error::Busy {
-                path: lock(state).capture_path(),
-                holders: Vec::new(),
-            });
+            return Err(Error::busy(lock(state).capture_path(), Vec::new()));
         }
         Ok(FakeCamera::new(Arc::clone(state), Arc::clone(&self.faults)))
     }

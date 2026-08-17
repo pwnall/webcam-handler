@@ -89,6 +89,7 @@ use std::time::{Duration, Instant};
 use camino::Utf8PathBuf;
 use schema::backend::{Camera, CameraBackend};
 use schema::camera::{CameraId, CameraInfo};
+use schema::error::Occupation;
 use schema::{Error, Result, limits};
 
 use crate::settle::Millis;
@@ -733,11 +734,16 @@ impl CameraActor {
     /// have this node open"; here the work in the way is our own, and it feeds
     /// `terminate_holder` — naming this process's pid would invite a client to kill the
     /// daemon it is talking to (note N42).
+    ///
+    /// **Which is exactly why it goes through [`Error::busy_here`]** (note **N221**). An empty
+    /// list renders as *"held by an unidentified process"*, written for the walk that found
+    /// nobody it could see — so for one repair this function said the sentence above and
+    /// shipped the opposite of it, about the very daemon the caller was talking to.
+    /// [`schema::error::Occupation::RunningCommands`] is what withholds the pid and still
+    /// says what has the camera, and it is the one alternative D12's `wait` helps with: it
+    /// waits for room in *this* queue.
     fn busy(&self) -> Error {
-        Error::Busy {
-            path: self.node.clone(),
-            holders: Vec::new(),
-        }
+        Error::busy_here(self.node.clone(), Occupation::RunningCommands)
     }
 
     /// The refusal for an actor whose thread has left.
@@ -1548,6 +1554,26 @@ mod tests {
         assert!(
             matches!(&spent, Error::Busy { holders, .. } if holders.is_empty()),
             "{spent:?}"
+        );
+        // **And the empty list is said rather than left to be read as ignorance** (docs/11
+        // **M19** and its repair's own defect, note **N221**). The work in the way is this
+        // process's, which is precisely what `Occupation` carries — and until this arm was
+        // written the refusal rendered as *"held by an unidentified process"*, sending a
+        // caller to hunt for a holder that is the program it is talking to.
+        assert!(
+            matches!(
+                &spent,
+                Error::Busy {
+                    this_process: Some(schema::error::Occupation::RunningCommands),
+                    ..
+                }
+            ),
+            "a full queue is this process's own work and has to say so: {spent:?}"
+        );
+        let rendered = spent.to_string();
+        assert!(
+            !rendered.contains("unidentified"),
+            "the refusal sends the caller looking for a process to blame: {rendered}"
         );
 
         drop(release);

@@ -111,7 +111,7 @@ mod photograph {
     }
 }
 
-pub use render::{Bar, Output, Quiet, Stream};
+pub use render::{Bar, Output, Quiet};
 
 closed_vocabulary! {
     /// Which root is running the one command surface.
@@ -178,6 +178,23 @@ impl Program {
         Cli::command().name(self.as_str())
     }
 
+    /// Whether this root composes a backend of its own.
+    ///
+    /// The one difference between the two binaries that a *command line* can be wrong about,
+    /// and therefore the one `Cli::check` needs: `webcam-handler-cli` builds a backend per
+    /// invocation and `--backend fake` there is a request this process must be able to
+    /// satisfy, so it needs `--profile`. `webcam-handler-client` links no backend at all
+    /// (AGENTS: "`webcam-handler-client` links no backend and no engine") and refuses both
+    /// flags outright, so requiring one beside the other would be a refusal telling a caller
+    /// to add a flag that is itself refused (note **N214**).
+    #[must_use]
+    pub const fn builds_a_backend(self) -> bool {
+        match self {
+            Program::Cli => true,
+            Program::Client => false,
+        }
+    }
+
     /// The one line a root writes to standard error when a verb fails.
     ///
     /// Here rather than in each `main` so the two roots cannot disagree about the shape of
@@ -220,16 +237,11 @@ pub struct Cli {
 
     /// Device profiles for the fake backend to replay. Repeatable.
     ///
-    /// Required with `--backend fake`, and enforced by clap rather than at run time: a
-    /// backend with nothing to replay enumerates nothing, and "no cameras" is exactly
-    /// what a user whose cameras had vanished would see. A usage mistake must not be
-    /// spelled like a device answer.
-    #[arg(
-        long,
-        global = true,
-        value_name = "PATH",
-        required_if_eq("backend", "fake")
-    )]
+    /// Required with `--backend fake` on the root that builds a backend, and enforced while
+    /// the command line is being parsed rather than at run time: a backend with nothing to
+    /// replay enumerates nothing, and "no cameras" is exactly what a user whose cameras had
+    /// vanished would see. A usage mistake must not be spelled like a device answer.
+    #[arg(long, global = true, value_name = "PATH")]
     pub profile: Vec<Utf8PathBuf>,
 
     /// What to do.
@@ -322,11 +334,24 @@ impl Cli {
 
     /// The cross-argument rules, in clap's error type so they still exit 2.
     ///
-    /// There is one, and it is here rather than as an attribute because `--json` is a
-    /// **global** argument: clap's `required_if_eq` resolves the arg it names within the
-    /// command that declares it, and a subcommand cannot name a flag defined on the root.
-    /// Written out rather than worked around, so the rule is visible and so the refusal is
-    /// still a usage error rather than a device one.
+    /// There are two, and both are here rather than as attributes because **the tree is
+    /// shared and an attribute is not** (T4). A `#[arg]` rule is a property of the one
+    /// [`Cli`] both binaries parse with, so clap applies it to both — and clap applies it
+    /// *before* either root's own code runs.
+    ///
+    /// - `--json photo` with no `--out`: `--json` is a **global** argument, and clap's
+    ///   `required_if_eq` resolves the arg it names within the command that declares it, so a
+    ///   subcommand cannot name a flag defined on the root. Written out so the rule is
+    ///   visible and so the refusal is still a usage error rather than a device one.
+    /// - `--backend fake` with no `--profile`: this was `required_if_eq("backend", "fake")`
+    ///   on the field until 2026-08-17, which made it true of `webcam-handler-client` as
+    ///   well — a root that builds no backend at all. Measured: `webcam-handler-client
+    ///   --backend fake list` answered *"the following required arguments were not provided:
+    ///   `--profile <PATH>`"* and exit 2, naming a flag whose addition cannot help, because
+    ///   `client::refuse_composition_flags` refuses `--profile` too. That is note **N123**'s
+    ///   defect — a message naming a flag that does nothing for the reader — and clap's
+    ///   ordering is what put it there, so the rule moved to where the *root* is known
+    ///   (docs/11 **M20**, note **N214**).
     ///
     /// It builds the tree through `program` for the same reason the parse does: a refusal
     /// whose usage block named the other binary would send an operator to the wrong
@@ -339,6 +364,17 @@ impl Cli {
                 clap::error::ErrorKind::MissingRequiredArgument,
                 "photo --json needs --out <PATH>: with no path the photo's bytes are \
                  standard output, and the JSON document cannot share it",
+            ));
+        }
+        if program.builds_a_backend()
+            && self.backend.0 == BackendKind::Fake
+            && self.profile.is_empty()
+        {
+            return Err(program.command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--backend fake needs --profile <PATH>: a backend with nothing to replay \
+                 enumerates nothing, and \"no cameras\" is exactly what a user whose cameras \
+                 had vanished would see",
             ));
         }
         Ok(())
@@ -597,7 +633,15 @@ pub enum Command {
         #[command(flatten)]
         settle: SettleArgs,
 
-        /// Wait for the camera rather than being refused while it is busy (D12).
+        /// Wait for room in the camera's command queue rather than being refused (D12).
+        ///
+        /// **What it waits for is the queue, and not the camera.** A camera that is busy
+        /// because something is *streaming* it — a recording, another program — is refused
+        /// with `busy` whether or not this flag is given, and this flag does not wait for
+        /// that stream to end. What it waits for is a turn among the commands queued for
+        /// this camera's one thread, bounded by
+        /// `schema::limits::CAMERA_ENQUEUE_WAIT_MS`, after which the answer is the same
+        /// refusal it would have been at once.
         ///
         /// Inert under `webcam-handler-cli`, which opens its own camera per invocation and
         /// runs one verb: the queue it would be waiting for is its own and always empty. It
@@ -639,11 +683,19 @@ pub enum Command {
         #[arg(long, short, value_name = "PATH", required = true)]
         out: Utf8PathBuf,
 
-        /// How long to record, as a duration such as `10s`, `1500ms` or `1m30s`.
+        /// How long to record, as a duration such as `10s`, `1500ms` or `1m30s`, and at least
+        /// `1ms`.
         ///
         /// `schema::limits::DEFAULT_RECORDING_MS` when omitted, and refused rather than
         /// clamped past `schema::limits::MAX_RECORDING_MS` — an agent that asked for five
         /// minutes and silently received two cannot tell that from a camera that stopped.
+        ///
+        /// The floor is the same argument at the other end and it is refused here rather than
+        /// answered: `500us` is a number the caller never wrote, so it is a usage error naming
+        /// the text that was typed, and a take shorter than one frame used to answer *success*
+        /// over a container header with nothing in it (note **N213**). One millisecond is not
+        /// a policy — it is the smallest number the wire field can hold — but it is a bound a
+        /// reader of this line meets, so this line says it.
         #[arg(long, value_name = "DURATION", value_parser = duration)]
         duration: Option<u64>,
 
@@ -651,7 +703,11 @@ pub enum Command {
         #[command(flatten)]
         stream: StreamArgs,
 
-        /// Wait for the camera rather than being refused while it is busy (D12).
+        /// Wait for room in the camera's command queue rather than being refused (D12).
+        ///
+        /// The same flag `photo --wait` is, waiting for the same thing: a turn among the
+        /// commands queued for this camera's thread, never for another take to finish. A
+        /// camera that is already recording answers `busy` to this verb with or without it.
         ///
         /// Inert under `webcam-handler-cli`, which opens its own camera per invocation, and
         /// meaningful under `webcam-handler-client` — the same split `photo --wait` has. It
@@ -725,6 +781,16 @@ pub struct StreamArgs {
 /// keeps `--duration 10s` and `{"duration_ms": 10000}` the same request. A duration too large
 /// for a `u64` of milliseconds is refused rather than saturated, because a saturating parse
 /// would turn a typo into the longest recording this build will refuse.
+///
+/// **And the small end, which that argument always covered and this function did not** (docs/11
+/// **L30**, note **N213**). `humantime` reads `--duration 500us` happily and `as_millis`
+/// truncates it to `0`, which reached the recorder as "run no turns": measured through the
+/// shipped binary, `--duration 500us` wrote a 224-byte AVI with `frames_written: 0` and exited
+/// `0`. Truncation is this conversion's own doing, so it is refused here, where the message can
+/// name the flag and the text that was typed — exactly as an unreadable duration is. A duration
+/// that is *written* as zero (`--duration 0s`, or `{"duration_ms": 0}` off a socket) parses
+/// fine and is refused one layer down by `RecordRequest::budget_ms`, which is where the bounds
+/// on a recording live; this arm is only about a number the caller did not write.
 fn duration(text: &str) -> std::result::Result<u64, String> {
     let parsed = humantime::parse_duration(text).map_err(|error| {
         format!(
@@ -733,8 +799,15 @@ fn duration(text: &str) -> std::result::Result<u64, String> {
             schema::limits::MAX_RECORDING_MS / 1_000
         )
     })?;
-    u64::try_from(parsed.as_millis())
-        .map_err(|_| format!("{text:?} is longer than this build can express in milliseconds"))
+    let millis = u64::try_from(parsed.as_millis())
+        .map_err(|_| format!("{text:?} is longer than this build can express in milliseconds"))?;
+    if millis == 0 && !parsed.is_zero() {
+        return Err(format!(
+            "{text:?} is under a millisecond, and a recording is measured in whole \
+             milliseconds; write 1ms or more"
+        ));
+    }
+    Ok(millis)
 }
 
 fn fourcc(text: &str) -> std::result::Result<PixelFormat, String> {
@@ -1698,14 +1771,11 @@ fn calibrate<E: Executor>(
             // that names the exact command. Standard error, so the `--json` answer on
             // standard output is still one document.
             if session.pre_snapshot.is_some() {
-                out.line(
-                    Stream::Stderr,
-                    &format!(
-                        "note: this sweep borrowed the camera and it still holds what the \
+                out.note(&format!(
+                    "note: this sweep borrowed the camera and it still holds what the \
                          sweep left; `calibrate restore {} --session {}` puts it back",
-                        camera.camera, session.id
-                    ),
-                )?;
+                    camera.camera, session.id
+                ));
             }
             Ok(())
         }
@@ -1741,11 +1811,10 @@ fn calibrate<E: Executor>(
             // back" — the ordinary answer to running this twice, and the two would be
             // indistinguishable from a table with no rows in it.
             if report.outcomes.is_empty() {
-                out.line(
-                    Stream::Stderr,
+                out.note(
                     "note: this session carries no unconsumed pre-sweep snapshot; the camera \
                      was not written to",
-                )?;
+                );
             }
             render::restore(&report, as_json, out)
         }
@@ -1861,13 +1930,15 @@ fn unreachable_record() -> Error {
 /// Writing the document is best-effort in exactly the way the line already was. A refusal
 /// whose *cause* was a closed standard output cannot be printed on it, and turning that into a
 /// panic — or into a different exit code — would replace the failure the caller asked about
-/// with one about the pipe.
+/// with one about the pipe. Since 2026-08-17 the line needs no `let _` to say so:
+/// [`Output::note`] is the only door to standard error and it answers nothing, which is that
+/// same argument made once, for every commentary line the surface writes (note **N216**).
 #[must_use]
 pub fn report_failure(program: Program, error: &Error, as_json: bool, out: &mut Output) -> u8 {
     if as_json {
         let _ = render::failure(&schema::error::Failure::new(error.clone()), out);
     }
-    let _ = out.line(Stream::Stderr, &program.error_line(error));
+    out.note(&program.error_line(error));
     exit_code(error)
 }
 
@@ -2030,10 +2101,7 @@ mod tests {
         // One format, one variable. The two roots print failures through this rather than each
         // holding a `format!`, so `webcam-handler-client`'s prefix cannot drift from
         // `webcam-handler-cli`'s shape.
-        let error = Error::Busy {
-            path: "/dev/video0".into(),
-            holders: Vec::new(),
-        };
+        let error = Error::busy("/dev/video0".into(), Vec::new());
         for &program in Program::ALL {
             let line = program.error_line(&error);
             assert!(
@@ -2111,11 +2179,19 @@ mod tests {
 
     #[test]
     fn the_fake_backend_cannot_be_selected_without_something_to_replay() {
-        // The inverse of the test below, and the reason `required_if_eq` is on the
-        // argument: a fake backend with no documents enumerates nothing, which reads
-        // exactly like a machine whose cameras disappeared.
-        let error = Cli::try_parse_from(["webcam-handler-cli", "--backend", "fake", "list"])
-            .expect_err("--backend fake without --profile must not parse");
+        // The inverse of the test below: a fake backend with no documents enumerates
+        // nothing, which reads exactly like a machine whose cameras disappeared.
+        //
+        // Through [`Cli::parse_checked`]'s own entry point rather than clap's derived
+        // `try_parse_from`, because that is the parse **both binaries perform** — the rule
+        // moved off the field and into `Cli::check` at 2026-08-17 so it could be the *root's*
+        // rather than the shared tree's (note **N214**), and a test driving a parse neither
+        // root uses would keep passing while the surface stopped refusing.
+        let error = Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "--backend", "fake", "list"],
+        )
+        .expect_err("--backend fake without --profile must not parse");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument,
@@ -2124,7 +2200,7 @@ mod tests {
         assert!(error.to_string().contains("--profile"), "{error}");
 
         // …and the default backend needs no profile at all.
-        assert!(Cli::try_parse_from(["webcam-handler-cli", "list"]).is_ok());
+        assert!(Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "list"]).is_ok());
     }
 
     #[test]
@@ -2198,6 +2274,48 @@ mod tests {
         )
         .expect("parses");
         assert!(other.backend_was_chosen());
+    }
+
+    #[test]
+    fn a_fake_backend_needs_its_profiles_on_the_root_that_builds_one_and_nowhere_else() {
+        // Both directions of the rule that moved off the shared tree (docs/11 **M20**, note
+        // **N214**). On `webcam-handler-cli` the profiles are what a fake backend *is*, so
+        // their absence is a usage error while the command line is being read — the same
+        // answer clap gave when this was `required_if_eq`, and asserted here so moving the
+        // rule did not quietly drop it.
+        let refused = Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "--backend", "fake", "list"],
+        )
+        .expect_err("a fake backend with nothing to replay enumerates nothing");
+        assert_eq!(
+            refused.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(
+            refused.to_string().contains("--profile"),
+            "the refusal has to name the flag that repairs it: {refused}"
+        );
+
+        // And on `webcam-handler-client` it parses, because this root builds no backend: the
+        // refusal that belongs to `--backend fake` there is `client::refuse_composition_flags`'
+        // typed one, which names the daemon. clap answering first turned that into "add
+        // `--profile`", which is note **N123**'s class — an instruction that cannot be
+        // followed, since `--profile` is refused on this root too.
+        let parsed = Cli::try_parse_checked_from(
+            Program::Client,
+            ["webcam-handler-client", "--backend", "fake", "list"],
+        )
+        .expect("the client's refusal for this line is its own, not clap's");
+        assert!(parsed.backend_was_chosen());
+        assert!(parsed.profile.is_empty());
+
+        // The rule is about `fake` and not about naming a backend at all.
+        Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "--backend", "v4l2", "list"],
+        )
+        .expect("the v4l2 backend replays nothing and needs no profile");
     }
 
     #[test]

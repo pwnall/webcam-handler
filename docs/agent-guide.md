@@ -212,7 +212,7 @@ webcam-handler-client photo <CAMERA> [--out <PATH>] [--format <FORMAT>] [--trans
 | `--skip-frames` | `<N>` | — | Discard this many frames before taking one [PF:11] |
 | `--settle-for` | `<MS>` | — | Discard frames for this long before taking one, in milliseconds |
 | `--settle-deadline` | `<MS>` | — | How long the whole settle may take, in milliseconds. At most 10000, because one camera is one thread and a longer settle is time nobody else gets; a bigger number is refused rather than quietly shortened |
-| `--wait` | — | — | Wait for the camera rather than being refused while it is busy (D12) |
+| `--wait` | — | — | Wait for room in the camera's command queue rather than being refused (D12) |
 
 ### `record`
 
@@ -231,10 +231,10 @@ webcam-handler-client record <CAMERA> --out <PATH> [--duration <DURATION>] [--si
 | Option | Value | Default | What it does |
 |---|---|---|---|
 | `--out`, `-o` | `<PATH>` | — | Where to write it. The extension chooses the container: `.avi` or `.y4m`, and a path with no extension lets the camera's negotiated format decide |
-| `--duration` | `<DURATION>` | — | How long to record, as a duration such as `10s`, `1500ms` or `1m30s` |
+| `--duration` | `<DURATION>` | — | How long to record, as a duration such as `10s`, `1500ms` or `1m30s`, and at least `1ms` |
 | `--size` | `<WxH>` | — | The frame size to ask the device for, as `WxH` |
 | `--pixel-format` | `<FOURCC>` | — | The pixel format to ask the device for, as a fourcc such as `MJPG` |
-| `--wait` | — | — | Wait for the camera rather than being refused while it is busy (D12) |
+| `--wait` | — | — | Wait for room in the camera's command queue rather than being refused (D12) |
 
 ### `calibrate start`
 
@@ -506,7 +506,7 @@ Branch on it:
 |---|---|
 | `failed` | that the verb refused. It is `true` in every failure document and no answer carries the field. |
 | `error.kind` | which refusal. The words are the first column of the next section. |
-| the rest of `error` | what to do about it: `available` here, `holders` for `busy`, `path` for `storage_io`. |
+| the rest of `error` | what to do about it: `available` here, `this_process` and `holders` for `busy`, `path` for `storage_io`. |
 | `message` | the same sentence a person would have read. |
 
 The same line also goes to standard error, prefixed with the program's name, and the process exits with the code the next section gives that failure. **The document is what to act on**; the exit code is a second, coarser copy of `error.kind` for a caller with no JSON parser. Without `--json` there is no document — standard error and the exit code are the whole answer.
@@ -522,13 +522,13 @@ A failed verb writes one line to standard error, prints the failure document und
 | Failure | Exit | Do | What it means |
 |---|---|---|---|
 | `device_gone` | `10` | **stop** | The camera is gone — unplugged, or its driver unbound. Nothing you can do will bring it back. Stop and tell the human. |
-| `busy` | `11` | **retry** | Another process is streaming from the camera. Retry; under `webcam-handler-client`, `--wait` asks the daemon to queue you instead of refusing. The holders it could see are in the message. |
+| `busy` | `11` | **retry** | Something else is streaming from the camera; only one thing may. Read `this_process`: when it is there the holder is the program you are talking to, and the message says what it is doing and what ends it — a `recording` ends on the take's own duration, `starting_recording` clears in the time one stream takes to come up, `streaming` ends when that stream is stopped, `streaming_preview` needs one of the preview's viewers to leave, and `running_commands` means the camera's command queue is full and clears as the work ahead of you runs. When it is absent the holder is another program, and `holders` names it when this user could see it. `--wait` helps with `running_commands` and with nothing else: it asks for room in that queue rather than being refused, and it waits for no stream to end. |
 | `permission_denied` | `12` | **fix the setup** | The device node is there and this user may not open it. The message carries the remedy — usually joining the `video` group and logging back in. Retrying changes nothing. |
 | `camera_unknown` | `13` | **fix the request** | No camera answers to that id. Run `list` and use an id it printed; ids come from what the device says about itself, not from `/dev/video0`. |
 | `camera_ambiguous` | `14` | **fix the request** | The prefix matched several cameras. The message names them; use a longer prefix or a whole id. |
 | `control_unknown` | `15` | **fix the request** | This camera has no such control. The message carries the closest slugs it does have, and `controls <CAMERA>` lists all of them. |
 | `control_read_only` | `16` | **do not retry** | The device says this control cannot be written — `privacy` on a camera with a hardware shutter, for instance. This is the camera's answer about itself, not a temporary state. |
-| `control_inactive` | `17` | **change the plan** | An automation control currently owns this one, and the message names the automation. Write without `--no-guard` and the write turns it off first; or turn it off yourself and write again. |
+| `control_inactive` | `17` | **change the plan** | An automation control currently owns this one. Your write was already guarded — guarding is the default — and the guard is what could not clear the owner, so repeating the write changes nothing. When the message names the automation, set that control to manual yourself and write again; when it says no partner was discovered, this camera's pairing is unknown and a human has to say which control owns this one. `--no-guard` is not the remedy: it writes anyway and the automation overwrites the value on the next frame. |
 | `format_unsupported` | `18` | **fix the request** | What was asked for cannot be delivered, and the payload says which part of the request to change. When `size` is present the frame size is the problem: `size.requested_width` and `size.requested_height` are what you asked for and `size.available` lists every size this camera can deliver — pick one, or leave `--size` out and let the camera choose. When `container` is present the output file is the problem: the camera delivered `container.negotiated`, the extension you typed cannot carry it, and `container.carried_by` lists every extension that can — write to one of those. An empty `container.carried_by` means no output file this build writes carries those frames, so change what the camera delivers rather than the filename. Otherwise the format is the problem: `requested` is the `--pixel-format` you asked for and `available` lists what this camera does offer — ask for one of those. Exactly one of the three is present: one refusal names one lever. |
 | `settle_timeout` | `19` | **retry once, then stop** | The camera did not deliver enough frames inside the settle deadline. Retry with a longer `--settle-deadline` or fewer `--skip-frames`. If it repeats, the device is not delivering and that is worth telling the human. The deadline has a ceiling of its own: 10000 ms is the most one capture may hold a camera, and a larger `--settle-deadline` is refused as `illegal_transition` rather than quietly shortened. |
 | `fingerprint_mismatch` | `20` | **stop** | The snapshot or session you named was recorded against a different camera, and the message names the fields that differ. Do not apply it here — the values would mean something else on this device. |
@@ -551,12 +551,12 @@ Through the daemon the same failures arrive as JSON-RPC errors, with a code per 
 | `camera_ambiguous` | `-32016` | "cam:web" matches 2 cameras: cam:webcam, cam:webcam-2 |
 | `control_unknown` | `-32017` | no control named "brightnes"; did you mean brightness? |
 | `control_read_only` | `-32018` | control privacy is read-only on this device |
-| `control_inactive` | `-32019` | control white_balance_temperature is inactive: disable white_balance_automatic first, or write with the automation guard on |
+| `control_inactive` | `-32019` | control white_balance_temperature is inactive: white_balance_automatic owns it and this build could not switch it off — set white_balance_automatic to manual and write again |
 | `format_unsupported` | `-32020` | format NV12 is unavailable; MJPG, YUYV would be accepted |
 | `settle_timeout` | `-32021` | frames did not settle within 5000 ms (3 frames seen) |
 | `fingerprint_mismatch` | `-32022` | camera fingerprint differs from the session's in: card, usb_id |
 | `session_conflict` | `-32023` | session conflict: another session for this camera and task is already sweeping |
-| `illegal_transition` | `-32024` | cannot select from state untouched |
+| `illegal_transition` | `-32024` | untouched: cannot select |
 | `schema_version_foreign` | `-32025` | document schema version 99 is not supported (this build reads 1) |
 | `store_locked` | `-32026` | the state directory is locked by webcam-handler- (pid 909); daemon owns the state (and likely the camera) — use webcam-handler-client |
 | `holder_gone` | `-32027` | pid 4242 no longer holds this device; refusing to signal it |
@@ -605,7 +605,7 @@ $ webcam-handler-client record <CAMERA> -o <RECORDING> --duration 2s --json
 
 **The path is written by whatever holds the camera.** Under `webcam-handler-client` that is the daemon, so `-o` must name somewhere the daemon can write; a relative path is resolved against your working directory before the request is sent, so the two programs put the file in the same place. The same is true of `photo -o`.
 
-`--duration` takes `10s`, `1500ms` or `1m30s`; leave it out for 10000 ms. Longer than 120000 ms is refused rather than quietly shortened — a caller that asked for five minutes and silently got two cannot tell that from a camera that stopped.
+`--duration` takes `10s`, `1500ms` or `1m30s`; leave it out for 10000 ms. Longer than 120000 ms is refused rather than quietly shortened — a caller that asked for five minutes and silently got two cannot tell that from a camera that stopped. Shorter than `1ms` is refused too, and for the same reason at the other end: a take of no time at all wrote a container header with no frames in it and reported that as a recording.
 
 The report counts the frames the file holds and the mean interval between them. **Frame timing is a payload, not a footnote**: a webcam delivers frames when it delivers them, so the interval the file declares is the one this take measured, and it is in the answer for you to read.
 

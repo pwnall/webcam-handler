@@ -186,6 +186,103 @@ impl std::fmt::Display for LockProtocol {
 }
 
 closed_vocabulary! {
+    /// What the process that refused is itself doing with the camera's node.
+    ///
+    /// [`Error::Busy`]'s `holders` answers *who has it* by walking `/proc`, and there is one
+    /// holder it deliberately never names: **this process**. A daemon that refuses its own
+    /// caller knows precisely what it is doing and will not hand over its own pid, because a
+    /// pid in a refusal is an invitation to signal it (`daemon::record`'s header). What was
+    /// missing is the other half of that decision — *what for* — without which the refusal
+    /// read as "somebody unidentified has it" and sent an unattended caller looking for a
+    /// process to kill (docs/11 **M19**, note **N217**).
+    ///
+    /// **Every in-process producer in the workspace has an alternative here**, and that is
+    /// the property rather than a tidiness. The moment one of them goes through
+    /// [`Error::busy`] instead, *"held by an unidentified process"* is back — about the
+    /// program the caller is talking to — and the guide's row telling a reader that an absent
+    /// `this_process` means another program is false with it. Three producers shipped that
+    /// way inside this repair and note **N221** is the entry for them.
+    ///
+    /// Every alternative says what ends it, because that is what makes `Busy`'s *retry*
+    /// disposition true: the caller is told what to wait for, not merely to wait. None of them
+    /// names a verb to poll with, and that is measured rather than terse — the surface this
+    /// refusal reaches most often has none to offer (note **N220**).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Occupation {
+        /// A recording this process is running for a caller.
+        ///
+        /// Bounded by the take's own duration (`limits::MAX_RECORDING_MS` at the outside), so
+        /// retrying is the action that succeeds.
+        Recording,
+        /// A `record_start` this process is still negotiating.
+        ///
+        /// The slot is claimed and the stream is not up yet. It resolves either way in the
+        /// time one `VIDIOC_STREAMON` takes, which is why it is told apart from
+        /// [`Occupation::Recording`]: what a caller waits for is different, and so is how
+        /// long.
+        StartingRecording,
+        /// This process's own commands for the camera, queued to the depth it allows.
+        ///
+        /// `engine::actor` gives each camera one thread and a bounded inbox
+        /// (`limits::CAMERA_COMMAND_QUEUE_DEPTH`), so a full one is this process's work in the
+        /// way and never a device that is unavailable (E3). It is the alternative a caller can
+        /// do something about beyond waiting: D12's `wait` spends
+        /// `limits::CAMERA_ENQUEUE_WAIT_MS` on room in exactly this queue, so it helps here
+        /// and with no other alternative.
+        RunningCommands,
+        /// A stream this process already has open on the node.
+        ///
+        /// One streamer per node is the kernel's rule and this build's, so a second
+        /// `start_stream` on a handle that is already streaming is refused before `S_FMT`
+        /// would say `EBUSY` a moment later and tear down buffers the caller is still
+        /// dequeuing from (note **N191**). It ends when the stream that is up ends.
+        Streaming,
+        /// A preview this process is already serving to every viewer it will.
+        ///
+        /// The node is streaming and what refuses is not the node: it is a count,
+        /// `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA`. Its own alternative because it is the one
+        /// a second browser tab meets, and because what ends it is a viewer leaving rather
+        /// than a stream stopping.
+        StreamingPreview,
+    }
+}
+
+impl Occupation {
+    /// What a caller is waiting for, and what ends it — the actionable half.
+    ///
+    /// A sentence rather than a word because `Busy`'s whole disposition is *retry*, and a
+    /// retry with no idea what it is waiting for is a loop. It lives here, on the value,
+    /// for [`LockProtocol::advice`]'s reason: the same words reach a person through
+    /// [`Error`]'s `Display`, an agent through the wire message, and
+    /// `webcam-handler-client` rendering a received document, and none of them re-word it.
+    #[must_use]
+    pub const fn advice(self) -> &'static str {
+        match self {
+            Occupation::Recording => {
+                "this process is recording it, and the take ends on its own duration — ask \
+                 again once it is over"
+            }
+            Occupation::StartingRecording => {
+                "this process is starting a recording on it — ask again in a moment"
+            }
+            Occupation::RunningCommands => {
+                "this process is running commands on it and its queue is full — ask again in \
+                 a moment, or ask to be queued rather than refused"
+            }
+            Occupation::Streaming => {
+                "this process is already streaming it, and a node takes one stream — ask \
+                 again once that one ends"
+            }
+            Occupation::StreamingPreview => {
+                "this process is serving its preview to as many viewers as it allows — ask \
+                 again once one of them leaves"
+            }
+        }
+    }
+}
+
+closed_vocabulary! {
     /// The discriminant of [`Error`], as a value.
     ///
     /// `ALL` is generated from this definition, so a variant cannot be added without
@@ -246,7 +343,11 @@ pub enum Error {
     },
 
     /// Another process holds the device. Distinct from "the camera cannot do this" (E3).
-    #[error("{path} is busy: held by {}", format_holders(.holders))]
+    ///
+    /// Build one through [`Error::busy`] or [`Error::busy_here`]: which of the two says
+    /// whether the holder is somebody else or this very process, and that is the difference
+    /// between "go and find out who has it" and "wait for what I am doing".
+    #[error("{path} is busy: {}", format_busy(.holders, .this_process))]
     Busy {
         /// The node in use.
         #[schemars(with = "String")]
@@ -257,6 +358,23 @@ pub enum Error {
         /// is invisible in `/proc` without privilege, and a process that exited between
         /// the `EBUSY` and the walk leaves nothing to find.
         holders: Vec<Holder>,
+        /// What **this** process is doing with the node, when this process is the holder.
+        ///
+        /// A daemon refusing its own caller walked no `/proc` and needs to walk none: it
+        /// knows. Until 2026-08-17 it said so by leaving `holders` empty — deliberately,
+        /// and argued in `daemon::record`'s header, because *"naming it would invite a
+        /// client to kill the daemon it is talking to"* — and the rendering then told the
+        /// caller the node was *"held by an unidentified process"*, which is the one thing
+        /// it was not. Measured through the shipped binaries: a `photo` during a take
+        /// answered `{"kind":"busy","holders":[]}` and printed that sentence, so an agent's
+        /// next move was to hunt for a process to kill (docs/11 **M19**, note **N217**).
+        ///
+        /// This field is how the daemon says "it is me, and here is what for" **without**
+        /// handing over a pid — the withholding stays, and what it withholds stops reading
+        /// as ignorance. `None` is every other producer, and means exactly what the empty
+        /// `holders` list has always meant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        this_process: Option<Occupation>,
     },
 
     /// The device node exists but we may not open it. The hint lives here, once.
@@ -408,11 +526,32 @@ pub enum Error {
     },
 
     /// The calibration state machine refused a transition (design D8).
-    #[error("cannot {op} from state {from}")]
+    ///
+    /// **The condition first and the instruction last**, and the order is the whole of what
+    /// this rendering decides. The template was `"cannot {op} from state {from}"` when D8 was
+    /// the only producer and `op` was a verb phrase — `"select"`, `"sweep privacy"` — where a
+    /// trailing `from state untouched` reads. The variant now has eleven producers across five
+    /// crates and most of them put a **multi-clause instruction** in `op`, because that is the
+    /// field a caller acts on; appending anything to such a sentence garbles it. Measured
+    /// through the shipped binaries before this changed:
+    ///
+    /// ```text
+    /// cannot write a photo to …/x.tiff; this build writes .jpg, .png, .ppm from state unwritable_extension(tiff)
+    /// ```
+    ///
+    /// So `from` becomes the label it has always been — a machine-shaped condition,
+    /// `unwritable_extension(tiff)`, `no_session(nightly)`, `not_one_process(0)` — and `op`
+    /// ends the message, where a sentence of any length can end.
+    /// `an_illegal_transitions_instruction_is_the_last_thing_it_says` is what keeps a suffix
+    /// from growing back (docs/11 **L29**, note **N212**).
+    #[error("{from}: cannot {op}")]
     IllegalTransition {
         /// The state we were in.
         from: String,
         /// The operation attempted.
+        ///
+        /// A whole instruction rather than a verb, for most of the producers: the rendering
+        /// above puts it last precisely so it can be one.
         op: String,
     },
 
@@ -480,6 +619,45 @@ pub enum Error {
 }
 
 impl Error {
+    /// The node is held by **somebody else**: whoever the walk could see, which may be
+    /// nobody it could see.
+    ///
+    /// One of two doors into [`Error::Busy`], and they exist for the reason
+    /// [`Error::format_unsupported`]'s three do: the two cases want different actions from
+    /// an unattended caller, so a value that could claim both — a `/proc` walk *and* this
+    /// process's own work — would be a refusal naming two remedies. This one is every
+    /// producer that met an `EBUSY` **from the kernel**: the holder is another program, and
+    /// `holders` says which when this user could tell.
+    ///
+    /// A refusal this process makes about its own work is [`Error::busy_here`] and never this,
+    /// however empty the holder list would have been — a full command queue, a second stream
+    /// on one node, a preview at its viewer cap. Each of those went through this door for one
+    /// repair and rendered as *"held by an unidentified process"* (note **N221**).
+    #[must_use]
+    pub fn busy(path: Utf8PathBuf, holders: Vec<Holder>) -> Error {
+        Error::Busy {
+            path,
+            holders,
+            this_process: None,
+        }
+    }
+
+    /// The node is held by **this process**, doing `occupation`.
+    ///
+    /// The daemon's own refusals: a photograph asked for during a take, a second
+    /// `record_start`, a `record_stop` for a reservation still negotiating. No walk runs —
+    /// there is nothing to find out — and no pid is handed over, because
+    /// `daemon::record`'s header is right that a pid in a refusal is an invitation to
+    /// signal it. What crosses instead is what the caller is waiting for (note **N217**).
+    #[must_use]
+    pub fn busy_here(path: Utf8PathBuf, occupation: Occupation) -> Error {
+        Error::Busy {
+            path,
+            holders: Vec::new(),
+            this_process: Some(occupation),
+        }
+    }
+
     /// A refusal about a **format**: what was named, when anything was, and what would be
     /// accepted instead.
     ///
@@ -618,13 +796,13 @@ impl Error {
             ErrorKind::DeviceGone => Error::DeviceGone {
                 path: "/dev/video0".into(),
             },
-            ErrorKind::Busy => Error::Busy {
-                path: "/dev/video0".into(),
-                holders: vec![Holder {
+            ErrorKind::Busy => Error::busy(
+                "/dev/video0".into(),
+                vec![Holder {
                     pid: 4242,
                     comm: Some("cheese".to_owned()),
                 }],
-            },
+            ),
             ErrorKind::PermissionDenied => Error::PermissionDenied {
                 path: "/dev/video0".into(),
                 hint: "add yourself to the `video` group, then log out and back in".to_owned(),
@@ -777,9 +955,14 @@ pub struct Failure {
     ///
     /// The discriminant is its `kind` tag in the registry's own snake_case spelling, and every
     /// actionable field the variant carries is beside it — the `available` formats of a
-    /// [`Error::FormatUnsupported`], the `holders` of a [`Error::Busy`], the `path` of a
-    /// [`Error::StorageIo`]. Those payloads are the entire reason the variants carry data, and
-    /// a document that dropped them would be the English sentence again wearing braces.
+    /// [`Error::FormatUnsupported`], the `holders` **and** the `this_process` of a
+    /// [`Error::Busy`], the `path` of a [`Error::StorageIo`]. Those payloads are the entire
+    /// reason the variants carry data, and a document that dropped them would be the English
+    /// sentence again wearing braces.
+    ///
+    /// The enumeration is illustrative and it still has to be *true*: it named `holders` alone
+    /// for a day after [`Occupation`] landed beside it, which is the failure mode the whole
+    /// registry exists to avoid, one document along (note **N222**).
     pub error: Error,
 
     /// What a person watching a terminal was told, without the program's name in front of it.
@@ -852,6 +1035,27 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// One error vocabulary, not two: rubric B2 requires every ioctl error path to map to a
 /// D13 variant, which is only checkable if the backend speaks D13 directly.
 pub type BackendError = Error;
+
+/// The whole of what a [`Error::Busy`] can say about who has the node.
+///
+/// Three answers, in the order a caller can act on them (note **N217**):
+///
+/// 1. **This process, and what for.** Nothing was walked and nothing needs to be; the
+///    refusal names the work rather than the pid, so the caller waits for the right thing
+///    and does not go looking for something to kill.
+/// 2. **Somebody else, named.** The `/proc` walk found them.
+/// 3. **Somebody else, unnamed** — which is the honest end of a walk that found nobody it
+///    could see, and no longer doubles as the sentence for case 1. That last clause is a
+///    claim about the *producers* rather than about this function, and it held for two of
+///    the five in-process ones when it was first written: a full command queue, a second
+///    stream on one node and a preview at its viewer cap all still came through case 3
+///    (note **N221**). It is true because [`Occupation`] now has an alternative for each.
+fn format_busy(holders: &[Holder], this_process: &Option<Occupation>) -> String {
+    match this_process {
+        Some(occupation) => occupation.advice().to_owned(),
+        None => format!("held by {}", format_holders(holders)),
+    }
+}
 
 fn format_holders(holders: &[Holder]) -> String {
     if holders.is_empty() {
@@ -929,9 +1133,22 @@ fn format_suggestions(slugs: &[ControlSlug]) -> String {
 /// is a client author with no command line at all, so naming any flag here was the wider
 /// mistake. `a_refusal_names_the_guard_and_never_a_flag_that_does_not_exist` is what stops it
 /// coming back.
+///
+/// **And then it named the guard, which is the thing that refused** (note **N220**). The
+/// repair above landed *"or write with the automation guard on"* — true of both surfaces and
+/// still unreachable advice: `engine::pairing::plan_unguarded` never produces this refusal and
+/// says so in its own `# Errors`, so the guard was already on for every caller who has ever
+/// read this sentence. Both alternatives here are now a lever the caller can actually pull —
+/// the automation, by name, to set to manual — and
+/// `an_inactive_control_is_not_answered_with_the_guard_that_refused_it` is what stops *that*
+/// coming back.
 fn format_automation(automation: &Option<ControlSlug>) -> String {
     match automation {
-        Some(a) => format!(": disable {a} first, or write with the automation guard on"),
+        Some(a) => {
+            format!(
+                ": {a} owns it and this build could not switch it off — set {a} to manual and write again"
+            )
+        }
         None => " and no automation partner was discovered for it".to_owned(),
     }
 }
@@ -1102,6 +1319,7 @@ fn format_errno(errno: &Option<i32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::Sink;
 
     #[test]
     fn every_kind_has_a_sample_and_the_sample_reports_that_kind() {
@@ -1127,6 +1345,121 @@ mod tests {
             );
             // A rendering that is just the variant name is a rendering nobody wrote.
             assert!(rendered.len() > 12, "{kind:?} renders too thin: {rendered}");
+        }
+    }
+
+    #[test]
+    fn an_illegal_transitions_instruction_is_the_last_thing_it_says() {
+        // **The producers, driven** — not a value built here (docs/11 **L29**, note
+        // **N212**). `Error::sample`'s `IllegalTransition` is `op: "select"`, the one shape
+        // this variant had when D8 was its only caller and the one shape a trailing `from
+        // state …` reads after, which is why `every_kind_renders_something_a_human_can_act_on`
+        // stayed green while the shipped binaries printed *"cannot write a photo to
+        // …/x.tiff; this build writes .jpg, .png, .ppm from state
+        // unwritable_extension(tiff)"*. So the population here is every producer this crate
+        // has, called: what each one puts in `op` is what a caller is supposed to do, and it
+        // has to survive being rendered.
+        //
+        // The five below are this crate's; the other six live in `webcam-handler-engine`,
+        // `webcam-handler-daemon`, `webcam-handler-cli-core` and `webcam-handler-client`, and
+        // `a_refusal_ends_with_the_instruction_its_payload_carries` drives one of those through
+        // the shipped binary — the template is one line and one arm of it going red is enough
+        // to condemn it.
+        let refusals = [
+            Sink::ServerPath {
+                path: "/tmp/x.tiff".into(),
+            }
+            .writable_format()
+            .err(),
+            crate::video::RecordRequest {
+                sink: Sink::ServerPath {
+                    path: "/tmp/take.mkv".into(),
+                },
+                ..record_request()
+            }
+            .container()
+            .err(),
+            crate::video::RecordRequest {
+                sink: Sink::ReturnBytes {
+                    format: crate::capture::PhotoFormat::Jpeg,
+                },
+                ..record_request()
+            }
+            .container()
+            .err(),
+            crate::video::RecordRequest {
+                duration_ms: Some(crate::limits::MAX_RECORDING_MS + 1),
+                ..record_request()
+            }
+            .budget_ms()
+            .err(),
+            crate::capture::SettlePolicy {
+                deadline_ms: crate::limits::MAX_SETTLE_DEADLINE_MS + 1,
+                ..crate::capture::SettlePolicy::default()
+            }
+            .within_bound()
+            .err(),
+        ];
+
+        let mut seen = 0;
+        for refusal in refusals {
+            let refusal = refusal.expect("each call above is refused");
+            let Error::IllegalTransition { from, op } = &refusal else {
+                panic!("{refusal:?} is not the variant this test is about");
+            };
+            seen += 1;
+            let rendered = refusal.to_string();
+            // The property, and it is about the *end* of the message: whatever a producer
+            // wrote as the instruction is a sentence of its own, so nothing may follow it.
+            assert!(
+                rendered.ends_with(op.as_str()),
+                "the instruction is not the last thing this refusal says, so a producer's \
+                 sentence runs into the state that refused it: {rendered}"
+            );
+            // And the condition is still in there, first, where a label goes. Losing it
+            // would be the opposite defect: a message a reader cannot tell apart from the
+            // same instruction refused for another reason.
+            assert!(
+                rendered.starts_with(from.as_str()),
+                "the refusal no longer says what state it refused from: {rendered}"
+            );
+            // Not vacuous in the direction that matters: at least one producer here writes a
+            // whole instruction rather than a verb, which is the shape the old template
+            // garbled.
+        }
+        assert_eq!(seen, 5, "this crate's producers are five");
+        assert!(
+            refusal_op(
+                Sink::ServerPath {
+                    path: "/tmp/x.tiff".into()
+                }
+                .writable_format()
+            )
+            .contains(';'),
+            "the fixture stopped being the multi-clause shape this test is about"
+        );
+    }
+
+    /// A `RecordRequest` whose every field but the one under test is the ordinary one.
+    ///
+    /// Here rather than in each arm above so the arms differ only in the field they are
+    /// about, which is what makes them readable as a list of producers.
+    fn record_request() -> crate::video::RecordRequest {
+        crate::video::RecordRequest {
+            stream: crate::capture::StreamRequest::default(),
+            duration_ms: None,
+            sink: Sink::ServerPath {
+                path: "/tmp/take.avi".into(),
+            },
+            wait: false,
+        }
+    }
+
+    /// The `op` of a refusal, or a panic naming what came back instead.
+    fn refusal_op<T: std::fmt::Debug>(result: Result<T>) -> String {
+        match result {
+            Err(Error::IllegalTransition { op, .. }) => op,
+            other => panic!("{other:?} is not an illegal transition"),
         }
     }
 
@@ -1274,10 +1607,7 @@ mod tests {
         // The walk finds nobody for two indistinguishable reasons — `/proc` restricted, or
         // a holder belonging to another user — so the rendering commits to neither, and
         // above all must not read as "nobody has it".
-        let err = Error::Busy {
-            path: "/dev/video0".into(),
-            holders: Vec::new(),
-        };
+        let err = Error::busy("/dev/video0".into(), Vec::new());
         let rendered = err.to_string();
         assert!(rendered.contains("unidentified process"), "{rendered}");
         assert!(
@@ -1287,14 +1617,118 @@ mod tests {
 
         // The other direction: a holder the walk *did* find is named, so the empty
         // rendering is a fallback rather than the only thing this ever says.
-        let named = Error::Busy {
-            path: "/dev/video0".into(),
-            holders: vec![Holder {
+        let named = Error::busy(
+            "/dev/video0".into(),
+            vec![Holder {
                 pid: 4321,
                 comm: Some("cheese".to_owned()),
             }],
-        };
+        );
         assert!(named.to_string().contains("cheese (pid 4321)"), "{named}");
+    }
+
+    #[test]
+    fn a_camera_this_process_is_holding_is_never_reported_as_held_by_a_stranger() {
+        // **The sentence that sent an agent hunting for a process** (docs/11 **M19**, note
+        // **N217**). The daemon refuses its own callers with an empty holder list on
+        // purpose — a pid in a refusal is an invitation to signal it — and the rendering
+        // turned that deliberate silence into *"held by an unidentified process"*.
+        //
+        // Walked over the whole vocabulary, so an alternative added later has to answer the
+        // same three questions rather than inherit an answer from the two written here.
+        for &occupation in Occupation::ALL {
+            let refusal = Error::busy_here("/dev/video0".into(), occupation);
+            let rendered = refusal.to_string();
+            assert!(
+                !rendered.contains("unidentified"),
+                "{occupation:?}: this process knows exactly what it is doing: {rendered}"
+            );
+            assert!(
+                !rendered.contains("held by"),
+                "{occupation:?}: a caller told the node is `held by` something goes looking \
+                 for it: {rendered}"
+            );
+            // The actionable half: what to wait for, since `Busy`'s whole disposition is
+            // *retry* and a retry that does not know what it waits for is a loop.
+            assert!(
+                rendered.contains("ask again"),
+                "{occupation:?}: the refusal says to retry and not what for: {rendered}"
+            );
+            // And it says *who* has it, which is this whole field's reason. Until the guide
+            // arm in `webcam-handler-cli` was widened, the alternative to "ask again" this
+            // assertion allowed was the literal `record_status` — a verb no surface offers,
+            // pinned by the test that was supposed to be able to go red on it (note **N220**).
+            assert!(
+                rendered.contains("this process"),
+                "{occupation:?}: the refusal says to retry and not who is in the way: \
+                 {rendered}"
+            );
+            // And the pid is still withheld, which is the decision this repair kept.
+            let Error::Busy { holders, .. } = &refusal else {
+                panic!("{refusal:?}");
+            };
+            assert!(holders.is_empty(), "{occupation:?}: {refusal:?}");
+        }
+
+        // The other door, unchanged: a walk that found somebody names them, and a walk that
+        // found nobody still says so rather than claiming this process.
+        let stranger = Error::busy(
+            "/dev/video0".into(),
+            vec![Holder {
+                pid: 4321,
+                comm: Some("cheese".to_owned()),
+            }],
+        );
+        assert!(
+            stranger.to_string().contains("cheese (pid 4321)"),
+            "{stranger}"
+        );
+        assert!(
+            Error::busy("/dev/video0".into(), Vec::new())
+                .to_string()
+                .contains("an unidentified process")
+        );
+    }
+
+    #[test]
+    fn an_inactive_control_is_not_answered_with_the_guard_that_refused_it() {
+        // **Note N123's finding, one reading deeper** (note **N220**). That entry took
+        // *"disable white_balance_automatic first, or use `--guarded`"* — a flag no binary
+        // has — and replaced the flag with *"or write with the automation guard on"*, on the
+        // ground that the guard is a fact of both surfaces where the flag was a fact of one.
+        // True, and still the wrong sentence: `engine::pairing::plan_unguarded` documents
+        // that it never produces this refusal and its own suite holds it to that, so **every**
+        // caller who reads this message wrote with the guard already on. The remedy offered
+        // was the thing that had just refused, which is the disposition table's "change the
+        // plan" turned into a loop.
+        let refusal = Error::ControlInactive {
+            control: ControlSlug::parse("white_balance_temperature").expect("literal slug"),
+            automation: Some(ControlSlug::parse("white_balance_automatic").expect("slug")),
+        };
+        let rendered = refusal.to_string();
+        assert!(
+            !rendered.contains("guard"),
+            "the guard is what refused, so it cannot also be the remedy: {rendered}"
+        );
+        // …and what it says instead is the control to act on, twice over: the one that is
+        // inactive and the one that owns it. A message naming only the first would leave an
+        // unattended caller with a fact and no lever.
+        assert!(
+            rendered.contains("white_balance_temperature")
+                && rendered.contains("white_balance_automatic"),
+            "{rendered}"
+        );
+        // The other alternative is a different fact and keeps its own sentence: nothing is
+        // named because nothing was found, and inventing an automation to blame would be the
+        // same defect wearing the other sign.
+        let unpaired = Error::ControlInactive {
+            control: ControlSlug::parse("exposure_time_absolute").expect("literal slug"),
+            automation: None,
+        };
+        assert!(
+            unpaired.to_string().contains("no automation partner"),
+            "{unpaired}"
+        );
     }
 
     #[test]

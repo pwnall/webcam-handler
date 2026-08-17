@@ -35,7 +35,7 @@ use schema::control::{
     Applied, ControlDesc, ControlFlags, ControlId, ControlSlug, ControlType, ControlValue,
     KnownFlag, WriteWarning,
 };
-use schema::error::{Error, Result};
+use schema::error::{Error, Occupation, Result};
 use schema::limits;
 use schema::pairing::AutomationPair;
 use schema::profile::DeviceProfile;
@@ -612,11 +612,14 @@ impl Camera for FakeCamera {
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
         let mut state = lock(&self.state);
         if state.stream.is_some() {
-            // V4L2 allows one streamer per node, and says so with EBUSY (D12).
-            return Err(Error::Busy {
-                path: state.capture_path(),
-                holders: Vec::new(),
-            });
+            // V4L2 allows one streamer per node, and says so with EBUSY (D12). The stream in
+            // the way is one *this* handle opened, so the refusal says so — the same door
+            // `webcam-handler-v4l2`'s `start_stream` takes, which is what E5 asks of this
+            // backend: a claim the real one does not make is a bug in the fake (note **N221**).
+            return Err(Error::busy_here(
+                state.capture_path(),
+                Occupation::Streaming,
+            ));
         }
         let negotiated = negotiate(&state, request)?;
         state.stream = Some(negotiated.clone());

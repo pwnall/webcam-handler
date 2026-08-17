@@ -678,6 +678,23 @@ fn a_second_stream_on_one_node_is_busy_and_stopping_twice_is_not() {
         .start_stream(&StreamRequest::default())
         .expect_err("the second must be refused");
     assert!(matches!(&error, Error::Busy { .. }), "{error}");
+    // …and it says the holder is **this** process, which is the half a `Busy` alone leaves
+    // out (docs/11 **M19**, note **N221**). The stream in the way is one this handle opened,
+    // so a refusal that rendered as *"held by an unidentified process"* would send a caller
+    // hunting for a pid that is its own — and `webcam-handler-v4l2` refuses a second start
+    // for the same reason in the same words (its `start_stream`, note **N191**), which is
+    // what makes this an assertion about resemblance rather than about the fake.
+    assert!(
+        matches!(
+            &error,
+            Error::Busy {
+                this_process: Some(schema::error::Occupation::Streaming),
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(!error.to_string().contains("unidentified"), "{error}");
 
     camera.stop_stream().expect("stop");
     camera

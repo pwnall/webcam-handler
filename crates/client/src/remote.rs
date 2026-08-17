@@ -69,6 +69,7 @@ use schema::video::{RecordReport, RecordRequest, RecordStatus};
 use uuid::Uuid;
 
 use crate::PROGRAM;
+use crate::transport::Goodbye;
 
 /// A connected `webcam-handler-daemon`, and the runtime that drives it.
 #[derive(Debug)]
@@ -80,9 +81,78 @@ pub struct Remote {
     /// person reading the line, and the answer is a path.
     socket: Utf8PathBuf,
     /// The runtime this process owns. One thread — see the module header.
+    ///
+    /// Declared **before** the client, and [`Remote::drop`] is why: field order is drop
+    /// order, and a runtime dropped first takes the client's background task with it
+    /// unpolled. The drop below empties `client` by hand before this is reached, so the
+    /// order here is what a reader sees rather than what the goodbye depends on (note
+    /// **N219**).
     runtime: tokio::runtime::Runtime,
     /// The one client, over the one connection, carrying calls **and** subscriptions.
-    client: Client,
+    ///
+    /// An `Option` so [`Remote::drop`] can take it: dropping the client is what tells
+    /// jsonrpsee's send task to write the close frame, and `Drop` gets only a `&mut`.
+    client: Option<Client>,
+    /// The close frame, as something to wait for. See [`Goodbye`].
+    goodbye: Option<Goodbye>,
+}
+
+impl Remote {
+    /// Close the connection politely, and answer whether the goodbye was said.
+    ///
+    /// Called by [`Remote::drop`], so a caller that simply lets the value go is not skipping
+    /// anything; it is `pub` because a `Drop` cannot be observed and this claim is one a test
+    /// has to be able to make (AGENTS: `webcam-handler-client` is "a lib as well as a bin, so
+    /// a test can drive the executor a subprocess cannot observe").
+    ///
+    /// **Three things have to happen in this order** (docs/11 **L31**, note **N219**), and
+    /// only the first two are obvious: the client is dropped, so jsonrpsee's `send_task` sees
+    /// its frontend channel close and calls `TransportSenderT::close`; the runtime is then
+    /// *driven*, because a `tokio::runtime::Runtime` dropped without being driven discards
+    /// its spawned tasks rather than finishing them; and the driving is **bounded**, because
+    /// the peer's readiness is not this process's business at exit
+    /// ([`limits::CLIENT_CLOSE_BUDGET_MS`]).
+    ///
+    /// A function rather than the body of [`Drop`] because a `Drop` cannot be observed: what
+    /// this returns is what
+    /// `a_client_that_is_finished_says_goodbye_before_its_runtime_goes_away` asserts, over a
+    /// real daemon on a real socket. Nothing in the product branches on it — the outcome the
+    /// caller asked about has already happened, and a refusal here would have no reader.
+    ///
+    /// **It takes the value.** Saying goodbye empties `client`, and this type's own `client`
+    /// `expect` rests on nothing calling a verb after that has happened — a claim `&mut self`
+    /// left to good manners, on a type AGENTS makes a *library* precisely so a test can hold
+    /// one and drive it. `self` moves the claim into the borrow checker: there is no `Remote`
+    /// left to call a verb on, so the panic is not avoided but unreachable (note **N223**).
+    /// The `Drop` below is the other emptier and it is the same instant by definition.
+    pub fn close(mut self) -> bool {
+        self.say_goodbye()
+    }
+
+    /// [`Remote::close`]'s body, on a borrow, so [`Drop`] can reach it too.
+    ///
+    /// Idempotent, and that is not decoration: `close` ends by dropping `self`, so this runs a
+    /// second time on every explicit close. `goodbye` is the token — taken once, and a call
+    /// that finds it gone has nothing to wait for and answers `false`, which is the honest
+    /// reading of "was a goodbye said *by this call*".
+    fn say_goodbye(&mut self) -> bool {
+        let Some(goodbye) = self.goodbye.take() else {
+            return false;
+        };
+        drop(self.client.take());
+        self.runtime.block_on(goodbye.wait())
+    }
+}
+
+impl Drop for Remote {
+    /// Say goodbye on the way out, which is what the transport always claimed to do.
+    ///
+    /// The whole of it is [`Remote::close`]; this is where it happens for every path a
+    /// verb can take, including the refusals, because a client that exits early owes the
+    /// daemon the same close frame as one that answered.
+    fn drop(&mut self) {
+        let _said = self.say_goodbye();
+    }
 }
 
 impl Remote {
@@ -119,9 +189,9 @@ impl Remote {
         // `ClientBuilder::build_with_tokio` **panics** when called outside a runtime context
         // (its own doc says so) because it spawns the background task that owns the
         // connection.
-        let client = runtime.block_on(async {
-            let (sender, receiver) = crate::transport::connect(socket).await?;
-            Ok::<Client, Error>(
+        let (client, goodbye) = runtime.block_on(async {
+            let (sender, receiver, goodbye) = crate::transport::connect(socket).await?;
+            Ok::<(Client, Goodbye), Error>((
                 ClientBuilder::new()
                     .request_timeout(request_timeout)
                     // Ours rather than jsonrpsee's 256 and 1024: both of its defaults are
@@ -136,14 +206,35 @@ impl Remote {
                     // silent-network failure mode for a ping to detect.
                     .disable_ws_ping()
                     .build_with_tokio(sender, receiver),
-            )
+                goodbye,
+            ))
         })?;
 
         Ok(Remote {
             socket: socket.to_owned(),
             runtime,
-            client,
+            client: Some(client),
+            goodbye: Some(goodbye),
         })
+    }
+
+    /// The client, which a [`Remote`] holds for the whole of its life but the last instant.
+    ///
+    /// The `Option` behind it is [`Remote::say_goodbye`]'s doing and nothing else's: dropping
+    /// the client is what makes jsonrpsee write the close frame, and a `Drop` is handed only a
+    /// `&mut` (note **N219**). So the expectation here states a precondition rather than
+    /// risking a socket — and the precondition is held by the borrow checker rather than by a
+    /// convention, because the two callers of `say_goodbye` are [`Remote::drop`] and
+    /// [`Remote::close`], and `close` **takes the value** (note **N223**).
+    #[expect(
+        clippy::expect_used,
+        reason = "`Remote::drop` and `Remote::close` are the only emptiers, and `close` \
+                  consumes the value, so no verb can follow either"
+    )]
+    fn client(&self) -> &Client {
+        self.client
+            .as_ref()
+            .expect("a Remote holds its client until it is dropped")
     }
 
     /// Run one call to completion on this process's runtime, and type its refusal.
@@ -173,11 +264,41 @@ impl Remote {
 /// answer (E3: availability is not capability). It becomes [`Error::StorageIo`] naming the
 /// socket, for [`crate::transport::connect`]'s reason: the reader's question is "is the
 /// daemon there?", and the answer is a path.
+///
+/// ## The middle case, which used to be spelled like a dead socket
+///
+/// [`codes::received`] has three answers and not two, and the middle one is an object
+/// carrying **one of D13's codes** over a payload this build cannot deserialize — a daemon
+/// and a client from different builds. Until 2026-08-17 that fell through to the sentence
+/// below, so a client met *"the daemon did not answer"* about a daemon that had answered
+/// precisely (docs/11 **M21**, note **N215**).
+///
+/// It is still [`Error::StorageIo`], and that is a decision rather than a leftover: the
+/// registry is closed at eighteen, none of the other seventeen is about two programs
+/// disagreeing, and **the payload is what the seventeen are made of** — answering `busy`
+/// with a `holders` list nobody sent would be inventing the very thing that failed to
+/// arrive. What changes is that the message says what happened, names the refusal's
+/// discriminant in the registry's own spelling, and keeps the daemon's own sentence, so a
+/// reader has the whole of what crossed the wire and none of what did not.
 fn refusal(socket: &Utf8Path, error: &ClientError) -> Error {
-    if let ClientError::Call(object) = error
-        && let Some(typed) = codes::typed(object)
-    {
-        return typed;
+    if let ClientError::Call(object) = error {
+        match codes::received(object) {
+            codes::Received::Refusal(typed) => return typed,
+            codes::Received::Kind(kind) => {
+                return Error::StorageIo {
+                    path: socket.to_owned(),
+                    errno: None,
+                    message: format!(
+                        "the daemon refused this call with `{}` and a payload this build \
+                         cannot read, so only the kind survived: {}. The daemon and this \
+                         client are different builds of webcam-handler — run them from one",
+                        codes::wire_name(kind),
+                        object.message()
+                    ),
+                };
+            }
+            codes::Received::Foreign => {}
+        }
     }
     Error::StorageIo {
         path: socket.to_owned(),
@@ -694,11 +815,11 @@ async fn drain_tail<S: ProgressSource>(
 
 impl Executor for Remote {
     fn list(&mut self) -> Result<CameraList> {
-        self.on(self.client.list())
+        self.on(self.client().list())
     }
 
     fn info(&mut self, camera: &CameraId) -> Result<CameraDetail> {
-        self.on(self.client.info(camera.clone()))
+        self.on(self.client().info(camera.clone()))
     }
 
     /// One T4 method, two wire methods — the first of the three that are not 1:1.
@@ -718,15 +839,15 @@ impl Executor for Remote {
     /// compares `--json`).
     fn controls(&mut self, camera: &CameraId, discover_pairs: bool) -> Result<ControlReport> {
         if !discover_pairs {
-            return self.on(self.client.controls(camera.clone()));
+            return self.on(self.client().controls(camera.clone()));
         }
-        let found = self.on(self.client.discover_pairs(camera.clone()))?;
+        let found = self.on(self.client().discover_pairs(camera.clone()))?;
         cli_core::report_probe(PROGRAM, &found.skipped, &found.restored);
         Ok(found.controls)
     }
 
     fn get(&mut self, camera: &CameraId, control: &ControlSlug) -> Result<ControlDesc> {
-        self.on(self.client.get(camera.clone(), control.clone()))
+        self.on(self.client().get(camera.clone(), control.clone()))
     }
 
     fn set(
@@ -735,11 +856,11 @@ impl Executor for Remote {
         writes: &[ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport> {
-        self.on(self.client.set(camera.clone(), writes.to_vec(), guarded))
+        self.on(self.client().set(camera.clone(), writes.to_vec(), guarded))
     }
 
     fn snapshot(&mut self, camera: &CameraId) -> Result<Snapshot> {
-        self.on(self.client.snapshot(camera.clone()))
+        self.on(self.client().snapshot(camera.clone()))
     }
 
     fn restore(&mut self, camera: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
@@ -747,7 +868,7 @@ impl Executor for Remote {
         // reads the caller's filesystem (the shared surface already did, in `cli_core::run`)
         // and sends the value, so a snapshot on a machine the daemon cannot see still
         // restores.
-        self.on(self.client.restore(camera.clone(), snapshot.clone()))
+        self.on(self.client().restore(camera.clone(), snapshot.clone()))
     }
 
     /// A base64 answer becomes a [`Photograph`] — the third of the three that are not 1:1.
@@ -764,7 +885,7 @@ impl Executor for Remote {
     /// device's**, which is the same reading `daemon::server::photo_response` gives it: the
     /// camera said nothing wrong, a document did.
     fn photo(&mut self, camera: &CameraId, request: &PhotoRequest) -> Result<Photograph> {
-        let response = self.on(self.client.photo(camera.clone(), request.clone()))?;
+        let response = self.on(self.client().photo(camera.clone(), request.clone()))?;
         if !response.bytes_match_the_delivery() {
             return Err(Error::DeviceIo {
                 operation: "wch_photo".to_owned(),
@@ -834,11 +955,7 @@ impl Executor for Remote {
     /// the device's or the disk's refusal for one that did not (AGENTS rule 7: a `DeviceGone`
     /// arriving as a successful recording is the conversion that is forbidden).
     fn record(&mut self, camera: &CameraId, request: &RecordRequest) -> Result<RecordReport> {
-        let Remote {
-            socket,
-            runtime,
-            client,
-        } = &*self;
+        let (socket, runtime, client) = (&self.socket, &self.runtime, self.client());
 
         runtime.block_on(async {
             // Step 1. Its answer is dropped rather than rendered: the *report* is what this
@@ -882,7 +999,7 @@ impl Executor for Remote {
     /// not.
     fn capture_profile(&mut self, camera: &CameraId, capturer: &str) -> Result<DeviceProfile> {
         self.on(self
-            .client
+            .client()
             .profile_capture(camera.clone(), capturer.to_owned()))
     }
 
@@ -893,7 +1010,7 @@ impl Executor for Remote {
         goal: &str,
         criteria: &[String],
     ) -> Result<Session> {
-        self.on(self.client.calibrate_start(
+        self.on(self.client().calibrate_start(
             camera.clone(),
             task.to_owned(),
             goal.to_owned(),
@@ -908,9 +1025,12 @@ impl Executor for Remote {
         controls: &[ControlSlug],
         order: bool,
     ) -> Result<Session> {
-        self.on(self
-            .client
-            .calibrate_plan(camera.clone(), which.clone(), controls.to_vec(), order))
+        self.on(self.client().calibrate_plan(
+            camera.clone(),
+            which.clone(),
+            controls.to_vec(),
+            order,
+        ))
     }
 
     /// The sweep, which is a state machine rather than an adapter.
@@ -1012,11 +1132,7 @@ impl Executor for Remote {
         watch: &dyn SweepWatcher,
     ) -> Result<Session> {
         let filter = SweepFilter::new(which, request);
-        let Remote {
-            socket,
-            runtime,
-            client,
-        } = &*self;
+        let (socket, runtime, client) = (&self.socket, &self.runtime, self.client());
 
         runtime.block_on(async {
             // Step 1.
@@ -1041,7 +1157,9 @@ impl Executor for Remote {
     }
 
     fn calibrate_status(&mut self, camera: &CameraId, which: &SessionRef) -> Result<SessionStatus> {
-        self.on(self.client.calibrate_status(camera.clone(), which.clone()))
+        self.on(self
+            .client()
+            .calibrate_status(camera.clone(), which.clone()))
     }
 
     fn calibrate_select(
@@ -1051,7 +1169,7 @@ impl Executor for Remote {
         control: &ControlSlug,
         selection: &Selection,
     ) -> Result<Session> {
-        self.on(self.client.calibrate_select(
+        self.on(self.client().calibrate_select(
             camera.clone(),
             which.clone(),
             control.clone(),
@@ -1066,7 +1184,7 @@ impl Executor for Remote {
         partial: bool,
     ) -> Result<WriteReport> {
         self.on(self
-            .client
+            .client()
             .calibrate_apply(camera.clone(), which.clone(), partial))
     }
 
@@ -1075,14 +1193,16 @@ impl Executor for Remote {
         camera: &CameraId,
         which: &SessionRef,
     ) -> Result<RestoreReport> {
-        self.on(self.client.calibrate_restore(camera.clone(), which.clone()))
+        self.on(self
+            .client()
+            .calibrate_restore(camera.clone(), which.clone()))
     }
 
     fn calibrate_list(&mut self, camera: Option<&CameraId>) -> Result<SessionList> {
         // `None` means every session on the machine — the one optional parameter on this
         // surface, and the daemon answers a missing key and an explicit `null` identically
         // (`webcam-handler-api`'s `wch_calibrate_list` measured it).
-        self.on(self.client.calibrate_list(camera.cloned()))
+        self.on(self.client().calibrate_list(camera.cloned()))
     }
 }
 
@@ -2004,5 +2124,65 @@ mod tests {
 
         assert_eq!(tail, Tail::Ended);
         assert!(watcher.drawn().is_empty());
+    }
+
+    #[test]
+    fn a_refusal_this_build_cannot_read_says_the_daemon_answered_and_names_the_kind() {
+        // **The dead-socket sentence, which was said about a daemon that answered** (docs/11
+        // **M21**, note **N215**). `api::codes` now separates "not ours" from "one of our
+        // codes over a payload this build cannot read", and this is what the second one has
+        // to sound like: a version skew, named, with the discriminant that did survive and
+        // the daemon's own sentence beside it.
+        //
+        // The population is the registry, so a nineteenth variant is covered the day it
+        // lands rather than the day somebody remembers this file.
+        let socket = Utf8PathBuf::from("/run/user/1000/webcam-handler/wchd.sock");
+        for &kind in schema::ErrorKind::ALL {
+            let object = codes::ErrorObjectOwned::owned(
+                codes::rpc_code(kind),
+                "the camera is busy",
+                Some(serde_json::json!({ "kind": "a_variant_from_a_later_build" })),
+            );
+            let refused = refusal(&socket, &ClientError::Call(object));
+            let rendered = refused.to_string();
+
+            assert!(
+                !rendered.contains("did not answer"),
+                "{kind:?}: the daemon answered, and precisely: {rendered}"
+            );
+            assert!(
+                rendered.contains(&codes::wire_name(kind)),
+                "{kind:?}: the one thing that survived the payload is not in the message: \
+                 {rendered}"
+            );
+            assert!(
+                rendered.contains("the camera is busy"),
+                "{kind:?}: the daemon's own sentence was dropped: {rendered}"
+            );
+            assert!(
+                rendered.contains(socket.as_str()),
+                "{kind:?}: a client's refusal names the socket it was talking to: {rendered}"
+            );
+        }
+
+        // The two neighbours, so the arm above is a decision rather than the only answer.
+        // A whole payload is rendered as itself…
+        let whole = refusal(
+            &socket,
+            &ClientError::Call(
+                codes::WireError(schema::Error::sample(schema::ErrorKind::Busy)).into(),
+            ),
+        );
+        assert_eq!(whole, schema::Error::sample(schema::ErrorKind::Busy));
+        // …and a transport failure still reads as one, because it is one (E3).
+        let foreign = refusal(
+            &socket,
+            &ClientError::Call(codes::ErrorObjectOwned::owned(
+                -32601,
+                "Method not found",
+                None::<()>,
+            )),
+        );
+        assert!(foreign.to_string().contains("did not answer"), "{foreign}");
     }
 }

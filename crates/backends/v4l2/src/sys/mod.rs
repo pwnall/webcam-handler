@@ -213,10 +213,7 @@ fn open_error(path: &Utf8Path, error: &std::io::Error) -> Error {
     match error.raw_os_error() {
         // D13's `holders`, populated where the refusal is made: `EBUSY` on its own is a
         // dead end for the reader, and the next thing they would do is run `fuser`.
-        Some(libc::EBUSY) => Error::Busy {
-            holders: crate::holders::of(path),
-            path: path.to_owned(),
-        },
+        Some(libc::EBUSY) => Error::busy(path.to_owned(), crate::holders::of(path)),
         Some(libc::EACCES | libc::EPERM) => Error::PermissionDenied {
             path: path.to_owned(),
             hint: "add yourself to the `video` group, then log out and back in".to_owned(),

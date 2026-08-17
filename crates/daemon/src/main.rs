@@ -156,10 +156,18 @@ struct Args {
 
     /// Device profiles for the fake backend to replay. Repeatable.
     ///
-    /// Required with `--backend fake`, and enforced by clap rather than at run time, for the
-    /// reason `webcam-handler-cli`'s identical flag states: a backend with nothing to replay
-    /// enumerates nothing, and "no cameras" is exactly what an operator whose cameras had
-    /// vanished would see. A usage mistake must not be spelled like a device answer.
+    /// Required with `--backend fake`, and enforced by clap rather than at run time: a backend
+    /// with nothing to replay enumerates nothing, and "no cameras" is exactly what an operator
+    /// whose cameras had vanished would see. A usage mistake must not be spelled like a device
+    /// answer.
+    ///
+    /// **The rule is the same one `webcam-handler-cli` makes and this is no longer the same
+    /// mechanism** (note **N214**). The shared command surface moved its copy out of
+    /// `required_if_eq` and into `cli_core::Cli::check`, because that tree is parsed by two
+    /// binaries and only one of them builds a backend — an attribute there fired on
+    /// `webcam-handler-client`, which cannot honour either flag. This tree is this binary's
+    /// alone, so the attribute is exactly as wide as the rule and there is nothing here to
+    /// move.
     #[arg(long, value_name = "PATH", required_if_eq("backend", "fake"))]
     profile: Vec<Utf8PathBuf>,
 

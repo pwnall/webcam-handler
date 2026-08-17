@@ -22289,3 +22289,734 @@ third container joins it the day it lands.
 **Retires when:** nothing. A fourth cause for this variant would need a fourth door and a fourth
 arm in `format_capture_refusal`, which is what the exhaustive `match (size, container)` is there
 to insist on.
+
+---
+
+## N212 — A refusal's template put the state after the instruction, and eleven producers had written instructions
+
+**Doc:** `crates/schema/src/error.rs`'s `Error::IllegalTransition`; `crates/engine/src/refusal.rs`,
+which pins this variant's convention for the pure cores; docs/11 **L29** and its §9.3 class ("the
+message *is* the payload, and it goes stale"). Recorded 2026-08-17, from the B9 repair pass.
+
+**Believed:** that `"cannot {op} from state {from}"` renders. It does, for the shape D8 wrote it
+for — `op: "select"`, `from: "untouched"` — and `every_kind_renders_something_a_human_can_act_on`
+walks `Error::sample`, whose `IllegalTransition` sample is exactly that shape.
+
+**True:** the variant grew to eleven producers across five crates and most of them put a
+*multi-clause instruction* in `op`, because `op` is the field a caller acts on. Appending
+anything to such a sentence garbles it, and both shipped binaries printed the result:
+
+```console
+$ webcam-handler-cli --backend fake --profile corpus/profiles/chicony-rgb.json photo cam:… -o x.tiff
+webcam-handler-cli: cannot write a photo to …/x.tiff; this build writes .jpg, .png, .ppm from state unwritable_extension(tiff)
+
+$ webcam-handler-client --backend fake --profile p.json list
+webcam-handler-client: cannot honour --backend: … which drives a camera in this process from state webcam-handler-client is a client
+```
+
+`illegal_transition`'s disposition in `docs/agent-guide.md` is *fix the request*, so the sentence
+an unattended agent reads to find out **what** to fix is the one that runs into the state token.
+
+**The repair is one line and the argument is about which field ends the message.** The template is
+`"{from}: cannot {op}"`: the condition is a label — `unwritable_extension(tiff)`,
+`no_session(nightly)`, `not_one_process(0)`, and that is already what every producer writes there
+— and the instruction is last, where a sentence of any length can end. Nothing about the payload
+moved; both fields were already right.
+
+**What went red first.** `an_illegal_transitions_instruction_is_the_last_thing_it_says` in
+`schema::error` drives **this crate's five producers** rather than a value built in the test —
+`Sink::writable_format`, `RecordRequest::container` twice, `RecordRequest::budget_ms`,
+`SettlePolicy::within_bound` — and asserts the rendering ends with the `op` each one wrote:
+
+```text
+the instruction is not the last thing this refusal says, so a producer's sentence runs into the
+state that refused it: cannot write a photo to /tmp/x.tiff; this build writes .jpg, .png, .ppm
+from state unwritable_extension(tiff)
+```
+
+`a_refusal_ends_with_the_instruction_its_payload_carries` is the same claim through the shipped
+binary, and it takes both halves **from the document the same run printed** rather than from a
+sentence written in the test — note **N211**'s lesson, applied here rather than re-learned: an
+assertion aimed at the wording of a defect stops firing when the wording changes.
+
+**Retires when:** nothing. A producer whose `op` is a bare verb still reads
+(`untouched: cannot select`), so the template does not constrain them; what it fixes is that a
+producer *may* write an instruction, which eleven of them already did.
+
+---
+
+## N213 — The duration cap's argument covered both ends and the code covered one
+
+**Doc:** `crates/schema/src/video.rs`'s `RecordRequest::budget_ms`; `crates/cli-core/src/lib.rs`'s
+`duration` value parser; docs/11 **L30**. Recorded 2026-08-17, from the B9 repair pass.
+
+**Believed:** that a recording's bounds were settled. `--duration` refuses a value too large to
+express in milliseconds because *"a saturating parse would turn a typo into the longest recording
+this build will refuse"*, and `budget_ms` refuses one past `MAX_RECORDING_MS` rather than clamping
+because *"an agent that asked for five minutes and silently received two cannot tell that from a
+camera that stopped after two"*.
+
+**True:** the same argument reads the same way at the small end, and nothing there refused
+anything. Measured through the shipped binary over `corpus/profiles/chicony-rgb.json`:
+
+```console
+$ webcam-handler-cli … record cam:… -o take.avi --duration 500us --json
+{"summary":{"frames_written":0,"bytes_written":224,…},"wall_clock_ms":0,"ended":"duration"}   exit 0
+```
+
+A 224-byte AVI: the container's header and nothing in it, reported as a **successful** recording.
+That is the one answer an unattended caller cannot tell from a camera that delivered nothing, and
+it is on the success path, so no refusal test could have seen it.
+
+**Two spellings, two homes, and the split is not fussiness.** `500us` is a number the caller never
+wrote — `Duration::as_millis` invented it — so the flag refuses it as a usage error (exit 2) where
+the message can name the text that was typed, exactly as an unreadable duration is refused. `0s`,
+and `{"duration_ms": 0}` off a socket, are numbers the caller *did* write, so they travel as a
+request and `budget_ms` refuses them beside the cap, which is where a recording's bounds live and
+what a socket client meets too. One request, one answer, whichever way it was spelled.
+
+**One millisecond is the floor and it is not a policy.** It is the smallest number the field can
+hold, and it is enough: measured, `--duration 1ms` writes one frame, because
+`engine::record::drive` checks the budget *before* each turn. So no constant joined
+`schema::limits` — a number that is "the smallest this type can say" is not a bound somebody
+chose.
+
+**Amended 2026-08-17 (B9b).** A bound is not a policy and it is still a bound a *reader* meets,
+and this one was added to the surface without being added to the manual: `--duration`'s help said
+`10s`, `1500ms` or `1m30s` and nothing about a floor, so `docs/agent-guide.md` — emitted from that
+help — let an unattended caller write `500us` and meet a usage error the document did not predict.
+The cap was written into both from the start, which is what makes the omission a pattern rather
+than an oversight: a bound gets documented when somebody argues for the number, and this one had
+no argument to write down. The `#[arg]` doc comment and the guide's `record` paragraph both name it
+now.
+
+**What went red first.**
+`a_take_too_short_to_hold_a_frame_is_refused_at_both_spellings_and_never_answered` drives the
+binary for both, and each half failed on its own arm before its own repair: `left: Some(0), right:
+Some(2)` for the flag, and *"a recording of no time at all answered as a recording"* over the
+whole 0 ms answer document for the wire.
+
+**It cost four fixtures, and that is the interesting part.** `duration_ms: Some(0)` was the
+established way to write "a take that is already over" — in `crates/daemon/tests/method_surface.rs`
+(under a comment saying it *"records the container's header and no frames"*, which is the defect
+described and accepted), three arms of `crates/daemon/tests/mutating_verbs.rs`, and one in
+`engine::record`'s own suite. They now ask for `SHORTEST_TAKE_MS`. One of them,
+`a_recording_over_an_earlier_one_leaves_no_tail_of_the_take_it_replaced`, seeded a 512 KiB file to
+record over and a one-frame take is about a mebibyte, so its seed grew to 8 MiB: a fixture built
+around an outcome that was itself the defect had to be rebuilt when the defect went.
+
+**Retires when:** nothing.
+
+---
+
+## N214 — A `required_if_eq` on a shared tree is a rule for both roots, and only one of them has a backend
+
+**Doc:** `crates/cli-core/src/lib.rs`'s `Cli::check` and `Program::builds_a_backend`;
+`crates/client/src/lib.rs`'s `refuse_composition_flags`; design **T4** (one command surface, two
+roots); note **N123** (a message naming a flag that cannot help). Recorded 2026-08-17, from the B9
+repair pass, closing docs/11 **M20**.
+
+**Believed:** that `--backend fake` needing `--profile` was best enforced by clap, "rather than at
+run time", because a backend with nothing to replay enumerates nothing and *"a usage mistake must
+not be spelled like a device answer"*. Both halves of that are still true.
+
+**True:** the attribute is a property of the **one tree both binaries parse with**, and clap
+applies it before either root's own code runs. `webcam-handler-client` builds no backend at all
+and refuses `--backend` *and* `--profile` outright — so the rule fired on the root it cannot help.
+Measured:
+
+```console
+$ webcam-handler-client --backend fake list
+error: the following required arguments were not provided:
+  --profile <PATH>
+                                                                        exit 2
+```
+
+An agent that does as it is told adds `--profile` and meets `webcam-handler-client: cannot honour
+--profile: …`. That is note **N123**'s class — a message naming a flag whose addition cannot help
+— produced this time by *ordering* rather than by wording.
+
+**The repair moves the rule to where the root is known.** `Cli::check` already existed for exactly
+this reason (`--json photo` needs `--out`, a rule clap's attributes cannot express because `--json`
+is global), and it takes the `Program`. `Program::builds_a_backend` is the fact it turns on, and it
+is one line per root because it is one difference: `webcam-handler-cli` composes a backend per
+invocation, `webcam-handler-client` links none. The refusal a `webcam-handler-cli` user meets is
+byte-comparable to clap's — same `ErrorKind`, same exit code, and it names `--profile`, which on
+that root is the flag that repairs it.
+
+**What went red first.** Two arms, and the second is the one §9.2 names.
+`a_fake_backend_needs_its_profiles_on_the_root_that_builds_one_and_nowhere_else` failed against the
+attribute with clap's own error for the client's line. And
+`the_flags_a_client_cannot_honour_are_refused_before_the_socket_is_touched` — which drove exactly
+the three argument vectors that dodge `required_if_eq`, *"the fixture one parameter away from the
+case"* — gained the fourth:
+
+```text
+["--backend", "fake", "list"]: error: the following required arguments were not provided:
+  --profile <PATH>
+```
+
+One more arm changed: `the_fake_backend_cannot_be_selected_without_something_to_replay` drove
+clap's derived `try_parse_from`, which is **not the parse either binary performs** — it skips
+`Cli::check` entirely — so it would have stayed green while the surface stopped refusing. It drives
+`try_parse_checked_from` now.
+
+**`webcam-handler-daemon` keeps its attribute, and that is the same rule rather than an exception**
+(added 2026-08-17, B9b). Its `--profile` is `required_if_eq("backend", "fake")` still, and the
+comment justifying it used to say "for the reason `webcam-handler-cli`'s identical flag states" —
+which stopped being a reason the moment the shared tree's copy moved. What decides the mechanism is
+not the rule but the *tree*: `crates/daemon/src/main.rs`'s `Args` is parsed by one binary, so an
+attribute there is exactly as wide as the rule, and there is nothing to move.
+
+**Retires when:** nothing. A third root would need a third answer from `builds_a_backend`, which is
+a compile error in that match rather than a silent inheritance.
+
+---
+
+## N215 — A code the wire delivered intact was thrown away with the payload it could not read
+
+**Doc:** `crates/api/src/codes.rs`'s `received`, `Received` and `kind_of`;
+`crates/client/src/remote.rs`'s `refusal`; design **D13** (the closed registry) and **E3**
+(availability is not capability). Recorded 2026-08-17, from the B9 repair pass, closing docs/11
+**M21**.
+
+**Believed:** that `typed()`'s `None` meant "not one of ours", and that everything else was a
+transport failure the client should report as one.
+
+**True:** `None` meant two different things. `rpc_code` is **injective**, so an object carrying one
+of D13's eighteen codes has already delivered the discriminant — and if its `data` will not
+deserialize (a daemon from a later build, a field this one does not know, a nineteenth variant),
+the kind survives and only the payload is lost. `webcam-handler-client` reported that as
+`Error::StorageIo` naming the socket, with the sentence *"the daemon did not answer"* — about a
+daemon that had answered precisely.
+
+**Three answers, because there were three cases.** `Received::Refusal` is the whole value rebuilt;
+`Received::Kind` is the discriminant alone; `Received::Foreign` is a transport failure, a proxy, or
+another server. `kind_of` is `rpc_code`'s inverse and is **derived by walking `ErrorKind::ALL`**
+rather than written as a second table, because a second literal table is eighteen more chances to
+disagree about a mapping whose whole point is that both ends of the wire read one number the same
+way. `Received` is deliberately **not** `#[non_exhaustive]`, for this module's own reason one type
+along: a wildcard arm is how a fourth case reaches a caller wearing a third one's meaning.
+
+**The middle case is still `StorageIo`, and that is a decision.** The registry is closed at
+eighteen, none of the other seventeen is about two programs disagreeing, and **the payload is what
+the seventeen are made of** — answering `busy` with a `holders` list nobody sent would invent the
+very thing that failed to arrive. What changed is the sentence: it says the daemon refused, names
+the kind in the registry's own spelling (`api::codes::wire_name`, from the kind's own `Serialize`,
+never its `Debug`), carries the daemon's own message, and names the remedy, which is that the two
+builds differ.
+
+**What went red first.**
+`a_code_this_registry_owns_keeps_its_kind_even_when_the_payload_is_unreadable` walks
+`ErrorKind::ALL` against two unreadable payloads and failed on the first: `left: Foreign, right:
+Kind(DeviceGone)`. `a_refusal_this_build_cannot_read_says_the_daemon_answered_and_names_the_kind`
+is the same walk one layer up, and printed the defect in the client's own voice — *"the daemon did
+not answer: ErrorObject { code: ServerError(-32012), … }"*.
+
+**Retires when:** nothing.
+
+---
+
+## N216 — A note about an outcome became the outcome, and standard error had a `?` on it
+
+**Doc:** `crates/cli-core/src/render.rs`'s `Output::note`, `Output::line` and `Output::bytes`;
+`crates/cli-core/src/lib.rs`'s `report_failure`; design **§2.7** (*"a `--json` invocation prints
+exactly one `webcam-handler-schema` type, and which type it is says whether the verb answered"*).
+Recorded 2026-08-17, from the B9 repair pass, closing docs/11 **M28**.
+
+**Believed:** that separating the two streams was the whole rule — *"notes and hints go to standard
+error, the answer goes to standard output"* — and that a write failure on either was a real outcome
+worth reporting, which is true of the answer's stream and was applied to both.
+
+**True:** every commentary line was written as `out.line(Stream::Stderr, …)?`, so a standard error
+that refuses replaced an outcome the verb had **already achieved**: the JPEG is on standard output,
+the snapshot is on disk, the sweep is persisted, the camera has been moved and its pre-sweep
+snapshot armed — and the process answered `failed: true` and exited 27, about the *stream*. Worst
+at `calibrate sweep --json`, whose note is written after the answer document, so standard output
+carried the session **and** a `Failure`: two schema documents from one `--json` run, which §2.7
+says can never happen.
+
+**The repair is structural rather than remembered.** `Stream` is gone. `Output::line` and
+`Output::bytes` write the answer and return `Result`; `Output::note` writes to standard error and
+returns nothing, so there is no `?` for a caller to put on it. One door per stream, and the type
+system holds the rule that a convention would have to be re-remembered at every new note. The
+write is still attempted, and a failure of the *answer's* stream is still propagated — a closed
+pipe on standard output is a real outcome and `webcam-handler-cli list | head -1` must not panic.
+`report_failure` needed no change beyond dropping a `let _`: it was already best-effort, and its
+argument — *"a refusal whose cause was a closed standard output cannot be printed on it"* — is the
+same one, made once for the whole surface.
+
+**One caller had to be rewritten rather than converted**: `render::photo` chose its summary's
+stream at run time, `Stderr` when the photo's bytes were the answer and `Stdout` when they were
+not. That is two calls now, and the reason reads better than the ternary did.
+
+**What went red first.**
+`a_sweep_whose_note_cannot_be_printed_still_answers_with_one_document_and_a_zero` runs the shipped
+binary with **file descriptor 2 on `/dev/full`** — a real, writable descriptor whose every write
+fails `ENOSPC`, which is what a full disk under a redirect actually does, with no pipe to race and
+no signal in it. Against the unrepaired surface it printed the whole defect:
+
+```text
+{ "failed": true, "error": { "kind": "storage_io", "path": "<stderr>", "errno": 28, … } }
+  left: 27
+ right: 0
+```
+
+— a failure document on standard output *after* the session document, and exit 27 for a sweep that
+had run, sampled and persisted. (`/dev/null` opened read-only was the first attempt at an
+unwritable descriptor and is not one on this host: the write succeeds. `/dev/full` is the honest
+fixture anyway, because it is a failure an operator really meets.)
+
+**Retires when:** nothing.
+
+---
+
+## N217 — The daemon withheld its own pid on purpose, and the rendering turned that into ignorance
+
+**Doc:** `crates/schema/src/error.rs`'s `Error::Busy`, `Occupation`, `Error::busy` and
+`Error::busy_here`; `crates/daemon/src/record.rs`'s header and `occupation_of`;
+`docs/agent-guide.md`'s `busy` row; AGENTS ("`Busy` means retry"). Recorded 2026-08-17, from the B9
+repair pass, closing docs/11 **M19**.
+
+**Believed:** that `Busy` with an empty `holders` list was the right answer from the daemon's own
+registry, and `crates/daemon/src/record.rs` argued it in so many words: *"the pid holding it is
+this daemon, and naming it would invite a client to kill the daemon it is talking to."* That
+argument is right and it stands.
+
+**True:** the *rendering* of an empty list is `"held by an unidentified process"`, which was
+written for the other producer — a `/proc` walk that found nobody it could see — and is the one
+thing the daemon's case is not. Measured, with a take running:
+
+```console
+$ webcam-handler-client photo cam:… -o p.jpg --json
+{"kind":"busy","path":"/dev/video0","holders":[]}
+webcam-handler-client: /dev/video0 is busy: held by an unidentified process        exit 11
+```
+
+An agent told the holder is unidentified goes looking for one — and the guide sent it the other
+way too: *"under `webcam-handler-client`, `--wait` asks the daemon to queue you instead of
+refusing"*. `--wait` is `Enqueue::WaitUntil` over the **camera's command queue**, and
+`Recordings::not_recording` answers before the actor is touched, so it cannot reach this refusal at
+all. Measured: `photo --wait` during a take refused in 80 ms.
+
+**The payload says what the pid does not.** `Occupation` is a closed vocabulary of what *this
+process* is doing with the node — `recording`, `starting_recording`, and since B9b three more
+(note **N221**) — carried in a new optional `this_process` field, and `Error::busy_here` is the
+only door to it beside `Error::busy` for every producer that met an `EBUSY` from the kernel. So the
+withholding stays and stops reading as
+ignorance: the refusal names the **work** rather than the pid, and `Occupation::advice` says what
+ends it, because `Busy`'s whole disposition is *retry* and a retry that does not know what it waits
+for is a loop. Adding the field turned all twenty-five construction sites in the workspace into a
+constructor call, which is the shape N211 gave `FormatUnsupported` for the same reason: causes that
+must not be expressible at once.
+
+**The guide and the flag's own help moved with it**, which is the half M19 is really about.
+`--wait` now says what it waits for — room in the camera's command queue, bounded by
+`CAMERA_ENQUEUE_WAIT_MS` — rather than "the camera"; and the `busy` row tells a reader to branch on
+`this_process` and says what ends each alternative.
+
+**Two sentences of that row were wrong on the day it was written, and B9b replaced them** (notes
+**N220** and **N221**). It said to *"poll `record_status`"* when `this_process` is the daemon —
+a verb `webcam-handler-client` does not offer, at the surface this guide documents — and that
+`--wait` *"does not help with either"*, which is exactly backwards for the queue-full refusal
+`--wait` was added for. Both are this note's own class landing inside this note's own repair: the
+remedy is the payload too.
+
+**What went red first.**
+`a_photograph_during_a_take_is_told_who_has_the_camera_and_waiting_does_not_change_it` asks the
+daemon what is true (`record_status`), asks it again for the refusal, and drives both spellings of
+the flag: `left: None, right: Some(Recording)`.
+`a_camera_this_process_is_holding_is_never_reported_as_held_by_a_stranger` walks `Occupation::ALL`
+in the schema, so an alternative added later has to answer the same three questions rather than
+inherit an answer.
+
+**Retires when:** nothing. It said *"a third in-daemon holder appears — a preview at its viewer cap
+is the obvious candidate and is deliberately **not** covered here, because what refuses there is a
+*count* and not the node"*, and that was already the wrong reading: the sentence a web-client
+operator meets is the error's own `Display`, which names the node and blames a stranger whatever
+the count did. Three such holders existed on the day this was written, none of them covered. Note
+**N221** covers all of them, and the vocabulary is now the whole population rather than the two the
+recorder needed.
+
+---
+
+## N218 — The two artifacts committed for a reader with no toolchain published 227 links to a tool that is not running
+
+**Doc:** `xtask/src/main.rs`'s `unlink_citations`, `artifact_text` and `name_d13_errors`; design
+**D10** (the bundle and the OpenRPC document are generated documentation, committed so a consumer
+needs no Rust toolchain); notes **N123** and **N148**, which is the entry that measured this pile
+and said not to add to it. Recorded 2026-08-17, from the B9 repair pass, closing docs/11 **M22**.
+
+**Believed:** N148 recorded the count and left the emptying to M22: 124 rustdoc links in
+`schemas/webcam-handler-openrpc.json` and 103 in `schemas/webcam-handler-schema.json`, all
+predating that work.
+
+**True:** they were all in `description` strings, which is the one place `rewrite_prose` already
+walks — so the fix is a third rewrite in the emitter rather than 101 doc comments edited by hand.
+The Rust source keeps the links a Rust reader can follow, exactly as `name_d13_errors` already
+arranged for D13 citations; what the consumer gets is the citation's text as a code span, minus a
+leading `crate::`, which means nothing outside the source tree.
+
+**Two of the three rewrites now run over the whole document, and one of them changed scope.**
+`name_d13_errors` was applied to method prose only, on the argument that a DTO description sits
+beside the vocabulary itself and rewriting there would produce "See `device_gone`" one line under
+`device_gone`. That is true and it is the wrong trade: what the narrow scope left behind was
+``[`crate::Error::Busy`]`` in `PhotoRequest.wait`'s description — a dead identifier for the reader
+these files exist for — and a mildly redundant cross-reference is a smaller cost than a name nobody
+can resolve. The order matters and is stated where it happens: unescape, then name the D13
+citations, then unlink whatever is left, so the general rule never flattens a citation the specific
+one would have resolved.
+
+**Amended 2026-08-17 (B9b): the scope change was the wrong lever and has been undone** (note
+**N222**). The dead identifier was real and `unlink_citations` alone answers it, because it runs
+over the whole document already and turns the same citation into `` `Error::Busy` `` — a name the
+reader can look up under `$defs/Error`. Broadening `name_d13_errors` on top of that bought nothing
+and cost the eighteen `ErrorKind` descriptions, which became `"See \`device_gone\`."` sitting one
+line above `"const": "device_gone"`. The quoted argument for the narrow scope was right; what it
+was missing was the second rewrite, not a wider first one.
+
+**One description was the link.** `SweepSpec::All` said *"Capped by
+[`limits::MAX_SWEEP_SAMPLES`]"*, so the document said a cap exists, said nothing about what it is,
+and pointed at a name appearing nowhere in the file. The number is written out beside the constant
+now, with `SampleCap`'s `const _: () = assert!(…)` already standing guard over it — N148's rule,
+applied to the one it did not reach.
+
+**What went red first.** `no_prose_in_a_committed_artifact_carries_a_rustdoc_link` renders both
+artifacts and walks every line, and against the unrepaired emitter it reported the bundle first:
+*"webcam-handler-schema.json publishes rustdoc links to a reader with no toolchain, on 49 line(s)"*,
+listing them. `a_citation_loses_its_link_and_keeps_its_name_and_nothing_else_moves` is the string
+function with its inverse arms — a code span that was never a link, an unterminated bracket, and a
+`[PF:15]` citation all survive, the last because rustdoc's escaping has already turned it into
+prose by the time this runs.
+
+**Retires when:** nothing. The whole-document arm is what keeps the count at zero, and it costs one
+run of the emitter. It counted one spelling until B9b: `` [` `` and not `crate::`, so the same
+batch published `` `crate::limits::MAX_RECORDING_MS` `` into `$defs/Occupation` in both files while
+the check for it was being written (note **N222**).
+
+---
+
+## N219 — The close frame was written by a task nobody polled, in a runtime that was already gone
+
+**Doc:** `crates/client/src/transport.rs`'s `Sender::close` and `Goodbye`;
+`crates/client/src/remote.rs`'s `Remote::close` and its `Drop`;
+`crates/schema/src/limits.rs`'s `CLIENT_CLOSE_BUDGET_MS`; note **N171**'s amendment, which read
+jsonrpsee 0.26 for the *server's* two transports. Recorded 2026-08-17, from the B9 repair pass,
+closing docs/11 **L31**.
+
+**Believed:** *"A real close frame, so the daemon's connection task ends on a peer that said
+goodbye rather than on a read error. `webcam-handler-client` runs one verb and exits, so this is
+the ordinary end of every connection this binary opens."* Every clause of that is a claim about
+somebody else's scheduling, and none of it had been read.
+
+**True:** jsonrpsee reaches `TransportSenderT::close` only from the `send_task` it spawns, once the
+frontend channel closes — which is to say, once the `Client` is dropped **and something polls that
+task afterwards**. `Remote`'s fields dropped in declaration order, runtime before client, and a
+`tokio::runtime::Runtime` dropped without being driven discards its spawned tasks rather than
+finishing them. So the frame was written for no connection this binary ever opened, and the daemon
+ended every one of them on a read error. This is rubric **A9**'s second half again, and it is the
+same shape N171's amendment found on the server side three notes ago: a sentence about a dependency
+that nobody had checked.
+
+**The repair is an order and a bound.** `Remote::close` drops the client, then *drives* the runtime
+until the transport says the frame is out or `CLIENT_CLOSE_BUDGET_MS` is spent — 250 ms, the same
+number `CLIENT_SWEEP_DRAIN_MS` uses and for the same reason: it is what this project calls "long
+enough for something that has almost certainly already happened". The signal is a `oneshot` the
+transport fires after its own `close()` returns. `Drop` calls that function, so no caller has to
+remember; it is `pub` because a `Drop` cannot be observed and this claim is one a test has to be
+able to make — which is the reason AGENTS gives for `webcam-handler-client` being a library at all.
+
+**Amended 2026-08-17 (B9b): "what is waited on is the frame rather than a proxy for it" was not
+true when it was written** (note **N223**). The `oneshot` fired whatever `close()` answered, so a
+write that failed was reported as a goodbye said — measured, with the daemon `SIGKILL`ed under a
+live connection. It fires on the `Ok` arm only now, and `Remote::close` takes the value rather than
+a `&mut`, which is the other half: a `pub fn` that empties `client` is a `pub fn` after which
+`Remote::client`'s `expect` is reachable, on a type this crate is a *library* for.
+
+**What went red first.** `a_client_that_is_finished_says_goodbye_before_its_runtime_goes_away`
+connects to a real daemon over a real socket, runs a verb so the connection is one that carried
+traffic, and asserts the goodbye:
+
+```text
+the connection was dropped without its close frame, so the daemon sees a read error where a
+goodbye belongs
+```
+
+That was measured against the mechanism with the client left alive — the send task then has no
+reason to close, the wait spends its whole budget, and the answer is `false`. The pre-repair binary
+had no channel to wait on at all, which is the same finding said the other way round: nothing could
+have observed the frame, because nothing was ever going to write it.
+
+**Retires when:** jsonrpsee changes where it calls `close` from. The `Goodbye` is a fact about the
+transport rather than about the client, so it would go on being true; what would change is whether
+the drop still has to drive anything.
+
+---
+
+## N220 — A refusal's remedy named a verb the surface does not have, and then the guard that had just refused
+
+**Doc:** `crates/schema/src/error.rs`'s `Occupation::advice` and `format_automation`;
+`xtask/src/guide.rs`'s `disposition_text`; `crates/cli/tests/agent_guide.rs`'s
+`every_name_the_failure_table_carries_is_one_this_surface_really_has`; notes **N123** (a message
+naming a flag nobody has) and **N129**. Recorded 2026-08-17, from the B9b repair pass.
+
+**Believed:** that note **N217**'s repair had closed this class at the `busy` refusal. It gave the
+daemon's own `Busy` an `Occupation` so the sentence would say what the caller was waiting for, and
+the sentence it wrote was *"this process is recording it, and the take ends on its own duration —
+poll `record_status` and ask again"*.
+
+**True:** there is no `record_status` to poll. Measured against the shipped client:
+
+```console
+$ webcam-handler-client --help
+Commands: list info controls get set snapshot restore photo record calibrate profile help
+```
+
+`record` performs `record_start` → poll → `record_stop` **itself**, so a CLI agent has no verb to
+poll with; a JSON-RPC caller has one and it is spelled `wch_record_status`; and `grep -n
+"record_status" docs/agent-guide.md` returned exactly one hit, which was the remedy. Note N123's
+defect, at a third surface, shipped by the batch whose subject is that defect. What the advice says
+now names no verb at all — *"the take ends on its own duration — ask again once it is over"* —
+because a sentence rendered into `Error`'s `Display` reaches three consumers and only one of them
+has a command line.
+
+**The same reading, one variant along, found an older one.** `Error::ControlInactive` said
+*"disable white_balance_automatic first, **or write with the automation guard on**"* — which N123
+itself wrote, replacing a `--guarded` that no binary had, on the sound argument that the guard is a
+fact of both surfaces where the flag was a fact of one. It is still unreachable advice:
+`engine::pairing::plan_unguarded` documents in its own `# Errors` that it never produces this
+refusal, *"because refusing for an inactive partner is exactly what this function is for not
+doing"*, so **every** caller who has ever read that sentence already had the guard on and the guard
+is what refused. The remedy offered was the thing that had just failed — the disposition table's
+"change the plan" turned into a loop. It names the automation to set to manual instead.
+
+**What went red first.** `every_name_the_failure_table_carries_is_one_this_surface_really_has` is
+`every_flag_the_failure_table_offers_as_a_lever_really_produces_that_failure` one token class
+along: that arm walks the code spans beginning with two dashes and is therefore structurally blind
+to a verb. This one walks **every** code span in the failure table and sorts each into the two
+things such a span can honestly be — something to run, which has to be a verb the guide's own
+`### ` headings document, or something to read, which has to be a name
+`schemas/webcam-handler-schema.json` publishes as a property, a `const` or an `enum` value. Both
+populations are read out of committed files, so neither is a list in the test. Anything that is
+neither is named with a reason, and there are four (`/dev/video0`, `privacy`, `video`,
+`webcam-handler-client`), none of them a verb.
+
+```text
+the `busy` row tells a reader about `record_status`, which is neither a verb
+`docs/agent-guide.md` documents nor a name `schemas/webcam-handler-schema.json` publishes — an
+unattended reader following that row has nothing to run and nothing to read
+```
+
+`an_inactive_control_is_not_answered_with_the_guard_that_refused_it` is the second finding's arm
+and it printed the whole sentence. The two tests that *pinned* the wrong verb rather than being
+able to fail on it — `a_camera_this_process_is_holding_is_never_reported_as_held_by_a_stranger`'s
+`contains("ask again") || contains("record_status")` and `mutating_verbs.rs`'s
+`contains("record_status")` — now assert the property (the refusal says who is in the way, and it
+ends with the vocabulary's own advice) rather than the string.
+
+**Retires when:** nothing. The guide arm is the population walk; a row that names something new has
+to say which of the two kinds of thing it is.
+
+---
+
+## N221 — Three holders that were this process went out through the stranger's door
+
+**Doc:** `crates/schema/src/error.rs`'s `Occupation`, `Error::busy` and `format_busy`;
+`crates/engine/src/actor.rs`'s `busy`; `crates/daemon/src/preview.rs`'s `reserve`;
+`crates/backends/v4l2/src/lib.rs`'s and `crates/backends/fake/src/camera.rs`'s `start_stream`;
+notes **N42**, **N48** point 5, **N191**, **N217**. Recorded 2026-08-17, from the B9b repair pass.
+
+**Believed:** that note N217 had given the daemon's in-process `Busy` a way to say what it was
+doing, and that the two alternatives it wrote — `recording`, `starting_recording` — were the
+population. Its own "Retires when" said a third holder would need its own alternative and named the
+preview's viewer cap as the obvious candidate, *"deliberately not covered here, because what
+refuses there is a count and not the node"*.
+
+**True:** there were three more on the day it was written, and the argument for leaving them out
+does not survive contact with the rendering. `format_busy` turns an empty holder list into *"held
+by an unidentified process"* — a sentence for a `/proc` walk that found nobody it could see — and
+that is what each of these three printed:
+
+- **A full command queue** (`engine::actor`), whose own doc comment states N217's premise in so
+  many words: *"here the work in the way is our own … naming this process's pid would invite a
+  client to kill the daemon it is talking to (note N42)"*. It went through `Error::busy`.
+- **A preview at `PREVIEW_MAX_VIEWERS_PER_CAMERA`** (`daemon::preview`). What refuses is a count,
+  and what the operator reads is `daemon::http::preview::refused` handing them the error's
+  `Display` — which names the node and blames a stranger. Measured over the shipped daemon, fifth
+  tab:
+
+  ```console
+  $ curl -i "$URL/preview?camera=cam%3Aintegrated-camera-integrated-c"
+  HTTP/1.1 503 Service Unavailable
+  /dev/video0 is busy: this process is serving its preview to as many viewers as it allows —
+  ask again once one of them leaves
+  ```
+
+- **A second stream on one node** (`webcam-handler-v4l2`, and `webcam-handler-fake` for
+  resemblance). Note N191 fought this exact refusal once already, over *which* pid it named; the
+  half left over was that "no pid" reads as "no idea".
+
+**So the vocabulary is the population, and that is the property.** `Occupation` has five
+alternatives, one per in-process producer, and its doc says so: the moment one of them goes through
+`Error::busy` instead, the stranger sentence is back and the guide's row — *"when it is absent the
+holder is another program"* — is false with it. `Error::busy`'s own doc no longer says "or a full
+queue", and `format_busy`'s case-3 claim that it "no longer doubles as the sentence for case 1" is
+true rather than aspirational.
+
+**`--wait` helps with exactly one of them, and the guide said the opposite.** N217's row told a
+reader `--wait` *"does not help with either"*; `daemon::server`'s `enqueueing(request.wait)` →
+`Enqueue::WaitUntil` is the only thing that avoids the queue-full refusal, and it is what
+`Occupation::RunningCommands`'s advice and the `busy` row both say now. The old row was wrong in
+one direction and the new one was wrong in the other, more confidently — which is why the row names
+each alternative and what ends it rather than generalising over the field's presence.
+
+**What went red first**, at three layers and one of them the only one that could:
+
+```text
+a full queue is this process's own work and has to say so:
+  Busy { path: "/dev/video0", holders: [], this_process: None }
+    — engine: a_full_queue_refuses_a_caller_that_will_not_wait_and_one_whose_deadline_has_passed
+  Busy { path: "/dev/video0", holders: [], this_process: None }
+    — daemon: the_fifth_reader_of_one_camera_is_refused_rather_than_served
+    — fake:   a_second_stream_on_one_node_is_busy_and_stopping_twice_is_not
+```
+
+`webcam-handler-v4l2`'s own
+`refusing_a_second_stream_names_nobody_rather_than_the_process_making_the_refusal` **asserted the
+defect** — `assert_eq!(*this_process, None)`, written in the same batch — so it failed the other
+way round when the producer was repaired, which is the shape a test takes when it pins a rendering
+instead of a property. It asserts the occupation and the absence of *"unidentified"* now, and keeps
+N48 point 5's claim about the pid, which was never in tension with this. The vivid rung's
+`vivid_a_second_stream_on_one_node_is_refused_as_busy_rather_than_unsupported` carries the same
+assertion against a real driver; it is `#[ignore]`d and was not run here.
+
+**Retires when:** nothing.
+
+---
+
+## N222 — The two committed artifacts spoke Rust twice more, and a doc comment stopped describing its item
+
+**Doc:** `xtask/src/main.rs`'s `unlink_citations`, `unqualify_crate_paths`, `name_d13_errors` and
+`artifact_text`; `crates/schema/src/error.rs`'s `Failure::error`;
+`scripts/gates/doc-comments-open-with-a-summary.sh`; notes **N148**, **N208**, **N218**. Recorded
+2026-08-17, from the B9b repair pass.
+
+**Believed:** that note N218 had emptied the pile — 227 rustdoc links across the two files D10
+commits *so a consumer needs no Rust toolchain* — and that
+`no_prose_in_a_committed_artifact_carries_a_rustdoc_link` kept it at zero.
+
+**True, three times over, and the first one is the same batch's own work.**
+
+**A `crate::` needs no brackets to be a dead name.** `unlink_citations` stripped a leading `crate::`
+only from inside `[`…`]`; a plain code span kept it. Measured, `crate::` occurrences in the
+committed files went 14 → 2 and 19 → 3 across N218's repair, and one survivor was **new**: a doc
+comment written that week said `` (`crate::limits::MAX_RECORDING_MS` at the outside) ``, which
+landed verbatim in `$defs/Occupation` in both files. The check written for the class could not see
+it, because it scanned for `` [` `` and this was the other spelling of the same instruction to the
+same absent tool. Both the rewrite and the check take two spellings now, and the count is zero in
+both files.
+
+**A citation may carry its target as well as its brackets.** ``[`X`](crate::X)`` came out as
+`` `X`(crate::X) ``: the link removed, the instruction promoted to prose. The shape is in this tree
+— `schema::capture` and `schema::camera` write it — and no item carrying it is published today,
+which is the only reason no artifact was corrupted. The test that claimed to cover it listed no
+such fixture; it does now, and the target goes with the link.
+
+**A scope was widened when a second rewrite was what was missing.** N218 broadened
+`name_d13_errors` from method prose to the whole document, to reach a ``[`crate::Error::Busy`]``
+the narrow scope left behind, and the eighteen `ErrorKind` descriptions became `"See
+\`device_gone\`."` one line above `"const": "device_gone"` — the exact outcome the narrow scope's
+own argument predicted, quoted in the code and overruled there. `unlink_citations` already runs
+over every prose string and turns that citation into `` `Error::Busy` ``, a name the reader finds
+under `$defs/Error`. The scope is narrow again and the dead identifier is still gone.
+
+**And a description that enumerates has to keep being true.** `Failure::error`'s prose lists what a
+payload carries — *"the `available` formats of a `format_unsupported`, the `holders` of a `busy`"* —
+and stayed at `holders` alone for a day after `this_process` landed beside it, while the guide's
+equivalent row was updated. §9.3's class, one document over, in the registry that exists to stop
+exactly that.
+
+**The fourth is not in these files and is the reason this entry mentions a gate.** A `const` was
+spliced **between** `record_request`'s doc comment and `record_request`, so the constant wore the
+function's prose — N110 citation and all — and the function was left with no doc at all. Note
+**N208**'s `doc-comments-open-with-a-summary.sh` was written for this accident at B8 and cannot see
+this shape: it reads the residue a splice leaves in the *surviving* block, and this splice left
+none. Two rules would have caught it and both were measured and rejected: requiring every item to
+carry a doc comment lights up **272** items in this tree (201 in `src`, 71 in `tests`), and reading
+a paragraph-final sentence on its own line as a spliced summary matches **12** places of which 11
+are ordinary prose. A gate with eleven exceptions is a gate that reads as a pass. The script's
+"Honest limits" says so now, with the numbers, so the next reader does not assume coverage it does
+not have.
+
+**What went red first.** `no_prose_in_a_committed_artifact_speaks_to_a_toolchain_that_is_not_there`
+— the widened name — over the rendered artifacts:
+
+```text
+webcam-handler-schema.json publishes `crate::` paths, which name a crate a reader with no
+toolchain has no copy of, on 1 line(s):
+"description": "… the caller left the container to the negotiated format
+ (`crate::video::RecordRequest::container`) …"
+```
+
+and `a_citation_loses_its_link_and_keeps_its_name_and_nothing_else_moves` on the string function:
+`left: "capped by \`crate::limits::MAX_RECORDING_MS\` at the outside"`. Its untouched fixtures gain
+an unterminated code span and a real markdown link whose text is not code — and lose one that was
+itself the class, a fixture asserting that `` `record_status` `` survives *"a method a client
+calls"*, which is note **N220**'s verb.
+
+**Retires when:** nothing.
+
+---
+
+## N223 — The goodbye was reported on a write that failed, and the close that had to take the value
+
+**Doc:** `crates/client/src/transport.rs`'s `Sender::close` and `Goodbye`;
+`crates/client/src/remote.rs`'s `Remote::close`, `Remote::say_goodbye` and `Remote::client`; note
+**N219**. Recorded 2026-08-17, from the B9b repair pass.
+
+**Believed:** that N219's repair answered *whether the frame went out*. Its `Goodbye`'s field says
+so in as many words — *"fired when the close frame has been written, and never otherwise"* — and
+`Remote::close`'s doc says it answers *"whether the goodbye was said"*.
+
+**True:** the `oneshot` fired on every call, `Ok` or `Err`, so what the `bool` answered was
+"`close()` was reached". The test that asserts the goodbye could therefore only ever fail if the
+send task were never polled — never on the write, which is the half its own message names. Measured
+against the unrepaired transport, with the daemon `SIGKILL`ed under a live connection that had
+carried a verb:
+
+```text
+PROBE said=true
+```
+
+— a goodbye reported for a frame `soketto` could not write to a socket whose reader had been
+reaped. Nothing in the product branches on the `bool`, so this was a false claim rather than a live
+defect; it was also the only claim the value makes.
+
+**Nothing is taken on the failing path either**, which is the same reading one line on: the goodbye
+has not been said, so a later `close` is still entitled to say it, and what a waiter sees meanwhile
+is the `Sender` dropping — which ends the wait at once rather than on the budget.
+
+**The second half is a `pub fn` that emptied a field an `expect` depends on.** `Remote::client`
+carries `#[expect(clippy::expect_used, reason = "only `Remote::drop` empties this, and no verb is
+called after a drop")]`, and N219 added a **public** `close(&mut self)` that empties it too — on a
+crate AGENTS makes *"a lib as well as a bin, so a test can drive the executor a subprocess cannot
+observe"*. Any `Executor` method after an explicit `close()` panics on a request-driven path whose
+stated justification was, by then, false. `close` takes `self` now: the body moved to a private
+`say_goodbye(&mut self)` that `Drop` also calls, and the claim is the borrow checker's rather than
+good manners'. There is no `Remote` left to call a verb on.
+
+**It cost the "said once" assertion, and that is the trade.** `a_client_that_is_finished_says_
+goodbye_before_its_runtime_goes_away` called `close()` twice and asserted the second answered
+`false`; a second call no longer compiles, which is the stronger form of the same claim and cannot
+stop being checked. `say_goodbye` stays idempotent because `close` ends by dropping the value and
+`Drop` runs it again.
+
+**What went red first.** `a_goodbye_the_socket_refused_is_not_reported_as_said` — the arm above,
+over a real daemon on a real socket, differing from the arm beside it in one thing: whether the
+peer is there when the goodbye is written.
+
+```text
+a close frame that could not be written was reported as a goodbye that was said
+```
+
+**Retires when:** nothing.

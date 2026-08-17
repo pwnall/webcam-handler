@@ -73,7 +73,44 @@ const ROOT: &str = "/";
 
 /// The write half: JSON-RPC text frames out.
 #[derive(Debug)]
-pub struct Sender(soketto::Sender<Socket>);
+pub struct Sender {
+    frames: soketto::Sender<Socket>,
+    /// Fired when the close frame has been written, and never otherwise.
+    ///
+    /// The half [`Goodbye`] waits on. `Option`, because a `oneshot::Sender` sends by value
+    /// and [`TransportSenderT::close`] takes `&mut self`; a second `close` therefore finds
+    /// nothing to fire, which is the honest reading — the goodbye happened once.
+    said: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// The fact that the connection was closed politely, as something a caller can wait for.
+///
+/// **A connection this binary opens is closed by a task, and a task needs the runtime to
+/// still be running** (docs/11 **L31**, note **N219**). jsonrpsee calls
+/// [`TransportSenderT::close`] from its own spawned `send_task`, so nothing here decides when
+/// the close frame goes out — what decides it is whether anybody polls that task after the
+/// client is dropped. `Remote`'s fields drop in declaration order and the runtime came before
+/// the client, so the runtime was gone first and the task was dropped unpolled: the frame was
+/// never written, and the daemon ended every one of this binary's connections on a read error
+/// instead of a goodbye.
+///
+/// This is the value that makes the wait possible: `Remote::drop` drops the client — which is
+/// what tells the send task to finish — and then blocks the runtime on this until the frame
+/// is out or [`limits::CLIENT_CLOSE_BUDGET_MS`] is spent.
+#[derive(Debug)]
+pub struct Goodbye(tokio::sync::oneshot::Receiver<()>);
+
+impl Goodbye {
+    /// Wait for the close frame, or for the budget, whichever comes first.
+    ///
+    /// Answers whether the goodbye was said, so a caller can assert on it — which is the only
+    /// reason it is a `bool` rather than nothing: this is a courtesy, and no product path
+    /// changes on the answer.
+    pub async fn wait(self) -> bool {
+        let budget = std::time::Duration::from_millis(limits::CLIENT_CLOSE_BUDGET_MS);
+        matches!(tokio::time::timeout(budget, self.0).await, Ok(Ok(())))
+    }
+}
 
 /// The read half: whatever the daemon writes, classified.
 #[derive(Debug)]
@@ -112,7 +149,7 @@ pub struct Receiver {
 /// operation. It loses on the field that matters — its `operation` is a syscall name, not a
 /// path — and on E3: `DeviceIo` is what a *camera* said, and a missing daemon is not a
 /// statement about any camera.
-pub async fn connect(socket: &Utf8Path) -> Result<(Sender, Receiver)> {
+pub async fn connect(socket: &Utf8Path) -> Result<(Sender, Receiver, Goodbye)> {
     let stream = UnixStream::connect(socket.as_std_path())
         .await
         .map_err(|error| unreachable(socket, error.raw_os_error(), &error.to_string()))?;
@@ -146,12 +183,19 @@ pub async fn connect(socket: &Utf8Path) -> Result<(Sender, Receiver)> {
         usize::MAX,
     ));
     let (sender, frames) = builder.finish();
+    // The goodbye channel, built here because this is where the two halves of one connection
+    // are handed out: the sender fires it and nothing else can (note **N219**).
+    let (said, heard) = tokio::sync::oneshot::channel();
     Ok((
-        Sender(sender),
+        Sender {
+            frames: sender,
+            said: Some(said),
+        },
         Receiver {
             frames,
             message: Vec::new(),
         },
+        Goodbye(heard),
     ))
 }
 
@@ -174,8 +218,8 @@ impl TransportSenderT for Sender {
         // `send_text_owned` rather than `send_text`: the string is ours already and the
         // owned form is one copy fewer. The flush is not optional — soketto buffers, and a
         // request left in the buffer is a call the daemon never sees.
-        self.0.send_text_owned(msg).await?;
-        self.0.flush().await
+        self.frames.send_text_owned(msg).await?;
+        self.frames.flush().await
     }
 
     async fn send_ping(&mut self) -> std::result::Result<(), FrameError> {
@@ -187,8 +231,8 @@ impl TransportSenderT for Sender {
         // generally). If a later build turns pings on, this one already sends them.
         match ByteSlice125::try_from(EMPTY_PING) {
             Ok(payload) => {
-                self.0.send_ping(payload).await?;
-                self.0.flush().await
+                self.frames.send_ping(payload).await?;
+                self.frames.flush().await
             }
             // Unreachable: `ByteSlice125` refuses a payload over 125 bytes and this one is
             // empty. The arm exists so this function has no `expect` in it, and it refuses
@@ -199,9 +243,35 @@ impl TransportSenderT for Sender {
 
     async fn close(&mut self) -> std::result::Result<(), FrameError> {
         // A real close frame, so the daemon's connection task ends on a peer that said goodbye
-        // rather than on a read error. `webcam-handler-client` runs one verb and exits, so
-        // this is the ordinary end of every connection this binary opens.
-        self.0.close().await
+        // rather than on a read error.
+        //
+        // **Who calls this, and when, is the whole of note N219.** jsonrpsee reaches it only
+        // from the `send_task` it spawned, once the frontend channel closes — so it happens
+        // if and only if something polls that task after the `Client` is dropped.
+        // `webcam-handler-client` runs one verb and exits, and its runtime used to be torn
+        // down first: the task went with it, unpolled, and this function had never run in the
+        // shipped binary. `Remote::drop` now drops the client and waits on [`Goodbye`], which
+        // is what the line below fires.
+        let closed = self.frames.close().await;
+        // **Only when the frame really went out** (note **N223**). This fired on every call,
+        // so what [`Goodbye`] answered was "`close` was reached" and its own field said
+        // *"fired when the close frame has been written, and never otherwise"* — two claims
+        // about one `bool`, of which the shipped one was the weaker. Measured: with the
+        // daemon `SIGKILL`ed under a live connection, `soketto` fails the write with `EPIPE`
+        // and this function answered `true` anyway.
+        //
+        // Nothing is taken on the failing path either, which is the same reading one line on:
+        // the goodbye has not been said, so a later `close` on a socket that recovered is
+        // still entitled to say it. What a waiter sees meanwhile is this `Sender` dropping,
+        // which drops the sender half and ends the wait at once rather than on the budget.
+        if closed.is_ok()
+            && let Some(said) = self.said.take()
+        {
+            // The receiver may be gone — a caller that stopped waiting is ordinary — and a
+            // failed send says only that nobody is listening.
+            let _ = said.send(());
+        }
+        closed
     }
 }
 

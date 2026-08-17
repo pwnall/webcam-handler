@@ -207,11 +207,111 @@ impl From<WireError> for ErrorObjectOwned {
 /// A malformed object never panics here. It reads as "not a typed error", which is a thing
 /// a caller can say out loud — unlike a fabricated variant, which is a lie the caller
 /// would then render as if the camera had said it.
+///
+/// ## Three answers, because there were three cases and two answers
+///
+/// Until 2026-08-17 this returned `Option<Error>` and gave `None` to both kinds of failure:
+/// an object that is not ours at all, and an object carrying **one of our codes** over a
+/// payload this build cannot deserialize. `webcam-handler-client` renders the second as
+/// [`Error::StorageIo`] naming the socket — *"the daemon did not answer"* — which is false
+/// twice over: the daemon answered, and it answered with a refusal whose discriminant
+/// arrived intact, because [`rpc_code`] is injective and the code is right there on the
+/// object. What is lost is only the payload (docs/11 **M21**, note **N215**).
+///
+/// [`Received::Kind`] is that case, and it carries the kind and nothing else, which is
+/// exactly what survived. A caller can say which refusal it met and that it could not read
+/// the rest; it cannot claim a payload nobody sent.
+#[must_use]
+pub fn received(object: &ErrorObject<'_>) -> Received {
+    if let Some(data) = object.data()
+        && let Ok(error) = serde_json::from_str::<Error>(data.get())
+        && rpc_code(error.kind()) == object.code()
+    {
+        return Received::Refusal(error);
+    }
+    match kind_of(object.code()) {
+        Some(kind) => Received::Kind(kind),
+        None => Received::Foreign,
+    }
+}
+
+/// What an error object off the wire turned out to be.
+///
+/// The three cases [`received`] separates. They are three because they want three different
+/// things said to a caller: render the refusal, say which refusal arrived and that this
+/// build could not read it, or report a transport failure that is not about a camera at all
+/// (E3).
+///
+/// **Deliberately not `#[non_exhaustive]`**, for this module's own reason one type along: a
+/// wildcard arm in a reader is how a fourth case reaches a caller wearing a third one's
+/// meaning. Three is the whole vocabulary, both readers are in this workspace, and a fourth
+/// should be a compile error in each of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Received {
+    /// The D13 refusal the daemon sent, rebuilt whole.
+    Refusal(Error),
+    /// One of D13's codes over a payload this build cannot read.
+    ///
+    /// The shape a **version skew** produces: a daemon that grew a field, or a variant this
+    /// build does not have. The kind is the code's, recovered by [`kind_of`], and it is the
+    /// half a caller can still act on — `busy` means retry whatever else was in the object.
+    Kind(ErrorKind),
+    /// Not this registry's: a transport failure, a proxy, or another server entirely.
+    Foreign,
+}
+
+/// A kind as the wire spells it: `busy`, `format_unsupported`, `device_gone`.
+///
+/// From the kind's own `Serialize`, never a table: the spelling belongs to
+/// `#[serde(rename_all = "snake_case")]` on the registry, and it is what
+/// `docs/agent-guide.md` tells an agent to dispatch on and what a failure document carries.
+/// A `Debug` rendering would be the *Rust* name — `FormatUnsupported` — which matches
+/// nothing a caller greps for.
+///
+/// Here because this module is where the registry meets the wire, and because
+/// `webcam-handler-client` needs it in a sentence and has no `serde_json` of its own. The
+/// artifact emitter derives the same string the same way and *bails* rather than falling
+/// back, which is right for a file that gets committed and wrong for a message that has to
+/// come out of a failing call.
+///
+/// The fallback cannot be reached by a unit-only enum. It is here so this function has no
+/// `expect` on a path a socket drives.
+#[must_use]
+pub fn wire_name(kind: ErrorKind) -> String {
+    match serde_json::to_value(kind) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => format!("{kind:?}"),
+    }
+}
+
+/// The kind a D13 code names, if it names one.
+///
+/// [`rpc_code`]'s inverse, and derived from it by walking [`ErrorKind::ALL`] rather than
+/// written as a second table — which is the whole reason this can be trusted as an inverse.
+/// A second literal table would be eighteen more chances to disagree with the first, on a
+/// mapping whose *point* is that both ends of the wire read one number the same way.
+///
+/// `None` for everything else, including the three codes inside the transport's run that
+/// [`D13_CODES`] deliberately leaves unclaimed.
+#[must_use]
+pub fn kind_of(code: i32) -> Option<ErrorKind> {
+    ErrorKind::ALL
+        .iter()
+        .copied()
+        .find(|&kind| rpc_code(kind) == code)
+}
+
+/// The D13 error inside a received error object, when the whole of it arrived.
+///
+/// [`received`]'s first case, for a caller that has nothing to say about the other two. Kept
+/// because it is the shape most callers want and because deleting it would push
+/// `matches!`-and-`else` into each of them.
 #[must_use]
 pub fn typed(object: &ErrorObject<'_>) -> Option<Error> {
-    let data = object.data()?;
-    let error: Error = serde_json::from_str(data.get()).ok()?;
-    (rpc_code(error.kind()) == object.code()).then_some(error)
+    match received(object) {
+        Received::Refusal(error) => Some(error),
+        Received::Kind(_) | Received::Foreign => None,
+    }
 }
 
 #[cfg(test)]
@@ -567,6 +667,77 @@ mod tests {
         // than of everything: the real thing still decodes.
         let ours: ErrorObjectOwned = WireError(Error::sample(ErrorKind::Busy)).into();
         assert_eq!(typed(&ours), Some(Error::sample(ErrorKind::Busy)));
+    }
+
+    #[test]
+    fn a_code_this_registry_owns_keeps_its_kind_even_when_the_payload_is_unreadable() {
+        // **The discriminant the wire delivered intact** (docs/11 **M21**, note **N215**).
+        // The arms above assert that none of these decodes into a `schema::Error`, which is
+        // right and was the whole answer: `typed` gave `None` to a foreign object and to one
+        // of *ours* alike, so `webcam-handler-client` reported the second as a dead socket.
+        // `rpc_code` is injective, so the kind is on the object either way.
+        //
+        // The population is `ErrorKind::ALL`, so this cannot fall behind the registry, and
+        // the payloads are the two shapes that reach it — a version skew is a field this
+        // build cannot read, or a variant it does not have.
+        for &kind in ErrorKind::ALL {
+            for payload in [
+                serde_json::json!({ "kind": "a_variant_from_a_later_build" }),
+                serde_json::json!({ "kind": "busy", "path": "/dev/video0" }),
+            ] {
+                let object =
+                    ErrorObjectOwned::owned(rpc_code(kind), "something happened", Some(payload));
+                assert_eq!(
+                    received(&object),
+                    Received::Kind(kind),
+                    "{kind:?} arrived over its own code and the kind was thrown away with the \
+                     payload"
+                );
+                // The narrower accessor still answers `None`, because there is no error to
+                // hand back — that is the case it is for.
+                assert_eq!(typed(&object), None, "{kind:?}");
+            }
+        }
+
+        // The other two answers, so `Kind` is a decision rather than everything this
+        // function says. A whole payload is a `Refusal`…
+        let whole: ErrorObjectOwned = WireError(Error::sample(ErrorKind::Busy)).into();
+        assert_eq!(
+            received(&whole),
+            Received::Refusal(Error::sample(ErrorKind::Busy))
+        );
+        // …and a code that is not ours is `Foreign` even when it carries one of our
+        // documents, which is the proxy-rewrote-the-code shape one arm along.
+        let transport =
+            ErrorObjectOwned::owned(METHOD_NOT_FOUND_CODE, "Method not found", None::<()>);
+        assert_eq!(received(&transport), Received::Foreign);
+        let application =
+            ErrorObjectOwned::owned(1001, "not ours", Some(Error::sample(ErrorKind::Busy)));
+        assert_eq!(received(&application), Received::Foreign);
+    }
+
+    #[test]
+    fn the_code_to_kind_map_is_the_inverse_of_the_kind_to_code_one_and_claims_nothing_else() {
+        // `kind_of` is what recovers a discriminant from a payload that would not parse, so
+        // it has to be `rpc_code`'s inverse and not merely resemble it. Both directions, over
+        // the generated population.
+        for &kind in ErrorKind::ALL {
+            assert_eq!(kind_of(rpc_code(kind)), Some(kind), "{kind:?}");
+            // And the name the sentence in `webcam-handler-client` prints is the wire's, not
+            // Rust's — an agent dispatches on `format_unsupported`, never on
+            // `FormatUnsupported`.
+            assert_eq!(
+                serde_json::to_value(kind).expect("a kind serializes"),
+                serde_json::Value::String(wire_name(kind)),
+                "{kind:?}"
+            );
+        }
+        // The three codes inside the transport's run that D13 deliberately leaves unclaimed,
+        // and the two edges just outside the block: a code with no kind must answer `None`
+        // rather than the nearest one.
+        for orphan in [-32002, -32003, -32004, -32011, -32030, 0, 1001] {
+            assert_eq!(kind_of(orphan), None, "{orphan} named a kind");
+        }
     }
 
     #[test]

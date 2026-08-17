@@ -2457,10 +2457,7 @@ mod tests {
         }
 
         fn open(&self, _id: &CameraId) -> Result<Box<dyn Camera>> {
-            Err(Error::Busy {
-                path: "/dev/video0".into(),
-                holders: Vec::new(),
-            })
+            Err(Error::busy("/dev/video0".into(), Vec::new()))
         }
 
         fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
@@ -2968,10 +2965,8 @@ mod tests {
                     }],
                 }],
                 streamed: None,
-                unavailable: (id.as_str().contains("busy")).then(|| Error::Busy {
-                    path: "/dev/video9".into(),
-                    holders: Vec::new(),
-                }),
+                unavailable: (id.as_str().contains("busy"))
+                    .then(|| Error::busy("/dev/video9".into(), Vec::new())),
             }))
         }
 

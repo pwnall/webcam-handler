@@ -191,6 +191,47 @@ impl Wch {
         ran
     }
 
+    /// Run with a standard error that **cannot be written**, and hand back the answer.
+    ///
+    /// The child's file descriptor 2 is one end of a `AF_UNIX` pair whose other end is
+    /// closed **before the child exists**, so every write to it fails with `EPIPE` — the
+    /// everyday way a terminal-less run loses its standard error, a reader that went away.
+    /// Deterministic and unraceable: the peer is dropped here, in this process, before
+    /// `spawn`, so there is no window in which a write could succeed. No signal in it
+    /// either — Rust sets `SIGPIPE` to `SIG_IGN` at startup, so the child meets an ordinary
+    /// `io::Error`, which is exactly the input note **N216** is about.
+    ///
+    /// A socket pair rather than a file on a device that refuses writes, for two reasons: a
+    /// `/dev/full` opened for writing is a raw write primitive in a file that names the
+    /// state directory, which `scripts/gates/atomic-write-home.sh` refuses on sight and is
+    /// right to; and a read-only descriptor is not reliably unwritable — measured on this
+    /// host, a write to `/dev/null` opened `O_RDONLY` *succeeds*.
+    fn run_with_unwritable_stderr(&self, args: &[&str]) -> Ran {
+        let mut command = wch();
+        command.env("XDG_STATE_HOME", self.state.as_str());
+        command.args(["--backend", "fake"]);
+        for profile in &self.profiles {
+            command.args(["--profile", profile.as_str()]);
+        }
+        let (reader, blocked) =
+            std::os::unix::net::UnixStream::pair().expect("a socket pair for the child's stderr");
+        drop(reader);
+        let child = command
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                blocked,
+            )))
+            .spawn()
+            .expect("webcam-handler-cli runs");
+        let output = child.wait_with_output().expect("it finishes");
+        Ran {
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::new(),
+        }
+    }
+
     /// The directory of the one session in the tree.
     fn only_session_dir(&self) -> Utf8PathBuf {
         let list = self.json(&["calibrate", "list"]);
@@ -976,6 +1017,97 @@ fn a_sweep_borrows_the_camera_and_calibrate_restore_spends_the_record_that_gives
     );
     let empty = wch.json(&["calibrate", "restore", "cam:integrated", "--task", task]);
     assert_eq!(empty["outcomes"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn a_sweep_whose_note_cannot_be_printed_still_answers_with_one_document_and_a_zero() {
+    // **A note is commentary, and commentary cannot fail a verb that succeeded** (docs/11
+    // **M28**, note **N216**). Every line this surface wrote to standard error was
+    // propagated with `?`, so a standard error that refuses replaced an outcome that had
+    // already happened: the sweep is on disk, the samples are recorded, the camera has been
+    // moved and its pre-sweep snapshot persisted — and the process answered `failed: true`
+    // and exited 27, about the *stream*.
+    //
+    // `calibrate sweep --json` is the worst of them and the reason this arm is here rather
+    // than in a unit test: its note is written **after** `render::session` has printed the
+    // answer, so the failure document went onto standard output beside it and the run
+    // printed *two* schema documents — which design §2.7 says can never happen ("a `--json`
+    // invocation prints exactly one `webcam-handler-schema` type, and which type it is says
+    // whether the verb answered"). A caller parsing that stream reads the first document,
+    // believes the sweep answered, and is right — while the exit code says it failed.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["chicony-rgb"]);
+    let task = "read text from the DUT display";
+    wch.ok(&[
+        "calibrate",
+        "start",
+        "cam:integrated",
+        "--task",
+        task,
+        "--goal",
+        "legible",
+        "--criterion",
+        "text clarity",
+    ]);
+    wch.ok(&[
+        "calibrate",
+        "plan",
+        "cam:integrated",
+        "--task",
+        task,
+        "brightness",
+    ]);
+
+    let ran = wch.run_with_unwritable_stderr(&[
+        "calibrate",
+        "sweep",
+        "cam:integrated",
+        "--task",
+        task,
+        "brightness",
+        "--values",
+        "0,128",
+        "--skip-frames",
+        "0",
+        "--json",
+    ]);
+
+    assert_eq!(
+        ran.code, 0,
+        "a sweep that ran, sampled and persisted reported a failure because it could not \
+         print the sentence about it: {}",
+        ran.stdout
+    );
+    // Exactly one document, and it is the answer. Parsed as the session it claims to be —
+    // and `Failure`'s marker is checked in the same breath, because two documents
+    // concatenated do not parse as one and a `Failure` alone would not be a session.
+    let answer: Value = serde_json::from_str(&ran.stdout).unwrap_or_else(|error| {
+        panic!(
+            "standard output is not one document ({error}):\n{}",
+            ran.stdout
+        );
+    });
+    assert!(
+        answer.get("id").is_some() && answer.get("controls").is_some(),
+        "the one document on standard output is not the session the verb answered with: \
+         {answer}"
+    );
+    assert!(
+        !ran.stdout.contains(schema::error::FAILURE_MARKER),
+        "the answer stream carries a failure marker, so a caller cannot tell an answer from \
+         a refusal: {}",
+        ran.stdout
+    );
+
+    // And the outcome the note was *about* really happened, so this is a test of a verb that
+    // succeeded rather than of one that failed early and printed nothing.
+    let dir = wch.only_session_dir();
+    assert!(
+        !document(&dir)["pre_snapshot"].is_null(),
+        "the sweep did not borrow the camera, so the note under test would not have been \
+         written at all: {}",
+        document(&dir)
+    );
 }
 
 #[test]

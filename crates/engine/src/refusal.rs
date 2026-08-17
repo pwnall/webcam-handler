@@ -2,9 +2,10 @@
 //!
 //! The error registry (D13) is closed, and the only variant that means "this operation
 //! is not legal in this situation" is [`schema::Error::IllegalTransition`], which renders
-//! as `cannot {op} from state {from}`. The sweep planner and the session state machine
-//! both need it, and left to themselves they would invent two phrasings for the same
-//! refusal — so this module pins the convention:
+//! as `{from}: cannot {op}` — the condition as a label and the operation last, so a
+//! producer whose `op` is a whole instruction still ends the sentence (note **N212**). The
+//! sweep planner and the session state machine both need it, and left to themselves they
+//! would invent two phrasings for the same refusal — so this module pins the convention:
 //!
 //! - `from` is a compact machine-readable token naming the *condition that refused*:
 //!   `empty_range(min=10,max=0)`, `blocked`, `undirected_metric(mean_luma)`. A caller
@@ -36,7 +37,7 @@ mod tests {
         let err = illegal("motion(allow_motion=false)", "sweep pan_absolute");
         assert_eq!(
             err.to_string(),
-            "cannot sweep pan_absolute from state motion(allow_motion=false)"
+            "motion(allow_motion=false): cannot sweep pan_absolute"
         );
     }
 }

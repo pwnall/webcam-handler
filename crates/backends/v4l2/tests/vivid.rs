@@ -499,6 +499,27 @@ fn vivid_a_second_stream_on_one_node_is_refused_as_busy_rather_than_unsupported(
             "{}: a second start answered {error} instead of Busy",
             info.id
         );
+        // …and it names the holder as **this** process, without naming its pid (note
+        // **N221**). The `Busy` above is what E3 asks for; this is what M19 asks for one
+        // field along, and it is asserted on the real driver because the fake's
+        // `a_second_stream_on_one_node_is_busy_and_stopping_twice_is_not` asserts the same
+        // shape — a resemblance claim is only worth what the real side of it is worth.
+        assert!(
+            matches!(
+                &error,
+                schema::Error::Busy {
+                    this_process: Some(schema::error::Occupation::Streaming),
+                    ..
+                }
+            ),
+            "{}: a second start blamed something other than this process: {error:?}",
+            info.id
+        );
+        assert!(
+            !error.to_string().contains("unidentified"),
+            "{}: {error}",
+            info.id
+        );
         camera.stop_stream().expect("stop");
         // And the refusal was about the *stream*, not the camera: after the stop, the
         // same handle streams again. Without this the arm would pass on a backend that

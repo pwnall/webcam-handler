@@ -92,7 +92,12 @@
 //!   exactly right — the take that is running is bounded by its own duration, so waiting and
 //!   asking again is the action that succeeds. It names the camera's node and carries **no**
 //!   holders, for `engine::actor`'s reason: the pid holding it is this daemon, and naming it
-//!   would invite a client to kill the daemon it is talking to.
+//!   would invite a client to kill the daemon it is talking to. Since 2026-08-17 it says so
+//!   **out loud**: every refusal here is built through `Error::busy_here`, which carries
+//!   `this_process` — the work rather than the pid — because an empty holder list rendered as
+//!   *"held by an unidentified process"*, and a caller told the holder is unidentified goes
+//!   looking for one. Measured, and repaired with the sentence and the guide together
+//!   (docs/11 **M19**, note **N217**).
 //! - **A `record_start` on a camera whose take has ended and was never collected discards
 //!   that take's report, counted and logged.** The alternative — refusing — would let one
 //!   abandoned poll loop wedge a camera until somebody called `record_stop` by hand, which is
@@ -158,6 +163,7 @@ use engine::record::{FrameOutcome, Opened, Recording};
 use engine::settle::{Clock, Millis, MonotonicClock};
 use schema::camera::{CameraId, CameraInfo};
 use schema::capture::{Frame, NegotiatedStream};
+use schema::error::Occupation;
 use schema::time::Stamp;
 use schema::video::{RecordReport, RecordStatus, RecordingEnd, TakeStatus, VideoFormat};
 use schema::{Error, ErrorKind, Result, limits};
@@ -576,11 +582,11 @@ impl Recordings {
         let held = Arc::new(Holding);
         let mut live = self.0.live.lock().await;
         match live.get(&info.id) {
-            Some(Slot::Starting(_) | Slot::Running(_)) => {
-                return Err(Error::Busy {
-                    path: crate::preview::node_of(info),
-                    holders: Vec::new(),
-                });
+            Some(slot @ (Slot::Starting(_) | Slot::Running(_))) => {
+                return Err(Error::busy_here(
+                    crate::preview::node_of(info),
+                    occupation_of(slot),
+                ));
             }
             Some(Slot::Ended(finished)) => {
                 // The module header's second bullet. Counted before it is logged, so the
@@ -910,14 +916,14 @@ impl Recordings {
             // takes it out of the map. Answered here as well because this decision is also read
             // from a thread that cannot reap (notes **N170** and **N171**).
             Some(Slot::Starting(reservation)) if !reservation.wanted() => Ok(()),
-            Some(Slot::Starting(reservation)) => Err(Error::Busy {
-                path: crate::preview::node_of(&reservation.info),
-                holders: Vec::new(),
-            }),
-            Some(Slot::Running(take)) => Err(Error::Busy {
-                path: crate::preview::node_of(&take.info),
-                holders: Vec::new(),
-            }),
+            Some(Slot::Starting(reservation)) => Err(Error::busy_here(
+                crate::preview::node_of(&reservation.info),
+                Occupation::StartingRecording,
+            )),
+            Some(Slot::Running(take)) => Err(Error::busy_here(
+                crate::preview::node_of(&take.info),
+                Occupation::Recording,
+            )),
             None | Some(Slot::Ended(_)) => Ok(()),
         }
     }
@@ -1043,10 +1049,10 @@ impl Recordings {
             match live.get(camera) {
                 None => return Err(nothing_to_stop(camera)),
                 Some(Slot::Starting(reservation)) => {
-                    return Err(Error::Busy {
-                        path: crate::preview::node_of(&reservation.info),
-                        holders: Vec::new(),
-                    });
+                    return Err(Error::busy_here(
+                        crate::preview::node_of(&reservation.info),
+                        Occupation::StartingRecording,
+                    ));
                 }
                 Some(Slot::Ended(_)) => None,
                 Some(Slot::Running(take)) => {
@@ -1089,10 +1095,7 @@ impl Recordings {
                             .to_owned(),
                     }
                 } else {
-                    Error::Busy {
-                        path: node_of_slot(&slot),
-                        holders: Vec::new(),
-                    }
+                    Error::busy_here(node_of_slot(&slot), occupation_of(&slot))
                 };
                 live.insert(camera.clone(), slot);
                 Err(refusal)
@@ -1162,6 +1165,22 @@ fn node_of_slot(slot: &Slot) -> Utf8PathBuf {
         Slot::Starting(reservation) => crate::preview::node_of(&reservation.info),
         Slot::Running(take) => crate::preview::node_of(&take.info),
         Slot::Ended(finished) => crate::preview::node_of(&finished.info),
+    }
+}
+
+/// What this daemon is doing with the node a `slot` holds, as the refusal says it.
+///
+/// The join between this module's state machine and D13's vocabulary, in one place because
+/// three refusals make it and three copies of a mapping is how two of them come to disagree
+/// (design §2.10). `Slot::Ended` is a take that finished and was never collected: it holds
+/// no stream, so a caller told to wait for it would be waiting for nothing — the arms that
+/// can reach this function never carry one, and it answers
+/// [`Occupation::StartingRecording`] rather than inventing a third alternative, because the
+/// honest reading of "there is a slot and no take running in it" is that one is on its way.
+fn occupation_of(slot: &Slot) -> Occupation {
+    match slot {
+        Slot::Running(_) => Occupation::Recording,
+        Slot::Starting(_) | Slot::Ended(_) => Occupation::StartingRecording,
     }
 }
 
@@ -1689,6 +1708,24 @@ mod tests {
         assert!(
             !matches!(&refused, Error::Busy { holders, .. } if !holders.is_empty()),
             "a Busy naming this daemon's pid invites a client to kill it: {refused:?}"
+        );
+        // …and the other half of that decision, which was missing until note **N217**: the
+        // refusal says *what this process is doing*, so withholding the pid reads as a
+        // choice rather than as ignorance. Asserted as a value and as the sentence, because
+        // the sentence is what an agent meets first.
+        assert!(
+            matches!(
+                &refused,
+                Error::Busy {
+                    this_process: Some(Occupation::StartingRecording | Occupation::Recording),
+                    ..
+                }
+            ),
+            "a refusal from this daemon's own registry does not say so: {refused:?}"
+        );
+        assert!(
+            !refused.to_string().contains("unidentified"),
+            "the daemon knows exactly what has the camera: {refused}"
         );
 
         // And the slot comes back, so the refusal is a state rather than a latch.

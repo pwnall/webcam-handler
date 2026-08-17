@@ -1298,7 +1298,10 @@ mod tests {
         let path = scratch.path("take.avi");
         run(
             camera.as_mut(),
-            &request(&path, Some(0)),
+            // One millisecond, which is the shortest take this build accepts: a budget of
+            // zero was refused at 2026-08-17 because it wrote a container header and no
+            // frames and answered as a success (note **N213**).
+            &request(&path, Some(1)),
             &mut OnDisk,
             &FrozenClock,
             Stamp::epoch(),

@@ -300,7 +300,7 @@ wire_surface! {
         /// Start recording `camera` to a file on the host this daemon runs on (D7, D10).
         ///
         /// **The first of three, and the only one that takes a request.** A recording is not
-        /// one call, and cannot be: `crate::wire`'s surface is served by a daemon that gives
+        /// one call, and cannot be: this trait's surface is served by a daemon that gives
         /// each open camera one thread taking one command at a time, so a take written as a
         /// single method would make `wch_record_stop` undeliverable — the stop would queue
         /// behind the recording it exists to stop, and only the take's own duration could ever

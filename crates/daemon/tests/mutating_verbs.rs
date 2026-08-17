@@ -2737,6 +2737,16 @@ const fn libc_sigterm() -> i32 {
 
 // ------------------------------------------------------------------ P6c's three
 
+/// The shortest take this build will make, for the arms that need a take to be **over**.
+///
+/// One millisecond, and it was `Some(0)` until 2026-08-17: a budget of zero ran no turn at
+/// all, so the file was a container header with nothing in it and the answer said the
+/// recording succeeded. Note **N213** made that a refusal at both spellings — the flag and
+/// the wire field — so the fixtures that wanted "a take that is already finished" ask for the
+/// smallest one there is instead. `engine::record::drive` checks the budget before each turn,
+/// so this is one frame and out, which is what these arms need: nothing waits on a camera.
+const SHORTEST_TAKE_MS: Option<u64> = Some(1);
+
 /// A recording of `duration_ms` into `path`.
 ///
 /// `Sink::ServerPath` and never `ReturnBytes`: note **N110** narrows this verb to one of
@@ -2891,7 +2901,18 @@ async fn a_second_start_is_told_to_retry_and_the_status_tracks_the_one_take_a_ca
     assert_eq!(code, rpc_code(ErrorKind::Busy));
     assert_eq!(error.kind(), ErrorKind::Busy);
     match &error {
-        Error::Busy { holders, .. } => assert!(holders.is_empty(), "{error:?}"),
+        Error::Busy {
+            holders,
+            this_process,
+            ..
+        } => {
+            assert!(holders.is_empty(), "{error:?}");
+            // …and it says whose camera it is, which is the half that was missing (docs/11
+            // **M19**, note **N217**): the pid is withheld on purpose, and without this the
+            // sentence read "held by an unidentified process" about the very daemon
+            // answering.
+            assert_eq!(*this_process, Some(schema::error::Occupation::Recording));
+        }
         other => panic!("wrong variant: {other:?}"),
     }
     // The refusal cost the second request nothing: no file where the second take would have
@@ -2920,10 +2941,106 @@ async fn a_second_start_is_told_to_retry_and_the_status_tracks_the_one_take_a_ca
     assert!(collected.take.is_none(), "{collected:?}");
 
     // And the camera records again, so the `Busy` above was a state rather than a latch.
-    wire.record_start(camera.clone(), record_request(&path, Some(0)))
+    wire.record_start(camera.clone(), record_request(&path, SHORTEST_TAKE_MS))
         .await
         .expect("the slot came free");
     wire.record_stop(camera).await.expect("the second take");
+}
+
+#[tokio::test]
+async fn a_photograph_during_a_take_is_told_who_has_the_camera_and_waiting_does_not_change_it() {
+    // **The refusal an agent meets most often, and what it used to say** (docs/11 **M19**,
+    // note **N217**). A `wch_photo` while this daemon is recording answered
+    // `{"kind":"busy","holders":[]}`, which rendered as *"held by an unidentified
+    // process"* — about the daemon the caller was talking to. The guide's remedy for it was
+    // `--wait`, and `--wait` cannot reach this refusal at all: it queues on the camera's
+    // command queue, and `Recordings::not_recording` answers before the actor is touched.
+    //
+    // So the test asks the daemon what is true (`record_status`), asks it again for the
+    // refusal, and fails a message that attributes the hold to somebody else — and then
+    // asks with `wait: true` to pin the guide's corrected sentence.
+    let fixture = Fixture::start();
+    let camera = camera(&fixture.cameras, 0).id.clone();
+    let scratch = TempRuntimeDir::new().expect("a throw-away directory");
+    let (_, wire) = fixture
+        .wires()
+        .into_iter()
+        .next()
+        .expect("two transports were built");
+
+    let path = scratch.base().join("take.avi");
+    wire.record_start(camera.clone(), record_request(&path, Some(30_000)))
+        .await
+        .expect("a free camera");
+    // The premise, from the daemon rather than from this test's expectations: the camera
+    // really is recording, so the refusal below is about a take rather than about anything
+    // else that could make a camera busy.
+    let running = wire
+        .record_status(camera.clone())
+        .await
+        .expect("the camera resolves");
+    assert!(running.is_running(), "{running:?}");
+
+    for wait in [false, true] {
+        let (code, error) = refusal(
+            wire.photo(
+                camera.clone(),
+                PhotoRequest {
+                    wait,
+                    ..photo_request(Sink::ReturnBytes {
+                        format: PhotoFormat::Jpeg,
+                    })
+                },
+            )
+            .await,
+        );
+        assert_eq!(code, rpc_code(ErrorKind::Busy), "wait: {wait}");
+        let Error::Busy {
+            holders,
+            this_process,
+            ..
+        } = &error
+        else {
+            panic!("wait: {wait}: wrong variant: {error:?}");
+        };
+        // The pid stays withheld — that decision is `crate::record`'s and it stands — and
+        // what replaces it is the work, which is the thing the caller waits for.
+        assert!(holders.is_empty(), "wait: {wait}: {error:?}");
+        assert_eq!(
+            *this_process,
+            Some(schema::error::Occupation::Recording),
+            "wait: {wait}: the daemon knows precisely what has this camera"
+        );
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains("unidentified"),
+            "wait: {wait}: the refusal sends the caller looking for a process to blame: \
+             {rendered}"
+        );
+        // What the caller is waiting for, taken from the *vocabulary* rather than written
+        // out here: this arm pinned the literal `record_status` until 2026-08-17, which is a
+        // verb no surface offers — `webcam-handler-client` has no such command and the wire
+        // spells the method `wch_record_status` — so the assertion held the wrong name in
+        // place instead of being able to go red on it (note **N220**).
+        assert!(
+            rendered.ends_with(schema::error::Occupation::Recording.advice()),
+            "wait: {wait}: the refusal says to retry and not what to retry on: {rendered}"
+        );
+    }
+
+    // And the camera comes back, so the refusal was a state rather than a latch — which is
+    // what makes `Busy`'s *retry* disposition true.
+    wire.record_stop(camera.clone())
+        .await
+        .expect("the running take");
+    wire.photo(
+        camera,
+        photo_request(Sink::ReturnBytes {
+            format: PhotoFormat::Jpeg,
+        }),
+    )
+    .await
+    .expect("a camera whose take has ended takes photographs again");
 }
 
 #[tokio::test]
@@ -3049,7 +3166,7 @@ async fn a_recording_request_only_a_socket_can_build_is_refused_before_any_camer
         "a request nobody was going to honour opened a camera"
     );
     let path = scratch.base().join("served.avi");
-    wire.record_start(camera.clone(), record_request(&path, Some(0)))
+    wire.record_start(camera.clone(), record_request(&path, SHORTEST_TAKE_MS))
         .await
         .expect("a request this build honours");
     wire.record_stop(camera).await.expect("the take");
@@ -3150,13 +3267,18 @@ async fn a_recording_over_an_earlier_one_leaves_no_tail_of_the_take_it_replaced(
         .next()
         .expect("two transports were built");
 
-    // A long file at the destination, longer than any take this test makes.
-    std::fs::write(path.as_std_path(), vec![0x7f; 512 * 1024]).expect("a writable scratch dir");
+    // A long file at the destination, longer than any take this test makes. Eight mebibytes
+    // rather than half of one since note **N213**: the shortest take this build accepts is a
+    // millisecond and takes a frame, and one synthesized MJPG frame at the replayed camera's
+    // largest mode is about a mebibyte — a seed smaller than that would make the assertion
+    // below fail for arithmetic rather than for a tail left behind.
+    std::fs::write(path.as_std_path(), vec![0x7f; 8 * 1024 * 1024])
+        .expect("a writable scratch dir");
     let before = std::fs::metadata(path.as_std_path())
         .expect("just written")
         .len();
 
-    wire.record_start(camera.clone(), record_request(&path, Some(0)))
+    wire.record_start(camera.clone(), record_request(&path, SHORTEST_TAKE_MS))
         .await
         .expect("a free camera");
     let report = wire.record_stop(camera).await.expect("the take");
@@ -3172,5 +3294,5 @@ async fn a_recording_over_an_earlier_one_leaves_no_tail_of_the_take_it_replaced(
         "the recording left the file it replaced underneath it"
     );
     imaging::avi::read::read_stream(&bytes)
-        .expect("a header-only take is still a file the strict reader accepts");
+        .expect("a one-frame take is still a file the strict reader accepts");
 }

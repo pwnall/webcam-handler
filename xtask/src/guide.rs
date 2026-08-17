@@ -767,8 +767,8 @@ fn failure_document() -> String {
          | `{marker}` | that the verb refused. It is `true` in every failure document and no \
          answer carries the field. |\n\
          | `error.kind` | which refusal. The words are the first column of the next section. |\n\
-         | the rest of `error` | what to do about it: `available` here, `holders` for `busy`, \
-         `path` for `storage_io`. |\n\
+         | the rest of `error` | what to do about it: `available` here, `this_process` and \
+         `holders` for `busy`, `path` for `storage_io`. |\n\
          | `message` | the same sentence a person would have read. |\n\n\
          The same line also goes to standard error, prefixed with the program's name, and the \
          process exits with the code the next section gives that failure. **The document is \
@@ -822,9 +822,17 @@ fn disposition_text(kind: ErrorKind) -> (&'static str, &'static str) {
         ),
         ErrorKind::Busy => (
             "retry",
-            "Another process is streaming from the camera. Retry; under \
-             `webcam-handler-client`, `--wait` asks the daemon to queue you instead of \
-             refusing. The holders it could see are in the message.",
+            "Something else is streaming from the camera; only one thing may. Read \
+             `this_process`: when it is there the holder is the program you are talking to, \
+             and the message says what it is doing and what ends it — a `recording` ends on \
+             the take's own duration, `starting_recording` clears in the time one stream \
+             takes to come up, `streaming` ends when that stream is stopped, \
+             `streaming_preview` needs one of the preview's viewers to leave, and \
+             `running_commands` means the camera's command queue is full and clears as the \
+             work ahead of you runs. When it is absent the holder is another program, and \
+             `holders` names it when this user could see it. `--wait` helps with \
+             `running_commands` and with nothing else: it asks for room in that queue rather \
+             than being refused, and it waits for no stream to end.",
         ),
         ErrorKind::PermissionDenied => (
             "fix the setup",
@@ -855,9 +863,13 @@ fn disposition_text(kind: ErrorKind) -> (&'static str, &'static str) {
         ),
         ErrorKind::ControlInactive => (
             "change the plan",
-            "An automation control currently owns this one, and the message names the \
-             automation. Write without `--no-guard` and the write turns it off first; or turn \
-             it off yourself and write again.",
+            "An automation control currently owns this one. Your write was already guarded — \
+             guarding is the default — and the guard is what could not clear the owner, so \
+             repeating the write changes nothing. When the message names the automation, set \
+             that control to manual yourself and write again; when it says no partner was \
+             discovered, this camera's pairing is unknown and a human has to say which \
+             control owns this one. `--no-guard` is not the remedy: it writes anyway and the \
+             automation overwrites the value on the next frame.",
         ),
         ErrorKind::FormatUnsupported => (
             "fix the request",
@@ -1044,7 +1056,9 @@ fn record_recipe() -> String {
          `--duration` takes `10s`, `1500ms` or `1m30s`; leave it out for {default_ms} ms. \
          Longer than {max_ms} ms is refused rather than quietly shortened — a caller that \
          asked for five minutes and silently got two cannot tell that from a camera that \
-         stopped.\n\n\
+         stopped. Shorter than `1ms` is refused too, and for the same reason at the other \
+         end: a take of no time at all wrote a container header with no frames in it and \
+         reported that as a recording.\n\n\
          The report counts the frames the file holds and the mean interval between them. \
          **Frame timing is a payload, not a footnote**: a webcam delivers frames when it \
          delivers them, so the interval the file declares is the one this take measured, and \
@@ -1244,6 +1258,8 @@ fn operations_map(root: &clap::Command) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     /// The emitted guide, for a test that asks it a question.
@@ -1597,5 +1613,62 @@ mod tests {
             "<PROFILE>" => "/tmp/profile.json".to_owned(),
             other => other.to_owned(),
         }
+    }
+
+    #[test]
+    fn every_flag_the_failure_table_names_is_one_the_surface_has() {
+        // **Note N123's defect, one document along** (docs/11 **M18**). `control_inactive`
+        // rendered *"use `--guarded`"* — design D3's spelling of a flag the shipped surface
+        // never had — and the table's `Do` column is **hand-written prose in this file**, so
+        // `scripts/gates/agent-guide-current.sh` cannot see it: the generator emits the same
+        // wrong sentence every run and the diff is clean.
+        //
+        // The population is the emitted document and the judge is the clap tree, so neither
+        // side is a list somebody maintains. `crates/cli/tests/agent_guide.rs` carries the
+        // other half — that the flags the table offers as *levers* really produce the
+        // failure they are filed under, driven through the binary.
+        let document = emitted();
+        let mut arguments = BTreeSet::new();
+        fn walk(command: &clap::Command, into: &mut BTreeSet<String>) {
+            for arg in command.get_arguments() {
+                if let Some(long) = arg.get_long() {
+                    into.insert(format!("--{long}"));
+                }
+            }
+            for sub in command.get_subcommands() {
+                walk(sub, into);
+            }
+        }
+        walk(&cli_core::Program::Client.command(), &mut arguments);
+
+        let mut named = 0;
+        for line in document.lines() {
+            let cells: Vec<&str> = line.trim().trim_matches('|').split('|').collect();
+            if cells.len() != 4 {
+                continue;
+            }
+            let kind = cells[0].trim().trim_matches('`');
+            let code = cells[1].trim().trim_matches('`');
+            if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            let mut rest = cells[3];
+            while let Some(open) = rest.find("`--") {
+                let after = &rest[open + 1..];
+                let Some(close) = after.find('`') else { break };
+                let flag = &after[..close];
+                assert!(
+                    arguments.contains(flag),
+                    "the failure table tells a reader meeting `{kind}` to use `{flag}`, and no \
+                     verb on this surface has that flag: {arguments:?}"
+                );
+                named += 1;
+                rest = &after[close + 1..];
+            }
+        }
+        // Not vacuous: the failure table is where an unattended reader is sent to repair a
+        // request, and a table that named no flag at all would mean this walk stopped
+        // walking rather than the prose improving.
+        assert!(named >= 4, "the failure table names {named} flag(s)");
     }
 }

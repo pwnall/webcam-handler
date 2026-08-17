@@ -307,6 +307,85 @@ fn a_duration_past_the_cap_and_a_container_this_build_cannot_write_are_refused_b
 }
 
 #[test]
+fn a_take_too_short_to_hold_a_frame_is_refused_at_both_spellings_and_never_answered() {
+    // **The small end of the same argument the cap makes** (docs/11 **L30**, note **N213**).
+    // `--duration` refuses a value too large because "a saturating parse would turn a typo
+    // into the longest recording this build will refuse"; the other end had no such
+    // treatment, so `--duration 500us` truncated to `0` ms and the binary answered — measured
+    // — a 224-byte AVI with `frames_written: 0`, `ended: "duration"` and exit `0`. That is
+    // the one answer an unattended caller cannot tell from a camera that delivered nothing,
+    // and it is the *success* path, so nothing here could have gone red on it.
+    //
+    // Two spellings because the two are refused in two homes and for two reasons. `500us` is
+    // a number the caller never wrote — the conversion to milliseconds invented it — so the
+    // flag refuses it as a usage error, exit 2. `0s` is a number the caller *did* write, so
+    // it travels as a request and `RecordRequest::budget_ms` refuses it beside the cap, which
+    // is where a recording's bounds live and what a socket client meets too.
+    let scratch = Scratch::new();
+    let device = replayed("chicony-rgb", "cam:integrated-camera-integrated-c");
+
+    let truncated = scratch.path("truncated.avi");
+    let output = wch()
+        .current_dir(scratch.base().as_std_path())
+        .args([
+            "--backend",
+            "fake",
+            "--profile",
+            device.profile.as_str(),
+            "record",
+            &device.camera,
+            "-o",
+            truncated.as_str(),
+            "--duration",
+            "500us",
+        ])
+        .output()
+        .expect("webcam-handler-cli runs");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a duration this build cannot express is a usage error, as an unreadable one is: \
+         {stderr}"
+    );
+    assert!(
+        stderr.contains("1ms"),
+        "the refusal has to say what to write instead: {stderr}"
+    );
+    assert!(
+        !truncated.exists(),
+        "a refused recording wrote a file, so the caller has a container with no frames in it"
+    );
+
+    let empty = scratch.path("empty.avi");
+    let (ok, stdout, stderr) = record_from(
+        &device,
+        &scratch.base(),
+        &["-o", empty.as_str(), "--duration", "0s", "--json"],
+    );
+    assert!(
+        !ok,
+        "a recording of no time at all answered as a recording: {stdout}"
+    );
+    assert_eq!(
+        output_kind(&stdout),
+        Some(schema::ErrorKind::IllegalTransition),
+        "{stdout} / {stderr}"
+    );
+    assert!(!empty.exists(), "a refused recording wrote a file");
+}
+
+/// The D13 discriminant a `--json` failure document carries, if it is one.
+///
+/// Read off the document rather than off the exit code, because the claim above is that the
+/// *answer* says which refusal this is — the code is the redundant channel (note **N127**).
+fn output_kind(stdout: &str) -> Option<schema::ErrorKind> {
+    serde_json::from_str::<schema::error::Failure>(stdout)
+        .ok()
+        .map(|failure| failure.kind())
+}
+
+#[test]
 fn the_human_rendering_and_the_json_document_describe_the_same_take() {
     // `cli_core::render`'s rule, at the verb that landed last: the two renderings are two
     // views of one value, so a fact one of them shows and the other omits is a bug in the

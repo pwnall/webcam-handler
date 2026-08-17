@@ -76,7 +76,7 @@ use schema::control::{
     Applied, ControlDesc, ControlId, ControlType, ControlValue, KnownFlag, Unverifiable,
     WriteWarning,
 };
-use schema::error::{Error, Result};
+use schema::error::{Error, Occupation, Result};
 use schema::limits;
 use schema::report::{HintKind, ListHint};
 
@@ -850,10 +850,15 @@ impl Camera for V4l2Camera {
             // reading the pid out of a `Busy` payload got a refusal only when it went on
             // to ask for the kill (note **N197**). `sys::ioctl::control_error` and
             // `holders::others_holding` are what hold the rest of this class.
-            return Err(Error::Busy {
-                holders: Vec::new(),
-                path: self.fd.path().to_owned(),
-            });
+            // **And the empty list is now said out loud instead of inferred** (note
+            // **N221**): `Error::busy`'s rendering of one is *"held by an unidentified
+            // process"*, which is the sentence for a walk that found nobody it could see and
+            // the exact opposite of this case. [`Occupation::Streaming`] withholds the pid,
+            // as the paragraph above requires, and still answers "what has it".
+            return Err(Error::busy_here(
+                self.fd.path().to_owned(),
+                Occupation::Streaming,
+            ));
         }
         // A metadata-only camera is a shape D1 supports on purpose: it is listed, and
         // streaming it is a typed refusal rather than a surprise.
@@ -1241,10 +1246,7 @@ mod tests {
         // report an unplugged camera as a camera whose controls cannot be written.
         let control = desc("brightness", 0);
         for error in [
-            Error::Busy {
-                path: camino::Utf8PathBuf::from("/dev/video0"),
-                holders: Vec::new(),
-            },
+            Error::busy(camino::Utf8PathBuf::from("/dev/video0"), Vec::new()),
             Error::DeviceGone {
                 path: camino::Utf8PathBuf::from("/dev/video0"),
             },
@@ -1350,9 +1352,25 @@ mod tests {
             .start_stream(&StreamRequest::default())
             .expect_err("a camera that is already streaming refuses a second stream");
 
-        let Error::Busy { holders, path } = &error else {
+        let Error::Busy {
+            holders,
+            path,
+            this_process,
+        } = &error
+        else {
             panic!("a second stream must be refused as Busy, got {error}");
         };
+        // **The pid stays withheld and the work is named** (note **N221**). This arm asserted
+        // `this_process == None` for one repair, on the reading that an in-process refusal is
+        // "the driver's" — but the rendering of an empty list is *"held by an unidentified
+        // process"*, so what the caller was handed was a stranger to hunt for, and the stream
+        // in the way is one this very handle opened. The two claims are not in tension: N48
+        // point 5 is about the *pid*, and `Occupation` is what says what for without it.
+        assert_eq!(*this_process, Some(schema::error::Occupation::Streaming));
+        assert!(
+            !error.to_string().contains("unidentified"),
+            "the refusal sends the caller after a holder that is this process: {error}"
+        );
         assert_eq!(path, &node);
         assert!(
             holders.is_empty(),
@@ -1403,10 +1421,7 @@ mod tests {
             "1-2:1.0".to_owned(),
             vec![(
                 camino::Utf8PathBuf::from("/dev/video2"),
-                Error::Busy {
-                    path: camino::Utf8PathBuf::from("/dev/video2"),
-                    holders: Vec::new(),
-                },
+                Error::busy(camino::Utf8PathBuf::from("/dev/video2"), Vec::new()),
             )],
         );
         probe
@@ -1619,10 +1634,7 @@ mod tests {
         // Tolerating it there is worse than it looks: `set` would proceed to write, the
         // read-back would then propagate the same refusal, and D3's `{requested, applied}`
         // pair would be lost from a write the device actually took.
-        let busy = Error::Busy {
-            path: camino::Utf8PathBuf::from("/dev/video0"),
-            holders: Vec::new(),
-        };
+        let busy = Error::busy(camino::Utf8PathBuf::from("/dev/video0"), Vec::new());
         assert_eq!(
             walked_current(Some(ControlId(9_963_776)), Err(busy.clone())),
             Err(busy.clone()),
@@ -1645,13 +1657,13 @@ mod tests {
         // a camera that was answering `QUERY_EXT_CTRL` for every control on it. It is also
         // the *only* refusal carried — `the_only_refusal_a_walk_carries_is_the_one_the_
         // uapi_makes_about_a_control` is the arm that holds the other three to rule 7.
-        let busy = Error::Busy {
-            path: camino::Utf8PathBuf::from("/dev/video0"),
-            holders: vec![schema::error::Holder {
+        let busy = Error::busy(
+            camino::Utf8PathBuf::from("/dev/video0"),
+            vec![schema::error::Holder {
                 pid: 4321,
                 comm: Some("something-else".to_owned()),
             }],
-        };
+        );
         assert_eq!(
             walked_current(None, Err(busy.clone())),
             Ok(None),

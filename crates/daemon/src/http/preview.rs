@@ -655,10 +655,10 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            refused(&Error::Busy {
-                path: camino::Utf8PathBuf::from("/dev/video0"),
-                holders: Vec::new(),
-            })
+            refused(&Error::busy(
+                camino::Utf8PathBuf::from("/dev/video0"),
+                Vec::new()
+            ))
             .status(),
             StatusCode::SERVICE_UNAVAILABLE
         );

@@ -387,10 +387,7 @@ mod tests {
             },
             failed: slug("brightness"),
             index: 0,
-            error: Error::Busy {
-                path: "/dev/video0".into(),
-                holders: Vec::new(),
-            },
+            error: Error::busy("/dev/video0".into(), Vec::new()),
         };
         assert_eq!(Error::from(partial).kind(), ErrorKind::Busy);
     }

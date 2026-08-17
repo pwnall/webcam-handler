@@ -358,7 +358,7 @@
       "type": "object"
     },
     "CameraId": {
-      "description": "The name RPC calls and CLI arguments use: `cam:<card-slug>[-<n>]`.\n\nReproducible across runs while the attached topology is unchanged, and stable for one\nengine's lifetime even across replug. Never persisted as identity — that is\n[`CameraFingerprint`]'s job.",
+      "description": "The name RPC calls and CLI arguments use: `cam:<card-slug>[-<n>]`.\n\nReproducible across runs while the attached topology is unchanged, and stable for one\nengine's lifetime even across replug. Never persisted as identity — that is\n`CameraFingerprint`'s job.",
       "type": "string"
     },
     "CameraInfo": {
@@ -431,7 +431,7 @@
       "type": "object"
     },
     "CapReached": {
-      "description": "Which bound ended the recording.\n\n`ALL` is generated from this definition, and the tests walk it: a cap that no\nrecording can reach is a bound that is not a bound, and a hand-written list of the\nthree would let one quietly stop being enforced (rubric rule 6). Since P6b the walk\nis two-dimensional — `CapReached::ALL` × [`VideoFormat::ALL`] — because the two\ncontainers count their own bytes and a cap enforced in one of them is not a cap.",
+      "description": "Which bound ended the recording.\n\n`ALL` is generated from this definition, and the tests walk it: a cap that no\nrecording can reach is a bound that is not a bound, and a hand-written list of the\nthree would let one quietly stop being enforced (rubric rule 6). Since P6b the walk\nis two-dimensional — `CapReached::ALL` × `VideoFormat::ALL` — because the two\ncontainers count their own bytes and a cap enforced in one of them is not a cap.",
       "oneOf": [
         {
           "const": "size",
@@ -469,7 +469,7 @@
               "type": "null"
             }
           ],
-          "description": "The container the sink path's extension named.\n\n`None` when the path carried no extension, which means the caller left the container to\nthe negotiated format (`crate::video::RecordRequest::container`) and this build writes\nno container that carries it. A different extension is then not the remedy, because the\ncaller never named one."
+          "description": "The container the sink path's extension named.\n\n`None` when the path carried no extension, which means the caller left the container to\nthe negotiated format (`video::RecordRequest::container`) and this build writes\nno container that carries it. A different extension is then not the remedy, because the\ncaller never named one."
         },
         "negotiated": {
           "$ref": "#/$defs/PixelFormat",
@@ -620,7 +620,7 @@
           "type": "integer"
         },
         "step": {
-          "description": "Declared step. Zero and negative steps occur; treat them as 1 when planning\n(see [`ControlRange::effective_step`]) rather than dividing by them.",
+          "description": "Declared step. Zero and negative steps occur; treat them as 1 when planning\n(see `ControlRange::effective_step`) rather than dividing by them.",
           "format": "int64",
           "type": "integer"
         }
@@ -647,7 +647,7 @@
           "type": "array"
         },
         "pairs": {
-          "description": "The auto/manual pairs in effect for this camera (design D3): the declared table\nfiltered to controls this device has, merged with anything a probe measured on it.\n\nEach pair carries its own [`crate::pairing::Provenance`], because \"the UVC spec\nsays so\" and \"this camera did it while we watched\" are different claims and E1\nmakes the second one win.",
+          "description": "The auto/manual pairs in effect for this camera (design D3): the declared table\nfiltered to controls this device has, merged with anything a probe measured on it.\n\nEach pair carries its own `pairing::Provenance`, because \"the UVC spec\nsays so\" and \"this camera did it while we watched\" are different claims and E1\nmakes the second one win.",
           "items": {
             "$ref": "#/$defs/AutomationPair"
           },
@@ -1222,7 +1222,7 @@
           "type": "object"
         },
         {
-          "description": "Another process holds the device. Distinct from \"the camera cannot do this\" (E3).",
+          "description": "Another process holds the device. Distinct from \"the camera cannot do this\" (E3).\n\nBuild one through `Error::busy` or `Error::busy_here`: which of the two says\nwhether the holder is somebody else or this very process, and that is the difference\nbetween \"go and find out who has it\" and \"wait for what I am doing\".",
           "properties": {
             "holders": {
               "description": "Who has it, as far as this user could see.\n\nEmpty means *unidentified*, not *nobody*: a holder belonging to another user\nis invisible in `/proc` without privilege, and a process that exited between\nthe `EBUSY` and the walk leaves nothing to find.",
@@ -1238,6 +1238,17 @@
             "path": {
               "description": "The node in use.",
               "type": "string"
+            },
+            "this_process": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Occupation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What **this** process is doing with the node, when this process is the holder.\n\nA daemon refusing its own caller walked no `/proc` and needs to walk none: it\nknows. Until 2026-08-17 it said so by leaving `holders` empty — deliberately,\nand argued in `daemon::record`'s header, because *\"naming it would invite a\nclient to kill the daemon it is talking to\"* — and the rendering then told the\ncaller the node was *\"held by an unidentified process\"*, which is the one thing\nit was not. Measured through the shipped binaries: a `photo` during a take\nanswered `{\"kind\":\"busy\",\"holders\":[]}` and printed that sentence, so an agent's\nnext move was to hunt for a process to kill (docs/11 **M19**, note **N217**).\n\nThis field is how the daemon says \"it is me, and here is what for\" **without**\nhanding over a pid — the withholding stays, and what it withholds stops reading\nas ignorance. `None` is every other producer, and means exactly what the empty\n`holders` list has always meant."
             }
           },
           "required": [
@@ -1388,7 +1399,7 @@
           "type": "object"
         },
         {
-          "description": "The requested pixel format is not one that would be accepted here.\n\n**Whose list `available` is depends on who refused, and the message must not\nguess.** It said \"this camera offers …\" until 2026-08-15, which is true of D6's\nsource-format refusal and false of the other two callers: `engine::preview`\nanswers with the format the negotiation actually produced, and D7's record path\nanswers with what the *container* would have carried. Measured at the Chicony IR\nsensor, which offers GREY and nothing else — a `record -o x.avi` refusal read\n\"format GREY is unavailable; this camera offers MJPG, JPEG\", naming two formats\nthat camera has never had. An unattended caller obeying it would retry\n`--pixel-format MJPG` against a device with no MJPG, which is the defect the D13\nregistry exists to prevent rather than commit (note **N129**).\n\nThe variant itself is right where it is: design D7 names\n`FormatUnsupported { available }` for the container case in so many words, so this\nis a rendering repair and not a re-litigation of which refusal applies. The\nsentence now says only what is true of every caller — these are the formats that\n*would* be accepted — and which lever to pull is the guide's `Do` column, where a\ncontainer mismatch is answered by changing the container rather than the format.\n\n**And the same lesson had to be learnt again about the *size*** (note **N138**).\nA request refused because no mode could deliver the size it named had nowhere to\nsay so: it reported `requested: None` and the sentence came out *\"format\n(unspecified) is unavailable; MJPG, YUYV would be accepted\"* — about formats, naming\nthe caller's own format as acceptable, never mentioning size. [`SizeRefusal`] is the\nslot N134 said this variant would need, and `size` is now what distinguishes the two\ncauses; build one through [`Error::format_unsupported`] or\n[`Error::size_unsupported`] rather than by hand, so they stay exclusive.\n\n**And a third time about the *container*** (note **N211**), which is where N129's\nrepair had stopped: the message stopped saying \"this camera offers\" but `available`\nwent on holding the container's own format list, so `record -o take.y4m` over\n`corpus/profiles/chicony-rgb.json` — a camera enumerating MJPG and YUYV — answered\n`requested: \"MJPG\"` with `available: [\"YUYV\", \"NV12\", \"GREY\"]`. Two of the three\nremedies are formats that sensor has never had, and the one the caller is told it\nasked for was chosen by D5's ranking rather than typed. `ContainerRefusal` is that\ncause's own payload and `container` is what distinguishes it; the door in is\n`Error::container_unsupported`.\n\nSo the variant has three causes and one lever each — a format, a size, a file\nextension — and which one applies is a field rather than a sentence to parse.",
+          "description": "The requested pixel format is not one that would be accepted here.\n\n**Whose list `available` is depends on who refused, and the message must not\nguess.** It said \"this camera offers …\" until 2026-08-15, which is true of D6's\nsource-format refusal and false of the other two callers: `engine::preview`\nanswers with the format the negotiation actually produced, and D7's record path\nanswers with what the *container* would have carried. Measured at the Chicony IR\nsensor, which offers GREY and nothing else — a `record -o x.avi` refusal read\n\"format GREY is unavailable; this camera offers MJPG, JPEG\", naming two formats\nthat camera has never had. An unattended caller obeying it would retry\n`--pixel-format MJPG` against a device with no MJPG, which is the defect the D13\nregistry exists to prevent rather than commit (note **N129**).\n\nThe variant itself is right where it is: design D7 names\n`FormatUnsupported { available }` for the container case in so many words, so this\nis a rendering repair and not a re-litigation of which refusal applies. The\nsentence now says only what is true of every caller — these are the formats that\n*would* be accepted — and which lever to pull is the guide's `Do` column, where a\ncontainer mismatch is answered by changing the container rather than the format.\n\n**And the same lesson had to be learnt again about the *size*** (note **N138**).\nA request refused because no mode could deliver the size it named had nowhere to\nsay so: it reported `requested: None` and the sentence came out *\"format\n(unspecified) is unavailable; MJPG, YUYV would be accepted\"* — about formats, naming\nthe caller's own format as acceptable, never mentioning size. `SizeRefusal` is the\nslot N134 said this variant would need, and `size` is now what distinguishes the two\ncauses; build one through `Error::format_unsupported` or\n`Error::size_unsupported` rather than by hand, so they stay exclusive.\n\n**And a third time about the *container*** (note **N211**), which is where N129's\nrepair had stopped: the message stopped saying \"this camera offers\" but `available`\nwent on holding the container's own format list, so `record -o take.y4m` over\n`corpus/profiles/chicony-rgb.json` — a camera enumerating MJPG and YUYV — answered\n`requested: \"MJPG\"` with `available: [\"YUYV\", \"NV12\", \"GREY\"]`. Two of the three\nremedies are formats that sensor has never had, and the one the caller is told it\nasked for was chosen by D5's ranking rather than typed. `ContainerRefusal` is that\ncause's own payload and `container` is what distinguishes it; the door in is\n`Error::container_unsupported`.\n\nSo the variant has three causes and one lever each — a format, a size, a file\nextension — and which one applies is a field rather than a sentence to parse.",
           "properties": {
             "available": {
               "description": "What would be accepted — the camera's formats, the negotiated one, or the\ncontainer's, according to which of the three callers refused.",
@@ -1508,7 +1519,7 @@
           "type": "object"
         },
         {
-          "description": "The calibration state machine refused a transition (design D8).",
+          "description": "The calibration state machine refused a transition (design D8).\n\n**The condition first and the instruction last**, and the order is the whole of what\nthis rendering decides. The template was `\"cannot {op} from state {from}\"` when D8 was\nthe only producer and `op` was a verb phrase — `\"select\"`, `\"sweep privacy\"` — where a\ntrailing `from state untouched` reads. The variant now has eleven producers across five\ncrates and most of them put a **multi-clause instruction** in `op`, because that is the\nfield a caller acts on; appending anything to such a sentence garbles it. Measured\nthrough the shipped binaries before this changed:\n\n```text\ncannot write a photo to …/x.tiff; this build writes .jpg, .png, .ppm from state unwritable_extension(tiff)\n```\n\nSo `from` becomes the label it has always been — a machine-shaped condition,\n`unwritable_extension(tiff)`, `no_session(nightly)`, `not_one_process(0)` — and `op`\nends the message, where a sentence of any length can end.\n`an_illegal_transitions_instruction_is_the_last_thing_it_says` is what keeps a suffix\nfrom growing back (docs/11 **L29**, note **N212**).",
           "properties": {
             "from": {
               "description": "The state we were in.",
@@ -1519,7 +1530,7 @@
               "type": "string"
             },
             "op": {
-              "description": "The operation attempted.",
+              "description": "The operation attempted.\n\nA whole instruction rather than a verb, for most of the producers: the rendering\nabove puts it last precisely so it can be one.",
               "type": "string"
             }
           },
@@ -1584,7 +1595,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Which of D9's protocols the holder follows, when we could tell.\n\nThe field exists so the refusal can say whether waiting is worth anything:\n[`LockProtocol::advice`] is the one place that turns it into words."
+              "description": "Which of D9's protocols the holder follows, when we could tell.\n\nThe field exists so the refusal can say whether waiting is worth anything:\n`LockProtocol::advice` is the one place that turns it into words."
             }
           },
           "required": [
@@ -1676,113 +1687,113 @@
       ]
     },
     "ErrorKind": {
-      "description": "The discriminant of [`Error`], as a value.\n\n`ALL` is generated from this definition, so a variant cannot be added without\njoining every completeness check that walks it (rubric rule 6: no hand lists).",
+      "description": "The discriminant of `Error`, as a value.\n\n`ALL` is generated from this definition, so a variant cannot be added without\njoining every completeness check that walks it (rubric rule 6: no hand lists).",
       "oneOf": [
         {
           "const": "device_gone",
-          "description": "See [`Error::DeviceGone`].",
+          "description": "See `Error::DeviceGone`.",
           "type": "string"
         },
         {
           "const": "busy",
-          "description": "See [`Error::Busy`].",
+          "description": "See `Error::Busy`.",
           "type": "string"
         },
         {
           "const": "permission_denied",
-          "description": "See [`Error::PermissionDenied`].",
+          "description": "See `Error::PermissionDenied`.",
           "type": "string"
         },
         {
           "const": "camera_unknown",
-          "description": "See [`Error::CameraUnknown`].",
+          "description": "See `Error::CameraUnknown`.",
           "type": "string"
         },
         {
           "const": "camera_ambiguous",
-          "description": "See [`Error::CameraAmbiguous`].",
+          "description": "See `Error::CameraAmbiguous`.",
           "type": "string"
         },
         {
           "const": "control_unknown",
-          "description": "See [`Error::ControlUnknown`].",
+          "description": "See `Error::ControlUnknown`.",
           "type": "string"
         },
         {
           "const": "control_read_only",
-          "description": "See [`Error::ControlReadOnly`].",
+          "description": "See `Error::ControlReadOnly`.",
           "type": "string"
         },
         {
           "const": "control_inactive",
-          "description": "See [`Error::ControlInactive`].",
+          "description": "See `Error::ControlInactive`.",
           "type": "string"
         },
         {
           "const": "format_unsupported",
-          "description": "See [`Error::FormatUnsupported`].",
+          "description": "See `Error::FormatUnsupported`.",
           "type": "string"
         },
         {
           "const": "settle_timeout",
-          "description": "See [`Error::SettleTimeout`].",
+          "description": "See `Error::SettleTimeout`.",
           "type": "string"
         },
         {
           "const": "fingerprint_mismatch",
-          "description": "See [`Error::FingerprintMismatch`].",
+          "description": "See `Error::FingerprintMismatch`.",
           "type": "string"
         },
         {
           "const": "session_conflict",
-          "description": "See [`Error::SessionConflict`].",
+          "description": "See `Error::SessionConflict`.",
           "type": "string"
         },
         {
           "const": "illegal_transition",
-          "description": "See [`Error::IllegalTransition`].",
+          "description": "See `Error::IllegalTransition`.",
           "type": "string"
         },
         {
           "const": "schema_version_foreign",
-          "description": "See [`Error::SchemaVersionForeign`].",
+          "description": "See `Error::SchemaVersionForeign`.",
           "type": "string"
         },
         {
           "const": "store_locked",
-          "description": "See [`Error::StoreLocked`].",
+          "description": "See `Error::StoreLocked`.",
           "type": "string"
         },
         {
           "const": "holder_gone",
-          "description": "See [`Error::HolderGone`].",
+          "description": "See `Error::HolderGone`.",
           "type": "string"
         },
         {
           "const": "device_io",
-          "description": "See [`Error::DeviceIo`].",
+          "description": "See `Error::DeviceIo`.",
           "type": "string"
         },
         {
           "const": "storage_io",
-          "description": "See [`Error::StorageIo`].",
+          "description": "See `Error::StorageIo`.",
           "type": "string"
         }
       ]
     },
     "Failure": {
-      "description": "A failed `--json` invocation, as the document standard output carries (owner ruling,\n2026-08-15; note **N127**).\n\n**Why this exists.** AGENTS' opening section says the error vocabulary is read\nunsupervised — *\"`Busy` means retry, `DeviceGone` means stop and tell the human,\n`PermissionDenied` means a setup problem — collapsing them makes the agent guess\"* — and\nnote **N124** measured that the discriminant reached no command-line caller at all: both\nroots printed one `Display` sentence to standard error, exited 1 for every one of the\neighteen kinds, and left standard output empty. The owner's ruling is that **the JSON is\nthe mechanism and it must be self-contained**, with distinct exit codes as redundancy\nbeside it ([`crate::error`]'s consumers reach those through `cli_core::exit_code`).\n\n**Three fields, and each answers a different question a reader has:**\n\n| Field | Answers |\n|---|---|\n| [`FAILURE_MARKER`] (`failed`) | *is this a failure?* — before anything else is parsed |\n| `error` | *which failure, and with what?* — the D13 value in the registry's own serde spelling, payload included |\n| `message` | *what would a human have been told?* — [`Error`]'s own `Display`, the same sentence standard error carries |\n\n**The error is nested rather than flattened, and that is a defect avoided rather than a\npreference.** Two variants of the registry — [`Error::DeviceIo`] and [`Error::StorageIo`]\n— carry a `message` field of their own, so flattening the payload beside this document's\n`message` would put two different strings under one key and let serde pick. Nesting also\nmakes the payload exactly what the wire's `data` object is (design D10), so a client\nauthor reading `schemas/webcam-handler-openrpc.json` and an agent reading a command line's\nstandard output are looking at the same bytes.\n\n**What is deliberately not here is the JSON-RPC code.** That number is a fact about the\nwire (D10), `webcam-handler-cli-core` links no `webcam-handler-api` — the dependency wall\n`scripts/gates/dependency-walls.sh` calls \"pure\", which jsonrpsee's tokio edge would\nbreak — and the command line's own numeric redundancy is the exit code. Two numeric\nregistries in one document would be two things a caller could branch on and one of them\nwould be the wrong one.\n\n**This is not an envelope.** `--json` still emits one `webcam-handler-schema` type\nverbatim; a failure emits a *different* type from an answer, which is why the success\ndocuments did not move and why `cli_core::render`'s \"no envelope, no timestamp, no tool\nversion\" rule is untouched.",
+      "description": "A failed `--json` invocation, as the document standard output carries (owner ruling,\n2026-08-15; note **N127**).\n\n**Why this exists.** AGENTS' opening section says the error vocabulary is read\nunsupervised — *\"`Busy` means retry, `DeviceGone` means stop and tell the human,\n`PermissionDenied` means a setup problem — collapsing them makes the agent guess\"* — and\nnote **N124** measured that the discriminant reached no command-line caller at all: both\nroots printed one `Display` sentence to standard error, exited 1 for every one of the\neighteen kinds, and left standard output empty. The owner's ruling is that **the JSON is\nthe mechanism and it must be self-contained**, with distinct exit codes as redundancy\nbeside it (`error`'s consumers reach those through `cli_core::exit_code`).\n\n**Three fields, and each answers a different question a reader has:**\n\n| Field | Answers |\n|---|---|\n| `FAILURE_MARKER` (`failed`) | *is this a failure?* — before anything else is parsed |\n| `error` | *which failure, and with what?* — the D13 value in the registry's own serde spelling, payload included |\n| `message` | *what would a human have been told?* — `Error`'s own `Display`, the same sentence standard error carries |\n\n**The error is nested rather than flattened, and that is a defect avoided rather than a\npreference.** Two variants of the registry — `Error::DeviceIo` and `Error::StorageIo`\n— carry a `message` field of their own, so flattening the payload beside this document's\n`message` would put two different strings under one key and let serde pick. Nesting also\nmakes the payload exactly what the wire's `data` object is (design D10), so a client\nauthor reading `schemas/webcam-handler-openrpc.json` and an agent reading a command line's\nstandard output are looking at the same bytes.\n\n**What is deliberately not here is the JSON-RPC code.** That number is a fact about the\nwire (D10), `webcam-handler-cli-core` links no `webcam-handler-api` — the dependency wall\n`scripts/gates/dependency-walls.sh` calls \"pure\", which jsonrpsee's tokio edge would\nbreak — and the command line's own numeric redundancy is the exit code. Two numeric\nregistries in one document would be two things a caller could branch on and one of them\nwould be the wrong one.\n\n**This is not an envelope.** `--json` still emits one `webcam-handler-schema` type\nverbatim; a failure emits a *different* type from an answer, which is why the success\ndocuments did not move and why `cli_core::render`'s \"no envelope, no timestamp, no tool\nversion\" rule is untouched.",
       "properties": {
         "error": {
           "$ref": "#/$defs/Error",
-          "description": "The typed error, serialized exactly as the wire's `data` object is.\n\nThe discriminant is its `kind` tag in the registry's own snake_case spelling, and every\nactionable field the variant carries is beside it — the `available` formats of a\n[`Error::FormatUnsupported`], the `holders` of a [`Error::Busy`], the `path` of a\n[`Error::StorageIo`]. Those payloads are the entire reason the variants carry data, and\na document that dropped them would be the English sentence again wearing braces."
+          "description": "The typed error, serialized exactly as the wire's `data` object is.\n\nThe discriminant is its `kind` tag in the registry's own snake_case spelling, and every\nactionable field the variant carries is beside it — the `available` formats of a\n`Error::FormatUnsupported`, the `holders` **and** the `this_process` of a\n`Error::Busy`, the `path` of a `Error::StorageIo`. Those payloads are the entire\nreason the variants carry data, and a document that dropped them would be the English\nsentence again wearing braces.\n\nThe enumeration is illustrative and it still has to be *true*: it named `holders` alone\nfor a day after `Occupation` landed beside it, which is the failure mode the whole\nregistry exists to avoid, one document along (note **N222**)."
         },
         "failed": {
-          "description": "Always `true`, and the reader's first question answered without parsing anything else.\n\nPrivate, with [`Failure::new`] as the only constructor, because it is a constant of the\nshape rather than data: a `Failure` somebody could build with `failed: false` would be\na refusal document announcing that nothing was refused.\n\nRefused on the way *in* as well — `refuse_a_document_that_says_it_did_not_fail` below is\nthe deserializer — so a consumer deserializing into this type cannot end up holding one\neither, which is the half a constructor alone cannot give: the bytes arrive from\nsomewhere else.",
+          "description": "Always `true`, and the reader's first question answered without parsing anything else.\n\nPrivate, with `Failure::new` as the only constructor, because it is a constant of the\nshape rather than data: a `Failure` somebody could build with `failed: false` would be\na refusal document announcing that nothing was refused.\n\nRefused on the way *in* as well — `refuse_a_document_that_says_it_did_not_fail` below is\nthe deserializer — so a consumer deserializing into this type cannot end up holding one\neither, which is the half a constructor alone cannot give: the bytes arrive from\nsomewhere else.",
           "type": "boolean"
         },
         "message": {
-          "description": "What a person watching a terminal was told, without the program's name in front of it.\n\n[`Error`]'s own `Display` and never a second rendering (design §2.10) — the same string\nthe wire's `message` carries and the same one `Program::error_line` prefixes on standard\nerror, so the two channels cannot come to describe one failure differently.",
+          "description": "What a person watching a terminal was told, without the program's name in front of it.\n\n`Error`'s own `Display` and never a second rendering (design §2.10) — the same string\nthe wire's `message` carries and the same one `Program::error_line` prefixes on standard\nerror, so the two channels cannot come to describe one failure differently.",
           "type": "string"
         }
       },
@@ -1898,7 +1909,7 @@
           "type": "object"
         },
         {
-          "description": "An interval described with a `v4l2_frmivaltypes` value this build cannot interpret.\nCarried for [`FrameSize::Unknown`]'s reason.",
+          "description": "An interval described with a `v4l2_frmivaltypes` value this build cannot interpret.\nCarried for `FrameSize::Unknown`'s reason.",
           "properties": {
             "kind": {
               "const": "unknown",
@@ -2158,7 +2169,7 @@
       ]
     },
     "KnownFlag": {
-      "description": "The control flag bits this version names.\n\nFlags are carried as raw bits *plus* this decoded set, because the set grows:\n`HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support\nbehind PF:1 and older references do not list it [PF:12]. Bits outside this\nvocabulary survive in [`ControlFlags::unknown_bits`].",
+      "description": "The control flag bits this version names.\n\nFlags are carried as raw bits *plus* this decoded set, because the set grows:\n`HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support\nbehind PF:1 and older references do not list it [PF:12]. Bits outside this\nvocabulary survive in `ControlFlags::unknown_bits`.",
       "oneOf": [
         {
           "const": "disabled",
@@ -2246,7 +2257,7 @@
       "type": "object"
     },
     "LockProtocol": {
-      "description": "Which of D9's two locking protocols the holder of the state directory follows.\n\nBoth take the same advisory lock the same way; what differs is how long it is held,\nand that difference is the whole of what a refused caller needs. A lock held for a\nprocess's lifetime will not be free in a moment, so retrying is pointless and the\nanswer is another program; a lock held for one operation will be free shortly, so\nretrying is the whole answer.\n\n**Here rather than in `webcam-handler-engine::store`, where the locking lives**,\nbecause [`Error::StoreLocked`] carries it: a refusal that cannot say which protocol\nholds the lock cannot tell the caller which of those two answers applies, and\n`webcam-handler-schema` cannot depend on the engine. The engine re-exports this\ntype, so the locking code still names one definition (design §2.10) — see note N40.",
+      "description": "Which of D9's two locking protocols the holder of the state directory follows.\n\nBoth take the same advisory lock the same way; what differs is how long it is held,\nand that difference is the whole of what a refused caller needs. A lock held for a\nprocess's lifetime will not be free in a moment, so retrying is pointless and the\nanswer is another program; a lock held for one operation will be free shortly, so\nretrying is the whole answer.\n\n**Here rather than in `webcam-handler-engine::store`, where the locking lives**,\nbecause `Error::StoreLocked` carries it: a refusal that cannot say which protocol\nholds the lock cannot tell the caller which of those two answers applies, and\n`webcam-handler-schema` cannot depend on the engine. The engine re-exports this\ntype, so the locking code still names one definition (design §2.10) — see note N40.",
       "oneOf": [
         {
           "const": "held_for_lifetime",
@@ -2769,8 +2780,38 @@
         }
       ]
     },
+    "Occupation": {
+      "description": "What the process that refused is itself doing with the camera's node.\n\n`Error::Busy`'s `holders` answers *who has it* by walking `/proc`, and there is one\nholder it deliberately never names: **this process**. A daemon that refuses its own\ncaller knows precisely what it is doing and will not hand over its own pid, because a\npid in a refusal is an invitation to signal it (`daemon::record`'s header). What was\nmissing is the other half of that decision — *what for* — without which the refusal\nread as \"somebody unidentified has it\" and sent an unattended caller looking for a\nprocess to kill (docs/11 **M19**, note **N217**).\n\n**Every in-process producer in the workspace has an alternative here**, and that is\nthe property rather than a tidiness. The moment one of them goes through\n`Error::busy` instead, *\"held by an unidentified process\"* is back — about the\nprogram the caller is talking to — and the guide's row telling a reader that an absent\n`this_process` means another program is false with it. Three producers shipped that\nway inside this repair and note **N221** is the entry for them.\n\nEvery alternative says what ends it, because that is what makes `Busy`'s *retry*\ndisposition true: the caller is told what to wait for, not merely to wait. None of them\nnames a verb to poll with, and that is measured rather than terse — the surface this\nrefusal reaches most often has none to offer (note **N220**).",
+      "oneOf": [
+        {
+          "const": "recording",
+          "description": "A recording this process is running for a caller.\n\nBounded by the take's own duration (`limits::MAX_RECORDING_MS` at the outside), so\nretrying is the action that succeeds.",
+          "type": "string"
+        },
+        {
+          "const": "starting_recording",
+          "description": "A `record_start` this process is still negotiating.\n\nThe slot is claimed and the stream is not up yet. It resolves either way in the\ntime one `VIDIOC_STREAMON` takes, which is why it is told apart from\n`Occupation::Recording`: what a caller waits for is different, and so is how\nlong.",
+          "type": "string"
+        },
+        {
+          "const": "running_commands",
+          "description": "This process's own commands for the camera, queued to the depth it allows.\n\n`engine::actor` gives each camera one thread and a bounded inbox\n(`limits::CAMERA_COMMAND_QUEUE_DEPTH`), so a full one is this process's work in the\nway and never a device that is unavailable (E3). It is the alternative a caller can\ndo something about beyond waiting: D12's `wait` spends\n`limits::CAMERA_ENQUEUE_WAIT_MS` on room in exactly this queue, so it helps here\nand with no other alternative.",
+          "type": "string"
+        },
+        {
+          "const": "streaming",
+          "description": "A stream this process already has open on the node.\n\nOne streamer per node is the kernel's rule and this build's, so a second\n`start_stream` on a handle that is already streaming is refused before `S_FMT`\nwould say `EBUSY` a moment later and tear down buffers the caller is still\ndequeuing from (note **N191**). It ends when the stream that is up ends.",
+          "type": "string"
+        },
+        {
+          "const": "streaming_preview",
+          "description": "A preview this process is already serving to every viewer it will.\n\nThe node is streaming and what refuses is not the node: it is a count,\n`limits::PREVIEW_MAX_VIEWERS_PER_CAMERA`. Its own alternative because it is the one\na second browser tab meets, and because what ends it is a viewer leaving rather\nthan a stream stopping.",
+          "type": "string"
+        }
+      ]
+    },
     "PhotoDelivery": {
-      "description": "Where a photo's bytes ended up — [`Sink`], answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports how\nmuch is on its way. **The bytes themselves are not in this document**: `webcam-handler-cli`\nstreams them to standard output, and D10's base64-in-JSON encoding lives with the wire\nsurface that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report\nrather than inside this enum. Carrying an unused encoding here would be a dependency nobody\nreads, and it would put base64 in every session file and `--json` document too.",
+      "description": "Where a photo's bytes ended up — `Sink`, answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports how\nmuch is on its way. **The bytes themselves are not in this document**: `webcam-handler-cli`\nstreams them to standard output, and D10's base64-in-JSON encoding lives with the wire\nsurface that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report\nrather than inside this enum. Carrying an unused encoding here would be a dependency nobody\nreads, and it would put base64 in every session file and `--json` document too.",
       "oneOf": [
         {
           "description": "The bytes were handed back to the caller.",
@@ -3004,7 +3045,7 @@
         },
         "wait": {
           "default": false,
-          "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag: *\"a second capture request queues or is refused with `Busy` per its\n`wait` flag\"*. `false` — the default, and the shape every client sent before this\nfield existed — is [`crate::Error::Busy`] the moment\n[`crate::limits::CAMERA_COMMAND_QUEUE_DEPTH`] commands are already waiting. `true`\nwaits for room, bounded by [`crate::limits::CAMERA_ENQUEUE_WAIT_MS`], and takes the\n*same* refusal when that budget is spent: the flag changes when the answer arrives,\nnever what it is.\n\n`#[serde(default)]` like its three siblings, so a request written before this field\nexisted still parses and still means what it meant. `false` rather than `true` for\nthe same reason: it is the behaviour every caller has already met, and a default that\nsilently turned a prompt refusal into ten seconds of latency would be a change to\nrequests nobody rewrote.\n\nIt is on the *request* rather than beside it because the T4 executor surface takes\none `&PhotoRequest` and the T5 method takes one assembled request (design §2.10), so\na value here reaches every caller without a second parameter on three signatures.\nThe flag is meaningful only where something else can be holding the camera's one\nthread, which today is the daemon; note **N42** records why it has no command-line\nspelling yet.",
+          "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag: *\"a second capture request queues or is refused with `Busy` per its\n`wait` flag\"*. `false` — the default, and the shape every client sent before this\nfield existed — is `Error::Busy` the moment\n`limits::CAMERA_COMMAND_QUEUE_DEPTH` commands are already waiting. `true`\nwaits for room, bounded by `limits::CAMERA_ENQUEUE_WAIT_MS`, and takes the\n*same* refusal when that budget is spent: the flag changes when the answer arrives,\nnever what it is.\n\n`#[serde(default)]` like its three siblings, so a request written before this field\nexisted still parses and still means what it meant. `false` rather than `true` for\nthe same reason: it is the behaviour every caller has already met, and a default that\nsilently turned a prompt refusal into ten seconds of latency would be a change to\nrequests nobody rewrote.\n\nIt is on the *request* rather than beside it because the T4 executor surface takes\none `&PhotoRequest` and the T5 method takes one assembled request (design §2.10), so\na value here reaches every caller without a second parameter on three signatures.\nThe flag is meaningful only where something else can be holding the camera's one\nthread, which today is the daemon; note **N42** records why it has no command-line\nspelling yet.",
           "type": "boolean"
         }
       },
@@ -3023,7 +3064,7 @@
       "description": "The part of a profile that should not change unless the device or the kernel does.",
       "properties": {
         "controls": {
-          "description": "The full control set, with `current` cleared and the volatile flag bits masked\nout — see [`invariant_control`].",
+          "description": "The full control set, with `current` cleared and the volatile flag bits masked\nout — see `invariant_control`.",
           "items": {
             "$ref": "#/$defs/ControlDesc"
           },
@@ -3159,7 +3200,7 @@
           "type": "object"
         },
         {
-          "description": "The camera has been moved to the next value; the sensor is settling.\n\nEmitted before the capture rather than after it because the capture is the slow\npart: a bar that only advances on [`CalibrationProgress::SampleTaken`] sits still\nfor the seconds that actually pass. It carries `{requested, applied}` for the same\nreason every other layer does — the driver may have taken something else [PF:6],\nand a viewer watching a sweep should see that when it happens, not when the\nsession file is read afterwards.",
+          "description": "The camera has been moved to the next value; the sensor is settling.\n\nEmitted before the capture rather than after it because the capture is the slow\npart: a bar that only advances on `CalibrationProgress::SampleTaken` sits still\nfor the seconds that actually pass. It carries `{requested, applied}` for the same\nreason every other layer does — the driver may have taken something else [PF:6],\nand a viewer watching a sweep should see that when it happens, not when the\nsession file is read afterwards.",
           "properties": {
             "applied": {
               "description": "The value the device actually holds.",
@@ -3366,7 +3407,7 @@
       ]
     },
     "RecordReport": {
-      "description": "What one recording turned out to be (design D7, D10).\n\n[`crate::capture::PhotoReport`]'s counterpart. Every field is a measurement of what\nhappened rather than a restatement of the request — `negotiated` is D5's \"requested is not\napplied\" for a stream that ran for seconds rather than for one frame, `format` is the\ncontainer the pairing chose, and `summary` is what the container itself counted.",
+      "description": "What one recording turned out to be (design D7, D10).\n\n`capture::PhotoReport`'s counterpart. Every field is a measurement of what\nhappened rather than a restatement of the request — `negotiated` is D5's \"requested is not\napplied\" for a stream that ran for seconds rather than for one frame, `format` is the\ncontainer the pairing chose, and `summary` is what the container itself counted.",
       "properties": {
         "camera": {
           "$ref": "#/$defs/CameraId",
@@ -3378,7 +3419,7 @@
         },
         "format": {
           "$ref": "#/$defs/VideoFormat",
-          "description": "The container it is in.\n\nReported rather than assumed, because a request that named no extension let the\nnegotiated stream decide — so this is the answer to a question the caller may have\nleft open (see [`RecordRequest::container`])."
+          "description": "The container it is in.\n\nReported rather than assumed, because a request that named no extension let the\nnegotiated stream decide — so this is the answer to a question the caller may have\nleft open (see `RecordRequest::container`)."
         },
         "negotiated": {
           "$ref": "#/$defs/NegotiatedStream",
@@ -3390,14 +3431,14 @@
         },
         "started_at": {
           "$ref": "#/$defs/Stamp",
-          "description": "When the recording started, on the wall clock.\n\nThe caller's [`Stamp`], as `PhotoReport::taken_at` is: the engine reads no clock\n(design §2.10), and the monotonic one this report's [`RecordReport::wall_clock_ms`]\ncomes from is a different question — conflating them is how an NTP step becomes a\nduration."
+          "description": "When the recording started, on the wall clock.\n\nThe caller's `Stamp`, as `PhotoReport::taken_at` is: the engine reads no clock\n(design §2.10), and the monotonic one this report's `RecordReport::wall_clock_ms`\ncomes from is a different question — conflating them is how an NTP step becomes a\nduration."
         },
         "summary": {
           "$ref": "#/$defs/RecordingSummary",
           "description": "What the container counted."
         },
         "wall_clock_ms": {
-          "description": "How long the recording took on the engine's monotonic clock, in milliseconds.\n\n**Beside [`RecordingSummary::span_us`] rather than instead of it, because they are\ntwo measurements and the difference between them is a finding.** `span_us` is the last\nwritten frame's timestamp minus the first's, on the *driver's* clock and in\nmicroseconds; this is the engine's own elapsed time across the whole take, in\nmilliseconds. `webcam-handler-imaging` reads no clock of its own — its\n`RecordingCaps::max_span` doc says wall-clock time is the caller's question — and this\nengine is that caller.\n\nThree things make the two disagree, and a caller can tell them apart from the rest of\nthis document: a **driver clock that ran slow or fast** (the span is short or long\nagainst a wall clock that is not), **frames dropped before they reached us**\n([`RecordingSummary::dropped_frames`] is non-zero), and **time spent in our own loop**\n— the wall clock includes the header write, the settle-free start, the close-time\nindex and every turn that brought no frame, none of which are inside the span. The\nwall clock is therefore always the larger of the two for an honest take, and a span\nthat *exceeds* it is a driver clock this host does not share.\n\n**The file's own declared duration is a third number and it is not the span.** A\nconstant-rate container declares `frames_written × declared_interval_us`, while the\ninterval is the mean of `frames_written - 1` gaps — so a healthy take's file legitimately\nclaims **one frame period more** video than this wall clock, and a comparison written the\nobvious way goes red on a camera that is working (note **N120**; measured at 1102 ms\ndeclared against 1016 ms of wall clock on a 8 fps take). The bound docs/7 P6d asks for is\ntherefore two-sided: at most one frame period above, and `MAX_WALL_CLOCK_OVERHANG_MS`\nbelow, with `crates/backends/v4l2/tests/hardware.rs` carrying the measurement.\n\nMilliseconds rather than microseconds because that is the resolution the engine's\nclock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by\nmultiplying by a thousand would be three digits of precision nobody measured.\n\nThis pair is docs/7 **P6d**'s criterion — the declared-vs-wall-clock duration bound,\nmeasured on a real capture — which is why both live in the one document a `--json`\nconsumer already has.",
+          "description": "How long the recording took on the engine's monotonic clock, in milliseconds.\n\n**Beside `RecordingSummary::span_us` rather than instead of it, because they are\ntwo measurements and the difference between them is a finding.** `span_us` is the last\nwritten frame's timestamp minus the first's, on the *driver's* clock and in\nmicroseconds; this is the engine's own elapsed time across the whole take, in\nmilliseconds. `webcam-handler-imaging` reads no clock of its own — its\n`RecordingCaps::max_span` doc says wall-clock time is the caller's question — and this\nengine is that caller.\n\nThree things make the two disagree, and a caller can tell them apart from the rest of\nthis document: a **driver clock that ran slow or fast** (the span is short or long\nagainst a wall clock that is not), **frames dropped before they reached us**\n(`RecordingSummary::dropped_frames` is non-zero), and **time spent in our own loop**\n— the wall clock includes the header write, the settle-free start, the close-time\nindex and every turn that brought no frame, none of which are inside the span. The\nwall clock is therefore always the larger of the two for an honest take, and a span\nthat *exceeds* it is a driver clock this host does not share.\n\n**The file's own declared duration is a third number and it is not the span.** A\nconstant-rate container declares `frames_written × declared_interval_us`, while the\ninterval is the mean of `frames_written - 1` gaps — so a healthy take's file legitimately\nclaims **one frame period more** video than this wall clock, and a comparison written the\nobvious way goes red on a camera that is working (note **N120**; measured at 1102 ms\ndeclared against 1016 ms of wall clock on a 8 fps take). The bound docs/7 P6d asks for is\ntherefore two-sided: at most one frame period above, and `MAX_WALL_CLOCK_OVERHANG_MS`\nbelow, with `crates/backends/v4l2/tests/hardware.rs` carrying the measurement.\n\nMilliseconds rather than microseconds because that is the resolution the engine's\nclock actually has (`engine::settle::Millis`), and a `wall_clock_us` filled in by\nmultiplying by a thousand would be three digits of precision nobody measured.\n\nThis pair is docs/7 **P6d**'s criterion — the declared-vs-wall-clock duration bound,\nmeasured on a real capture — which is why both live in the one document a `--json`\nconsumer already has.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -3416,10 +3457,10 @@
       "type": "object"
     },
     "RecordRequest": {
-      "description": "Everything one recording needs (design D7, D10).\n\n[`crate::capture::PhotoRequest`]'s counterpart, and deliberately smaller than it. There is\nno `settle` field: the frames immediately after `STREAMON` are dark until AE converges\n[PF:11], and a *photo* discards them because one dark frame is the whole answer — a\nrecording's are visible in the file beside everything that follows, and discarding them\nwould move the recording's start away from where the caller put it. An agent filming a\ntransition asked for the moment it asked for. Note **N111** records the decision.\n\nThere is no `format` field either, and that is [`RecordRequest::container`]'s paragraph:\nthe sink path's extension names the container, exactly as it names a photo's encoding.",
+      "description": "Everything one recording needs (design D7, D10).\n\n`capture::PhotoRequest`'s counterpart, and deliberately smaller than it. There is\nno `settle` field: the frames immediately after `STREAMON` are dark until AE converges\n[PF:11], and a *photo* discards them because one dark frame is the whole answer — a\nrecording's are visible in the file beside everything that follows, and discarding them\nwould move the recording's start away from where the caller put it. An agent filming a\ntransition asked for the moment it asked for. Note **N111** records the decision.\n\nThere is no `format` field either, and that is `RecordRequest::container`'s paragraph:\nthe sink path's extension names the container, exactly as it names a photo's encoding.",
       "properties": {
         "duration_ms": {
-          "description": "How long to record, in milliseconds. `None` is\n[`crate::limits::DEFAULT_RECORDING_MS`].\n\nRead through [`RecordRequest::budget_ms`], which is where the default and the cap\nlive; a caller that read this field directly would be reading a request rather than a\ndecision.",
+          "description": "How long to record, in milliseconds. `None` is\n`limits::DEFAULT_RECORDING_MS`.\n\nRead through `RecordRequest::budget_ms`, which is where the default and the cap\nlive; a caller that read this field directly would be reading a request rather than a\ndecision.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3429,18 +3470,18 @@
         },
         "sink": {
           "$ref": "#/$defs/Sink",
-          "description": "Where the file goes.\n\nA [`Sink::ServerPath`] and nothing else — see [`RecordRequest::server_path`] for the\nrefusal and note **N110** for why this verb narrows D10's two-variant DTO rather than\nchanging it."
+          "description": "Where the file goes.\n\nA `Sink::ServerPath` and nothing else — see `RecordRequest::server_path` for the\nrefusal and note **N110** for why this verb narrows D10's two-variant DTO rather than\nchanging it."
         },
         "stream": {
           "$ref": "#/$defs/StreamRequest",
           "default": {
             "buffer_count": 4
           },
-          "description": "What to ask the device's format negotiation for.\n\nThe negotiated answer decides the container when the sink path named none, so this\nfield and [`RecordRequest::container`] are the two halves of one question — which is\nwhy [`VideoFormat::resolve`] takes both and refuses rather than picking a winner."
+          "description": "What to ask the device's format negotiation for.\n\nThe negotiated answer decides the container when the sink path named none, so this\nfield and `RecordRequest::container` are the two halves of one question — which is\nwhy `VideoFormat::resolve` takes both and refuses rather than picking a winner."
         },
         "wait": {
           "default": false,
-          "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag, in the same shape and for the same reasons\n[`crate::capture::PhotoRequest::wait`] carries it — that field's doc is the argument\nand this one is not a second copy of it. What is worth saying twice is which *call* it\nbounds: a recording is a chain of turns (note **N111**), and only the **first** of them\nnegotiates a stream on a camera somebody else may be holding. So this flag decides how\n`record_start` meets a busy camera and nothing else — the turns that follow are issued\nby a driver that already owns the take, and a recording that had to re-queue per frame\nwould be a recording bounded by other clients rather than by its own duration.\n\n`#[serde(default)]` for [`crate::capture::PhotoRequest::wait`]'s reason: `false` is the\nbehaviour every caller written before this field existed already meets, and a default\nthat turned a prompt [`Error::Busy`] into ten seconds of latency would change requests\nnobody rewrote.",
+          "description": "Whether a request that finds the camera's command queue full waits for its turn.\n\nD12's flag, in the same shape and for the same reasons\n`capture::PhotoRequest::wait` carries it — that field's doc is the argument\nand this one is not a second copy of it. What is worth saying twice is which *call* it\nbounds: a recording is a chain of turns (note **N111**), and only the **first** of them\nnegotiates a stream on a camera somebody else may be holding. So this flag decides how\n`record_start` meets a busy camera and nothing else — the turns that follow are issued\nby a driver that already owns the take, and a recording that had to re-queue per frame\nwould be a recording bounded by other clients rather than by its own duration.\n\n`#[serde(default)]` for `capture::PhotoRequest::wait`'s reason: `false` is the\nbehaviour every caller written before this field existed already meets, and a default\nthat turned a prompt `Error::Busy` into ten seconds of latency would change requests\nnobody rewrote.",
           "type": "boolean"
         }
       },
@@ -3450,7 +3491,7 @@
       "type": "object"
     },
     "RecordStatus": {
-      "description": "What one camera's recording is doing (design D10; docs/7 P6c).\n\n**The answer to `record_status`, and D10's whole progress mechanism**: *\"progress by\npolling `record_status` — no recording subscription in v1\"*. A recording runs for seconds\nor minutes on a camera the caller does not hold, so the only thing a caller can do between\n`record_start` and `record_stop` is ask; this is the shape of the asking.\n\nIt is a **struct with an optional take** rather than a three-armed enum, and the shape is\nthe claim: a camera has at most one take, so \"is there one\" and \"what is it doing\" are one\nquestion with one answer and [`RecordStatus::is_running`] is the one predicate every\nconsumer branches on. A client's poll loop, `webcam-handler-cli`'s renderer and the\ndaemon's own refusals all read that one function, which is what stops three copies of \"has\nit finished?\" from disagreeing about a take whose driver has stopped but whose container is\nstill closing.",
+      "description": "What one camera's recording is doing (design D10; docs/7 P6c).\n\n**The answer to `record_status`, and D10's whole progress mechanism**: *\"progress by\npolling `record_status` — no recording subscription in v1\"*. A recording runs for seconds\nor minutes on a camera the caller does not hold, so the only thing a caller can do between\n`record_start` and `record_stop` is ask; this is the shape of the asking.\n\nIt is a **struct with an optional take** rather than a three-armed enum, and the shape is\nthe claim: a camera has at most one take, so \"is there one\" and \"what is it doing\" are one\nquestion with one answer and `RecordStatus::is_running` is the one predicate every\nconsumer branches on. A client's poll loop, `webcam-handler-cli`'s renderer and the\ndaemon's own refusals all read that one function, which is what stops three copies of \"has\nit finished?\" from disagreeing about a take whose driver has stopped but whose container is\nstill closing.",
       "properties": {
         "camera": {
           "$ref": "#/$defs/CameraId",
@@ -3474,21 +3515,21 @@
       "type": "object"
     },
     "RecordingEnd": {
-      "description": "Why a recording stopped.\n\n[`RecordingSummary::cap_reached`] answers a narrower question — *which bound the\ncontainer refused a frame at* — and it is `None` for every recording that ended for\none of the other four reasons below. An agent reading only that field cannot tell a\ntake that ran its whole duration from one whose camera went silent after two frames,\nand those are different findings about the device under test: the first is a\nrecording, the second is a defect. So the ending is carried as its own closed\nvocabulary, walked by\n`engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —\nbecause an ending nothing can produce is a word in a report rather than an answer.",
+      "description": "Why a recording stopped.\n\n`RecordingSummary::cap_reached` answers a narrower question — *which bound the\ncontainer refused a frame at* — and it is `None` for every recording that ended for\none of the other four reasons below. An agent reading only that field cannot tell a\ntake that ran its whole duration from one whose camera went silent after two frames,\nand those are different findings about the device under test: the first is a\nrecording, the second is a defect. So the ending is carried as its own closed\nvocabulary, walked by\n`engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —\nbecause an ending nothing can produce is a word in a report rather than an answer.",
       "oneOf": [
         {
           "const": "duration",
-          "description": "The wall-clock budget the request asked for was spent.\n\nThe ordinary ending, and the one [`RecordRequest::budget_ms`] names. Measured on\nthe engine's own monotonic clock rather than on the driver's frame timestamps —\nsee [`RecordReport::wall_clock_ms`] for why a recording is bounded by both.",
+          "description": "The wall-clock budget the request asked for was spent.\n\nThe ordinary ending, and the one `RecordRequest::budget_ms` names. Measured on\nthe engine's own monotonic clock rather than on the driver's frame timestamps —\nsee `RecordReport::wall_clock_ms` for why a recording is bounded by both.",
           "type": "string"
         },
         {
           "const": "cap",
-          "description": "One of the bounds `engine::record::caps` assembles out of\n[`crate::limits`] refused a frame.\n\n[`RecordingSummary::cap_reached`] names which one; it is `Some` exactly when the\nending is this.",
+          "description": "One of the bounds `engine::record::caps` assembles out of\n`limits` refused a frame.\n\n`RecordingSummary::cap_reached` names which one; it is `Some` exactly when the\nending is this.",
           "type": "string"
         },
         {
           "const": "device_quiet",
-          "description": "The device stopped delivering.\n\n[`crate::limits::RECORDING_MAX_EMPTY_TURNS`] consecutive turns brought no frame,\nwhich is the bound that covers the case the duration cannot: a driver answering\npromptly and delivering nothing, on a clock that is not moving. AGENTS rule 7 is\nwhy it is an *ending* rather than an error — the recording it produced is real\nand its frames are the device's own; what is being reported is that there were no\nmore of them.",
+          "description": "The device stopped delivering.\n\n`limits::RECORDING_MAX_EMPTY_TURNS` consecutive turns brought no frame,\nwhich is the bound that covers the case the duration cannot: a driver answering\npromptly and delivering nothing, on a clock that is not moving. AGENTS rule 7 is\nwhy it is an *ending* rather than an error — the recording it produced is real\nand its frames are the device's own; what is being reported is that there were no\nmore of them.",
           "type": "string"
         },
         {
@@ -3906,7 +3947,7 @@
       "type": "object"
     },
     "SessionListing": {
-      "description": "One session in a listing, as the directory tree alone describes it.\n\n**Nothing here is parsed out of a session document**, and that is the property rather\nthan a shortcut: D9 chose UUIDv7 so a listing sorts chronologically without opening a\nfile, so listing costs no parse, cannot fail on the one session whose document is\ncorrupt, and still shows a session written by a build this one cannot read. Reading a\nsession is [`SessionStatus`]'s job, and it is the one that refuses a foreign version.",
+      "description": "One session in a listing, as the directory tree alone describes it.\n\n**Nothing here is parsed out of a session document**, and that is the property rather\nthan a shortcut: D9 chose UUIDv7 so a listing sorts chronologically without opening a\nfile, so listing costs no parse, cannot fail on the one session whose document is\ncorrupt, and still shows a session written by a build this one cannot read. Reading a\nsession is `SessionStatus`'s job, and it is the one that refuses a foreign version.",
       "properties": {
         "camera": {
           "description": "The camera, as the fingerprint slug that names its directory.",
@@ -3934,7 +3975,7 @@
       "type": "object"
     },
     "SessionStatus": {
-      "description": "A session and its history — what `calibrate status` answers.\n\nTwo documents rather than one, and both of them, because they answer different\nquestions and neither can be read off the other. [`Session`] is *where the session\nstands*: which controls are calibrated, at what value, chosen by whom. The log is\n*what happened to get there*, and it holds the facts the document by design does not —\nwhich automation controls were switched off, and, when a sweep stopped early, the\nrefusal that stopped it ([`SessionEvent::SweepInterrupted`]).",
+      "description": "A session and its history — what `calibrate status` answers.\n\nTwo documents rather than one, and both of them, because they answer different\nquestions and neither can be read off the other. `Session` is *where the session\nstands*: which controls are calibrated, at what value, chosen by whom. The log is\n*what happened to get there*, and it holds the facts the document by design does not —\nwhich automation controls were switched off, and, when a sweep stopped early, the\nrefusal that stopped it (`SessionEvent::SweepInterrupted`).",
       "properties": {
         "log": {
           "default": [],
@@ -4063,10 +4104,10 @@
       ]
     },
     "SizeRefusal": {
-      "description": "The size half of a [`Error::FormatUnsupported`]: the frame size a caller named, and\nevery size the device can actually deliver.\n\n**A refusal has to say which knob to turn.** `FormatUnsupported` carried one slot for\n\"what was asked for\" and it held a [`PixelFormat`], so a request refused for its *size*\nhad to report `requested: None` and a list of formats — which rendered as *\"format\n(unspecified) is unavailable; MJPG, YUYV would be accepted\"* and told an unattended\ncaller that the half of its request that was answerable was the problem. Retrying with\none of the formats named produces the identical refusal, so the guide's *\"fix the\nrequest\"* disposition becomes a loop: note **N129**'s misdirection class, at the same\nvariant, one phase later (note **N138**).\n\nSo the size that was refused and the sizes that would be accepted travel together, and\nthe presence of this payload is what says *which* half of the request could not be met.\nSee [`Error::size_unsupported`] for the two constructors that keep the two causes\nmutually exclusive.",
+      "description": "The size half of a `Error::FormatUnsupported`: the frame size a caller named, and\nevery size the device can actually deliver.\n\n**A refusal has to say which knob to turn.** `FormatUnsupported` carried one slot for\n\"what was asked for\" and it held a `PixelFormat`, so a request refused for its *size*\nhad to report `requested: None` and a list of formats — which rendered as *\"format\n(unspecified) is unavailable; MJPG, YUYV would be accepted\"* and told an unattended\ncaller that the half of its request that was answerable was the problem. Retrying with\none of the formats named produces the identical refusal, so the guide's *\"fix the\nrequest\"* disposition becomes a loop: note **N129**'s misdirection class, at the same\nvariant, one phase later (note **N138**).\n\nSo the size that was refused and the sizes that would be accepted travel together, and\nthe presence of this payload is what says *which* half of the request could not be met.\nSee `Error::size_unsupported` for the two constructors that keep the two causes\nmutually exclusive.",
       "properties": {
         "available": {
-          "description": "Every size the device can deliver, across **every** format it enumerates — because\nthe resolver's candidate set is device-wide, so \"no mode fits\" is a fact about the\ndevice rather than about whichever format a ranking happened to pick.\n\nA [`FrameSize`] rather than a `(width, height)` pair, so a **stepwise** entry\narrives as the range it is: collapsing it to its maximum corner here would be the\nsame falsehood [`FrameSize::largest_within`] exists to avoid, committed in the\nmessage that is supposed to repair the request.\n\nEntries whose shape this build cannot read (D2's [`FrameSize::Unknown`]) are left\nout: this list is what *would be accepted*, and a size we cannot interpret is not\nsomething a caller can ask for. The device's own enumeration still carries them —\n`info` is where a caller sees that the driver said something we did not understand.",
+          "description": "Every size the device can deliver, across **every** format it enumerates — because\nthe resolver's candidate set is device-wide, so \"no mode fits\" is a fact about the\ndevice rather than about whichever format a ranking happened to pick.\n\nA `FrameSize` rather than a `(width, height)` pair, so a **stepwise** entry\narrives as the range it is: collapsing it to its maximum corner here would be the\nsame falsehood `FrameSize::largest_within` exists to avoid, committed in the\nmessage that is supposed to repair the request.\n\nEntries whose shape this build cannot read (D2's `FrameSize::Unknown`) are left\nout: this list is what *would be accepted*, and a size we cannot interpret is not\nsomething a caller can ask for. The device's own enumeration still carries them —\n`info` is where a caller sees that the driver said something we did not understand.",
           "items": {
             "$ref": "#/$defs/FrameSize"
           },
@@ -4097,7 +4138,7 @@
       "properties": {
         "camera": {
           "$ref": "#/$defs/CameraFingerprint",
-          "description": "Which camera it came from — restoring a snapshot onto a different camera is a\n[`crate::Error::FingerprintMismatch`], not a surprise."
+          "description": "Which camera it came from — restoring a snapshot onto a different camera is a\n`Error::FingerprintMismatch`, not a surprise."
         },
         "declined": {
           "description": "The writable controls this snapshot could **not** record, because the device\ndeclined to read them — a `current` absent from a descriptor that predicted one.\n\nA snapshot's whole promise is that the camera can be put back, and a control with\nno recorded value is one it cannot promise for. Leaving such a control out of\n`entries` and saying nothing would make `is_complete` answer `true` for a camera\nthat was changed and not changed back — outcomes are one per entry, so a control\nthat never became an entry produces no outcome to be incomplete about (note\n**N195**).\n\nEmpty on every device this project has measured, and the ordinary answer. Restore\nturns each name here into an `unrestorable` outcome whose reason is\n`never_recorded`, which is what makes the incompleteness reach a report, an exit\ncode and a human line.",
@@ -4384,7 +4425,7 @@
       "description": "How to derive the values a sweep visits.",
       "oneOf": [
         {
-          "description": "Every step from min to max. Capped by [`limits::MAX_SWEEP_SAMPLES`].",
+          "description": "Every step from min to max, up to the 256 samples a sweep may take\n(`limits::MAX_SWEEP_SAMPLES`, checked against this sentence below).\n\nThe number is written out for note **N148**'s reason: this description is published\ninto `schemas/webcam-handler-schema.json`, where a reader has no Rust toolchain to\nresolve a constant with, and \"capped by a name you cannot look up\" tells them a cap\nexists and nothing about what it is.",
           "properties": {
             "kind": {
               "const": "all",
@@ -4460,16 +4501,16 @@
       ]
     },
     "TakeStatus": {
-      "description": "One take, while it runs and after it ends (design D7, D10).\n\nEvery field is a *measurement*, in [`RecordingSummary`]'s tradition, and the two are not\nthe same document: this one exists while the container is still open, so it carries what\ncan be known mid-take and nothing that cannot. `frames_written` is here and\n`bytes_written` is not — the container's byte count includes trailers written at close\n(`imaging::avi::write::AviWriter::finish` writes the whole `idx1` there), so a running\ntake's file size is not the recording's size and reporting it as one would be a number\nthat changes meaning when the take ends.\n\nThe finished take's full accounting is [`RecordReport`], which `record_stop` answers with.",
+      "description": "One take, while it runs and after it ends (design D7, D10).\n\nEvery field is a *measurement*, in `RecordingSummary`'s tradition, and the two are not\nthe same document: this one exists while the container is still open, so it carries what\ncan be known mid-take and nothing that cannot. `frames_written` is here and\n`bytes_written` is not — the container's byte count includes trailers written at close\n(`imaging::avi::write::AviWriter::finish` writes the whole `idx1` there), so a running\ntake's file size is not the recording's size and reporting it as one would be a number\nthat changes meaning when the take ends.\n\nThe finished take's full accounting is `RecordReport`, which `record_stop` answers with.",
       "properties": {
         "budget_ms": {
-          "description": "How long it may run, from [`RecordRequest::budget_ms`].\n\nBeside [`TakeStatus::elapsed_ms`] so a caller can draw a bar without holding the\nrequest it sent — AGENTS' primary consumer has no hands, and a progress mechanism that\nneeds the client to remember what it asked for is one a restarted client cannot use.",
+          "description": "How long it may run, from `RecordRequest::budget_ms`.\n\nBeside `TakeStatus::elapsed_ms` so a caller can draw a bar without holding the\nrequest it sent — AGENTS' primary consumer has no hands, and a progress mechanism that\nneeds the client to remember what it asked for is one a restarted client cannot use.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "elapsed_ms": {
-          "description": "How long it has run, on the daemon's monotonic clock.\n\nMonotonic rather than `Stamp::now() - started_at`, because those are two clocks and\nsubtracting one from the other is how an NTP step becomes a duration\n([`RecordReport::wall_clock_ms`] argues the same pair).",
+          "description": "How long it has run, on the daemon's monotonic clock.\n\nMonotonic rather than `Stamp::now() - started_at`, because those are two clocks and\nsubtracting one from the other is how an NTP step becomes a duration\n(`RecordReport::wall_clock_ms` argues the same pair).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -4494,14 +4535,14 @@
               "type": "null"
             }
           ],
-          "description": "The D13 discriminant of the refusal that ended it, when one did.\n\nA **kind and not the error**, for `schema::progress::CalibrationProgress`'s reason one\nstream along: a status document is read by a poller that wants to know whether to stop\npolling, and the error itself belongs to the caller that asked for the take — which is\n`record_stop`, and which answers with the device's own [`Error`] unchanged. Putting the\nwhole error here as well would give one refusal two homes and let a client act on the\ncopy that is easier to reach rather than on the one the verb returned.\n\n**It does not follow [`TakeStatus::ended`], and the two are separate fields because of\nthat rather than in spite of it.** A take the *device* refused ends\n[`RecordingEnd::DeviceFailed`] and carries the device's kind here. A take that ran its\nduration and whose **container could not be closed** ends\n[`RecordingEnd::Duration`] — because that is what happened, and rewriting the ending\nbecause a flush refused would lose the one fact the vocabulary carries — and carries\nthe disk's kind here. An ending is a fact about the recording and a refusal is a fact\nabout the whatever refused; AGENTS rule 7 is the line between them, and folding one\ninto the other is the collapse it forbids.\n\nWhat is always true is the other direction: `failed` is `Some` only for a take that has\n**ended**, because nothing fills it in until [`TakeStatus::ended`] does."
+          "description": "The D13 discriminant of the refusal that ended it, when one did.\n\nA **kind and not the error**, for `schema::progress::CalibrationProgress`'s reason one\nstream along: a status document is read by a poller that wants to know whether to stop\npolling, and the error itself belongs to the caller that asked for the take — which is\n`record_stop`, and which answers with the device's own `Error` unchanged. Putting the\nwhole error here as well would give one refusal two homes and let a client act on the\ncopy that is easier to reach rather than on the one the verb returned.\n\n**It does not follow `TakeStatus::ended`, and the two are separate fields because of\nthat rather than in spite of it.** A take the *device* refused ends\n`RecordingEnd::DeviceFailed` and carries the device's kind here. A take that ran its\nduration and whose **container could not be closed** ends\n`RecordingEnd::Duration` — because that is what happened, and rewriting the ending\nbecause a flush refused would lose the one fact the vocabulary carries — and carries\nthe disk's kind here. An ending is a fact about the recording and a refusal is a fact\nabout the whatever refused; AGENTS rule 7 is the line between them, and folding one\ninto the other is the collapse it forbids.\n\nWhat is always true is the other direction: `failed` is `Some` only for a take that has\n**ended**, because nothing fills it in until `TakeStatus::ended` does."
         },
         "format": {
           "$ref": "#/$defs/VideoFormat",
-          "description": "The container, decided by [`VideoFormat::resolve`] when the take started.\n\nReported from the first status onwards because a request that named no extension left\nit to the negotiated stream, and an agent that has not enumerated the camera learns\nhere which file it is about to have (see [`RecordRequest::container`])."
+          "description": "The container, decided by `VideoFormat::resolve` when the take started.\n\nReported from the first status onwards because a request that named no extension left\nit to the negotiated stream, and an agent that has not enumerated the camera learns\nhere which file it is about to have (see `RecordRequest::container`)."
         },
         "frames_written": {
-          "description": "How many frames the container has accepted so far.\n\nFrames *written*, not frames delivered: a frame a cap refused is not in the file, and a\ncount that included it would tell an agent its recording holds a frame it can never\nread. It ends equal to [`RecordingSummary::frames_written`], which is a cross-check a\ntest can make rather than a coincidence.",
+          "description": "How many frames the container has accepted so far.\n\nFrames *written*, not frames delivered: a frame a cap refused is not in the file, and a\ncount that included it would tell an agent its recording holds a frame it can never\nread. It ends equal to `RecordingSummary::frames_written`, which is a cross-check a\ntest can make rather than a coincidence.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -4531,7 +4572,7 @@
       "type": "object"
     },
     "Transform": {
-      "description": "An orientation transform (the skill's flip and rotate).\n\nOn the verbatim-JPEG sink these become an EXIF Orientation tag — zero re-encode,\nbyte fidelity preserved (E6). On PNG and re-encode sinks they are applied to\npixels.\n\nThe serde spelling and [`Transform::as_str`] are the same strings on purpose: a\n`--transform` argument and a `\"transform\"` field in a JSON document must name the\nsame thing the same way, and the CLI reaches this vocabulary rather than deriving\na second one of its own.",
+      "description": "An orientation transform (the skill's flip and rotate).\n\nOn the verbatim-JPEG sink these become an EXIF Orientation tag — zero re-encode,\nbyte fidelity preserved (E6). On PNG and re-encode sinks they are applied to\npixels.\n\nThe serde spelling and `Transform::as_str` are the same strings on purpose: a\n`--transform` argument and a `\"transform\"` field in a JSON document must name the\nsame thing the same way, and the CLI reaches this vocabulary rather than deriving\na second one of its own.",
       "oneOf": [
         {
           "const": "none",
@@ -4602,7 +4643,7 @@
               "type": "string"
             },
             "orientation": {
-              "description": "The tag value [`Transform::exif_orientation`] produced.",
+              "description": "The tag value `Transform::exif_orientation` produced.",
               "format": "uint16",
               "maximum": 65535,
               "minimum": 0,
@@ -4621,7 +4662,7 @@
       "description": "Why one control could not be put back.",
       "oneOf": [
         {
-          "description": "The control has been taken over by automation that did **not** hold it when the\nsnapshot was taken.\n\nA real change we could not undo, and distinct from\n[`RestoreOutcome::OwnedByAutomation`], which is the same *flag* meaning the\nopposite thing: there, the owner is the one that was there before.",
+          "description": "The control has been taken over by automation that did **not** hold it when the\nsnapshot was taken.\n\nA real change we could not undo, and distinct from\n`RestoreOutcome::OwnedByAutomation`, which is the same *flag* meaning the\nopposite thing: there, the owner is the one that was there before.",
           "properties": {
             "automation": {
               "anyOf": [
@@ -4748,7 +4789,7 @@
       "type": "object"
     },
     "VideoFormat": {
-      "description": "The container a recording lands in (design D7).\n\nTwo, and they are not alternatives a caller picks on taste: each one carries a\ndisjoint set of pixel formats, so the container is decided by what the device\nnegotiated. See [`VideoFormat::carries`] for the law and [`VideoFormat::resolve`] for\nthe decision every caller makes with it.\n\nThe serde spelling, [`VideoFormat::as_str`] and [`VideoFormat::extension`] are the\nsame three strings for the same reason `PhotoFormat`'s are: a `--format y4m`\nargument, a `\"format\":\"y4m\"` field and a `.y4m` filename must name one thing.",
+      "description": "The container a recording lands in (design D7).\n\nTwo, and they are not alternatives a caller picks on taste: each one carries a\ndisjoint set of pixel formats, so the container is decided by what the device\nnegotiated. See `VideoFormat::carries` for the law and `VideoFormat::resolve` for\nthe decision every caller makes with it.\n\nThe serde spelling, `VideoFormat::as_str` and `VideoFormat::extension` are the\nsame three strings for the same reason `PhotoFormat`'s are: a `--format y4m`\nargument, a `\"format\":\"y4m\"` field and a `.y4m` filename must name one thing.",
       "oneOf": [
         {
           "const": "avi",
@@ -4763,7 +4804,7 @@
       ]
     },
     "WriteReport": {
-      "description": "What `set` answers (design D3/E4).\n\nA list rather than a single [`Applied`], because a guarded write is more than one\nwrite: switching an automation partner off is a change to the camera the caller is\nentitled to see, and hiding it would make `--guarded` a verb whose side effects are\nundocumented at the moment they happen.",
+      "description": "What `set` answers (design D3/E4).\n\nA list rather than a single `Applied`, because a guarded write is more than one\nwrite: switching an automation partner off is a change to the camera the caller is\nentitled to see, and hiding it would make `--guarded` a verb whose side effects are\nundocumented at the moment they happen.",
       "properties": {
         "camera": {
           "$ref": "#/$defs/CameraId",
@@ -4878,7 +4919,7 @@
           "type": "object"
         },
         {
-          "description": "The write was accepted and there was nothing to read back, so\n[`Applied::applied`] is what was *asked for* rather than what was observed.\n\nD3 says every write reads back. Some controls cannot: a `BUTTON` is a trigger with\nno value, and a `WRITE_ONLY` control's value is the device's to keep. Returning\n`{requested, applied}` with the two equal and no warning would make those writes\nindistinguishable from verified ones, which is the collapse E4 exists to prevent —\nso the gap is carried as data instead.",
+          "description": "The write was accepted and there was nothing to read back, so\n`Applied::applied` is what was *asked for* rather than what was observed.\n\nD3 says every write reads back. Some controls cannot: a `BUTTON` is a trigger with\nno value, and a `WRITE_ONLY` control's value is the device's to keep. Returning\n`{requested, applied}` with the two equal and no warning would make those writes\nindistinguishable from verified ones, which is the collapse E4 exists to prevent —\nso the gap is carried as data instead.",
           "properties": {
             "because": {
               "$ref": "#/$defs/Unverifiable",

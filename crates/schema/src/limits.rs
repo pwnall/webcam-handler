@@ -253,6 +253,26 @@ const _: () = assert!(CLIENT_SUBSCRIPTION_BUFFER > WS_MESSAGE_BUFFER_CAPACITY as
 /// place (note **N70**, finding F2).
 pub const CLIENT_SWEEP_DRAIN_MS: u64 = 250;
 
+/// How long `webcam-handler-client` may spend saying goodbye, in milliseconds.
+///
+/// A WebSocket close is one frame on a Unix socket to a daemon on this host, so the ordinary
+/// cost of this is a syscall; the budget exists because the *pathological* cost is unbounded,
+/// and a client that hung at exit on a daemon that had stopped reading would be worse than
+/// one that never said goodbye at all. A quarter of a second, for `CLIENT_SWEEP_DRAIN_MS`'s
+/// reason and given once for both: it is what this project calls "long enough for something
+/// that has almost certainly already happened".
+///
+/// Read by `client::remote::Remote`'s `Drop`, which is where the close frame is made to
+/// happen at all (note **N219**): jsonrpsee writes it from a spawned task, and a
+/// current-thread runtime torn down first drops that task unpolled — so the claim in
+/// `client::transport::Sender::close` that it is "the ordinary end of every connection this
+/// binary opens" was false for every connection this binary opened.
+pub const CLIENT_CLOSE_BUDGET_MS: u64 = 250;
+
+// The floor, and it is the same one the drain has: a goodbye that cannot wait is a goodbye
+// that never leaves, which is the defect this constant was added to close.
+const _: () = assert!(CLIENT_CLOSE_BUDGET_MS > 0);
+
 // The floor, and it is mechanical rather than a matter of taste: a tail that cannot wait
 // collects nothing. `Remote::calibrate_sweep`'s own doc records the measurement — this
 // client's queue is provably empty when its call answers (note N65), so the event a tail

@@ -41,6 +41,15 @@
 #   - It sees the *shape* of a splice, not a splice. Text moved onto the wrong item while both
 #     items keep a summary line is invisible here and belongs to review — which is how the B8
 #     finding was actually found. What this buys is that the destroyed half can never be silent.
+#   - **The destroyed half is only visible when it keeps a doc comment.** B9 spliced a `const`
+#     between `record_request`'s doc comment and `record_request`, so the constant wore the
+#     function's prose and the function was left with **no `///` at all** — no block, so nothing
+#     for this to read. Note **N222** measured the two rules that would have seen it and both
+#     cost more than they are worth here: requiring every item to carry a doc comment lights up
+#     272 items in this tree, and reading a paragraph-final sentence on its own line as a
+#     spliced summary matches 12 places of which 11 are ordinary prose. Review is what finds
+#     this shape; what the rule above still buys is that a *surviving* block cannot lose its
+#     summary silently.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR

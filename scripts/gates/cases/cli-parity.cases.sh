@@ -87,9 +87,13 @@ fail_case_the_two_roots_render_one_document_two_ways() {
     target="$(gate_root)/target/gate-selftest/cli-parity-fork"
     mkdir -p "$target"
 
-    # Anchored, and the anchor is checked below: `out.line(Stream::Stdout, &text)` appears
-    # three times in that file and only one of them is the `--json` emitter.
-    gate_seed 's|^    out\.line(Stream::Stdout, &text)$|    let text = if std::env::args().next().is_some_and(\|a\| a.ends_with("webcam-handler-client")) { format!("{text} ") } else { text };\n    out.line(Stream::Stdout, \&text)|' \
+    # Anchored, and the anchor is the emitter's own line: `out.line(&text)` appears three
+    # times in that file and only one of them is at column four — the other two are `None =>`
+    # arms of a `match`. `Output::line` lost its stream argument at note **N216**, when
+    # standard error became `Output::note` and stopped being a thing a caller could propagate
+    # a failure from; this expression moved with it, and `gate_seed` is what refuses silently
+    # if it ever stops matching.
+    gate_seed 's|^    out\.line(&text)$|    let text = if std::env::args().next().is_some_and(\|a\| a.ends_with("webcam-handler-client")) { format!("{text} ") } else { text };\n    out.line(\&text)|' \
         "$tree/crates/cli-core/src/render.rs"
 
     if ! (cd "$tree" && CARGO_TARGET_DIR="$target" cargo build --locked --offline \

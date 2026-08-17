@@ -314,6 +314,310 @@ fn every_example_the_guide_shows_runs_and_answers() {
     assert!(ran > 10, "{ran} example(s) run");
 }
 
+/// Every `--flag` the failure table names, with the row it is named in.
+///
+/// Read out of the committed guide rather than listed here, for [`examples`]'s reason: a list
+/// written in this file would be a second document, and the drift under test is exactly
+/// between two documents. The table's rows are `| \`kind\` | \`code\` | **do** | prose |`, and
+/// the flags are the code spans in the prose that begin with two dashes.
+fn flags_the_failure_table_names() -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for line in GUIDE.lines() {
+        let cells: Vec<&str> = line.trim().trim_matches('|').split('|').collect();
+        if cells.len() != 4 {
+            continue;
+        }
+        let kind = cells[0].trim().trim_matches('`');
+        let code = cells[1].trim().trim_matches('`');
+        if !code.chars().all(|c| c.is_ascii_digit()) || code.is_empty() {
+            continue;
+        }
+        let mut rest = cells[3];
+        while let Some(open) = rest.find("`--") {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('`') else { break };
+            found.push((kind.to_owned(), after[..close].to_owned()));
+            rest = &after[close + 1..];
+        }
+    }
+    found
+}
+
+#[test]
+fn every_flag_the_failure_table_offers_as_a_lever_really_produces_that_failure() {
+    // **The other half, and the one a name check cannot reach** (docs/11 **M18**, §9.3's
+    // "drive the flag, require the kind"). A flag can exist and still be the wrong advice:
+    // the `format_unsupported` row tells a reader that `--size` and `--pixel-format` are the
+    // two halves of that refusal, and until a `--size` no mode fits *was* refused rather than
+    // quietly substituted, half of that sentence named a flag that could not produce the
+    // failure it was filed under.
+    //
+    // Every flag the table names is either driven here or **named with a reason**, and the
+    // join is checked, because a flag that is neither is how this claim quietly stops being
+    // true (`scripts/gates/cli-parity.sh`'s bucket rule, one document along).
+    let bench = Bench::new();
+    let photo = bench.path("lever.jpg");
+    let drivers: &[(&str, &[&str], schema::ErrorKind)] = &[
+        (
+            "--pixel-format",
+            &["photo", CAMERA, "-o", "", "--pixel-format", "NV12"],
+            schema::ErrorKind::FormatUnsupported,
+        ),
+        (
+            "--size",
+            &["photo", CAMERA, "-o", "", "--size", "1x1"],
+            schema::ErrorKind::FormatUnsupported,
+        ),
+    ];
+    // The flags the table names as something to *change* rather than as the lever that
+    // produced the refusal, each with where its claim is asserted instead.
+    let named_elsewhere: &[(&str, &str)] = &[
+        (
+            "--wait",
+            "the busy row's claim about it is a negative one — it waits for room in the \
+             camera's command queue and not for a stream to end — and it is asserted against \
+             a running take in `crates/daemon/tests/mutating_verbs.rs` \
+             (`a_photograph_during_a_take_is_told_who_has_the_camera_and_waiting_does_not_\
+             change_it`), which needs a daemon this suite deliberately does not start",
+        ),
+        (
+            "--no-guard",
+            "the control_inactive row names it as the thing that is *not* the remedy, and \
+             that is a fact about the planner rather than about the row's wording: \
+             `engine::pairing::plan_unguarded` — the planner this flag selects — documents \
+             in its own `# Errors` that it never produces `ControlInactive`, because \
+             refusing for an inactive partner is precisely what it exists not to do, and \
+             `an_inactive_control_with_no_discoverable_partner_is_refused_by_name` drives \
+             the guarded sibling that does. So driving this flag here could only ever \
+             answer, whatever a profile's INACTIVE flags said (note **N220**)",
+        ),
+        (
+            "--settle-deadline",
+            "the settle_timeout row names it as the remedy, not the cause: producing that \
+             refusal takes a device that delivers nothing, which is the fake's scripted \
+             fault menu in `crates/engine`'s capture suite",
+        ),
+        (
+            "--skip-frames",
+            "the same row and the same reason as `--settle-deadline`",
+        ),
+    ];
+
+    for (kind, flag) in flags_the_failure_table_names() {
+        let driven = drivers.iter().find(|(named, _, _)| *named == flag);
+        let excused = named_elsewhere.iter().any(|(named, _)| *named == flag);
+        assert!(
+            driven.is_some() || excused,
+            "the failure table offers `{flag}` for `{kind}`, and this suite neither drives it \
+             nor says why not"
+        );
+        let Some((_, args, expected)) = driven else {
+            continue;
+        };
+        let argv: Vec<&str> = args
+            .iter()
+            .map(|word| {
+                if word.is_empty() {
+                    photo.as_str()
+                } else {
+                    *word
+                }
+            })
+            .collect();
+        let output = Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"))
+            .args(["--backend", "fake", "--profile", bench.profile.as_str()])
+            .arg("--json")
+            .args(&argv)
+            .output()
+            .expect("webcam-handler-cli runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let failure: schema::error::Failure = serde_json::from_str(&stdout).unwrap_or_else(|_| {
+            panic!(
+                "the failure table offers `{flag}` for `{kind}`, and driving it answered \
+                 instead of refusing:\n{stdout}"
+            )
+        });
+        assert_eq!(
+            failure.kind(),
+            *expected,
+            "the failure table files `{flag}` under `{kind}`, and driving it produced \
+             something else: {stdout}"
+        );
+        assert_eq!(
+            format!("{:?}", failure.kind()),
+            format!("{expected:?}"),
+            "{stdout}"
+        );
+    }
+}
+
+/// Every code span the failure table's prose carries, with the row it is written in.
+///
+/// [`flags_the_failure_table_names`] one token class along, and read out of the committed
+/// guide for its reason: the drift under test is between two documents, so a list written
+/// here would be a third one. A row's prose is the fourth cell; a code span is anything
+/// between backticks in it.
+fn code_spans_the_failure_table_uses() -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for line in GUIDE.lines() {
+        let cells: Vec<&str> = line.trim().trim_matches('|').split('|').collect();
+        if cells.len() != 4 {
+            continue;
+        }
+        let kind = cells[0].trim().trim_matches('`');
+        let code = cells[1].trim().trim_matches('`');
+        if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let mut rest = cells[3];
+        while let Some(open) = rest.find('`') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('`') else { break };
+            found.push((kind.to_owned(), after[..close].to_owned()));
+            rest = &after[close + 1..];
+        }
+    }
+    found
+}
+
+/// Every verb this guide documents, spelled the way a reader types it.
+///
+/// The verbs section keys each one as ``### `calibrate sweep` ``, so the headings *are* the
+/// surface as this document teaches it — which is the surface the failure table's advice has
+/// to be true of. Taken from the same file rather than from the clap tree because a row that
+/// sent a reader to a verb the generator emits but the guide never shows would be just as
+/// unrunnable for the reader.
+fn verbs_the_guide_documents() -> std::collections::BTreeSet<String> {
+    GUIDE
+        .lines()
+        .filter_map(|line| line.strip_prefix("### "))
+        .map(|heading| heading.trim().trim_matches('`').to_owned())
+        .collect()
+}
+
+/// Every name the committed JSON Schema bundle publishes — field names and vocabulary values.
+///
+/// The failure table's prose names two kinds of thing, and only one of them is something to
+/// run: `holders`, `this_process` and `size.available` are payload fields an agent *reads*,
+/// and `recording` is a value one of them takes. They are recognised from the artifact the
+/// same agent parses (`schemas/webcam-handler-schema.json`), so a field renamed in the schema
+/// stops being an excuse here the moment it stops being a field.
+fn names_the_bundle_publishes() -> std::collections::BTreeSet<String> {
+    fn walk(node: &serde_json::Value, into: &mut std::collections::BTreeSet<String>) {
+        match node {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    match (key.as_str(), child) {
+                        ("properties", serde_json::Value::Object(fields)) => {
+                            into.extend(fields.keys().cloned());
+                        }
+                        ("const", serde_json::Value::String(value)) => {
+                            into.insert(value.clone());
+                        }
+                        ("enum", serde_json::Value::Array(values)) => into.extend(
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_owned)),
+                        ),
+                        _ => {}
+                    }
+                    walk(child, into);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| walk(item, into)),
+            _ => {}
+        }
+    }
+    const BUNDLE: &str = include_str!("../../../schemas/webcam-handler-schema.json");
+    let mut names = std::collections::BTreeSet::new();
+    walk(
+        &serde_json::from_str(BUNDLE).expect("the committed bundle is JSON"),
+        &mut names,
+    );
+    names
+}
+
+#[test]
+fn every_name_the_failure_table_carries_is_one_this_surface_really_has() {
+    // **The token class `every_flag_the_failure_table_offers_as_a_lever_really_produces_that_
+    // failure` cannot see** (docs/11 §9.3; notes **N123**, **N129**, **N220**). That arm walks
+    // the code spans beginning with two dashes, so it is structurally blind to a *verb*: the
+    // `busy` row shipped telling an unattended reader to "poll `record_status` and ask again",
+    // and `record_status` is on no surface this guide documents — `webcam-handler-client`
+    // offers no such verb, `record` does its own start-poll-stop, and the JSON-RPC method for
+    // it is spelled `wch_record_status`. One `grep` of the guide found the name exactly once,
+    // in the remedy itself.
+    //
+    // So this is the same population walk one class along: **every** code span in the table,
+    // sorted into the two things such a span can honestly be — something to run, which must be
+    // a verb this guide documents, or something to read, which must be a name the committed
+    // bundle publishes — and anything that is neither is named here with a reason. A span that
+    // is neither driven, resolvable nor named is how a remedy quietly stops being runnable.
+    let verbs = verbs_the_guide_documents();
+    let published = names_the_bundle_publishes();
+    // The spans that are neither a verb nor a payload name, each with why it is prose rather
+    // than an instruction. Kept to things the row *shows*, never something it tells a reader
+    // to run: an entry here for a verb would be the excuse this test exists to refuse.
+    let prose: &[(&str, &str)] = &[
+        (
+            "/dev/video0",
+            "a device node the `camera_unknown` row names in order to say that ids do **not** \
+             come from it",
+        ),
+        (
+            "privacy",
+            "a control slug, shown as the example of a control a camera reports read-only; \
+             `controls <CAMERA>` is the verb that lists them and is checked as one",
+        ),
+        (
+            "video",
+            "the Unix group the `permission_denied` remedy names — a group, not a verb",
+        ),
+        (
+            "webcam-handler-client",
+            "a program rather than a verb, and the one this guide's own \"Which program to \
+             run\" section tells the reader to prefer",
+        ),
+    ];
+
+    let mut resolved = 0;
+    let mut ran = 0;
+    for (kind, span) in code_spans_the_failure_table_uses() {
+        // The flags are the other arm's population, and it drives or names every one.
+        if span.starts_with("--") {
+            continue;
+        }
+        // `controls <CAMERA>` is the verb plus the placeholder the guide writes for its
+        // argument, and the verb is the half that has to exist.
+        let named = span.split(" <").next().unwrap_or(&span).to_owned();
+        if verbs.contains(&named) {
+            ran += 1;
+            continue;
+        }
+        // A dotted path is a payload field reached through another — `size.available` — and
+        // every segment of it has to be a name the bundle really publishes.
+        if named.split('.').all(|segment| published.contains(segment)) {
+            resolved += 1;
+            continue;
+        }
+        assert!(
+            prose.iter().any(|(excused, _)| *excused == named),
+            "the `{kind}` row tells a reader about `{span}`, which is neither a verb \
+             `docs/agent-guide.md` documents nor a name `schemas/webcam-handler-schema.json` \
+             publishes — an unattended reader following that row has nothing to run and \
+             nothing to read"
+        );
+    }
+    // Not vacuous in either direction: the table really does name verbs, and it really does
+    // name payload fields, so a walk that had stopped finding either would fail here rather
+    // than pass by finding nothing to check.
+    assert!(ran > 0, "the failure table names no verb at all");
+    assert!(
+        resolved > 0,
+        "the failure table names no payload field at all"
+    );
+}
+
 #[test]
 fn a_failing_verb_prints_the_document_the_guide_shows_and_exits_the_code_it_lists() {
     // **What N124 found and the owner's ruling of 2026-08-15 repaired** (note **N127**),

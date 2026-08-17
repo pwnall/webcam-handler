@@ -184,6 +184,7 @@ use engine::preview::{Delivery, Demand, FrameSink};
 use engine::settle::{Clock, MonotonicClock};
 use schema::camera::{CameraId, CameraInfo};
 use schema::capture::Frame;
+use schema::error::Occupation;
 use schema::{Error, ErrorKind, Result, limits};
 use tokio::sync::{Mutex, oneshot, watch};
 
@@ -661,11 +662,18 @@ impl Previews {
             // The second tab. The bound is read off the channel's own receiver count rather
             // than a tally kept beside it, because a tally is a second answer to "how many
             // readers" and the channel already has the only one that cannot drift.
+            //
+            // `busy_here` and not `busy`: what is full is this daemon's own preview, and the
+            // empty holder list [`Error::busy`] takes renders as *"held by an unidentified
+            // process"* — which `http::preview::refused` puts in front of a web-client
+            // operator verbatim, naming the node and blaming a stranger for four tabs of
+            // their own (note **N221**). The occupation says what ends it, and what ends it
+            // here is a viewer leaving rather than a stream stopping.
             if feed.frames.receiver_count() >= limits::PREVIEW_MAX_VIEWERS_PER_CAMERA {
-                return Err(Error::Busy {
-                    path: node_of(&info),
-                    holders: Vec::new(),
-                });
+                return Err(Error::busy_here(
+                    node_of(&info),
+                    Occupation::StreamingPreview,
+                ));
             }
             let viewer = self.viewer(feed);
             return Ok((Arc::clone(feed), viewer, None));
@@ -1939,6 +1947,26 @@ mod tests {
             .await
             .expect_err("the fifth reader");
         assert_eq!(refused.kind(), ErrorKind::Busy);
+        // **And it says whose preview is full** (docs/11 **M19**'s class, note **N221**). The
+        // *kind* is asserted above so a rewording does not fail this test; the payload is
+        // asserted here because it is not wording — a refusal that left `this_process` empty
+        // reached the operator of the web client as *"held by an unidentified process"*
+        // through `http::preview::refused`, naming the node and blaming a stranger for a
+        // preview this daemon is serving to four of its own tabs.
+        assert!(
+            matches!(
+                &refused,
+                Error::Busy {
+                    this_process: Some(schema::error::Occupation::StreamingPreview),
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert!(
+            !refused.to_string().contains("unidentified"),
+            "the operator is sent to look for a holder that is this daemon: {refused}"
+        );
 
         // One leaves, and the next one in is served — so the bound is a bound rather than a
         // latch. The answer is kept rather than dropped on the spot, because a `Viewer` is a

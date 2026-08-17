@@ -190,9 +190,19 @@ fn the_flags_a_client_cannot_honour_are_refused_before_the_socket_is_touched() {
     // Ordering, asserted from outside: the fixture below has no daemon, so a build that
     // connected first would produce the *socket's* refusal and this test would see it. That
     // is what makes "before" a claim rather than a comment.
+    //
+    // **The fourth vector is the one an agent types, and it was the one missing** (docs/11
+    // **M20**, §9.2's "the fixture is one parameter away from the case"; note **N214**). The
+    // three above dodge, one each, the rule that used to sit on the shared tree as
+    // `required_if_eq("backend", "fake")`: the first names a backend that is not `fake`, the
+    // second supplies the `--profile` the rule asked for, and the third names no backend at
+    // all. `--backend fake list` — a caller reaching for the replayed backend, which is what
+    // an agent does first — met clap instead, exit 2, told to add `--profile <PATH>`: a flag
+    // this root refuses too, so the instruction cannot be followed.
     let fixture = Fixture::new();
     for args in [
         ["--backend", "v4l2", "list"].as_slice(),
+        ["--backend", "fake", "list"].as_slice(),
         ["--backend", "fake", "--profile", "p.json", "list"].as_slice(),
         ["--profile", "p.json", "list"].as_slice(),
     ] {
@@ -960,4 +970,74 @@ fn a_refusal_that_crossed_the_wire_is_the_document_webcam_handler_cli_prints_loc
     // Not vacuous in the other direction either: the three refusals are three *different*
     // ones, so the comparison above is over three documents rather than one repeated.
     assert!(refusals.len() > 2, "{} refusal(s) compared", refusals.len());
+}
+
+#[test]
+fn a_client_that_is_finished_says_goodbye_before_its_runtime_goes_away() {
+    // **The claim the transport made and never kept** (docs/11 **L31**, note **N219**).
+    // `Sender::close` writes a real WebSocket close frame, and its doc said "this is the
+    // ordinary end of every connection this binary opens" — but jsonrpsee reaches it only
+    // from the `send_task` it spawned, and `Remote` dropped its current-thread runtime before
+    // its client, so that task was discarded unpolled. The frame was written for no
+    // connection this binary ever opened, and the daemon ended every one of them on a read
+    // error instead.
+    //
+    // Over a real daemon on a real socket, because the thing under test is what a *task*
+    // does after a value is dropped: a double of the transport would answer whatever it was
+    // written to answer.
+    let fixture = Fixture::new();
+    let _daemon = replaying(&fixture, REPLAYED);
+    let socket = fixture.socket();
+    let mut remote = client::remote::Remote::connect(
+        &socket,
+        std::time::Duration::from_millis(schema::limits::CLIENT_REQUEST_TIMEOUT_MS),
+    )
+    .expect("the daemon is listening");
+
+    // A verb first, so the connection under test is one that carried traffic — a socket that
+    // was opened and never used is not the shape a client exits in.
+    remote.list().expect("the daemon enumerates");
+
+    assert!(
+        remote.close(),
+        "the connection was dropped without its close frame, so the daemon sees a read error \
+         where a goodbye belongs"
+    );
+    // There is no second call to make: `close` takes the value (note **N223**), so "said
+    // once" is the borrow checker's claim rather than an assertion that could stop being
+    // checked. `Drop` runs `say_goodbye` again on the way out of `close` and finds the token
+    // gone, which is the same fact from the inside.
+}
+
+#[test]
+fn a_goodbye_the_socket_refused_is_not_reported_as_said() {
+    // **The other direction of the same `bool`, and the one it could not answer** (docs/11
+    // L31's repair, note **N223**). `Sender::close` fired its signal whatever the write did,
+    // so `Goodbye::wait` answered "`close()` was reached" while the field it waits on said
+    // *"fired when the close frame has been written, and never otherwise"*. The assertion
+    // above could then only fail if the send task were never polled at all — never on the
+    // write, which is the half its message names.
+    //
+    // The fixture is a peer that is *gone*: the daemon is `SIGKILL`ed under a live
+    // connection, so `soketto`'s write meets `EPIPE` on a socket whose reader has been
+    // reaped. Measured against the unrepaired transport, this answered `true`.
+    let fixture = Fixture::new();
+    let mut daemon = replaying(&fixture, REPLAYED);
+    let socket = fixture.socket();
+    let mut remote = client::remote::Remote::connect(
+        &socket,
+        std::time::Duration::from_millis(schema::limits::CLIENT_REQUEST_TIMEOUT_MS),
+    )
+    .expect("the daemon is listening");
+    // The same traffic as the arm above, so the two differ in one thing: whether the peer is
+    // there when the goodbye is written.
+    remote.list().expect("the daemon enumerates");
+
+    daemon.child.kill().expect("the daemon was running");
+    daemon.child.wait().expect("the daemon is reaped");
+
+    assert!(
+        !remote.close(),
+        "a close frame that could not be written was reported as a goodbye that was said"
+    );
 }

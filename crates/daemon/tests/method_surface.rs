@@ -303,11 +303,11 @@ async fn every_method<C: WchRpcClient + Sync>(
         .await
         .expect("the fake synthesizes a frame");
     // P6c's three, in the one order that works: a take, a question about it, and the
-    // collection that empties the camera's slot. The take asks for **no** duration at all —
-    // `duration_ms: Some(0)` records the container's header and no frames — because what a
-    // census needs is that the three answered as themselves, and a shorter take is a
-    // deterministic one: the driver ends on its budget before its first turn, so `record_stop`
-    // collects rather than waits. Depth is `mutating_verbs.rs`'s.
+    // collection that empties the camera's slot. The take asks for the **shortest** duration
+    // this build records, because what a census needs is that the three answered as
+    // themselves, and a shorter take is a deterministic one: the driver takes one turn and
+    // ends on its budget, so `record_stop` collects rather than waits. Depth is
+    // `mutating_verbs.rs`'s.
     let record_start = client
         .record_start(camera.clone(), a_recording(recording))
         .await
@@ -494,11 +494,16 @@ fn a_photo() -> PhotoRequest {
 
 /// A recording of nothing at all, into `path`.
 ///
-/// `duration_ms: Some(0)` on purpose: a budget of zero writes the container's header and no
-/// frames (`engine::record::drive` checks the bound *before* each turn), so this take is over
-/// before it starts and the census never waits on a camera. That is exactly the shallowest
-/// call that produces a real answer — a negotiated stream, a chosen container and a file on
-/// disk — which is this walk's rule for every method in it.
+/// One millisecond on purpose: it is the shortest budget this build accepts, and
+/// `engine::record::drive` checks the bound *before* each turn, so the take is over after one
+/// and the census never waits on a camera. That is exactly the shallowest call that produces
+/// a real answer — a negotiated stream, a chosen container and a file on disk — which is this
+/// walk's rule for every method in it.
+///
+/// A budget of **zero** was what this said until 2026-08-17, and it wrote a container header
+/// with no frames in it and answered as a success — which is the outcome note **N213** made
+/// into a refusal, at both spellings, because an unattended caller cannot tell it from a
+/// camera that delivered nothing.
 ///
 /// A `ServerPath` and not a `ReturnBytes`, because a recording has no second variant: note
 /// **N110** narrows this verb to one of D10's two, and asking for the other is a refusal
@@ -506,7 +511,7 @@ fn a_photo() -> PhotoRequest {
 fn a_recording(path: &camino::Utf8Path) -> RecordRequest {
     RecordRequest {
         stream: StreamRequest::default(),
-        duration_ms: Some(0),
+        duration_ms: Some(1),
         sink: Sink::ServerPath {
             path: path.to_owned(),
         },

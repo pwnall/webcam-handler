@@ -749,10 +749,7 @@ fn classify(
     holders: impl FnOnce() -> Vec<schema::error::Holder>,
 ) -> Error {
     match error.raw_os_error() {
-        Some(libc::EBUSY) => Error::Busy {
-            holders: holders(),
-            path: fd.path().to_owned(),
-        },
+        Some(libc::EBUSY) => Error::busy(fd.path().to_owned(), holders()),
         Some(libc::ENODEV | libc::ENXIO) => Error::DeviceGone {
             path: fd.path().to_owned(),
         },
@@ -841,10 +838,18 @@ mod tests {
         // A node-level refusal — `S_FMT` on a streaming node, `STREAMON` on a taken one —
         // still walks, because there really can be another process to name. It just may
         // not name us.
-        let Error::Busy { holders, path: at } = device_error(&fd, "VIDIOC_STREAMON", &busy) else {
+        let Error::Busy {
+            holders,
+            path: at,
+            this_process,
+        } = device_error(&fd, "VIDIOC_STREAMON", &busy)
+        else {
             panic!("EBUSY is D13's `Busy`");
         };
         assert_eq!(at, path);
+        // The kernel said EBUSY, so the holder is somebody else by construction: this arm
+        // must never wear the daemon's *"it is me" spelling (note **N217**).
+        assert_eq!(this_process, None);
         assert!(
             holders.is_empty(),
             "a node-level refusal named the process making it: {holders:?}"

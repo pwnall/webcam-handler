@@ -27,7 +27,7 @@ use schema::control::{
     Applied, ControlDesc, ControlFlags, ControlId, ControlRange, ControlSlug, ControlType,
     ControlValue, KnownFlag, WriteWarning,
 };
-use schema::error::{Error, Result};
+use schema::error::{Error, Occupation, Result};
 
 /// What a scripted camera does when a particular control is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,10 +422,10 @@ impl Camera for ScriptedCamera {
             // double says it too — not for resemblance, which is the *fake's* obligation
             // (E5), but because half the tests in this crate are about who holds a stream
             // and a double that let two of them coexist could not fail any of them.
-            return Err(Error::Busy {
-                path: camino::Utf8PathBuf::from("/dev/video0"),
-                holders: Vec::new(),
-            });
+            return Err(Error::busy_here(
+                camino::Utf8PathBuf::from("/dev/video0"),
+                Occupation::Streaming,
+            ));
         }
         if let Some((allowed, error)) = &self.stream_start_fault
             && self.started.len() >= usize::try_from(*allowed).unwrap_or(usize::MAX)

@@ -58,15 +58,6 @@ impl std::fmt::Debug for Output {
     }
 }
 
-/// Which stream a line belongs on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stream {
-    /// The answer.
-    Stdout,
-    /// Everything about the answer.
-    Stderr,
-}
-
 impl Output {
     /// The process's own streams.
     #[must_use]
@@ -83,7 +74,7 @@ impl Output {
         Output { stdout, stderr }
     }
 
-    /// Write raw bytes, with no newline and no interpretation.
+    /// Write raw bytes to the answer, with no newline and no interpretation.
     ///
     /// `webcam-handler-cli photo cam:x > shot.jpg` is the reason this exists: with no `-o`,
     /// the photo's bytes *are* the answer, and a `line` would append a byte the image does not
@@ -92,42 +83,55 @@ impl Output {
     /// # Errors
     ///
     /// As [`Output::line`].
-    pub fn bytes(&mut self, stream: Stream, data: &[u8]) -> Result<()> {
-        let sink = match stream {
-            Stream::Stdout => &mut self.stdout,
-            Stream::Stderr => &mut self.stderr,
-        };
+    pub fn bytes(&mut self, data: &[u8]) -> Result<()> {
+        let sink = &mut self.stdout;
         sink.write_all(data)
             .and_then(|()| sink.flush())
             .map_err(|error| Error::StorageIo {
-                path: match stream {
-                    Stream::Stdout => "<stdout>".into(),
-                    Stream::Stderr => "<stderr>".into(),
-                },
+                path: "<stdout>".into(),
                 errno: error.raw_os_error(),
                 message: error.to_string(),
             })
     }
 
-    /// Write a line.
+    /// Write a line of the answer.
     ///
     /// # Errors
     ///
     /// [`Error::StorageIo`] when the stream refuses — a closed pipe is a real outcome and
     /// `webcam-handler-cli list | head -1` must not panic on it.
-    pub fn line(&mut self, stream: Stream, text: &str) -> Result<()> {
-        let sink = match stream {
-            Stream::Stdout => &mut self.stdout,
-            Stream::Stderr => &mut self.stderr,
-        };
-        writeln!(sink, "{text}").map_err(|error| Error::StorageIo {
-            path: match stream {
-                Stream::Stdout => "<stdout>".into(),
-                Stream::Stderr => "<stderr>".into(),
-            },
+    pub fn line(&mut self, text: &str) -> Result<()> {
+        writeln!(&mut self.stdout, "{text}").map_err(|error| Error::StorageIo {
+            path: "<stdout>".into(),
             errno: error.raw_os_error(),
             message: error.to_string(),
         })
+    }
+
+    /// Write a line *about* the answer, on standard error, and answer nothing.
+    ///
+    /// **A note that cannot be printed is not the verb's failure** (docs/11 **M28**, note
+    /// **N216**). Every commentary line this surface writes had the shape
+    /// `out.note(…)`, so a failing standard error replaced an outcome the
+    /// verb had already achieved: the JPEG was on standard output, the snapshot was on disk,
+    /// the sweep was persisted — and the process answered `failed: true` and exited 27,
+    /// about the *pipe*. Worse under `--json`, where the answer document had already been
+    /// printed, so standard output carried an answer **and** a `Failure`, which is exactly
+    /// the pair design §2.7 says can never occur: *"a `--json` invocation prints exactly one
+    /// `webcam-handler-schema` type, and which type it is says whether the verb answered"*.
+    ///
+    /// So this returns `()`, and the rule is structural rather than remembered: the type
+    /// system has no `?` to offer a caller here, and standard error has no other door —
+    /// [`Output::line`] and [`Output::bytes`] write the answer, this writes everything else.
+    /// `report_failure`'s human line takes the same route and always did, for the same
+    /// reason stated one function along: a refusal whose cause was a closed stream must not
+    /// be replaced by one about the stream.
+    ///
+    /// The write is still *attempted*, and its failure is still visible where such a failure
+    /// can be acted on — the answer's own stream refusing is [`Output::line`]'s error, and
+    /// that one is propagated.
+    pub fn note(&mut self, text: &str) {
+        let _ = writeln!(&mut self.stderr, "{text}");
     }
 }
 
@@ -186,7 +190,7 @@ fn json<T: serde::Serialize>(value: &T, out: &mut Output) -> Result<()> {
         errno: None,
         message: format!("could not serialize the answer: {error}"),
     })?;
-    out.line(Stream::Stdout, &text)
+    out.line(&text)
 }
 
 /// The failure document, on standard output, through the one `--json` emitter.
@@ -225,7 +229,7 @@ pub(crate) fn list(list: &CameraList, as_json: bool, out: &mut Output) -> Result
     }
 
     if list.cameras.is_empty() {
-        out.line(Stream::Stdout, "no cameras")?;
+        out.line("no cameras")?;
     } else {
         let mut table = table();
         table.set_header(vec!["ID", "CARD", "CAPTURE NODE", "BUS PATH", "DRIVER"]);
@@ -244,12 +248,12 @@ pub(crate) fn list(list: &CameraList, as_json: bool, out: &mut Output) -> Result
                 Cell::new(&camera.driver),
             ]);
         }
-        out.line(Stream::Stdout, &table.to_string())?;
+        out.line(&table.to_string())?;
     }
 
     // D1's diagnosis. On stderr because it is about the answer rather than part of it.
     for hint in &list.hints {
-        out.line(Stream::Stderr, &format!("note: {}", hint.message()))?;
+        out.note(&format!("note: {}", hint.message()));
     }
     Ok(())
 }
@@ -260,13 +264,10 @@ pub(crate) fn info(detail: &CameraDetail, as_json: bool, out: &mut Output) -> Re
         return json(detail, out);
     }
 
-    out.line(Stream::Stdout, &identity_table(&detail.info).to_string())?;
+    out.line(&identity_table(&detail.info).to_string())?;
 
     if detail.formats.is_empty() {
-        out.line(
-            Stream::Stdout,
-            "\nformats: none (this camera has no capture node)",
-        )?;
+        out.line("\nformats: none (this camera has no capture node)")?;
         return Ok(());
     }
 
@@ -293,7 +294,7 @@ pub(crate) fn info(detail: &CameraDetail, as_json: bool, out: &mut Output) -> Re
             ]);
         }
     }
-    out.line(Stream::Stdout, &table.to_string())
+    out.line(&table.to_string())
 }
 
 fn identity_table(info: &CameraInfo) -> Table {
@@ -434,7 +435,7 @@ pub(crate) fn controls(report: &ControlReport, as_json: bool, out: &mut Output) 
             Cell::new(flags_text(desc)),
         ]);
     }
-    out.line(Stream::Stdout, &table.to_string())?;
+    out.line(&table.to_string())?;
 
     // Menus print under the table rather than inside a cell: the holes are the point
     // [PF:2], and a hole is only visible when the indices are.
@@ -448,10 +449,7 @@ pub(crate) fn controls(report: &ControlReport, as_json: bool, out: &mut Output) 
             })
             .collect::<Vec<_>>()
             .join(", ");
-        out.line(
-            Stream::Stdout,
-            &format!("\n{} menu: {items}", desc.slug.as_str()),
-        )?;
+        out.line(&format!("\n{} menu: {items}", desc.slug.as_str()))?;
     }
 
     // The self-contradicting rows, named once more where a reader will not miss them.
@@ -463,15 +461,12 @@ pub(crate) fn controls(report: &ControlReport, as_json: bool, out: &mut Output) 
             .map(|d| d.slug.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {} control(s) report a default or current value outside their own \
+        out.note(&format!(
+            "note: {} control(s) report a default or current value outside their own \
                  declared range, marked `!` above: {names}. This is the device's answer, \
                  reported rather than corrected [PF:4, PF:5].",
-                odd.len()
-            ),
-        )?;
+            odd.len()
+        ));
     }
 
     // The pairs. `--json` has carried them since P2 and the table did not, which made
@@ -500,8 +495,8 @@ pub(crate) fn controls(report: &ControlReport, as_json: bool, out: &mut Output) 
                 }),
             ]);
         }
-        out.line(Stream::Stdout, "\nauto/manual pairs:")?;
-        out.line(Stream::Stdout, &pairs.to_string())?;
+        out.line("\nauto/manual pairs:")?;
+        out.line(&pairs.to_string())?;
     }
     Ok(())
 }
@@ -631,37 +626,28 @@ pub(crate) fn control(desc: &ControlDesc, as_json: bool, out: &mut Output) -> Re
     ] {
         table.add_row(vec![Cell::new(field), Cell::new(value)]);
     }
-    out.line(Stream::Stdout, &table.to_string())?;
+    out.line(&table.to_string())?;
 
     // The marks the table cannot carry, on stderr so a piped table stays a table. Read
     // from the schema's own predicates, so `--json` supports the same conclusion.
     if desc.current_out_of_range() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {}'s current value is outside its declared range [PF:4] — reported, \
+        out.note(&format!(
+            "note: {}'s current value is outside its declared range [PF:4] — reported, \
                  not corrected",
-                desc.slug
-            ),
-        )?;
+            desc.slug
+        ));
     }
     if desc.default_out_of_range() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {}'s default is outside its declared range [PF:5]",
-                desc.slug
-            ),
-        )?;
+        out.note(&format!(
+            "note: {}'s default is outside its declared range [PF:5]",
+            desc.slug
+        ));
     }
     if desc.is_inactive() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {} is INACTIVE — an automation control owns it right now [PF:3]",
-                desc.slug
-            ),
-        )?;
+        out.note(&format!(
+            "note: {} is INACTIVE — an automation control owns it right now [PF:3]",
+            desc.slug
+        ));
     }
     Ok(())
 }
@@ -691,32 +677,26 @@ pub(crate) fn writes(report: &WriteReport, as_json: bool, out: &mut Output) -> R
             }),
         ]);
     }
-    out.line(Stream::Stdout, &table.to_string())?;
+    out.line(&table.to_string())?;
 
     if !report.disabled_automation.is_empty() {
         // A guarded write changes more than the caller named, and that is a change to the
         // camera they are entitled to hear about at the moment it happens.
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: switched off to make the write stick: {}",
-                report
-                    .disabled_automation
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        )?;
+        out.note(&format!(
+            "note: switched off to make the write stick: {}",
+            report
+                .disabled_automation
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     if !report.is_exact() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {} write(s) did not land exactly as asked",
-                report.inexact().len()
-            ),
-        )?;
+        out.note(&format!(
+            "note: {} write(s) did not land exactly as asked",
+            report.inexact().len()
+        ));
     }
     Ok(())
 }
@@ -734,17 +714,18 @@ pub(crate) fn snapshot(
     })?;
 
     match destination {
-        None => out.line(Stream::Stdout, &text),
+        None => out.line(&text),
         Some(path) => {
             std::fs::write(path, format!("{text}\n")).map_err(|error| Error::StorageIo {
                 path: path.to_path_buf(),
                 errno: error.raw_os_error(),
                 message: error.to_string(),
             })?;
-            out.line(
-                Stream::Stderr,
-                &format!("wrote {path} ({} control(s))", snapshot.entries.len()),
-            )
+            out.note(&format!(
+                "wrote {path} ({} control(s))",
+                snapshot.entries.len()
+            ));
+            Ok(())
         }
     }
 }
@@ -761,45 +742,39 @@ pub(crate) fn restore(report: &RestoreReport, as_json: bool, out: &mut Output) -
         let (control, text) = outcome_text(outcome);
         table.add_row(vec![Cell::new(control), Cell::new(text)]);
     }
-    out.line(Stream::Stdout, &table.to_string())?;
+    out.line(&table.to_string())?;
 
     // A restore repairs the session as well as the camera, and the second half has nothing
     // to do with the snapshot: a sweep killed before its first sample leaves a control every
     // verb refuses and nothing to put back (note **N139**). A run that changed a status on
     // disk and printed an empty table would be telling the operator nothing happened.
     if !report.freed.is_empty() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {} control(s) were left mid-sweep by a process that is gone and have \
+        out.note(&format!(
+            "note: {} control(s) were left mid-sweep by a process that is gone and have \
                  been given back: {}",
-                report.freed.len(),
-                report
-                    .freed
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        )?;
+            report.freed.len(),
+            report
+                .freed
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
 
     // The one line that matters, and it is on stderr because a caller scripting a restore
     // wants the exit code and the table, not prose in the middle of them.
     if !report.is_complete() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: {} control(s) did not come back: {}",
-                report.unrestored().len(),
-                report
-                    .unrestored()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        )?;
+        out.note(&format!(
+            "note: {} control(s) did not come back: {}",
+            report.unrestored().len(),
+            report
+                .unrestored()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     Ok(())
 }
@@ -825,13 +800,8 @@ pub(crate) fn photo(
     // The bytes first and the table after, both because a reader piping stdout wants the
     // image at byte zero and because the summary describes what was just written.
     if let Some(bytes) = returned {
-        out.bytes(Stream::Stdout, bytes)?;
+        out.bytes(bytes)?;
     }
-    let summary = if returned.is_some() {
-        Stream::Stderr
-    } else {
-        Stream::Stdout
-    };
 
     let mut table = table();
     table.set_header(vec!["FIELD", "VALUE"]);
@@ -847,22 +817,27 @@ pub(crate) fn photo(
     ] {
         table.add_row(vec![Cell::new(field), Cell::new(value)]);
     }
-    out.line(summary, &table.to_string())?;
+    // Where the summary goes is decided by whether the *answer* was the bytes. With `-o` the
+    // table is the answer and goes to standard output; with the photo itself on standard
+    // output the table is commentary, and commentary on the answer's own stream would land
+    // inside the image (note **N216** for why the two doors are two functions).
+    if returned.is_some() {
+        out.note(&table.to_string());
+    } else {
+        out.line(&table.to_string())?;
+    }
 
     if !report.negotiated.is_exact() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: the device adjusted the request: {}",
-                report
-                    .negotiated
-                    .adjustments
-                    .iter()
-                    .map(adjustment_text)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
-        )?;
+        out.note(&format!(
+            "note: the device adjusted the request: {}",
+            report
+                .negotiated
+                .adjustments
+                .iter()
+                .map(adjustment_text)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
     }
     Ok(())
 }
@@ -1070,46 +1045,37 @@ pub(crate) fn record(report: &RecordReport, as_json: bool, out: &mut Output) -> 
     ] {
         table.add_row(vec![Cell::new(field), Cell::new(value)]);
     }
-    out.line(Stream::Stdout, &table.to_string())?;
+    out.line(&table.to_string())?;
 
     // The three notes an operator acts on, on standard error so the table stays the answer.
     // Each names something the fields above state but do not interpret — which is the split
     // this module's header describes: the renderer may explain a field and may not compute a
     // fact the document does not carry.
     if let Some(cap) = summary.cap_reached {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: the {} cap ended this recording before its duration was spent; the \
+        out.note(&format!(
+            "note: the {} cap ended this recording before its duration was spent; the \
                  file holds everything up to that point",
-                format!("{cap:?}").to_lowercase()
-            ),
-        )?;
+            format!("{cap:?}").to_lowercase()
+        ));
     }
     if summary.dropped_frames > 0 {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: the driver's sequence numbers say {} frame(s) never arrived; a dropped \
+        out.note(&format!(
+            "note: the driver's sequence numbers say {} frame(s) never arrived; a dropped \
                  frame reads as a slow transition unless it is counted",
-                summary.dropped_frames
-            ),
-        )?;
+            summary.dropped_frames
+        ));
     }
     if !report.negotiated.is_exact() {
-        out.line(
-            Stream::Stderr,
-            &format!(
-                "note: the device adjusted the request: {}",
-                report
-                    .negotiated
-                    .adjustments
-                    .iter()
-                    .map(adjustment_text)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
-        )?;
+        out.note(&format!(
+            "note: the device adjusted the request: {}",
+            report
+                .negotiated
+                .adjustments
+                .iter()
+                .map(adjustment_text)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
     }
     Ok(())
 }
@@ -1199,7 +1165,7 @@ pub(crate) fn session(session: &Session, as_json: bool, out: &mut Output) -> Res
             Cell::new(criterion),
         ]);
     }
-    out.line(Stream::Stdout, &header.to_string())?;
+    out.line(&header.to_string())?;
 
     // **Two different empties, and printing one sentence for both told a user their plan had
     // done nothing.** `controls` is the per-control *status* map — a control appears in it once
@@ -1223,10 +1189,7 @@ pub(crate) fn session(session: &Session, as_json: bool, out: &mut Output) -> Res
     // had read this screen in the order a new user meets it.
     if session.controls.is_empty() {
         if session.queue.is_empty() {
-            return out.line(
-                Stream::Stdout,
-                "\nno controls queued yet — `calibrate plan` drafts them",
-            );
+            return out.line("\nno controls queued yet — `calibrate plan` drafts them");
         }
         let queued = session
             .queue
@@ -1235,7 +1198,6 @@ pub(crate) fn session(session: &Session, as_json: bool, out: &mut Output) -> Res
             .collect::<Vec<_>>()
             .join(", ");
         return out.line(
-            Stream::Stdout,
             &format!(
                 "\n{} control(s) queued and none swept yet — `calibrate sweep` takes the samples: {queued}",
                 session.queue.len()
@@ -1293,16 +1255,15 @@ pub(crate) fn session(session: &Session, as_json: bool, out: &mut Output) -> Res
             Cell::new(entry.samples.len().to_string()),
         ]);
     }
-    out.line(Stream::Stdout, &controls.to_string())?;
+    out.line(&controls.to_string())?;
 
     // The one sentence a caller needs before `apply`: whether anything is still pending.
     // Read from the schema's own predicate, so `--json` supports the same conclusion.
     if !session.is_settled() {
-        out.line(
-            Stream::Stderr,
+        out.note(
             "note: this session still has queued work; `calibrate apply` needs --partial \
              until it settles",
-        )?;
+        );
     }
     Ok(())
 }
@@ -1431,14 +1392,11 @@ pub(crate) fn status(status: &SessionStatus, as_json: bool, out: &mut Output) ->
     session(&status.session, false, out)?;
 
     if let Some(last) = status.log.last() {
-        out.line(
-            Stream::Stdout,
-            &format!(
-                "\nhistory: {} event(s), last at {}",
-                status.log.len(),
-                last.at
-            ),
-        )?;
+        out.line(&format!(
+            "\nhistory: {} event(s), last at {}",
+            status.log.len(),
+            last.at
+        ))?;
     }
     // Every sweep that stopped, in full, on stderr. This is the question `status` is asked
     // after the terminal that showed the live progress is gone, and the samples on the
@@ -1463,14 +1421,11 @@ pub(crate) fn status(status: &SessionStatus, as_json: bool, out: &mut Output) ->
                 .and_then(|kind| serde_json::to_value(kind).ok())
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
                 .map_or_else(String::new, |name| format!(" ({name})"));
-            out.line(
-                Stream::Stderr,
-                &format!(
-                    "note: the sweep of {control} stopped after {taken} of {total} sample(s) \
+            out.note(&format!(
+                "note: the sweep of {control} stopped after {taken} of {total} sample(s) \
                      at {}: {detail}{named}",
-                    entry.at
-                ),
-            )?;
+                entry.at
+            ));
         }
     }
     Ok(())
@@ -1482,7 +1437,7 @@ pub(crate) fn sessions(list: &SessionList, as_json: bool, out: &mut Output) -> R
         return json(list, out);
     }
     if list.sessions.is_empty() {
-        return out.line(Stream::Stdout, "no sessions");
+        return out.line("no sessions");
     }
 
     let mut table = table();
@@ -1495,7 +1450,7 @@ pub(crate) fn sessions(list: &SessionList, as_json: bool, out: &mut Output) -> R
             Cell::new(found.path.as_str()),
         ]);
     }
-    out.line(Stream::Stdout, &table.to_string())
+    out.line(&table.to_string())
 }
 
 // ------------------------------------------------------------------ sweep progress
@@ -1758,7 +1713,7 @@ pub(crate) fn profile(
     })?;
 
     match destination {
-        None => out.line(Stream::Stdout, &text),
+        None => out.line(&text),
         Some(path) => {
             // A trailing newline: the committed corpus is diffed by humans and by
             // `git`, and a file without one is a permanent "\ No newline" in every diff.
@@ -1767,7 +1722,8 @@ pub(crate) fn profile(
                 errno: error.raw_os_error(),
                 message: error.to_string(),
             })?;
-            out.line(Stream::Stderr, &format!("wrote {path}"))
+            out.note(&format!("wrote {path}"));
+            Ok(())
         }
     }
 }

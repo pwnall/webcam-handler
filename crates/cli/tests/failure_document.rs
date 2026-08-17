@@ -776,3 +776,60 @@ fn a_recording_refused_for_its_file_names_a_file_and_no_format_this_camera_lacks
         );
     }
 }
+
+#[test]
+fn a_refusal_ends_with_the_instruction_its_payload_carries() {
+    // **The message tested against the payload, not against a sentence written here** (docs/11
+    // **L29**, note **N212**). `IllegalTransition` carries the instruction in `op` and the
+    // condition in `from`, and its template used to append the condition — so the shipped
+    // binary printed
+    //
+    //     cannot write a photo to …/x.tiff; this build writes .jpg, .png, .ppm from state
+    //     unwritable_extension(tiff)
+    //
+    // to an agent whose documented disposition for this kind is *fix the request*. Nothing in
+    // this file could go red on it: the sentence was still non-empty, still named the
+    // extension, and still carried both fields.
+    //
+    // The assertion takes both halves from the document the same run printed, so it says
+    // "whatever this producer wrote as the instruction is the last thing the reader sees"
+    // rather than pinning today's wording — which is the shape a message defect survives
+    // (note **N211**: an arm aimed at wording stops firing when the wording changes).
+    let scratch = scratch();
+    let out =
+        Utf8PathBuf::from_path_buf(scratch.path().join("x.tiff")).expect("a UTF-8 scratch path");
+    let refused = run(&["--json", "photo", &camera(), "-o", out.as_str()]);
+
+    let failure = refused.refusal();
+    assert_eq!(failure.kind(), schema::ErrorKind::IllegalTransition);
+    let Error::IllegalTransition { from, op } = &failure.error else {
+        panic!("an unwritable extension was refused as something else: {failure:?}");
+    };
+    // The premise: this producer writes a whole instruction rather than a verb, which is the
+    // shape the template garbled. An `op` that had become one word would make the rest of this
+    // test pass for a reason it does not mean.
+    assert!(
+        op.contains(';'),
+        "this refusal no longer carries a multi-clause instruction, so it is no longer the \
+         case this test is about: {op}"
+    );
+
+    assert!(
+        failure.message.ends_with(op.as_str()),
+        "the instruction the payload carries is not where the message ends, so an agent \
+         reading the sentence gets the condition glued to the end of it: {}",
+        failure.message
+    );
+    assert!(
+        failure.message.starts_with(from.as_str()),
+        "the message dropped the condition it refused from: {}",
+        failure.message
+    );
+    // The line a person reads is the same value with the program's name in front, so it ends
+    // in the same place. Asserted through the process because that is where the two renderings
+    // could drift.
+    assert_eq!(
+        refused.stderr.trim_end(),
+        format!("webcam-handler-cli: {}", failure.message)
+    );
+}

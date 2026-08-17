@@ -28,7 +28,13 @@ use crate::vocabulary::closed_vocabulary;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SweepSpec {
-    /// Every step from min to max. Capped by [`limits::MAX_SWEEP_SAMPLES`].
+    /// Every step from min to max, up to the 256 samples a sweep may take
+    /// (`limits::MAX_SWEEP_SAMPLES`, checked against this sentence below).
+    ///
+    /// The number is written out for note **N148**'s reason: this description is published
+    /// into `schemas/webcam-handler-schema.json`, where a reader has no Rust toolchain to
+    /// resolve a constant with, and "capped by a name you cannot look up" tells them a cap
+    /// exists and nothing about what it is.
     All,
     /// Every `step`-th value, aligned to the control's own step.
     Uniform {

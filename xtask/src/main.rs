@@ -466,10 +466,19 @@ fn unescape_doc_brackets(text: &str) -> String {
 /// file is a dead end. The citation is rewritten rather than duplicated: the Rust source
 /// keeps the link a Rust reader can follow, and the document gets the name it can look up.
 ///
-/// **Applied to the method prose only**, which is where the mismatch is. The DTO
-/// descriptions in either artifact sit beside the vocabulary itself — `ErrorKind`'s
-/// alternatives *are* `"const": "device_gone"` — so rewriting there would turn a link into
-/// "See `device_gone`" one line under `device_gone`.
+/// **Applied to the method and subscription prose only**, which is where the mismatch is. The
+/// DTO descriptions in either artifact sit beside the vocabulary itself — `ErrorKind`'s
+/// alternatives *are* `"const": "device_gone"` — so rewriting there turns a link into
+/// "See `device_gone`" one line above `"const": "device_gone"`, which is a sentence with
+/// nothing in it.
+///
+/// This ran over the whole document for one repair, on the argument that the narrow scope left
+/// ``[`crate::Error::Busy`]`` behind in a `PhotoRequest.wait` description — a dead identifier
+/// for the reader D10 commits these files for. That was a real defect and this was the wrong
+/// fix for it: [`unlink_citations`] runs over the whole document and turns the same citation
+/// into `` `Error::Busy` ``, a name the reader can find under `$defs/Error`, while the
+/// eighteen `ErrorKind` descriptions keep saying which variant they are about (docs/11
+/// **M22**, notes **N218** and **N222**).
 ///
 /// `names` maps a variant's Rust spelling to its wire one and is built by walking
 /// `ErrorKind::ALL` — the vocabulary, not a table here — so a variant this cannot rewrite
@@ -531,6 +540,92 @@ fn d13_wire_names() -> Result<BTreeMap<String, String>> {
         .collect()
 }
 
+/// Undo rustdoc's *linking*, which is an instruction to a tool that is not running.
+///
+/// ``[`RecordRequest::container`]`` reaches a reader of `schemas/*.json` as brackets around
+/// an identifier they cannot open — note **N123**'s finding about clap help, at the two
+/// artifacts D10 commits **so a consumer needs no Rust toolchain** (docs/11 **M22**, note
+/// **N218**). The committed files carried 124 and 103 of them.
+///
+/// The citation keeps its text and loses its brackets, so what is left is a code span naming
+/// the thing: `RecordRequest::container`. That is the honest residue — most of these name a
+/// type the document really has, keyed under `$defs` or `components/schemas`, and the reader
+/// can find it. What it must not become is a *claim*: this does not rewrite the name into a
+/// JSON pointer, because a field's Rust name and its serde name are not always the same
+/// string and a wrong pointer is worse than a plain name.
+///
+/// A leading `crate::` goes with the brackets — and with **no** brackets, which is the half
+/// that had to be added (docs/11 §9.3's class, note **N222**). It is a Rust-internal spelling,
+/// meaning "whichever crate this comment was written in", and it means nothing at all outside
+/// the source tree; whether the author reached for a link or for a plain code span does not
+/// change that. The first pass below reads the linked form and the second the bare one, and
+/// the second is why `` `crate::limits::MAX_RECORDING_MS` `` cannot be published as written.
+///
+/// A citation spelled as a **real markdown link** — ``[`X`](crate::X)`` — carries its target
+/// as well as its brackets, and rustdoc accepts both spellings for one thing. Dropping the
+/// brackets alone would leave `` `X`(crate::X) ``: the instruction to the absent tool, now
+/// promoted to prose. The target goes with the link.
+///
+/// Runs **after** [`name_d13_errors`], so a D13 citation in a method's prose has already
+/// become the name the document keys it under and never arrives here.
+fn unlink_citations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("[`") {
+        let (before, from_open) = rest.split_at(open);
+        out.push_str(before);
+        let inner_start = &from_open["[`".len()..];
+        let Some(close) = inner_start.find("`]") else {
+            // An unterminated citation is prose, not a citation — the same reading
+            // `name_d13_errors` takes, and for its reason: prose is not required to be
+            // well-formed markdown, and an emitter that truncated it would lose the rest.
+            out.push_str(from_open);
+            return out;
+        };
+        let (inner, after) = inner_start.split_at(close);
+        out.push('`');
+        out.push_str(inner.strip_prefix("crate::").unwrap_or(inner));
+        out.push('`');
+        rest = &after["`]".len()..];
+        // The link form's target, when there is one. A parenthetical that is *not* a target
+        // is separated from the citation by a space and is left alone, which is what keeps
+        // this from eating the sentence after a bracket.
+        if let Some(target) = rest.strip_prefix('(')
+            && let Some(end) = target.find(')')
+        {
+            rest = &target[end + ")".len()..];
+        }
+    }
+    out.push_str(rest);
+    unqualify_crate_paths(&out)
+}
+
+/// Drop the `crate::` from a code span that never was a link.
+///
+/// [`unlink_citations`]'s second half, split out because the two read different syntax for one
+/// rule and a single loop doing both would have to say which it was in the middle of. Keyed on
+/// the opening backtick and the prefix together, so a `crate::` in running prose — which no
+/// doc comment in this workspace writes — is not this function's business, and an unterminated
+/// span is prose rather than a span, as everywhere else here.
+fn unqualify_crate_paths(text: &str) -> String {
+    const QUALIFIED: &str = "`crate::";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find(QUALIFIED) {
+        let (before, from_open) = rest.split_at(open);
+        out.push_str(before);
+        let named = &from_open[QUALIFIED.len()..];
+        if !named.contains('`') {
+            out.push_str(from_open);
+            return out;
+        }
+        out.push('`');
+        rest = named;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The bytes one generated artifact is committed as.
 ///
 /// Pretty-printed with a trailing newline, and with the prose rewritten for the consumer
@@ -539,8 +634,15 @@ fn d13_wire_names() -> Result<BTreeMap<String, String>> {
 /// stable across runs. Arrays are the emitter's own business — `methods` is in the trait's
 /// declaration order and the error list is in `ErrorKind::ALL`'s, so neither can shuffle
 /// between runs and make the gate flap.
+///
+/// Two rewrites over every prose string, in an order that matters: the escaping rustdoc made
+/// us write comes off first, and only then is what is left un-linked. The third,
+/// [`name_d13_errors`], is applied where the document is built rather than here, because it is
+/// the *method* prose that keys errors by their wire name — see its own doc for the scope
+/// argument, which has been made twice now.
 fn artifact_text(mut value: Value) -> Result<String> {
     rewrite_prose(&mut value, &unescape_doc_brackets);
+    rewrite_prose(&mut value, &unlink_citations);
     let mut text = serde_json::to_string_pretty(&value)?;
     text.push('\n');
     Ok(text)
@@ -946,6 +1048,108 @@ mod tests {
             "no citation at all",
         ] {
             assert_eq!(name_d13_errors(untouched, &names), untouched);
+        }
+    }
+
+    #[test]
+    fn no_prose_in_a_committed_artifact_speaks_to_a_toolchain_that_is_not_there() {
+        // **The whole of docs/11 M22**, and the reason it is asserted over the *rendered*
+        // artifacts rather than over the rewrite: D10 commits these two files so a consumer
+        // needs no Rust toolchain, and ``[`RecordRequest::container`]`` reaches that consumer
+        // as brackets around an identifier they cannot open. Note **N123** found the class in
+        // clap help and note **N148** measured this pile — 124 links in the document and 103
+        // in the bundle — and said not to add to it. This is what empties it and what keeps
+        // it empty.
+        //
+        // Every string, not only `description` and `summary`: the walker `rewrite_prose` uses
+        // is keyed on those two, so a link that landed anywhere else would be a link no
+        // rewrite reaches, which is exactly the thing worth knowing.
+        //
+        // **Two spellings, because a link is not the only way to address a tool that is not
+        // running** (note **N222**). The first pass of this scanned for `` [` `` alone, and a
+        // doc comment written the same week published `` `crate::limits::MAX_RECORDING_MS` ``
+        // into `$defs/Occupation` in both files — the identical defect, in the batch that
+        // named it, invisible to the check that had just been written for it. A leading
+        // `crate::` resolves for exactly one reader and these files are committed for the
+        // other one.
+        const ADDRESSED_TO_RUSTDOC: &[(&str, &str)] = &[
+            (
+                "[`",
+                "rustdoc links, which promise a reader with no toolchain a page",
+            ),
+            (
+                "crate::",
+                "`crate::` paths, which name a crate a reader with no toolchain has no copy of",
+            ),
+        ];
+        for (name, document) in artifacts().expect("the artifacts are emitted") {
+            let text = artifact_text(document).expect("the artifact renders");
+            for (spelling, what) in ADDRESSED_TO_RUSTDOC {
+                let found: Vec<&str> = text
+                    .lines()
+                    .filter(|line| line.contains(spelling))
+                    .map(str::trim)
+                    .collect();
+                assert!(
+                    found.is_empty(),
+                    "{name} publishes {what}, on {} line(s):\n{}",
+                    found.len(),
+                    found.join("\n")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_citation_loses_its_link_and_keeps_its_name_and_nothing_else_moves() {
+        // The rewrite as a string function, with its inverse arms — the citation keeps the
+        // name a reader can look up in `$defs`, loses the brackets that promised a link, and
+        // loses a `crate::` prefix that means "whichever crate this comment was written in".
+        assert_eq!(
+            unlink_citations("[`RecordRequest::container`] decides the file."),
+            "`RecordRequest::container` decides the file."
+        );
+        assert_eq!(
+            unlink_citations("[`crate::limits::MAX_SWEEP_SAMPLES`] caps it."),
+            "`limits::MAX_SWEEP_SAMPLES` caps it."
+        );
+        assert_eq!(
+            unlink_citations("[`A`] and [`B`]"),
+            "`A` and `B`",
+            "a line with two citations keeps both"
+        );
+        // A code span that never was a link carries the same dead prefix and until 2026-08-17
+        // kept it, which is how `` `crate::limits::MAX_RECORDING_MS` `` reached both committed
+        // files (note **N222**).
+        assert_eq!(
+            unlink_citations("capped by `crate::limits::MAX_RECORDING_MS` at the outside"),
+            "capped by `limits::MAX_RECORDING_MS` at the outside"
+        );
+        // And the link spelling of a citation loses its target with its brackets. Leaving it
+        // published `` `X`(crate::X) ``: the same instruction to the same absent tool, no
+        // longer even wearing the syntax that says it is one. The shape is in this tree —
+        // `schema::capture` and `schema::camera` write it — and no item carrying it is
+        // published today, which is why this arm is the only thing standing between the two.
+        assert_eq!(
+            unlink_citations("[`Error::size_unsupported`](crate::Error::size_unsupported) is."),
+            "`Error::size_unsupported` is."
+        );
+
+        // …and it touches nothing else. A code span that was never a link, a citation
+        // rustdoc's escaping already turned into prose, an unterminated bracket, an
+        // unterminated code span, and a real markdown link whose text is not code all survive
+        // — the last because a document may legitimately point at a file, and flattening that
+        // would remove the only working link in it.
+        for untouched in [
+            "`wch_record_status` is a method a client calls",
+            "a size of 1280x720",
+            "an unterminated [`citation",
+            "an unterminated `crate::span",
+            "[the design](docs/6-claude-fable-design-v2.md) is a document",
+            "[PF:15] is a probe finding",
+            "no citation at all",
+        ] {
+            assert_eq!(unlink_citations(untouched), untouched);
         }
     }
 

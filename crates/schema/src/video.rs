@@ -661,9 +661,20 @@ impl RecordRequest {
     /// the whole point of a recording is to be measured. An agent that is *told* the cap can
     /// ask again for something inside it.
     ///
+    /// **And a duration of zero is refused for the same reason, which the cap's argument
+    /// always covered and the code did not** (docs/11 **L30**, note **N213**). A budget of
+    /// `0` runs no turn at all: the file is opened, the header is written, and the answer
+    /// says `frames_written: 0` with `ended: "duration"` and exits `0` — a *successful*
+    /// recording of nothing, which is the one outcome an unattended caller cannot tell from
+    /// a camera that delivered nothing. One millisecond is enough to record a frame
+    /// (measured: `--duration 1ms` over `corpus/profiles/chicony-rgb.json` writes one), so
+    /// the floor is the smallest number this field can hold and not a policy of its own —
+    /// which is why it is written here rather than added to `crate::limits`.
+    ///
     /// # Errors
     ///
-    /// [`Error::IllegalTransition`] naming both the duration asked for and the cap.
+    /// [`Error::IllegalTransition`] naming both the duration asked for and the bound it
+    /// missed, at either end.
     pub fn budget_ms(&self) -> Result<u64> {
         match self.duration_ms {
             None => Ok(limits::DEFAULT_RECORDING_MS),
@@ -674,6 +685,12 @@ impl RecordRequest {
                      or under it",
                     limits::MAX_RECORDING_MS
                 ),
+            }),
+            Some(0) => Err(Error::IllegalTransition {
+                from: "a 0 ms recording".to_owned(),
+                op: "record for no time at all; that writes a container header and no frames \
+                     and answers as a success, so ask for at least 1 ms"
+                    .to_owned(),
             }),
             Some(asked) => Ok(asked),
         }

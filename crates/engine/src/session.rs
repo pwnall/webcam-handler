@@ -889,7 +889,7 @@ mod tests {
         begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 4), later()).expect("legal");
         let err = begin_sweep(&mut session, &focus, planned(&SweepSpec::All, 4), later())
             .expect_err("one at a time");
-        assert!(err.to_string().contains("from state sweeping"), "{err}");
+        assert!(err.to_string().starts_with("sweeping:"), "{err}");
     }
 
     #[test]
@@ -1014,7 +1014,7 @@ mod tests {
             later(),
         )
         .expect_err("mid-sweep");
-        assert!(err.to_string().contains("from state sweeping"), "{err}");
+        assert!(err.to_string().starts_with("sweeping:"), "{err}");
     }
 
     #[test]
@@ -1028,7 +1028,7 @@ mod tests {
             Stamp::epoch(),
         );
         let err = defer(&mut session, &privacy, "later", later()).expect_err("already set aside");
-        assert!(err.to_string().contains("from state blocked"), "{err}");
+        assert!(err.to_string().starts_with("blocked:"), "{err}");
 
         // The inverse: an untouched control defers.
         defer(&mut session, &slug("brightness"), "no lens", later()).expect("legal");
