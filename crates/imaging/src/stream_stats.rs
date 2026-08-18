@@ -10,7 +10,7 @@
 //!
 //! Sequence-gap counting existed here before D16 did — twice, letter for letter, once in
 //! each muxer's `count_sequence` — and the mean frame interval had its one home next door in
-//! [`crate::video::declared_interval`] since P6d. This module is where the first of those
+//! `video::declared_interval` since P6d. This module is where the first of those
 //! becomes one copy and the second gains the rest of its distribution; both muxers push
 //! their frames through an [`Accumulator`] and read `frames_dropped` back out of it, so
 //! `RecordingSummary::dropped_frames` and `RecordReport::stats` are two readings of one

@@ -115,7 +115,7 @@ fn ssim(a: &GrayImage, b: &GrayImage) -> Ssim {
 ///
 /// # Errors
 ///
-/// The crate's one refusal home ([`crate::fault::imaging_failure`], `DeviceIo` with no
+/// The crate's one refusal home (`fault::imaging_failure`, `DeviceIo` with no
 /// errno — D13 has no imaging-local variant), naming what was found: bytes in no format this
 /// build writes, and bytes whose own decoder refused them.
 pub fn read(bytes: &[u8]) -> Result<GrayImage> {
