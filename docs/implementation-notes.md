@@ -24849,3 +24849,69 @@ forgiven"*) and green on the tree.
 
 **Retires when:** nothing. This is coverage, and the note is here because the *reason* it was
 missing is a shape worth recognising, not because the line was hard.
+
+---
+
+## N251 — The floor cannot answer at full parallelism on this machine, and N60's false direction is why
+
+**Doc:** note **N60** (the register's second direction fired once and was wrong, because a mutant's
+test pass can fail for reasons that have nothing to do with the mutant); notes **N52**, **N66**,
+**N68** (a verdict that is a function of the machine); **N26** (the `sharpness` equivalence);
+docs/11 **§11 item 2**, which records that the G6 review did not run the floor. Measured
+2026-08-17/18 while paying that debt.
+
+**Repo:** `scripts/mutants.sh`'s job sizing and its register check; `.cargo/mutants.toml`;
+`scripts/mutants-accepted.txt`; the load-sensitive suites named below.
+
+**Two runs, and the second is the finding.**
+
+The first ran with `TMPDIR` on the 16 GiB `tmpfs`, which sized it at **2 jobs**. After 13 hours it
+died of `Disk quota exceeded` — and, separately, **refused to give a verdict at all**, because the
+tree had moved under it: the operator had edited two files mid-run to repair the survivor the run
+had just reported. `mutants.sh` said so in its own words — *"a mutation result describes one tree
+and this run read two … nothing here is a claim about the code"* — and exited 75. That refusal is
+the script working: it distinguished *no survivors* from *I could not answer*, and it caught the
+person driving it. **Its one survivor was real** and is note **N250**.
+
+The second ran with `WCH_MUTANTS_BUILD_ROOT` on the 314 GiB filesystem, which sized it at **8 jobs
+on 8 cores**, and finished cleanly in 2h23: 1132 mutants, 963 caught, 0 missed, 169 unviable —
+and **13 recorded acceptances reported as no longer surviving**.
+
+**All thirteen are N60's artifact, and the per-mutant log says so without being asked.** The
+`metrics.rs` mutant's run failed on `client::wchc` and `daemon::calibrate_verbs`:
+
+    the sweep runs: SettleTimeout { waited_ms: 5017, frames_seen: 11 }
+
+N60's recorded failure, at the P4e-i boundary, was *"frames did not settle within 5303 ms (11
+frames seen)"* — the same suites, the same deadline, the same frame count. Neither has anything to
+do with `sharpness`, and `crates/imaging/src/metrics.rs` has not changed since (`git log` over the
+file across the whole G6 repair pass is empty), so N26's equivalence proof still holds and an
+equivalent program cannot be killed by any test.
+
+**Verified by N60's own protocol rather than by that argument.** The mutant applied by hand to the
+working tree, on an idle machine: **1529 of 1529 tests pass.** The mutant survives. The acceptance
+is telling the truth; the run was wrong.
+
+**The mechanism, stated so it is not rediscovered a third time.** A handful of daemon and client
+integration suites drive settle logic on a **real** clock against a real deadline, which AGENTS
+forbids in as many words — *"No `sleep` as synchronisation — settle logic runs on a clock the test
+owns, never on the real one"* — and which note **N60** already identified in
+`crates/engine/tests/sweep.rs`. Eight cargo-mutants jobs on eight cores is enough contention to
+miss those deadlines. The consequence runs both ways and the second is worse: a spurious failure
+marks the *accepted* mutant as killable, **and it marks an ordinary mutant as caught**. So the
+"963 caught, 0 missed" half of that run is no more trustworthy than the 13 — a run that fails tests
+for load reasons cannot distinguish a mutant its suite kills from a mutant its suite merely
+outlasted.
+
+**What this bounds.** `just mutants` is a G4 criterion and it cannot answer on this machine at
+`nproc` jobs. It can answer at a parallelism low enough that the real-clock suites keep their
+deadlines — the 2-job run showed no acceptance failures before it died of space — which is hours
+rather than the two it takes at eight. **The register was not edited.** Deleting thirteen true
+acceptances on a verdict this note disproves is exactly the mistake N15 records and N60 was written
+to stop.
+
+**Retires when:** the daemon and client integration suites take a clock the test owns, at which
+point the floor's verdict stops being a function of how many jobs it was given and the criterion
+can be run at `nproc`. Until then `WCH_MUTANTS_JOBS` is the knob and a low number is the honest
+setting — and a run at any parallelism that reports an acceptance failure should be checked by hand
+before a line is deleted, which is N60's clause and now has a second instance behind it.
