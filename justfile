@@ -1,7 +1,7 @@
 # webcam-handler task runner.
 #
 # `just ci` is what CI runs, verbatim, and it runs offline. Every phase gate is a
-# named, counted, re-runnable recipe (`just gate-g0` … `just gate-g6`).
+# named, counted, re-runnable recipe (`just gate-g0` … `just gate-g9`).
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -73,6 +73,10 @@ gate-g5:
 # G6 — video recording.
 gate-g6:
     ./scripts/gates/phase.sh g6
+
+# G7 — adoption and the consumer contracts: selectors, the projection, the facade.
+gate-g7:
+    ./scripts/gates/phase.sh g7
 
 # ------------------------------------------------------- the privileged helper
 

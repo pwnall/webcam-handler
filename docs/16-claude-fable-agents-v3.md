@@ -1,17 +1,17 @@
 # AGENTS.md — webcam-handler (v3)
 
-Doc 16 in the webcam-handler series, **v3 — second revision**; supersedes docs/10 (v2,
-under `docs/historical/` after adoption). **Not yet the deployed copy**: the root
-`AGENTS.md` tracks docs/10 until docs/13 P7a executes the adoption, and the two
-declarations this series' gate reads out of preambles — the deployment sentence *and* the
-`CLAUDE.md` redirect sentence — live in this document's closing section until that commit
-moves them up here, because a second claimant of either, in a preamble, is the gate's own
-fail arm by design. Terse by design; the reasoning lives in
+Doc 16 in the webcam-handler series, **v3 — second revision**; supersedes docs/10 (v2, now
+under `docs/historical/`). Deploy at the repository
+root as `AGENTS.md`; the deployed copy tracks this file (one-directional; when they
+drift, reconcile deliberately and record which side was wrong). Terse by design; the
+reasoning lives in
 `docs/14-…-code-review-rubric-v3.md` (rubric) and `docs/12-claude-fable-design-v3.md`
-(design). The rules keep one home — `AGENTS.md`, the standardized, tool-neutral name —
-and a Claude-specific reader is pointed at it rather than given a second copy (owner
-ruling, 2026-08-14; note **N102**; the redirect's exact sentence is in the closing
-section with the deploy sentence).
+(design).
+
+Redirect at the repository root from `CLAUDE.md`, which holds `@AGENTS.md` and nothing
+else: `AGENTS.md` is the standardized, tool-neutral name, so the rules keep one home and a
+Claude-specific reader is pointed at it rather than given a second copy (owner ruling,
+2026-08-14; note **N102**).
 
 ## Who runs this, and why (owner, 2026-08-12; extended 2026-08-18)
 
@@ -325,19 +325,3 @@ notes current; the phase review gets its own session.
 - Build deps (bindgen, libclang, kernel headers — a declared, gated vintage
   precondition, N236) are acceptable; runtime external binaries are not (ffprobe/mpv are
   test oracles). The web client vendors or hand-writes everything — no CDN, no npm.
-
-## Deployment and adoption
-
-This document deploys at docs/13 P7a. In that commit — the same one that moves docs/10
-under `docs/historical/` and repoints the two selftest case files that seed the old paths
-— the following two sentences replace the "Not yet the deployed copy" clause in the
-preamble above, and the root `AGENTS.md` becomes this file's byte-identical copy
-(`agents-md-current.sh` discovers both declarations from the preamble and enforces the
-identity and the redirect):
-
-> Deploy at the repository root as `AGENTS.md`; the deployed copy tracks this file
-> (one-directional; when they drift, reconcile deliberately and record which side was
-> wrong).
-
-> Redirect at the repository root from `CLAUDE.md`, which holds `@AGENTS.md` and nothing
-> else.

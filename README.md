@@ -7,14 +7,17 @@ run calibration sessions that record what worked.
 Everything happens in-process. No `v4l2-ctl`, no `ffmpeg`, no external binaries at
 runtime — the tool links Rust libraries and talks to the kernel itself.
 
-**Status: under construction.** The architecture is settled (`docs/6`) and the work is
-phase-gated (`docs/7`): P0–P6 are closed — P6's gate `G6` holds as 39 named, counted,
+**Status: under construction.** The architecture is settled (`docs/12`) and the work is
+phase-gated (`docs/13`): P0–P6 are closed — P6's gate `G6` holds as 39 named, counted,
 re-runnable criteria. `record` is here: an AVI muxer and a Y4M sink written in-process,
 duration and size caps, the three wire methods, one verb on both command-line roots, and a
 preview that is fed the recording's own frames. `docs/agent-guide.md` is generated from the
 command surface it teaches. P6 closed with an adversarial review of the whole tree
 (`docs/11`), its seventy-nine findings repaired, and the reconciliation those repairs owed the
-rubric (`docs/8`).
+rubric (`docs/14`). The v3 document set is adopted as of P7a and the v2 series it supersedes
+lives under `docs/historical/`; P7–P9 add the consumer contracts (camera selectors, a masked
+profile compare, stream statistics, photograph comparison, an embedding facade) and turn the
+web client into the operator's workbench.
 
 ## Deliverables
 
@@ -311,8 +314,9 @@ sudo apt install ffmpeg mpv   # ffprobe ships inside the ffmpeg package
 These are the oracles the recording work is measured against. D7 L0 accepts a hand-written
 AVI muxer at a stated price — "~300 lines *and* an ffprobe round-trip oracle" — and docs/7
 **P6d** commissions that harness over generated AVI as present-or-counted-skip, with docs/9's
-oracle-accounting row making a silently-absent oracle a defect in its own right. P6 is the
-phase in flight, so install these before touching `crates/imaging/src/avi/`.
+oracle-accounting row making a silently-absent oracle a defect in its own right. P6 is
+closed and the muxer is shipped, so install these before touching
+`crates/imaging/src/avi/` — the oracle is what a change to those bytes is measured against.
 
 What their absence costs is specific and not small: the muxer's player-compatibility claim
 falls back on readers this repository also wrote. `avi-reparse-is-independent.sh` and the

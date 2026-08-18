@@ -1065,8 +1065,15 @@ quietly stopped being true [N133], and the L32 pins-with-no-consumer sat beside 
 **The dependency registry.** One row per `[workspace.dependencies]` entry (the
 manifest-side fact; this table is the design-side one), plus rows marked **(lock only)**
 for edges the walls police that no manifest names; `dependency-registry-sync.sh` —
-commissioned in docs/15 — reconciles table against manifest both ways over the unmarked
-rows, which is the reconciler N133 asked for and the check whose absence L32 priced. A
+commissioned in docs/15 — reconciles table against manifest both ways, which is the
+reconciler N133 asked for and the check whose absence L32 priced. Both directions in one
+sentence: every manifest entry is registered by some row, and every row whose **pin cell
+carries no bold parenthetical mark** names a crate the manifest has at the version the
+row states. The mark vocabulary is closed and lives in the pin cell, where a version
+would otherwise be — **(lock only)** for an edge the walls police that no manifest names,
+and **(not yet an edge — …)** for an adoption this revision decided and a later phase
+lands; a marked row still registers its crate, so a mark buys a row an absent manifest
+entry and never a hidden one, and the gate counts and names every mark it honours. A
 row may be a pin without a consumer only if it says so and names its disposition —
 carrying one silently is the L32 defect this table exists to end. Versions are pins-at-adoption; licenses as verified at adoption; the *scope*
 column names the crates whose edge it is, because an unscoped row is how `caps` went
@@ -1097,7 +1104,7 @@ unregistered inside the one crate whose dependency list most needs reviewing:
 | `image` | 0.25, `default-features=false, features=["png","jpeg"]` | MIT/Apache | imaging | PNG/JPEG encode; the `avif` default stays off (gate-held) |
 | `png` | 0.18 | MIT/Apache | imaging | PNG encode path |
 | `imageproc` | 0.27 | MIT | imaging | Laplacian and friends (D8 metrics) |
-| `image-compare` | 0.5 | MIT | imaging (**v3, conditional** — D17) | SSIM corroborator; adoption conditional on a clean resolved feature graph, owned fallback named |
+| `image-compare` | 0.5 **(not yet an edge — D17, P8b)** | MIT | imaging (v3, conditional) | SSIM corroborator; adoption conditional on a clean resolved feature graph, owned fallback named; the mark comes off the pin in the commit that adds the manifest row |
 | `little_exif` | 0.6 | MIT/Apache | imaging | APP1 bytes only; our splice writes them [PF:16] |
 | `y4m` | 0.8 | MIT | (pin, not linked) | measured and declined at P6b — the module writes its own 51-line sink [N107]; the pin stays by that entry's ruling, removal being the owner's |
 | `clap` | 4 | MIT/Apache | cli-core | the one command tree |
@@ -1114,7 +1121,6 @@ unregistered inside the one crate whose dependency list most needs reviewing:
 | `uuid` | 1 (v7) | MIT/Apache | schema | session ids |
 | `jiff` | 0.2 | Unlicense/MIT | schema | timestamps; RFC 3339 on disk |
 | `camino` | 1.2.5 | MIT/Apache | schema | UTF-8 paths on the wire and on disk |
-| `toml` | 1 | MIT/Apache | (unconsumed pin) | pinned at P0 for daemon config that never landed — the L32 class; P7a removes the pin or lands the consumer, and says which |
 | `base64` | 0.23 | MIT/Apache | api only | D10's transport encoding, one home |
 | `caps` | 0.5.6 | MIT/Apache | priv (**dev-only**) | ambient-capability handling in the blessed helper (registered at v3 — N133; the crate with the strongest reason to be reviewed is the one that was unlisted) |
 | `kamadak-exif` | 0.6 | BSD-2 | imaging (dev) | the independent EXIF read-back oracle |

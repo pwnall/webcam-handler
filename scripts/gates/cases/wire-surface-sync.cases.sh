@@ -21,7 +21,7 @@
 tick='`'
 
 _design() {
-    printf '%s' "$1/docs/6-claude-fable-design-v2.md"
+    printf '%s' "$1/docs/12-claude-fable-design-v3.md"
 }
 
 _surface() {
@@ -129,7 +129,7 @@ fail_case_the_method_lists_closing_anchor_is_gone() {
     # document and every backticked identifier in the design becomes a method claim.
     local tree
     tree="$(gate_scratch_tree)"
-    gate_seed 's/Binary results (photo\/record) cross the wire/Binary payloads cross the wire/' \
+    gate_seed 's/Binary results cross/Binary payloads cross/' \
         "$(_design "$tree")" || return 0
     gate_red_because 'cannot tell where the list ends' env WCH_GATE_ROOT="$tree" "$GATE"
 }

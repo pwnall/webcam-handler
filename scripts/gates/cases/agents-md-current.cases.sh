@@ -26,7 +26,7 @@ pass_case() {
 pass_case_the_source_document_may_be_reissued_under_another_number() {
     local tree
     tree="$(gate_scratch_tree)"
-    mv "$tree/docs/10-claude-fable-agents-v2.md" "$tree/docs/11-claude-fable-agents-v3.md"
+    mv "$tree/docs/16-claude-fable-agents-v3.md" "$tree/docs/17-claude-fable-agents-v4.md"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -43,7 +43,7 @@ pass_case_another_document_may_quote_the_rule_in_its_body() {
         printf '\n## A section discussing the deployment\n\n'
         # shellcheck disable=SC2016  # markdown backticks, quoting the rule under discussion
         printf 'AGENTS.md says: "Deploy at the repository root as `AGENTS.md`; the deployed copy tracks this file."\n'
-    } >>"$tree/docs/6-claude-fable-design-v2.md"
+    } >>"$tree/docs/12-claude-fable-design-v3.md"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -69,7 +69,7 @@ fail_case_the_deployed_copy_drifted() {
 fail_case_the_source_moved_and_the_copy_did_not() {
     local tree doc
     tree="$(gate_scratch_tree)"
-    doc="$tree/docs/10-claude-fable-agents-v2.md"
+    doc="$tree/docs/16-claude-fable-agents-v3.md"
     printf '\n9. A ninth non-negotiable rule that the root copy has never heard of.\n' >>"$doc"
     gate_red_because '; the deployment is one-directional — the doc is the source and the root copy tracks it' \
         env WCH_GATE_ROOT="$tree" "$GATE"
@@ -88,7 +88,7 @@ fail_case_the_deployed_copy_is_missing() {
 fail_case_the_source_document_is_gone() {
     local tree
     tree="$(gate_scratch_tree)"
-    rm -f "$tree/docs/10-claude-fable-agents-v2.md"
+    rm -f "$tree/docs/16-claude-fable-agents-v3.md"
     # The same sentence the reworded-declaration arm below claims, for the same reason the two
     # drift arms share one: "the series lost the document" and "the document lost the sentence"
     # are one branch by construction — the predicate looks for a *declaration*, and both seeds
@@ -104,7 +104,7 @@ fail_case_the_source_no_longer_says_where_it_deploys() {
     local tree file
     tree="$(gate_scratch_tree)"
     gate_seed 's/Deploy at the repository$/Keep this at the repository/' \
-        "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"
+        "$tree/docs/16-claude-fable-agents-v3.md" "$tree/AGENTS.md"
     gate_red_because 'no document under docs/ says where it deploys' \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -114,7 +114,7 @@ fail_case_the_source_no_longer_says_where_it_deploys() {
 fail_case_a_second_document_claims_the_deployment() {
     local tree
     tree="$(gate_scratch_tree)"
-    cp "$tree/docs/10-claude-fable-agents-v2.md" "$tree/docs/11-claude-fable-agents-v3.md"
+    cp "$tree/docs/16-claude-fable-agents-v3.md" "$tree/docs/17-claude-fable-agents-v4.md"
     gate_red_because 'each claim to deploy a copy' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -128,7 +128,7 @@ fail_case_the_deploy_target_is_not_a_name_at_the_root() {
     tree="$(gate_scratch_tree)"
     # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
     gate_seed 's|^root as `AGENTS\.md`|root as `../AGENTS.md`|' \
-        "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"
+        "$tree/docs/16-claude-fable-agents-v3.md" "$tree/AGENTS.md"
     gate_red_because 'which is not a plain file name at the repository root' \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
@@ -141,7 +141,7 @@ fail_case_the_deployed_copy_is_a_link_rather_than_a_copy() {
     local tree
     tree="$(gate_scratch_tree)"
     rm -f "$tree/AGENTS.md"
-    ln -s docs/10-claude-fable-agents-v2.md "$tree/AGENTS.md"
+    ln -s docs/16-claude-fable-agents-v3.md "$tree/AGENTS.md"
     gate_red_because 'are the same file (a link, not a copy)' env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -166,7 +166,7 @@ pass_case_the_redirect_follows_a_rename_in_the_document() {
     local tree file
     tree="$(gate_scratch_tree)"
     mv "$tree/CLAUDE.md" "$tree/CLAUDE-CODE.md"
-    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+    for file in "$tree/docs/16-claude-fable-agents-v3.md" "$tree/AGENTS.md"; do
         # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
         sed 's|root from `CLAUDE\.md`|root from `CLAUDE-CODE.md`|' "$file" >"$file.seeded"
         mv "$file.seeded" "$file"
@@ -222,7 +222,7 @@ fail_case_the_redirect_is_a_link_to_the_deployed_copy() {
 fail_case_the_source_no_longer_declares_a_redirect() {
     local tree file
     tree="$(gate_scratch_tree)"
-    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+    for file in "$tree/docs/16-claude-fable-agents-v3.md" "$tree/AGENTS.md"; do
         sed 's|^Redirect at the repository root from|A file at the repository root points from|' \
             "$file" >"$file.seeded"
         mv "$file.seeded" "$file"
@@ -238,7 +238,7 @@ fail_case_a_second_document_declares_the_redirect() {
     tree="$(gate_scratch_tree)"
     # shellcheck disable=SC2016  # markdown backticks quoting filenames, not commands
     printf 'Redirect at the repository root from `CLAUDE.md`, which holds `@AGENTS.md` and nothing else.\n' \
-        >"$tree/docs/12-a-second-declaration.md"
+        >"$tree/docs/98-a-second-declaration.md"
     gate_red_because 'each declare a redirect' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
@@ -249,7 +249,7 @@ fail_case_a_second_document_declares_the_redirect() {
 fail_case_the_declared_redirect_is_not_a_name_at_the_root() {
     local tree file
     tree="$(gate_scratch_tree)"
-    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+    for file in "$tree/docs/16-claude-fable-agents-v3.md" "$tree/AGENTS.md"; do
         # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
         sed 's|root from `CLAUDE\.md`|root from `../CLAUDE.md`|' "$file" >"$file.seeded"
         mv "$file.seeded" "$file"
@@ -265,7 +265,7 @@ fail_case_the_declared_redirect_is_not_a_name_at_the_root() {
 fail_case_the_declared_reference_is_not_the_deployed_copy() {
     local tree file
     tree="$(gate_scratch_tree)"
-    for file in "$tree/docs/10-claude-fable-agents-v2.md" "$tree/AGENTS.md"; do
+    for file in "$tree/docs/16-claude-fable-agents-v3.md" "$tree/AGENTS.md"; do
         # shellcheck disable=SC2016  # markdown backticks quoting a filename, not a command
         sed 's|which holds `@AGENTS\.md`|which holds `@README.md`|' "$file" >"$file.seeded"
         mv "$file.seeded" "$file"

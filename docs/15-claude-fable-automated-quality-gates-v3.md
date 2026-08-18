@@ -63,7 +63,7 @@ trusted), the panic/indexing set present at every shipped root and **walked by
 crate that reads kernel-shaped integers, `disallowed-methods` carrying the PF:1 ban and
 the workspace-wide sleep ban (N3).
 
-### The predicate register — one claim per predicate, 36 predicates
+### The predicate register — one claim per predicate, 37 predicates
 
 The count is the check: `run-all.sh` prints the same number every run, and `selftest.sh`
 fails on a predicate with no case file. Full rationale: each script's header.
@@ -79,6 +79,7 @@ fails on a predicate with no case file. Full rationale: each script's header.
 | `cli-parity.sh` | one command surface: byte-identical `--json` (answers **and** refusals, with exit codes) across both roots; every uncompared verb in a named bucket with a reason |
 | `corpus-floor.sh` | no dead corpus: profiles exist, are reachable, and are *replayed* |
 | `counted-selections.sh` | every criteria row still selects more than zero tests |
+| `dependency-registry-sync.sh` | design §2.8's registry and `[workspace.dependencies]` are one fact, reconciled name by name and pin by pin, both directions; a mark in the pin cell excuses a row from the manifest direction only, and every mark honoured is counted and named |
 | `dependency-walls.sh` | the T6 linkage walls hold, from `cargo metadata` |
 | `doc-comments-open-with-a-summary.sh` | no `///` block opens with a heading (the splice shape) |
 | `feature-posture.sh` | the three feature doors stay shut (`v4l` defaults, `image` defaults, TLS), from the resolved graph |
@@ -149,8 +150,8 @@ authoritative; this table is the commissioning record).
 
 | Gate | Phase | Enforces | Catches |
 |---|---|---|---|
-| **Adoption reconciliation** | P7a | the repointed `wire-surface-sync.sh` green against docs/12's D10 sentence; the two `cases/*.cases.sh` seeds repointed with it; `agents-md-current.sh` following docs/16's preamble (deploy and redirect declarations both); the historical move leaving no gate file reading a moved path | a half-adopted document set — some readers on v2, some on v3, nothing red |
-| **`dependency-registry-sync.sh`** | P7a | design §2.8's registry table against `[workspace.dependencies]`, **both directions**: a manifest row the table lacks, a table row the manifest lacks, a version that disagrees | the N133 class — three crates adopted and never registered, a version stated wrong, and (L32) a pin with no consumer; the reconciler both those findings priced |
+| ~~**Adoption reconciliation**~~ (landed) | P7a | the repointed `wire-surface-sync.sh` green against docs/12's D10 sentence; the two `cases/*.cases.sh` seeds repointed with it; `agents-md-current.sh` following docs/16's preamble (deploy and redirect declarations both); the historical move leaving no gate file reading a moved path | a half-adopted document set — some readers on v2, some on v3, nothing red |
+| ~~**`dependency-registry-sync.sh`**~~ (landed) | P7a | design §2.8's registry table against `[workspace.dependencies]`, **both directions**: a manifest row the table lacks, a table row the manifest lacks, a version that disagrees | the N133 class — three crates adopted and never registered, a version stated wrong, and (L32) a pin with no consumer; the reconciler both those findings priced |
 | **Selector criteria** | P7b | the parser over the closed vocabulary, both directions per spelling; corpus ambiguity (the shared-`usb_id` pair); id stability under any selector; `NodePath` re-resolving across a scripted renumbering [PF:22] | a spelling that parses to the wrong selector; a filter smuggled into enumeration; an address treated as identity |
 | **Derived populations absorb the new verbs** | P7b–P8b | the arm that *proves the construction* per the schema-artifacts precedent: `json-validates.sh`, `cli-parity.sh` and `agent-guide-current.sh` each demonstrated red on a seeded v3-verb defect, since their populations are scraped from `--help` and the contracts table rather than named | "covered by construction" asserted instead of demonstrated — the sentence this suite exists to distrust |
 | **`document` bucket in `cli-parity.sh`** | P7c | the fifth bucket with its one-implementation argument in the header; a document verb relabelled out of it fails | a document verb quietly acquiring an executor dependency (a socket, a store) while exempted from comparison |

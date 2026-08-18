@@ -37,6 +37,7 @@ claims-come-back-with-their-values
 cli-parity
 corpus-floor
 counted-selections
+dependency-registry-sync
 dependency-walls
 doc-comments-open-with-a-summary
 feature-posture

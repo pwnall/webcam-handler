@@ -129,7 +129,6 @@ tokio = "1.53.1"
 # combinator set this daemon does not use); `wrappers::ReceiverStream` is unconditional.
 tokio-stream = { version = "0.1.19", default-features = false }
 tokio-util = "0.7.19"
-toml = "1.1.4"
 # The `Service` trait itself, and the `Identity` layer its builders default to. Adopted at
 # P5b for one reason: jsonrpsee's wire surface is handed out as a `tower::Service`
 # (`TowerServiceBuilder::build`), and **neither `jsonrpsee-server` nor `axum` re-exports the

@@ -25107,3 +25107,42 @@ which reads the same in reverse.
 `MIN_RECORDING_BYTES - 1` at `begin` and `header_len - 1` at frame zero, and never the value
 itself; the AVI suite has had both halves in one test all along. The repair is the missing
 half, next to the half that existed.
+
+## N256 — The `toml` pin is removed, and the registry it hid in is now reconciled by a gate
+
+**Doc:** design §2.8's dependency registry and its new lead-in; docs/13 P7a ("with the `toml`
+pin's L32-class disposition — remove it or land its consumer — decided and recorded in the same
+commit").
+
+**Repo:** `Cargo.toml`'s `[workspace.dependencies]` loses `toml = "1.1.4"`;
+`docs/12-…-v3.md` §2.8 loses the row that named it; `scripts/gates/dependency-registry-sync.sh`
+lands beside both.
+
+**The disposition is removal.** `toml` was pinned at P0 for a daemon configuration file that no
+phase ever wrote: the daemon takes its whole posture from flags and from the systemd units
+(`--http`, `--http-insecure-loopback`, the token, the socket paths), and nothing in P0–P6 read a
+configuration file or asked to. No crate in this workspace names it — `grep -rn 'toml' crates/
+xtask/` finds the `Cargo.toml` filenames and nothing else — so, exactly as N164 measured for
+`clap_complete` and `clap_mangen`, a workspace dependency nobody names never reaches
+`Cargo.lock` at all, and a version "pinned at adoption" for a crate that was never adopted is a
+pin nothing can go stale against. Removing it costs nothing and re-adopting it is the one-line
+decision the owner's 2026-08-09 ruling says is not an escalation — in the commit that writes the
+consumer, with its §2.8 row beside it.
+
+**Why this one needed a ruling at all**, when N164 removed two of the same shape without one:
+the v3 registry is a *reconciled* table, so a pin with no consumer is no longer merely
+untidy — it is a row one direction of the gate cannot satisfy. §2.8's lead-in makes the
+condition explicit ("a row may be a pin without a consumer only if it says so and names its
+disposition"), and this entry is that disposition executed rather than restated.
+
+**The mark vocabulary the same commit introduces.** `futures-timer` is the opposite case and it
+is why the gate reconciles *names* in both directions but requires a *manifest entry* only from
+unmarked rows: it is a manifest row no crate names, carried so the adoption is visible, with the
+lock rather than the line pinning it. `hyper` is the mirror — a real edge with no manifest row —
+and carries **(lock only)** in its pin cell. D17's `image-compare` is the third shape: decided
+here, landing at P8b with its feature-graph measurement, so its pin carries **(not yet an
+edge — D17, P8b)** and the mark comes off in the commit that adds the manifest row. Three shapes,
+one closed vocabulary, all of it in the pin cell where a version would otherwise be, and every
+mark the gate honours is counted and named in its output — a mark that bought silence would be
+the L32 defect wearing the gate's approval.
+

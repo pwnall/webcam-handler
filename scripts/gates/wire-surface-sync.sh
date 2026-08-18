@@ -58,7 +58,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 root="$(gate_root)"
-design_path="docs/6-claude-fable-design-v2.md"
+design_path="docs/12-claude-fable-design-v3.md"
 design="$root/$design_path"
 openrpc_path="schemas/webcam-handler-openrpc.json"
 openrpc="$root/$openrpc_path"
