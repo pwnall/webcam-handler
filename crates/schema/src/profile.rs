@@ -16,7 +16,7 @@
 //!
 //! Provenance rides outside both.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -88,6 +88,31 @@ pub struct DeviceProfile {
     pub state: ProfileState,
 }
 
+/// The slugs whose invariant descriptors disagree, in sorted order.
+///
+/// Keyed by slug rather than compared positionally, so the answer names *which* control
+/// moved: a control present on one side only differs, and so does one both sides describe
+/// differently. The sort is on the slug, so the same two profiles always produce the same
+/// list — a diff whose order depended on which side was passed first would be a document two
+/// runs could disagree about.
+fn differing_control_slugs(mine: &[ControlDesc], theirs: &[ControlDesc]) -> Vec<ControlSlug> {
+    let ours: BTreeMap<&ControlSlug, &ControlDesc> =
+        mine.iter().map(|desc| (&desc.slug, desc)).collect();
+    let others: BTreeMap<&ControlSlug, &ControlDesc> =
+        theirs.iter().map(|desc| (&desc.slug, desc)).collect();
+
+    // Through a set rather than by chaining the two key iterators: a slug both sides carry
+    // appears in both, and the two runs are each sorted without being sorted *together*, so
+    // the duplicates a `dedup` would remove are not adjacent. The set is also what makes the
+    // order a property of the slugs instead of a property of the argument order.
+    let every_slug: BTreeSet<&ControlSlug> = ours.keys().chain(others.keys()).copied().collect();
+    every_slug
+        .into_iter()
+        .filter(|slug| ours.get(slug) != others.get(slug))
+        .cloned()
+        .collect()
+}
+
 /// The flag bits that belong to the state block rather than the invariant one.
 ///
 /// `INACTIVE` flips when an automation partner is toggled and `GRABBED` flips while
@@ -154,15 +179,158 @@ pub struct InvariantDifference {
     /// same camera in the same shape — which is not the same as being equal, because
     /// `/dev/videoN` is excluded there \[PF:22\].
     info: Vec<String>,
+    /// Everything that is not identity: the format tree, the control set and the measured
+    /// pairs. Held as [`DeviceDifference`] rather than as three flags so that the
+    /// section-membership rule has one home and this type is a *view* of the comparison
+    /// D15 made rather than a second comparison beside it (design §2.10).
+    device: DeviceDifference,
+}
+
+/// What two profiles say about the **device** — the description half of D15's partition.
+///
+/// The identity half is where the device *is* (`info`: id, fingerprint, bus strings, node
+/// table) and legitimately differs across a forwarded bus, another port, another machine.
+/// This half is what the device *is*, and across all of those it must not differ. Answering
+/// them separately is FR-W2's whole request: "is the forwarded camera the same device?" and
+/// "what identity moved?" are two questions with one comparison behind them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceDifference {
     /// Whether the format tree differs, at any of its three depths: a pixel format, a size
     /// under a pixel format, or a frame interval under a size. One flag rather than three,
     /// because the ruling this type serves is about the tree and not about a level of it.
-    formats: bool,
-    /// Whether the control set differs, with `current` cleared and the volatile bits masked
-    /// \[see [`invariant_control`]\].
-    controls: bool,
+    pub formats: bool,
+    /// The control slugs whose invariant descriptor differs — described differently on the
+    /// two sides, or present on only one of them. Named rather than counted, because
+    /// "seventeen controls differ" sends a reader to diff two documents by hand and
+    /// `["pan_absolute"]` sends them to the control.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlSlug>,
     /// Whether the automation pairs D3's probe measured differ \[PF:3\].
-    measured_pairs: bool,
+    pub measured_pairs: bool,
+}
+
+impl DeviceDifference {
+    /// The sections that disagree, named, in the order [`ProfileInvariant`] declares them.
+    ///
+    /// The one walk of these fields: [`InvariantDifference::sections`] extends this list
+    /// with `info`, [`ProfileComparison`] renders it, and the format-tree predicates on both
+    /// types compare against it — so "which of these counts as a disagreement, and in what
+    /// order" is settled here and nowhere else.
+    #[must_use]
+    pub fn sections(&self) -> Vec<&'static str> {
+        // Destructured, not field-accessed, so a fourth description section cannot be added
+        // without being named here: a section missing from this list is a section that
+        // silently never disagrees *and* one the format-tree predicates would keep waving
+        // through, because both are written over this list precisely so they cannot be told
+        // about a section separately.
+        let Self {
+            formats,
+            controls,
+            measured_pairs,
+        } = self;
+
+        let mut out = Vec::new();
+        if *formats {
+            out.push(InvariantDifference::FORMATS);
+        }
+        if !controls.is_empty() {
+            out.push("controls");
+        }
+        if *measured_pairs {
+            out.push("measured_pairs");
+        }
+        out
+    }
+
+    /// Whether the two profiles describe the same device.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sections().is_empty()
+    }
+}
+
+impl fmt::Display for DeviceDifference {
+    /// Every disagreeing section, with the control slugs named underneath theirs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let named: Vec<String> = self
+            .sections()
+            .into_iter()
+            .map(|section| {
+                if section == "controls" {
+                    let slugs: Vec<&str> = self.controls.iter().map(ControlSlug::as_str).collect();
+                    format!("controls ({})", slugs.join(", "))
+                } else {
+                    section.to_owned()
+                }
+            })
+            .collect();
+        f.write_str(&named.join(", "))
+    }
+}
+
+/// Two profiles compared with identity held to one side (design D15; FR-W2).
+///
+/// The document `profile compare` answers, and a schema DTO because the consumer that asked
+/// for it reads `--json` out of a subprocess. Both halves come back from one comparison
+/// because the consumer needs both: [`Self::device`] is the fidelity assertion — the
+/// forwarded camera is the same device — and [`Self::identity`] is the expected-delta
+/// report, since a different bus path is exactly what forwarding *means*.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProfileComparison {
+    /// What the device *is*: formats, controls, measured pairs.
+    pub device: DeviceDifference,
+    /// Where the device *is*: the `info` fields that differ, in the order and the spelling
+    /// [`CameraInfo::differing_fields`] produced. Expected to be non-empty across a
+    /// forwarded bus, a different port, a reboot or another machine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity: Vec<String>,
+}
+
+impl ProfileComparison {
+    /// Whether the two profiles describe the same device, whatever their identity says.
+    ///
+    /// The derived bool, for callers that only branch. Everything that decides it is on
+    /// [`Self::device`], so a caller that wants to know *what* moved never has to compare
+    /// twice to find out.
+    #[must_use]
+    pub fn device_matches(&self) -> bool {
+        self.device.is_empty()
+    }
+
+    /// Whether the advertised format tree is the **only** thing the device half disagrees
+    /// about.
+    ///
+    /// The distinction the owner's 2026-08-13 ruling turns on, carried on the answer so a
+    /// consumer can apply the policy its own situation warrants: a camera's format tree is
+    /// invariant within a connection and nowhere else \[PF:23, note **N89**\], so two
+    /// captures across a replug may legitimately differ here and nowhere else. This tool
+    /// reports the shape and declines to guess what it means for somebody else's rig.
+    ///
+    /// Written as an equality against [`DeviceDifference::sections`] rather than as a
+    /// conjunction, for the reason [`InvariantDifference::is_only_the_format_tree`] gives:
+    /// a conjunction fails *open* the day a fourth section is added, and a permission
+    /// should fail closed.
+    #[must_use]
+    pub fn device_differs_only_in_the_format_tree(&self) -> bool {
+        self.device.sections() == [InvariantDifference::FORMATS]
+    }
+}
+
+impl fmt::Display for ProfileComparison {
+    /// The device half, then the identity half, each named — and "the same device" said in
+    /// words when the device half is empty, because an empty string is the one answer a
+    /// reader cannot tell from a failure to print.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.device.is_empty() {
+            f.write_str("same device")?;
+        } else {
+            write!(f, "device differs: {}", self.device)?;
+        }
+        if !self.identity.is_empty() {
+            write!(f, "; identity differs: {}", self.identity.join(", "))?;
+        }
+        Ok(())
+    }
 }
 
 impl InvariantDifference {
@@ -182,32 +350,20 @@ impl InvariantDifference {
     /// disagreement, and in what order" is settled here and nowhere else (design §2.10).
     #[must_use]
     pub fn sections(&self) -> Vec<&'static str> {
-        // Destructured for the same reason `DeviceProfile::invariant_difference`
-        // destructures `ProfileInvariant`, and with more riding on it: a field added to this
-        // struct and not named here would be a section that silently never disagrees *and* a
-        // section the format-tree predicate would keep waving through, because that
-        // predicate is written over this list precisely so it cannot be told about a section
-        // separately. The compiler is the only thing that reliably asks.
-        let Self {
-            info,
-            formats,
-            controls,
-            measured_pairs,
-        } = self;
+        // Destructured for the same reason `DeviceProfile::compare` destructures
+        // `ProfileInvariant`: a field added to this struct and not named here would be a
+        // section that silently never disagrees *and* one the format-tree predicate would
+        // keep waving through. The compiler is the only thing that reliably asks. The three
+        // description sections are `DeviceDifference`'s to name — one list, extended here
+        // with the identity section this type adds, rather than two lists that could come
+        // to disagree about the order.
+        let Self { info, device } = self;
 
         let mut out = Vec::new();
         if !info.is_empty() {
             out.push(Self::INFO);
         }
-        if *formats {
-            out.push(Self::FORMATS);
-        }
-        if *controls {
-            out.push("controls");
-        }
-        if *measured_pairs {
-            out.push("measured_pairs");
-        }
+        out.extend(device.sections());
         out
     }
 
@@ -287,13 +443,48 @@ impl DeviceProfile {
     /// right call for anybody who only wants the bool.
     #[must_use]
     pub fn invariant_difference(&self, other: &DeviceProfile) -> Option<InvariantDifference> {
-        // Destructured, not `==`, and destructured on both sides so that a new field on
-        // `ProfileInvariant` stops compiling here until somebody says whether it compares
-        // exactly or by rule — and, since 2026-08-13, until somebody also says whether a run
-        // may *decline* over it the way it may decline over `formats`. A field added to the
-        // struct and forgotten here would be a section that silently never disagrees, which
-        // is the failure this destructuring was put in to prevent and which now has a second
-        // way to be wrong.
+        let comparison = self.compare(other);
+        let difference = InvariantDifference {
+            info: comparison.identity,
+            device: comparison.device,
+        };
+        // Asked through `sections()` rather than re-spelling "is any of the four set",
+        // because "which of these four count as a disagreement" is one rule and this is the
+        // place it would quietly grow a second copy.
+        (!difference.sections().is_empty()).then_some(difference)
+    }
+
+    /// Compare two profiles with identity held to one side (design D15; FR-W2 — "the single
+    /// highest-value request in this file").
+    ///
+    /// **The partition is a destructuring, not a list.** `ProfileInvariant`'s four fields are
+    /// bound by name on both sides, so a field added later stops this function compiling
+    /// until somebody assigns it a side — closed in both directions by construction, which
+    /// is the only mechanical defence this design trusts for a partition. `info` is identity
+    /// (where the device is); `formats`, `controls` and `measured_pairs` are description
+    /// (what the device is).
+    ///
+    /// **Identity goes through [`CameraInfo::differing_fields`]**, which is the one home for
+    /// "is this the same camera": `/dev/videoN` is probe order and a `uvcvideo` reload
+    /// renumbered three of four attached cameras without any of them changing \[PF:22, note
+    /// **N63**\], and spelling that exclusion again here would be the second copy AGENTS
+    /// forbids.
+    ///
+    /// **Controls are compared by slug, and order is deliberately not a difference.** The
+    /// control walk is `QUERY_EXT_CTRL` in id order, so two captures of one device produce
+    /// one order and a *set* that differs is what a device changing shape looks like; naming
+    /// the slugs is what makes the answer usable, and a reordering with identical members is
+    /// not a fact about the device this comparison will invent. Provenance and state are
+    /// excluded by construction — they are outside the invariant section, which is what lets
+    /// "the capture reproduces the committed profile" be true of a camera someone has been
+    /// using.
+    #[must_use]
+    pub fn compare(&self, other: &DeviceProfile) -> ProfileComparison {
+        // Destructured on both sides so a new field on `ProfileInvariant` stops compiling
+        // here until somebody says which half of D15's partition it belongs to — and, since
+        // 2026-08-13, until somebody also says whether a run may *decline* over it the way
+        // it may decline over `formats`. A field added to the struct and forgotten here
+        // would be a section that silently never disagrees.
         let ProfileInvariant {
             info,
             formats,
@@ -307,16 +498,23 @@ impl DeviceProfile {
             measured_pairs: other_pairs,
         } = &other.invariant;
 
-        let difference = InvariantDifference {
-            info: info.differing_fields(other_info),
-            formats: formats != other_formats,
-            controls: controls != other_controls,
-            measured_pairs: measured_pairs != other_pairs,
-        };
-        // Asked through `sections()` rather than re-spelling "is any of the four set",
-        // because "which of these four count as a disagreement" is one rule and this is the
-        // place it would quietly grow a second copy.
-        (!difference.sections().is_empty()).then_some(difference)
+        ProfileComparison {
+            device: DeviceDifference {
+                formats: formats != other_formats,
+                controls: differing_control_slugs(controls, other_controls),
+                measured_pairs: measured_pairs != other_pairs,
+            },
+            identity: info.differing_fields(other_info),
+        }
+    }
+
+    /// Whether two profiles describe the same device, whatever their identity says.
+    ///
+    /// The bool for callers that only branch; [`Self::compare`] is what they call when the
+    /// answer is "no" and they need to say why.
+    #[must_use]
+    pub fn device_matches(&self, other: &DeviceProfile) -> bool {
+        self.compare(other).device_matches()
     }
 
     /// Whether two profiles describe the same device in the same way.
@@ -812,5 +1010,141 @@ mod tests {
         let json = serde_json::to_string_pretty(&p).expect("serialize");
         let back: DeviceProfile = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, p);
+    }
+
+    // ------------------------------------------------------- D15: the masked device compare
+
+    #[test]
+    fn a_profile_is_the_same_device_as_its_identity_rewritten_self() {
+        // FR-W2's question, in its simplest true form: the same camera reached over a
+        // forwarded bus reports a different bus path, a different card ordinal and a
+        // different serial, and every one of those is identity. The description must not
+        // move, and `device_matches` is the sentence a consumer branches on.
+        let mine = profile(vec![control("brightness", 0, 50)]);
+        let mut forwarded = mine.clone();
+        forwarded.invariant.info.fingerprint.bus_path = "1-2:1.0".to_owned();
+        forwarded.invariant.info.bus_info = "usb-1-2".to_owned();
+        forwarded.invariant.info.id = CameraId::parse("cam:test-2").expect("literal id");
+
+        let comparison = mine.compare(&forwarded);
+        assert!(comparison.device_matches(), "{comparison}");
+        assert!(mine.device_matches(&forwarded));
+        assert_eq!(
+            comparison.identity,
+            vec!["fingerprint.bus_path".to_owned(), "bus_info".to_owned()],
+            "the identity half must name what moved rather than merely disagreeing"
+        );
+        // And the whole-invariant comparison still calls that a difference, which is the
+        // point of having two answers: `invariant_difference` is about the corpus, `compare`
+        // is about the device.
+        assert!(mine.invariant_difference(&forwarded).is_some());
+    }
+
+    #[test]
+    fn a_control_the_other_side_describes_differently_is_named_by_its_slug() {
+        let mine = profile(vec![
+            control("brightness", 0, 50),
+            control("contrast", 0, 50),
+        ]);
+        let mut theirs = mine.clone();
+        theirs.invariant.controls[1].range.max = 200;
+
+        let comparison = mine.compare(&theirs);
+        assert!(!comparison.device_matches());
+        assert_eq!(
+            comparison.device.controls,
+            vec![ControlSlug::parse("contrast").expect("literal slug")]
+        );
+        assert_eq!(comparison.device.sections(), vec!["controls"]);
+        assert!(comparison.to_string().contains("controls (contrast)"));
+    }
+
+    #[test]
+    fn a_control_only_one_side_has_is_a_difference_in_both_directions() {
+        // Both directions, because a comparison that only noticed additions would call a
+        // camera that lost a control the same device.
+        let fewer = profile(vec![control("brightness", 0, 50)]);
+        let more = profile(vec![control("brightness", 0, 50), control("gain", 0, 50)]);
+        let gain = ControlSlug::parse("gain").expect("literal slug");
+
+        assert_eq!(fewer.compare(&more).device.controls, vec![gain.clone()]);
+        assert_eq!(more.compare(&fewer).device.controls, vec![gain]);
+    }
+
+    #[test]
+    fn the_same_controls_in_another_order_are_the_same_device() {
+        // Stated rather than discovered, because it is a deliberate narrowing of the
+        // whole-invariant `==` this comparison replaced: the control walk is id-ordered, so
+        // one device produces one order, and a set that differs is what a device changing
+        // shape looks like. Order is not a fact about the device this answer will invent.
+        let mine = profile(vec![
+            control("brightness", 0, 50),
+            control("contrast", 0, 50),
+        ]);
+        let mut reordered = mine.clone();
+        reordered.invariant.controls.reverse();
+
+        assert!(mine.device_matches(&reordered));
+        assert!(mine.compare(&reordered).device.controls.is_empty());
+    }
+
+    #[test]
+    fn a_format_tree_difference_is_reported_as_the_only_one_it_is() {
+        // The owner's 2026-08-13 ruling, carried on the D15 answer: a consumer applies its
+        // own policy to a formats-only delta, and this predicate is what it branches on.
+        let mine = profile(vec![control("brightness", 0, 50)]);
+        let mut theirs = mine.clone();
+        theirs.invariant.formats.push(crate::camera::FormatInfo {
+            pixel_format: crate::camera::PixelFormat(*b"MJPG"),
+            description: "Motion-JPEG".to_owned(),
+            flags: 0,
+            sizes: Vec::new(),
+        });
+
+        let comparison = mine.compare(&theirs);
+        assert!(!comparison.device_matches());
+        assert!(comparison.device_differs_only_in_the_format_tree());
+        assert_eq!(comparison.device.sections(), vec!["formats"]);
+
+        // And with anything beside it, the permission goes away — the ruling is about a
+        // device re-deciding what it advertises, not about two findings at once.
+        theirs.invariant.controls[0].range.max = 200;
+        assert!(
+            !mine
+                .compare(&theirs)
+                .device_differs_only_in_the_format_tree()
+        );
+    }
+
+    #[test]
+    fn an_identity_only_difference_is_no_device_difference_at_all() {
+        // The inverse of the format-tree arm and the reason the two halves are separate: an
+        // identity delta must never make `device_differs_only_in_the_format_tree` false,
+        // because it is not a section of the device half.
+        let mine = profile(vec![control("brightness", 0, 50)]);
+        let mut theirs = mine.clone();
+        theirs.invariant.info.fingerprint.bus_path = "9-9:1.0".to_owned();
+
+        let comparison = mine.compare(&theirs);
+        assert!(comparison.device_matches());
+        assert!(comparison.device.is_empty());
+        assert_eq!(comparison.device.sections(), Vec::<&str>::new());
+        assert_eq!(
+            comparison.to_string(),
+            "same device; identity differs: fingerprint.bus_path"
+        );
+    }
+
+    #[test]
+    fn a_comparison_round_trips_through_json_because_a_subprocess_consumer_reads_it() {
+        let mine = profile(vec![control("brightness", 0, 50)]);
+        let mut theirs = mine.clone();
+        theirs.invariant.controls[0].range.max = 200;
+        theirs.invariant.info.fingerprint.bus_path = "9-9:1.0".to_owned();
+
+        let comparison = mine.compare(&theirs);
+        let json = serde_json::to_string_pretty(&comparison).expect("serialize");
+        let back: ProfileComparison = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, comparison);
     }
 }

@@ -354,6 +354,19 @@ impl<W: Write + Seek> Recorder<W> {
             Recorder::Y4m(writer) => writer.finish(),
         }
     }
+
+    /// How the frames written so far were delivered (design D16).
+    ///
+    /// Readable before [`Self::finish`] because `finish` consumes the recorder and a caller
+    /// wants both answers about one take. `wall_clock_skew_us` is `None` here — the muxers
+    /// read no clock — and the engine fills it from the stamps only it holds.
+    #[must_use]
+    pub fn stats(&self) -> schema::video::StreamStats {
+        match self {
+            Recorder::Avi(writer) => writer.stats(),
+            Recorder::Y4m(writer) => writer.stats(),
+        }
+    }
 }
 
 #[cfg(test)]

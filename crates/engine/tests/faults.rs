@@ -21,6 +21,7 @@ use schema::capture::{
 };
 use schema::control::{ControlSlug, ControlValue};
 use schema::time::Stamp;
+use schema::video::RecordRequest;
 use testkit::fixtures;
 
 #[test]
@@ -34,6 +35,7 @@ fn every_fault_in_the_menu_has_a_named_engine_behaviour() {
             }
             Fault::SettleNeverConverges => a_stream_that_never_settles_times_out(),
             Fault::FrameTimeout => a_frame_that_never_arrives_times_out(),
+            Fault::FrameGap => a_gap_in_the_stream_reaches_the_recording_answer(),
             Fault::DeviceGoneMidStream => a_device_that_vanishes_is_device_gone(),
             Fault::Busy => a_busy_camera_refuses_without_claiming_it_cannot(),
             // Hotplug is the backend's channel and the engine has no consumer for it at
@@ -191,6 +193,74 @@ fn a_frame_that_never_arrives_times_out() {
     )
     .expect_err("no frame arrived before the deadline");
     assert_eq!(error.kind(), ErrorKind::SettleTimeout);
+}
+
+fn a_gap_in_the_stream_reaches_the_recording_answer() {
+    // Design D16, end to end: the fake loses a run of frames, and what a subprocess consumer
+    // reads out of `record --json` says so — twice, in two fields that come from one
+    // accumulator and therefore cannot drift apart. This is the arm that makes "gaps mean
+    // dropped frames" a contract rather than a doc comment.
+    let lossy = backend();
+    let mut camera = open(&lossy);
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = camino::Utf8PathBuf::from_path_buf(scratch.path().join("gap.avi"))
+        .expect("a UTF-8 scratch path");
+
+    lossy.queue_fault(Fault::FrameGap);
+    let report = engine::record::run(
+        camera.as_mut(),
+        &RecordRequest {
+            stream: StreamRequest::default(),
+            duration_ms: Some(400),
+            sink: Sink::ServerPath { path },
+            wait: false,
+        },
+        &mut engine::record::OnDisk,
+        &engine::settle::MonotonicClock::new(),
+        Stamp::epoch(),
+    )
+    .expect("the fake records");
+
+    assert_eq!(
+        report.stats.frames_dropped,
+        u64::from(fake::FRAME_GAP_FRAMES),
+        "the take lost {} frames and the answer did not say so",
+        fake::FRAME_GAP_FRAMES
+    );
+    assert_eq!(
+        report.stats.gap_events,
+        1,
+        "one run of drops, not {}",
+        fake::FRAME_GAP_FRAMES
+    );
+    assert_eq!(
+        report.summary.dropped_frames, report.stats.frames_dropped,
+        "the container's count and the stream's count are one accumulator's answer"
+    );
+    // And the inverse, on the same path with nothing scripted: a healthy take reports none.
+    let healthy = backend();
+    let mut camera = open(&healthy);
+    let path = camino::Utf8PathBuf::from_path_buf(scratch.path().join("clean.avi"))
+        .expect("a UTF-8 scratch path");
+    let clean = engine::record::run(
+        camera.as_mut(),
+        &RecordRequest {
+            stream: StreamRequest::default(),
+            duration_ms: Some(400),
+            sink: Sink::ServerPath { path },
+            wait: false,
+        },
+        &mut engine::record::OnDisk,
+        &engine::settle::MonotonicClock::new(),
+        Stamp::epoch(),
+    )
+    .expect("the fake records");
+    assert_eq!(clean.stats.frames_dropped, 0);
+    assert_eq!(clean.stats.gap_events, 0);
+    assert!(
+        clean.stats.intervals.is_some(),
+        "a take of several frames spans intervals and must report their distribution"
+    );
 }
 
 fn a_device_that_vanishes_is_device_gone() {

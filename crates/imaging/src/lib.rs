@@ -52,12 +52,14 @@
 mod fault;
 
 pub mod avi;
+pub mod compare;
 pub mod decode;
 pub mod encode;
 pub mod exif;
 pub mod fixtures;
 pub mod metrics;
 pub mod photo;
+pub mod stream_stats;
 pub mod video;
 pub mod y4m;
 

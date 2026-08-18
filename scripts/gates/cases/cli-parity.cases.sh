@@ -149,6 +149,46 @@ fail_case_a_bucket_name_outside_the_closed_vocabulary() {
     gate_red_because "'get' is in bucket 'read-only'" bash "$mutant"
 }
 
+# A **document verb** relabelled out of its bucket, by the same route the read verbs get moved:
+# not deleting the row but changing one word, so the table still looks complete and the count
+# is unchanged. `session` is the destination that buys the most silence — it is the only bucket
+# whose reason is a refusal, so a verb parked there is one nothing compares and nothing has to
+# answer twice. It goes red on that exemption's own consequence: `profile compare` reads two
+# files and takes no lock, so `webcam-handler-cli` runs it happily beside the daemon and "the
+# store lock is what stands between these two roots" is false about it.
+fail_case_a_document_verb_moved_quietly_into_the_session_exemption() {
+    local mutant
+    mutant="$(_mutated_predicate 's/^    "profile-compare|document|/    "profile-compare|session|/' \
+        '"profile-compare|session|' '"profile-compare|document|')"
+    gate_red_because "webcam-handler-cli ran 'profile compare' while a daemon held" bash "$mutant"
+}
+
+# The other half of the `document` bucket, and the half that keeps it from being a label: the
+# exemption's reason is that **one implementation answered both roots**, so the arm has to have
+# watched it answer. This stand-in is the real `webcam-handler-client` for every verb but
+# `profile compare`, which it declines — the shape a document verb takes the day it grows a
+# dependency on the daemon, or the day an executor verb is filed here to escape the double
+# drive. Either way the bucket's claim is untrue and this is what says so.
+fail_case_the_document_buckets_verb_cannot_be_driven() {
+    local stub wchc
+    wchc="$(git rev-parse --show-toplevel)/target/debug/webcam-handler-client"
+    stub="$(mktemp "$(gate_scratch_root)/wch-stub-wchc.XXXXXXXX")"
+    cat >"$stub" <<STUB
+#!/usr/bin/env bash
+set -uo pipefail
+for arg in "\$@"; do
+    if [[ "\$arg" == compare ]]; then
+        printf 'webcam-handler-client: profile compare needs the daemon this client cannot reach\n' >&2
+        exit 1
+    fi
+done
+exec "$wchc" "\$@"
+STUB
+    chmod +x "$stub"
+    gate_red_because "webcam-handler-client could not answer 'profile compare' with no daemon to reach" \
+        env "WCH_GATE_WCHC=$stub" "$GATE"
+}
+
 # The other direction of the population check: a row naming a verb the surface does not
 # offer. A table nobody re-derives drifts this way — the verb goes, the row stays, and the
 # count keeps reporting a population that includes a verb nothing can run.

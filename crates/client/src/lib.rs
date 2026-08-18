@@ -105,6 +105,15 @@ pub const PROGRAM: Program = Program::Client;
 /// the daemon answered — all typed, all rendered by the caller.
 pub fn run(cli: &Cli, env: &dyn Env, out: &mut Output) -> Result<()> {
     refuse_composition_flags(cli)?;
+    // A document verb takes files and answers a document (design §2.7, D15): it touches no
+    // camera, no store and no socket, so it runs in this process and no daemon has to be
+    // running for it. Asked here, before the socket is composed, for the reason the flag
+    // refusal above is asked before it: a verb that needs nothing from a daemon must not
+    // report that one is missing. The verbs that *do* need one are unaffected — this answers
+    // `None` for every one of them.
+    if let Some(answered) = cli_core::below_the_executor(cli, out) {
+        return answered;
+    }
     let socket = socket(env)?;
     let mut executor = remote::Remote::connect(&socket, request_timeout(&cli.command))?;
     cli_core::run(cli, &mut executor, out)

@@ -78,6 +78,10 @@ gate-g6:
 gate-g7:
     ./scripts/gates/phase.sh g7
 
+# G8 — the instruments: stream health, photograph comparison, the device-loss contract.
+gate-g8:
+    ./scripts/gates/phase.sh g8
+
 # ------------------------------------------------------- the privileged helper
 
 # Where the blessed copy lives. Outside `target/` on purpose: writing a binary file

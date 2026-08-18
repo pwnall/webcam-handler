@@ -1104,7 +1104,7 @@ unregistered inside the one crate whose dependency list most needs reviewing:
 | `image` | 0.25, `default-features=false, features=["png","jpeg"]` | MIT/Apache | imaging | PNG/JPEG encode; the `avif` default stays off (gate-held) |
 | `png` | 0.18 | MIT/Apache | imaging | PNG encode path |
 | `imageproc` | 0.27 | MIT | imaging | Laplacian and friends (D8 metrics) |
-| `image-compare` | 0.5 **(not yet an edge — D17, P8b)** | MIT | imaging (v3, conditional) | SSIM corroborator; adoption conditional on a clean resolved feature graph, owned fallback named; the mark comes off the pin in the commit that adds the manifest row |
+| `image-compare` | 0.5 | MIT | imaging | SSIM corroborator; the conditional adoption's measurement cleared at P8b — its own `image` edge is `default-features = false`, the resolved graph stays clean, and six permissive packages join the lock (note **N260**, which also names the owned-SSIM exit) |
 | `little_exif` | 0.6 | MIT/Apache | imaging | APP1 bytes only; our splice writes them [PF:16] |
 | `y4m` | 0.8 | MIT | (pin, not linked) | measured and declined at P6b — the module writes its own 51-line sink [N107]; the pin stays by that entry's ruling, removal being the owner's |
 | `clap` | 4 | MIT/Apache | cli-core | the one command tree |

@@ -59,6 +59,7 @@ pub mod actor;
 pub mod calibrate;
 pub mod capture;
 pub mod discover;
+pub mod facade;
 pub mod lifecycle;
 pub mod pairing;
 pub mod paths;

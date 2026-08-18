@@ -393,8 +393,12 @@ pub struct Y4mWriter<W: Write + Seek> {
     frames_written: u32,
     first_timestamp_us: Option<i64>,
     last_timestamp_us: i64,
-    last_sequence: Option<u32>,
-    dropped_frames: u64,
+    /// What the delivered frames say about how they were delivered (design D16).
+    ///
+    /// The same accumulator the AVI muxer pushes into, and for the same reason: the two
+    /// sinks carried one `count_sequence` each, identical, and a rule stated twice is a rule
+    /// that can be repaired once (design §2.10).
+    stats: crate::stream_stats::Accumulator,
     cap_reached: Option<CapReached>,
     sink_failed: bool,
 }
@@ -406,7 +410,7 @@ impl<W: Write + Seek> std::fmt::Debug for Y4mWriter<W> {
         f.debug_struct("Y4mWriter")
             .field("frames_written", &self.frames_written)
             .field("bytes_written", &self.bytes_written)
-            .field("dropped_frames", &self.dropped_frames)
+            .field("dropped_frames", &self.stats.frames_dropped())
             .field("cap_reached", &self.cap_reached)
             .field("sink_failed", &self.sink_failed)
             .finish_non_exhaustive()
@@ -508,8 +512,7 @@ impl<W: Write + Seek> Y4mWriter<W> {
             frames_written: 0,
             first_timestamp_us: None,
             last_timestamp_us: 0,
-            last_sequence: None,
-            dropped_frames: 0,
+            stats: crate::stream_stats::Accumulator::new(),
             cap_reached,
             sink_failed: false,
         })
@@ -558,7 +561,7 @@ impl<W: Write + Seek> Y4mWriter<W> {
         self.put_planes()?;
 
         self.frames_written = next_count;
-        self.count_sequence(frame.sequence);
+        self.stats.push(frame.sequence, frame.timestamp_us);
         if self.first_timestamp_us.is_none() {
             self.first_timestamp_us = Some(frame.timestamp_us);
         }
@@ -608,7 +611,7 @@ impl<W: Write + Seek> Y4mWriter<W> {
             bytes_written: self.bytes_written,
             declared_interval_us,
             interval_source,
-            dropped_frames: self.dropped_frames,
+            dropped_frames: self.stats.frames_dropped(),
             span_us,
             cap_reached: self.cap_reached,
         })
@@ -757,20 +760,13 @@ impl<W: Write + Seek> Y4mWriter<W> {
         }
     }
 
-    /// Count what the driver's sequence numbers say never arrived.
+    /// How the frames written so far were delivered (design D16).
     ///
-    /// Only a forward gap is a drop. A repeated or backwards sequence number is a driver doing
-    /// something else — and a `u32` that wrapped, which at 30 fps takes four and a half years
-    /// — so it is not counted rather than counted as four billion.
-    fn count_sequence(&mut self, sequence: u32) {
-        if let Some(previous) = self.last_sequence
-            && let Some(gap) = sequence.checked_sub(previous)
-        {
-            self.dropped_frames = self
-                .dropped_frames
-                .saturating_add(u64::from(gap.saturating_sub(1)));
-        }
-        self.last_sequence = Some(sequence);
+    /// The accumulator's own answer, handed out whole. `RecordingSummary::dropped_frames` is
+    /// one number out of this same record, which is why the two can never disagree.
+    #[must_use]
+    pub fn stats(&self) -> schema::video::StreamStats {
+        self.stats.stats()
     }
 
     fn put_marker(&mut self) -> Result<()> {

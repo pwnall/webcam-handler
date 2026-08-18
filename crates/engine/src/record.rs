@@ -500,10 +500,22 @@ impl Recording {
             started_at,
             ..
         } = self;
+        // Read before `finish` consumes the recorder: one take, two answers, and the
+        // accumulator that produced both is inside the thing about to be given up.
+        let mut stats = recorder.stats();
         let summary = match recorder.finish() {
             Ok(summary) => summary,
             Err(refused) => return Err(as_storage_io(&failure, &path, refused)),
         };
+        // The one field a pure core cannot fill (design D16). The driver's span and this
+        // engine's own elapsed time are two clocks, and their difference is the measurement
+        // a forwarding path is judged on — so it is computed exactly where both numbers are
+        // in scope and nowhere else. `None` when the take spanned nothing, because a skew
+        // against no span is not a quantity.
+        stats.wall_clock_skew_us = summary.span_us.and_then(|span| {
+            let wall_us = i64::try_from(wall_clock_ms).ok()?.checked_mul(1_000)?;
+            wall_us.checked_sub(i64::try_from(span).ok()?)
+        });
         Ok(RecordReport {
             camera,
             started_at,
@@ -511,6 +523,7 @@ impl Recording {
             format,
             negotiated,
             summary,
+            stats,
             wall_clock_ms,
             ended,
         })

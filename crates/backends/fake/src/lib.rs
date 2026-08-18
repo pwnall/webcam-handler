@@ -63,7 +63,7 @@ use schema::limits;
 use schema::profile::DeviceProfile;
 
 pub use camera::FakeCamera;
-pub use fault::Fault;
+pub use fault::{FRAME_GAP_FRAMES, Fault};
 
 use camera::{CameraState, lock, take_fault};
 use fault::FaultQueue;
@@ -271,10 +271,18 @@ impl CameraBackend for FakeBackend {
     }
 
     fn enumerate(&self) -> Result<Vec<CameraInfo>> {
+        // A camera that vanished mid-stream is not on this machine any more (design D19), so
+        // it is not in the listing either. Filtered rather than removed from `self.cameras`,
+        // because the fault is scripted against a backend a test still holds — and because
+        // "the device came back" is the next sentence D19 writes, which wants the state to
+        // still be here to come back from.
         Ok(self
             .cameras
             .iter()
-            .map(|state| lock(state).info().clone())
+            .filter_map(|state| {
+                let state = lock(state);
+                (!state.is_gone()).then(|| state.info().clone())
+            })
             .collect())
     }
 

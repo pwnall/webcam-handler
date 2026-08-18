@@ -144,7 +144,7 @@ fn bundle() -> Result<Value> {
     };
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
     use schema::error::{Error, Failure};
-    use schema::profile::DeviceProfile;
+    use schema::profile::{DeviceProfile, ProfileComparison};
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session, SessionList, SessionStatus, SweepRequest};
     use schema::snapshot::{RestoreReport, Snapshot};
@@ -212,6 +212,12 @@ fn bundle() -> Result<Value> {
     register::<RecordReport>(&mut generator, &mut roots);
     register::<RecordStatus>(&mut generator, &mut roots);
     register::<DeviceProfile>(&mut generator, &mut roots);
+    // P7c's document verb: `profile compare` answers this and nothing else (D15). A root by
+    // the paragraph above's plain reading — a `--json` verb emits it — and the consumer that
+    // asked for the verb reads it out of a subprocess, which is exactly the reader this bundle
+    // is for. `DeviceDifference` arrives as a `$def` by reachability, because no verb answers
+    // with one on its own.
+    register::<ProfileComparison>(&mut generator, &mut roots);
     register::<Error>(&mut generator, &mut roots);
     // P6f's failure document, and a root by the strictest reading of the paragraph above: it
     // is the one thing a `--json` verb prints that is not the verb's answer (owner ruling,

@@ -25248,3 +25248,187 @@ machinery whose only failure mode is proposing the scheme the caller did not wan
 artifacts do not move. `Error::example(CameraUnknown)` carries `requested: "cam:nope"`, which
 parses, so the OpenRPC document's example message is the sentence it always was — the hint is a
 runtime clause on a request that went wrong, not a change to the registry's published shape.
+
+## N258 — The control set compares by slug, and a reordering is not a device changing shape
+
+**Doc:** design D15's projection; `DeviceProfile::compare`'s doc comment carries the rule.
+
+**Repo:** `schema::profile::differing_control_slugs`, consumed by `compare` and — since the
+same commit — by `invariant_difference`, which used to compare `Vec<ControlDesc>` with `==`.
+
+**This is a deliberate narrowing of a settled comparison**, so it is recorded rather than left
+to a reader of the diff. Before D15, "the control sets differ" was `controls != other.controls`
+over two vectors: order-sensitive, and answering only yes or no. D15 needs the *slugs*, because
+"seventeen controls differ" sends a consumer to diff two documents by hand while
+`["pan_absolute"]` sends it to the control. Keying by slug is what makes that answer possible,
+and it drops order sensitivity as a side effect.
+
+**Why the side effect is acceptable, stated as a claim somebody can refute.** The control walk
+is the raw `QUERY_EXT_CTRL` loop in id order (PF:1's replacement), so one device produces one
+order across two captures; a set that differs — a control gained, lost, or described
+differently — is what a device changing shape looks like, and that is exactly what the slug
+comparison reports. A reordering with identical members has never been observed, and if it were
+observed it would be a PF entry about a driver rather than a fact this comparison should invent
+a verdict for. `the_same_controls_in_another_order_are_the_same_device` is the arm that pins the
+new behaviour, so a future reader meets the decision rather than deducing it.
+
+**What did not change**: `formats` still compares with `==`, order included. The format tree is
+nested three deep and the owner's 2026-08-13 ruling already licenses it to move wholesale across
+a replug \[PF:23\], so there is nothing a per-node diff would buy that
+`device_differs_only_in_the_format_tree` does not already answer.
+
+## N259 — Two muxers counted sequence gaps in identical code, and D16 gave the count a home
+
+**Doc:** design D16 ("the accumulator extends that home rather than founding a second");
+design §2.10's one-home law.
+
+**Repo:** `imaging::stream_stats::Accumulator`, and the `count_sequence` methods deleted from
+`imaging::avi::write::AviWriter` and `imaging::y4m::Y4mWriter`.
+
+**The finding, in the shape §2.10 names.** Both muxers carried a private `count_sequence` —
+eleven lines, letter for letter, doc comment included, down to the phrase *"which at 30 fps
+takes four and a half years"*. Neither was wrong. They were two copies of one rule about what a
+driver's `sequence` field means, and the copy is what makes a repair in one of them a defect in
+the other. The pair survived P6b, P6d and the G6 whole-tree review, which is worth recording:
+duplicated code that is *correct* and *identical* is the copy that review is worst at seeing,
+because every diff that touches one of them looks locally right.
+
+**What made the repair possible now rather than then** is that D16 needed the same two numbers
+for something else. A shared helper extracted for tidiness alone would have been a third place
+to look; an accumulator that answers `frames_dropped`, the interval distribution and the gap-run
+count means `RecordingSummary::dropped_frames` and `RecordReport::stats` are two readings of one
+record and cannot disagree, which is the property the one-home law is actually for.
+
+**The behaviour is unchanged and the existing arms prove it**: `dropped_frames_are_counted_from_sequence_gaps`
+and `a_repeated_or_backwards_sequence_number_is_not_a_dropped_frame` in the AVI suite, and their
+Y4M twin, pass against the accumulator without amendment. What is *added* is that a repeated or
+backwards sequence is now **counted** as `sequence_resets` rather than merely ignored — the same
+decision, represented instead of discarded (AGENTS rule 6).
+
+## N260 — `image-compare`'s adoption measurement, and the eight crates it actually costs
+
+**Doc:** design D17 ("adopted under the 2026-08-09 ruling — the licence clears the bar, the
+crate looks solid — **conditional on one measurement at adoption**"); §2.8's registry row, whose
+pin loses its **(not yet an edge — D17, P8b)** mark in the commit this entry lands with.
+
+**Repo:** `Cargo.toml`'s `[workspace.dependencies]`, `crates/imaging/Cargo.toml`,
+`imaging::compare::ssim`.
+
+**The condition, measured 2026-08-18 on this host.** The condition D17 named is that
+`image-compare`'s own `image` edge must not re-enable the default features this workspace turned
+off, because cargo unifies features per package workspace-wide and `image`'s defaults drag `avif`
+and with it the rav1e encoder. Read at the source rather than inferred:
+`image-compare-0.5.0/Cargo.toml` declares `image = { version = "0.25", default-features = false }`.
+Then read from the resolved graph, which is the reading that counts: `feature-posture.sh` PASS
+over **316 packages and 622 enabled features**, both per-crate posture rules held. `cargo deny
+--offline check bans licenses sources` — ok on all three. `dependency-walls.sh` PASS over 1653
+dependency links. The condition is met; the design's decision procedure says adopt, and this is
+that decision executed rather than re-taken.
+
+**What the adoption costs, stated because the design could not have known it.** Six packages
+join `Cargo.lock`: `image-compare`, `rayon`, `rayon-core`, `crossbeam-deque`, `crossbeam-epoch`,
+`crossbeam-utils`. (`itertools` and `either` were already resolved through other edges.) All
+MIT/Apache-2.0, all on the allowlist. The one that deserves a sentence is **rayon**: it is a
+work-stealing thread pool, and it lands inside `webcam-handler-imaging`, a crate this design
+calls pure. That is not a purity violation — `photos()` is still a total function of its two
+arguments and every test hands it a vector — but it does mean a library consumer that links
+`imaging` links a global thread pool it did not ask for. Recorded here so the next reviewer meets
+the fact rather than discovering it, and so the trigger is stated: **if a consumer ever objects to
+the pool, the fallback D17 already named — a grayscale windowed SSIM owned in this crate, about a
+hundred lines over primitives already linked — is the exit, and `imaging::compare::ssim` is the
+one function that would change.**
+
+**What was rejected, and why it is a close call rather than an obvious one.** Owning the SSIM
+outright was tempting for exactly N2's reason (`directories` dropped for ~30 owned lines), and
+this crate has form: it owns an AVI muxer and a Y4M sink. Two things decided it the other way.
+The design had already taken this decision with its condition stated, and the condition passed —
+re-taking it on the transitive count would be substituting taste for a settled decision, which
+AGENTS' "Read before changing anything" forbids in as many words. And the `MSSIMSimple` algorithm
+is *pinned by a third party's tests*: an owned SSIM would be a hundred lines whose only oracle is
+the paper it was written from, which is precisely the position the AVI re-parser exists to avoid
+and could not be given here without writing the second implementation anyway.
+
+**One thing the adoption does not buy**: `gray_similarity_structure` allocates and returns a
+whole per-pixel similarity image alongside the scalar, and this module discards it. For a
+document verb over two photographs that is a wasted allocation and nothing more; it is written
+down because a future profile of `photo diff` will find it and should find the reason too.
+
+## N261 — On a colour device, D5's ranking prefers monochrome, and the corpus can finally see it
+
+**Doc:** design D5's ranking key and `schema::camera::Lossiness`; the owner's re-ranking ruling
+of 2026-08-13. **This entry answers nothing — it is a question for the owner, recorded where
+questions go.**
+
+**Repo:** `corpus/profiles/vivid.json` (committed at P9b as D20's 77-control layout fixture),
+and the `("vivid", *b"GREY", 3840, 2160)` row in `corpus_replay.rs`'s `RANKED_DEFAULT`.
+
+**The measurement.** `webcam-handler-cli photo` with no flags, against the vivid virtual driver,
+takes a **monochrome** 3840×2160 frame — on a device that also offers `YUYV`, `NV12`, `NV24`,
+`RGB3` and seventy-odd other layouts, most of them in colour. The ranking key is doing exactly
+what it says: `Lossiness::Lossless` outranks `ChromaSubsampled` at equal resolution, and `GREY`
+is `Lossless`.
+
+**Why nobody has met it before.** The only device in this project's corpus that offered `GREY`
+was `chicony-ir`, an infrared sensor that offers *nothing else*. There, "lossless" and "the whole
+signal the sensor produced" are the same sentence, and the vocabulary's own doc comment says so
+in as many words: *"an IR sensor's luma has no chroma to subsample and no quantiser in front of
+it"*. vivid is the first committed device where a `GREY` mode competes with a colour one, and it
+is only in the corpus at all because D20 needed a 77-control layout fixture. The finding is a
+side effect of a UI decision, which is the argument for keeping the corpus wide.
+
+**The question, stated so it can be ruled on.** Is discarding chroma *lossless*? Measured over
+the whole path D5's amendment cares about — sensor to file — it is not: a colour sensor's frame
+delivered as `GREY` has lost every chroma sample, which is strictly more than `YUYV`'s half.
+Two readings are available and this entry declines to choose between them:
+
+1. **`Lossiness` is about the encoding, not the content.** `GREY` quantises nothing and
+   subsamples nothing; a caller who wants colour asks for it. The rule stays; this row is a
+   curiosity about a virtual device.
+2. **`Lossiness` is about fidelity to the device under test**, which is what the 2026-08-13
+   amendment says in its first sentence. Then `GREY` on a colour source belongs *below* every
+   chroma-carrying format — perhaps as a fifth key, "carries chroma at all", above the
+   subsampling fraction — and the repair is a few lines in `rank_within`'s key.
+
+**What is not in question**: `chicony-ir` is unaffected under either reading (it offers one
+format), and no shipped behaviour changes with this commit. What changes is that the corpus now
+contains a device where the answer is visible, and `RANKED_DEFAULT` records it as measured — so
+a ruling either way is a row that moves with an argument beside it rather than a discovery.
+
+## N262 — What the single-column page measured, and what the two-pane shell measures instead
+
+**Doc:** design D20 ("preview beside the controls with no scrolling between them" — the owner's
+own sentence, 2026-08-18); docs/13 P9a.
+
+**Repo:** `crates/web/assets/index.html` and `app.css`; the two claims
+`the_preview_and_the_control_being_adjusted_are_visible_together_at_every_scroll_position` and
+its narrow-viewport twin in `crates/daemon/tests/browser/client.spec.mjs`.
+
+**The measurement, before.** The P5 page was four stacked `<section>`s in one scrolling
+document. Driven through the pinned Chromium at 1440×900 against the fake replaying three
+committed profiles, the document was **3359 px tall**; `#cameras` ran 156 px from y=81,
+`#stage` 542 px from y=261, and `#controls` **2395 px from y=828** — so the control panel began
+below the fold and ran nearly three screens. Adjusting any control at all scrolled the preview
+off the top of the screen, and that is the whole of the owner's complaint: the page was a good
+*viewer* and P5's scope said so, but the session it is actually opened for is tuning.
+
+**The measurement, after.** Same viewport, same daemon: `document.scrollHeight <= innerHeight`
+(the document does not scroll at all), the control column is its own scroll container with
+2514 px of content in an 847 px box, and the preview's bounding box does not move at any scroll
+position of that column. The shell is one `100dvh` grid: header, then two panes, the left one
+sized to fit and the right one `overflow-y: auto`.
+
+**Three things that had to be got right and would have looked fine wrong.**
+`min-height: 0` on both panes — a grid item's default is `auto`, "as tall as my content", so a
+column of 77 controls silently grows the row past the viewport and scrolls the *document*,
+which is the layout this replaced wearing the new one's markup. `max-height` on the camera
+picker in **rem and not per cent** — a percentage height on a grid item resolves against the row
+it is sizing, which is itself, and the first attempt clipped a camera card in half. And
+`object-fit: contain` on the preview `<img>` rather than `cover`: yielding space must never
+*crop* what the camera saw, because a cropped preview is a picture of a different scene than the
+one the device delivered, on a page whose entire subject is what the device delivered.
+
+**Why the claim is made over `vivid` and not the ordinary fixture.** Eighteen controls very
+nearly fit on a screen. A layout claim asserted against them would pass against a page with no
+two-pane arrangement at all — the fixture-one-parameter-away smell docs/14 Part C rejects on
+sight — so the fixture is the 77-control corpus profile, committed for this purpose, and the
+claim asserts the column really does overflow before it asserts anything about the preview.

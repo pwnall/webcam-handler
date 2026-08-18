@@ -174,6 +174,13 @@ why_it_does_not_validate() {
 # run. That is not a weakness of the check — it is what makes the documents real. The
 # sweep takes one value with the settle disabled, because this gate is about the shape of
 # the answer and a ten-frame settle per sample would buy nothing.
+#
+# `profile compare` is a **document verb** (design §2.7): it reads two files and drives no
+# camera, so its two tokens are committed profiles rather than anything this run produced. They
+# are two *different* profiles on purpose — a row that named one file twice would validate the
+# document a comparison finding nothing produces, and the interesting half of this answer is
+# the half that carries the named control slugs. The global `--backend fake --profile …` below
+# is still passed, because it is passed to every row; this verb reads neither.
 verbs=(
     "list|list"
     "info|info <camera>"
@@ -193,6 +200,7 @@ verbs=(
     "calibrate-restore|calibrate restore <camera> --task gate"
     "calibrate-list|calibrate list <camera>"
     "profile-capture|profile capture <camera>"
+    "profile-compare|profile compare <profile> <other-profile>"
 )
 
 # The one home of "which verb answers with which document", found by name rather than by
@@ -246,6 +254,21 @@ for candidate in "${candidates[@]}"; do
 done
 if [[ -z "$profile" ]]; then
     gate_fail "none of the ${#candidates[@]} committed profile(s) exposes a writable integer control, so the write verbs cannot be exercised against a replayed device"
+    gate_finish
+fi
+
+# The document verb's second file. First sorted candidate that is not the replayed one, so the
+# pair is the same on every run and in every scratch copy, and so the two sides really differ —
+# see the note above the table for why comparing a file with itself would not do.
+other_profile=""
+for candidate in "${candidates[@]}"; do
+    if [[ "$candidate" != "$profile" ]]; then
+        other_profile="$candidate"
+        break
+    fi
+done
+if [[ -z "$other_profile" ]]; then
+    gate_fail "corpus/profiles/ holds one committed profile and the document verb's row compares two different ones; there is no pair here for 'profile compare' to answer about"
     gate_finish
 fi
 
@@ -308,6 +331,8 @@ for row in "${verbs[@]}"; do
     argv="${argv//<value>/$value}"
     argv="${argv//<photo>/$scratch/shot.jpg}"
     argv="${argv//<recording>/$scratch/take.avi}"
+    argv="${argv//<other-profile>/$other_profile}"
+    argv="${argv//<profile>/$profile}"
     if [[ "$argv" == *"<snapshot>"* ]]; then
         # `restore` needs a document, and the only honest source of one is `snapshot`
         # itself: a hand-written fixture would validate a shape nothing produces.

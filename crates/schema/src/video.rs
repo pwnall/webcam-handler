@@ -219,6 +219,109 @@ pub struct RecordingSummary {
     pub cap_reached: Option<CapReached>,
 }
 
+/// How a stream *delivered*, as distinct from what it delivered (design D16; FR-W4).
+///
+/// USB-over-IP's characteristic failures — added latency, isochronous bandwidth collapse,
+/// dropped frames — are visible only in two fields every frame already carries:
+/// [`crate::capture::Frame::sequence`], whose gaps mean dropped frames, and
+/// [`crate::capture::Frame::timestamp_us`], the driver's own clock. Thermal throttling and a
+/// contended hub look the same way on an ordinary rig. This is what an accumulator over
+/// those two numbers can say about a take, and **nothing here is a judgement**: the stats
+/// rank and report exactly as D8's metrics do, and deciding whether a stream was "healthy"
+/// belongs to the consumer whose tolerance it is.
+///
+/// Every quantity is an integer in microseconds. `imaging::stream_stats::Accumulator`
+/// computes it; the recording path fills [`Self::wall_clock_skew_us`], which is the one field
+/// no pure core could produce because the engine is the only layer that reads a clock.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamStats {
+    /// How many frames reached us.
+    pub frames_delivered: u64,
+    /// How many the driver's sequence numbers say never did.
+    ///
+    /// Summed forward gaps. A repeated or backwards sequence number is not a gap — it is a
+    /// driver doing something else, counted as [`Self::sequence_resets`] rather than as the
+    /// four billion frames a wrapping subtraction would invent.
+    pub frames_dropped: u64,
+    /// How many *runs* of dropped frames there were.
+    ///
+    /// Beside [`Self::frames_dropped`] because one gap of sixty and sixty gaps of one are the
+    /// same count and different failures: the first is a stall, the second is a link losing
+    /// one frame in every two.
+    pub gap_events: u32,
+    /// Frames whose sequence number did not advance.
+    ///
+    /// A `u32` sequence wraps after four and a half years at 30 fps, so in practice this is a
+    /// driver restarting its counter — recorded rather than discarded (AGENTS rule 6), and
+    /// deliberately not folded into the drop count.
+    pub sequence_resets: u32,
+    /// Frames whose timestamp was not later than the one before it.
+    ///
+    /// A negative interval is not a duration, so it joins no statistic below; the count is
+    /// here because a clock that ran backwards is a finding about the host, not noise.
+    pub clock_reversals: u32,
+    /// What the intervals between consecutive frames looked like, when there were any.
+    ///
+    /// `None` for a take of fewer than two usable frames — which spans no interval at all,
+    /// and reporting zeros there would claim a measurement nobody made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intervals: Option<IntervalStats>,
+    /// The driver's span against the caller's own clock, when a caller filled it in.
+    ///
+    /// `None` from a pure accumulator, which sees no wall clock by construction. The
+    /// recording path fills it — the take's own start and stop stamps against the span the
+    /// driver's timestamps describe — and a consumer aggregating a live stream in process
+    /// fills it from its own stamps or leaves it absent. Public precisely so it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock_skew_us: Option<i64>,
+}
+
+/// The interval distribution of one stream, in microseconds (design D16).
+///
+/// **Two tiers, and the split is the bound.** `mean`, `min` and `max` are streaming moments
+/// and cover every interval the stream produced. The order statistics — `p50`, `p99` and the
+/// jitter — are exact over the intervals the accumulator *retained*, which is every one of
+/// them up to `crate::limits::MAX_RECORDING_FRAMES` and the first `retained` of them after
+/// that. `retained < observed` is how the answer states its own truncation, which is the
+/// only honest way to bound a percentile: a stream longer than the recording cap is a stream
+/// this tool has already declined to record whole.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+pub struct IntervalStats {
+    /// How many intervals the stream produced.
+    pub observed: u64,
+    /// How many of them the accumulator kept exactly.
+    pub retained: u32,
+    /// The mean interval, over every one observed.
+    pub mean_us: u64,
+    /// The shortest, over every one observed.
+    pub min_us: u64,
+    /// The longest, over every one observed.
+    pub max_us: u64,
+    /// The median, over the retained ones.
+    pub p50_us: u64,
+    /// The 99th percentile, over the retained ones — the number a stall shows up in.
+    pub p99_us: u64,
+    /// Mean absolute deviation from the mean, over the retained ones.
+    ///
+    /// Mean absolute deviation rather than a standard deviation because this is integer
+    /// arithmetic end to end: a variance in microseconds squared overflows a `u64` at a
+    /// four-second interval and needs a square root to become a number anybody reads.
+    pub jitter_us: u64,
+}
+
+impl IntervalStats {
+    /// Whether the order statistics cover only part of the stream.
+    ///
+    /// Derived rather than carried as a field: two spellings of one fact are two things that
+    /// can come to disagree, and the two counts are already on the answer.
+    #[must_use]
+    pub fn is_truncated(&self) -> bool {
+        u64::from(self.retained) < self.observed
+    }
+}
+
 impl RecordingSummary {
     /// The mean delivered frame interval in microseconds, when the take measured one.
     ///
@@ -755,6 +858,17 @@ pub struct RecordReport {
     pub negotiated: NegotiatedStream,
     /// What the container counted.
     pub summary: RecordingSummary,
+    /// How the take's frames were *delivered* (design D16).
+    ///
+    /// Beside [`Self::summary`] rather than inside it, because they answer two questions
+    /// about one take: the summary is what the **file** turned out to be, and this is what
+    /// the **link** turned out to be. A consumer proving a camera-forwarding path reads this
+    /// one — `frames_dropped` here and [`RecordingSummary::dropped_frames`] are two readings
+    /// of one accumulator, so they cannot disagree, and everything else here (the gap runs,
+    /// the interval distribution, the skew against this report's own wall clock) exists
+    /// nowhere else in the document.
+    #[serde(default)]
+    pub stats: StreamStats,
     /// How long the recording took on the engine's monotonic clock, in milliseconds.
     ///
     /// **Beside [`RecordingSummary::span_us`] rather than instead of it, because they are

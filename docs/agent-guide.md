@@ -440,6 +440,21 @@ webcam-handler-client profile capture <CAMERA> [--out <PATH>] [--capturer <WHO>]
 | `--capturer` | `<WHO>` | `unattributed` | Who to record as having taken the capture (T3 provenance) |
 | `--discover-pairs` | — | — | Also probe which controls this device pairs, and record what it demonstrated |
 
+### `profile compare`
+
+Compare two captured profiles: the same device, and what moved
+
+```text
+webcam-handler-client profile compare <A> <B>
+```
+
+`--json` answers with one `ProfileComparison` document.
+
+| Argument | What it is |
+|---|---|
+| `<A>` | A device profile written by `profile capture` |
+| `<B>` | The profile to compare it against |
+
 ## The words a flag takes
 
 *Generated from the closed vocabularies in `webcam-handler-schema`. Do not edit; regenerate.*
@@ -496,6 +511,7 @@ Two cameras can match one spelling — one USB device often hosts two logical ca
 | `calibrate restore` | [`RestoreReport`](../schemas/webcam-handler-schema.json) |
 | `calibrate list` | [`SessionList`](../schemas/webcam-handler-schema.json) |
 | `profile capture` | [`DeviceProfile`](../schemas/webcam-handler-schema.json) |
+| `profile compare` | [`ProfileComparison`](../schemas/webcam-handler-schema.json) |
 
 Two verbs write a document whether or not you pass `--json`: `snapshot` and `profile capture` exist to produce one. Both take `-o <PATH>`, and print to standard output when you leave it out.
 

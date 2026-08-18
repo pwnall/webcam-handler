@@ -20,7 +20,7 @@
 # makes the table complete rather than transcribed. Rows that name no leaf fail too, so a verb
 # deleted from the surface cannot leave a row here quietly answering for it.
 #
-# Four buckets, and three of them carry a check that their own reason implies — an exemption
+# Five buckets, and four of them carry a check that their own reason implies — an exemption
 # whose reason nothing tests is the "silently exempted" docs/9 forbids, wearing a label:
 #
 # - **compared** — the read verbs. Both roots answer, both exit 0, and the bytes are equal.
@@ -39,12 +39,26 @@
 #   construction. It is deliberately **not** filed as mutating, because it is not.
 #   *Checked*: with that one field removed the two answers are equal, and with it they are
 #   not — the exemption proved to be exactly one field wide rather than asserted.
+# - **exempt, document** — takes files and answers a document (design §2.7's T4 clause; D15).
+#   It touches no camera, no store and no socket, so it executes inside
+#   `webcam-handler-cli-core` itself and both roots run the *same code over the same bytes*:
+#   **parity for a document verb is a property of there being one implementation rather than a
+#   comparison this gate must make.** Comparing two runs of it would be comparing
+#   `cli_core::below_the_executor` with itself and reporting the tautology as evidence.
+#   *Checked*, and on the exemption's own consequence rather than beside it:
+#   `webcam-handler-client` is made to **answer** the verb with `XDG_RUNTIME_DIR` pointing at a
+#   directory holding no socket. A verb that reached the executor seam would have had nothing
+#   to reach, so this arm goes red both for a document verb that quietly grew a dependency on
+#   the daemon and for an executor verb relabelled into this bucket to escape the double drive.
 #
 # The honest limit, recorded rather than left to be discovered: this predicate catches a row
-# that is **missing**, a row whose bucket is not one of the four, and — through the three
-# checks above — a read verb *relabelled* into `session` or `stamped`. A read verb relabelled
-# into `device` would pass, because the only checkable consequence of "it mutates the camera"
-# is the double drive that exemption exists to avoid performing. Review carries that one.
+# that is **missing**, a row whose bucket is not one of the five, and — through the four
+# checks above — a read verb *relabelled* into `session`, `stamped` or `document`. A read verb
+# relabelled into `device` would pass, because the only checkable consequence of "it mutates
+# the camera" is the double drive that exemption exists to avoid performing; and a document
+# verb relabelled into `compared` would pass too, because a verb with one implementation does
+# answer both roots byte for byte — the comparison is redundant there rather than wrong.
+# Review carries those two.
 #
 # ## The refusals are compared too, and that is a strictly stronger claim (note **N127**)
 #
@@ -144,6 +158,12 @@ root="$(gate_root)"
 # camera-second. The container is `.avi`, which the first sorted profile with a writable
 # integer control negotiates as MJPG — a GREY-only camera would be refused `FormatUnsupported`
 # by D7's pairing, which is `crates/cli/tests/record.rs`'s claim rather than this gate's.
+#
+# `profile compare`'s two tokens are **committed profiles rather than a camera**, which is what
+# a document verb takes. They are two *different* ones, so the row drives a comparison that
+# finds something: a file compared with itself answers the same shape whether or not the
+# comparison works, and this bucket's whole claim is that the code which produced the answer is
+# the one both roots share.
 verbs=(
     "list|compared|list"
     "info|compared|info <camera>"
@@ -163,12 +183,13 @@ verbs=(
     "calibrate-restore|session|calibrate restore <camera> --task gate"
     "calibrate-status|compared|calibrate status <camera> --session <session>"
     "calibrate-list|compared|calibrate list <camera>"
+    "profile-compare|document|profile compare <profile> <other-profile>"
 )
 
 # The closed vocabulary. A bucket outside it is a failure rather than a fall-through, because
 # a fall-through is precisely how a verb gets silently exempted: one typo and an `else` that
 # means "skip" excuses a row nobody notices.
-buckets=(compared session device stamped)
+buckets=(compared session device stamped document)
 
 # The refusals, compared byte for byte — see the header. Each names a camera or a control or a
 # format the replayed device does not have, so the failure is the *device's* answer and not
@@ -227,6 +248,20 @@ for candidate in $(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\
 done
 if [[ -z "$profile" ]]; then
     gate_fail "no committed profile exposes a writable integer control, so the write verbs this table exempts could not be driven through webcam-handler-client at all"
+    gate_finish
+fi
+
+# The document row's second file: the first sorted profile that is not the replayed one, so the
+# pair is the same on every run and the two sides really differ. See the note above the table.
+other_profile=""
+for candidate in $(gate_find "$root/corpus/profiles" -name '*.json' | tr '\0' '\n' | sort); do
+    if [[ "$candidate" != "$profile" ]]; then
+        other_profile="$candidate"
+        break
+    fi
+done
+if [[ -z "$other_profile" ]]; then
+    gate_fail "corpus/profiles/ holds one committed profile and the document row compares two different ones; there is no pair here for 'profile compare' to answer about"
     gate_finish
 fi
 
@@ -452,6 +487,13 @@ compared=0
 exempted=0
 refusals=0
 stamped=0
+documents=0
+
+# Where a document verb is driven from: a runtime directory this gate creates and never puts a
+# socket in. A client that answered from here reached no daemon, which is the whole of the
+# `document` exemption's reason — see the header.
+daemonless="$scratch/no-daemon"
+mkdir -p "$daemonless"
 
 # Substitute the tokens a row uses. `<snapshot>` and `<session>` are produced by earlier rows,
 # so a table reordered under them fails loudly rather than comparing a stale document.
@@ -465,6 +507,8 @@ expand() {
     argv="${argv//<snapshot>/$scratch/snapshot.json}"
     argv="${argv//<session>/$session}"
     argv="${argv//<refused>/$scratch/refused.jpg}"
+    argv="${argv//<other-profile>/$other_profile}"
+    argv="${argv//<profile>/$profile}"
     printf '%s\n' "$argv"
 }
 
@@ -539,6 +583,29 @@ for row in "${verbs[@]}"; do
         stamped=$((stamped + 1))
         exempted=$((exempted + 1))
         gate_note "$name → exempt, stamped: equal once taken_at is removed, unequal with it"
+        ;;
+
+    document)
+        # Driven, not assumed. The exemption says this verb runs inside the shared command
+        # core on both roots, so the checkable consequence is that `webcam-handler-client`
+        # answers it with **no daemon to reach**: `$daemonless` holds no socket, and a verb
+        # that went through the executor seam would refuse here naming the one it wanted.
+        # A verb neither compared nor driven is how this claim quietly stops being true, so
+        # the row is still run end to end and its answer is still required to parse.
+        wchc_status=0
+        # shellcheck disable=SC2086
+        XDG_RUNTIME_DIR="$daemonless" "$wchc" --json $argv >"$scratch/document.json" 2>"$scratch/wchc.err" || wchc_status=$?
+        if ((wchc_status != 0)); then
+            gate_fail "webcam-handler-client could not answer '${name/-/ }' with no daemon to reach (exit $wchc_status): $(head -n1 "$scratch/wchc.err"); this bucket's exemption is that a document verb runs in the client's own process, and a verb that needs a socket is an executor verb whatever it answers"
+            continue
+        fi
+        if ! jq -e . "$scratch/document.json" >/dev/null 2>&1; then
+            gate_fail "webcam-handler-client --json $argv exited 0 and emitted no parseable document; a bucket whose reason is 'one implementation answered' has to have watched it answer"
+            continue
+        fi
+        documents=$((documents + 1))
+        exempted=$((exempted + 1))
+        gate_note "$name → exempt, document: answered by webcam-handler-client from a runtime directory holding no socket, so the shared implementation is what ran"
         ;;
 
     device | session)
@@ -671,5 +738,7 @@ gate_checked "$refusals" "session-writing verb(s) refused to webcam-handler-cli 
 gate_require_nonzero "$refusals" "lock refusals"
 gate_checked "$stamped" "stamped verb(s) shown to differ in exactly the one field their exemption names"
 gate_require_nonzero "$stamped" "stamped verbs"
+gate_checked "$documents" "document verb(s) answered by webcam-handler-client with no daemon to reach, which is what their exemption — one implementation, not one comparison — implies"
+gate_require_nonzero "$documents" "document verbs"
 
 gate_finish

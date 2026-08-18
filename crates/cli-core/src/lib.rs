@@ -768,7 +768,7 @@ pub enum Command {
     #[command(subcommand)]
     Calibrate(CalibrateCommand),
 
-    /// Capture device profiles.
+    /// Capture device profiles, and compare two of them (D15).
     #[command(subcommand)]
     Profile(ProfileCommand),
 }
@@ -1428,6 +1428,32 @@ pub enum ProfileCommand {
         #[arg(long)]
         discover_pairs: bool,
     },
+
+    /// Compare two captured profiles: the same device, and what moved.
+    ///
+    /// Reads both files and answers with two halves of one comparison. The device half
+    /// names the sections that describe the camera differently: its format tree, the
+    /// control slugs whose descriptor differs or is present on one side only, and the
+    /// automation pairs a probe measured. The identity half names the fields that say
+    /// where the camera is, in the spelling the answer uses: its id, its bus path, its
+    /// serial, its device nodes.
+    ///
+    /// The same camera reached over a forwarded bus, on another port, after a reboot or on
+    /// another machine differs in identity and must not differ in the device half. A
+    /// format tree that differs on its own is the one device difference a camera is
+    /// allowed to produce when it is plugged in again; decide what that means for your rig.
+    ///
+    /// Touches no camera and needs no daemon: both programs read the two files in their own
+    /// process.
+    Compare {
+        /// A device profile written by `profile capture`.
+        #[arg(value_name = "A")]
+        a: Utf8PathBuf,
+
+        /// The profile to compare it against.
+        #[arg(value_name = "B")]
+        b: Utf8PathBuf,
+    },
 }
 
 /// What a binary must be able to do for the command surface to work.
@@ -1707,6 +1733,14 @@ impl SessionArg {
 /// The executor's error, unrendered — the caller decides how a failure reaches the user
 /// and what it exits with, because those are process concerns and this is a library.
 pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result<()> {
+    // The document verbs first, and they never reach `executor` at all — design §2.7's clause,
+    // argued on [`below_the_executor`]. Both roots call that function before they build the
+    // thing they would hand this one, so the early return here is the *third* call site rather
+    // than the rule: a root that skipped it would open a socket it has no use for, and this
+    // arm would still answer.
+    if let Some(answered) = below_the_executor(cli, out) {
+        return answered;
+    }
     match &cli.command {
         Command::List => {
             let list = executor.list()?;
@@ -1784,7 +1818,67 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
                 executor.capture_profile(&camera.selector()?, capturer, *discover_pairs)?;
             render::profile(&profile, destination.as_deref(), out)
         }
+        // Answered above, before the executor existed. The arm keeps this match exhaustive
+        // without an `unwrap` on a request-driven path, exactly as [`unreachable_photo`] does
+        // for the arm the request builder has already ruled out.
+        Command::Profile(ProfileCommand::Compare { .. }) => Err(unreachable_document()),
     }
+}
+
+/// Run the verb here and now if it is a **document verb**, and answer `None` if it is not
+/// (design §2.7's T4 clause; D15).
+///
+/// A document verb takes files, answers a document, and touches no camera, no store and no
+/// socket — so it executes inside this crate, on both roots, and never reaches the
+/// [`Executor`] seam. `profile compare` is one: it reads two profiles somebody already
+/// captured and compares them.
+///
+/// **The boundary is sharp, and it is about what a verb needs rather than what it answers.** A
+/// verb that needs a backend, a store or a daemon is an executor verb whatever document it
+/// comes back with — `profile capture` answers a profile off a live camera and is an executor
+/// verb for exactly that reason, and so would a comparison that captured either side itself.
+/// The fall-through below is written to that boundary: a verb added to [`Command`] and not
+/// named here is an executor verb, which is the direction that fails safe. The opposite
+/// default would let a verb reach a caller with the camera silently unopened.
+///
+/// **Public because it is what lets `webcam-handler-client` decline to open a socket it has no
+/// use for.** That root calls this before it connects; `webcam-handler-cli` calls it before it
+/// builds a backend. A client that connected first would make `profile compare` need a running
+/// daemon on one root and not on the other — one verb with two preconditions, which is the
+/// fork T4 exists to prevent and the thing `scripts/gates/cli-parity.sh`'s `document` bucket
+/// measures by driving this verb with no daemon to reach.
+///
+/// # Errors
+///
+/// Inside the `Some`: whatever the verb says. A path that is not a readable device profile is
+/// [`Error::StorageIo`] naming it, and a profile from another schema version is
+/// [`Error::SchemaVersionForeign`] naming both — see [`read_profile`].
+pub fn below_the_executor(cli: &Cli, out: &mut Output) -> Option<Result<()>> {
+    match &cli.command {
+        Command::Profile(ProfileCommand::Compare { a, b }) => {
+            Some(compare_profiles(a, b, cli.json, out))
+        }
+        _ => None,
+    }
+}
+
+/// `profile compare` (design D15): two documents in, one document out.
+///
+/// The comparison itself is [`DeviceProfile::compare`] and lives in the schema crate, which is
+/// where the identity/device partition is closed by destructuring — this function is the two
+/// reads and the rendering around it, and deliberately decides nothing about which fields are
+/// which.
+///
+/// `a` is read before `b` so a run naming two unreadable paths refuses the first one a reader
+/// would go and look at.
+///
+/// # Errors
+///
+/// As [`read_profile`], for either path.
+fn compare_profiles(a: &Utf8Path, b: &Utf8Path, as_json: bool, out: &mut Output) -> Result<()> {
+    let mine = read_profile(a)?;
+    let theirs = read_profile(b)?;
+    render::comparison(&mine.compare(&theirs), as_json, out)
 }
 
 /// `webcam-handler-cli calibrate …`, dispatched.
@@ -1967,6 +2061,68 @@ fn read_snapshot(path: &Utf8Path) -> Result<Snapshot> {
     })
 }
 
+/// Read a device profile named on a command line, refusing a foreign one by *version* before
+/// anything tries to represent it.
+///
+/// **Here rather than through `engine::profile::read`, and that is the thin-client wall rather
+/// than a preference** (T6): `webcam-handler-client` links no engine, and a document verb has
+/// to run identically on both roots — reaching for the engine's reader would put this verb in
+/// exactly one of the two binaries. What is *not* copied is the law: the version this build
+/// speaks is [`schema::limits::PROFILE_SCHEMA_VERSION`] and the refusal is the D13 registry's
+/// [`Error::SchemaVersionForeign`], both read from the crate that owns them.
+///
+/// The version comes off a probe that deserializes only `schema_version`, for the reason the
+/// engine's reader and the session store both give: a document this build cannot represent is
+/// refused *for its version* rather than for whichever field this build's shape happens to be
+/// missing, which is the difference between an agent knowing to re-capture and an agent
+/// reading a serde path.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] naming the path when it cannot be read, is not JSON, carries no
+/// `schema_version`, or does not deserialize into a profile; [`Error::SchemaVersionForeign`]
+/// naming both versions for a profile this build does not read.
+fn read_profile(path: &Utf8Path) -> Result<DeviceProfile> {
+    let bytes = std::fs::read(path).map_err(|error| Error::StorageIo {
+        path: path.to_owned(),
+        errno: error.raw_os_error(),
+        message: error.to_string(),
+    })?;
+    let unreadable = |message: String| Error::StorageIo {
+        path: path.to_owned(),
+        errno: None,
+        message,
+    };
+
+    let probe: ProfileVersionProbe = serde_json::from_slice(&bytes)
+        .map_err(|error| unreadable(format!("is not a JSON document: {error}")))?;
+    match probe.schema_version {
+        None => {
+            return Err(unreadable(
+                "carries no schema_version; every device profile this tool writes has one, \
+                 so this file was not written by it"
+                    .to_owned(),
+            ));
+        }
+        Some(found) if found != schema::limits::PROFILE_SCHEMA_VERSION => {
+            return Err(Error::SchemaVersionForeign {
+                found,
+                supported: schema::limits::PROFILE_SCHEMA_VERSION,
+            });
+        }
+        Some(_) => {}
+    }
+
+    serde_json::from_slice(&bytes)
+        .map_err(|error| unreadable(format!("is not a device profile: {error}")))
+}
+
+/// Only the field that decides whether the rest of a profile may be read.
+#[derive(Debug, serde::Deserialize)]
+struct ProfileVersionProbe {
+    schema_version: Option<u32>,
+}
+
 /// The refusal for a `photo` arm that is not a photo — which the match above has already
 /// ruled out, and which exists so the dispatch has no `unwrap` on it.
 fn unreachable_photo() -> Error {
@@ -1983,6 +2139,15 @@ fn unreachable_record() -> Error {
     Error::IllegalTransition {
         from: "not_a_record_command".to_owned(),
         op: "build a recording request".to_owned(),
+    }
+}
+
+/// [`unreachable_photo`]'s counterpart for a document verb reaching the executor dispatch,
+/// which [`below_the_executor`] has already answered before [`run`]'s match is entered.
+fn unreachable_document() -> Error {
+    Error::IllegalTransition {
+        from: "a_document_verb".to_owned(),
+        op: "reach the executor seam".to_owned(),
     }
 }
 
@@ -3778,5 +3943,415 @@ mod tests {
         );
         assert!(stdout.text().is_empty(), "{}", stdout.text());
         assert!(stderr.text().contains("busy"), "{}", stderr.text());
+    }
+
+    // ------------------------------------------- P7c: `profile compare`, the document verb
+    //
+    // Design §2.7's T4 clause and D15. The arms below are about the *verb* — that it never
+    // reaches the executor, that it refuses a file that is not a profile by name, that its
+    // `--json` answer is the schema document and its table names the same sections. The claim
+    // that the two shipped binaries print identical bytes for one pair of files is a property
+    // of two processes and is asserted where two processes can be run
+    // (`crates/client/tests/wchc.rs`).
+
+    /// An [`Executor`] that is a defect if anything calls it.
+    ///
+    /// The document verbs' whole claim is that they run *below* this seam, and a `run` that
+    /// quietly acquired one would still answer correctly — the executor would simply be built,
+    /// or connected, for nothing. On `webcam-handler-client` that is not a nuance: building it
+    /// is opening a socket, and a verb that needed a daemon on one root and not on the other
+    /// would be the fork T4 exists to prevent. So the seam is made to *say so*, which is what
+    /// `the_double_is_armed` proves it does.
+    struct NeverAsked;
+
+    impl NeverAsked {
+        fn refuse(method: &str) -> ! {
+            panic!("a document verb reached the executor seam at {method}");
+        }
+    }
+
+    impl Executor for NeverAsked {
+        fn list(&mut self) -> Result<CameraList> {
+            Self::refuse("list")
+        }
+        fn info(&mut self, _camera: &CameraSelector) -> Result<CameraDetail> {
+            Self::refuse("info")
+        }
+        fn controls(
+            &mut self,
+            _camera: &CameraSelector,
+            _discover_pairs: bool,
+        ) -> Result<ControlReport> {
+            Self::refuse("controls")
+        }
+        fn get(&mut self, _camera: &CameraSelector, _control: &ControlSlug) -> Result<ControlDesc> {
+            Self::refuse("get")
+        }
+        fn set(
+            &mut self,
+            _camera: &CameraSelector,
+            _writes: &[ControlWrite],
+            _guarded: bool,
+        ) -> Result<WriteReport> {
+            Self::refuse("set")
+        }
+        fn snapshot(&mut self, _camera: &CameraSelector) -> Result<Snapshot> {
+            Self::refuse("snapshot")
+        }
+        fn restore(
+            &mut self,
+            _camera: &CameraSelector,
+            _snapshot: &Snapshot,
+        ) -> Result<RestoreReport> {
+            Self::refuse("restore")
+        }
+        fn photo(
+            &mut self,
+            _camera: &CameraSelector,
+            _request: &PhotoRequest,
+        ) -> Result<Photograph> {
+            Self::refuse("photo")
+        }
+        fn record(
+            &mut self,
+            _camera: &CameraSelector,
+            _request: &RecordRequest,
+        ) -> Result<RecordReport> {
+            Self::refuse("record")
+        }
+        fn capture_profile(
+            &mut self,
+            _camera: &CameraSelector,
+            _capturer: &str,
+            _discover_pairs: bool,
+        ) -> Result<DeviceProfile> {
+            Self::refuse("capture_profile")
+        }
+        fn calibrate_start(
+            &mut self,
+            _camera: &CameraSelector,
+            _task: &str,
+            _goal: &str,
+            _criteria: &[String],
+        ) -> Result<Session> {
+            Self::refuse("calibrate_start")
+        }
+        fn calibrate_plan(
+            &mut self,
+            _camera: &CameraSelector,
+            _which: &SessionRef,
+            _controls: &[ControlSlug],
+            _order: bool,
+        ) -> Result<Session> {
+            Self::refuse("calibrate_plan")
+        }
+        fn calibrate_sweep(
+            &mut self,
+            _camera: &CameraSelector,
+            _which: &SessionRef,
+            _request: &SweepRequest,
+            _watch: &dyn SweepWatcher,
+        ) -> Result<Session> {
+            Self::refuse("calibrate_sweep")
+        }
+        fn calibrate_status(
+            &mut self,
+            _camera: &CameraSelector,
+            _which: &SessionRef,
+        ) -> Result<SessionStatus> {
+            Self::refuse("calibrate_status")
+        }
+        fn calibrate_select(
+            &mut self,
+            _camera: &CameraSelector,
+            _which: &SessionRef,
+            _control: &ControlSlug,
+            _selection: &Selection,
+        ) -> Result<Session> {
+            Self::refuse("calibrate_select")
+        }
+        fn calibrate_apply(
+            &mut self,
+            _camera: &CameraSelector,
+            _which: &SessionRef,
+            _partial: bool,
+        ) -> Result<WriteReport> {
+            Self::refuse("calibrate_apply")
+        }
+        fn calibrate_restore(
+            &mut self,
+            _camera: &CameraSelector,
+            _which: &SessionRef,
+        ) -> Result<RestoreReport> {
+            Self::refuse("calibrate_restore")
+        }
+        fn calibrate_list(&mut self, _camera: Option<&CameraSelector>) -> Result<SessionList> {
+            Self::refuse("calibrate_list")
+        }
+    }
+
+    /// A committed profile, by name.
+    ///
+    /// Fixtures enter these arms as corpus rather than as a builder: two captures of two real
+    /// webcams differ in every section a comparison has an opinion about, which a constructed
+    /// pair only differs in where somebody remembered to make it.
+    fn corpus_path(name: &str) -> Utf8PathBuf {
+        let path = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/profiles")
+            .join(format!("{name}.json"));
+        assert!(path.exists(), "the corpus is missing {path}");
+        path
+    }
+
+    fn corpus(name: &str) -> DeviceProfile {
+        let bytes = std::fs::read(corpus_path(name)).expect("a committed profile");
+        serde_json::from_slice(&bytes).expect("a committed profile parses")
+    }
+
+    /// One `profile compare` run through the shared surface, with the executor armed.
+    fn compared(argv: &[&str]) -> (Result<()>, String, String) {
+        let cli = Cli::try_parse_from(argv).expect("profile compare parses");
+        let stdout = render::tests::Buffer::default();
+        let stderr = render::tests::Buffer::default();
+        let mut out = Output::to_buffers(Box::new(stdout.clone()), Box::new(stderr.clone()));
+        let answered = run(&cli, &mut NeverAsked, &mut out);
+        (answered, stdout.text(), stderr.text())
+    }
+
+    #[test]
+    #[should_panic(expected = "a document verb reached the executor seam at list")]
+    fn the_double_is_armed() {
+        // Non-vacuity for every arm below: `NeverAsked` proves nothing about `profile compare`
+        // unless it would have gone off for a verb that *is* an executor verb.
+        let _ = compared(&["webcam-handler-cli", "--json", "list"]);
+    }
+
+    #[test]
+    fn a_document_verb_answers_without_ever_reaching_the_executor() {
+        // Design §2.7's clause as a property: `profile compare` takes two files, answers a
+        // document, and touches no camera — so it must come back with the answer from a run in
+        // which the executor seam would have panicked on contact.
+        let a = corpus_path("chicony-rgb");
+        let b = corpus_path("chicony-ir");
+        let (answered, stdout, stderr) = compared(&[
+            "webcam-handler-cli",
+            "--json",
+            "profile",
+            "compare",
+            a.as_str(),
+            b.as_str(),
+        ]);
+        answered.expect("the comparison answers");
+
+        // The document, and it is the schema type verbatim — no envelope, which is what makes
+        // the `--json` contract row above mean something.
+        let document: schema::profile::ProfileComparison =
+            serde_json::from_str(&stdout).expect("standard output carries a ProfileComparison");
+        assert_eq!(
+            document,
+            corpus("chicony-rgb").compare(&corpus("chicony-ir"))
+        );
+        assert!(stderr.is_empty(), "{stderr}");
+
+        // Two different webcams, so both halves have something to say. Asserted against the
+        // corpus rather than against the comparison: these two captures carry different cards,
+        // which is a fact about the committed documents.
+        assert!(!document.device_matches(), "{document}");
+        assert!(
+            document.identity.iter().any(|field| field == "card"),
+            "{document}"
+        );
+    }
+
+    #[test]
+    fn the_json_answer_round_trips_and_the_table_names_the_sections_that_differ() {
+        // The two renderings of one value, and the rule this crate opens with: neither may
+        // show a fact the other omits. The table's verdict column has to name the sections and
+        // the control slugs, because a reader told only that "the device differs" is a reader
+        // with nowhere to look.
+        let a = corpus_path("chicony-rgb");
+        let b = corpus_path("chicony-ir");
+        let argv = ["profile", "compare", a.as_str(), b.as_str()];
+
+        let (answered, json_text, _) =
+            compared(&[&["webcam-handler-cli", "--json"], &argv[..]].concat());
+        answered.expect("the comparison answers");
+        let document: schema::profile::ProfileComparison =
+            serde_json::from_str(&json_text).expect("a ProfileComparison");
+        assert_eq!(
+            serde_json::to_string_pretty(&document).expect("re-serializes") + "\n",
+            json_text,
+            "the printed bytes are the document's own serialization and nothing else"
+        );
+
+        let (answered, table, _) = compared(&[&["webcam-handler-cli"], &argv[..]].concat());
+        answered.expect("the comparison answers");
+        for named in document.device.sections() {
+            assert!(table.contains(named), "{named} is missing from:\n{table}");
+        }
+        // …and the slugs underneath the `controls` section, which is the whole reason that
+        // section is a list of names rather than a count.
+        let slug = document
+            .device
+            .controls
+            .first()
+            .expect("two different webcams describe some control differently");
+        assert!(table.contains(slug.as_str()), "{table}");
+        for half in ["device", "identity"] {
+            assert!(table.contains(half), "{table}");
+        }
+    }
+
+    #[test]
+    fn a_camera_at_another_address_is_the_same_device_and_the_table_says_both() {
+        // FR-W2's question through the verb: the same capture with its bus path rewritten is
+        // the camera reached over a forwarded bus, and the two halves must disagree — same
+        // device, different address. Written to a scratch file rather than committed, because
+        // a corpus entry is a document a tool captured and this one is a document a test made.
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let a = corpus_path("chicony-rgb");
+        let mut forwarded = corpus("chicony-rgb");
+        forwarded.invariant.info.fingerprint.bus_path = "9-9:1.0".to_owned();
+        let b = Utf8PathBuf::from_path_buf(dir.path().join("forwarded.json"))
+            .expect("a UTF-8 scratch path");
+        std::fs::write(&b, serde_json::to_vec(&forwarded).expect("serializes"))
+            .expect("writes the rewritten capture");
+
+        let (answered, table, notes) = compared(&[
+            "webcam-handler-cli",
+            "profile",
+            "compare",
+            a.as_str(),
+            b.as_str(),
+        ]);
+        answered.expect("the comparison answers");
+        assert!(table.contains("same device"), "{table}");
+        assert!(table.contains("fingerprint.bus_path"), "{table}");
+        // The format-tree note belongs to a formats-only difference and this is not one, so a
+        // rendering that printed it unconditionally is caught here rather than by a reader.
+        assert!(notes.is_empty(), "{notes}");
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_profile_is_refused_by_name_and_never_compared() {
+        // Three refusals, all from the D13 registry v3 adds nothing to, and each one naming
+        // what a caller has to fix. An agent reading these unsupervised needs the path in the
+        // first two and both version numbers in the third.
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let good = corpus_path("chicony-rgb");
+        let write = |name: &str, bytes: &[u8]| -> Utf8PathBuf {
+            let path = Utf8PathBuf::from_path_buf(dir.path().join(name)).expect("a UTF-8 path");
+            std::fs::write(&path, bytes).expect("writes the fixture");
+            path
+        };
+
+        let missing = dir.path().join("was-never-written.json");
+        let missing = Utf8PathBuf::from_path_buf(missing).expect("a UTF-8 path");
+        let (answered, stdout, _) = compared(&[
+            "webcam-handler-cli",
+            "profile",
+            "compare",
+            missing.as_str(),
+            good.as_str(),
+        ]);
+        let error = answered.expect_err("a path with no file behind it is not a comparison");
+        assert_eq!(error.kind(), ErrorKind::StorageIo, "{error}");
+        assert!(error.to_string().contains(missing.as_str()), "{error}");
+        assert!(stdout.is_empty(), "{stdout}");
+
+        // A JSON document that is not a profile, and one that is not JSON at all: the message
+        // has to tell those apart, because "your file is corrupt" and "you named the wrong
+        // file" send a caller to different places.
+        //
+        // Carrying *this build's* profile version deliberately, so the refusal under test is
+        // about the document's shape: a fixture at some other number would be refused by the
+        // version probe one line earlier and this arm would be measuring the wrong sentence.
+        let not_a_profile = write(
+            "session.json",
+            format!(
+                r#"{{"schema_version":{},"id":"nope"}}"#,
+                schema::limits::PROFILE_SCHEMA_VERSION
+            )
+            .as_bytes(),
+        );
+        let (answered, ..) = compared(&[
+            "webcam-handler-cli",
+            "profile",
+            "compare",
+            good.as_str(),
+            not_a_profile.as_str(),
+        ]);
+        let error = answered.expect_err("a session document is not a device profile");
+        assert_eq!(error.kind(), ErrorKind::StorageIo, "{error}");
+        assert!(
+            error.to_string().contains("is not a device profile"),
+            "{error}"
+        );
+
+        let not_json = write("photo.jpg", b"\xff\xd8\xff\xe0 not json");
+        let (answered, ..) = compared(&[
+            "webcam-handler-cli",
+            "profile",
+            "compare",
+            good.as_str(),
+            not_json.as_str(),
+        ]);
+        let error = answered.expect_err("a JPEG is not a device profile");
+        assert!(
+            error.to_string().contains("is not a JSON document"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_profile_from_another_schema_version_is_refused_for_its_version() {
+        // The refusal an agent can act on: re-capture, or use the build that wrote it. Refused
+        // *for the version* rather than for whichever field this build's shape is missing,
+        // which is why the read probes `schema_version` before it parses anything else — and
+        // the fixture is a real committed profile with one number changed, so nothing else
+        // about it could be what this arm is measuring.
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let mut document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(corpus_path("chicony-rgb")).expect("a committed profile"),
+        )
+        .expect("a JSON document");
+        let ours = schema::limits::PROFILE_SCHEMA_VERSION;
+        document["schema_version"] = serde_json::json!(ours + 1);
+        let foreign =
+            Utf8PathBuf::from_path_buf(dir.path().join("next-version.json")).expect("a UTF-8 path");
+        std::fs::write(&foreign, document.to_string()).expect("writes the fixture");
+
+        let (answered, ..) = compared(&[
+            "webcam-handler-cli",
+            "profile",
+            "compare",
+            corpus_path("chicony-rgb").as_str(),
+            foreign.as_str(),
+        ]);
+        let error = answered.expect_err("a profile from another version is not read");
+        assert_eq!(
+            error,
+            Error::SchemaVersionForeign {
+                found: ours + 1,
+                supported: ours,
+            },
+            "{error}"
+        );
+
+        // The other direction, and it is what makes the arm above about the *version*: the
+        // same bytes at this build's version are read and compared.
+        document["schema_version"] = serde_json::json!(ours);
+        let ours_path =
+            Utf8PathBuf::from_path_buf(dir.path().join("this-version.json")).expect("a UTF-8 path");
+        std::fs::write(&ours_path, document.to_string()).expect("writes the fixture");
+        let (answered, table, _) = compared(&[
+            "webcam-handler-cli",
+            "profile",
+            "compare",
+            corpus_path("chicony-rgb").as_str(),
+            ours_path.as_str(),
+        ]);
+        answered.expect("a profile at this build's version compares");
+        assert!(table.contains("same device"), "{table}");
     }
 }

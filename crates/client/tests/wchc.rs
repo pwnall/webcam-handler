@@ -279,6 +279,100 @@ fn a_command_line_that_is_not_one_leaves_claps_code_and_names_this_binary() {
     );
 }
 
+#[test]
+fn a_document_verb_answers_from_both_roots_with_no_daemon_and_the_same_bytes() {
+    // **The one-implementation claim, asserted rather than assumed** (design §2.7's T4 clause;
+    // D15). `profile compare` takes two files and answers a document: it touches no camera, no
+    // store and no socket, so it runs inside `webcam-handler-cli-core` on both roots. Two
+    // consequences, and this is the only place either can be observed, because both are
+    // properties of a *process*:
+    //
+    // - `webcam-handler-client` answers it with **no daemon running at all** — this fixture
+    //   starts none, and every other test in this half of the file is here precisely because
+    //   that produces a refusal naming the socket. A build that connected first would meet
+    //   that refusal here.
+    // - the two shipped binaries print the **same bytes**, which is the claim
+    //   `scripts/gates/cli-parity.sh` exempts the `document` bucket from making: the exemption
+    //   is that there is one implementation, and this is where that is checked against the
+    //   only thing that can disprove it, which is two programs.
+    //
+    // Two *different* committed profiles, so both halves of the answer carry something. A file
+    // compared with itself would answer the same shape whether or not the comparison worked.
+    let fixture = Fixture::new();
+    let a = profile(REPLAYED);
+    let b = profile("chicony-ir");
+    let argv = ["--json", "profile", "compare", a.as_str(), b.as_str()];
+
+    let theirs = fixture.run(&argv);
+    assert_eq!(
+        theirs.code, 0,
+        "webcam-handler-client could not answer a document verb with no daemon: {}",
+        theirs.stderr
+    );
+    // Not merely bytes: the document is `ProfileComparison` and nothing else, and it found
+    // something — two captures of two different webcams are two different devices.
+    let document: schema::profile::ProfileComparison = serde_json::from_slice(&theirs.stdout)
+        .expect("standard output carries a ProfileComparison");
+    assert!(!document.device_matches(), "{document}");
+    assert!(!document.identity.is_empty(), "{document}");
+
+    let mine = wch().args(argv).output().expect("webcam-handler-cli runs");
+    assert_eq!(
+        mine.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&mine.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&mine.stdout),
+        String::from_utf8_lossy(&theirs.stdout),
+        "one verb, one implementation, and these two roots printed different bytes"
+    );
+
+    // And the same on the refusal path, which is where the two roots have the most room to
+    // diverge: `webcam-handler-cli` builds a `schema::Error` and `webcam-handler-client` — for
+    // every *other* verb — rebuilds one off the wire. A document verb never crosses a socket,
+    // so both refusals are the same value rendered by the same emitter, and a build that
+    // routed one of them elsewhere is what this half would catch.
+    let missing = repo_root().join("corpus/profiles/no-such-capture.json");
+    assert!(
+        !missing.exists(),
+        "the fixture names a file that must not exist"
+    );
+    let refused = ["--json", "profile", "compare", missing.as_str(), b.as_str()];
+
+    let theirs = fixture.run(&refused);
+    let mine = wch()
+        .args(refused)
+        .output()
+        .expect("webcam-handler-cli runs");
+    assert_eq!(
+        theirs.code,
+        refusal_code(schema::ErrorKind::StorageIo),
+        "{}",
+        theirs.stderr
+    );
+    assert_eq!(mine.status.code(), Some(theirs.code));
+    assert_eq!(
+        String::from_utf8_lossy(&mine.stdout),
+        String::from_utf8_lossy(&theirs.stdout),
+        "the two roots refuse a document verb with different documents"
+    );
+    // The refusal names the file a caller has to go and look at, on both streams and from
+    // both programs — a `storage_io` that named neither would be a refusal an agent cannot act
+    // on.
+    assert!(
+        theirs.stderr.contains(missing.as_str()),
+        "{}",
+        theirs.stderr
+    );
+    assert!(
+        String::from_utf8_lossy(&theirs.stdout).contains(missing.as_str()),
+        "{}",
+        String::from_utf8_lossy(&theirs.stdout)
+    );
+}
+
 // ------------------------------------------------------------------- with a daemon
 
 #[test]

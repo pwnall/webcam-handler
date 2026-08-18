@@ -85,6 +85,94 @@ pub enum Preference {
     Undirected,
 }
 
+/// What two photographs measured, side by side (design D17; FR-W3).
+///
+/// "Same scene, two paths" — two units of one model, before and after a firmware update,
+/// one camera direct and one forwarded — wants a comparison *record*, and this is it: the
+/// D8 metric set on each side, the per-metric delta, and an SSIM corroborator that
+/// represents its own unavailability instead of refusing.
+///
+/// **Nothing here decides.** The metrics rank exactly as they do everywhere else, SSIM
+/// corroborates, and "are these two photographs peers?" is answered with numbers a consumer
+/// applies its own tolerance to. And nothing here resizes: a comparison that resampled one
+/// side would be measuring a codec artifact it introduced itself (E6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PhotoComparison {
+    /// The first photograph.
+    pub a: PhotoMeasurements,
+    /// The second.
+    pub b: PhotoMeasurements,
+    /// `b - a`, per metric — every name in [`MetricName::ALL`], so a sixth metric joins the
+    /// comparison by existing rather than by being added here.
+    pub delta: std::collections::BTreeMap<MetricName, f64>,
+    /// The structural-similarity corroborator, or why there is not one.
+    pub ssim: Ssim,
+}
+
+/// One photograph's shape and scores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PhotoMeasurements {
+    /// Width in pixels, as decoded.
+    pub width: u32,
+    /// Height in pixels, as decoded.
+    pub height: u32,
+    /// Every metric this build computes, over the luma plane.
+    pub metrics: std::collections::BTreeMap<MetricName, f64>,
+}
+
+/// The SSIM corroborator, or a stated reason there is none.
+///
+/// **A dimension mismatch is represented, not refused** (D2's doctrine applied to a
+/// comparison): the per-metric scalars above are well-defined on unequal images and stay,
+/// while this one says why it could not answer. So an unattended consumer branches on data
+/// rather than parsing a refusal, and D17 adds no error kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Ssim {
+    /// Mean structural similarity over the two luma planes: 1.0 is identical.
+    Measured {
+        /// The score.
+        score: f64,
+    },
+    /// No score, and the reason — from a closed set, so a consumer can branch on it.
+    Unavailable {
+        /// Why.
+        reason: SsimUnavailable,
+    },
+}
+
+/// Why a comparison carries no SSIM score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum SsimUnavailable {
+    /// The two images are not the same size, and nothing here resamples (E6).
+    DimensionsDiffer {
+        /// The first image's size, as `[width, height]`.
+        a: [u32; 2],
+        /// The second image's size.
+        b: [u32; 2],
+    },
+    /// The implementation refused for a reason of its own, carried verbatim.
+    ///
+    /// Represented rather than swallowed (AGENTS rule 6): a corroborator that failed
+    /// silently would leave a consumer unable to tell "these differ" from "nobody looked".
+    ComputationFailed {
+        /// What it said.
+        message: String,
+    },
+}
+
+impl Ssim {
+    /// The score, when there is one.
+    #[must_use]
+    pub fn score(&self) -> Option<f64> {
+        match self {
+            Ssim::Measured { score } => Some(*score),
+            Ssim::Unavailable { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

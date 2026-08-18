@@ -33,6 +33,7 @@ fn every_fault_in_the_menu_is_observable() {
             Fault::ControlReadDeclined => control_read_declined(),
             Fault::SettleNeverConverges => settle_never_converges(),
             Fault::FrameTimeout => frame_timeout(),
+            Fault::FrameGap => frame_gap(),
             Fault::HotplugAdd => hotplug_add(),
             Fault::HotplugRemove => hotplug_remove(),
             Fault::WatchUnavailable => watch_unavailable(),
@@ -355,6 +356,39 @@ fn frame_timeout() {
         panic!("expected a timeout, got {error}");
     };
     assert_eq!(frames_seen, 1);
+}
+
+fn frame_gap() {
+    // Design D16's driven inverse: `Frame::sequence`'s "gaps mean dropped frames" is a
+    // contract consumers are now invited to aggregate over, and this is the fault that lets
+    // a consumer's gap accounting be tested against something rather than reasoned about.
+    let backend = backend();
+    let mut camera = backend.open_fake(&first_id(&backend)).expect("open");
+    start(&mut camera);
+    let before = camera.next_frame(soon()).expect("a frame before the fault");
+
+    backend.queue_fault(Fault::FrameGap);
+    let after = camera.next_frame(soon()).expect("a frame after the gap");
+
+    // The sequence skips the frames that never arrived...
+    assert_eq!(
+        after.sequence - before.sequence,
+        fake::FRAME_GAP_FRAMES + 1,
+        "a gap of {} lost frames advances the sequence by that many plus this frame",
+        fake::FRAME_GAP_FRAMES
+    );
+    // ...and the clock moves on by the same frames, which is what tells a lost run from a
+    // stall: a stall stretches one interval and skips no sequence number at all.
+    let one_interval =
+        (after.timestamp_us - before.timestamp_us) / i64::from(fake::FRAME_GAP_FRAMES + 1);
+    assert!(
+        one_interval > 0,
+        "the timestamps did not advance across the gap"
+    );
+
+    // One shot: the next frame follows the one before it.
+    let next = camera.next_frame(soon()).expect("a frame after the gap");
+    assert_eq!(next.sequence - after.sequence, 1);
 }
 
 fn hotplug_add() {

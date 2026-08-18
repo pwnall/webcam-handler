@@ -1135,6 +1135,31 @@
         }
       ]
     },
+    "DeviceDifference": {
+      "description": "What two profiles say about the **device** — the description half of D15's partition.\n\nThe identity half is where the device *is* (`info`: id, fingerprint, bus strings, node\ntable) and legitimately differs across a forwarded bus, another port, another machine.\nThis half is what the device *is*, and across all of those it must not differ. Answering\nthem separately is FR-W2's whole request: \"is the forwarded camera the same device?\" and\n\"what identity moved?\" are two questions with one comparison behind them.",
+      "properties": {
+        "controls": {
+          "description": "The control slugs whose invariant descriptor differs — described differently on the\ntwo sides, or present on only one of them. Named rather than counted, because\n\"seventeen controls differ\" sends a reader to diff two documents by hand and\n`[\"pan_absolute\"]` sends them to the control.",
+          "items": {
+            "$ref": "#/$defs/ControlSlug"
+          },
+          "type": "array"
+        },
+        "formats": {
+          "description": "Whether the format tree differs, at any of its three depths: a pixel format, a size\nunder a pixel format, or a frame interval under a size. One flag rather than three,\nbecause the ruling this type serves is about the tree and not about a level of it.",
+          "type": "boolean"
+        },
+        "measured_pairs": {
+          "description": "Whether the automation pairs D3's probe measured differ [PF:3].",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "formats",
+        "measured_pairs"
+      ],
+      "type": "object"
+    },
     "DeviceNode": {
       "description": "One `/dev/videoN` node belonging to a camera.",
       "properties": {
@@ -2168,6 +2193,70 @@
         }
       ]
     },
+    "IntervalStats": {
+      "description": "The interval distribution of one stream, in microseconds (design D16).\n\n**Two tiers, and the split is the bound.** `mean`, `min` and `max` are streaming moments\nand cover every interval the stream produced. The order statistics — `p50`, `p99` and the\njitter — are exact over the intervals the accumulator *retained*, which is every one of\nthem up to `limits::MAX_RECORDING_FRAMES` and the first `retained` of them after\nthat. `retained < observed` is how the answer states its own truncation, which is the\nonly honest way to bound a percentile: a stream longer than the recording cap is a stream\nthis tool has already declined to record whole.",
+      "properties": {
+        "jitter_us": {
+          "description": "Mean absolute deviation from the mean, over the retained ones.\n\nMean absolute deviation rather than a standard deviation because this is integer\narithmetic end to end: a variance in microseconds squared overflows a `u64` at a\nfour-second interval and needs a square root to become a number anybody reads.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_us": {
+          "description": "The longest, over every one observed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mean_us": {
+          "description": "The mean interval, over every one observed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min_us": {
+          "description": "The shortest, over every one observed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observed": {
+          "description": "How many intervals the stream produced.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p50_us": {
+          "description": "The median, over the retained ones.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p99_us": {
+          "description": "The 99th percentile, over the retained ones — the number a stall shows up in.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retained": {
+          "description": "How many of them the accumulator kept exactly.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "observed",
+        "retained",
+        "mean_us",
+        "min_us",
+        "max_us",
+        "p50_us",
+        "p99_us",
+        "jitter_us"
+      ],
+      "type": "object"
+    },
     "KnownFlag": {
       "description": "The control flag bits this version names.\n\nFlags are carried as raw bits *plus* this decoded set, because the set grows:\n`HasWhichMinMax` (0x1000) arrived with the same kernel work as the RECT support\nbehind PF:1 and older references do not list it [PF:12]. Bits outside this\nvocabulary survive in `ControlFlags::unknown_bits`.",
       "oneOf": [
@@ -3060,6 +3149,26 @@
       "minLength": 4,
       "type": "string"
     },
+    "ProfileComparison": {
+      "description": "Two profiles compared with identity held to one side (design D15; FR-W2).\n\nThe document `profile compare` answers, and a schema DTO because the consumer that asked\nfor it reads `--json` out of a subprocess. Both halves come back from one comparison\nbecause the consumer needs both: `Self::device` is the fidelity assertion — the\nforwarded camera is the same device — and `Self::identity` is the expected-delta\nreport, since a different bus path is exactly what forwarding *means*.",
+      "properties": {
+        "device": {
+          "$ref": "#/$defs/DeviceDifference",
+          "description": "What the device *is*: formats, controls, measured pairs."
+        },
+        "identity": {
+          "description": "Where the device *is*: the `info` fields that differ, in the order and the spelling\n`CameraInfo::differing_fields` produced. Expected to be non-empty across a\nforwarded bus, a different port, a reboot or another machine.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
     "ProfileInvariant": {
       "description": "The part of a profile that should not change unless the device or the kernel does.",
       "properties": {
@@ -3432,6 +3541,17 @@
         "started_at": {
           "$ref": "#/$defs/Stamp",
           "description": "When the recording started, on the wall clock.\n\nThe caller's `Stamp`, as `PhotoReport::taken_at` is: the engine reads no clock\n(design §2.10), and the monotonic one this report's `RecordReport::wall_clock_ms`\ncomes from is a different question — conflating them is how an NTP step becomes a\nduration."
+        },
+        "stats": {
+          "$ref": "#/$defs/StreamStats",
+          "default": {
+            "clock_reversals": 0,
+            "frames_delivered": 0,
+            "frames_dropped": 0,
+            "gap_events": 0,
+            "sequence_resets": 0
+          },
+          "description": "How the take's frames were *delivered* (design D16).\n\nBeside `Self::summary` rather than inside it, because they answer two questions\nabout one take: the summary is what the **file** turned out to be, and this is what\nthe **link** turned out to be. A consumer proving a camera-forwarding path reads this\none — `frames_dropped` here and `RecordingSummary::dropped_frames` are two readings\nof one accumulator, so they cannot disagree, and everything else here (the gap runs,\nthe interval distribution, the skew against this report's own wall clock) exists\nnowhere else in the document."
         },
         "summary": {
           "$ref": "#/$defs/RecordingSummary",
@@ -4261,6 +4381,68 @@
       },
       "type": "object"
     },
+    "StreamStats": {
+      "description": "How a stream *delivered*, as distinct from what it delivered (design D16; FR-W4).\n\nUSB-over-IP's characteristic failures — added latency, isochronous bandwidth collapse,\ndropped frames — are visible only in two fields every frame already carries:\n`capture::Frame::sequence`, whose gaps mean dropped frames, and\n`capture::Frame::timestamp_us`, the driver's own clock. Thermal throttling and a\ncontended hub look the same way on an ordinary rig. This is what an accumulator over\nthose two numbers can say about a take, and **nothing here is a judgement**: the stats\nrank and report exactly as D8's metrics do, and deciding whether a stream was \"healthy\"\nbelongs to the consumer whose tolerance it is.\n\nEvery quantity is an integer in microseconds. `imaging::stream_stats::Accumulator`\ncomputes it; the recording path fills `Self::wall_clock_skew_us`, which is the one field\nno pure core could produce because the engine is the only layer that reads a clock.",
+      "properties": {
+        "clock_reversals": {
+          "description": "Frames whose timestamp was not later than the one before it.\n\nA negative interval is not a duration, so it joins no statistic below; the count is\nhere because a clock that ran backwards is a finding about the host, not noise.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames_delivered": {
+          "description": "How many frames reached us.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames_dropped": {
+          "description": "How many the driver's sequence numbers say never did.\n\nSummed forward gaps. A repeated or backwards sequence number is not a gap — it is a\ndriver doing something else, counted as `Self::sequence_resets` rather than as the\nfour billion frames a wrapping subtraction would invent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "gap_events": {
+          "description": "How many *runs* of dropped frames there were.\n\nBeside `Self::frames_dropped` because one gap of sixty and sixty gaps of one are the\nsame count and different failures: the first is a stall, the second is a link losing\none frame in every two.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "intervals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IntervalStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the intervals between consecutive frames looked like, when there were any.\n\n`None` for a take of fewer than two usable frames — which spans no interval at all,\nand reporting zeros there would claim a measurement nobody made."
+        },
+        "sequence_resets": {
+          "description": "Frames whose sequence number did not advance.\n\nA `u32` sequence wraps after four and a half years at 30 fps, so in practice this is a\ndriver restarting its counter — recorded rather than discarded (AGENTS rule 6), and\ndeliberately not folded into the drop count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall_clock_skew_us": {
+          "description": "The driver's span against the caller's own clock, when a caller filled it in.\n\n`None` from a pure accumulator, which sees no wall clock by construction. The\nrecording path fills it — the take's own start and stop stamps against the span the\ndriver's timestamps describe — and a consumer aggregating a live stream in process\nfills it from its own stamps or leaves it absent. Public precisely so it can.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "frames_delivered",
+        "frames_dropped",
+        "gap_events",
+        "sequence_resets",
+        "clock_reversals"
+      ],
+      "type": "object"
+    },
     "SweepAdjustment": {
       "description": "One way the values a sweep will actually visit differ from what the spec literally asked\nfor.\n\nThe same doctrine as D3's `{requested, applied}`, one layer up: the caller is told what\nhappened to their request instead of diffing two lists to find out.\n\n**It is here rather than in `webcam-handler-engine::sweep` since note N145**, and the move\nis the finding rather than tidying. The planner has always produced these and both\ncomposition roots dropped the whole sweep outcome on the floor, so four adjustment kinds\nand a precision reached no caller for three phases — rubric A8's \"a typed declaration\nnothing reads\", read only by a hardware test. They reach a caller now because they ride on\nthe `sweep_started` progress event *and* are written into the session document beside the\ncontrol they are about; a vocabulary that crosses those seams is the schema's, like every\nother one.\n\nWhy it matters to the consumer AGENTS names: a `--precision 1` sweep of a 10 000-wide\nrange plans 251 samples at a stride of 40, and without this the agent is told \"251\nsamples\" and has no way to learn that the precision it asked for is not the precision it\ngot. Every comparison it then draws from those photos is drawn at a resolution it believes\nis forty times finer than it is.",
       "oneOf": [
@@ -4959,6 +5141,7 @@
     "PhotoFormat",
     "PhotoReport",
     "PhotoRequest",
+    "ProfileComparison",
     "ProgressEvent",
     "RecordReport",
     "RecordRequest",

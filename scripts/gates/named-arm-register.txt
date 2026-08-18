@@ -52,6 +52,7 @@ no-external-fetch-in-web
 no-frame-bytes-in-repo
 oracle-rung-accounting
 privileged-helper
+profile-partition-is-closed
 schema-artifacts-current
 scratch-has-one-home
 shipped-profile-is-declared

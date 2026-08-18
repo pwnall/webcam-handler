@@ -90,6 +90,16 @@ pub(crate) struct CameraState {
     /// Only the pairs the profile *measured* (E1, E5).
     pairs: Vec<AutomationPair>,
     stream: Option<NegotiatedStream>,
+    /// Whether this camera has vanished from the machine (design D19).
+    ///
+    /// Set by `Fault::DeviceGoneMidStream` when it fires, and it is what makes the fake's
+    /// device loss a *loss* rather than one refused call: a camera that answered `DeviceGone`
+    /// to a frame and went on being enumerated would be a shape no real machine has, and a
+    /// consumer's re-enumeration — the thing D19 says a caller does next — would find it and
+    /// carry on. Once set, this camera is absent from `enumerate` and refuses every further
+    /// operation with `DeviceGone` (E5: the double resembles by having the same shape, and
+    /// this is the shape).
+    gone: bool,
     frames_delivered: u32,
     /// How many streams this camera has started, ever.
     ///
@@ -143,6 +153,7 @@ impl CameraState {
             controls,
             pairs,
             stream: None,
+            gone: false,
             frames_delivered: 0,
             streams_started: 0,
             opens: 0,
@@ -174,6 +185,11 @@ impl CameraState {
     /// Record a handle going away, which on a real device is the descriptor closing.
     pub(crate) fn closed(&mut self) {
         self.closes = self.closes.saturating_add(1);
+    }
+
+    /// Whether this camera has left the machine (design D19).
+    pub(crate) fn is_gone(&self) -> bool {
+        self.gone
     }
 
     pub(crate) fn info(&self) -> &CameraInfo {
@@ -659,6 +675,11 @@ impl Camera for FakeCamera {
         }
         if take_fault(&self.faults, Fault::DeviceGoneMidStream) {
             state.stream = None;
+            // The camera leaves the machine, it does not merely refuse this frame: D19's
+            // contract is a sentence about `list`, about a watcher's removal event and about
+            // a later return being a *new arrival*, and none of those can be driven against a
+            // double that stayed enumerable.
+            state.gone = true;
             return Err(Error::DeviceGone {
                 path: state.capture_path(),
             });
@@ -684,6 +705,26 @@ impl Camera for FakeCamera {
             unsettled,
         };
         let bytes = frames::encode(&frames::render(&scene), stream.pixel_format)?;
+
+        // A lost run of frames advances both counters before this frame is stamped, so what
+        // a consumer sees is a sequence that skipped and a clock that moved on by exactly the
+        // frames that never arrived (design D16). Spent here rather than beside the two
+        // faults above because it changes a frame rather than replacing one, which is the
+        // same rule `SettleNeverConverges` is placed by.
+        // Only once a frame has already gone out: a gap is a *difference* between two
+        // sequence numbers, so a scripted loss before the first frame would leave the take
+        // starting at sequence three with nothing to have skipped — invisible to every
+        // consumer, and a fault that cannot be observed is the thing this menu exists to
+        // prevent. Queued and not yet spent, so the next frame fires it.
+        if state.frames_delivered > 0 && take_fault(&self.faults, Fault::FrameGap) {
+            state.frames_delivered = state
+                .frames_delivered
+                .saturating_add(crate::fault::FRAME_GAP_FRAMES);
+            state.timestamp_us = state.timestamp_us.saturating_add(
+                interval_micros(stream.interval)
+                    .saturating_mul(i64::from(crate::fault::FRAME_GAP_FRAMES)),
+            );
+        }
 
         let frame = Frame {
             bytes,

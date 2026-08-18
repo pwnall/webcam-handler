@@ -146,6 +146,16 @@ fn a_committed_profile_keeps_the_identity_it_was_captured_with() {
     // The fake rewrites two fields on purpose — a fresh `CameraId` and `backend: Fake` —
     // and must rewrite nothing else, or replaying corpus would prove things about a
     // camera that never existed.
+    //
+    // **Asked through the product's own comparison since D15**, rather than through a list
+    // of fields written out here. This suite carried that list from P1 until v3 —
+    // fingerprint, card, bus_info, nodes, four asserts — and it was a private copy of
+    // exactly the rule `CameraInfo::differing_fields` states, which is the second-copy
+    // defect design §2.10 names. The promotion runs the other way too: what the product
+    // could not have known is that a *replay* must preserve node paths verbatim, because no
+    // kernel renumbered anything between the capture and this loop. So that one claim stays
+    // here, beside the projection rather than instead of it, and it is the only field-level
+    // assertion left.
     for (path, profile) in corpus::load_all().expect("the corpus parses") {
         let captured = profile.invariant.info.clone();
         let backend = FakeBackend::from_profile(profile).expect("replays");
@@ -161,10 +171,157 @@ fn a_committed_profile_keeps_the_identity_it_was_captured_with() {
             schema::backend::BackendKind::Fake,
             "{path}: a fake run must never be mistakable for a hardware one"
         );
-        assert_eq!(replayed.fingerprint, captured.fingerprint, "{path}");
-        assert_eq!(replayed.card, captured.card, "{path}");
-        assert_eq!(replayed.bus_info, captured.bus_info, "{path}");
-        assert_eq!(replayed.nodes, captured.nodes, "{path}");
+        assert_eq!(
+            captured.differing_fields(&replayed),
+            vec!["backend".to_owned()],
+            "{path}: the fake rewrote something other than the backend it is allowed to \
+             rewrite (the id is excluded by the comparison itself, which is where that \
+             exclusion is argued)"
+        );
+        let paths: Vec<&str> = captured
+            .nodes
+            .iter()
+            .map(|node| node.path.as_str())
+            .collect();
+        let replayed_paths: Vec<&str> = replayed
+            .nodes
+            .iter()
+            .map(|node| node.path.as_str())
+            .collect();
+        assert_eq!(
+            paths, replayed_paths,
+            "{path}: a replay renumbers nothing, so the node paths are the captured ones"
+        );
+    }
+}
+
+#[test]
+fn every_committed_profile_is_the_same_device_as_its_identity_rewritten_self() {
+    // D15's corpus arm, positive half. Identity is where the device *is* — a forwarded bus,
+    // another port, another machine legitimately move it — and description is what the
+    // device *is*, which must not move. So every committed profile, given somebody else's
+    // identity, must still compare device-equal to itself.
+    //
+    // The rewrite is deliberately total: every `info` field the comparison looks at is
+    // replaced, not one of them. A rewrite of a single field would pass against a
+    // comparison that had quietly started reading `formats` out of `info`.
+    for (path, profile) in corpus::load_all().expect("the corpus parses") {
+        let mut forwarded = profile.clone();
+        let info = &mut forwarded.invariant.info;
+        info.id = schema::camera::CameraId::parse("cam:somewhere-else").expect("a literal id");
+        info.fingerprint.bus_path = "9-9:1.9".to_owned();
+        info.fingerprint.usb_id = Some(schema::camera::UsbId {
+            vendor: 0xdead,
+            product: 0xbeef,
+        });
+        info.fingerprint.serial = Some("A-DIFFERENT-SERIAL".to_owned());
+        info.bus_info = "usb-9-9".to_owned();
+        info.backend = schema::backend::BackendKind::Fake;
+
+        let comparison = profile.compare(&forwarded);
+        assert!(
+            comparison.device_matches(),
+            "{path}: an identity rewrite moved the device half — {comparison}"
+        );
+        assert!(
+            !comparison.identity.is_empty(),
+            "{path}: the identity half reported nothing, so this arm rewrote nothing and \
+             proves nothing"
+        );
+        assert!(
+            comparison.device.sections().is_empty(),
+            "{path}: {} section(s) disagree",
+            comparison.device.sections().len()
+        );
+    }
+}
+
+#[test]
+fn no_two_committed_profiles_are_the_same_device_and_each_names_why() {
+    // D15's corpus arm, negative half — the one that makes the positive half mean
+    // something. A `device_matches` that answered `true` for everything would pass the
+    // arm above and be worthless, so every *pair* of distinct profiles is walked and each
+    // one must disagree about something the answer can name.
+    //
+    // Note which pair is the hardest: the Chicony's RGB and IR halves are one physical
+    // device, share a USB id and a serial \[PF:13, PF:8\], and differ only in what they can
+    // do. That is exactly the pair a comparison keyed on identity would call equal.
+    let profiles = corpus::load_all().expect("the corpus parses");
+    assert!(
+        profiles.len() >= 2,
+        "a one-profile corpus cannot exhibit a mutual negative"
+    );
+
+    let mut pairs = 0usize;
+    for (path_a, a) in &profiles {
+        for (path_b, b) in &profiles {
+            if path_a >= path_b {
+                continue;
+            }
+            pairs += 1;
+            let comparison = a.compare(b);
+            assert!(
+                !comparison.device_matches(),
+                "{path_a} and {path_b} describe the same device: {comparison}"
+            );
+            let sections = comparison.device.sections();
+            assert!(
+                !sections.is_empty(),
+                "{path_a} vs {path_b}: device_matches said no and no section said why"
+            );
+            // Both directions, because a comparison that reported a difference one way and
+            // not the other would be a diff nobody could rely on.
+            assert_eq!(
+                sections,
+                b.compare(a).device.sections(),
+                "{path_a} vs {path_b}: the two orders disagree about which sections differ"
+            );
+        }
+    }
+    assert_eq!(
+        pairs,
+        profiles.len() * (profiles.len() - 1) / 2,
+        "the walk skipped pairs"
+    );
+}
+
+#[test]
+fn a_formats_only_difference_is_the_one_the_owners_ruling_licenses() {
+    // The distinction D15 puts on the answer, driven over a real captured document rather
+    // than a constructed one: a camera's advertised format tree is invariant within a
+    // connection and nowhere else (owner ruling, 2026-08-13; \[PF:23\], note **N89**), so a
+    // consumer needs to know when *that* is the only thing that moved.
+    let (path, profile) = corpus::load_all()
+        .expect("the corpus parses")
+        .into_iter()
+        .next()
+        .expect("the corpus is not empty");
+
+    let mut fewer_modes = profile.clone();
+    assert!(
+        fewer_modes.invariant.formats.pop().is_some(),
+        "{path}: a profile with no formats cannot exhibit a format-tree-only difference"
+    );
+    let comparison = profile.compare(&fewer_modes);
+    assert!(!comparison.device_matches(), "{path}");
+    assert!(
+        comparison.device_differs_only_in_the_format_tree(),
+        "{path}: dropping a pixel format moved something besides the format tree — {comparison}"
+    );
+
+    // And with anything beside it the permission goes away, because the ruling is about a
+    // device re-deciding what it advertises and not about two findings at once.
+    if let Some(control) = fewer_modes.invariant.controls.first_mut() {
+        control.range.max = control.range.max.saturating_add(1);
+        let both = profile.compare(&fewer_modes);
+        assert!(
+            !both.device_differs_only_in_the_format_tree(),
+            "{path}: a control moved too and the format-tree permission still applied"
+        );
+        assert!(
+            !both.device.controls.is_empty(),
+            "{path}: the control that moved is not named"
+        );
     }
 }
 
@@ -736,6 +893,20 @@ const RANKED_DEFAULT: &[(&str, [u8; 4], u32, u32)] = &[
     ("dell-u3224kb", *b"MJPG", 3840, 2160),
     ("logitech-brio", *b"MJPG", 4096, 2160),
     ("obsbot-tiny3", *b"MJPG", 3840, 2160),
+    // The one virtual device in the corpus, committed at P9b as the workbench's 77-control
+    // layout fixture (D20 sizes the two-pane shell against it rather than against the
+    // 18-control common case). Its row is the surprising one, and it is recorded as measured
+    // rather than as expected: vivid advertises **83 formats including both `GREY` and
+    // `YUYV`**, and D5's key ranks `Lossiness::Lossless` above `ChromaSubsampled`, so an
+    // unspecified photo request on this device answers *monochrome* at 4K.
+    //
+    // That is the rule working as written, and it is also the first time this project has
+    // owned a device where the rule can be questioned: `chicony-ir` offers `GREY` alone, so
+    // until now "lossless" and "the whole signal" were the same sentence. On a colour source
+    // they are not — dropping chroma entirely loses more than keeping half of it — and note
+    // **N261** puts the question to the owner rather than answering it here. Nothing about
+    // D5 is touched by this commit; what changed is that the corpus can now see it.
+    ("vivid", *b"GREY", 3840, 2160),
 ];
 
 #[test]
@@ -814,8 +985,12 @@ fn the_ruling_costs_nothing_on_the_hardware_this_project_has_met() {
     // why they are argued in `schema::capture`'s unit tests over fixtures and here only as
     // an absence.
     //
-    // The Chicony IR sensor is the honest exception and it is named: it has no compressed
-    // format at all, so there is nothing for the ruling to prefer.
+    // Two honest exceptions, both named: the Chicony IR sensor has no compressed format at
+    // all, so there is nothing for the ruling to prefer — and neither does `vivid`, whose 83
+    // formats are every raw layout the kernel can synthesize and not one bitstream. The
+    // virtual device joining this list is worth a sentence rather than a number: it means the
+    // set is no longer "the one IR camera", and PF:26's reading of the corpus rests on the
+    // *cameras* in it, so a reader checking that reading should skip the row that is not one.
     let profiles = corpus::load_all().expect("the corpus parses");
     let mut without_compressed = Vec::new();
 
@@ -846,9 +1021,11 @@ fn the_ruling_costs_nothing_on_the_hardware_this_project_has_met() {
 
     assert_eq!(
         without_compressed,
-        vec!["chicony-ir"],
-        "the set of cameras with no compressed format at all has changed; PF:26's \
-         reading of the corpus and N85's cost estimate both rest on it"
+        vec!["chicony-ir", "vivid"],
+        "the set of profiles with no compressed format at all has changed; PF:26's \
+         reading of the corpus and N85's cost estimate both rest on it, and both are \
+         statements about the *cameras* — a virtual driver joining this list changes what \
+         the list means as well as how long it is"
     );
 }
 

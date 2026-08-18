@@ -21,6 +21,7 @@
 //! | [`Fault::ControlReadDeclined`] | one shot | `controls` reports the first writable control valueless, as a device that declined one `G_EXT_CTRLS` does |
 //! | [`Fault::SettleNeverConverges`] | held | every frame's exposure differs, so no settle policy converges \[PF:11\] |
 //! | [`Fault::FrameTimeout`] | one shot | `next_frame` → [`schema::Error::SettleTimeout`] |
+//! | [`Fault::FrameGap`] | one shot | the next frame's `sequence` jumps, as a link that lost frames does (design D16) |
 //! | [`Fault::HotplugAdd`] | one shot | the watch yields [`schema::backend::HotplugEvent::Added`] |
 //! | [`Fault::HotplugRemove`] | one shot | the watch yields [`schema::backend::HotplugEvent::Removed`] |
 //! | [`Fault::WatchUnavailable`] | one shot | `watch` → [`schema::Error::DeviceIo`]: this host has no watch to give |
@@ -30,6 +31,13 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use schema::vocabulary::closed_vocabulary;
+
+/// How many frames [`Fault::FrameGap`] loses when it fires.
+///
+/// Three rather than one, because one is the number a fencepost error also produces: a
+/// gap-counting bug that reported `gap` instead of `gap - 1` is invisible against a single
+/// lost frame and obvious against three.
+pub const FRAME_GAP_FRAMES: u32 = 3;
 
 closed_vocabulary! {
     /// A fault the fake can be told to exhibit.
@@ -74,6 +82,24 @@ closed_vocabulary! {
         SettleNeverConverges,
         /// A frame does not arrive before the deadline.
         FrameTimeout,
+        /// Frames were lost on the way here: the next frame's `sequence` jumps forward
+        /// past the ones that never arrived (design D16).
+        ///
+        /// The driven inverse of gap accounting, and the reason it is a *fault* rather than
+        /// a test fixture: `Frame::sequence`'s "gaps mean dropped frames" is a contract this
+        /// design now asks consumers to build on — client-side aggregation over `sequence`
+        /// and `timestamp_us` is a supported use of the API — and a contract with no way to
+        /// exercise its unhappy half is a sentence nobody can test against. USB-over-IP loses
+        /// frames to a collapsed isochronous budget, an ordinary rig loses them to a
+        /// contended hub, and neither is arrangeable in a hermetic suite.
+        ///
+        /// **What the fake claims here, exactly**: the sequence number skips
+        /// [`FRAME_GAP_FRAMES`] frames while the timestamp advances by the same number of
+        /// intervals — which is what a link that dropped frames looks like, as distinct from
+        /// a stall, where the timestamps stretch and the sequence does not skip. Both shapes
+        /// are what the accumulator tells apart, so the fake has to be able to produce the
+        /// one it is named after and not a blur of the two.
+        FrameGap,
         /// A device node appears.
         HotplugAdd,
         /// A device node disappears.
@@ -108,6 +134,7 @@ impl Fault {
             Fault::ControlReadDeclined => "control_read_declined",
             Fault::SettleNeverConverges => "settle_never_converges",
             Fault::FrameTimeout => "frame_timeout",
+            Fault::FrameGap => "frame_gap",
             Fault::HotplugAdd => "hotplug_add",
             Fault::HotplugRemove => "hotplug_remove",
             Fault::WatchUnavailable => "watch_unavailable",

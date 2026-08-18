@@ -40,3 +40,4 @@ calibrate-apply	WriteReport
 calibrate-restore	RestoreReport
 calibrate-list	SessionList
 profile-capture	DeviceProfile
+profile-compare	ProfileComparison

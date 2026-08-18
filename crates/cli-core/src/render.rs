@@ -29,7 +29,7 @@ use schema::control::{
 };
 use schema::error::{Error, Result};
 use schema::pairing::{AutomationOff, Provenance};
-use schema::profile::DeviceProfile;
+use schema::profile::{DeviceProfile, ProfileComparison};
 use schema::progress::{CalibrationProgress, ProgressEvent};
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
 use schema::session::{
@@ -1726,6 +1726,64 @@ pub(crate) fn profile(
             Ok(())
         }
     }
+}
+
+/// `profile compare` — what the two documents say about the device, and about where it is.
+///
+/// Two rows, because D15's partition is the answer's shape and a reader has the two questions
+/// it separates: *is this the same device* and *what identity moved*. A camera reached over a
+/// forwarded bus is expected to fill the second row and must leave the first one empty, and a
+/// rendering that ran them together would hide exactly the distinction the verb exists for.
+///
+/// Every word in the verdict column comes from the value's own `Display` — `DeviceDifference`
+/// names the sections it found and puts the differing control slugs underneath theirs — rather
+/// than from a walk written here. That is design §2.10 at its narrowest: which sections count
+/// as a disagreement, how they are spelled and in what order they are listed is settled in
+/// `schema::profile` and read here, so this table and the `--json` document cannot come to
+/// disagree about what differs.
+pub(crate) fn comparison(
+    comparison: &ProfileComparison,
+    as_json: bool,
+    out: &mut Output,
+) -> Result<()> {
+    if as_json {
+        return json(comparison, out);
+    }
+
+    let mut table = table();
+    table.set_header(vec!["HALF", "VERDICT"]);
+    table.add_row(vec![
+        Cell::new("device"),
+        // "same device" in words rather than an empty cell, for the reason `ProfileComparison`
+        // gives for saying it in its own `Display`: an empty string is the one answer a reader
+        // cannot tell from a failure to print.
+        Cell::new(if comparison.device_matches() {
+            "same device".to_owned()
+        } else {
+            format!("differs: {}", comparison.device)
+        }),
+    ]);
+    table.add_row(vec![
+        Cell::new("identity"),
+        Cell::new(if comparison.identity.is_empty() {
+            "same address".to_owned()
+        } else {
+            format!("differs: {}", comparison.identity.join(", "))
+        }),
+    ]);
+    out.line(&table.to_string())?;
+
+    // The owner's 2026-08-13 ruling as the one line a reader can act on. It is computed by
+    // the answer rather than here, so a caller reading `--json` reaches the same conclusion
+    // from the same three fields — the rule this module opens with — and this tool reports
+    // the shape rather than guessing what it means for somebody else's rig.
+    if comparison.device_differs_only_in_the_format_tree() {
+        out.note(
+            "note: the format tree is the only device section that differs, and a camera may \
+             advertise a different one each time it is plugged in",
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

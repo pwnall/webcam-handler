@@ -71,6 +71,15 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli, out: &mut Output) -> Result<()> {
+    // A document verb takes files and answers a document (design §2.7, D15): it touches no
+    // camera, so this root does not name a backend for it. Asked *before* `backend_for`
+    // rather than left to `cli_core::run` — which asks the same question again — because
+    // `--backend fake --profile …` reads and version-checks a corpus document at that call,
+    // and `profile compare` refusing over a profile it was never going to replay would be
+    // this root deciding something the shared surface does not.
+    if let Some(answered) = cli_core::below_the_executor(cli, out) {
+        return answered;
+    }
     let mut executor = InProcess {
         backend: backend_for(cli)?,
     };

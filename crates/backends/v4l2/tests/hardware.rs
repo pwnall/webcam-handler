@@ -287,6 +287,138 @@ fn hw_controls_enumerate_on_every_node_without_panicking() {
     }
 }
 
+// ------------------------------------------------- D19: mid-stream device loss (FR-W6)
+
+/// The environment variable a rig that *can* make a camera vanish sets.
+///
+/// Design D19 records mid-stream loss on real hardware as unmeasured **by design**: the
+/// privileged helper refuses to unload `uvcvideo` under an open node (§2.13), so on this host
+/// the event exists only as the fake's scripted fault. A sibling project can produce the real
+/// one reproducibly — drop the tunnel, detach the vhci port — and these two recipes are what
+/// it runs. The protocol is one variable holding a command line that makes the camera under
+/// test disappear *while a stream is open*; the recipes run it, then assert this design's
+/// stated contract against what the driver does.
+const LOSS_COMMAND: &str = "WCH_DEVICE_LOSS";
+
+/// The command that arranges a loss, or a counted skip naming what is missing.
+///
+/// A named, counted skip and never silence (AGENTS rule 3): on every host in this project the
+/// answer is `None`, and a recipe that said nothing would be indistinguishable from one that
+/// ran and found nothing wrong.
+fn arrangeable_loss() -> Option<String> {
+    match std::env::var(LOSS_COMMAND) {
+        Ok(command) if !command.trim().is_empty() => Some(command),
+        _ => {
+            println!(
+                "SKIP: needs an arrangeable mid-stream device loss; set {LOSS_COMMAND} to a \
+                 command that makes the camera under test vanish while a stream is open (design \
+                 D19 — the partner rig detaches a vhci port; this host's privileged helper \
+                 refuses to unload uvcvideo under an open node, by design)"
+            );
+            None
+        }
+    }
+}
+
+/// Run the arrangement and say what it did, because a rig's transcript is the evidence.
+fn arrange_the_loss(command: &str) -> std::process::ExitStatus {
+    println!("arranging a device loss with: {command}");
+    Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .unwrap_or_else(|err| panic!("{LOSS_COMMAND} could not be run: {err}"))
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_gone_a_photo_answers_device_gone_and_not_a_deadline() {
+    // D19's first sentence, on real hardware. The three kinds it must not be are the
+    // assertion: an agent's next move differs for each — wait, retry, stop and tell a human.
+    let Some(command) = arrangeable_loss() else {
+        return;
+    };
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+    let info = cameras
+        .first()
+        .expect("attached() refuses an empty listing")
+        .clone();
+    let mut camera = backend.open(&info.id).expect("opens");
+    camera
+        .start_stream(&schema::capture::StreamRequest::default())
+        .expect("starts a stream");
+
+    let status = arrange_the_loss(&command);
+    assert!(status.success(), "{LOSS_COMMAND} exited {status}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let refused = camera
+        .next_frame(deadline)
+        .expect_err("the camera was detached and still delivered a frame");
+    println!("the driver answered: {refused}");
+    assert_eq!(
+        refused.kind(),
+        schema::ErrorKind::DeviceGone,
+        "D19 says a device that vanishes answers DeviceGone; this driver answered {refused}"
+    );
+    for never in [
+        schema::ErrorKind::SettleTimeout,
+        schema::ErrorKind::Busy,
+        schema::ErrorKind::FormatUnsupported,
+    ] {
+        assert_ne!(refused.kind(), never, "{refused}");
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_gone_the_listing_stops_naming_the_camera_that_left() {
+    // D19's fourth sentence: around the loss, `list` stops naming the camera, and a later
+    // return is a *new arrival* whose fingerprint says it is the same device at a different
+    // address — which is D14 and D15 doing their job. This recipe asserts the first half; the
+    // second needs a rig that can re-attach, and its transcript is what would establish it.
+    let Some(command) = arrangeable_loss() else {
+        return;
+    };
+    let Some((backend, before)) = attached() else {
+        return;
+    };
+    let info = before
+        .first()
+        .expect("attached() refuses an empty listing")
+        .clone();
+    let mut camera = backend.open(&info.id).expect("opens");
+    camera
+        .start_stream(&schema::capture::StreamRequest::default())
+        .expect("starts a stream");
+
+    let status = arrange_the_loss(&command);
+    assert!(status.success(), "{LOSS_COMMAND} exited {status}");
+    let _ = camera.next_frame(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    drop(camera);
+
+    let after = backend.enumerate().expect("the machine still enumerates");
+    println!(
+        "before: {} camera(s); after: {} camera(s)",
+        before.len(),
+        after.len()
+    );
+    assert!(
+        after.iter().all(|other| other.id != info.id),
+        "the listing still names {} after it was detached mid-stream",
+        info.id
+    );
+    assert_eq!(
+        after.len(),
+        before.len() - 1,
+        "detaching one camera changed the listing by more than one camera"
+    );
+}
+
 #[test]
 #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
 fn hw_a_selector_finds_the_camera_its_fingerprint_names() {
