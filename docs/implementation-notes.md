@@ -24808,3 +24808,44 @@ batch counted by eye, which is the ordinary reason to let a walk do the counting
 
 **Retires when:** nothing. The escape is required by `-D warnings` and the undoing is required by
 every reader who is not rustdoc; both halves stay as long as both readers do.
+
+---
+
+## N250 — The first survivor of the G6 floor run is in the credential gate, and §7.2 could not have seen it
+
+**Doc:** note **N74** (the gate's policy: every credential presented must verify, and at least one
+must be presented); docs/11 **§7.2**, whose absence list records twenty request shapes driven at a
+live daemon and concludes *"No new hole was found in the credential layer"*; D11. Found by the
+mutation floor run of 2026-08-17, the one docs/11 §11 item 2 says the review did not do.
+
+**Repo:** `crates/daemon/src/http/gate.rs`'s `query_tokens` and `admits`;
+`a_token_parameter_with_no_value_is_a_credential_that_fails`.
+
+**The survivor.** `replace match guard pair == TOKEN_QUERY_PARAM with false in query_tokens` —
+the arm that turns a **bare** `?token`, with no `=` at all, into `Some("")`. It survived the whole
+1529-test suite.
+
+**What the mutant changes.** `admits` is `presented > 0 && every_one_verified`. The real code counts
+a truncated parameter as a credential that then fails to verify; the mutant counts it as nothing at
+all. Alone, the two readings are indistinguishable — `presented` is zero either way and the request
+is refused — which is exactly what the one test reaching that arm asserted. **Beside a bearer that
+verifies they separate**, and in the direction that matters: the real gate refuses
+`Authorization: Bearer <valid>` with `?token`, because N74 says *every* credential presented must
+verify; the mutant **admits** it.
+
+**Why the review's own measurement missed it, which is the part worth keeping.** §7.2 drove twenty
+request shapes at a live daemon and its table includes *"`?token` with no value counted as a
+credential that fails"*. That shape is `?token=` — the `=` present, the value empty — which enters
+through the `Some((name, value))` arm. The **bare** `?token` is a different match arm with a
+different guard, and the assertion covering it was one an ignoring gate also satisfies. So a
+twenty-shape live probe, an absence list, and a named test all agreed the arm was covered, and a
+mutant disagreed. A test that asserts a refusal proves nothing about *why* the refusal happened
+when the alternative reading refuses too — which is L25's shape (an arm red for a reason other than
+the one its name gives) arriving in Rust rather than in the gate suite.
+
+**The repair** adds the arm both truncations need: each beside a bearer that verifies, asserted
+refused. Measured red on the mutant (*"a truncated `?token` beside a bearer that verifies was
+forgiven"*) and green on the tree.
+
+**Retires when:** nothing. This is coverage, and the note is here because the *reason* it was
+missing is a shape worth recognising, not because the line was hard.

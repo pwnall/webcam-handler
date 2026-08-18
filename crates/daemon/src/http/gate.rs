@@ -571,6 +571,33 @@ mod tests {
             Some(&format!("{TOKEN_QUERY_PARAM}=")),
             &token
         ));
+
+        // **Beside a credential that does verify**, which is the arm that makes the two
+        // assertions above about *counting* rather than about refusing. Alone, a truncated
+        // parameter is refused whether it counts as a credential or as nothing at all —
+        // `presented > 0` fails either way — so neither line above can tell the two readings
+        // apart. Add a valid bearer and they separate: N74's policy is that **every**
+        // credential presented must verify, so the empty one has to drag the request down
+        // with it. A gate that quietly ignored the truncated parameter would serve this.
+        //
+        // Found by the mutation floor (note **N250**): `replace match guard pair ==
+        // TOKEN_QUERY_PARAM with false in query_tokens` survived 1529 tests, and it survived
+        // because the only arm reaching that guard asserted a refusal the mutant also
+        // produces.
+        let secret = token.expose_secret().to_owned();
+        for truncated in [
+            TOKEN_QUERY_PARAM.to_owned(),
+            format!("{TOKEN_QUERY_PARAM}="),
+        ] {
+            assert!(
+                !admits(
+                    &authorization(&[&format!("Bearer {secret}")]),
+                    Some(&truncated),
+                    &token
+                ),
+                "a truncated `?{truncated}` beside a bearer that verifies was forgiven"
+            );
+        }
     }
 
     #[test]
