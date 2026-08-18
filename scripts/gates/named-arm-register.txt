@@ -40,6 +40,7 @@ counted-selections
 dependency-registry-sync
 dependency-walls
 doc-comments-open-with-a-summary
+facade-is-the-composition
 feature-posture
 ignored-suites-have-recipes
 json-validates

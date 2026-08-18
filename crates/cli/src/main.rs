@@ -24,10 +24,10 @@ use std::process::ExitCode;
 
 use cli_core::{Cli, Executor, Output, Photograph, Program, Selection, SessionRef, SweepWatcher};
 use engine::calibrate::{SweepContext, SweepRequest};
+use engine::facade::Facade;
 use engine::lifecycle::{self, SessionSpec};
 use engine::store::SessionStore;
-use schema::backend::{BackendKind, Camera, CameraBackend};
-use schema::camera::CameraInfo;
+use schema::backend::{BackendKind, CameraBackend};
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug};
 use schema::error::Result;
@@ -81,7 +81,7 @@ fn run(cli: &Cli, out: &mut Output) -> Result<()> {
         return answered;
     }
     let mut executor = InProcess {
-        backend: backend_for(cli)?,
+        facade: Facade::new(backend_for(cli)?),
     };
     cli_core::run(cli, &mut executor, out)
 }
@@ -106,33 +106,37 @@ fn backend_for(cli: &Cli) -> Result<Box<dyn CameraBackend>> {
     }
 }
 
-/// The T4 executor over an in-process backend.
+/// The T4 executor over an in-process backend, written as parse-and-render around
+/// [`engine::facade`] (design **D18**).
 ///
-/// Every method here is assembly: resolve an id, open the camera, ask it the questions,
-/// put the answers in the schema type. No policy, because policy belongs to the engine
-/// and rendering belongs to `cli-core`.
+/// Every one-shot verb below is **one facade call** and the argument conversion around it.
+/// That is the shape D18 asks for and the reason it asks: the blessed call order — resolve,
+/// open, ask, assemble — used to live here, in a binary's private executor, so the first
+/// embedder that was neither the owner nor the owner's agent harness had to read a CLI to
+/// learn it. It now lives in `engine::facade`, and this file is what stops the two from
+/// becoming siblings: the facade is the code `webcam-handler-cli` actually ships, so
+/// `scripts/gates/cli-parity.sh` — which compares this root with `webcam-handler-client` byte
+/// for byte on every read verb — pins the facade's answers transitively.
+/// `scripts/gates/facade-is-the-composition.sh` is the other half, and it goes red on the
+/// event that would undo this: an executor verb reaching an engine module the facade
+/// encapsulates.
+///
+/// **Two verbs keep their own assembly, and it is a boundary rather than an omission.**
+/// `record` holds the device from `STREAMON` to `STREAMOFF` and the calibration verbs run
+/// inside the session store's fd-lock; both are *stateful lifecycles*, which D18 excludes
+/// from the facade on purpose — "a facade method that half-owned a session would be a second
+/// lifecycle home", which is the defect §2.10 exists to prevent. An embedder that wants those
+/// wants the daemon or this binary, and this binary is entitled to them because it *is* one of
+/// the two blessed compositions (design §2.11). So `engine::record`, `engine::store`,
+/// `engine::lifecycle`, `engine::session`, `engine::calibrate` and `engine::progress` are
+/// still named below, and nothing else in the engine is: the gate's policy list is that
+/// sentence, made checkable.
+///
+/// Note that the excluded verbs still *select* their camera through the facade —
+/// [`Facade::open`], [`Facade::resolve`], [`Facade::open_id`]. What D18 excludes is the
+/// lifecycle, not the camera selection D14 gave one home.
 struct InProcess {
-    backend: Box<dyn CameraBackend>,
-}
-
-impl InProcess {
-    /// Resolve a caller-supplied selector (D1's ids and prefixes, D14's four other
-    /// spellings) against a live enumeration.
-    ///
-    /// Enumerating first is what lets the refusal name the candidates, which is the difference
-    /// between `CameraAmbiguous` being actionable and being a shrug. The rule itself lives in
-    /// `engine::resolve`, so `webcam-handler-cli` and the P4 daemon cannot disagree about what
-    /// a prefix means.
-    fn resolve(&self, requested: &CameraSelector) -> Result<CameraInfo> {
-        let cameras = self.backend.enumerate()?;
-        engine::resolve::camera(&cameras, requested).cloned()
-    }
-
-    fn open(&self, requested: &CameraSelector) -> Result<(CameraInfo, Box<dyn Camera>)> {
-        let info = self.resolve(requested)?;
-        let camera = self.backend.open(&info.id)?;
-        Ok((info, camera))
-    }
+    facade: Facade,
 }
 
 /// The calibration half of the executor (design D8, D9).
@@ -184,15 +188,11 @@ fn report_probe(skipped: &[ProbeSkip], restored: &RestoreReport) {
 
 impl Executor for InProcess {
     fn list(&mut self) -> Result<CameraList> {
-        engine::resolve::list(self.backend.as_ref())
+        self.facade.list()
     }
 
     fn info(&mut self, requested: &CameraSelector) -> Result<CameraDetail> {
-        let (info, camera) = self.open(requested)?;
-        Ok(CameraDetail {
-            formats: camera.formats()?,
-            info,
-        })
+        self.facade.detail(requested)
     }
 
     fn controls(
@@ -200,34 +200,21 @@ impl Executor for InProcess {
         requested: &CameraSelector,
         discover_pairs: bool,
     ) -> Result<ControlReport> {
-        let (info, mut camera) = self.open(requested)?;
         if discover_pairs {
-            // The probe writes, and the document it produces is assembled in the engine —
-            // probe first, read the control set afterwards, merge declared with measured.
+            // A different verb, not a flag on this one, because it *writes* to the camera
+            // (note N30) — and the document it produces is assembled in the engine: probe
+            // first, read the control set afterwards, merge declared with measured.
             // `webcam-handler-daemon`'s `wch_discover_pairs` answers that whole document; this
             // surface shows its `controls` and prints the other two fields on standard error.
-            // Two authors of one assembly is what note N34 booked the move against.
-            let found = engine::discover::report(camera.as_mut(), Stamp::now())?;
+            let found = self.facade.discover_pairs(requested, Stamp::now())?;
             report_probe(&found.skipped, &found.restored);
             return Ok(found.controls);
         }
-        let controls = camera.controls()?;
-        Ok(ControlReport {
-            // The declared table (D3) narrowed to the relationships this device can
-            // exhibit. Nothing measured: measuring writes to the camera, and that is the
-            // flag above (note N30).
-            pairs: engine::pairing::in_effect(&controls, Vec::new()),
-            camera: info.id,
-            controls,
-        })
+        self.facade.controls(requested)
     }
 
     fn get(&mut self, requested: &CameraSelector, control: &ControlSlug) -> Result<ControlDesc> {
-        let (_, camera) = self.open(requested)?;
-        // The suggestion list on a miss comes from the planner's, so `get brightnes` and
-        // `set brightnes=1` name the same candidates — which is why the lookup lives in
-        // the engine beside the planner rather than at each surface that offers a `get`.
-        engine::pairing::describe(&camera.controls()?, control)
+        self.facade.get(requested, control)
     }
 
     fn set(
@@ -236,17 +223,11 @@ impl Executor for InProcess {
         writes: &[schema::control::ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport> {
-        let (_, mut camera) = self.open(requested)?;
-        // The composition — which pair set this write plans against, and where the wire's
-        // `ControlWrite` stops (note N35) — is the engine's, because `webcam-handler-daemon`'s
-        // `wch_set` reaches the same rule and a second author for it is two opinions about
-        // what a camera's automation looks like.
-        engine::write::set_requested(camera.as_mut(), writes, guarded)
+        self.facade.set(requested, writes, guarded)
     }
 
     fn snapshot(&mut self, requested: &CameraSelector) -> Result<Snapshot> {
-        let (_, mut camera) = self.open(requested)?;
-        engine::snapshot::take_in_effect(camera.as_mut(), Stamp::now())
+        self.facade.snapshot(requested, Stamp::now())
     }
 
     fn restore(
@@ -254,29 +235,23 @@ impl Executor for InProcess {
         requested: &CameraSelector,
         snapshot: &Snapshot,
     ) -> Result<RestoreReport> {
-        let (_, mut camera) = self.open(requested)?;
-        engine::snapshot::restore_in_effect(camera.as_mut(), snapshot)
+        self.facade.restore(requested, snapshot)
     }
 
     fn photo(&mut self, requested: &CameraSelector, request: &PhotoRequest) -> Result<Photograph> {
-        let (_, mut camera) = self.open(requested)?;
-        let taken = engine::photo::take(
-            camera.as_mut(),
+        let taken = self.facade.photo(
+            requested,
             request,
-            // The blocking open, which for `webcam-handler-cli` is a feature rather than note
-            // N51's hazard: a person typed this path, `-o /dev/stdout` and `-o` a fifo both
-            // work, and Ctrl-C exists. The daemon's destination is the other one (design §2.10
-            // — one rule, two callers, and the difference is stated rather than assumed).
+            // Where the bytes go is the one thing the facade takes as a parameter rather than
+            // deciding, and its module doc says why: it is a fact about the *caller's process*
+            // rather than about the camera. This one blocks on a path a person typed, which
+            // for `webcam-handler-cli` is a feature rather than note N51's hazard —
+            // `-o /dev/stdout` and `-o` a fifo both work, and Ctrl-C exists. The daemon passes
+            // the other implementation, because its `open(2)` would run on a camera actor's
+            // one thread (design §2.10 — one rule, two callers, the difference stated).
             &mut engine::photo::WhereverTheCallerSaid,
-            &engine::settle::MonotonicClock::new(),
             Stamp::now(),
-        )
-        // `webcam-handler-cli` opens a camera per invocation, takes one photo and closes it,
-        // so nothing in this process can be previewing the device and the gap beside the
-        // answer is always `None`. It is dropped here rather than asserted: what a *different*
-        // caller does with it is `daemon::server`'s business, and the suspend/resume this
-        // discards the report of is the same mechanism either way (note **N83**).
-        .outcome?;
+        )?;
         // Two structurally identical types, and they stay separate on purpose:
         // `webcam-handler-client` links no engine (T6), so the shared command surface cannot
         // name the engine's.
@@ -287,6 +262,13 @@ impl Executor for InProcess {
     }
 
     /// Record one video, holding the camera for the whole take.
+    ///
+    /// **The one verb whose engine reach is not the facade, and D18 excludes it on purpose.**
+    /// A take is a lifecycle rather than a one-shot: it holds the device for its whole
+    /// duration, so a facade method that owned one would own a claim on hardware across a
+    /// call boundary — which is the second lifecycle home §2.10 forbids, and the reason the
+    /// module doc names recording beside calibration. The camera is still *selected* through
+    /// the facade; only the take itself is assembled here.
     ///
     /// `engine::record::run` and nothing else — the whole verb is one engine call, exactly as
     /// `photo` is, because a second assembly in a composition root is the defect T4 and T5
@@ -307,7 +289,7 @@ impl Executor for InProcess {
         requested: &CameraSelector,
         request: &RecordRequest,
     ) -> Result<RecordReport> {
-        let (_, mut camera) = self.open(requested)?;
+        let (_, mut camera) = self.facade.open(requested)?;
         engine::record::run(
             camera.as_mut(),
             request,
@@ -328,7 +310,7 @@ impl Executor for InProcess {
         goal: &str,
         criteria: &[String],
     ) -> Result<Session> {
-        let (info, mut camera) = self.open(requested)?;
+        let (info, mut camera) = self.facade.open(requested)?;
         let store = self.store()?;
         store.with_lock(|lock| {
             let spec = SessionSpec {
@@ -370,7 +352,7 @@ impl Executor for InProcess {
         order: bool,
     ) -> Result<Session> {
         let store = self.store()?;
-        let info = self.resolve(requested)?;
+        let info = self.facade.resolve(requested)?;
         store.with_lock(|lock| {
             let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             if order {
@@ -383,7 +365,7 @@ impl Executor for InProcess {
             } else {
                 // Drafting asks the *device* what it has and what it will not let this tool
                 // calibrate, so this is where the camera has to open.
-                let mut camera = self.backend.open(&info.id)?;
+                let mut camera = self.facade.open_id(&info.id)?;
                 lifecycle::draft(
                     &store,
                     lock,
@@ -408,7 +390,7 @@ impl Executor for InProcess {
         // The camera is opened before the lock deliberately: a camera nothing answers to is
         // the caller's own mistake and reporting it costs nobody the state directory. The
         // *document* is read inside, because that read is half of a read-modify-write.
-        let (info, mut camera) = self.open(requested)?;
+        let (info, mut camera) = self.facade.open(requested)?;
         let progress = Watched(watch);
         let clock = engine::settle::MonotonicClock::new();
         store.with_lock(|lock| {
@@ -434,7 +416,7 @@ impl Executor for InProcess {
         // that refused while a daemon held the lock would be a status verb nobody can use on
         // the machine the sessions are on.
         let store = self.store()?;
-        let info = self.resolve(requested)?;
+        let info = self.facade.resolve(requested)?;
         lifecycle::status(&store, &info.fingerprint, which)
     }
 
@@ -446,7 +428,7 @@ impl Executor for InProcess {
         selection: &Selection,
     ) -> Result<Session> {
         let store = self.store()?;
-        let info = self.resolve(requested)?;
+        let info = self.facade.resolve(requested)?;
         store.with_lock(|lock| {
             let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             // The `Selection` match is the engine's, beside the two transitions it chooses
@@ -465,7 +447,7 @@ impl Executor for InProcess {
         partial: bool,
     ) -> Result<WriteReport> {
         let store = self.store()?;
-        let (info, mut camera) = self.open(requested)?;
+        let (info, mut camera) = self.facade.open(requested)?;
         store.with_lock(|lock| {
             let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             lifecycle::apply(
@@ -485,7 +467,7 @@ impl Executor for InProcess {
         which: &SessionRef,
     ) -> Result<RestoreReport> {
         let store = self.store()?;
-        let (info, mut camera) = self.open(requested)?;
+        let (info, mut camera) = self.facade.open(requested)?;
         store.with_lock(|lock| {
             let mut session = lifecycle::session_to_update(&store, lock, &info.fingerprint, which)?;
             // `lifecycle::restore` rather than `recover` plus two decisions written here:
@@ -502,7 +484,7 @@ impl Executor for InProcess {
         // this machine, and a listing that enumerated cameras to answer it would refuse on
         // a host whose cameras have all been unplugged.
         let fingerprint = match requested {
-            Some(id) => Some(self.resolve(id)?.fingerprint),
+            Some(id) => Some(self.facade.resolve(id)?.fingerprint),
             None => None,
         };
         lifecycle::list(&store, fingerprint.as_ref())
@@ -514,30 +496,22 @@ impl Executor for InProcess {
         capturer: &str,
         discover_pairs: bool,
     ) -> Result<DeviceProfile> {
-        let (_, mut camera) = self.open(requested)?;
-        // The T3 split lives in the engine, so this verb, the hardware rung's comparison,
-        // and P4's `profile_capture` method all produce the same document.
-        let context = engine::profile::CaptureContext {
-            captured_at: schema::time::Stamp::now(),
-            // Both host facts read where they have one home: the kernel release moved
-            // beside the field it fills when `webcam-handler-daemon` acquired this verb,
-            // and the tool version is the schema crate's, so a profile captured over a
-            // socket and one captured on a command line carry the same provenance.
-            kernel: engine::profile::kernel_release(),
-            tool_version: schema::TOOL_VERSION.to_owned(),
-            capturer: capturer.to_owned(),
-            backend: self.backend.kind(),
-        };
         if !discover_pairs {
-            return engine::profile::capture(camera.as_mut(), &context);
+            // The T3 split and the provenance block are both the engine's, so this verb, the
+            // hardware rung's comparison and the daemon's `profile_capture` produce the same
+            // document — the three host facts included. The clock is still this root's,
+            // because the engine reads none (design §2.10).
+            return self.facade.profile(requested, capturer, Stamp::now());
         }
 
-        // The probe wrote to the camera, so what the restore achieved goes to standard
+        // The probe writes to the camera, so what the restore achieved goes to standard
         // error the way `controls --discover-pairs` sends it there — beside the document
         // rather than inside it. A profile is a reading of a device; whether the run that
         // took it put the device back is a fact about the run, and a caller who never hears
         // it has been handed a promise (docs/8 Part C).
-        let (profile, found) = engine::profile::capture_probed(camera.as_mut(), &context)?;
+        let (profile, found) = self
+            .facade
+            .profile_probed(requested, capturer, Stamp::now())?;
         eprintln!(
             "{}: probe measured {} pair(s), declined {}, left the camera alone: {}",
             // The selector's canonical spelling, which is what the caller typed — the

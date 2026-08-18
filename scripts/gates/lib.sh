@@ -320,16 +320,20 @@ gate_rust_files() {
 
 # --------------------------------------------------------------- product code vs test code
 #
-# **Six predicates** make claims about what a *file* says and must not count what its own tests
-# say, and the count is written down because a change here changes all six:
+# **Seven predicates** make claims about what a *file* says and must not count what its own
+# tests say, and the count is written down because a change here changes all seven:
 # `token-comparison-has-one-home.sh` (who may read the token's secret and who may render its
 # URL), `web-routes-are-gated.sh` (what may register a route), `privileged-helper.sh` (what may
 # hand this binary's capabilities to a caller-named program), `avi-reparse-is-independent.sh`
-# (what the reparser may import), `oracle-rung-accounting.sh` (what the oracle runner may say)
-# and `claims-come-back-with-their-values.sh` (what a claim may be built from). A test that
-# builds a router of its own, holds a secret to construct a near miss with, or writes the very
-# spelling a predicate refuses in order to prove the refusal, is not the defect any of them is
-# about — and a gate that refused those is a gate somebody turns off.
+# (what the reparser may import), `oracle-rung-accounting.sh` (what the oracle runner may say),
+# `claims-come-back-with-their-values.sh` (what a claim may be built from) and
+# `facade-is-the-composition.sh` (what the direct CLI's executor may name in the engine, and
+# which engine modules the facade composes on its behalf — it is the only caller that reads
+# *two* files through this classifier, because its population and its subject are different
+# files). A test that builds a router of its own, holds a secret to construct a near miss with,
+# drives the engine directly, or writes the very spelling a predicate refuses in order to prove
+# the refusal, is not the defect any of them is about — and a gate that refused those is a gate
+# somebody turns off.
 #
 # This header used to say "two predicates", and it said so through four of the six arriving.
 # That is not a typo worth a line of its own: a shared classifier whose header names a subset of
@@ -339,7 +343,7 @@ gate_rust_files() {
 # **The rule is one sentence, and it is the shape every module in this workspace writes: test
 # code is everything from a file's one `#[cfg(test)]` marker to the end of it.** A file this
 # cannot classify — two markers, or a marker that opens something other than a `mod` — is a
-# **failure and not a pass** in both callers, because a file whose boundary has no answer is a
+# **failure and not a pass** in every caller, because a file whose boundary has no answer is a
 # file where the confinement has none either; that is `unsafe-scope.sh`'s price for a count it
 # cannot read, charged for a boundary. The residual is the other end: product code placed
 # *after* a trailing test module would not be seen. Nothing in this workspace is written that
@@ -356,7 +360,7 @@ gate_rust_files() {
 # rather than a convention this file invented: `crates/<pkg>/tests/*.rs` is compiled only by
 # `cargo test`, so there is no product code in one and a `#[cfg(test)]` marker would be
 # redundant — which is why none of them carries one, and why the marker rule alone would read
-# every line of an integration suite as shipped code. All six callers want the same answer about
+# every line of an integration suite as shipped code. All seven callers want the same answer about
 # them (a suite that holds the token to build a near miss with, or builds a router of its own,
 # is not the defect any of those predicates is about), so the rule lives here beside the other
 # half of the classification rather than in one of them. The residual is the mirror image and is
@@ -368,11 +372,11 @@ gate_rust_files() {
 # `"$root/$module"` — so matching `$1` itself asks a question about *where somebody cloned this
 # repository*: a checkout under `~/tests/`, or a scratch copy a harness put beside a `tests`
 # directory, classifies **every** file in the tree as test code from line 1, `gate_product_lines`
-# answers zero bytes, and four of the six callers fail loudly while two go vacuously green
+# answers zero bytes, and five of the seven callers fail loudly while two go vacuously green
 # (`privileged-helper.sh`'s caller-named-program claim and `avi-reparse-is-independent.sh`'s
 # import claim both keep a non-zero count while reading nothing). That is a verdict that is a
 # function of the checkout path, which is notes **N52**, **N66** and **N68** for the fifth time,
-# introduced into the one classifier all six share. A root that cannot be resolved leaves the
+# introduced into the one classifier all seven share. A root that cannot be resolved leaves the
 # path as it is, which is the marker rule alone — the answer this helper gave before the
 # `tests/` rule existed, and never a silent reclassification of the whole tree.
 gate_test_region_start() {
@@ -404,7 +408,7 @@ gate_test_region_start() {
 # The product half of $1 — everything above the test region that starts at line $2 — with line
 # comments stripped.
 #
-# **Prose does not count**, in both callers and for the same reason: what defends each claim is
+# **Prose does not count**, in every caller and for the same reason: what defends each claim is
 # the argument written beside the code, those arguments name the very spellings the predicates
 # match on, and a gate that turned writing about a rule into a violation would push the
 # reasoning out of the modules that need it. Block comments and string literals are not

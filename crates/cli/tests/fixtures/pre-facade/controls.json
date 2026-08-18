@@ -1,0 +1,552 @@
+{
+  "camera": "cam:integrated-camera-integrated-c",
+  "controls": [
+    {
+      "id": 9961473,
+      "name": "User Controls",
+      "slug": "user_controls",
+      "type": {
+        "kind": "control_class"
+      },
+      "range": {
+        "min": 0,
+        "max": 0,
+        "step": 0
+      },
+      "default": 0,
+      "flags": {
+        "raw": 68,
+        "known": [
+          "read_only",
+          "write_only"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 0,
+      "elem_size": 0
+    },
+    {
+      "id": 9963776,
+      "name": "Brightness",
+      "slug": "brightness",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 0,
+        "max": 255,
+        "step": 1
+      },
+      "default": 128,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "id": 9963777,
+      "name": "Contrast",
+      "slug": "contrast",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      "default": 32,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "id": 9963778,
+      "name": "Saturation",
+      "slug": "saturation",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      "default": 64,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "id": 9963779,
+      "name": "Hue",
+      "slug": "hue",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": -180,
+        "max": 180,
+        "step": 1
+      },
+      "default": 0,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "id": 9963788,
+      "name": "White Balance, Automatic",
+      "slug": "white_balance_automatic",
+      "type": {
+        "kind": "boolean"
+      },
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 1
+      },
+      "default": 1,
+      "flags": {
+        "raw": 0,
+        "known": [],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "id": 9963792,
+      "name": "Gamma",
+      "slug": "gamma",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 90,
+        "max": 150,
+        "step": 1
+      },
+      "default": 120,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 120
+      }
+    },
+    {
+      "id": 9963800,
+      "name": "Power Line Frequency",
+      "slug": "power_line_frequency",
+      "type": {
+        "kind": "menu"
+      },
+      "range": {
+        "min": 0,
+        "max": 2,
+        "step": 1
+      },
+      "default": 1,
+      "flags": {
+        "raw": 0,
+        "known": [],
+        "unknown_bits": 0
+      },
+      "menu": {
+        "0": {
+          "kind": "name",
+          "name": "Disabled"
+        },
+        "1": {
+          "kind": "name",
+          "name": "50 Hz"
+        },
+        "2": {
+          "kind": "name",
+          "name": "60 Hz"
+        }
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "id": 9963802,
+      "name": "White Balance Temperature",
+      "slug": "white_balance_temperature",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 2800,
+        "max": 6500,
+        "step": 10
+      },
+      "default": 4600,
+      "flags": {
+        "raw": 4112,
+        "known": [
+          "inactive",
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 4600
+      }
+    },
+    {
+      "id": 9963803,
+      "name": "Sharpness",
+      "slug": "sharpness",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 0,
+        "max": 7,
+        "step": 1
+      },
+      "default": 3,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "id": 9963804,
+      "name": "Backlight Compensation",
+      "slug": "backlight_compensation",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 0,
+        "max": 2,
+        "step": 1
+      },
+      "default": 1,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "id": 9968353,
+      "name": "Region of Interest Rectangle",
+      "slug": "region_of_interest_rectangle",
+      "type": {
+        "kind": "rect"
+      },
+      "range": {
+        "min": 0,
+        "max": 0,
+        "step": 0
+      },
+      "default": 0,
+      "flags": {
+        "raw": 4352,
+        "known": [
+          "has_payload",
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 16,
+      "current": {
+        "kind": "bytes",
+        "value": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 9968354,
+      "name": "Region of Interest Auto Ctrls",
+      "slug": "region_of_interest_auto_ctrls",
+      "type": {
+        "kind": "bitmask"
+      },
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 0
+      },
+      "default": 1,
+      "flags": {
+        "raw": 4096,
+        "known": [
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "id": 10092545,
+      "name": "Camera Controls",
+      "slug": "camera_controls",
+      "type": {
+        "kind": "control_class"
+      },
+      "range": {
+        "min": 0,
+        "max": 0,
+        "step": 0
+      },
+      "default": 0,
+      "flags": {
+        "raw": 68,
+        "known": [
+          "read_only",
+          "write_only"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 0,
+      "elem_size": 0
+    },
+    {
+      "id": 10094849,
+      "name": "Auto Exposure",
+      "slug": "auto_exposure",
+      "type": {
+        "kind": "menu"
+      },
+      "range": {
+        "min": 0,
+        "max": 3,
+        "step": 1
+      },
+      "default": 3,
+      "flags": {
+        "raw": 0,
+        "known": [],
+        "unknown_bits": 0
+      },
+      "menu": {
+        "1": {
+          "kind": "name",
+          "name": "Manual Mode"
+        },
+        "3": {
+          "kind": "name",
+          "name": "Aperture Priority Mode"
+        }
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "id": 10094850,
+      "name": "Exposure Time, Absolute",
+      "slug": "exposure_time_absolute",
+      "type": {
+        "kind": "integer"
+      },
+      "range": {
+        "min": 2,
+        "max": 1250,
+        "step": 1
+      },
+      "default": 156,
+      "flags": {
+        "raw": 4112,
+        "known": [
+          "inactive",
+          "has_which_min_max"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 156
+      }
+    },
+    {
+      "id": 10094851,
+      "name": "Exposure, Dynamic Framerate",
+      "slug": "exposure_dynamic_framerate",
+      "type": {
+        "kind": "boolean"
+      },
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 1
+      },
+      "default": 0,
+      "flags": {
+        "raw": 0,
+        "known": [],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "id": 10094864,
+      "name": "Privacy",
+      "slug": "privacy",
+      "type": {
+        "kind": "boolean"
+      },
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 1
+      },
+      "default": 0,
+      "flags": {
+        "raw": 4,
+        "known": [
+          "read_only"
+        ],
+        "unknown_bits": 0
+      },
+      "elems": 1,
+      "elem_size": 4,
+      "current": {
+        "kind": "int",
+        "value": 0
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "manual": "exposure_time_absolute",
+      "automation": "auto_exposure",
+      "off": {
+        "kind": "menu_item_named",
+        "patterns": [
+          "manual"
+        ]
+      },
+      "provenance": "declared"
+    },
+    {
+      "manual": "exposure_time_absolute",
+      "automation": "exposure_dynamic_framerate",
+      "off": {
+        "kind": "value",
+        "value": 0
+      },
+      "provenance": "declared"
+    },
+    {
+      "manual": "white_balance_temperature",
+      "automation": "white_balance_automatic",
+      "off": {
+        "kind": "value",
+        "value": 0
+      },
+      "provenance": "declared"
+    }
+  ]
+}

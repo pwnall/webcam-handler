@@ -50,7 +50,7 @@
 //! **Where a photograph goes.** [`crate::photo::Destination`] is a seam with two real
 //! implementations and a scriptable double, and which one is right is a fact about the
 //! caller's process rather than about the camera: `webcam-handler-cli` blocks on a path a
-//! person typed, and the daemon must not block an actor thread on `open(2)` [N51].
+//! person typed, and the daemon must not block an actor thread on `open(2)` (note **N51**).
 
 use std::fmt;
 
@@ -263,7 +263,7 @@ impl Facade {
     /// it is a parameter rather than a choice made here. The monotonic clock the settle
     /// deadline runs on is this module's.
     ///
-    /// The take's [`crate::photo::Gap`] — what this photo did to a preview, when there was one
+    /// The take's [`crate::preview::Gap`] — what this photo did to a preview, when there was one
     /// to interrupt — is deliberately dropped here. A facade caller has no preview to
     /// interrupt: this composition opens a camera per call and closes it, so nothing in the
     /// caller's process is streaming the device. The daemon is the composition that keeps the

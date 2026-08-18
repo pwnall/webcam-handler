@@ -1,0 +1,197 @@
+{
+  "taken_at": "2026-08-18T22:58:42.252052333Z",
+  "camera": {
+    "bus_path": "3-4:1.0",
+    "usb_id": {
+      "vendor": 1266,
+      "product": 47164
+    },
+    "card": "Integrated Camera: Integrated C",
+    "driver": "uvcvideo",
+    "serial": "0001"
+  },
+  "entries": [
+    {
+      "control": "brightness",
+      "id": 9963776,
+      "value": {
+        "kind": "int",
+        "value": 128
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "contrast",
+      "id": 9963777,
+      "value": {
+        "kind": "int",
+        "value": 32
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "saturation",
+      "id": 9963778,
+      "value": {
+        "kind": "int",
+        "value": 64
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "hue",
+      "id": 9963779,
+      "value": {
+        "kind": "int",
+        "value": 0
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "white_balance_automatic",
+      "id": 9963788,
+      "value": {
+        "kind": "int",
+        "value": 1
+      },
+      "role": "automation",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "gamma",
+      "id": 9963792,
+      "value": {
+        "kind": "int",
+        "value": 120
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "power_line_frequency",
+      "id": 9963800,
+      "value": {
+        "kind": "int",
+        "value": 1
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "white_balance_temperature",
+      "id": 9963802,
+      "value": {
+        "kind": "int",
+        "value": 4600
+      },
+      "role": "manual",
+      "was_inactive": true,
+      "was_volatile": false
+    },
+    {
+      "control": "sharpness",
+      "id": 9963803,
+      "value": {
+        "kind": "int",
+        "value": 3
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "backlight_compensation",
+      "id": 9963804,
+      "value": {
+        "kind": "int",
+        "value": 1
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "region_of_interest_rectangle",
+      "id": 9968353,
+      "value": {
+        "kind": "bytes",
+        "value": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "region_of_interest_auto_ctrls",
+      "id": 9968354,
+      "value": {
+        "kind": "int",
+        "value": 0
+      },
+      "role": "manual",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "auto_exposure",
+      "id": 10094849,
+      "value": {
+        "kind": "int",
+        "value": 3
+      },
+      "role": "automation",
+      "was_inactive": false,
+      "was_volatile": false
+    },
+    {
+      "control": "exposure_time_absolute",
+      "id": 10094850,
+      "value": {
+        "kind": "int",
+        "value": 156
+      },
+      "role": "manual",
+      "was_inactive": true,
+      "was_volatile": false
+    },
+    {
+      "control": "exposure_dynamic_framerate",
+      "id": 10094851,
+      "value": {
+        "kind": "int",
+        "value": 1
+      },
+      "role": "automation",
+      "was_inactive": false,
+      "was_volatile": false
+    }
+  ]
+}

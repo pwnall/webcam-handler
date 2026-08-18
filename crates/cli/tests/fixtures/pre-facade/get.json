@@ -1,0 +1,27 @@
+{
+  "id": 9963776,
+  "name": "Brightness",
+  "slug": "brightness",
+  "type": {
+    "kind": "integer"
+  },
+  "range": {
+    "min": 0,
+    "max": 255,
+    "step": 1
+  },
+  "default": 128,
+  "flags": {
+    "raw": 4096,
+    "known": [
+      "has_which_min_max"
+    ],
+    "unknown_bits": 0
+  },
+  "elems": 1,
+  "elem_size": 4,
+  "current": {
+    "kind": "int",
+    "value": 128
+  }
+}

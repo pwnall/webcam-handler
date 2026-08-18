@@ -1,0 +1,300 @@
+{
+  "info": {
+    "id": "cam:integrated-camera-integrated-c",
+    "fingerprint": {
+      "bus_path": "3-4:1.0",
+      "usb_id": {
+        "vendor": 1266,
+        "product": 47164
+      },
+      "card": "Integrated Camera: Integrated C",
+      "driver": "uvcvideo",
+      "serial": "0001"
+    },
+    "card": "Integrated Camera: Integrated C",
+    "driver": "uvcvideo",
+    "bus_info": "usb-0000:00:14.0-4",
+    "nodes": [
+      {
+        "path": "/dev/video0",
+        "kind": {
+          "kind": "video_capture"
+        },
+        "device_caps": 69206017,
+        "capabilities": 2225078273
+      },
+      {
+        "path": "/dev/video1",
+        "kind": {
+          "kind": "meta_capture"
+        },
+        "device_caps": 77594624,
+        "capabilities": 2225078273
+      }
+    ],
+    "backend": "fake"
+  },
+  "formats": [
+    {
+      "pixel_format": "MJPG",
+      "description": "Motion-JPEG",
+      "flags": 1,
+      "sizes": [
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 1280,
+            "height": 720
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 320,
+            "height": 180
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 320,
+            "height": 240
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 640,
+            "height": 360
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 640,
+            "height": 480
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 960,
+            "height": 540
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 1920,
+            "height": 1080
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 2560,
+            "height": 1440
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 2592,
+            "height": 1944
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "pixel_format": "YUYV",
+      "description": "YUYV 4:2:2",
+      "flags": 0,
+      "sizes": [
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 640,
+            "height": 480
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 320,
+            "height": 180
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 320,
+            "height": 240
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        },
+        {
+          "size": {
+            "kind": "discrete",
+            "width": 640,
+            "height": 360
+          },
+          "intervals": [
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 30
+            },
+            {
+              "kind": "discrete",
+              "numerator": 1,
+              "denominator": 15
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
