@@ -63,7 +63,7 @@ trusted), the panic/indexing set present at every shipped root and **walked by
 crate that reads kernel-shaped integers, `disallowed-methods` carrying the PF:1 ban and
 the workspace-wide sleep ban (N3).
 
-### The predicate register — one claim per predicate, 37 predicates
+### The predicate register — one claim per predicate, 39 predicates
 
 The count is the check: `run-all.sh` prints the same number every run, and `selftest.sh`
 fails on a predicate with no case file. Full rationale: each script's header.
@@ -82,6 +82,7 @@ fails on a predicate with no case file. Full rationale: each script's header.
 | `dependency-registry-sync.sh` | design §2.8's registry and `[workspace.dependencies]` are one fact, reconciled name by name and pin by pin, both directions; a mark in the pin cell excuses a row from the manifest direction only, and every mark honoured is counted and named |
 | `dependency-walls.sh` | the T6 linkage walls hold, from `cargo metadata` |
 | `doc-comments-open-with-a-summary.sh` | no `///` block opens with a heading (the splice shape) |
+| `facade-is-the-composition.sh` | the direct CLI's executor reaches the engine only through `engine::facade`, over a population derived from the facade's own exports; the two policy lists — the lifecycles D18 excludes and the two root-only reaches — are checked both ways |
 | `feature-posture.sh` | the three feature doors stay shut (`v4l` defaults, `image` defaults, TLS), from the resolved graph |
 | `ignored-suites-have-recipes.sh` | every `#[ignore]`d suite is owned by a recipe and serialized where it must be |
 | `json-validates.sh` | every verb's `--json` — answers and refusals — validates against the committed bundle; no answer wears the failure marker |
@@ -93,6 +94,7 @@ fails on a predicate with no case file. Full rationale: each script's header.
 | `no-external-fetch-in-web.sh` | the web client loads nothing off-origin |
 | `no-frame-bytes-in-repo.sh` | no camera frames in the repository; fixtures carry provenance and bounded extents, containers walked |
 | `oracle-rung-accounting.sh` | the oracle rung's four verdicts stay apart; declines reprint their reasons; line shapes derived from the product |
+| `profile-partition-is-closed.sh` | the four partitions D15 closes **by destructuring** are still destructured — the mechanism the compiler enforces, which a pattern "simplified" into field access silently reopens while compiling perfectly; field names derived from each struct's own declaration |
 | `privileged-helper.sh` | the blessed helper stays contained: exact caps, mode, no stray capability-carrying file, no verb that runs a caller-named program |
 | `schema-artifacts-current.sh` | committed generated artifacts are what the types emit |
 | `scratch-has-one-home.sh` | temporary data has one home under `target/`; the tree-copier cannot copy itself |
@@ -155,8 +157,8 @@ authoritative; this table is the commissioning record).
 | ~~**Selector criteria**~~ (landed) | P7b | the parser over the closed vocabulary, both directions per spelling; corpus ambiguity (the shared-`usb_id` pair); id stability under any selector; `NodePath` re-resolving across a scripted renumbering [PF:22] | a spelling that parses to the wrong selector; a filter smuggled into enumeration; an address treated as identity |
 | ~~**Derived populations absorb the new verbs**~~ (landed) | P7b–P8b | the arm that *proves the construction* per the schema-artifacts precedent: `json-validates.sh`, `cli-parity.sh` and `agent-guide-current.sh` each demonstrated red on a seeded v3-verb defect, since their populations are scraped from `--help` and the contracts table rather than named | "covered by construction" asserted instead of demonstrated — the sentence this suite exists to distrust |
 | ~~**`document` bucket in `cli-parity.sh`**~~ (landed) | P7c | the fifth bucket with its one-implementation argument in the header; a document verb relabelled out of it fails | a document verb quietly acquiring an executor dependency (a socket, a store) while exempted from comparison |
-| ~~**Projection closure**~~ (landed) | P7c | the compile-fail fixture: a field added to `ProfileInvariant` unsided; the corpus mutual-negative walk | a new invariant field silently joining neither side of the identity/device partition |
-| **`facade-is-the-composition.sh`** | P7d | the CLI executor's only engine reach is the facade, population derived from the facade's exports; plus the one-time byte-equivalence criterion at introduction | the facade and the CLI drifting into siblings — the FR's own upgrade-risk, inverted onto us |
+| ~~**Projection closure**~~ (landed, as a predicate rather than a fixture) | P7c | **delta**: this row asked for a compile-fail fixture, and what landed is `profile-partition-is-closed.sh` — because the compiler *already* refuses a field nobody sided, and a `trybuild` harness would therefore be a test that the compiler works. What can go wrong without anyone noticing is the *mechanism*: a destructuring "simplified" into field access compiles perfectly and silently reopens the partition, which is what the predicate reads for, over field names derived from each struct's own declaration. The corpus mutual-negative walk landed as asked | a new invariant field silently joining neither side of the identity/device partition, **and** a pattern quietly stopping being one |
+| ~~**`facade-is-the-composition.sh`**~~ (landed) | P7d | the CLI executor's only engine reach is the facade, population derived from the facade's exports; plus the one-time byte-equivalence criterion at introduction | the facade and the CLI drifting into siblings — the FR's own upgrade-risk, inverted onto us |
 | ~~**Stats criteria + `FrameGap` fault**~~ (landed) | P8a | the accumulator's both-direction arms; the fault's exhaustive-menu membership; the one-home reconciliation with `declared_interval`; truncation stated on the answer | gap accounting with no driven inverse; a second interval home; silent truncation |
 | ~~**D17 adoption measurement**~~ (landed) | P8b | the resolved-graph check recorded in the landing note; `feature-posture.sh` is the standing backstop that makes the trap impossible to re-open silently | `image-compare` re-enabling `image`'s defaults through feature unification — the avif→rav1e drag |
 | ~~**`hw_gone_*` decline accounting**~~ (landed) | P8c | the recipes decline by name on hosts that cannot arrange mid-stream loss, counted through the existing census machinery | D19's recipes rotting into silence before the partner rig ever runs them |
