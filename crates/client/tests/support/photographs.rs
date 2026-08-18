@@ -18,7 +18,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
 /// Write one photograph under `dir`, and answer where it went.
-pub fn write_photograph(dir: &Utf8Path, name: &str, image: image::GrayImage) -> Utf8PathBuf {
+pub(crate) fn write_photograph(dir: &Utf8Path, name: &str, image: image::GrayImage) -> Utf8PathBuf {
     let path = dir.join(name);
     let bytes = imaging::encode::png(&imaging::Decoded::Gray(image)).expect("a fixture encodes");
     std::fs::write(&path, bytes).expect("writes the fixture");
@@ -30,7 +30,7 @@ pub fn write_photograph(dir: &Utf8Path, name: &str, image: image::GrayImage) -> 
 /// Named rather than inlined so the arm that uses it reads as the claim it is making: what is
 /// under test is the refusal for *content*, and bytes spelled out in the middle of the
 /// assertions would look like part of the comparison.
-pub fn write_not_a_photograph(dir: &Utf8Path, name: &str) -> Utf8PathBuf {
+pub(crate) fn write_not_a_photograph(dir: &Utf8Path, name: &str) -> Utf8PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, b"GIF89a and then some").expect("writes the fixture");
     path

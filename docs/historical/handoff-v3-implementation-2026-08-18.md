@@ -40,13 +40,31 @@ browser rung is 28 claims / 259 assertions.
    five recurrences one gate later; docs/14's record section is still empty and says its first
    entry will be G7's. The shape to copy is docs/historical/8-…-v2.md's own record
    ("**G1 (P1, four confirmed defects).** Predicted by the rubric: …").
-3. **An adversarial review was launched and its verdict was not collected.** Five read-only
-   lenses (schema/wire, engine/imaging, daemon/web, tests-and-gates, false-prose) returned; the
-   verifier was still running when this session ended. The workflow script is at
-   `~/.claude/projects/-home-pwnall-workspace-webcam-handler/9245be84-6ece-4c2c-ac45-b0f4e7d5df31/workflows/scripts/v3-adversarial-review-wf_8d8d970a-90c.js`
-   and the lens reports are in that run's `journal.jsonl`. **Re-run it rather than trusting a
-   stale verdict** — the tree moved twice after the lenses read it (the facade rebuild and
-   `photo diff`). It already earned its keep once: see "the mutation" below.
+3. **The adversarial review returned, and most of it is unrepaired.** Five read-only lenses and
+   an independent verifier: **15 confirmed, 8 narrowed, 1 refuted**, every confirmation
+   reproduced rather than argued. Three were repaired before this session ended (below); the
+   rest are the next session's first job and are listed in full further down. The run is
+   `wf_8d8d970a-90c`; its script and `journal.jsonl` are under
+   `~/.claude/projects/-home-pwnall-workspace-webcam-handler/9245be84-6ece-4c2c-ac45-b0f4e7d5df31/`.
+   Note that the lenses read a tree two commits older than `ca24f14` — the facade rebuild and
+   `photo diff` landed after they started — so re-verify each finding against `HEAD` before
+   repairing it, and re-run the workflow afterwards.
+
+   **Repaired in `ca24f14`'s successor commit**, because two were regressions this session
+   introduced and one was a test that could not fail:
+   - `preview.js` — the failure-path probe `fetch` held a **second MJPEG stream open for the
+     life of the tab** whenever it succeeded, spending one of four viewer slots with nothing on
+     screen. It now cancels the body on a 200. Measured by the reviewer in this rung's own
+     Chromium.
+   - `calibrate-flow.js` — the flow **wedged permanently on a motorized control**: the page
+     sends no `allow_motion` (§5 says it must not), the sweep is refused, no samples are
+     written, and `nextControl()` returned the same slug forever. On the OBSBOT profile that is
+     the thirteenth control in the queue. The page now remembers what it was refused and offers
+     the next one, saying so.
+   - `faults.rs` — `Fault::FrameGap`'s distinguishing claim (a lost run, not a stall) was
+     asserted as `one_interval > 0`, which is true of a stall too; deleting the fake's clock
+     advance left the workspace green. Now asserted against the interval the stream really has,
+     and proven red on that exact deletion.
 4. **`just ci` end to end, and the mutation floor** (`just mutants`) — both deferred at the
    owner's instruction and neither run this session. The floor is hours; N251's price sheet
    applies.
@@ -95,3 +113,41 @@ their generated artifacts are one JSON bundle and one guide between them, so any
 splitting them is red on `schema-artifacts-current.sh` at every commit but the last. The sizing
 lesson (N54, "size by story") still stands; this is its cost, paid once and recorded rather than
 smoothed over. If you split further work, split it where the *artifacts* split.
+
+## The review's confirmed findings, unrepaired
+
+Verbatim enough to act on; the reproduction for each is in the run's `journal.jsonl`.
+
+1. **`compare::read` measures one picture two ways** (`imaging/src/compare.rs:140`) — JPEG and
+   PNG go to luma through `image`'s Rec.709 `to_luma8`, the hand-written Netpbm path uses the
+   BT.601 coefficients the rest of the crate uses. Same scene, two formats, different metrics.
+2. **`compare::read` ignores EXIF Orientation** (`:141`) — which this build's own verbatim JPEG
+   path *writes*: `photo --format jpeg --transform rot90` tags the file and keeps 2592×1944,
+   the PNG of the same transform is 1944×2592, and `photo diff` refuses them a similarity score
+   for differing dimensions. D17 says nothing about orientation, so this is a gap, not a ruling.
+3. **The facade gate is one brace wide** (`facade-is-the-composition.sh:332`) — its walk matches
+   `engine::[a-z_]+`, so `use engine::{pairing, write};` re-opens the bypass and the gate passes
+   byte-identically. Reproduced both ways.
+4. **`calibrate-flow.js`'s `refresh()` has no fence** (`:291`) — the N154/N156 defect closed in
+   every sibling module: a late `calibrate_status` answer paints under whatever the operator is
+   looking at now. `app.js:427` and `calibration.js:76` are the house pattern, two files away.
+5. **The narrow-viewport browser claim asserts neither stacking nor scrolling**
+   (`client.spec.mjs:1832`) — it checks the preview's box is on screen, which it is in both
+   layouts.
+6. **N262's stated measurement conditions contradict the harness** (`implementation-notes.md`) —
+   the before/after numbers were taken at 1440×900 by hand and the rung pins 1280×720; the note
+   reads as if they were the same run.
+7. **Stale counts in three places** (`phase-criteria.tsv:244` and two others) — the g9 row still
+   names the browser rung's pre-P9c figures.
+8. **D16's and D17's pure cores are in neither `examine_globs` nor the "owed" paragraph** of
+   `.cargo/mutants.toml` — which that file's own law calls an oversight wearing one.
+9. **`/session-photo` has no proof its only consumer can reach it** (`credential.js:122`) — the
+   page's five URL literals are reconciled with nothing on the daemon side.
+
+Narrowed but worth reading: `wall_clock_skew_us` has no assertion anywhere; `RecordReport.stats`
+is defaulted so its absence is indistinguishable from a zeroed take; the D14 vocabulary is
+hand-written in two places besides `SelectorScheme::ALL`; `ProfileComparison`'s two fail-closed
+verdicts are Rust-only and a `--json` consumer must rebuild the conjunction the code documents as
+unsafe; the corpus format-tree arm's second half sits inside an `if let` whose false branch cannot
+go red; and the sweep-time pane D20 describes does not exist yet (scheduled work the plan allows
+to split, but the module header describes it as if it were there).

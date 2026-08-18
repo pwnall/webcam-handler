@@ -377,17 +377,29 @@ fn frame_gap() {
         "a gap of {} lost frames advances the sequence by that many plus this frame",
         fake::FRAME_GAP_FRAMES
     );
-    // ...and the clock moves on by the same frames, which is what tells a lost run from a
-    // stall: a stall stretches one interval and skips no sequence number at all.
-    let one_interval =
-        (after.timestamp_us - before.timestamp_us) / i64::from(fake::FRAME_GAP_FRAMES + 1);
+    // ...and the clock moves on by *that many intervals*, which is what tells a lost run from
+    // a stall: a stall stretches one interval and skips no sequence number, and a lost run
+    // does both together. Asserted against the interval this stream really has — measured
+    // from two frames the fault did not touch — rather than as `> 0`, which is true of a
+    // stall as well and which an adversarial reader measured as unfalsifiable: deleting the
+    // fake's clock advance left the whole workspace green.
+    let gap_span = after.timestamp_us - before.timestamp_us;
+    let next = camera.next_frame(soon()).expect("a frame after the gap");
+    let one_interval = next.timestamp_us - after.timestamp_us;
     assert!(
         one_interval > 0,
-        "the timestamps did not advance across the gap"
+        "this stream has no interval to compare a gap against"
+    );
+    assert_eq!(
+        gap_span,
+        one_interval * i64::from(fake::FRAME_GAP_FRAMES + 1),
+        "the clock advanced {gap_span} µs across a gap of {} lost frame(s) and one interval \
+         is {one_interval} µs — a lost run advances the clock by the frames it lost, and a \
+         stall would advance it by one",
+        fake::FRAME_GAP_FRAMES
     );
 
-    // One shot: the next frame follows the one before it.
-    let next = camera.next_frame(soon()).expect("a frame after the gap");
+    // One shot: the frame after the gap follows the one before it.
     assert_eq!(next.sequence - after.sequence, 1);
 }
 

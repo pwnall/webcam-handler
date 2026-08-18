@@ -80,7 +80,22 @@ export function watch(img, status, camera, token) {
     // Only on the failure path, only once, and it replaces nothing if it cannot answer: a
     // page that had *two* stories about one failure would be worse than one that guessed.
     fetch(previewUrl(camera, token), { method: "GET" })
-      .then((response) => (response.ok ? null : response.text()))
+      .then((response) => {
+        if (response.ok) {
+          // **Cancelled, not dropped**, and this line is the whole of why the probe is safe.
+          // A 200 here is a `multipart/x-mixed-replace` stream that never ends: the daemon
+          // attached a viewer and spent one of `PREVIEW_MAX_VIEWERS_PER_CAMERA` before
+          // answering, and a `fetch` whose body nobody reads holds that slot for the life of
+          // the tab — measured, in this rung's own Chromium, as a request that is still open
+          // three seconds later and after the reference is dropped. So the retry that
+          // *succeeds* is the dangerous one, and the case it succeeds in is the transient
+          // `Busy` note **N83** calls normal. Nothing is on screen either way: this request
+          // exists to read a refusal, and there is no refusal to read.
+          void response.body?.cancel();
+          return null;
+        }
+        return response.text();
+      })
       .then((sentence) => {
         if (typeof sentence === "string" && sentence.trim() !== "") {
           status.textContent = `${camera}: ${sentence.trim()}`;

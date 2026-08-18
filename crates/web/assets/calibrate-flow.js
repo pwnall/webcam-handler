@@ -54,6 +54,16 @@ const flow = {
   reviewing: null,
   status: null,
   sweeping: false,
+  /// Controls this page asked for and was refused, so the queue can be got past.
+  ///
+  /// **Not a second state machine and not a skip**: the session document still has these
+  /// controls queued and untouched, and `calibrate status` on any other surface says so. What
+  /// this remembers is only that *this page* has already been told no — which is what stops
+  /// "Sweep next" handing the operator the same refusal forever. A motorized control is the
+  /// case that forced it: §5 says a plan that would move motors says so first, the page sends
+  /// no `allow_motion` and therefore must not, and without this the owner's own PTZ camera
+  /// wedges the flow at the thirteenth control in the queue.
+  refused: new Set(),
 };
 
 /**
@@ -78,6 +88,7 @@ export function watching(camera, nodes) {
   flow.session = null;
   flow.reviewing = null;
   flow.status = null;
+  flow.refused.clear();
   fill(nodes.grid, []);
   paint(nodes);
 }
@@ -163,7 +174,13 @@ async function sweep(rpc, nodes, preview) {
   requireSession();
   const control = nextControl();
   if (control === null) {
-    throw new Error("every planned control has been swept — apply, or plan again");
+    throw new Error(
+      flow.refused.size === 0
+        ? "every planned control has been swept — apply, or plan again"
+        : `every control this page can sweep has been swept; ${[...flow.refused].join(", ")} ` +
+          "was refused and is still queued — the command-line surface can sweep it, and a " +
+          "motorized one needs --allow-motion",
+    );
   }
 
   // How many photographs this click is worth, converted to the stride the planner takes.
@@ -188,6 +205,13 @@ async function sweep(rpc, nodes, preview) {
       session: flow.session,
       request: { control, plan: { kind: "uniform", step } },
     });
+  } catch (refusal) {
+    // Remembered, so the next click offers the *next* control rather than this one again.
+    // The refusal itself is not swallowed: it goes up to `run`, which prints the daemon's own
+    // words — a motorized control's `illegal_transition` says `motion(allow_motion=false)`,
+    // which is the sentence that tells an operator to use the command line for it.
+    flow.refused.add(control);
+    throw refusal;
   } finally {
     flow.sweeping = false;
     // The preview comes back whatever happened, including a refusal: a page that left the
@@ -395,6 +419,9 @@ function nextControl() {
   const controls = flow.status?.session?.controls ?? {};
   const queue = flow.status?.session?.queue ?? [];
   for (const slug of queue) {
+    if (flow.refused.has(slug)) {
+      continue;
+    }
     const record = controls[slug];
     if (!record || !Array.isArray(record.samples) || record.samples.length === 0) {
       return slug;
