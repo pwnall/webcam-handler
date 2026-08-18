@@ -2143,6 +2143,45 @@ mod tests {
             ),
         );
         assert!(refusal(&refused).contains(CAP_TOO_SMALL));
+
+        // And the floor itself is admitted, so that refusal is a bound rather than a blanket.
+        // The AVI writer asserts the same pair in one test
+        // (`a_cap_below_the_empty_file_is_refused_at_begin`); this half was missing here, and
+        // the mutation floor turned the `<` into a `<=` with the workspace still green. The
+        // geometry is the smallest this writer has, because `MIN_RECORDING_BYTES` *is* that
+        // header's length — `the_smallest_header_this_writer_emits_is_the_documented_floor`
+        // pins the two together. A cap of exactly the floor has to buy exactly the file the
+        // refusal above promises, or the message tells a caller that 44 bytes is enough while
+        // refusing 44 bytes.
+        let mut file = Vec::new();
+        let writer = Y4mWriter::begin(
+            Cursor::new(&mut file),
+            Y4mParams {
+                width: 2,
+                height: 2,
+                pixel_format: PixelFormat::NV12,
+                caps: RecordingCaps {
+                    max_bytes: MIN_RECORDING_BYTES,
+                    ..generous_caps()
+                },
+                ..params(PixelFormat::NV12, generous_caps())
+            },
+        )
+        .expect("a cap of exactly the floor is a legal cap");
+        writer
+            .finish()
+            .expect("an empty recording fits its own floor");
+        assert_eq!(
+            u64::try_from(file.len()).expect("fits"),
+            MIN_RECORDING_BYTES,
+            "the floor bought a file that is not the floor"
+        );
+        assert!(
+            parse_y4m(&file)
+                .expect("an empty Y4M is a Y4M")
+                .frames
+                .is_empty()
+        );
     }
 
     #[test]

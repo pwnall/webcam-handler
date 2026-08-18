@@ -546,6 +546,38 @@ mod tests {
     }
 
     #[test]
+    fn a_kind_reaches_the_wire_under_the_name_the_registry_spells_and_not_its_rust_one() {
+        // [`wire_name`]'s whole claim, and until now nothing in the workspace held it. The
+        // walks in this module reach the **shadowing** helper of the same name a few lines
+        // up, and the one consumer outside — `client::remote::refusal`'s version-skew
+        // sentence (docs/11 **M21**) — asserts that its message contains
+        // `codes::wire_name(kind)` while *building* that message with
+        // `codes::wire_name(kind)`, so both halves move together and the spelling could be
+        // anything at all. The mutation floor found the hole: delete the `Value::String`
+        // arm, so every name becomes the `Debug` one, and the whole workspace stays green.
+        //
+        // The spelling is the payload here. `docs/agent-guide.md` tells an unattended agent
+        // to dispatch on it and a failure document carries it, and `FormatUnsupported` is
+        // not `format_unsupported` — an agent greps for the second and finds nothing. The
+        // committed table is the yardstick because it is a literal nobody derives: its own
+        // header says the names are each kind's serde spelling, so a function that stopped
+        // producing them has nothing left to agree with.
+        let pinned = pinned();
+        for &kind in ErrorKind::ALL {
+            let name = super::wire_name(kind);
+            assert!(
+                pinned.iter().any(|(row, _)| *row == name),
+                "{kind:?} names itself {name:?}, which fixtures/d13-rpc-codes.tsv does not pin"
+            );
+            assert_ne!(
+                name,
+                format!("{kind:?}"),
+                "{kind:?} crossed the wire under its Rust name"
+            );
+        }
+    }
+
+    #[test]
     fn the_codes_are_the_ones_that_were_committed() {
         let pinned = pinned();
         assert_eq!(

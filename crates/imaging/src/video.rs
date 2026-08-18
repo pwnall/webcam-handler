@@ -442,6 +442,61 @@ mod tests {
     }
 
     #[test]
+    fn a_recorders_debug_names_the_container_it_opened_and_what_it_wrote_and_no_frame() {
+        // Two claims, and the second is why the first is worth asserting at all. The impl is
+        // hand-written for the **bound** — `engine::record::Recording` derives `Debug` over a
+        // `Recorder<Tap>`, and a derived impl here would add a `W: Debug` bound and make that
+        // impossible — but what reaches a log is the **content**, and the content is the
+        // arm's own counters: which container is open and how much has gone into it. The
+        // mutation floor replaced this `fmt` with `Ok(Default::default())` — an empty
+        // rendering — and the whole workspace stayed green, because nothing had ever printed
+        // a `Recorder`.
+        //
+        // Rubric A12 is the other half: a frame may contain a person, so neither the sink nor
+        // a plane buffer may appear. An empty rendering satisfies *that* vacuously, which is
+        // precisely why the counters are asserted beside it. `AviWriter` has its own A12 test
+        // (`avi::write::tests::the_debug_rendering_never_contains_the_recording`); this is the
+        // only one the `Y4mWriter` arm has.
+        for &container in VideoFormat::ALL {
+            let format = representative(container);
+            let mut file = Vec::new();
+            let mut recorder = Recorder::begin(
+                container,
+                Cursor::new(&mut file),
+                params(container, generous_caps()),
+            )
+            .expect("begin");
+            assert_eq!(
+                recorder
+                    .write_frame(&frame(format, 0, 0))
+                    .expect("write_frame"),
+                FrameOutcome::Written
+            );
+
+            let rendered = format!("{recorder:?}");
+            let arm = match container {
+                VideoFormat::Avi => "Avi(AviWriter {",
+                VideoFormat::Y4m => "Y4m(Y4mWriter {",
+            };
+            assert!(
+                rendered.starts_with(arm),
+                "{container}: a log line about a recording has to say which container it is: \
+                 {rendered:?}"
+            );
+            assert!(
+                rendered.contains("frames_written: 1"),
+                "{container}: the arm's counters did not reach the rendering: {rendered:?}"
+            );
+            // Every sequence Rust prints is bracketed, so a sink or a plane buffer could not
+            // have reached this rendering without one.
+            assert!(
+                !rendered.contains('['),
+                "{container}: a sequence reached a `Debug` rendering: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_d6_source_format_is_carried_by_exactly_one_container() {
         // The totality claim `schema::video`'s module doc makes and cannot check: D6's set
         // lives in `imaging::decode` and the pairing lives in `webcam-handler-schema`, so this

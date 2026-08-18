@@ -24863,7 +24863,8 @@ docs/11 **§11 item 2**, which records that the G6 review did not run the floor.
 **Repo:** `scripts/mutants.sh`'s job sizing and its register check; `.cargo/mutants.toml`;
 `scripts/mutants-accepted.txt`; the load-sensitive suites named below.
 
-**Two runs, and the second is the finding.**
+**Three runs. The second is where the mechanism was found; the third is where its cost was
+measured.**
 
 The first ran with `TMPDIR` on the 16 GiB `tmpfs`, which sized it at **2 jobs**. After 13 hours it
 died of `Disk quota exceeded` — and, separately, **refused to give a verdict at all**, because the
@@ -24910,8 +24911,199 @@ rather than the two it takes at eight. **The register was not edited.** Deleting
 acceptances on a verdict this note disproves is exactly the mistake N15 records and N60 was written
 to stop.
 
+**A third run, at three jobs, and the comparison between the three is now the finding.** It ran
+2026-08-18 03:43–08:09 local, **4h26** against the 8-job run's 2h23, over the same tree:
+
+| jobs | wall | survivors reported | acceptances reported "no longer surviving" |
+|---|---|---|---|
+| 2 | died at 13h | 1 (note **N250**), then **verdict refused** — the tree had moved | 0 up to where it died |
+| 8 | 2h23 | **0** | 13 |
+| 3 | 4h26 | **9** | 8 |
+
+**The survivors column is what changes this note.** "963 caught, 0 missed" was not a clean bill; it
+was nine survivors marked caught by tests that failed for load. Four of the nine have no acceptance
+and are real — notes **N252**, **N253**, **N254**, **N255**. Two of them are in code this repair
+pass wrote (`wire_name`, M21's discriminant repair, 2026-08-17; `heal_log_tail`, M9's torn-log heal,
+2026-08-16) and two are in the Y4M container work of 2026-08-14. So the cost of running the floor
+at `nproc` was never thirteen false alarms to argue about; it was **four defects waved through,
+under a green verdict that made the waving invisible**. N60's warning about a gate that cries wolf
+has its third instance, and this is the expensive direction.
+
+**The 3-job run contradicts itself inside one expression, which settles it without comparing runs
+at all.** At `crates/imaging/src/metrics.rs:91:67` — the mean N26 proves is exactly zero — `/ → %`
+is in `missed.txt` and `/ → *` is in `caught.txt`. One operator, one expression, one run: one
+spelling of a provably-zero number survived and another died. No program distinguishes them, so
+whatever killed the second was not the mutation.
+
+**All eight reported acceptance failures were checked by N60's protocol before anything was
+deleted, and all eight survive.** Each applied by hand to the working tree on an idle machine,
+`cargo nextest run --workspace` **1529 of 1529 passing** every time — `codes.rs`'s `WireError::source`
+\[N37\], `store.rs`'s `WouldBlock` guard \[N27\], all four `sweep.rs` planner mutants \[N25\],
+`avi.rs`'s `interval_micros` \[N101\], and `metrics.rs`'s mean \[N26\], whose file has still not
+changed across the whole G6 repair pass. And the floor's per-mutant logs name the reason without
+being asked: **every failure in all eight, without exception, is the same one** —
+
+    -32021 settle_timeout: frames did not settle within 5164 ms (10 frames seen)
+
+in `daemon::calibrate_verbs`, `daemon::subscriptions`, `daemon::method_surface` and
+`daemon::web_rpc`, at deadlines of 5056–5429 ms and 8–11 frames. Not one failure is in the crate
+that owns the mutated code. **The register was not edited**, for the second time.
+
+**The register's second direction has now fired four times and has never once been right.** N60
+at P4e-i (two `metrics.rs` acceptances, killed by a loaded machine's settle deadline); N68 (three
+N25 acceptances, on a tree that moved mid-run — a *void* verdict, and the cause this script now
+detects itself); the 8-job run (thirteen); this one (eight). Four firings, four false. That is not
+an argument for removing it — N15 is why it exists — but it fixes what its output **is**: a prompt
+to apply the mutant by hand, never a finding. `mutants.sh` already prints that in as many words
+before the list, and it is right to.
+
+**The honest `WCH_MUTANTS_JOBS` on this machine is 1.** Three jobs on eight cores still misses those
+deadlines for eight of the thirteen acceptances, so three is not low enough; two jobs is the only
+other candidate and has never finished a run, so there is no evidence for it either way. One has no
+evidence against it, and costs somewhere between **13 and 19 hours** by the two finished runs' own
+arithmetic (4h26 × 3, 2h23 × 8) — inside AGENTS' "hours not minutes" for a G4 dev tool that is
+deliberately not a `just ci` step. Anything above 1 produces a "caught" column that has to be read
+as *not missed **and** not outlasted*, and both directions of that are now measured rather than
+argued.
+
 **Retires when:** the daemon and client integration suites take a clock the test owns, at which
 point the floor's verdict stops being a function of how many jobs it was given and the criterion
 can be run at `nproc`. Until then `WCH_MUTANTS_JOBS` is the knob and a low number is the honest
 setting — and a run at any parallelism that reports an acceptance failure should be checked by hand
 before a line is deleted, which is N60's clause and now has a second instance behind it.
+
+## N252 — The registry's own spelling was asserted against itself, and the walks beside it measure a different function
+
+**Doc:** `api::codes::wire_name`'s own doc comment — *"A `Debug` rendering would be the **Rust**
+name — `FormatUnsupported` — which matches nothing a caller greps for"*; docs/11 **M21** and note
+**N215**, the version-skew sentence this function was written for; AGENTS' *"the error vocabulary is
+read unsupervised"*. Found by the mutation floor run of 2026-08-18 at three jobs — the first run of
+this repair pass that could report a survivor at all (note **N251**).
+
+**Repo:** `crates/api/src/codes.rs`'s `wire_name` and the new
+`a_kind_reaches_the_wire_under_the_name_the_registry_spells_and_not_its_rust_one`;
+`crates/client/src/remote.rs`'s
+`a_refusal_this_build_cannot_read_says_the_daemon_answered_and_names_the_kind`.
+
+**The survivor.** `delete match arm Ok(serde_json::Value::String(name)) in wire_name`, which leaves
+the fallback as the only arm and makes every kind name itself `FormatUnsupported` rather than
+`format_unsupported`. Applied by hand on an idle machine: **1529 of 1529 pass**.
+
+**Why nothing saw it, in two halves, and both are worth keeping.** The walks in `codes.rs` that
+look like they cover it do not: `mod tests` defines **its own `wire_name`**, so `use super::*` is
+shadowed and every one of them measures the helper instead of the function. And the one consumer
+outside is `client::remote::refusal`, whose M21 test asserts
+
+    rendered.contains(&codes::wire_name(kind))
+
+about a message *built* with `codes::wire_name(kind)`. Both sides move together. That assertion can
+go red when the name disappears from the sentence and can never go red when the name is wrong,
+which is the whole of what this function decides. **An assertion that asks the function under test
+for its own expectation is red-able in one direction only** — L25's shape (an arm red for a reason
+other than the one its name gives) arriving as a tautology rather than as a weak fault.
+
+**What it costs.** The doc comment had already said it: this string is what `docs/agent-guide.md`
+tells an unattended agent to dispatch on, and what a failure document carries. An agent greps for
+`format_unsupported`; `FormatUnsupported` matches nothing, and the primary consumer has no hands to
+notice.
+
+**Changed.** A test in `codes.rs` walking `ErrorKind::ALL` against `fixtures/d13-rpc-codes.tsv` —
+the yardstick is a committed literal nobody derives, whose own header says the names are each
+kind's serde spelling — and asserting separately that no kind arrives under its `Debug` name. And
+`remote.rs`'s assertion now derives the spelling from `serde_json` rather than from the function it
+is checking, so the M21 test can see a spelling change too.
+
+## N253 — The heal repeated `load_log`'s guard and not the test that already existed for it
+
+**Doc:** note **N140** (the heal, and the scan window it first landed with); note **N15** (the
+directory-as-file fault, and why an acceptance nobody re-checks is how a mistake gets made twice);
+AGENTS rule 7 — availability is not capability. The test
+`a_log_that_exists_and_cannot_be_read_refuses_instead_of_reporting_no_history` was written at P3f
+for the **same mutant on the same guard**, one function along, and says so in its own comment.
+
+**Repo:** `crates/engine/src/store.rs` — `heal_log_tail`'s open arm, and the new
+`a_heal_that_could_not_open_the_log_refuses_rather_than_reporting_it_appendable`.
+
+**The survivor.** `replace match guard err.kind() == io::ErrorKind::NotFound with true in
+heal_log_tail`, which turns *every* failure to open `log.ndjson` into "there is no tail yet".
+Applied by hand on an idle machine: **1529 of 1529 pass**.
+
+**This is the same defect P3f already closed.** `load_log`'s
+`NotFound` guard had exactly this mutant, and closing it produced both the argument (a widened
+guard turns a permission problem, a vanished mount or a damaged file into *"this session has done
+nothing"*) and the fixture technique (`log.ndjson` is a **directory**, so the open is `EISDIR` for
+every user including root — no `chmod`, no privilege assumption). M9's heal added a second
+`NotFound` guard and brought neither. **When a repair copies a guard, the guard's test is part of
+the guard.**
+
+**What the widened guard costs, which is not bookkeeping.** `append_log` documents that *"a log
+this call could not make appendable is not one it may append to"*, and the heal is the whole of what
+keeps a torn tail survivable. An open that failed transiently — `EMFILE`, with the process out of
+descriptors, is the ordinary one — would be reported as healed, and the append behind it would put a
+terminator *after* the damage. That is the interior corruption `load_log` refuses for ever, and the
+state N140 wrote this function to make unreachable.
+
+**Asserted at the function, deliberately.** `append_log` cannot see the difference today: its own
+open meets the same `EISDIR` one line later and answers the same `StorageIo`. That makes the
+guard's correctness a local claim, which is precisely the condition its neighbour was in until
+somebody looked.
+
+## N254 — A hand-written `Debug` on a frame-holding type owes two claims, and only one had ever been asserted
+
+**Doc:** rubric **A12** / AGENTS — *a frame may contain a person*, so no frame reaches a log;
+`avi::write::tests::the_debug_rendering_never_contains_the_recording` and
+`avi::read::tests::a_debug_rendering_of_a_frame_never_contains_the_frame`, the two tests that
+already held that half; `engine::record::Recording`, which is `#[derive(Debug)]` over a
+`Recorder<Tap>`.
+
+**Repo:** `crates/imaging/src/video.rs` — `impl Debug for Recorder<W>` and the new
+`a_recorders_debug_names_the_container_it_opened_and_what_it_wrote_and_no_frame`.
+
+**The survivor.** `replace <impl std::fmt::Debug for Recorder<W>>::fmt with Ok(Default::default())`
+— a rendering of the empty string. **1529 of 1529 pass.**
+
+**The impl's own doc comment explains why, and it is true.** It says the impl is hand-written *"for
+the bound rather than for the content"*: a `#[derive(Debug)]` would add a `W: Debug` bound and make
+`Recorder<File>` unprintable, which is a narrower impl than either arm already has. That reason is
+correct and it is a **compile-time** fact — the mutant does not touch it, and `Recording` still
+compiles. So a suite that relies only on the bound cannot see the body at all.
+
+**And the privacy half is satisfied vacuously by the empty string**, which is the part worth
+stating: a test asserting only *"no frame bytes in the rendering"* would have survived this mutant
+too. The claim that separates the two programs is the **content** — which container is open, and
+what has gone into it — so the new test asserts the arm's name and the arm's own counters beside
+the A12 assertion, and says why.
+
+**What it costs.** `engine::record::Recording` derives `Debug` over this type, so this rendering is
+what a daemon log line about a recording in progress is made of; an empty `fmt` turns it into
+`Recording { recorder: , … }`. Separately: `Y4mWriter` had no `Debug` test of any kind, and this is
+now the only one it has.
+
+## N255 — AVI asserted both sides of the recording floor and Y4M asserted one, on the same constant
+
+**Doc:** `MIN_RECORDING_BYTES`, defined in both containers as the shortest header that container
+emits; `avi::write::tests::a_cap_below_the_empty_file_is_refused_at_begin`, which asserts **both**
+halves of the boundary; `y4m::tests::the_smallest_header_this_writer_emits_is_the_documented_floor`,
+which pins the Y4M constant to the 2×2 C420 header it names.
+
+**Repo:** `crates/imaging/src/y4m.rs` — `Y4mWriter::begin`'s cap floor, and the accepting half added
+to `a_cap_below_the_header_this_geometry_needs_is_the_size_cap_at_frame_zero`.
+
+**The survivor.** `replace < with <= in Y4mWriter<W>::begin`, at
+`params.caps.max_bytes < MIN_RECORDING_BYTES`. **1529 of 1529 pass.**
+
+**The boundary is the one cap that is exactly the floor**, and under `<=` it is refused — by a
+message that reads *"a cap of 44 bytes is too small: the shortest header this writer emits is
+already 44 bytes"*. The refusal tells a caller that 44 bytes is enough while refusing 44 bytes, and
+`the_smallest_header_this_writer_emits_is_the_documented_floor` is what makes that a contradiction
+rather than an opinion: the constant **is** that header's length, asserted against the bytes.
+
+**What a wrong answer costs is a refusal, not a file** — no file is written, so nothing on disk is
+malformed. Said plainly because the tempting sentence is the other one: this is a bound whose own
+sentence the code does not honour, which is the defect class D5 names on the permissive side and
+which reads the same in reverse.
+
+**Every assertion this constant had was on the refusing side.** The Y4M suite checked
+`MIN_RECORDING_BYTES - 1` at `begin` and `header_len - 1` at frame zero, and never the value
+itself; the AVI suite has had both halves in one test all along. The repair is the missing
+half, next to the half that existed.

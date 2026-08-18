@@ -259,6 +259,15 @@ else
     printf 'mutants: scope is %s file(s), per %s\n' "${#scope[@]}" "${config#"$root"/}"
     printf 'mutants:   %s\n' "${scope[@]}"
 
+    # **Parallelism decides the verdict here, not only the runtime** (note **N251**). A handful
+    # of daemon and client integration suites drive settle logic on a *real* clock against a real
+    # five-second deadline, so a loaded machine hands them a correct `SettleTimeout` where the
+    # test asked about something else — and every such failure marks its mutant **caught**, which
+    # is the expensive direction. The 8-job run on this host reported `0 missed` over nine real
+    # survivors; the 3-job run found them, four with no acceptance. So `nproc` below is the fast
+    # default and not the trustworthy one: until those suites take a clock the test owns,
+    # `WCH_MUTANTS_JOBS=1` is what a verdict can be believed at, at something between 13 and 19
+    # hours.
     jobs="${WCH_MUTANTS_JOBS:-$(nproc)}"
 
     # Debug info off, and this is a space decision before it is a speed one.

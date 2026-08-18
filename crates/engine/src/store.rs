@@ -2222,6 +2222,54 @@ mod tests {
         assert_eq!(errno, from_the_kernel);
     }
 
+    #[test]
+    fn a_heal_that_could_not_open_the_log_refuses_rather_than_reporting_it_appendable() {
+        // The twin of the test above, one guard along — and the guard the repair that added
+        // it did not bring the test for. `heal_log_tail` reads `NotFound` as "there is no
+        // tail yet", which is right and is the first append; the floor widened that guard to
+        // *every* open failure and the whole workspace stayed green, exactly as it did for
+        // `load_log`'s guard at P3f.
+        //
+        // What the widened guard costs is not bookkeeping. [`SessionStore::append_log`] says
+        // "a log this call could not make appendable is not one it may append to", and the
+        // heal is the whole of what keeps a torn tail survivable: an open that failed
+        // transiently — `EMFILE`, with the process out of descriptors, is the ordinary one —
+        // would be reported as healed, and the append behind it would put a terminator after
+        // the damage. That is the *interior* corruption `load_log` refuses for ever, and the
+        // state this function exists to make unreachable (note **N140**).
+        //
+        // Asserted at the function because `append_log` cannot see the difference today: its
+        // own open meets the same kernel refusal one line later and answers the same
+        // `StorageIo`. The fault is the neighbour's real one — `log.ndjson` is a
+        // *directory*, so the open is `EISDIR` for every user including root.
+        let temp = TempStore::new().expect("a temp dir");
+        let dir = temp.root().join("sessions/unhealable");
+        let path = dir.join(limits::SESSION_LOG_FILE);
+        fs::create_dir_all(path.as_std_path()).expect("a directory where a file belongs");
+
+        let err = heal_log_tail(&path).expect_err("a log that cannot be opened cannot be healed");
+        assert_eq!(err.kind(), ErrorKind::StorageIo);
+        let Error::StorageIo { errno, .. } = err else {
+            panic!("the refusal must carry the kernel's own number");
+        };
+        let from_the_kernel = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.root().as_std_path())
+            .expect_err("a directory does not open read-write")
+            .raw_os_error();
+        assert!(
+            from_the_kernel.is_some(),
+            "the kernel gave no errno for opening a directory read-write"
+        );
+        assert_eq!(errno, from_the_kernel);
+
+        // Both directions: the case the guard is actually for is not a failure, or the first
+        // append to every session would refuse.
+        heal_log_tail(&dir.join("not-written-yet.ndjson"))
+            .expect("a log that does not exist yet has no tail to heal");
+    }
+
     /// The malformed fixtures, as bytes. Each one is a shape a crash or an editor
     /// actually produces, and each has an asserted outcome.
     #[test]

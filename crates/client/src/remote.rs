@@ -2155,8 +2155,16 @@ mod tests {
                 !rendered.contains("did not answer"),
                 "{kind:?}: the daemon answered, and precisely: {rendered}"
             );
+            // The spelling is derived here rather than asked of `codes::wire_name`, which is
+            // what builds the sentence: an assertion that asks the function under test for
+            // its own expectation moves with it, and can only see a name that vanished
+            // rather than one that changed (note **N252**).
+            let spelled = serde_json::to_string(&kind)
+                .expect("a kind names itself")
+                .trim_matches('"')
+                .to_owned();
             assert!(
-                rendered.contains(&codes::wire_name(kind)),
+                rendered.contains(&spelled),
                 "{kind:?}: the one thing that survived the payload is not in the message: \
                  {rendered}"
             );
