@@ -1851,3 +1851,132 @@ test("a narrow viewport stacks the shell and keeps the preview at the top", asyn
   expect(after.y).toBeGreaterThanOrEqual(0);
   expect(after.y).toBeLessThan(page.viewportSize().height);
 });
+
+test("a session driven from the page records the operator's own choice", async ({ page }) => {
+  // **D20's headline, and D8's oldest reserved word finally getting a producer.** `selector:
+  // human` has been in the vocabulary since P3 for "a person looked at the photographs and
+  // picked one", and nothing in this project could produce it: the CLI flow is the agent's, and
+  // P5's page could only watch a sweep somebody else started. This claim drives the whole flow
+  // through the buttons an operator uses — start, plan, sweep, review, pick — and then asks a
+  // **second socket** what the session document says, because the page's own belief about a
+  // session is exactly what must not be the evidence.
+  //
+  // The preview is *not* aborted here, unlike the watch-a-sweep claim above. That is the point:
+  // a sweep is minutes of exclusive capture and D12 leaves it outside the suspend mechanism, so
+  // whichever streaming operation asks second meets `Busy` (note **N83**; E16 measured it over
+  // a second socket and recorded it as a design question). The page's answer is to end its own
+  // preview before `calibrate_sweep`, and a flow that had not would fail right here.
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  const task = "p9c driven from a real browser";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  await page.locator("#flow-sweep").click();
+  await expect(page.locator("#flow-status")).toContainText("pick the sample that looks right", {
+    timeout: 20_000,
+  });
+  // The preview came back on its own, which is the other half of standing it down: a flow that
+  // left the pane blank after a sweep would have taken the operator's camera away for good.
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  // Three photographs, because that is what the operator's budget asked for — the grid is the
+  // review D8 reserved `human` for, and each one carries what the metrics thought beside it,
+  // because metrics rank and do not decide.
+  const samples = page.locator("#flow-grid .sample-pick");
+  await expect(samples).toHaveCount(3);
+  await expect(samples.first().locator(".score")).toContainText("sharpness");
+
+  const picked = await samples.nth(1).locator(".value").textContent();
+  await samples.nth(1).click();
+  await expect(page.locator("#flow-status")).toContainText(`chosen by eye`);
+  // The page marks its own choice from the *document* it re-read, not from the click.
+  await expect(samples.nth(1)).toHaveAttribute("aria-pressed", "true");
+
+  // **The evidence, from somewhere else.** A second connection asks the daemon what the
+  // session says, so what is asserted is the state machine's record rather than this page's
+  // opinion of it — which is the whole reason D20 puts the page in front of the same eight
+  // verbs the CLI drives instead of giving it a flow of its own.
+  const recorded = await page.evaluate(
+    async ({ camera, wire, task }) => {
+      const socket = new WebSocket(wire);
+      await new Promise((opened, refused) => {
+        socket.addEventListener("open", opened, { once: true });
+        socket.addEventListener("error", () => refused(new Error("refused")), { once: true });
+      });
+      let next = 0;
+      const call = (method, params) =>
+        new Promise((resolve, reject) => {
+          const id = (next += 1);
+          const onMessage = (event) => {
+            const frame = JSON.parse(event.data);
+            if (frame.id !== id) {
+              return;
+            }
+            socket.removeEventListener("message", onMessage);
+            if (frame.error === undefined) {
+              resolve(frame.result);
+            } else {
+              reject(new Error(JSON.stringify(frame.error)));
+            }
+          };
+          socket.addEventListener("message", onMessage);
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        });
+
+      const status = await call("wch_calibrate_status", {
+        camera,
+        session: { kind: "task", task },
+      });
+      socket.close();
+      const controls = status.session.controls;
+      const calibrated = Object.entries(controls).find(
+        ([, record]) => record.status?.status === "calibrated",
+      );
+      return calibrated === undefined
+        ? null
+        : { slug: calibrated[0], status: calibrated[1].status };
+    },
+    { camera: cameraId, wire: `${origin.replace(/^http/, "ws")}/rpc?token=${encodeURIComponent(token)}`, task },
+  );
+
+  expect(recorded).not.toBeNull();
+  // `human`, spelled the way D8 spells it, on the session's own document.
+  expect(recorded.status.selector).toEqual({ kind: "human" });
+  expect(String(recorded.status.value)).toEqual(picked);
+});
+
+test("an out-of-order click is the daemon's refusal, rendered, and the flow carries on", async ({
+  page,
+}) => {
+  // D20: *the state machine's `IllegalTransition`s are the page's guard rails, not duplicated
+  // client-side logic.* So the page does **not** grey out the wrong button on a guess — it
+  // sends the verb, and what an operator reads is what the daemon said, in the daemon's own
+  // words. A page that had mirrored the state machine here would show its own opinion of a
+  // session, and the two would drift.
+  await openClient(page);
+  const task = "p9c the same task twice";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+
+  // The same task again, while the first session is still open. The daemon refuses; the page
+  // prints the kind beside the message, because the kind is what a reader branches on and the
+  // message is what tells them which session.
+  await page.locator("#flow-start").click();
+  const refusal = page.locator("#flow-status");
+  await expect(refusal).toHaveClass(/failed/);
+  await expect(refusal).toContainText("session_conflict");
+
+  // …and the flow is not wedged: the next legal step works, and the failure styling goes with
+  // it. A page that had latched on a refusal would leave an operator restarting a browser.
+  await page.locator("#flow-plan").click();
+  await expect(refusal).toContainText(/^planned \d+ control\(s\)$/);
+  await expect(refusal).not.toHaveClass(/failed/);
+});

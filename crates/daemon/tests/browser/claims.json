@@ -143,6 +143,16 @@
       "title": "a narrow viewport stacks the shell and keeps the preview at the top",
       "assertions": 7,
       "what": "D20 — the same claim one column wide: a sticky pane inside a scroll container that is not the document sticks to nothing, and that failure looks exactly like a working page until somebody scrolls"
+    },
+    {
+      "title": "a session driven from the page records the operator's own choice",
+      "assertions": 14,
+      "what": "D20 — the whole human-driven flow through the buttons an operator uses, with `selector: human` asserted on a second socket rather than through the page's own belief; the page stands its own preview down before the sweep, which is N83's boundary and E16's collision answered"
+    },
+    {
+      "title": "an out-of-order click is the daemon's refusal, rendered, and the flow carries on",
+      "assertions": 7,
+      "what": "D20 — the state machine's refusals are the page's guard rails rather than duplicated client-side logic: an illegal step is sent, refused, rendered with its D13 kind, and the next legal step works"
     }
   ]
 }

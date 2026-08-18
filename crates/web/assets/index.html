@@ -125,6 +125,12 @@
             <div class="flow-start">
               <label>Task <input id="flow-task" type="text" placeholder="dut-display" /></label>
               <label>Goal <input id="flow-goal" type="text" placeholder="text legible on the DUT display" /></label>
+              <!--
+                What a click on "Sweep next" costs, in photographs. A sweep is minutes (D8) and
+                `SweepSpec::All` is 256 shots on an ordinary control — the right default for a
+                command somebody typed, the wrong one for a button.
+              -->
+              <label>Samples <input id="flow-samples" type="number" min="2" max="256" value="8" /></label>
             </div>
             <div class="flow-buttons">
               <button id="flow-start" type="button" disabled>Start</button>

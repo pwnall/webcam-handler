@@ -188,9 +188,15 @@ struct Floor {
 /// where a sticky pane inside the wrong scroll container sticks to nothing. Both are invisible to
 /// every other kind of test this project has — the JSON is identical either way — which is rubric
 /// B7's sentence arriving at a layout (note **N262**).
+///
+/// Raised again at P9c for the flow itself: a session started, planned, swept and *chosen from*
+/// through the page's own buttons, with `selector: human` read back on a second socket — because
+/// the page's belief about a session is exactly what must not be the evidence — and the arm that
+/// holds an out-of-order click to being the daemon's refusal rendered rather than a button the
+/// page greyed out on a guess.
 const FLOOR: Floor = Floor {
-    claims: 26,
-    assertions: 238,
+    claims: 28,
+    assertions: 259,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.

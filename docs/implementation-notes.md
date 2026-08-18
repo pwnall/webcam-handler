@@ -25471,3 +25471,46 @@ route rather than after it.
 to a session whose photo file has been deleted answers HEAD 200 and GET 404. That is the N179
 precedent applied — a HEAD that opened the file to answer would be a HEAD that opens a file —
 and the suite pins it by deleting the photo and asserting exactly that pair.
+
+## N264 — The page waits for its own preview to let go, because ending a stream is not the daemon knowing it ended
+
+**Doc:** design D20's "The sweep/preview collision is resolved by the page, not the actor";
+D12's suspend boundary and note **N83**; evidence entry **E16**, which measured the collision
+and recorded it as a design question.
+
+**Repo:** `crates/web/assets/calibrate-flow.js` — `sweepOnceThePreviewIsGone`, and the two
+constants beside it.
+
+**What the browser rung found.** D20 says the page ends its own preview before
+`calibrate_sweep`, and the flow did exactly that — and the sweep was still refused
+`Busy: this process is already streaming it`. `preview.stop()` removes the `<img>`'s `src`,
+which aborts the request; the daemon retires a feed when its **last reader goes**, and "goes"
+means the socket closing. For the few milliseconds between those two facts the page is, quite
+truthfully, still streaming the camera it is about to sweep. Ending a stream and the daemon
+knowing it ended are two events, and the design sentence had quietly assumed one.
+
+**The repair is a bounded wait with a sentence on screen**, and its precision is the whole of
+why it is not a retry loop with a nicer name. It waits **only** for a `Busy` whose
+`this_process` says `streaming` — D13's `Occupation`, which exists precisely so a refusal can
+say "it is me, and here is what for" without handing over a pid (note **N217**). A camera
+another process holds is not a camera this wait can do anything about; a recording is a
+different wait with a different remedy; and a page that retried at either would be hiding a
+refusal an operator needs to read. Twenty attempts at a hundred milliseconds, stated in the
+module, with *"waiting for this page's own preview to let the camera go…"* on the status line
+while it does — because a click that appears to do nothing for two seconds is a click an
+operator will make again.
+
+**Why this is the page's problem and not the actor's.** D12 deliberately leaves a sweep outside
+the suspend mechanism: a photo interleaves with a preview because it is one frame, and a sweep
+is minutes of exclusive capture. Moving the wait into the daemon would mean an actor holding a
+sweep request open while a viewer it cannot see decides to go away, which is the queue depth
+D12 bounds and the sort of thing that turns one client's tab into another client's timeout. The
+page knows something the actor does not — that the preview it is waiting on is *its own, and
+already told to stop* — and that knowledge is exactly what makes the wait bounded.
+
+**What would have hidden it.** Nothing in the JSON says whether a preview has drained, so this
+is only visible to a test that drives a real browser through the real sequence. The claim that
+found it is `a session driven from the page records the operator's own choice`, and it
+deliberately does **not** abort `/preview` the way P5's sweep-watching claim does — that arm
+worked around the collision to get a free camera, which was right for what it asserts and is
+exactly why the collision survived to be found here.

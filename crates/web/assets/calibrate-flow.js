@@ -34,6 +34,14 @@ import { el, fill } from "./dom.js";
 const GRID_COLUMNS = 4;
 
 /**
+ * Photographs per sweep, unless the operator says otherwise.
+ *
+ * Eight is a number an operator can look at in one screen and a click can pay for in seconds,
+ * which are the two constraints a *button* has and a command line does not.
+ */
+const DEFAULT_SAMPLES = 8;
+
+/**
  * The flow's own view of where it is.
  *
  * Deliberately thin — a label for the buttons and nothing a refusal could contradict. The
@@ -122,14 +130,25 @@ async function plan(rpc, nodes) {
   const planned = await rpc.call("wch_calibrate_plan", {
     camera: flow.camera,
     session: flow.session,
-    // Every control the planner finds worth sweeping. Naming a subset is the CLI's flag and
-    // a form field this page deliberately does not have: the operator's next click is the
-    // sweep, and the queue is what tells them what is coming.
+    // Empty means *every control the camera has*, which is what an operator who clicked
+    // "Plan" asked for; naming a subset is the CLI's flag and a form field this page
+    // deliberately does not have.
     controls: [],
-    order: true,
+    // **Additions, not a reordering.** `order: true` treats the named controls as the queue's
+    // new order — so an empty list with `order: true` is a request to reorder the queue to
+    // nothing, which the daemon accepts and which plans exactly no controls. Found by driving
+    // it: the page reported "planned" and the next click had nothing to sweep.
+    order: false,
   });
   await refresh(rpc, nodes);
-  nodes.status.textContent = `planned ${planned.queue.length} control(s)`;
+  // `queue` is omitted from the document when it is empty (`skip_serializing_if`), so this
+  // reads a length off a key that may not be there — and a plan that queued nothing is a
+  // sentence an operator needs rather than a crash.
+  const queued = planned.queue?.length ?? 0;
+  nodes.status.textContent =
+    queued === 0
+      ? "planned nothing — this camera has no control this build knows how to sweep"
+      : `planned ${queued} control(s)`;
 }
 
 /**
@@ -147,16 +166,27 @@ async function sweep(rpc, nodes, preview) {
     throw new Error("every planned control has been swept — apply, or plan again");
   }
 
+  // How many photographs this click is worth, converted to the stride the planner takes.
+  // **A sweep is minutes** — D8 says so and D20 builds the sweep-time pane around it — and
+  // `SweepSpec::All` means every step from min to max, which on an ordinary 0..255 control is
+  // 256 photographs. That is the right default for `webcam-handler-cli`, where somebody typed
+  // a command and can wait; it is the wrong default for a button, where the cost has to be
+  // visible before the click. So the operator sets a budget and the page turns it into a
+  // stride, which is the same arithmetic `--samples` would do one surface over.
+  const budget = Math.max(2, Number(nodes.samples.value) || DEFAULT_SAMPLES);
+  const span = await rangeOf(rpc, control);
+  const step = span === null ? 1 : Math.max(1, Math.floor(span / (budget - 1)));
+
   preview.stop();
   flow.sweeping = true;
   flow.reviewing = control;
   paint(nodes);
-  nodes.status.textContent = `sweeping ${control}…`;
+  nodes.status.textContent = `sweeping ${control} in ${budget} step(s)…`;
   try {
-    await rpc.call("wch_calibrate_sweep", {
+    await sweepOnceThePreviewIsGone(rpc, nodes, {
       camera: flow.camera,
       session: flow.session,
-      request: { control, plan: { kind: "all" } },
+      request: { control, plan: { kind: "uniform", step } },
     });
   } finally {
     flow.sweeping = false;
@@ -166,6 +196,49 @@ async function sweep(rpc, nodes, preview) {
   }
   await refresh(rpc, nodes);
   nodes.status.textContent = `${control} swept — pick the sample that looks right`;
+}
+
+/**
+ * How long to wait for this page's own preview to let go of the camera, and how often to ask.
+ *
+ * **Ending the preview is not the same as the daemon knowing it ended.** `preview.stop()`
+ * removes the `<img>`'s `src`, which aborts the request; the daemon retires a feed when its
+ * last reader goes, and "goes" is the socket closing — so for a few milliseconds after the
+ * click this page is still, truthfully, streaming the camera it is about to sweep. The sweep
+ * that arrives in that window is refused `Busy`, which is correct (D12 leaves a sweep outside
+ * the suspend mechanism, note **N83**) and is exactly the collision E16 measured.
+ *
+ * So the page waits for its own preview to drain, with a stated bound and a sentence on screen
+ * while it does. It waits **only** for a `Busy` that names *this process* — D13's
+ * `Occupation` is what makes that distinguishable — because a camera another process holds is
+ * not a camera this wait can do anything about, and retrying at it would be a page hiding a
+ * refusal an operator needs to read.
+ */
+const PREVIEW_RELEASE_TRIES = 20;
+const PREVIEW_RELEASE_INTERVAL_MS = 100;
+
+/** Send the sweep, waiting out this page's own preview if it is still holding the camera. */
+async function sweepOnceThePreviewIsGone(rpc, nodes, params) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await rpc.call("wch_calibrate_sweep", params);
+    } catch (err) {
+      // `this_process` is D13's `Occupation`, an internally-tagged word rather than a flag:
+      // `streaming` is a node this daemon has a stream up on, which is what a preview leaves
+      // behind for the moment it takes the socket to close. Any *other* occupation — a
+      // recording, a command queue — is a different wait with a different remedy, and a page
+      // that retried at it would be hiding a refusal an operator needs to read.
+      const ours = err.kind === "busy" && err.data?.this_process === "streaming";
+      if (!ours || attempt >= PREVIEW_RELEASE_TRIES) {
+        throw err;
+      }
+      nodes.status.textContent =
+        "waiting for this page's own preview to let the camera go…";
+      await new Promise((done) => {
+        setTimeout(done, PREVIEW_RELEASE_INTERVAL_MS);
+      });
+    }
+  }
 }
 
 async function apply(rpc, nodes) {
@@ -328,6 +401,23 @@ function nextControl() {
     }
   }
   return null;
+}
+
+/**
+ * The span of a control's declared range, or `null` when it has none to speak of.
+ *
+ * Asked of the device through `wch_controls` rather than remembered from the panel: the panel
+ * is another module's, and a stride computed from a range this module had cached would be a
+ * stride for a camera that may since have been switched.
+ */
+async function rangeOf(rpc, control) {
+  const report = await rpc.call("wch_controls", { camera: flow.camera });
+  const desc = (report.controls ?? []).find((entry) => entry.slug === control);
+  if (!desc || typeof desc.range?.min !== "number" || typeof desc.range?.max !== "number") {
+    return null;
+  }
+  const span = desc.range.max - desc.range.min;
+  return span > 0 ? span : null;
 }
 
 function requireSession() {
