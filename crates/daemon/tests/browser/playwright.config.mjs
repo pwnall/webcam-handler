@@ -72,6 +72,13 @@ export default defineConfig({
     baseURL: new URL(url).origin,
     browserName: "chromium",
     headless: true,
+    // **Pinned, not defaulted** (design D20). The workbench's layout claim is a statement
+    // about a viewport — the preview and the control being adjusted visible together at every
+    // scroll position — and a claim measured against whatever Playwright's default happens to
+    // be this release is a claim that moves when the tool does. This is Playwright's 1.62
+    // default written down, so nothing about the existing claims changes and the layout one
+    // has a number to be true of.
+    viewport: { width: 1280, height: 720 },
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",

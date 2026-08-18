@@ -25432,3 +25432,42 @@ nearly fit on a screen. A layout claim asserted against them would pass against 
 two-pane arrangement at all — the fixture-one-parameter-away smell docs/14 Part C rejects on
 sight — so the fixture is the 77-control corpus profile, committed for this purpose, and the
 claim asserts the column really does overflow before it asserts anything about the preview.
+
+## N263 — `/session-photo` addresses a record, and the record supplies the path
+
+**Doc:** design D20's "Sample review needs the sample bytes, and that is the one new route";
+D9's slug transform and relative-path discipline; D11's token gate.
+
+**Repo:** `crates/daemon/src/http/session_photo.rs` and the third entry in
+`daemon::http::CAMERA_BEARING_PATHS`; `crates/web/assets/credential.js`'s `samplePhotoUrl`.
+
+**The contract, and the one sentence that makes it safe.** `GET|HEAD /session-photo?session=…
+&control=…&pass=…&value=…` — four parameters that name a *record*, not a file. The daemon reads
+the session document, finds the sample in `controls[control].samples` whose `requested` equals
+`value` and whose recorded `photo` sits under that pass's directory, and serves **the relative
+path the document recorded**. Nothing a caller wrote ever becomes a path component, so there is
+nothing to traverse — and a hand-edited `session.json` whose `photo` points outside its own
+session directory is a 404 rather than a read, because the record is checked against the
+derivation as well as consulted.
+
+**`value` is the *requested* value, and getting that wrong would have been silent.** The store
+names a sample's photo after the value the sweep asked for —
+`photos/<control>/<from>/<requested>.<ext>` — because two requests that clamp to one applied
+value are two samples and would otherwise overwrite each other \[PF:6\]. The **applied** value is
+what a *selection* records, one verb over. On a device that never clamps the two are equal and
+every arm would pass either way; the corpus's clamping profiles are why this is stated rather
+than discovered.
+
+**Why a route and not base64 over the wire.** Considered and declined in D20: a sample through
+`wch_calibrate_*` would spend a third of a response budget per photograph to avoid a route this
+posture already knows how to gate — and an `<img>` is the consumer. What it costs instead is one
+more camera-bearing door, which is why the addition was deliberately made the **first live
+exercise** of the defect class N82's ruling created: both halves of the partition —
+`web-routes-are-gated.sh` and `every_camera_bearing_route_is_behind_the_gate` — go red on a
+camera-bearing route added without its gate, and both were extended in the same commit as the
+route rather than after it.
+
+**One asymmetry worth recording**: HEAD decides from the query alone, so a well-formed reference
+to a session whose photo file has been deleted answers HEAD 200 and GET 404. That is the N179
+precedent applied — a HEAD that opened the file to answer would be a HEAD that opens a file —
+and the suite pins it by deleting the photo and asserting exactly that pair.

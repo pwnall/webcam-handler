@@ -256,10 +256,28 @@ async fn until_the_sweep_stops(watching: &mut Watching) -> ProgressEvent {
 /// directions plus the disconnect test, in milliseconds — which is what says the second
 /// question is really asked and really answered by the daemon rather than by this helper.
 async fn still_answers(connection: &mut Ws<tokio::net::UnixStream>, ask: &Ask, after: &str) {
+    still_answers_about(connection, ask, after, FIXTURE_CAMERAS).await;
+}
+
+/// How many cameras the fixture backend replays.
+///
+/// Named rather than repeated, because one caller below expects a different number and the
+/// difference is a claim rather than an adjustment: a take that met `DeviceGoneMidStream`
+/// leaves a machine with one fewer camera on it (design D19), and a fake that went on listing
+/// a device it had just told a caller was gone would be a shape no machine has (E5).
+const FIXTURE_CAMERAS: usize = 2;
+
+/// [`still_answers`], for a caller that knows the machine has changed under it.
+async fn still_answers_about(
+    connection: &mut Ws<tokio::net::UnixStream>,
+    ask: &Ask,
+    after: &str,
+    cameras: usize,
+) {
     let listed = connection.call("wch_list", json!({})).await;
     assert_eq!(
         listed["result"]["cameras"].as_array().map(Vec::len),
-        Some(2),
+        Some(cameras),
         "{after}: the daemon stopped listing its cameras: {listed}"
     );
 
@@ -282,8 +300,13 @@ async fn still_answers(connection: &mut Ws<tokio::net::UnixStream>, ask: &Ask, a
 /// upgrade and the calls share one listener (`daemon::uds`), so a subscription that damaged
 /// the socket would be visible on the transport that never subscribes.
 async fn a_fresh_client_is_served(fixture: &Fixture, ask: &Ask, after: &str) {
+    a_fresh_client_is_served_about(fixture, ask, after, FIXTURE_CAMERAS).await;
+}
+
+/// [`a_fresh_client_is_served`], for a caller that knows the machine has changed under it.
+async fn a_fresh_client_is_served_about(fixture: &Fixture, ask: &Ask, after: &str, cameras: usize) {
     let mut fresh = Ws::connect(&fixture.socket).await;
-    still_answers(&mut fresh, ask, after).await;
+    still_answers_about(&mut fresh, ask, after, cameras).await;
 
     let answered = support::call(
         &fixture.socket,
@@ -1172,13 +1195,26 @@ async fn a_subscription_outlives_the_session_it_watched_and_carries_the_next_one
     // true if the two agree.
     assert_eq!(failure, refused.kind(), "{refused}");
 
-    still_answers(
+    // One camera fewer than the fixture started with, and that is the assertion rather than
+    // an adjustment: the sweep above met `DeviceGoneMidStream`, and a device that vanished
+    // mid-stream has left the machine (design D19) — so the daemon's next listing must stop
+    // naming it. A fake that answered `DeviceGone` to a frame and went on enumerating the
+    // camera would be a shape no machine has, and a consumer's re-enumeration — the thing
+    // D19 says a caller does next — would find the camera and carry on.
+    still_answers_about(
         watching.connection(),
         &ask,
         "after two sessions ended under one subscription",
+        FIXTURE_CAMERAS - 1,
     )
     .await;
-    a_fresh_client_is_served(&fixture, &ask, "after a watched sweep was interrupted").await;
+    a_fresh_client_is_served_about(
+        &fixture,
+        &ask,
+        "after a watched sweep was interrupted",
+        FIXTURE_CAMERAS - 1,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

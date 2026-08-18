@@ -134,6 +134,7 @@ impl Client {
             false,
             methods.clone(),
             wchd.previews(),
+            Arc::new(SessionStore::new(state.root())),
             shutdown.clone(),
         )
         .await

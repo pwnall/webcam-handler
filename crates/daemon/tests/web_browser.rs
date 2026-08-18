@@ -181,9 +181,16 @@ struct Floor {
 /// no current had a claim; the *slider* with no current did not, and a range input cannot hold
 /// "nothing" — it held the declared default, live, one relative gesture from a write (note
 /// **N199**).
+///
+/// Raised at P9a for D20's two layout claims, and they are the first pair here that assert about
+/// *arrangement* rather than about content: the preview and the control being adjusted visible
+/// together at every scroll position of a 77-control column, and the same claim one column wide
+/// where a sticky pane inside the wrong scroll container sticks to nothing. Both are invisible to
+/// every other kind of test this project has — the JSON is identical either way — which is rubric
+/// B7's sentence arriving at a layout (note **N262**).
 const FLOOR: Floor = Floor {
-    claims: 24,
-    assertions: 206,
+    claims: 26,
+    assertions: 238,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.
@@ -398,6 +405,8 @@ fn pinned_chromium_build(suite: &Utf8Path) -> String {
 struct Serving {
     serving: http::Serving,
     camera: CameraId,
+    /// The camera whose control set does not fit on a screen (design D20's layout fixture).
+    wide_camera: CameraId,
     /// The second camera, which exists so a claim can *switch* between two of them.
     ///
     /// Two claims need a page to stop looking at one camera and start looking at another, and
@@ -429,18 +438,29 @@ impl Serving {
     /// rather than one this file assembled.
     async fn start() -> Serving {
         let backend = Arc::new(
-            FakeBackend::new(vec![small_mjpeg_camera(), second_mjpeg_camera()])
-                .expect("the synthetic profile is this build's version"),
+            FakeBackend::new(vec![
+                small_mjpeg_camera(),
+                second_mjpeg_camera(),
+                wide_camera(),
+            ])
+            .expect("the synthetic profile is this build's version"),
         );
         let cameras = backend
             .enumerate()
             .expect("the fake enumerates what it replays");
         let camera = cameras.first().expect("the first camera").id.clone();
         let second_camera = cameras.get(1).expect("the second camera").id.clone();
+        let wide_camera = cameras.get(2).expect("the wide camera").id.clone();
         assert_ne!(
             camera, second_camera,
             "the two profiles collapsed into one identity, so no claim below can switch \
              between them"
+        );
+        assert_ne!(
+            camera, wide_camera,
+            "the layout fixture collapsed into the ordinary camera's identity, so the \
+             workbench claim would be made against eighteen controls rather than the \
+             seventy-seven it is sized for"
         );
 
         let state = TempStore::new().expect("a state directory");
@@ -465,6 +485,7 @@ impl Serving {
             false,
             methods,
             wchd.previews(),
+            Arc::new(SessionStore::new(state.root())),
             shutdown.clone(),
         )
         .await
@@ -474,6 +495,7 @@ impl Serving {
             serving,
             camera,
             second_camera,
+            wide_camera,
             take: runtime.base().join("browser-take.avi"),
             shutdown,
             _lock: lock,
@@ -514,6 +536,44 @@ fn small_mjpeg_camera() -> schema::profile::DeviceProfile {
             }];
         }
     }
+    profile
+}
+
+/// The widest control set this project has captured, with its modes rewritten small.
+///
+/// The **layout** fixture (design D20), and the reason it is a third camera rather than a
+/// replacement for the first: the workbench's claim is about a control column that does not
+/// fit on a screen, and the synthetic profile's eighteen controls very nearly do. `vivid`'s
+/// seventy-seven do not fit on any screen, which is the case the two-pane shell is sized
+/// against — *"the 77-control vivid case is the sizing fixture, not the 18-control common
+/// case"*, in D20's own words.
+///
+/// It is the committed corpus document rather than a construction, so the widget mix a
+/// browser has to render — the class headers, the bitmasks, the RECT payload, the menus with
+/// holes in them — is a real driver's rather than one this file thought of. Its formats are
+/// cut down to one small mode for `small_mjpeg_camera`'s reason: a browser decodes every
+/// preview frame, and 4K would make this rung slow for nothing.
+fn wide_camera() -> schema::profile::DeviceProfile {
+    let mut profile = testkit::corpus::load("vivid").expect("the vivid profile is committed");
+    let mut kept = false;
+    profile.invariant.formats.retain_mut(|format| {
+        if kept {
+            return false;
+        }
+        kept = true;
+        format.sizes = vec![FrameSizeInfo {
+            size: FrameSize::Discrete {
+                width: 160,
+                height: 120,
+            },
+            intervals: vec![FrameInterval::Discrete {
+                numerator: 1,
+                denominator: 30,
+            }],
+        }];
+        true
+    });
+    assert!(kept, "the vivid profile enumerated no formats at all");
     profile
 }
 
@@ -619,6 +679,7 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
 
     let camera = daemon.camera.as_str().to_owned();
     let second_camera = daemon.second_camera.as_str().to_owned();
+    let wide_camera = daemon.wide_camera.as_str().to_owned();
     let brightness = SECOND_CAMERA_BRIGHTNESS.to_string();
     // **The aperture through which a browser reads the daemon's own viewer count.** Nothing on
     // this listener reports how many readers a camera's feed has — `daemon::http` serves two
@@ -642,6 +703,7 @@ async fn the_shipped_client_renders_and_refuses_in_a_real_chromium() {
             .env("WCH_E2E_URL", url)
             .env("WCH_E2E_CAMERA", camera)
             .env("WCH_E2E_SECOND_CAMERA", second_camera)
+            .env("WCH_E2E_WIDE_CAMERA", wide_camera)
             .env("WCH_E2E_SECOND_BRIGHTNESS", brightness)
             .env("WCH_E2E_PREVIEW_VIEWER_CAP", viewer_cap)
             .env("WCH_E2E_MODULE_COUNT", modules.to_string())

@@ -82,6 +82,10 @@ gate-g7:
 gate-g8:
     ./scripts/gates/phase.sh g8
 
+# G9 — the operator's workbench.
+gate-g9:
+    ./scripts/gates/phase.sh g9
+
 # ------------------------------------------------------- the privileged helper
 
 # Where the blessed copy lives. Outside `target/` on purpose: writing a binary file

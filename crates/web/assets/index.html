@@ -22,89 +22,144 @@
     <script type="module" src="app.js"></script>
   </head>
   <body>
+    <!--
+      The operator's workbench (design D20). The owner's session at the start of a
+      development run is *tuning* — eyes on the preview, hands on the controls — and the
+      shape that serves it is two panes that scroll independently: the preview stays put
+      while the control column moves under it, so the picture and the control being
+      adjusted are visible at the same time at every scroll position.
+
+      What this replaced was four stacked sections in one scrolling document. It was not
+      wrong, it was a *viewer*: at the rung's pinned 1440x900 the page ran to 3359px, the
+      control panel began 828px down and ran 2395px, and adjusting anything at all meant
+      scrolling the preview off the screen. The measurement is in note **N262**.
+    -->
     <header>
       <h1>webcam-handler</h1>
       <p id="connection" class="status">connecting…</p>
     </header>
 
-    <main>
+    <main class="workbench">
       <!--
         Every region below is filled by a module and empty here. The alternative — markup
         that shows a plausible camera and a plausible control until the daemon answers —
         is a page that lies for as long as it takes a socket to open, on a document whose
         whole subject is what a device actually reports (D2, AGENTS rule 4).
       -->
-      <section id="cameras" aria-labelledby="cameras-heading">
-        <h2 id="cameras-heading">Cameras</h2>
-        <ul id="camera-list" class="cameras"></ul>
-        <ul id="camera-hints" class="hints"></ul>
-      </section>
+      <section id="stage" class="pane pane-preview" aria-labelledby="stage-heading">
+        <h2 id="stage-heading" class="visually-hidden">Camera and preview</h2>
 
-      <section id="stage" aria-labelledby="stage-heading">
-        <h2 id="stage-heading">Preview</h2>
-        <div class="stage">
-          <figure class="live">
-            <!--
-              The `<img>` has no `src` until a camera is chosen, and it is set from
-              preview.js rather than written here: the URL carries the credential the page
-              was opened with, and a credential does not belong in a file this daemon
-              serves to anybody who asks (note N82).
-            -->
-            <img id="preview-frame" alt="" />
-            <figcaption id="preview-status" class="status"></figcaption>
-            <!--
-              A second line rather than a second writer of the one above, and P5d's browser
-              rung is why that distinction is written down: two views sharing one element
-              overwrite each other within milliseconds, and the loser is whichever wrote
-              first (see #sweep-status below). These two have different lifetimes — the
-              caption is written by the `<img>`'s own load and error events, and this one by
-              a poll loop the socket owns — so they are two elements. recording.js is its
-              only writer.
-            -->
-            <p id="recording-status" class="status"></p>
+        <div id="cameras" class="picker">
+          <ul id="camera-list" class="cameras"></ul>
+          <ul id="camera-hints" class="hints"></ul>
+        </div>
+
+        <figure class="live">
+          <!--
+            The `<img>` has no `src` until a camera is chosen, and it is set from
+            preview.js rather than written here: the URL carries the credential the page
+            was opened with, and a credential does not belong in a file this daemon
+            serves to anybody who asks (note N82).
+          -->
+          <img id="preview-frame" alt="" />
+          <figcaption id="preview-status" class="status"></figcaption>
+          <!--
+            A second line rather than a second writer of the one above, and P5d's browser
+            rung is why that distinction is written down: two views sharing one element
+            overwrite each other within milliseconds, and the loser is whichever wrote
+            first (see #sweep-status below). These two have different lifetimes — the
+            caption is written by the `<img>`'s own load and error events, and this one by
+            a poll loop the socket owns — so they are two elements. recording.js is its
+            only writer.
+          -->
+          <p id="recording-status" class="status"></p>
+        </figure>
+
+        <!--
+          The photograph a person takes to look at, and the sample they are reviewing
+          during a sweep, are the same slot: only one of them is ever the answer to "what
+          did the camera just see", and two side by side would make the operator ask which
+          one is current. calibration.js takes the slot over while a sweep is running and
+          gives it back when the sweep ends.
+        -->
+        <div class="capture">
+          <button id="take-photo" type="button" disabled>Take a photo</button>
+          <p id="photo-status" class="status"></p>
+          <figure class="shot">
+            <img id="photo-frame" alt="" />
+            <figcaption id="photo-report" class="report"></figcaption>
           </figure>
-          <div class="capture">
-            <button id="take-photo" type="button" disabled>Take a photo</button>
-            <p id="photo-status" class="status"></p>
-            <figure class="shot">
-              <img id="photo-frame" alt="" />
-              <figcaption id="photo-report" class="report"></figcaption>
-            </figure>
-          </div>
         </div>
       </section>
 
-      <section id="controls" aria-labelledby="controls-heading">
-        <h2 id="controls-heading">Controls</h2>
-        <p class="status">
-          <label>
-            <input id="guarded" type="checkbox" checked />
-            switch automation off first (D3)
-          </label>
-        </p>
-        <p id="controls-status" class="status"></p>
-        <div id="control-panel" class="panel"></div>
-      </section>
+      <!--
+        The column that scrolls. Its own scroll container rather than the document's, so
+        that reaching the last of a 77-control panel moves nothing in the pane beside it —
+        which is the claim the browser rung asserts at the pinned viewport over the vivid
+        profile, the widest committed control set this project has met.
+      -->
+      <div id="column" class="pane pane-controls">
+        <section id="controls" aria-labelledby="controls-heading">
+          <h2 id="controls-heading">Controls</h2>
+          <p class="status">
+            <label>
+              <input id="guarded" type="checkbox" checked />
+              switch automation off first (D3)
+            </label>
+          </p>
+          <p id="controls-status" class="status"></p>
+          <div id="control-panel" class="panel"></div>
+        </section>
 
-      <section id="calibration" aria-labelledby="calibration-heading">
-        <h2 id="calibration-heading">Calibration</h2>
-        <!--
-          Two status lines, because there are two independent things to be wrong about and
-          they were sharing one until the browser rung looked (P5d). `#calibration-status`
-          belongs to the session *list*, which is re-read on every camera switch;
-          `#sweep-status` belongs to the live sweep *subscription*, which is opened once at
-          startup and outlives every switch. With one element between them the list's line
-          was written milliseconds after the subscription's and overwrote it — so "the
-          daemon refused a sweep subscription" and "the sweep stream ended" were both
-          replaced by "no calibration sessions recorded for this camera", and a calibration
-          view that had silently stopped being live looked exactly like a healthy one.
-        -->
-        <p id="calibration-status" class="status"></p>
-        <ul id="session-list" class="sessions"></ul>
-        <div id="session-detail" class="session"></div>
-        <p id="sweep-status" class="status"></p>
-        <ol id="sweep-log" class="sweep"></ol>
-      </section>
+        <section id="calibration" aria-labelledby="calibration-heading">
+          <h2 id="calibration-heading">Calibration</h2>
+
+          <!--
+            The flow the owner asked for (D20): start, plan, sweep, review the photographs,
+            pick one by eye, apply, put the camera back. Every button below sends one of the
+            eight `wch_calibrate_*` verbs the daemon already had — the page adds no state
+            machine of its own, and an out-of-order click is *meant* to reach the daemon and
+            come back as the refusal an operator can read.
+          -->
+          <div id="flow" class="flow" data-sweeping="false" data-session="">
+            <div class="flow-start">
+              <label>Task <input id="flow-task" type="text" placeholder="dut-display" /></label>
+              <label>Goal <input id="flow-goal" type="text" placeholder="text legible on the DUT display" /></label>
+            </div>
+            <div class="flow-buttons">
+              <button id="flow-start" type="button" disabled>Start</button>
+              <button id="flow-plan" type="button" disabled>Plan</button>
+              <button id="flow-sweep" type="button" disabled>Sweep next</button>
+              <button id="flow-apply" type="button" disabled>Apply</button>
+              <button id="flow-restore" type="button" disabled>Restore</button>
+            </div>
+            <p id="flow-status" class="status"></p>
+            <!--
+              The samples of the control under review, each one clickable. Selecting is
+              `selector: human` — D8 reserved that word for a reviewer with eyes on the
+              photographs, and until this grid existed nothing in this project produced one.
+            -->
+            <div id="flow-grid" class="samples"></div>
+          </div>
+
+          <!--
+            Two status lines, because there are two independent things to be wrong about and
+            they were sharing one until the browser rung looked (P5d). `#calibration-status`
+            belongs to the session *list*, which is re-read on every camera switch;
+            `#sweep-status` belongs to the live sweep *subscription*, which is opened once at
+            startup and outlives every switch. With one element between them the list's line
+            was written milliseconds after the subscription's and overwrote it — so "the
+            daemon refused a sweep subscription" and "the sweep stream ended" were both
+            replaced by "no calibration sessions recorded for this camera", and a calibration
+            view that had silently stopped being live looked exactly like a healthy one.
+          -->
+          <p id="calibration-status" class="status"></p>
+          <ul id="session-list" class="sessions"></ul>
+          <div id="session-detail" class="session"></div>
+          <p id="sweep-status" class="status"></p>
+          <ol id="sweep-log" class="sweep"></ol>
+        </section>
+      </div>
     </main>
   </body>
 </html>

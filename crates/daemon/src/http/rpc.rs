@@ -73,7 +73,7 @@
 //! an ordinary HTTP request, so it meets the gate before it meets this handler, and an
 //! anonymous upgrade is a `401`.
 //!
-//! **This is one of the two routes the owner's 2026-08-12 ruling keeps gated**, and it is the
+//! **This is one of the routes the owner's 2026-08-12 ruling keeps gated**, and it is the
 //! "drives" half of "carries or drives the camera": every T5 method that opens a camera is
 //! reachable over this socket, so an anonymous upgrade is a control surface for somebody
 //! else's webcam. The other half is [`super::preview`], which carries the frames themselves.

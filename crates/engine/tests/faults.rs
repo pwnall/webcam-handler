@@ -202,7 +202,7 @@ fn a_gap_in_the_stream_reaches_the_recording_answer() {
     // dropped frames" a contract rather than a doc comment.
     let lossy = backend();
     let mut camera = open(&lossy);
-    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
     let path = camino::Utf8PathBuf::from_path_buf(scratch.path().join("gap.avi"))
         .expect("a UTF-8 scratch path");
 

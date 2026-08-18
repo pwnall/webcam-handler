@@ -1,5 +1,5 @@
 //! The opt-in TCP transport: one axum server, the embedded client behind it, and the token
-//! gate in front of the two routes that are the camera (D11 and its 2026-08-12 amendment,
+//! gate in front of the routes that are the camera (D11 and its 2026-08-12 amendment,
 //! docs/7 P5a).
 //!
 //! [`crate::uds`] is this module's model and its counterweight. That transport is **always**
@@ -120,8 +120,9 @@
 //!
 //! The owner ruled (2026-08-12) that **static assets are served without authentication** —
 //! the client is open-source code rather than a secret — and that only the resources which
-//! *carry or drive the camera* stay behind D11's token: the WebSocket endpoint and the MJPEG
-//! preview, which is exactly what [`super::CAMERA_BEARING_PATHS`] names. So in D11's three
+//! *carry or drive the camera* stay behind D11's token: the WebSocket endpoint, the MJPEG
+//! preview and (since P9b) the stored calibration samples, which is exactly what
+//! [`super::CAMERA_BEARING_PATHS`] names. So in D11's three
 //! token-gated cells the gate is a [`Router::route_layer`] over the routes and the asset
 //! **fallback** is outside it; in the token-less loopback cell nothing is installed at all.
 //! Note **N82** carries the ruling and what it changed; it retires note N76.
@@ -186,7 +187,7 @@
 //! composition derives it — `web::paths()` for the assets, [`super::CAMERA_BEARING_PATHS`] for
 //! the routes, and a path that is neither for the catch-all — and a route added later is already
 //! forced onto that list by the existing predicate's claim 2, which puts it into this population
-//! by existing. A build that installed this rule with `route_layer` passes on the two routes and
+//! by existing. A build that installed this rule with `route_layer` passes on the routes and
 //! is red on every asset and on the 404; one that installed it inside the posture `match` is red
 //! in the token-less cell; one that dropped it is red everywhere.
 //!
@@ -220,6 +221,7 @@ use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::serve::Listener;
+use engine::store::SessionStore;
 use jsonrpsee_server::{Methods, ServerHandle};
 use schema::{Error, Result, limits};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -230,7 +232,7 @@ use tower_http::compression::CompressionLayer;
 use super::gate;
 use super::posture::{Posture, TokenRule};
 use super::token::Token;
-use super::{preview, provenance, rpc};
+use super::{preview, provenance, rpc, session_photo};
 use crate::preview::Previews;
 use crate::shutdown::Shutdown;
 
@@ -276,6 +278,14 @@ const REFERRER_POLICY: &str = "no-referrer";
 /// method name. A parameter rather than a `Wchd` for the same reason `posture` and `token`
 /// are parameters — this module reads decisions, it does not make them.
 ///
+/// `samples` is D9's session tree, and it arrives the same way and for the same reason:
+/// [`super::session_photo`] reads a stored photograph out of it, and *where the state directory
+/// is* is a decision the composition root already made (`crate::state`). A store this function
+/// built from the environment would be a second answer to which tree this daemon is holding the
+/// lock on. It is an [`Arc`] because axum state is cloned per request and a
+/// [`SessionStore`] "owns a path, not a handle" — one path, shared, rather than one rebuilt per
+/// `GET`.
+///
 /// [`Token::mint`]'s doc says it is called once, from the composition root, on the path that
 /// opens the TCP listener. It still is: this function is that path, called from `main` and
 /// from the suite that drives what `main` drives.
@@ -291,6 +301,7 @@ pub async fn open(
     insecure_loopback_requested: bool,
     methods: Methods,
     previews: Previews,
+    samples: Arc<SessionStore>,
     shutdown: Shutdown,
 ) -> Result<Serving> {
     let posture = Posture::of(requested, insecure_loopback_requested);
@@ -299,7 +310,9 @@ pub async fn open(
         TokenRule::NotRequired => None,
     };
     let listener = bind(requested).await?;
-    serve(listener, posture, token, methods, previews, shutdown)
+    serve(
+        listener, posture, token, methods, previews, samples, shutdown,
+    )
 }
 
 /// Bind the address `--http` asked for.
@@ -555,6 +568,7 @@ pub fn serve(
     token: Option<Arc<Token>>,
     methods: Methods,
     previews: Previews,
+    samples: Arc<SessionStore>,
     shutdown: Shutdown,
 ) -> Result<Serving> {
     let bound = listener.local_addr().map_err(|err| Error::DeviceIo {
@@ -564,7 +578,13 @@ pub fn serve(
     })?;
     let wire = rpc::mount(methods);
     let ending = wire.ending.clone();
-    let router = router(posture, token.clone(), wire.route, preview::mount(previews))?;
+    let router = router(
+        posture,
+        token.clone(),
+        wire.route,
+        preview::mount(previews),
+        session_photo::mount(samples),
+    )?;
 
     let sockets = Sockets::new();
     let admitting = Bounded::over(listener, sockets.clone());
@@ -960,15 +980,22 @@ impl AsyncWrite for Admitted {
 /// question. Adding a route is therefore a security decision whatever else it is
 /// (`scripts/gates/web-routes-are-gated.sh`), and adding a file is not.
 ///
-/// ## The compression layer, and the route it is deliberately not over
+/// ## The compression layer, and the two routes it is deliberately not over
 ///
 /// `tower_http::CompressionLayer` is applied to **the assets and the wire**, and the preview
-/// is merged in afterwards, so the preview's service is not inside it. That is the exclusion
-/// docs/7 P5b asks for, made by composition: there is no predicate to invert, no content-type
-/// list to keep current, and a mutant that puts the preview under the layer has to *move a
-/// line* rather than flip a boolean. `CompressionLayer`'s own default predicate would compress
-/// the preview — it declines `image/*`, and `multipart/x-mixed-replace` is not `image/*` —
-/// which is why leaving it to a default would be leaving it to the wrong answer.
+/// and the calibration samples are merged in afterwards, so neither service is inside it. That
+/// is the exclusion docs/7 P5b asks for, made by composition: there is no predicate to invert,
+/// no content-type list to keep current, and a mutant that puts the preview under the layer has
+/// to *move a line* rather than flip a boolean. `CompressionLayer`'s own default predicate
+/// would compress the preview — it declines `image/*`, and `multipart/x-mixed-replace` is not
+/// `image/*` — which is why leaving it to a default would be leaving it to the wrong answer.
+///
+/// The samples route is outside it for a smaller reason and gets a smaller sentence: a
+/// calibration sample is a JPEG or a PNG, so the layer's default predicate would decline it
+/// anyway and gzip has nothing to find in a file that is already entropy. Being outside the
+/// layer by *composition* costs nothing and does not depend on that predicate staying what it
+/// is — which is the same argument as the preview's, at a route where getting it wrong would
+/// waste cycles rather than break a picture.
 ///
 /// It is over the assets because that is what compresses: the client is HTML, CSS and ES
 /// modules (design §2.7), which is the traffic gzip was designed for. It is over the wire
@@ -979,7 +1006,8 @@ impl AsyncWrite for Admitted {
 /// ## The gate, and the one word that carries the owner's ruling
 ///
 /// `Router::route_layer` maps over `path_router` and **neither** fallback, so the gate covers
-/// the WebSocket upgrade and the preview — the two routes — and does not cover a request for a
+/// the WebSocket upgrade, the preview and the samples — the routes — and does not cover a
+/// request for a
 /// path that is not one of them. That is the 2026-08-12 ruling in one word: the assets are
 /// served to anybody, and what stays behind D11's token is what carries or drives the camera.
 /// `Router::layer` is what this was, note **N75** argued for it at length, and the module
@@ -1032,12 +1060,14 @@ fn router(
     token: Option<Arc<Token>>,
     wire: Router,
     preview: Router,
+    samples: Router,
 ) -> Result<Router> {
     let routes = Router::new()
         .merge(wire)
         .fallback(asset)
         .layer(CompressionLayer::new())
-        .merge(preview);
+        .merge(preview)
+        .merge(samples);
     let served = match (posture.token(), token) {
         // D11's three gated cells: loopback without the flag, and both non-loopback cells.
         (TokenRule::Required, Some(token)) => {
@@ -1283,8 +1313,9 @@ mod tests {
         let bind = address("127.0.0.1:0");
         let token = Arc::new(Token::mint().expect("the kernel has a CSPRNG"));
 
-        let gated_without_a_token = router(Posture::of(bind, false), None, wire(), preview())
-            .expect_err("a gate with nothing to check is not a gate");
+        let gated_without_a_token =
+            router(Posture::of(bind, false), None, wire(), preview(), samples())
+                .expect_err("a gate with nothing to check is not a gate");
         assert_eq!(gated_without_a_token.kind(), schema::ErrorKind::DeviceIo);
 
         let open_with_a_token = router(
@@ -1292,6 +1323,7 @@ mod tests {
             Some(Arc::clone(&token)),
             wire(),
             preview(),
+            samples(),
         )
         .expect_err("a token that is never checked is a URL that lies");
         assert_eq!(open_with_a_token.kind(), schema::ErrorKind::DeviceIo);
@@ -1299,11 +1331,18 @@ mod tests {
         // ... and the two agreeing arrangements do get one, which is what makes the assertions
         // above about the disagreement rather than about `router` refusing everything.
         assert!(
-            router(Posture::of(bind, false), Some(token), wire(), preview()).is_ok(),
+            router(
+                Posture::of(bind, false),
+                Some(token),
+                wire(),
+                preview(),
+                samples()
+            )
+            .is_ok(),
             "D11's default cell"
         );
         assert!(
-            router(Posture::of(bind, true), None, wire(), preview()).is_ok(),
+            router(Posture::of(bind, true), None, wire(), preview(), samples()).is_ok(),
             "D11's token-less cell"
         );
     }
@@ -1322,6 +1361,23 @@ mod tests {
         super::preview::mount(no_cameras())
     }
 
+    /// A session tree with no session in it, as [`open`] and [`serve`] take it.
+    fn samples_store() -> Arc<SessionStore> {
+        Arc::new(SessionStore::new(
+            "/nonexistent/webcam-handler-holds-no-sessions-here",
+        ))
+    }
+
+    /// The calibration-samples route, over a session tree with no session in it.
+    ///
+    /// [`no_methods`]'s and [`no_cameras`]'s argument once more: every assertion in this module
+    /// is about the posture, the token, the URL or the asset table. What that route *does* is
+    /// `crate::http::session_photo`'s claim and `crates/daemon/tests/session_photo.rs`'s, over a
+    /// real session tree with a real photograph in it.
+    fn samples() -> Router {
+        super::session_photo::mount(samples_store())
+    }
+
     #[tokio::test]
     async fn the_url_is_built_from_the_bound_address_and_carries_the_token() {
         // D11's "default `127.0.0.1:0` → report the bound port", as the property of the one
@@ -1333,6 +1389,7 @@ mod tests {
             false,
             no_methods(),
             no_cameras(),
+            samples_store(),
             shutdown.clone(),
         )
         .await
@@ -1361,6 +1418,7 @@ mod tests {
             true,
             no_methods(),
             no_cameras(),
+            samples_store(),
             shutdown.clone(),
         )
         .await

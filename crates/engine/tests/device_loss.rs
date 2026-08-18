@@ -132,7 +132,7 @@ fn during_a_recording_the_take_finalizes_valid_to_the_last_frame_with_its_end_na
         })
         .expect("some committed camera offers MJPG")
         .id;
-    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
     let path = Utf8PathBuf::from_path_buf(scratch.path().join("interrupted.avi"))
         .expect("a UTF-8 scratch path");
 

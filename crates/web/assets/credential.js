@@ -42,6 +42,9 @@ const RPC_PATH = "/rpc";
 /** `daemon::http::preview::PREVIEW_PATH`. */
 const PREVIEW_PATH = "/preview";
 
+/** `daemon::http::samples::SESSION_PHOTO_PATH` — the third camera-bearing route (D20). */
+const SESSION_PHOTO_PATH = "/session-photo";
+
 /** `daemon::http::preview::CAMERA_QUERY_PARAM`. */
 const CAMERA_PARAM = "camera";
 
@@ -101,4 +104,28 @@ export function previewUrl(camera, token) {
     query.set(TOKEN_PARAM, token);
   }
   return `${PREVIEW_PATH}?${query}`;
+}
+
+/**
+ * The `<img>` source for one calibration sample, addressed by reference (design D20).
+ *
+ * **No path crosses this function**, and that is the whole shape of the route: the caller
+ * names a session, a control, a sweep pass and the value the sample was taken at, and the
+ * daemon derives the file from the session store's own layout rules (D9). A page that sent
+ * `sample.photo` — the relative path the session document carries — would be handing caller
+ * text to a filesystem, which is the one thing the route is built not to do.
+ *
+ * The token rides the query for `previewUrl`'s reason: an `<img>` sets no headers, and this
+ * route serves stored camera frames, so it is behind the same gate as its two siblings.
+ */
+export function samplePhotoUrl({ session, control, pass, value }, token = tokenFromLocation()) {
+  const query = new URLSearchParams();
+  query.set("session", session);
+  query.set("control", control);
+  query.set("pass", String(pass));
+  query.set("value", String(value));
+  if (token !== null) {
+    query.set(TOKEN_PARAM, token);
+  }
+  return `${SESSION_PHOTO_PATH}?${query}`;
 }

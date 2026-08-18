@@ -33,11 +33,33 @@
   }
 }
 
+/* ---------------------------------------------------- the workbench shell (D20)
+ *
+ * One viewport-height app shell in two panes: the preview stays put and the control column
+ * scrolls on its own axis beside it. The requirement it serves is stated testably in D20 —
+ * *the preview and the control being adjusted are simultaneously visible at every scroll
+ * position of the control column* — and it is asserted at the rung's pinned viewport over
+ * the 77-control vivid profile, which is the sizing case rather than the 18-control common
+ * one.
+ *
+ * `100dvh` rather than `100vh`: on a phone the visual viewport shrinks when browser chrome
+ * appears, and a shell measured against the larger one puts its own scrollbar off the
+ * bottom of the screen. Chrome is the supported target (§2.7) and has had `dvh` since 108.
+ *
+ * The `min-height: 0` on the panes is not decoration. A grid item's default `min-height` is
+ * `auto`, which means "as tall as my content" — so a column holding 77 controls would grow
+ * the grid row past the viewport and scroll the *document* instead of itself, which is
+ * exactly the layout this shell replaced. */
 body {
   margin: 0;
-  padding: 1.5rem;
+  padding: 0;
   font-family: system-ui, sans-serif;
   line-height: 1.5;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  /* The document never scrolls; its two panes do. */
+  overflow: hidden;
 }
 
 header {
@@ -46,7 +68,85 @@ header {
   gap: 0 1rem;
   align-items: baseline;
   border-bottom: 1px solid var(--edge);
-  padding-bottom: 0.5rem;
+  padding: 0.6rem 1.25rem;
+}
+
+main.workbench {
+  display: grid;
+  grid-template-columns: minmax(22rem, 34%) minmax(0, 1fr);
+  gap: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.pane {
+  min-height: 0;
+  padding: 1rem 1.25rem;
+}
+
+/* The preview pane. It does not scroll: everything in it is sized to fit, and the picture
+ * takes whatever is left over — so there is no scroll position at which the operator's own
+ * camera is off screen. */
+.pane-preview {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  border-right: 1px solid var(--edge);
+  overflow: hidden;
+}
+
+/* The control column, and the one scroll container on the page. `overscroll-behavior`
+ * because a column that hands its momentum to the document would move a shell that has
+ * nowhere to go, which reads as a stutter. */
+.pane-controls {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  gap: 1.5rem;
+  align-content: start;
+}
+
+/* Below two panes' worth of width the shell stacks, and the preview sticks to the top of
+ * the scrolling document instead — the same claim, made the only way one column can make
+ * it. The width is the point at which the control column's own widgets stop fitting beside
+ * a picture worth looking at, not a device class. */
+@media (max-width: 60rem) {
+  body {
+    height: auto;
+    overflow: visible;
+  }
+
+  main.workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pane-preview {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    /* Room for the picture and the picker, and the rest of the screen for the controls. */
+    max-height: 60dvh;
+    border-right: none;
+    border-bottom: 1px solid var(--edge);
+    background: Canvas;
+  }
+
+  .pane-controls {
+    overflow-y: visible;
+  }
+}
+
+/* Present to a screen reader, absent to a sighted reader: the preview pane's heading names
+ * a region whose content says what it is. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 h1 {
@@ -63,11 +163,7 @@ h2 {
   margin: 0 0 0.5rem;
 }
 
-main {
-  display: grid;
-  gap: 1.5rem;
-  margin-top: 1rem;
-}
+
 
 .status,
 .report {
@@ -105,9 +201,20 @@ ul.sessions {
   gap: 0.25rem;
 }
 
+/* One camera per row in the preview pane: the cards carry an id and a node list, and two of
+ * them side by side in a 22rem pane elide away the characters that tell them apart. */
+.pane-preview ul.cameras {
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.pane-preview .cameras button {
+  width: 100%;
+}
+
 .cameras button {
   font: inherit;
-  padding: 0.4rem 0.7rem;
+  padding: 0.3rem 0.6rem;
   border: 1px solid var(--edge);
   border-radius: 0.4rem;
   background: transparent;
@@ -125,33 +232,79 @@ ul.sessions {
   display: block;
   font-size: 0.8rem;
   color: var(--refused);
+  /* One line, elided. The whole listing — every node path, the driver, the fingerprint — is
+   * what `webcam-handler-cli list` is for; what this line has to do is tell two cameras of
+   * one model apart at a glance, and the id does that in its first few characters. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ------------------------------------------------------- preview and photos */
 
-.stage {
+/* The camera picker, at the top of the preview pane because choosing a camera is the first
+ * thing an operator does and the thing they undo most often. It scrolls on its own axis if
+ * a machine has more cameras than fit, rather than pushing the picture down. */
+.picker {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 0.4rem;
+  /* An absolute bound rather than a percentage: this is a grid item, and a percentage
+   * height on one resolves against the row it is sizing — which is itself. Eleven rem is
+   * about four cards, and the fifth scrolls. */
+  max-height: 11rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.stage figure {
+.pane-preview figure {
   margin: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  gap: 0.25rem;
 }
 
-.stage img {
+.pane-preview img {
   display: block;
   max-width: 100%;
+  /* `min-height: 0` so the picture yields to the pane rather than the pane to the picture,
+   * and `object-fit: contain` so yielding never crops what the camera saw — a preview that
+   * cropped would be a picture of a different scene than the one the device delivered. */
+  /* The picture fills the row it was given and letterboxes inside it. `contain` rather than
+   * `cover` is the load-bearing half: yielding must never *crop* what the camera saw,
+   * because a cropped preview is a picture of a different scene than the one the device
+   * delivered — and this page's whole subject is what the device delivered. */
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  object-fit: contain;
+  object-position: center;
   border: 1px solid var(--edge);
   border-radius: 0.4rem;
   background: var(--sunken);
-  /* Zero-height until a picture arrives, so an empty frame is empty rather than a grey
-   * rectangle a reader could mistake for a camera pointed at a wall. */
-  min-height: 0;
 }
 
-.stage img:not([src]) {
+.pane-preview img:not([src]) {
   display: none;
+}
+
+/* The photograph, below the live picture and smaller than it: it is a record of a moment
+ * that has passed, and the live one is what the operator is steering by. */
+.capture {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+}
+
+.capture .shot {
+  margin: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.capture .shot img {
+  max-height: 8rem;
+  object-position: left top;
 }
 
 button {
@@ -296,4 +449,101 @@ td {
   padding: 0.2rem 0.6rem 0.2rem 0;
   text-align: left;
   vertical-align: top;
+}
+
+/* --------------------------------------------- the human-driven flow (D20) */
+
+.flow {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--edge);
+  border-radius: 0.5rem;
+}
+
+/* The pane is standing down while a sweep runs, and the shell says so rather than leaving
+ * an operator to work out why the preview went away. `data-sweeping` is written by the flow
+ * itself, so the styling and the state have one source. */
+.flow[data-sweeping="true"] {
+  border-color: var(--owned);
+}
+
+.flow-start {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.flow-start label {
+  display: grid;
+  gap: 0.15rem;
+  font-size: 0.85rem;
+}
+
+.flow-start input {
+  font: inherit;
+}
+
+.flow-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* The sample grid: the photographs the operator is choosing between, with what the metrics
+ * thought beside each one. D8's posture is on the screen here — metrics rank, they do not
+ * decide, so the score is *shown* and the click is the decision. */
+.samples {
+  display: grid;
+  grid-template-columns: repeat(var(--sample-columns, 4), minmax(0, 1fr));
+  gap: 0.4rem;
+  /* A sweep may take 256 samples (`limits::MAX_SWEEP_SAMPLES`), which is more than any screen
+   * holds; the grid scrolls rather than growing the column it lives in. */
+  max-height: 22rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.samples figure {
+  margin: 0;
+}
+
+.sample-pick {
+  display: grid;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.25rem;
+  text-align: left;
+}
+
+.sample-pick img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: var(--sunken);
+  border-radius: 0.25rem;
+}
+
+.sample-pick figcaption {
+  display: grid;
+  gap: 0.05rem;
+  font-size: 0.75rem;
+}
+
+.sample-pick .score {
+  color: var(--refused);
+}
+
+/* The sample the session document says was chosen — by this operator or by a metric before
+ * them. Border rather than a background, so the picture itself is not tinted: a review screen
+ * that changed how a photograph looked would be the one thing this page must never do. */
+.sample-pick[aria-pressed="true"] {
+  border-color: var(--owned);
+  outline: 2px solid var(--owned);
+}
+
+/* The freshest sample of a running sweep — what the camera saw most recently, which is what
+ * an operator watching a sweep is actually looking at. */
+.samples .freshest .sample-pick {
+  border-color: currentcolor;
 }

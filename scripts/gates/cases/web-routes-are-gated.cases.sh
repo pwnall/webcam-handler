@@ -8,6 +8,12 @@
 # that carries camera data, forgets the list, and every test in the workspace stays green
 # because no test knows to ask for a path nobody wrote down.
 #
+# **P9b is the first time that defect class had a real route to be about**, and it gets a second
+# arm beside the generic one: `fail_case_the_session_photo_route_left_the_list` seeds the list
+# losing a route that exists, which is the same hole a rebase or a tidy-up reaches from the
+# opposite side. D20 asked for both halves of the pair to go red on this class before
+# `/session-photo` landed; this is the half that reads the source.
+#
 # The seeds are Rust-shaped but never compiled: this predicate reads source, so a seeded
 # violation has to be readable rather than buildable, and a case that ran cargo would be
 # measuring something else.
@@ -98,6 +104,42 @@ fail_case_a_new_route_module_nobody_put_on_the_list() {
     # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
     gate_red_because 'registers a route on `"/snapshot"`, which is not one of the paths' \
         env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_session_photo_route_left_the_list() {
+    # **The same hole, reached from the other direction, and about a route that really exists.**
+    # `fail_case_a_new_route_module_nobody_put_on_the_list` seeds a route somebody forgot to add;
+    # this seeds the list forgetting a route that is already there — a rebase that dropped a line,
+    # a "tidy the array" edit, a merge that took the wrong side. The route keeps answering, the
+    # `route_layer` keeps covering exactly the paths named beside it, and the calibration samples
+    # a sweep photographed go out to anybody who asks.
+    #
+    # `/session-photo` rather than `/preview` because it is the entry the list *gained* (D20,
+    # P9b), which makes it the one a future edit is most likely to treat as removable — and D20
+    # asked for this class to have a live arm before the route landed.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed '/^    session_photo::SESSION_PHOTO_PATH,$/d' "$tree/crates/daemon/src/http/mod.rs"
+    gate_seed 's/pub const CAMERA_BEARING_PATHS: \[&str; 3\]/pub const CAMERA_BEARING_PATHS: [\&str; 2]/' \
+        "$tree/crates/daemon/src/http/mod.rs"
+    # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
+    gate_red_because 'registers a route on `SESSION_PHOTO_PATH`, which is not one of the paths' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_session_photo_route_answers_a_method_this_gate_cannot_place() {
+    # Claim 2's method half at the newest camera-bearing route, and it is here rather than only
+    # at `/preview` because the two routes' `HEAD`s were added for the same reason and by the
+    # same argument (note **N179**): a `HEAD` that fell through to the `GET` slot would do the
+    # whole job — there a camera opened, here a session tree walked and a photograph read — for a
+    # request that asked for no bytes. A spelling this gate cannot place is a method nobody is
+    # counting, on the route that hands back stored frames.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's/\.route(SESSION_PHOTO_PATH, get(sample)\.head(described))/.route(SESSION_PHOTO_PATH, get(sample).also_answer(described))/' \
+        "$tree/crates/daemon/src/http/session_photo.rs"
+    # shellcheck disable=SC2016  # the predicate's own message, backticks and all, matched verbatim
+    gate_red_because 'which is not one of `axum::routing`' env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
 fail_case_a_new_route_on_a_constant_the_list_does_not_name() {
@@ -231,7 +273,10 @@ fail_case_the_list_is_empty() {
     # non-zero says so before the comparison does.
     local tree
     tree="$(gate_scratch_tree)"
-    gate_seed 's/pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/pub const CAMERA_BEARING_PATHS: [\&str; 0] = [];/' \
+    # A **range** seed, because rustfmt puts one entry per line at three of them and `sed` is
+    # line-based: `/…/,/;/c\` replaces the whole declaration however it is wrapped, which is
+    # what stops this arm going quiet the next time the array grows (note **N186**).
+    gate_seed '/pub const CAMERA_BEARING_PATHS/,/^];$/c\pub const CAMERA_BEARING_PATHS: [\&str; 0] = [];' \
         "$tree/crates/daemon/src/http/mod.rs"
     # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
     gate_red_because 'examined zero paths on `CAMERA_BEARING_PATHS`' \
@@ -244,7 +289,7 @@ fail_case_the_list_names_a_literal_instead_of_the_constant() {
     # over a route nothing gates.
     local tree
     tree="$(gate_scratch_tree)"
-    gate_seed 's/= \[rpc::RPC_PATH, preview::PREVIEW_PATH\];/= ["\/rpc", "\/preview"];/' \
+    gate_seed '/pub const CAMERA_BEARING_PATHS/,/^];$/c\pub const CAMERA_BEARING_PATHS: [\&str; 3] = ["/rpc", "/preview", "/session-photo"];' \
         "$tree/crates/daemon/src/http/mod.rs"
     # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
     gate_red_because 'names `"/rpc"`, which is not a constant' \
@@ -257,7 +302,7 @@ fail_case_the_list_names_a_path_nothing_declares() {
     # nothing naming it.
     local tree
     tree="$(gate_scratch_tree)"
-    gate_seed 's/preview::PREVIEW_PATH\];/preview::SNAPSHOT_PATH];/' \
+    gate_seed 's/session_photo::SESSION_PHOTO_PATH,/session_photo::SNAPSHOT_PATH,/' \
         "$tree/crates/daemon/src/http/mod.rs"
     # shellcheck disable=SC2016  # the predicate's own sentence, backticks and $defs and all, matched verbatim
     gate_red_because 'names `SNAPSHOT_PATH` and nothing in crates/daemon/src/http declares it' \
@@ -299,6 +344,8 @@ fail_case_no_route_is_registered_at_all() {
         "$tree/crates/daemon/src/http/rpc.rs"
     gate_seed 's/\.route(PREVIEW_PATH,[^;]*)/.with_state(())/' \
         "$tree/crates/daemon/src/http/preview.rs"
+    gate_seed 's/\.route(SESSION_PHOTO_PATH,[^;]*)/.with_state(())/' \
+        "$tree/crates/daemon/src/http/session_photo.rs"
     # The registrations, not the methods below them: both vacuity branches fire when the last
     # `.route(` goes, and this arm's name is about the routes.
     gate_red_because 'examined zero route registrations' \
@@ -361,16 +408,17 @@ fail_case_the_daemon_left_the_workspace() {
 }
 
 pass_case_a_wrapped_declaration_is_still_a_list() {
-    # A third path pushes the array past rustfmt's width and the value moves to a line of its
-    # own. That is a formatting event, and a predicate that read it as an empty list would go
-    # red on `cargo fmt` — note **N60**'s cost, in a gate whose subject is a security boundary.
-    # The seeded third entry is declared beside the route it would belong to, so this arm is the
-    # legitimate shape of the *next* camera-bearing route rather than a doctored file.
+    # The array is past rustfmt's width and the value is no longer on the `pub const` line — as
+    # of P9b's third entry that is the *shipped* shape, and this arm now seeds one wrap further
+    # still. Either way it is a formatting event, and a predicate that read it as an empty list
+    # would go red on `cargo fmt` — note **N60**'s cost, in a gate whose subject is a security
+    # boundary. The seeded fourth entry is declared beside the route it would belong to, so this
+    # arm is the legitimate shape of the *next* camera-bearing route rather than a doctored file.
     local tree
     tree="$(gate_scratch_tree)"
-    gate_seed 's|pub const CAMERA_BEARING_PATHS: \[&str; 2\] = \[rpc::RPC_PATH, preview::PREVIEW_PATH\];|pub const CAMERA_BEARING_PATHS: [\&str; 3] =\n    [rpc::RPC_PATH, preview::PREVIEW_PATH, preview::SNAPSHOT_PATH];|' \
+    gate_seed '/pub const CAMERA_BEARING_PATHS/,/^];$/c\pub const CAMERA_BEARING_PATHS: [\&str; 4] = [rpc::RPC_PATH, preview::PREVIEW_PATH,\n    session_photo::SESSION_PHOTO_PATH, preview::SNAPSHOT_PATH];' \
         "$tree/crates/daemon/src/http/mod.rs"
-    gate_seed 's|^pub const CAMERA_QUERY_PARAM: &str = "camera";|pub const CAMERA_QUERY_PARAM: \&str = "camera";\n\n/// A third camera-bearing path, named on the list and gated with the rest.\npub const SNAPSHOT_PATH: \&str = "/snapshot";|' \
+    gate_seed 's|^pub const CAMERA_QUERY_PARAM: &str = "camera";|pub const CAMERA_QUERY_PARAM: \&str = "camera";\n\n/// A fourth camera-bearing path, named on the list and gated with the rest.\npub const SNAPSHOT_PATH: \&str = "/snapshot";|' \
         "$tree/crates/daemon/src/http/preview.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }

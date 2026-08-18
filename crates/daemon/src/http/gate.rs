@@ -3,8 +3,8 @@
 //!
 //! [`super::token`] is the secret and the comparison; this is the *policy* about a request:
 //! which parts of it may carry a credential, what it means when more than one does, and what
-//! a request that carries none is answered with. The listener installs it over the two routes
-//! that carry or drive the camera — [`super::CAMERA_BEARING_PATHS`] — and over nothing else,
+//! a request that carries none is answered with. The listener installs it over the routes that
+//! carry or drive the camera — [`super::CAMERA_BEARING_PATHS`] — and over nothing else,
 //! because the owner ruled (2026-08-12) that the static assets are open-source code rather
 //! than a secret and are served without authentication (note **N82**).
 //! `super::listener::router` is where that is composed; its header argues both halves — why

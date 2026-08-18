@@ -1,10 +1,10 @@
 //! The MJPEG preview route: `multipart/x-mixed-replace`, one part per frame, ending when the
 //! client goes away or the daemon does (design **D11**, **D12**, §2.6; docs/7 P5b).
 //!
-//! [`super::rpc`] is this module's neighbour and the two are the daemon's only routes that
-//! carry a camera. That one hands a request to somebody else's service; this one owns its
-//! response from the first byte to the last, because there is no library between a `DQBUF` and
-//! a socket here — `crate::preview` publishes the camera's own JPEG bytes into a latest-frame
+//! [`super::rpc`] is this module's neighbour and [`super::session_photo`] is its sibling: the
+//! three are the daemon's only routes that carry a camera. The first hands a request to somebody
+//! else's service and the last hands back a file; this one owns its response from the first byte
+//! to the last, because there is no library between a `DQBUF` and a socket here — `crate::preview` publishes the camera's own JPEG bytes into a latest-frame
 //! channel and this module frames them.
 //!
 //! ## This route is gated because it carries camera frames
@@ -12,15 +12,17 @@
 //! **Permanently, and by name.** The owner ruled (2026-08-12) that static assets are served
 //! without authentication — they are open-source code, not a secret — and that only the
 //! resources which carry or drive the camera stay behind D11's bearer token: the WebSocket
-//! endpoint and this one (note **N82**). Since that ruling landed, the gate over this route is
+//! endpoint, this one, and — since P9b — the stored calibration samples (note **N82**). Since
+//! that ruling landed, the gate over this route is
 //! no longer an accident of where it sits in a router — it is `super::listener::router`'s
 //! `route_layer` over the routes, and this route is one of them. What keeps it that way is a
 //! pair, because neither half can see what the other does:
 //! `crates/daemon/tests/preview.rs`'s `every_camera_bearing_route_is_behind_the_gate` drives
 //! every path in [`super::CAMERA_BEARING_PATHS`] over a real socket and requires the refusal,
 //! and `scripts/gates/web-routes-are-gated.sh` requires every route registration in this crate
-//! to name a path on that list — so a *third* route added without one is a finding rather than
-//! a discovery.
+//! to name a path on that list — so a route added without one is a finding rather than a
+//! discovery. [`super::session_photo`] is where that stopped being hypothetical: it is the first
+//! path the list ever gained, and both halves were extended in the commit that added it.
 //!
 //! What is behind the credential here is not a document: it is a live view of whatever the
 //! camera is pointed at, which on a laptop is a person's room (AGENTS: "a frame may contain a
@@ -172,7 +174,7 @@ const FRAME_SEQUENCE_HEADER: &str = "X-Wch-Frame-Sequence";
 /// A sentence, for [`super::listener`]'s `NOT_FOUND` reason: the reader is a person who typed
 /// a URL or a client one version behind, and a listing of this daemon's cameras would be a
 /// camera inventory served to whoever asked. The token is still required to reach this line —
-/// this is one of the two routes the 2026-08-12 ruling kept gated — but "the operator
+/// this is one of the routes the 2026-08-12 ruling kept gated — but "the operator
 /// authenticated" is not a reason to volunteer more than was asked for.
 const NO_CAMERA: &str = "name a camera: /preview?camera=<id>\n";
 
@@ -460,10 +462,20 @@ fn part(shot: &Shot) -> Vec<u8> {
 
 /// The camera a request names, percent-decoded.
 ///
+/// [`parameter`] with this route's parameter name, and nothing else: the grammar and the
+/// decoding argument live there, because since P9b two routes read a name out of a query string
+/// and a second copy of a decoder is the way they come to disagree about one URL.
+fn camera_of(query: Option<&str>) -> Option<String> {
+    parameter(query, CAMERA_QUERY_PARAM)
+}
+
+/// The value of the first `name=` parameter in `query`, percent-decoded.
+///
 /// The query grammar is the one [`super::gate`] reads — split on `&`, then on the first `=` —
 /// and this is a second *reader* of it rather than a second rule: that module answers "which
 /// credentials does this request present", which is a security decision, and this one answers
-/// "which camera", which is a name.
+/// "which resource", which is a name. `pub(super)` because [`super::session_photo`] asks the
+/// same question about four parameters of its own.
 ///
 /// **Percent-decoded, where the token deliberately is not.** [`super::gate`]'s header argues
 /// that decoding a credential is more ways to spell one secret, in the one place where more
@@ -484,13 +496,19 @@ fn part(shot: &Shot) -> Vec<u8> {
 /// disagreeing camera names have an ordinary one, and a request that asks for two cameras gets
 /// the first — a stream of one of the two cameras it named, which is what any answer to that
 /// request has to be.
-fn camera_of(query: Option<&str>) -> Option<String> {
+///
+/// An **empty** value is no value: `?camera=` and `?session=` are the shape a URL truncated at
+/// its `=` takes, and a caller who sent one has named nothing. That is the opposite of the
+/// gate's reading of `?token=`, and deliberately — there, a truncated credential must be a
+/// credential that fails rather than a request that presented none, because the request is
+/// asking to be let in. Here it is asking for something by name.
+pub(super) fn parameter(query: Option<&str>, name: &str) -> Option<String> {
     query?
         .split('&')
         .filter_map(|pair| pair.split_once('='))
-        .find(|(name, _)| *name == CAMERA_QUERY_PARAM)
+        .find(|(found, _)| *found == name)
         .map(|(_, value)| percent_decoded(value))
-        .filter(|name| !name.is_empty())
+        .filter(|value| !value.is_empty())
 }
 
 /// `value` with its percent-escapes resolved.

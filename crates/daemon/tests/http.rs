@@ -165,6 +165,7 @@ impl Web {
             insecure_loopback,
             no_methods(),
             no_cameras(),
+            no_samples(),
             shutdown.clone(),
         )
         .await
@@ -193,6 +194,7 @@ impl Web {
             token,
             no_methods(),
             no_cameras(),
+            no_samples(),
             shutdown.clone(),
         )
         .expect("a posture and a token that agree");
@@ -315,6 +317,26 @@ fn no_cameras() -> daemon::preview::Previews {
         engine::settle::MonotonicClock::new(),
         Shutdown::new(),
     )
+}
+
+/// The session tree this suite hands the listener: one with no session in it.
+///
+/// [`no_cameras`]'s argument, one route further along. The credential is checked before
+/// `/session-photo`'s handler runs, so an anonymous request for it is a `401` whether or not any
+/// sample exists — and with the token it is the `404` a reference nothing answers to gets, which
+/// is what claim 3 of [`every_camera_bearing_route_is_behind_the_gate`] needs (neither the gate's
+/// `401` nor the asset table's). What the route *does* with a sample behind it is
+/// `crates/daemon/tests/session_photo.rs`'s claim, over a real session tree.
+///
+/// A directory that does not exist rather than a `TempStore`, and that is the honest fixture
+/// rather than a shortcut: `SessionStore::all_sessions` answers "no sessions" for a missing tree
+/// ("a missing tree is no sessions, which is an answer rather than a failure"), so this store
+/// resolves nothing and creates nothing — and a `TempStore` held nowhere would be deleted before
+/// the first request anyway.
+fn no_samples() -> Arc<engine::store::SessionStore> {
+    Arc::new(engine::store::SessionStore::new(
+        "/nonexistent/webcam-handler-holds-no-sessions-here",
+    ))
 }
 
 /// An equal-length, one-digit-different token.

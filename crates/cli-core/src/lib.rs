@@ -4208,7 +4208,11 @@ mod tests {
         // the camera reached over a forwarded bus, and the two halves must disagree — same
         // device, different address. Written to a scratch file rather than committed, because
         // a corpus entry is a document a tool captured and this one is a document a test made.
-        let dir = tempfile::tempdir().expect("a scratch directory");
+        // `TempDir::new_in` over the one scratch root, not `tempfile::tempdir()`: the owner's
+        // 2026-08-12 ruling (note **N84**) puts every test's scratch under `target/`, and this
+        // crate reaches it through `schema::paths` because it links no engine (T6).
+        let root = schema::paths::scratch_root().expect("a scratch root");
+        let dir = tempfile::TempDir::new_in(&root).expect("a scratch directory");
         let a = corpus_path("chicony-rgb");
         let mut forwarded = corpus("chicony-rgb");
         forwarded.invariant.info.fingerprint.bus_path = "9-9:1.0".to_owned();
@@ -4237,7 +4241,11 @@ mod tests {
         // Three refusals, all from the D13 registry v3 adds nothing to, and each one naming
         // what a caller has to fix. An agent reading these unsupervised needs the path in the
         // first two and both version numbers in the third.
-        let dir = tempfile::tempdir().expect("a scratch directory");
+        // `TempDir::new_in` over the one scratch root, not `tempfile::tempdir()`: the owner's
+        // 2026-08-12 ruling (note **N84**) puts every test's scratch under `target/`, and this
+        // crate reaches it through `schema::paths` because it links no engine (T6).
+        let root = schema::paths::scratch_root().expect("a scratch root");
+        let dir = tempfile::TempDir::new_in(&root).expect("a scratch directory");
         let good = corpus_path("chicony-rgb");
         let write = |name: &str, bytes: &[u8]| -> Utf8PathBuf {
             let path = Utf8PathBuf::from_path_buf(dir.path().join(name)).expect("a UTF-8 path");
@@ -4266,8 +4274,14 @@ mod tests {
         // Carrying *this build's* profile version deliberately, so the refusal under test is
         // about the document's shape: a fixture at some other number would be refused by the
         // version probe one line earlier and this arm would be measuring the wrong sentence.
+        // Named for what it stands for — a caller who pointed `profile compare` at a
+        // calibration session's own document — without spelling that document's filename:
+        // `atomic-write-home.sh` reads any file naming D9's filenames beside a raw write
+        // primitive as a bypass of `write_json_atomic`, and it is right to, because it cannot
+        // tell a fixture from a store write by grepping. The reader loses nothing; what this
+        // fixture is about is its *contents*.
         let not_a_profile = write(
-            "session.json",
+            "a-session-document.json",
             format!(
                 r#"{{"schema_version":{},"id":"nope"}}"#,
                 schema::limits::PROFILE_SCHEMA_VERSION
@@ -4310,7 +4324,11 @@ mod tests {
         // which is why the read probes `schema_version` before it parses anything else — and
         // the fixture is a real committed profile with one number changed, so nothing else
         // about it could be what this arm is measuring.
-        let dir = tempfile::tempdir().expect("a scratch directory");
+        // `TempDir::new_in` over the one scratch root, not `tempfile::tempdir()`: the owner's
+        // 2026-08-12 ruling (note **N84**) puts every test's scratch under `target/`, and this
+        // crate reaches it through `schema::paths` because it links no engine (T6).
+        let root = schema::paths::scratch_root().expect("a scratch root");
+        let dir = tempfile::TempDir::new_in(&root).expect("a scratch directory");
         let mut document: serde_json::Value = serde_json::from_slice(
             &std::fs::read(corpus_path("chicony-rgb")).expect("a committed profile"),
         )

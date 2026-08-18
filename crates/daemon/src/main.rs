@@ -426,6 +426,15 @@ async fn run(args: &Args, logging: logging::Sink) -> Result<()> {
                 // so the listener composes a transport and decides nothing about cameras
                 // (docs/7 P5b).
                 wchd.previews(),
+                // D9's session tree, handed over the same way and for the same reason: D20's
+                // `/session-photo` reads a stored sample photograph out of it, and *where the
+                // state directory is* is a decision this root already made
+                // (`daemon::state::OwnedState`). A third `SessionStore` over the directory this
+                // process already owns — "cheap to build and cheap to clone-by-rebuilding: it
+                // owns a path, not a handle" — and never a second *lock*, because this route
+                // reads and `daemon::server`'s header is where "the read verbs take no lock at
+                // all" is argued.
+                std::sync::Arc::new(SessionStore::new(state.store().root())),
                 shutdown.clone(),
             )
             .await?;

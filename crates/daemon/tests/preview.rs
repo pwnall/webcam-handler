@@ -47,11 +47,17 @@ use camino::Utf8Path;
 use daemon::http;
 use daemon::server::Wchd;
 use daemon::shutdown::Shutdown;
+use engine::lifecycle::{self, SessionSpec};
 use engine::store::{LockProtocol, SessionStore, TempStore};
 use fake::FakeBackend;
 use schema::backend::CameraBackend;
-use schema::camera::{CameraId, FrameInterval, FrameSize, FrameSizeInfo, PixelFormat};
+use schema::camera::{
+    CameraFingerprint, CameraId, FrameInterval, FrameSize, FrameSizeInfo, PixelFormat,
+};
+use schema::control::ControlSlug;
 use schema::limits;
+use schema::session::{ControlSession, ControlStatus, Sample, SweepSpec};
+use schema::time::Stamp;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpSocket, TcpStream};
@@ -66,6 +72,12 @@ struct Preview {
     wchd: Wchd,
     backend: Arc<FakeBackend>,
     camera: CameraId,
+    /// The one calibration sample this fixture's state directory holds.
+    ///
+    /// Here because `every_camera_bearing_route_is_behind_the_gate` grew a third path to drive
+    /// (P9b, D20) and the claim it has to make about that path is "the token gets **something**
+    /// back" — which needs a sample that really exists, on a store this listener really reads.
+    sample: Planted,
     serving: http::Serving,
     token: String,
     shutdown: Shutdown,
@@ -114,16 +126,21 @@ impl Preview {
             FakeBackend::new(vec![small_mjpeg_camera()])
                 .expect("the synthetic profile is this build's version"),
         );
-        let camera = backend
+        let cameras = backend
             .enumerate()
-            .expect("the fake enumerates what it replays")
-            .first()
-            .expect("one camera")
-            .id
-            .clone();
+            .expect("the fake enumerates what it replays");
+        let first = cameras.first().expect("one camera");
+        let camera = first.id.clone();
+        let fingerprint = first.fingerprint.clone();
 
         let state = TempStore::new().expect("a state directory");
         let store = SessionStore::new(state.root());
+        // The calibration sample `/session-photo` serves, written **before** the daemon takes
+        // the directory: D9 gives a running daemon the lock for its lifetime, so a fixture that
+        // wrote afterwards would be contending with the thing it is setting up
+        // (`tests/support/fixture.rs` writes its sessions in the same window and for the same
+        // reason).
+        let sample = plant_sample(&store, &fingerprint);
         let lock = Arc::new(
             store
                 .lock(LockProtocol::HeldForLifetime)
@@ -142,9 +159,16 @@ impl Preview {
         // than about one it arranged.
         let requested: std::net::SocketAddr = "127.0.0.1:0".parse().expect("a literal address");
         let serving = match send_buffer {
-            None => http::open(requested, false, methods, wchd.previews(), shutdown.clone())
-                .await
-                .expect("loopback on an ephemeral port"),
+            None => http::open(
+                requested,
+                false,
+                methods,
+                wchd.previews(),
+                Arc::new(SessionStore::new(state.root())),
+                shutdown.clone(),
+            )
+            .await
+            .expect("loopback on an ephemeral port"),
             Some(bytes) => {
                 let socket = TcpSocket::new_v4().expect("an IPv4 socket");
                 socket
@@ -162,6 +186,7 @@ impl Preview {
                     Some(token),
                     methods,
                     wchd.previews(),
+                    Arc::new(SessionStore::new(state.root())),
                     shutdown.clone(),
                 )
                 .expect("a posture and a token that agree")
@@ -180,6 +205,7 @@ impl Preview {
             wchd,
             backend,
             camera,
+            sample,
             serving,
             token,
             shutdown,
@@ -199,6 +225,25 @@ impl Preview {
             id = self.camera.as_str().replace(':', "%3A"),
             token = http::TOKEN_QUERY_PARAM,
             secret = self.token,
+        )
+    }
+
+    /// The request target D20's sample grid would use for this fixture's one sample.
+    ///
+    /// `session` is a parameter rather than the planted id, because the claim the twin makes
+    /// about this route has two ends: a reference this store answers to, and one it does not.
+    /// A helper that could only build the first could only assert half of it.
+    fn sample_target(&self, session: uuid::Uuid) -> String {
+        format!(
+            "{path}?{s}={session}&{c}={control}&{p}={pass}&{v}={value}",
+            path = http::SESSION_PHOTO_PATH,
+            s = http::SESSION_QUERY_PARAM,
+            c = http::CONTROL_QUERY_PARAM,
+            control = self.sample.control.as_str(),
+            p = http::PASS_QUERY_PARAM,
+            pass = self.sample.pass,
+            v = http::VALUE_QUERY_PARAM,
+            value = self.sample.value,
         )
     }
 
@@ -664,6 +709,98 @@ impl Part {
     /// `engine::preview::start`'s negotiation check would have put there.
     fn is_jpeg(&self) -> bool {
         self.bytes.starts_with(&[0xff, 0xd8]) && self.bytes.ends_with(&[0xff, 0xd9])
+    }
+}
+
+/// One finished sweep sample on disk, and the reference that names it over HTTP.
+///
+/// Not a path: D20's route takes a session, a control, a pass and a value, and derives the file
+/// server-side. This is the same four facts on the other side of the wire.
+struct Planted {
+    session: uuid::Uuid,
+    control: ControlSlug,
+    pass: usize,
+    value: i64,
+    /// Exactly what the route must hand back, byte for byte.
+    bytes: Vec<u8>,
+}
+
+/// Write one session with one finished sweep sample into `store`, D9's way.
+///
+/// Everything about the layout comes from the store rather than from this function:
+/// `lifecycle::create` makes the session directory, `SessionStore::create_photo_dir` makes
+/// `photos/<control>/<pass>/`, and `SessionStore::photo_dir_rel` is what the sample's `photo`
+/// field records — so this fixture cannot accidentally assert a layout the product does not
+/// write.
+///
+/// **The bytes are not a camera frame.** AGENTS: a frame may contain a person, and none enters
+/// this repository or a test's expectations. What the claim needs is a file with a JPEG's magic
+/// number and a body this file wrote, so that "the route served *this* sample" is a byte
+/// comparison rather than a shape.
+fn plant_sample(store: &SessionStore, fingerprint: &CameraFingerprint) -> Planted {
+    let control = ControlSlug::parse("focus_absolute").expect("a literal slug");
+    let (pass, value) = (0_usize, 42_i64);
+    let bytes = b"\xff\xd8\xffa calibration sample this suite wrote\xff\xd9".to_vec();
+    let session = store
+        .with_lock(|lock| {
+            let mut session = lifecycle::create(
+                store,
+                lock,
+                &SessionSpec {
+                    id: uuid::Uuid::now_v7(),
+                    fingerprint: fingerprint.clone(),
+                    task: "sample-review".to_owned(),
+                    goal: "a legible frame".to_owned(),
+                    criteria: vec!["sharp".to_owned()],
+                    tool_version: schema::TOOL_VERSION.to_owned(),
+                },
+                Stamp::now(),
+            )?;
+            // Where the store put it, **asked rather than assembled**: `lifecycle::create` has
+            // already written the document, and the walk that lists sessions is the one thing
+            // that knows D9's layout. A fixture that built the path itself would be a second
+            // copy of that layout — and would put this file into `atomic-write-home`'s
+            // population, where a test that names D9's paths and writes a fixture cannot be
+            // told apart from a bypass by a `grep` (that gate's header says so).
+            let dir = store
+                .all_sessions()?
+                .into_iter()
+                .find(|found| found.id == session.id)
+                .expect("the store lists the session it has just written")
+                .dir;
+            let photo_dir = store.create_photo_dir(lock, &dir, &control, pass)?;
+            let name = format!("{value}.jpg");
+            std::fs::write(photo_dir.join(&name), &bytes).expect("a fresh photo directory");
+            session.controls.insert(
+                control.clone(),
+                ControlSession {
+                    status: ControlStatus::Sweeping {
+                        plan: SweepSpec::Uniform { step: 1 },
+                        done: 1,
+                        total: 1,
+                        precision: 1,
+                        adjustments: Vec::new(),
+                    },
+                    samples: vec![Sample {
+                        requested: value,
+                        applied: value,
+                        warnings: Vec::new(),
+                        photo: SessionStore::photo_dir_rel(&control, pass)?.join(&name),
+                        metrics: std::collections::BTreeMap::new(),
+                        captured_at: Stamp::now(),
+                    }],
+                },
+            );
+            store.save_session(lock, &session)?;
+            Ok(session.id)
+        })
+        .expect("a fresh state directory takes the daemonless lock");
+    Planted {
+        session,
+        control,
+        pass,
+        value,
+        bytes,
     }
 }
 
@@ -1207,6 +1344,91 @@ async fn every_camera_bearing_route_is_behind_the_gate() {
         methods_refused,
         driven * EVERY_METHOD.len(),
         "the method axis did not quantify over every method on every path"
+    );
+
+    // ------------------------------------------------- the entry the list gained at P9b
+    //
+    // **The first exercise of the defect class the 2026-08-12 ruling created** (D20, note N82).
+    // The loop above quantifies over the list, so `/session-photo` is already inside claims 1, 2
+    // and 4 by being on it; what it cannot say is anything about a route whose answers depend on
+    // a *store*, and claim 3 over an empty store would be satisfied by a `400`. So the five
+    // claims D20 asks for are driven here by name, against a reference this fixture really
+    // planted, and each of them fails a different build:
+    //
+    //   - **anonymous is refused** even though the sample is there, so the gate runs before the
+    //     store is read and a stranger cannot tell an existing sample from a missing one;
+    //   - **the token gets the picture**, which is the claim an empty store cannot make: a route
+    //     that was on the list and served nothing would satisfy every refusal above;
+    //   - **a cross-site request is refused with `403` before any credential is read**, which is
+    //     the second admission rule (owner, 2026-08-13) covering the new route by composition
+    //     rather than by anybody remembering it;
+    //   - **a reference to a session this store does not hold is a `404`**, not a `403`, a `500`
+    //     or an empty `200` — the one refusal a page can act on;
+    //   - **a `HEAD` answers about the route and opens nothing**, which is visible from outside
+    //     precisely because the `HEAD` and the `GET` of the *same* out-of-session reference
+    //     disagree: the one that looked says `404` and the one that did not says `200`
+    //     (note **N179**'s precedent, one route along).
+    let planted = preview.sample_target(preview.sample.session);
+    let credential = format!(
+        "{token}={secret}",
+        token = http::TOKEN_QUERY_PARAM,
+        secret = preview.token
+    );
+
+    let anonymous = get(bound, &planted, &[]).await;
+    assert!(
+        anonymous.starts_with("HTTP/1.1 401"),
+        "a stored calibration sample was reachable without the token: {anonymous:.96}"
+    );
+
+    let served = get(bound, &format!("{planted}&{credential}"), &[]).await;
+    assert!(served.starts_with("HTTP/1.1 200"), "{served:.96}");
+    let lowered = served.to_ascii_lowercase();
+    assert!(
+        lowered.contains("content-type: image/jpeg"),
+        "the sample was not served as the type its extension names: {served:.256}"
+    );
+    // A stored frame is not put on the browser's disk a second time (design §5's reason).
+    assert!(lowered.contains("cache-control: no-store"), "{served:.256}");
+    // The sample and not an empty `200`: the length is the file's, which is the smallest claim
+    // that separates "served the picture" from "answered the request". The bytes themselves are
+    // `session_photo.rs`'s claim, where the answer is read as bytes rather than as text.
+    assert!(
+        lowered.contains(&format!(
+            "content-length: {size}",
+            size = preview.sample.bytes.len()
+        )),
+        "{served:.256}"
+    );
+
+    let foreign = get(
+        bound,
+        &format!("{planted}&{credential}"),
+        &[("Sec-Fetch-Site", "cross-site")],
+    )
+    .await;
+    assert!(
+        foreign.starts_with("HTTP/1.1 403"),
+        "a page at another origin was served a stored camera frame: {foreign:.96}"
+    );
+
+    // A well-formed reference to a session nobody wrote. Same shape, one field different, so
+    // the `404` below is about the *reference* and not about a URL this route cannot read.
+    let elsewhere = preview.sample_target(uuid::Uuid::now_v7());
+    let missing = get(bound, &format!("{elsewhere}&{credential}"), &[]).await;
+    assert!(
+        missing.starts_with("HTTP/1.1 404"),
+        "a reference outside every session this store holds: {missing:.96}"
+    );
+
+    let described = request("HEAD", bound, &format!("{elsewhere}&{credential}"), &[]).await;
+    assert!(
+        described.starts_with("HTTP/1.1 200"),
+        "a HEAD of this route went and looked in the store: {described:.96}"
+    );
+    assert!(
+        !described.to_ascii_lowercase().contains("content-length:"),
+        "a HEAD claimed a length no GET of it would send: {described:.256}"
     );
 
     // The other side of the same ruling, asserted against the same listener in the same run:

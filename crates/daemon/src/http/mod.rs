@@ -9,6 +9,7 @@
 //! | [`preview`] | the MJPEG preview: `multipart/x-mixed-replace` over the actor's latest-frame watch |
 //! | [`provenance`] | the cross-origin rule: what a browser says about where a request came from, and which answers this listener admits |
 //! | [`rpc`] | the WebSocket JSON-RPC endpoint: the T5 surface `crate::server::mount` produced, reached over TCP |
+//! | [`session_photo`] | the stored calibration samples: one photograph per reference, the path derived from D9's layout |
 //! | [`token`] | the per-run bearer token: minted from the kernel, compared in constant time, printed as a URL |
 //!
 //! ## D11's paragraph, and what this crate does with it
@@ -32,9 +33,10 @@
 //! security rule is a second copy of it that is one edit away from meaning something else.
 //!
 //! **D11 carries an amendment of 2026-08-12, and the sentence it amends is the one about the
-//! three things this transport serves.** "Requires a bearer token" is now about the two of them
-//! that are the camera — the WS JSON-RPC endpoint and the MJPEG preview — and not about the
-//! static assets, which are this client's own source code. The matrix is untouched, its reason
+//! three things this transport serves.** "Requires a bearer token" is now about the ones that
+//! are the camera — the WS JSON-RPC endpoint, the MJPEG preview and, since P9b, the stored
+//! calibration samples — and not about the static assets, which are this client's own source
+//! code. The matrix is untouched, its reason
 //! is untouched ("a camera is a privacy-sensitive device; the daemon's exposure posture errs
 //! closed"), and what changed is which resources that reason is about. See D11's amended
 //! paragraph and note **N82**.
@@ -68,7 +70,7 @@
 //! value [`crate::server::mount`] produced** rather than a second registration of anything.
 //! It fits the arrangement above without disturbing it — it decides nothing, [`listener`]
 //! merges its route beside the asset fallback, and [`gate`] covers it because it is one of the
-//! two routes that carry or drive a camera. Its header carries the two things that are
+//! routes that carry or drive a camera. Its header carries the two things that are
 //! genuinely new: why jsonrpsee's own upgrade path is used instead of axum's `ws` feature, and
 //! what the `?token=` credential costs on a WebSocket rather than on a navigation (a
 //! `new WebSocket(url)` can set no headers, so the URL form is not a preference).
@@ -84,7 +86,17 @@
 //! itself is not here: `crate::preview` owns the watch channel, the feed registry and the
 //! driver, because those are questions about cameras and this module is about a socket.
 //!
-//! ## The two routes that carry a camera, and everything else is a file
+//! ## The newest module, and the frame that is already on the disk
+//!
+//! [`session_photo`] is P9b's half of D20: the operator's workbench reviews a sweep's sample
+//! photographs in a grid, "and that is the one new route". It sits beside [`preview`] in the
+//! arrangement above and differs from it in one word — *stored* rather than *live* — which
+//! changes the mechanism completely (a file, not a fan-out) and changes the posture not at all.
+//! Its own header carries the two arguments that are new: why a **reference** rather than a path
+//! is what makes the traversal question empty, and why a refusal here says less than the
+//! preview's does.
+//!
+//! ## The three routes that carry a camera, and everything else is a file
 //!
 //! [`CAMERA_BEARING_PATHS`] is the list, and it exists because of an owner ruling
 //! (2026-08-12): **static assets are served without authentication** — they are open-source
@@ -130,26 +142,44 @@ pub mod posture;
 pub mod preview;
 pub mod provenance;
 pub mod rpc;
+pub mod session_photo;
 pub mod token;
 
 pub use listener::{Serving, bind, open, serve};
 pub use posture::{INSECURE_LOOPBACK_FLAG, Posture, Reach, TokenRule};
 pub use preview::{CAMERA_QUERY_PARAM, PREVIEW_PATH};
 pub use rpc::RPC_PATH;
+pub use session_photo::{
+    CONTROL_QUERY_PARAM, PASS_QUERY_PARAM, SESSION_PHOTO_PATH, SESSION_QUERY_PARAM,
+    VALUE_QUERY_PARAM,
+};
 pub use token::{TOKEN_BYTES, TOKEN_QUERY_PARAM, Token};
 
 /// The routes that carry or drive the camera, and therefore stay behind D11's token.
 ///
-/// One list, `pub` because it has four readers that must agree: `crates/daemon/tests/http.rs`
-/// and `crates/daemon/tests/preview.rs`, which drive every path in it anonymously and require
-/// the refusal in full; [`rpc`]'s and [`preview`]'s own tests, each asserting that its route is
-/// on it; and `scripts/gates/web-routes-are-gated.sh`, which reads the entries out of this
-/// declaration and requires every route registered in this crate to be one of them.
+/// One list, `pub` because its readers must agree: `crates/daemon/tests/http.rs` and
+/// `crates/daemon/tests/preview.rs`, which drive every path in it anonymously and require the
+/// refusal in full; [`rpc`]'s, [`preview`]'s and [`session_photo`]'s own tests, each asserting
+/// that its route is on it; and `scripts/gates/web-routes-are-gated.sh`, which reads the entries
+/// out of this declaration and requires every route registered in this crate to be one of them.
 ///
-/// The two entries are the WebSocket endpoint, which *drives* a camera (every T5 method that
-/// opens one is reachable over it), and the MJPEG preview, which *carries* one — its response
-/// body is a live picture of whatever the camera is pointed at, which is the whole reason the
-/// ruling kept a gate at all (AGENTS: "a frame may contain a person").
+/// The three entries are the WebSocket endpoint, which *drives* a camera (every T5 method that
+/// opens one is reachable over it), the MJPEG preview, which *carries* one — its response body
+/// is a live picture of whatever the camera is pointed at — and the calibration samples, whose
+/// response body is a picture the camera already took. All three are the sentence the ruling
+/// kept a gate for at all (AGENTS: "a frame may contain a person").
+///
+/// **The third entry is the first one the list ever gained, and its argument is where the
+/// argument was always going to have to happen.** [`session_photo`] serves a photograph out of
+/// D9's session tree — a directory this project creates 0700 *because* it holds frames
+/// (`engine::store::STATE_DIR_MODE`) — so "does this carry the camera?" answers itself: a
+/// stored frame is a frame, and the only thing time changed is that the operator can no longer
+/// walk in front of it to find out. Serving it without the token would put a browsing stranger
+/// in front of every picture a sweep ever took, which is strictly more than the preview leaks
+/// and lasts strictly longer. D20 says the same thing and adds the reason this route was chosen
+/// to be the one that proves the mechanism: its addition "is deliberately the first exercise of
+/// the defect class N82's ruling created, with both halves going red on a route added without
+/// its gate … before the route lands".
 ///
 /// **What "carries or drives the camera" means as something checkable.** Nothing can read a
 /// handler and know whether a camera is behind it, so the predicate this project encodes is
@@ -158,4 +188,8 @@ pub use token::{TOKEN_BYTES, TOKEN_QUERY_PARAM, Token};
 /// `webcam-handler-web`). Today those are the same set — the only reason this listener has a
 /// route at all is the camera — and the day one of them is not, this list is where the
 /// argument has to happen rather than where it can be skipped.
-pub const CAMERA_BEARING_PATHS: [&str; 2] = [rpc::RPC_PATH, preview::PREVIEW_PATH];
+pub const CAMERA_BEARING_PATHS: [&str; 3] = [
+    rpc::RPC_PATH,
+    preview::PREVIEW_PATH,
+    session_photo::SESSION_PHOTO_PATH,
+];

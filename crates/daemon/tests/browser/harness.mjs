@@ -42,6 +42,27 @@ export const cameraId = required("WCH_E2E_CAMERA");
 export const secondCameraId = required("WCH_E2E_SECOND_CAMERA");
 
 /**
+ * The camera whose control set does not fit on a screen — design D20's layout fixture.
+ *
+ * `vivid`'s seventy-seven controls, from the committed corpus. The workbench's claim is about
+ * a column that *has* to scroll, and the ordinary fixture's eighteen controls very nearly fit
+ * — so a layout claim made against it would pass on a shell that had no two-pane arrangement
+ * at all.
+ */
+export const wideCameraId = required("WCH_E2E_WIDE_CAMERA");
+
+/**
+ * Every camera this daemon's fixture serves, in the order it enumerates them.
+ *
+ * Derived from the three ids the harness is handed rather than counted in a claim: an arm that
+ * writes the number down goes red the next time the fixture grows, for a reason that is not
+ * what the arm is about. P9a is when that happened — the layout camera made a `toHaveCount(2)`
+ * into a failure about nothing.
+ */
+export const fixtureCameras = [cameraId, secondCameraId, wideCameraId];
+
+
+/**
  * The brightness the second camera reports, so a panel can be asked which device it came from.
  *
  * The first camera's is 128 and this is not it — the difference is the whole instrument. A

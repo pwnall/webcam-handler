@@ -133,6 +133,16 @@
       "title": "the browser this rung drove is the pinned one",
       "assertions": 6,
       "what": "the Playwright package and the Chromium build that ran are the pinned ones"
+    },
+    {
+      "title": "the preview and the control being adjusted are visible together at every scroll position",
+      "assertions": 25,
+      "what": "D20 — the workbench's layout requirement, at the rung's pinned viewport over the 77-control profile: the document does not scroll, the control column does, and the preview's box does not move at any scroll position of it"
+    },
+    {
+      "title": "a narrow viewport stacks the shell and keeps the preview at the top",
+      "assertions": 7,
+      "what": "D20 — the same claim one column wide: a sticky pane inside a scroll container that is not the document sticks to nothing, and that failure looks exactly like a working page until somebody scrolls"
     }
   ]
 }

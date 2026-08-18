@@ -8,11 +8,13 @@
 //!
 //! ## What is here
 //!
-//! Eleven files: a page, a stylesheet, and nine ES modules — the JSON-RPC-over-WebSocket
+//! Twelve files: a page, a stylesheet, and ten ES modules — the JSON-RPC-over-WebSocket
 //! helper, the credential, a DOM helper, and one module each for the camera list's composition
-//! root, the control panel, the preview, the photo trigger, the recording line and the
-//! calibration view. P5c is the sub-milestone that made them a client rather than a skeleton
-//! and the recording line arrived at P6c with note **N117**'s ruling. Every one of them is
+//! root, the control panel, the preview, the photo trigger, the recording line, the
+//! calibration view and — since P9c — the human-driven calibration *flow*. P5c is the
+//! sub-milestone that made them a client rather than a skeleton, the recording line arrived at
+//! P6c with note **N117**'s ruling, and the flow is D20: the page stopped being a viewer of
+//! sessions the CLI drove and became the producer of D8's `selector: human`. Every one of them is
 //! hand-written; nothing here was generated, bundled, minified or vendored (§2.7, AGENTS: "the
 //! web client vendors or hand-writes everything — no CDN, no npm").
 //!
@@ -184,7 +186,7 @@ pub fn paths() -> impl Iterator<Item = Cow<'static, str>> {
 /// `every_asset_has_a_content_type`'s walk over the assets that actually exist.
 ///
 /// Three of the four now have shipped assets — this client is one page, one stylesheet and
-/// nine modules — and `.mjs` is the one that does not, kept because it is the other spelling
+/// ten modules — and `.mjs` is the one that does not, kept because it is the other spelling
 /// the ecosystem uses for the thing this directory is full of and because the failure it
 /// prevents is expensive and quiet: a module served as `application/octet-stream` is a script
 /// a browser declines to execute, on a page that then does nothing and says nothing. The test

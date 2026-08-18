@@ -114,6 +114,10 @@ async fn serving(fixture: &Fixture) -> http::Serving {
         // this listener is the one `main` opens, and a preview route over a second fan-out
         // would be a second answer to which cameras are being previewed (docs/7 P5b).
         fixture.wchd.previews(),
+        // The fixture's own session tree, for the same reason again: `/session-photo` reads the
+        // directory this daemon holds the lock on, and a store over somewhere else would be a
+        // listener answering about sessions this process is not the one serving.
+        std::sync::Arc::new(engine::store::SessionStore::new(fixture.store.root())),
         fixture.wchd.shutdown().clone(),
     )
     .await

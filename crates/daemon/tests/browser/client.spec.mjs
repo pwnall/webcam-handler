@@ -54,6 +54,8 @@ import { expect, test } from "@playwright/test";
 import {
   cameraId,
   control,
+  fixtureCameras,
+  wideCameraId,
   moduleCount,
   openClient,
   origin,
@@ -1443,11 +1445,17 @@ test("a refused camera list at startup is a sentence rather than a silence", asy
   expect(await page.evaluate(() => window.unhandled)).toEqual([]);
 
   // The positive control: the same page, over the same wire with the refusal withdrawn, lists
-  // the two cameras this daemon really has. Without it every assertion above is satisfied by a
-  // page that never enumerates anything.
+  // the cameras this daemon really has. Without it every assertion above is satisfied by a page
+  // that never enumerates anything.
+  //
+  // The count is **derived from the harness's own fixture list** rather than written here as a
+  // number. It was `2` until P9a added the 77-control layout camera, and the arm went red for a
+  // reason that had nothing to do with what it claims — which is the shape of an assertion that
+  // will go red again for the next reason too. What it is actually about is "more than none,
+  // and exactly what this daemon serves".
   wire.allow();
   await openClient(page);
-  await expect(page.locator("#camera-list button[data-camera]")).toHaveCount(2);
+  await expect(page.locator("#camera-list button[data-camera]")).toHaveCount(fixtureCameras.length);
 });
 
 test("a recording answer in flight is not written under the next camera's picture", async ({
@@ -1751,4 +1759,95 @@ test("a stale session list is not painted under the camera on screen", async ({ 
   expect(painted.refused.after).toBe("1 session(s) recorded for this camera");
   expect(painted.refused.failed).toBe(false);
   expect(painted.refused.sessions).toBe(1);
+});
+
+// ------------------------------------------------------------- the workbench (D20)
+
+test("the preview and the control being adjusted are visible together at every scroll position", async ({
+  page,
+}) => {
+  // Design D20's requirement, stated testably by the design itself and asserted here in the
+  // only place it can be: *the preview and the control being adjusted are simultaneously
+  // visible at every scroll position of the control column, at the rung's pinned viewport
+  // size.* The owner's session at the start of a development run is tuning — eyes on the
+  // preview, hands on the controls — and before this shell the page was a single scrolling
+  // document 3359px tall at this viewport, whose control panel began below the fold and ran
+  // 2395px: adjusting anything at all meant scrolling the picture off the screen (note
+  // **N262**).
+  //
+  // The camera is the **77-control** one on purpose. The ordinary fixture's eighteen very
+  // nearly fit on a screen, so a layout claim made against it would pass against a page with
+  // no two-pane arrangement at all — which is the fixture-one-parameter-away smell the rubric
+  // rejects on sight.
+  await openClient(page);
+  await page.locator(`button[data-camera="${wideCameraId}"]`).click();
+  await expect(page.locator("#controls-status")).toHaveText(/^77 controls/);
+
+  const preview = page.locator("#preview-frame");
+  const column = page.locator("#column");
+
+  // The column really does overflow, or everything below is vacuous.
+  const overflow = await column.evaluate((el) => el.scrollHeight - el.clientHeight);
+  expect(overflow).toBeGreaterThan(400);
+
+  // The document itself does not scroll: the shell is the viewport's height, and the one
+  // scroll container on the page is the control column.
+  expect(
+    await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1),
+  ).toBe(true);
+
+  const previewBefore = await preview.boundingBox();
+  const visible = (box) =>
+    box !== null && box.y >= 0 && box.y + box.height <= page.viewportSize().height + 1;
+  expect(visible(previewBefore)).toBe(true);
+
+  // Every scroll position, sampled at the granularity a person scrolls at: the picture must
+  // not move, and the control under the cursor must be on the screen beside it. A shell that
+  // scrolled the document would move the preview on the very first step.
+  for (let at = 0; at <= overflow; at += Math.max(1, Math.floor(overflow / 8))) {
+    await column.evaluate((el, top) => el.scrollTo(0, top), at);
+    const previewNow = await preview.boundingBox();
+    expect(previewNow).toEqual(previewBefore);
+
+    // …and something in the column is adjustable *here*, which is what "the control being
+    // adjusted" means at this scroll position.
+    const adjustable = page.locator("#column .control input, #column .control select");
+    const onScreen = await adjustable.evaluateAll(
+      (nodes, viewport) =>
+        nodes.filter((node) => {
+          const box = node.getBoundingClientRect();
+          return box.height > 0 && box.top >= 0 && box.bottom <= viewport;
+        }).length,
+      page.viewportSize().height,
+    );
+    expect(onScreen).toBeGreaterThan(0);
+  }
+
+  // And the last one, explicitly: at the bottom of a 77-control column the picture is still
+  // where it was.
+  await column.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  expect(await preview.boundingBox()).toEqual(previewBefore);
+});
+
+test("a narrow viewport stacks the shell and keeps the preview at the top", async ({ page }) => {
+  // D20's other half: *on a viewport too narrow for two panes the shell stacks with the
+  // preview sticky at the top*. The same claim, made the only way one column can make it —
+  // and the reason it is asserted rather than left to the media query is that a sticky
+  // element inside a scroll container that is not the document sticks to nothing, which is a
+  // failure that looks exactly like a working page until you scroll.
+  await openClient(page);
+  await page.locator(`button[data-camera="${wideCameraId}"]`).click();
+  await expect(page.locator("#controls-status")).toHaveText(/^77 controls/);
+  await page.setViewportSize({ width: 700, height: 800 });
+
+  const preview = page.locator("#preview-frame");
+  const before = await preview.boundingBox();
+  expect(before).not.toBeNull();
+
+  // The document is the scroll container now, and the pane is stuck to its top.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  const after = await preview.boundingBox();
+  expect(after).not.toBeNull();
+  expect(after.y).toBeGreaterThanOrEqual(0);
+  expect(after.y).toBeLessThan(page.viewportSize().height);
 });

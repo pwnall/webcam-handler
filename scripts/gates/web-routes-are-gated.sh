@@ -35,10 +35,22 @@
 # It is not decidable from a handler — nothing here can read a function and know whether a
 # camera is behind it. So the checkable predicate is the one that errs closed and happens to be
 # exact today: **a route is gated; the only ungated answer is the asset fallback.** The only
-# reason this listener has a route at all is the camera — one drives it (`/rpc`) and one carries
-# it (`/preview`) — and everything else it serves is a file compiled into the binary. A future
-# route with no camera in it would be red here, and that is the intent rather than a limitation:
-# this is where somebody has to make the argument, in a diff, instead of in a router.
+# reason this listener has a route at all is the camera — one drives it (`/rpc`), one carries it
+# live (`/preview`) and one carries it stored (`/session-photo`) — and everything else it serves
+# is a file compiled into the binary. A future route with no camera in it would be red here, and
+# that is the intent rather than a limitation: this is where somebody has to make the argument,
+# in a diff, instead of in a router.
+#
+# ## The third path, which is what this predicate was written waiting for
+#
+# `/session-photo` (D20, docs/13 P9b) is the **first entry the list ever gained** since the
+# ruling turned it from a shape into a decision, and D20 says so in as many words: its addition
+# "is deliberately the first exercise of the defect class N82's ruling created, with both halves
+# going red on a route added without its gate … before the route lands". So it is not merely
+# covered by the claims below — it is the arm the claims are for, and `cases/` carries a fail
+# arm of its own for it (`fail_case_the_session_photo_route_left_the_list`) beside the generic
+# one, because "a route somebody added and did not list" and "a route somebody had listed and
+# took off the list" are the same hole reached from two directions.
 #
 # ## The four claims
 #
@@ -79,19 +91,19 @@
 #
 # **It checks shape, and shape is not behaviour.** It sees that one `route_layer(` and one
 # `gate::check` are in the composition; it cannot see what that layer wraps, and a composition
-# that registered a third route *after* the `route_layer` line would satisfy every claim here.
+# that registered a further route *after* the `route_layer` line would satisfy every claim here.
 # What catches that is the other half of the pair — the suite drives the list over a real
 # socket, and a route that is on the list and not behind the gate answers something other than
 # `401` — so the two halves are only worth having together, and each says so in its own header.
 #
 # It is also a `grep`: a route registered through a helper of somebody else's, or a router built
 # by a macro, is invisible to claim 2. What claim 2 rests on is that this workspace registers
-# routes the way axum documents them, in three files a reviewer can hold in their head.
+# routes the way axum documents them, in a handful of files a reviewer can hold in their head.
 #
 # The method half inherits that and errs the other way, deliberately: it reads every `name(` after
 # the path argument, so a handler that is itself a call — `get(make_handler())` — is a name it
 # cannot place and a **failure**. That is the same direction claim 2 already takes about a path
-# argument spelled across lines, and for the same reason: on the two routes that carry a camera,
+# argument spelled across lines, and for the same reason: on the routes that carry a camera,
 # a registration this gate has to guess about is one nobody is counting the methods of. The
 # remedy in that diff is a `let` above the registration, which is what the workspace writes
 # anyway.
@@ -198,11 +210,11 @@ gate_require_nonzero "$anchors" "named declarations"
 # written `preview::PREVIEW_PATH` are the same name.
 
 #
-# The declaration is read as **one line whatever rustfmt did to it**: a third entry pushes the
-# array past the width and the value moves to a line of its own, which is a formatting event and
-# must not be a finding (note N60 — a gate that cries wolf gets re-run until it agrees, and the
-# run after that is the one where a real finding is waved through). `cases/` has a green arm for
-# the wrapped shape.
+# The declaration is read as **one line whatever rustfmt did to it**: at three entries the array
+# is past the width and rustfmt has already put every entry on a line of its own, which is a
+# formatting event and must not be a finding (note N60 — a gate that cries wolf gets re-run until
+# it agrees, and the run after that is the one where a real finding is waved through). `cases/`
+# has a green arm for a wrapped shape wider still, so a fourth entry costs nothing here either.
 declaration="$(sed -n "/pub const ${list_name}[[:space:]]*:/,/;/p" <<<"$list_product" | tr '\n' ' ')"
 entries="$(sed -n 's/.*=[[:space:]]*\[\([^]]*\)\].*/\1/p' <<<"$declaration")"
 

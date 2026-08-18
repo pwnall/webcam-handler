@@ -51,6 +51,7 @@ import { byId, el, fill } from "./dom.js";
 import { SOCKET_CLOSED, connect } from "./rpc.js";
 import * as controls from "./controls.js";
 import * as calibration from "./calibration.js";
+import * as flow from "./calibrate-flow.js";
 import * as photo from "./photo.js";
 import * as preview from "./preview.js";
 import * as recording from "./recording.js";
@@ -139,7 +140,33 @@ const nodes = {
   // differ: the session list is re-read per camera and the subscription is opened once.
   sweepStatus: byId("sweep-status"),
   sweeps: byId("sweep-log"),
+  // The human-driven flow's own controls (D20). One node table, so a renamed id is one
+  // failure at startup rather than a `null` reached minutes later on a click.
+  flow: byId("flow"),
+  flowTask: byId("flow-task"),
+  flowGoal: byId("flow-goal"),
+  flowStart: byId("flow-start"),
+  flowPlan: byId("flow-plan"),
+  flowSweep: byId("flow-sweep"),
+  flowApply: byId("flow-apply"),
+  flowRestore: byId("flow-restore"),
+  flowStatus: byId("flow-status"),
+  flowGrid: byId("flow-grid"),
 };
+
+/// The flow's node table in the shape `calibrate-flow.js` names them.
+const flowNodes = () => ({
+  flow: nodes.flow,
+  task: nodes.flowTask,
+  goal: nodes.flowGoal,
+  start: nodes.flowStart,
+  plan: nodes.flowPlan,
+  sweep: nodes.flowSweep,
+  apply: nodes.flowApply,
+  restore: nodes.flowRestore,
+  status: nodes.flowStatus,
+  grid: nodes.flowGrid,
+});
 
 main();
 
@@ -182,6 +209,24 @@ async function main() {
   await calibration.watchSweeps(state.rpc, {
     status: nodes.sweepStatus,
     log: nodes.sweeps,
+  });
+  // The flow borrows the preview for the length of a sweep — a sweep is minutes of exclusive
+  // capture and whichever streaming operation asks second meets `Busy` (note N83, E16), so
+  // the page stands its own preview down rather than racing itself. The two functions it is
+  // handed are this module's, because the `<img>` belongs to the shell.
+  flow.mount(state.rpc, flowNodes(), {
+    // `preview.watch` and `preview.stop` *replace* the element — see preview.js on why a
+    // torn-down `<img>` is a new one — so the pair below goes through `state.frame` exactly
+    // as every other caller does. A flow that held its own reference would end a feed nobody
+    // was watching and leave the one on screen running.
+    stop: () => {
+      state.frame = preview.stop(state.frame, nodes.previewStatus);
+    },
+    start: () => {
+      if (state.camera !== null && state.socketOpen) {
+        state.frame = preview.watch(state.frame, nodes.previewStatus, state.camera, state.token);
+      }
+    },
   });
   await watchDevices();
   // **Caught, because the alternative is a page that says nothing at all.** `enumerate` is one
@@ -308,6 +353,10 @@ function hintSentence(hint) {
 async function select(camera) {
   state.camera = camera;
   controls.forgetOutcomes();
+  // A session does not follow a camera: `calibrate_apply`'s fingerprint check is what makes
+  // that a refusal rather than a surprise (D8), and the page says the same thing by forgetting
+  // which session it was driving the moment the operator looks at another device.
+  flow.watching(camera, flowNodes());
   for (const button of nodes.cameras.querySelectorAll("button[data-camera]")) {
     button.setAttribute("aria-pressed", String(button.dataset.camera === camera));
   }
