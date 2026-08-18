@@ -28,6 +28,7 @@ use schema::control::{
     ControlDesc, ControlType, ControlValue, KnownFlag, Unverifiable, WriteWarning,
 };
 use schema::error::{Error, Result};
+use schema::metrics::{MetricName, PhotoComparison, Ssim, SsimUnavailable};
 use schema::pairing::{AutomationOff, Provenance};
 use schema::profile::{DeviceProfile, ProfileComparison};
 use schema::progress::{CalibrationProgress, ProgressEvent};
@@ -1786,6 +1787,94 @@ pub(crate) fn comparison(
     Ok(())
 }
 
+/// `photo diff` — what each photograph measures, what moved, and the similarity score.
+///
+/// Three parts, because the answer has three and a reader has three questions: the two shapes
+/// (which is also what decides whether a similarity score exists at all), the metric table
+/// with both sides and the delta beside each other, and the corroborator.
+///
+/// **The metric rows are walked from [`MetricName::ALL`]**, not from either side's map — the
+/// same walk `imaging::compare::photos` builds the deltas with, so a sixth metric joins this
+/// table by existing rather than by being added here, and a metric a side somehow did not
+/// measure reads as an absence rather than vanishing from the table.
+///
+/// **The similarity line renders its own unavailability** (D17; AGENTS rule 6). A comparison
+/// of two differently-sized photographs is not a failure — the per-metric scalars above it are
+/// well defined and are printed — so the reason arrives here as data and leaves as a sentence
+/// carrying both shapes. A renderer that had turned it into an error would have thrown away
+/// the half of the answer that was computed, and a caller reading `--json` reaches the same
+/// conclusion from the same field.
+pub(crate) fn photo_comparison(
+    comparison: &PhotoComparison,
+    as_json: bool,
+    out: &mut Output,
+) -> Result<()> {
+    if as_json {
+        return json(comparison, out);
+    }
+
+    out.line(&format!(
+        "a: {}x{}   b: {}x{}",
+        comparison.a.width, comparison.a.height, comparison.b.width, comparison.b.height
+    ))?;
+
+    let mut table = table();
+    table.set_header(vec!["METRIC", "A", "B", "DELTA"]);
+    for name in MetricName::ALL {
+        table.add_row(vec![
+            Cell::new(name.as_str()),
+            Cell::new(measurement_text(comparison.a.metrics.get(name).copied())),
+            Cell::new(measurement_text(comparison.b.metrics.get(name).copied())),
+            // Signed, always: a delta printed as `0.0312` leaves a reader working out which
+            // way it went from two columns they then have to subtract themselves, which is
+            // the arithmetic this column exists to have already done.
+            Cell::new(comparison.delta.get(name).copied().map_or_else(
+                || "(not computed)".to_owned(),
+                |value| format!("{value:+.4}"),
+            )),
+        ]);
+    }
+    out.line(&table.to_string())?;
+    out.line(&format!("ssim: {}", ssim_text(&comparison.ssim)))
+}
+
+/// One metric's value, or the fact that this side carries none.
+///
+/// `(not measured)` rather than a dash, for the reason `current_text` gives one column over
+/// (note **N199**): a dash is this table's "nothing to report", and a metric the vocabulary
+/// names and a side did not compute is a different thing from a metric with no value to have.
+fn measurement_text(value: Option<f64>) -> String {
+    value.map_or_else(
+        || "(not measured)".to_owned(),
+        |value| format!("{value:.4}"),
+    )
+}
+
+/// The similarity score, or the reason there is none.
+///
+/// Exhaustive over [`SsimUnavailable`], which is what makes a new reason a compile error here
+/// rather than a sentence that quietly stops covering one of them — the closed vocabulary
+/// exists so a consumer can branch, and this is the human consumer's branch.
+fn ssim_text(ssim: &Ssim) -> String {
+    match ssim {
+        Ssim::Measured { score } => format!("{score:.4} (1.0000 is identical)"),
+        Ssim::Unavailable {
+            reason:
+                SsimUnavailable::DimensionsDiffer {
+                    a: [aw, ah],
+                    b: [bw, bh],
+                },
+        } => format!(
+            "not computed, because a similarity score compares pixel to pixel and these are \
+             {aw}x{ah} and {bw}x{bh}; nothing here resizes, and the metrics above still \
+             measured both"
+        ),
+        Ssim::Unavailable {
+            reason: SsimUnavailable::ComputationFailed { message },
+        } => format!("not computed: {message}; the metrics above still measured both"),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::collections::BTreeMap;
@@ -3113,5 +3202,54 @@ pub(crate) mod tests {
         quiet.finish();
         drawn.event(&event);
         drawn.finish();
+    }
+
+    #[test]
+    fn every_reason_a_similarity_score_is_missing_has_a_sentence_of_its_own() {
+        // The closed vocabulary walked, in the one place a human meets it. Two claims, and
+        // the second is what a `match` alone would not give: each reason has to *say* what it
+        // is, so a rendering that answered "no score" to both would be a reader who cannot
+        // tell a size mismatch — which they fix by re-taking one photograph — from an
+        // implementation that fell over, which they cannot fix at all.
+        let mismatched = ssim_text(&Ssim::Unavailable {
+            reason: SsimUnavailable::DimensionsDiffer {
+                a: [640, 480],
+                b: [1280, 720],
+            },
+        });
+        for expected in ["640x480", "1280x720", "nothing here resizes"] {
+            assert!(mismatched.contains(expected), "{mismatched}");
+        }
+        let broken = ssim_text(&Ssim::Unavailable {
+            reason: SsimUnavailable::ComputationFailed {
+                message: "the implementation said so".to_owned(),
+            },
+        });
+        assert!(broken.contains("the implementation said so"), "{broken}");
+        assert_ne!(mismatched, broken);
+
+        // Both of them say the rest of the answer survived, because that is the whole of D17's
+        // doctrine here: the per-metric scalars above the line were computed, and a reader who
+        // read this as a failed comparison would throw them away.
+        for text in [&mismatched, &broken] {
+            assert!(text.contains("still measured both"), "{text}");
+        }
+
+        // And a score is a number rather than a sentence, or the arms above are about
+        // nothing.
+        let measured = ssim_text(&Ssim::Measured { score: 0.9875 });
+        assert!(measured.starts_with("0.9875"), "{measured}");
+        assert!(!measured.contains("not computed"), "{measured}");
+    }
+
+    #[test]
+    fn a_metric_a_side_did_not_measure_reads_differently_from_one_that_measured_zero() {
+        // `current_text`'s distinction one table along (note **N199**): the metric vocabulary
+        // is the walk, so a side missing one of them prints a cell rather than losing a row —
+        // and that cell must not read like a measurement of zero, which is a perfectly
+        // ordinary answer for two of the five metrics.
+        assert_eq!(measurement_text(Some(0.0)), "0.0000");
+        assert_eq!(measurement_text(None), "(not measured)");
+        assert_ne!(measurement_text(None), measurement_text(Some(0.0)));
     }
 }

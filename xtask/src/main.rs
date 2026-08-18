@@ -144,6 +144,7 @@ fn bundle() -> Result<Value> {
     };
     use schema::control::{Applied, ControlDesc, ControlValue, WriteWarning};
     use schema::error::{Error, Failure};
+    use schema::metrics::PhotoComparison;
     use schema::profile::{DeviceProfile, ProfileComparison};
     use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
     use schema::session::{LogEntry, Session, SessionList, SessionStatus, SweepRequest};
@@ -218,6 +219,13 @@ fn bundle() -> Result<Value> {
     // is for. `DeviceDifference` arrives as a `$def` by reachability, because no verb answers
     // with one on its own.
     register::<ProfileComparison>(&mut generator, &mut roots);
+    // P8b's document verb: `photo diff` answers this and nothing else (D17). A root for
+    // `ProfileComparison`'s reason — a `--json` verb emits it, and the sibling harness that
+    // asked for the verb reads it out of a subprocess. `PhotoMeasurements`, `Ssim` and
+    // `SsimUnavailable` arrive as `$defs` by reachability, because no verb answers with one on
+    // its own — and the last two are the shapes a consumer branches on to tell a similarity
+    // score from a stated reason there is none, so reachability is what has to carry them.
+    register::<PhotoComparison>(&mut generator, &mut roots);
     register::<Error>(&mut generator, &mut roots);
     // P6f's failure document, and a root by the strictest reading of the paragraph above: it
     // is the one thing a `--json` verb prints that is not the verb's answer (owner ruling,

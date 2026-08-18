@@ -34,6 +34,15 @@ serde_json.workspace = true
 # A session is named by its UUIDv7 on the command line (`calibrate apply --session`), which
 # is the only way to reach one recorded against another camera.
 uuid.workspace = true
+# `photo diff`'s two halves: `imaging::compare::read` decodes a file this build wrote and
+# `imaging::compare::photos` measures the pair (D17). A **document verb runs below the
+# executor** (design §2.7), so the comparison has to be reachable from the shared command
+# surface itself rather than from either root — an edge to the engine would put the verb in
+# one of the two binaries, and this crate's other consumer is the one that links no engine.
+# The wall this edge does not cross is the one `scripts/gates/dependency-walls.sh` names:
+# `webcam-handler-imaging` sits on that gate's *pure* list beside this crate, so a client
+# that links it still links no backend, no engine and no async runtime.
+webcam-handler-imaging.workspace = true
 webcam-handler-schema.workspace = true
 
 [dev-dependencies]

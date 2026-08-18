@@ -97,6 +97,13 @@ serde_json.workspace = true
 # only, so the binary still links exactly the four features the normal edge above names.
 tokio = { workspace = true, features = ["test-util"] }
 webcam-handler-engine.workspace = true
+# The synthetic pictures `photo diff` is driven over (D17). A *dev*-dependency for the reason
+# the engine above is one — `dependency-walls.sh`'s thin-client wall counts normal edges only —
+# and the shipped client already links this crate through `webcam-handler-cli-core`, which is
+# where the comparison itself lives; what this edge buys the suite is the *generator*, so the
+# two files the arm compares are deterministic bytes rather than a capture off a backend a
+# document verb has no business needing.
+webcam-handler-imaging.workspace = true
 # The conformance battery's own answers to "may a test write to this control", "is there a
 # motor on the other end of it" and "which control may a brightness-class sweep run over" —
 # `is_perturbable`, `is_motorized` and `brightness_class_target`. The R3 arms here ask them

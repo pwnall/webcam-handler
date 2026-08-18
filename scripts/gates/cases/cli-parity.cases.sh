@@ -119,6 +119,22 @@ fail_case_a_leaf_verb_that_no_row_puts_in_a_bucket() {
         bash "$mutant"
 }
 
+# The same completeness half asked of the node this walk learned to see at P8b: a verb that is
+# **also a subtree**. `photo` takes a picture and `photo diff` compares two (D17), so a walk
+# that read "has children" as "is only a prefix" would have stopped requiring a bucket for
+# `photo` on the day the subcommand landed — and the leaf count would not have moved, because
+# `photo-diff` arrived in the same breath. That is the shape of a population check quietly
+# covering one verb fewer, which is note N10's family and why this is an arm rather than a
+# comment.
+fail_case_a_verb_that_is_also_a_subtree_still_needs_a_bucket() {
+    local mutant
+    # `"photo|` and not `"photo`, so the `photo-diff` row beside it survives: this arm is about
+    # the parent being seen, not about the child.
+    mutant="$(_mutated_predicate '/^    "photo|/d' '' '"photo|')"
+    gate_red_because "the surface offers 'photo' and no row above puts it in a bucket" \
+        bash "$mutant"
+}
+
 # A read verb dropped from the comparison, by the route somebody would actually take: not
 # deleting the row (the arm above catches that) but *relabelling* it, so the table still looks
 # complete. It goes red on the exemption's own consequence — `webcam-handler-cli get` answers

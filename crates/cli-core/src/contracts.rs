@@ -98,7 +98,17 @@ pub fn verbs() -> Vec<String> {
     found
 }
 
-/// [`verbs`]'s recursion: a leaf is a verb, a subtree is a prefix.
+/// [`verbs`]'s recursion: a node a caller can run is a verb, and a node with children is also
+/// a prefix.
+///
+/// **The two are not exclusive, and `photo` is why** (D17). `photo <CAMERA>` takes a photo and
+/// `photo diff <A> <B>` compares two of them, so that node is a verb *and* a subtree — clap's
+/// own `subcommand_required` is the question this asks, because it is exactly clap's answer to
+/// "may this be run without naming a child": `calibrate` and `profile` require one and are
+/// prefixes only, `photo` does not and is both. A walk that had kept the old "childless means
+/// leaf" rule would have dropped `photo` from this population the day it grew a subcommand,
+/// and `photo` is a verb with a `--json` contract, a parity bucket and a row in the agent
+/// guide — the drop would have taken all three with it, silently.
 fn collect_verbs(command: &clap::Command, prefix: &str, found: &mut Vec<String>) {
     for sub in command.get_subcommands() {
         let name = sub.get_name();
@@ -110,11 +120,10 @@ fn collect_verbs(command: &clap::Command, prefix: &str, found: &mut Vec<String>)
         } else {
             format!("{prefix}-{name}")
         };
-        if sub.get_subcommands().next().is_some() {
-            collect_verbs(sub, &path, found);
-        } else {
-            found.push(path);
+        if !sub.is_subcommand_required_set() {
+            found.push(path.clone());
         }
+        collect_verbs(sub, &path, found);
     }
 }
 
@@ -228,6 +237,25 @@ mod tests {
         assert!(!verbs.iter().any(|verb| verb == "profile"), "{verbs:?}");
         // And clap's generated help subcommand is not one of this surface's verbs.
         assert!(!verbs.iter().any(|verb| verb == "help"), "{verbs:?}");
+
+        // **A node can be both, and `photo` is** (D17): `photo <CAMERA>` takes a picture,
+        // `photo diff <A> <B>` compares two, and each answers a document of its own. The two
+        // assertions are one claim in both directions — the parent kept and the child reached
+        // — because the walk that would drop the parent is the same one that adds the child,
+        // so a test naming only the second would go green on exactly the regression this
+        // arrangement risks.
+        assert!(verbs.iter().any(|verb| verb == "photo"), "{verbs:?}");
+        assert!(verbs.iter().any(|verb| verb == "photo-diff"), "{verbs:?}");
+        // Once each, which is what makes the count this population reports mean something.
+        assert_eq!(verbs.iter().filter(|verb| *verb == "photo").count(), 1);
+        assert_eq!(
+            verbs.len(),
+            verbs
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            "{verbs:?}"
+        );
     }
 
     #[test]

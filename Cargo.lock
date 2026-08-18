@@ -2676,6 +2676,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "uuid",
+ "webcam-handler-imaging",
  "webcam-handler-schema",
 ]
 
@@ -2695,6 +2696,7 @@ dependencies = [
  "webcam-handler-api",
  "webcam-handler-cli-core",
  "webcam-handler-engine",
+ "webcam-handler-imaging",
  "webcam-handler-schema",
  "webcam-handler-testkit",
 ]

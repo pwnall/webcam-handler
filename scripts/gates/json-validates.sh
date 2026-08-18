@@ -181,6 +181,13 @@ why_it_does_not_validate() {
 # document a comparison finding nothing produces, and the interesting half of this answer is
 # the half that carries the named control slugs. The global `--backend fake --profile …` below
 # is still passed, because it is passed to every row; this verb reads neither.
+#
+# `photo diff` is the other one (D17), and its two tokens are photographs this run took —
+# `<photo-a>` and `<photo-b>`, produced by the loop the way `<snapshot>` is, because the only
+# honest source of a photograph this build reads is this build writing one. They are two
+# *different* pictures for `profile compare`'s reason: the second is mirrored, so the
+# similarity score in the answer is a measurement rather than the 1.0 an image compared with
+# itself reports whether or not the comparison works.
 verbs=(
     "list|list"
     "info|info <camera>"
@@ -190,6 +197,7 @@ verbs=(
     "snapshot|snapshot <camera>"
     "restore|restore <camera> <snapshot>"
     "photo|photo <camera> -o <photo>"
+    "photo-diff|photo diff <photo-a> <photo-b>"
     "record|record <camera> -o <recording> --duration 100ms"
     "calibrate-start|calibrate start <camera> --task gate --goal gate-run"
     "calibrate-plan|calibrate plan <camera> --task gate <control>"
@@ -343,6 +351,27 @@ for row in "${verbs[@]}"; do
         fi
         argv="${argv//<snapshot>/$scratch/snapshot.json}"
     fi
+    if [[ "$argv" == *"<photo-a>"* ]]; then
+        # `photo diff` needs two photographs, and the only honest source of one is `photo`
+        # itself — a hand-written image would validate a comparison of a file this build does
+        # not write, and the reader under test accepts exactly what the writer emits. The
+        # second is mirrored, so the two really differ: measured on this corpus, an image and
+        # its mirror score 1.0000 on every flip-invariant metric and -0.0667 on the similarity
+        # score, which is the field that would read the same on a pair that was secretly one
+        # file.
+        if ! "$binary" --backend fake --profile "$profile" \
+            photo "cam:$camera_id" -o "$scratch/diff-a.png" >/dev/null 2>&1; then
+            gate_fail "could not take the first photograph the diff row compares"
+            continue
+        fi
+        if ! "$binary" --backend fake --profile "$profile" \
+            photo "cam:$camera_id" --transform hflip -o "$scratch/diff-b.png" >/dev/null 2>&1; then
+            gate_fail "could not take the second photograph the diff row compares"
+            continue
+        fi
+        argv="${argv//<photo-a>/$scratch/diff-a.png}"
+        argv="${argv//<photo-b>/$scratch/diff-b.png}"
+    fi
 
     output=""
     status=0
@@ -495,6 +524,26 @@ help_commands() {
         grep -v '^help$' || true
 }
 
+# Whether a node that *has* subcommands can also be run without naming one — that is, whether
+# it is a verb of its own as well as a prefix.
+#
+# **`photo` is both** (D17): `photo <CAMERA>` takes a picture and `photo diff <A> <B>` compares
+# two, so a walk that treated "has children" as "is only a prefix" would have dropped `photo`
+# from this population the day the subcommand landed, while the leaf count stayed the same
+# because `photo-diff` replaced it. A verb silently leaving a completeness check is note N10's
+# family, so the question is asked of clap's own rendering rather than assumed: clap prints one
+# usage line per way the node may be invoked, and a node that requires a subcommand has exactly
+# one and it ends in `<COMMAND>`.
+runs_without_a_subcommand() {
+    "$binary" "$@" --help 2>/dev/null |
+        awk '
+            /^Usage:/ { inside = 1 }
+            inside && /^[[:space:]]*$/ { inside = 0 }
+            inside && $0 !~ /<COMMAND>/ { found = 1 }
+            END { exit(found ? 0 : 1) }
+        '
+}
+
 # Exact match, not a prefix: `calibrate-start` no longer answers for `calibrate-sweep`.
 has_row() {
     local want="$1" row
@@ -518,6 +567,15 @@ for verb in "${offered[@]}"; do
             gate_fail "the CLI offers '$verb' but no row above validates its --json answer"
         fi
         continue
+    fi
+    # A node with children may still be a verb in its own right — see
+    # `runs_without_a_subcommand`. It is counted and required to have a row exactly as a
+    # childless one is, because it answers a `--json` document exactly as one does.
+    if runs_without_a_subcommand "$verb"; then
+        leaves=$((leaves + 1))
+        if ! has_row "$verb"; then
+            gate_fail "the CLI offers '$verb' — which runs without naming a subcommand — but no row above validates its --json answer"
+        fi
     fi
     for sub in "${subs[@]}"; do
         leaves=$((leaves + 1))

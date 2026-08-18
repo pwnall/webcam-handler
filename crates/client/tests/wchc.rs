@@ -52,6 +52,8 @@ use serde_json::Value;
 
 #[path = "support/fixture.rs"]
 mod fixture;
+#[path = "support/photographs.rs"]
+mod photographs;
 
 use fixture::{Daemon, Fixture, wchc};
 
@@ -371,6 +373,98 @@ fn a_document_verb_answers_from_both_roots_with_no_daemon_and_the_same_bytes() {
         "{}",
         String::from_utf8_lossy(&theirs.stdout)
     );
+}
+
+#[test]
+fn the_other_document_verb_answers_from_both_roots_with_no_daemon_and_the_same_bytes() {
+    // The arm above, for `photo diff` (D17). A second document verb is not a repetition: the
+    // exemption `scripts/gates/cli-parity.sh` grants that bucket is *per verb*, so the claim
+    // that one implementation serves both roots has to be made about each member of it — and
+    // this one reaches for a different crate on the way (`imaging`, for the decoders and the
+    // comparison core), which is the edge that would put the verb in one binary if it were
+    // ever taken through the engine.
+    //
+    // Its files are **synthetic pictures rather than a capture**, and deliberately so: a
+    // fixture taken off the fake backend would put a backend in an arm whose whole subject is
+    // a verb that needs none. They are encoded through `imaging::encode`, which is the writer
+    // whose output the reader under test accepts.
+    let fixture = Fixture::new();
+    let base = imaging::fixtures::checkerboard(48, 48, 6);
+    let blurred = imaging::fixtures::blurred(&base, 2.0).expect("a 48x48 image blurs");
+    let a = photographs::write_photograph(fixture.state.root(), "sharp.png", base);
+    let b = photographs::write_photograph(fixture.state.root(), "blurred.png", blurred);
+    let argv = ["--json", "photo", "diff", a.as_str(), b.as_str()];
+
+    let theirs = fixture.run(&argv);
+    assert_eq!(
+        theirs.code, 0,
+        "webcam-handler-client could not answer a document verb with no daemon: {}",
+        theirs.stderr
+    );
+    // One `PhotoComparison` and nothing else, and it found something: a blurred copy of a
+    // picture is less sharp than the picture and scores below 1.0 against it. Two claims about
+    // the *pair*, so a run that had compared one file with itself could not have made them.
+    let document: schema::metrics::PhotoComparison =
+        serde_json::from_slice(&theirs.stdout).expect("standard output carries a PhotoComparison");
+    let delta = document
+        .delta
+        .get(&schema::metrics::MetricName::Sharpness)
+        .copied()
+        .expect("every metric has a delta");
+    assert!(delta < 0.0, "blurring must lower the sharpness: {delta}");
+    let score = document.ssim.score().expect("two 48x48 images score");
+    assert!((0.0..1.0).contains(&score), "{score}");
+
+    let mine = wch().args(argv).output().expect("webcam-handler-cli runs");
+    assert_eq!(
+        mine.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&mine.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&mine.stdout),
+        String::from_utf8_lossy(&theirs.stdout),
+        "one verb, one implementation, and these two roots printed different bytes"
+    );
+
+    // And the refusal path, which is where the two roots have the most room to diverge — the
+    // same argument the arm above makes. A file that is *there* and is not a photograph is the
+    // shape unique to this verb: `profile compare` refuses an unreadable file by path, and this
+    // one refuses readable bytes by naming the formats that would have read.
+    let refused_path = write_not_a_photograph(&fixture);
+    let refused = ["--json", "photo", "diff", a.as_str(), refused_path.as_str()];
+    let theirs = fixture.run(&refused);
+    let mine = wch()
+        .args(refused)
+        .output()
+        .expect("webcam-handler-cli runs");
+    assert_eq!(
+        theirs.code,
+        refusal_code(schema::ErrorKind::DeviceIo),
+        "{}",
+        theirs.stderr
+    );
+    assert_eq!(mine.status.code(), Some(theirs.code));
+    assert_eq!(
+        String::from_utf8_lossy(&mine.stdout),
+        String::from_utf8_lossy(&theirs.stdout),
+        "the two roots refuse a document verb with different documents"
+    );
+    assert!(
+        theirs.stderr.contains("not a photograph this build writes"),
+        "{}",
+        theirs.stderr
+    );
+}
+
+/// A file that exists, is readable, and is in no format this build writes.
+///
+/// Named rather than inlined so the arm above reads as the claim it is making: what is under
+/// test is the refusal for *content*, and a fixture spelled out in the middle of the
+/// assertions would look like part of the comparison.
+fn write_not_a_photograph(fixture: &Fixture) -> Utf8PathBuf {
+    photographs::write_not_a_photograph(fixture.state.root(), "not-a-photograph.png")
 }
 
 // ------------------------------------------------------------------- with a daemon

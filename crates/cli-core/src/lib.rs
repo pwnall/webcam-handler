@@ -402,8 +402,15 @@ impl Cli {
     /// whose usage block named the other binary would send an operator to the wrong
     /// `--help`.
     fn check(&self, program: Program) -> std::result::Result<(), clap::Error> {
+        // `diff: None` is the taking form, and the rule is about it alone: `photo diff --json`
+        // writes no image anywhere, so its document has standard output to itself and a rule
+        // demanding `--out` would refuse the one shape of this verb that has nothing to write.
         if self.json
-            && let Command::Photo { out: None, .. } = &self.command
+            && let Command::Photo {
+                out: None,
+                diff: None,
+                ..
+            } = &self.command
         {
             return Err(program.command().error(
                 clap::error::ErrorKind::MissingRequiredArgument,
@@ -643,11 +650,32 @@ pub enum Command {
         snapshot: Utf8PathBuf,
     },
 
-    /// Take a photo.
+    /// Take a photo, or compare two that were already taken.
+    ///
+    /// `photo <CAMERA>` opens a camera; `photo diff <A> <B>` opens neither, and reads two
+    /// files instead.
+    // `subcommand_negates_reqs` is what lets one verb be both: `<CAMERA>` stays required for
+    // the form that takes a camera and is not demanded of the form that names two files. The
+    // camera is `Option<CameraArg>` for the same reason and only that reason — clap still
+    // refuses `photo` with no camera at all, in its own words and with its own exit code,
+    // because the flatten leaves the inner argument required (measured: the `Option` changes
+    // what is *extracted*, not what is *required*).
+    //
+    // `args_conflicts_with_subcommands` is deliberately **not** set, and the measurement is
+    // why. With it, clap stops recognising the subcommand once any argument has been parsed —
+    // including a global one — so `photo --json diff a b`, which is a caller doing something
+    // entirely reasonable, answered *"error: the subcommand '/path/a.png' cannot be used with
+    // --json"* and exit 2 (measured, 2026-08-18). Without it that invocation works, and the
+    // price is that a taking flag typed beside the comparison is ignored rather than refused:
+    // `photo -o shot.jpg diff a b` compares the two files and writes no photo. That price is
+    // paid where it is smallest — `photo diff --help` offers `<A>`, `<B>` and the global flags
+    // and nothing else, so a caller reading the manual for the form they are invoking is never
+    // shown `--out` at all.
+    #[command(subcommand_negates_reqs = true)]
     Photo {
         /// Which camera.
         #[command(flatten)]
-        camera: CameraArg,
+        camera: Option<CameraArg>,
 
         // The cross-reference a Rust reader wants is `Cli::try_parse_checked_from`, and it
         // is a line comment rather than an intra-doc link because **clap prints the doc
@@ -698,6 +726,12 @@ pub enum Command {
         // above to a user (note **N123**).
         #[arg(long)]
         wait: bool,
+
+        // The document half of this verb (D17). No doc comment, because clap prints an
+        // `about` for the subcommand itself and this field's own comment would reach nobody;
+        // the sentence a reader meets is `PhotoCommand::Diff`'s.
+        #[command(subcommand)]
+        diff: Option<PhotoCommand>,
     },
 
     /// Record a video.
@@ -1293,6 +1327,9 @@ impl Command {
     /// N46, debt D-1). Deliberately not `FormatUnsupported`: that variant is the camera saying
     /// what it cannot offer, and `.webp` is not the camera's fault (E3).
     pub fn photo_request(&self, cwd: &camino::Utf8Path) -> Result<Option<PhotoRequest>> {
+        // `diff: None` and not `..`: `photo diff` describes no photo request at all, and a
+        // builder that answered `Some` for it would hand the executor a capture nobody asked
+        // for the day a caller reached this method with the other form of the verb.
         let Command::Photo {
             out,
             format,
@@ -1300,6 +1337,7 @@ impl Command {
             stream,
             settle,
             wait,
+            diff: None,
             ..
         } = self
         else {
@@ -1397,6 +1435,40 @@ impl Command {
         request.budget_ms()?;
         Ok(Some(request))
     }
+}
+
+/// `webcam-handler-cli photo diff …`
+///
+/// One variant, and a subtree rather than a flag for the reason design D17 gives the verb its
+/// name: `photo` is where a caller already goes for a photograph, and a comparison of two of
+/// them is a second thing that verb does rather than a modifier on the first. A `--diff A B`
+/// on the taking form would have made `--out`, `--size` and `--settle-for` legal beside it and
+/// meaningless.
+#[derive(Debug, Subcommand)]
+pub enum PhotoCommand {
+    /// Compare two photographs: what each one measures, and what moved between them.
+    ///
+    /// Reads both files and answers one comparison: every metric this build computes, on each
+    /// side and as a delta, plus a structural-similarity score.
+    ///
+    /// Nothing is resized and nothing is decided. Two images of different sizes still measure,
+    /// and the similarity score is the one quantity that needs matching shapes — it comes back
+    /// saying so, with both sizes on it, rather than refusing the whole comparison.
+    ///
+    /// The files are photographs this tool wrote: JPEG, PNG, or binary Netpbm. Which one is
+    /// read from the bytes rather than from the name, so a renamed file still reads.
+    ///
+    /// Touches no camera and needs no daemon: both programs read the two files in their own
+    /// process.
+    Diff {
+        /// A photograph, as `photo --out` wrote it.
+        #[arg(value_name = "A")]
+        a: Utf8PathBuf,
+
+        /// The photograph to compare it against.
+        #[arg(value_name = "B")]
+        b: Utf8PathBuf,
+    },
 }
 
 /// `webcam-handler-cli profile …`
@@ -1789,7 +1861,11 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             let report = executor.restore(&camera.selector()?, &document)?;
             render::restore(&report, cli.json, out)
         }
-        Command::Photo { camera, .. } => {
+        Command::Photo {
+            camera: Some(camera),
+            diff: None,
+            ..
+        } => {
             let cwd = current_directory()?;
             let request = cli
                 .command
@@ -1798,6 +1874,11 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             let taken = executor.photo(&camera.selector()?, &request)?;
             render::photo(&taken.report, taken.returned.as_deref(), cli.json, out)
         }
+        // `photo diff` is answered above, before the executor existed; `photo` with no camera
+        // at all is clap's refusal and never reaches here. Both arms exist so this dispatch
+        // carries no `unwrap` on a request-driven path — [`unreachable_photo`]'s reason.
+        Command::Photo { diff: Some(_), .. } => Err(unreachable_document()),
+        Command::Photo { camera: None, .. } => Err(unreachable_photo()),
         Command::Record { camera, .. } => {
             let cwd = current_directory()?;
             let request = cli
@@ -1830,8 +1911,9 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
 ///
 /// A document verb takes files, answers a document, and touches no camera, no store and no
 /// socket — so it executes inside this crate, on both roots, and never reaches the
-/// [`Executor`] seam. `profile compare` is one: it reads two profiles somebody already
-/// captured and compares them.
+/// [`Executor`] seam. There are two. `profile compare` reads two profiles somebody already
+/// captured and compares the devices they describe (D15); `photo diff` reads two photographs
+/// somebody already took and measures them against each other (D17).
 ///
 /// **The boundary is sharp, and it is about what a verb needs rather than what it answers.** A
 /// verb that needs a backend, a store or a daemon is an executor verb whatever document it
@@ -1852,12 +1934,18 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
 ///
 /// Inside the `Some`: whatever the verb says. A path that is not a readable device profile is
 /// [`Error::StorageIo`] naming it, and a profile from another schema version is
-/// [`Error::SchemaVersionForeign`] naming both — see [`read_profile`].
+/// [`Error::SchemaVersionForeign`] naming both — see `read_profile`. A path that is not a
+/// photograph this build writes is [`Error::DeviceIo`] saying what was found — see
+/// `compare_photographs`.
 pub fn below_the_executor(cli: &Cli, out: &mut Output) -> Option<Result<()>> {
     match &cli.command {
         Command::Profile(ProfileCommand::Compare { a, b }) => {
             Some(compare_profiles(a, b, cli.json, out))
         }
+        Command::Photo {
+            diff: Some(PhotoCommand::Diff { a, b }),
+            ..
+        } => Some(compare_photographs(a, b, cli.json, out)),
         _ => None,
     }
 }
@@ -1879,6 +1967,48 @@ fn compare_profiles(a: &Utf8Path, b: &Utf8Path, as_json: bool, out: &mut Output)
     let mine = read_profile(a)?;
     let theirs = read_profile(b)?;
     render::comparison(&mine.compare(&theirs), as_json, out)
+}
+
+/// `photo diff` (design D17): two photographs in, one comparison out.
+///
+/// [`compare_profiles`]'s shape one document along, and the split is the same: the comparison
+/// is `imaging::compare::photos`, which is **total** — it answers for every pair of images,
+/// and the one quantity that needs matching shapes says so on itself rather than refusing. So
+/// this function decides nothing about what "differs" means, and D17 adds no error kind. The
+/// only failures here are about the two *files*.
+///
+/// `a` is read **and decoded** before `b` is opened, which is [`compare_profiles`]'s ordering
+/// and its reason: a run naming two files that are not photographs refuses the first one a
+/// reader would go and look at.
+///
+/// # Errors
+///
+/// [`Error::StorageIo`] naming the path, for a file that cannot be read. [`Error::DeviceIo`]
+/// from `imaging::compare::read` for bytes in no format this build writes and for bytes their
+/// own decoder refused, carried verbatim from the crate that owns the format vocabulary: the
+/// message names every format that *would* have read and the first bytes that were found
+/// instead. It does **not** name the path, which is the one thing this refusal leaves to the
+/// caller's own command line — the ordering above is what makes "which of the two" answerable
+/// at all, and a message rebuilt here to add the path would be a second opinion about what
+/// `imaging` refuses.
+fn compare_photographs(a: &Utf8Path, b: &Utf8Path, as_json: bool, out: &mut Output) -> Result<()> {
+    let mine = imaging::compare::read(&read_photograph(a)?)?;
+    let theirs = imaging::compare::read(&read_photograph(b)?)?;
+    render::photo_comparison(&imaging::compare::photos(&mine, &theirs), as_json, out)
+}
+
+/// The bytes of a file named on a command line, or a refusal naming it.
+///
+/// Its own function rather than an inline `std::fs::read`, because *this* is the refusal that
+/// carries the path and it has two callers a line apart — the same argument
+/// [`read_profile`]'s first four lines make, and the reason a caller meets one spelling of
+/// "that file is not there" whichever side of the comparison it was on.
+fn read_photograph(path: &Utf8Path) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|error| Error::StorageIo {
+        path: path.to_owned(),
+        errno: error.raw_os_error(),
+        message: error.to_string(),
+    })
 }
 
 /// `webcam-handler-cli calibrate …`, dispatched.
@@ -2981,6 +3111,92 @@ mod tests {
         assert!(
             Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "--json", "list"])
                 .is_ok()
+        );
+        // It is about the *taking* form of `photo` alone, too (D17). `photo diff` writes no
+        // image anywhere, so the stream its document would have shared is empty and demanding
+        // a path would refuse the one shape of this verb that has nothing to write. Both
+        // spellings of the flag's position, because `--json` is global and a caller reaches
+        // for it on either side of the verb.
+        for argv in [
+            [
+                "webcam-handler-cli",
+                "--json",
+                "photo",
+                "diff",
+                "a.png",
+                "b.png",
+            ],
+            [
+                "webcam-handler-cli",
+                "photo",
+                "--json",
+                "diff",
+                "a.png",
+                "b.png",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_checked_from(Program::Cli, argv).is_ok(),
+                "{argv:?} must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn photo_is_a_verb_and_a_subtree_and_neither_form_takes_the_others_arguments() {
+        // The shape D17 asks of one verb, and the three things that have to stay true of it.
+        //
+        // A camera is still required for the taking form, in clap's own words and with clap's
+        // own exit code: the camera became `Option<CameraArg>` so that the comparison form
+        // could exist beside it, and if that had also made it optional to clap, `photo` with
+        // nothing after it would have stopped being a usage error and become a device one.
+        let error = Cli::try_parse_checked_from(Program::Cli, ["webcam-handler-cli", "photo"])
+            .expect_err("photo with no camera and no subcommand is a usage error");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("CAMERA"), "{error}");
+
+        // The comparison form does not demand one, and parses into the arm that answers below
+        // the executor.
+        let cli = Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "photo", "diff", "a.png", "b.png"],
+        )
+        .expect("photo diff parses");
+        let Command::Photo {
+            camera: None,
+            diff: Some(PhotoCommand::Diff { a, b }),
+            ..
+        } = &cli.command
+        else {
+            panic!("photo diff parsed as {:?}", cli.command);
+        };
+        assert_eq!((a.as_str(), b.as_str()), ("a.png", "b.png"));
+
+        // And the comparison form describes no photo request at all. A builder answering
+        // `Some` here would hand an executor a capture nobody asked for.
+        let cwd = Utf8PathBuf::from("/tmp");
+        assert!(
+            cli.command
+                .photo_request(&cwd)
+                .expect("no refusal")
+                .is_none(),
+            "photo diff described a photo request"
+        );
+        let taking = Cli::try_parse_checked_from(
+            Program::Cli,
+            ["webcam-handler-cli", "photo", "cam:x", "-o", "shot.jpg"],
+        )
+        .expect("photo parses");
+        assert!(
+            taking
+                .command
+                .photo_request(&cwd)
+                .expect("no refusal")
+                .is_some(),
+            "the taking form still describes one"
         );
     }
 
@@ -4371,5 +4587,278 @@ mod tests {
         ]);
         answered.expect("a profile at this build's version compares");
         assert!(table.contains("same device"), "{table}");
+    }
+
+    // ---------------------------------------------- P8b: `photo diff`, the document verb
+    //
+    // Design §2.7's T4 clause again, and D17. The arms are shaped like the `profile compare`
+    // ones above because the claim is the same one about a different document: the verb runs
+    // below the executor, refuses a file it cannot read by name, and prints two renderings of
+    // one value. What is new is the third of those — a comparison that cannot compute one
+    // answer states the reason and answers the rest (AGENTS rule 6), and a human rendering
+    // that turned that into a refusal would throw away the half that *was* computed.
+    //
+    // The claim that the two shipped binaries print identical bytes for one pair of files is a
+    // property of two processes and is asserted where two can be run
+    // (`crates/client/tests/wchc.rs`).
+
+    /// A scratch directory for the arms below to write photographs into.
+    ///
+    /// `TempDir::new_in` over the one scratch root for the reason the profile arms give: the
+    /// owner's 2026-08-12 ruling (note **N84**) puts every test's scratch under `target/`, and
+    /// this crate reaches it through `schema::paths` because it links no engine (T6). The
+    /// pictures in it are synthetic, so nothing here is a frame that could contain a person.
+    fn photo_scratch() -> tempfile::TempDir {
+        let root = schema::paths::scratch_root().expect("a scratch root");
+        tempfile::TempDir::new_in(&root).expect("a scratch directory")
+    }
+
+    /// One file in it, and the path to name on a command line.
+    fn write_file(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> Utf8PathBuf {
+        let path = Utf8PathBuf::from_path_buf(dir.path().join(name)).expect("a UTF-8 path");
+        std::fs::write(&path, bytes).expect("writes the fixture");
+        path
+    }
+
+    /// One synthetic picture, as the PNG bytes this build writes.
+    ///
+    /// Through `imaging::encode`, which is the writer `imaging::compare::read` is defined
+    /// against — a hand-built PNG here would be testing somebody else's encoder. It takes a
+    /// `Decoded` rather than a pixel buffer so this crate names no type from `image` itself:
+    /// the edge is to `webcam-handler-imaging`, and the pixel type is that crate's business.
+    fn png(image: imaging::Decoded) -> Vec<u8> {
+        imaging::encode::png(&image).expect("a fixture encodes")
+    }
+
+    #[test]
+    fn a_photograph_comparison_answers_without_ever_reaching_the_executor() {
+        // The §2.7 clause as a property, for the second document verb: two files in, one
+        // document out, from a run in which the executor seam would have panicked on contact.
+        // `the_double_is_armed` above is what makes that non-vacuous.
+        let dir = photo_scratch();
+        let base = imaging::fixtures::checkerboard(32, 32, 4);
+        let blurred = imaging::fixtures::blurred(&base, 2.0).expect("a 32x32 image blurs");
+        let a = write_file(&dir, "a.png", &png(imaging::Decoded::Gray(base.clone())));
+        let b = write_file(&dir, "b.png", &png(imaging::Decoded::Gray(blurred.clone())));
+
+        let (answered, stdout, stderr) = compared(&[
+            "webcam-handler-cli",
+            "--json",
+            "photo",
+            "diff",
+            a.as_str(),
+            b.as_str(),
+        ]);
+        answered.expect("the comparison answers");
+
+        // The schema type verbatim, and the *bytes* the core's own serialization produces —
+        // which is what makes the `--json` contract row for `photo-diff` mean something. The
+        // expectation is the core's answer to the same two images, not a transcription of
+        // this run.
+        //
+        // Compared as bytes rather than by parsing and comparing values, and that is a
+        // measurement rather than a preference: `serde_json` without its `float_roundtrip`
+        // feature parses `0.49816176470588236` back as `0.4981617647058824`, one ULP away
+        // (measured here, 2026-08-18). It is harmless for this document — D17's consumer
+        // applies its own tolerance, and nothing in the comparison is a discriminant — but a
+        // value equality after a parse would be a test that passes on the numbers it happened
+        // to be given.
+        let expected = imaging::compare::photos(&base, &blurred);
+        assert_eq!(
+            stdout,
+            serde_json::to_string_pretty(&expected).expect("the core's answer serializes") + "\n"
+        );
+        assert!(stderr.is_empty(), "{stderr}");
+        // And it is one schema type and nothing else: a consumer parses this and is done.
+        let _: schema::metrics::PhotoComparison =
+            serde_json::from_str(&stdout).expect("standard output carries a PhotoComparison");
+
+        // It found something, too: a blurred copy of a picture is less sharp than the picture
+        // and scores below 1.0 against it. Two claims about the *pair*, so a run that had
+        // compared one file with itself could not have produced them.
+        let delta = expected
+            .delta
+            .get(&MetricName::Sharpness)
+            .copied()
+            .expect("every metric has a delta");
+        assert!(delta < 0.0, "blurring must lower the sharpness: {delta}");
+        let score = expected.ssim.score().expect("equal sizes score");
+        assert!((0.0..1.0).contains(&score), "{score}");
+    }
+
+    #[test]
+    fn the_json_answer_parses_as_one_document_and_the_table_carries_every_metric_on_both_sides() {
+        // The two renderings of one value, and this crate's opening rule: neither may show a
+        // fact the other omits. The table's population is `MetricName::ALL` for the same
+        // reason the document's is — a sixth metric joins both by existing — so the assertion
+        // walks the vocabulary rather than a list written here.
+        let dir = photo_scratch();
+        let base = imaging::fixtures::gradient(32, 32);
+        let brighter = imaging::fixtures::overexposed(&base);
+        let a = write_file(&dir, "a.png", &png(imaging::Decoded::Gray(base)));
+        let b = write_file(&dir, "b.png", &png(imaging::Decoded::Gray(brighter)));
+        let argv = ["photo", "diff", a.as_str(), b.as_str()];
+
+        let (answered, json_text, _) =
+            compared(&[&["webcam-handler-cli", "--json"], &argv[..]].concat());
+        answered.expect("the comparison answers");
+        // One schema type and no envelope: what a consumer parses is the document, and every
+        // property it carries is one the committed bundle declares — which
+        // `scripts/gates/json-validates.sh` is what checks, against the bundle itself.
+        let document: schema::metrics::PhotoComparison =
+            serde_json::from_str(&json_text).expect("a PhotoComparison");
+        assert_eq!(document.delta.len(), MetricName::ALL.len(), "{json_text}");
+
+        let (answered, table, _) = compared(&[&["webcam-handler-cli"], &argv[..]].concat());
+        answered.expect("the comparison answers");
+        for name in MetricName::ALL {
+            assert!(
+                table.contains(name.as_str()),
+                "{name} is missing from:\n{table}"
+            );
+        }
+        // Both shapes, so a reader can see that the two pictures are the same size — which is
+        // also what decides whether the line below it can carry a score at all.
+        assert!(table.contains("32x32"), "{table}");
+        assert!(table.contains("ssim: "), "{table}");
+    }
+
+    #[test]
+    fn a_pair_that_cannot_be_scored_says_why_and_still_reports_every_metric() {
+        // **D17's shape, at the surface** (AGENTS rule 6). Two photographs of different sizes
+        // are a comparison this tool answers, not one it refuses: every per-metric scalar is
+        // well defined on unequal images and is printed, and the one quantity that needed
+        // matching shapes says so — with both shapes in the sentence, because a reader told
+        // only that there is no score has nothing to act on.
+        let dir = photo_scratch();
+        let small = imaging::fixtures::checkerboard(16, 16, 4);
+        let large = imaging::fixtures::checkerboard(32, 32, 4);
+        let a = write_file(
+            &dir,
+            "small.png",
+            &png(imaging::Decoded::Gray(small.clone())),
+        );
+        let b = write_file(&dir, "large.png", &png(imaging::Decoded::Gray(large)));
+        let argv = ["photo", "diff", a.as_str(), b.as_str()];
+
+        let (answered, table, stderr) = compared(&[&["webcam-handler-cli"], &argv[..]].concat());
+        answered.expect("a mismatched pair is answered, not refused");
+        assert!(table.contains("not computed"), "{table}");
+        assert!(
+            table.contains("16x16") && table.contains("32x32"),
+            "{table}"
+        );
+        assert!(table.contains("nothing here resizes"), "{table}");
+        for name in MetricName::ALL {
+            assert!(table.contains(name.as_str()), "{name}:\n{table}");
+        }
+        // The reason is the answer, so it goes to standard output with the rest of it; a
+        // sentence pushed to standard error would be one a caller redirecting stdout loses.
+        assert!(stderr.is_empty(), "{stderr}");
+
+        // The same fact reached from `--json`, which is what "two renderings of one value"
+        // means here: the reason is data, and both consumers branch on the same field.
+        let (answered, json_text, _) =
+            compared(&[&["webcam-handler-cli", "--json"], &argv[..]].concat());
+        answered.expect("a mismatched pair is answered, not refused");
+        let document: schema::metrics::PhotoComparison =
+            serde_json::from_str(&json_text).expect("a PhotoComparison");
+        assert_eq!(
+            document.ssim,
+            schema::metrics::Ssim::Unavailable {
+                reason: schema::metrics::SsimUnavailable::DimensionsDiffer {
+                    a: [16, 16],
+                    b: [32, 32],
+                },
+            },
+            "{json_text}"
+        );
+
+        // The inverse, and the arm is about the *reason* without it: a pair that can be scored
+        // prints a number and never the sentence above.
+        let same = write_file(&dir, "same.png", &png(imaging::Decoded::Gray(small)));
+        let (answered, scored, _) = compared(&[
+            "webcam-handler-cli",
+            "photo",
+            "diff",
+            a.as_str(),
+            same.as_str(),
+        ]);
+        answered.expect("an equal-sized pair scores");
+        assert!(scored.contains("ssim: 1.0000"), "{scored}");
+        assert!(!scored.contains("not computed"), "{scored}");
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_photograph_is_refused_by_name_and_never_compared() {
+        // The refusals this verb owns, all from the D13 registry v3 adds nothing to (D17: a
+        // dimension mismatch is represented, so the only failures here are about the files).
+        let dir = photo_scratch();
+        let good = write_file(
+            &dir,
+            "good.png",
+            &png(imaging::Decoded::Gray(imaging::fixtures::checkerboard(
+                16, 16, 4,
+            ))),
+        );
+
+        // Bytes in no format this build writes. The refusal names the formats that *would*
+        // have read and what was found instead, which is what an unattended caller needs:
+        // "convert it" and "you named the wrong file" are different repairs.
+        let not_a_photograph = write_file(&dir, "notes.txt", b"GIF89a and then some");
+        let (answered, stdout, _) = compared(&[
+            "webcam-handler-cli",
+            "photo",
+            "diff",
+            good.as_str(),
+            not_a_photograph.as_str(),
+        ]);
+        let error = answered.expect_err("a GIF is not a photograph this build writes");
+        assert_eq!(error.kind(), ErrorKind::DeviceIo, "{error}");
+        let message = error.to_string();
+        for expected in ["not a photograph this build writes", "the first bytes are"] {
+            assert!(message.contains(expected), "{message}");
+        }
+        for format in PhotoFormat::ALL {
+            assert!(message.contains(format.as_str()), "{message}");
+        }
+        assert!(stdout.is_empty(), "{stdout}");
+
+        // A file that is there and is not decodable is told apart from one that is not there:
+        // the second names the path, because that is the refusal a caller acts on by looking.
+        let missing = good.with_file_name("was-never-written.png");
+        let (answered, ..) = compared(&[
+            "webcam-handler-cli",
+            "photo",
+            "diff",
+            missing.as_str(),
+            good.as_str(),
+        ]);
+        let error = answered.expect_err("a path with no file behind it is not a comparison");
+        assert_eq!(error.kind(), ErrorKind::StorageIo, "{error}");
+        assert!(error.to_string().contains(missing.as_str()), "{error}");
+
+        // And the ordering this verb documents, which is the only thing that makes "which of
+        // the two" answerable: `a` is read and decoded before `b` is opened, so a run naming
+        // two unreadable files refuses the first. Both directions, because a refusal that
+        // always named the same side would satisfy one of them.
+        let other_missing = missing.with_file_name("also-never-written.png");
+        for (first, second, named) in [
+            (&missing, &other_missing, &missing),
+            (&other_missing, &missing, &other_missing),
+        ] {
+            let (answered, ..) = compared(&[
+                "webcam-handler-cli",
+                "photo",
+                "diff",
+                first.as_str(),
+                second.as_str(),
+            ]);
+            let error = answered.expect_err("neither file is a photograph");
+            assert!(
+                error.to_string().contains(named.as_str()),
+                "the refusal is about {named} and says: {error}"
+            );
+        }
     }
 }

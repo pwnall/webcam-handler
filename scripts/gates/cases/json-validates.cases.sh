@@ -136,6 +136,28 @@ fail_case_a_calibrate_subverb_loses_its_validation_row() {
     gate_red_because 'calibrate sweep' bash "$mutant"
 }
 
+# The same completeness claim asked of the node this walk learned to see at P8b: a verb that is
+# **also a subtree**. `photo` takes a picture and `photo diff` compares two (D17), so a walk
+# that read "has children" as "is only a prefix" would have stopped requiring a row for `photo`
+# on the day the subcommand landed — with the leaf count unchanged, because `photo-diff`
+# arrived in the same breath, which is the shape that makes this worth an arm rather than a
+# comment. Seeded the way the arm above is, and for its reason: the alternative is building a
+# `webcam-handler-cli` whose `photo` has no subcommand.
+fail_case_a_verb_that_is_also_a_subtree_loses_its_validation_row() {
+    local dir mutant
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-json-rows.XXXXXXXX")"
+    mutant="$dir/$(basename "$GATE")"
+    cp "$(dirname "$GATE")/lib.sh" "$dir/lib.sh"
+    # `"photo|` and not `"photo`, so the `photo-diff` row beside it survives: dropping both
+    # would leave the parent unvalidated *and* the child, and this arm is about the parent.
+    grep -v '^    "photo|' "$GATE" >"$mutant"
+    if grep -q '^    "photo|' "$mutant"; then
+        printf 'selftest: the photo row was not removed\n' >&2
+        return 0
+    fi
+    gate_red_because "which runs without naming a subcommand" bash "$mutant"
+}
+
 # The other half of the completeness claim, and since docs/7 P6e it has a seam in the *tree*
 # rather than only in the predicate: the verb-to-document mapping moved to
 # `crates/cli-core/json-contracts.tsv`, which three readers share (note **N122**). A row

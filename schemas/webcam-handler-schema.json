@@ -2899,6 +2899,38 @@
         }
       ]
     },
+    "PhotoComparison": {
+      "description": "What two photographs measured, side by side (design D17; FR-W3).\n\n\"Same scene, two paths\" — two units of one model, before and after a firmware update,\none camera direct and one forwarded — wants a comparison *record*, and this is it: the\nD8 metric set on each side, the per-metric delta, and an SSIM corroborator that\nrepresents its own unavailability instead of refusing.\n\n**Nothing here decides.** The metrics rank exactly as they do everywhere else, SSIM\ncorroborates, and \"are these two photographs peers?\" is answered with numbers a consumer\napplies its own tolerance to. And nothing here resizes: a comparison that resampled one\nside would be measuring a codec artifact it introduced itself (E6).",
+      "properties": {
+        "a": {
+          "$ref": "#/$defs/PhotoMeasurements",
+          "description": "The first photograph."
+        },
+        "b": {
+          "$ref": "#/$defs/PhotoMeasurements",
+          "description": "The second."
+        },
+        "delta": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "description": "`b - a`, per metric — every name in `MetricName::ALL`, so a sixth metric joins the\ncomparison by existing rather than by being added here.",
+          "type": "object"
+        },
+        "ssim": {
+          "$ref": "#/$defs/Ssim",
+          "description": "The structural-similarity corroborator, or why there is not one."
+        }
+      },
+      "required": [
+        "a",
+        "b",
+        "delta",
+        "ssim"
+      ],
+      "type": "object"
+    },
     "PhotoDelivery": {
       "description": "Where a photo's bytes ended up — `Sink`, answered.\n\nThe two variants pair with the two sinks, and each says the thing its caller cannot\notherwise learn: a path answer reports how much was written, and a bytes answer reports how\nmuch is on its way. **The bytes themselves are not in this document**: `webcam-handler-cli`\nstreams them to standard output, and D10's base64-in-JSON encoding lives with the wire\nsurface that needs it — `webcam-handler-api`'s `photo::Base64Bytes`, beside the report\nrather than inside this enum. Carrying an unused encoding here would be a dependency nobody\nreads, and it would put base64 in every session file and `--json` document too.",
       "oneOf": [
@@ -2973,6 +3005,37 @@
           "type": "string"
         }
       ]
+    },
+    "PhotoMeasurements": {
+      "description": "One photograph's shape and scores.",
+      "properties": {
+        "height": {
+          "description": "Height in pixels, as decoded.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "description": "Every metric this build computes, over the luma plane.",
+          "type": "object"
+        },
+        "width": {
+          "description": "Width in pixels, as decoded.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "metrics"
+      ],
+      "type": "object"
     },
     "PhotoRendering": {
       "description": "What the photo pipeline did to produce a photo's bytes (design D6/E6).\n\nReported alongside every photo because \"the camera's own bitstream\" and \"a faithful\nre-encode\" are different products, and a calibration sample that was re-encoded is\npartly ranking our codec rather than the lens.",
@@ -4324,6 +4387,108 @@
       ],
       "type": "object"
     },
+    "Ssim": {
+      "description": "The SSIM corroborator, or a stated reason there is none.\n\n**A dimension mismatch is represented, not refused** (D2's doctrine applied to a\ncomparison): the per-metric scalars above are well-defined on unequal images and stay,\nwhile this one says why it could not answer. So an unattended consumer branches on data\nrather than parsing a refusal, and D17 adds no error kind.",
+      "oneOf": [
+        {
+          "description": "Mean structural similarity over the two luma planes: 1.0 is identical.",
+          "properties": {
+            "kind": {
+              "const": "measured",
+              "type": "string"
+            },
+            "score": {
+              "description": "The score.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "score"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No score, and the reason — from a closed set, so a consumer can branch on it.",
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/SsimUnavailable",
+              "description": "Why."
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SsimUnavailable": {
+      "description": "Why a comparison carries no SSIM score.",
+      "oneOf": [
+        {
+          "description": "The two images are not the same size, and nothing here resamples (E6).",
+          "properties": {
+            "a": {
+              "description": "The first image's size, as `[width, height]`.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "b": {
+              "description": "The second image's size.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "reason": {
+              "const": "dimensions_differ",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "a",
+            "b"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The implementation refused for a reason of its own, carried verbatim.\n\nRepresented rather than swallowed (AGENTS rule 6): a corroborator that failed\nsilently would leave a consumer unable to tell \"these differ\" from \"nobody looked\".",
+          "properties": {
+            "message": {
+              "description": "What it said.",
+              "type": "string"
+            },
+            "reason": {
+              "const": "computation_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Stamp": {
       "description": "An RFC 3339 timestamp, e.g. 2026-08-08T10:11:12Z",
       "type": "string"
@@ -5138,6 +5303,7 @@
     "HotplugEvent",
     "LogEntry",
     "NegotiatedStream",
+    "PhotoComparison",
     "PhotoFormat",
     "PhotoReport",
     "PhotoRequest",

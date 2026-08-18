@@ -164,6 +164,14 @@ root="$(gate_root)"
 # finds something: a file compared with itself answers the same shape whether or not the
 # comparison works, and this bucket's whole claim is that the code which produced the answer is
 # the one both roots share.
+#
+# `photo diff` is the second document verb (D17) and its two tokens are the same shape one
+# document along: two photographs, taken by `webcam-handler-cli` into this gate's scratch
+# directory before the loop runs, because the only honest source of a photograph this build
+# reads is this build writing one. Different pictures for the reason above — the second is
+# mirrored — and taken **outside** the table because the `document` arm drives
+# `webcam-handler-client` alone, so a row that produced its own input would be asking the
+# client to write the file it is about to read.
 verbs=(
     "list|compared|list"
     "info|compared|info <camera>"
@@ -184,6 +192,7 @@ verbs=(
     "calibrate-status|compared|calibrate status <camera> --session <session>"
     "calibrate-list|compared|calibrate list <camera>"
     "profile-compare|document|profile compare <profile> <other-profile>"
+    "photo-diff|document|photo diff <photo-a> <photo-b>"
 )
 
 # The closed vocabulary. A bucket outside it is a failure rather than a fall-through, because
@@ -425,6 +434,23 @@ help_commands() {
         grep -v '^help$' || true
 }
 
+# Whether a node that *has* subcommands can also be run without naming one — that is, whether
+# it is a verb of its own as well as a prefix. `json-validates.sh`'s function of the same name
+# carries the argument: `photo` is both (D17), and a walk that read "has children" as "is only
+# a prefix" would have dropped it from this population while the count stayed put, because
+# `photo-diff` arrived in the same breath. Asked of clap's own rendering — one usage line per
+# way the node may be invoked, and a node that requires a subcommand has exactly one, ending in
+# `<COMMAND>`.
+runs_without_a_subcommand() {
+    "$wch" "$@" --help 2>/dev/null |
+        awk '
+            /^Usage:/ { inside = 1 }
+            inside && /^[[:space:]]*$/ { inside = 0 }
+            inside && $0 !~ /<COMMAND>/ { found = 1 }
+            END { exit(found ? 0 : 1) }
+        '
+}
+
 mapfile -t offered < <(help_commands)
 leaves=()
 for verb in "${offered[@]}"; do
@@ -433,6 +459,11 @@ for verb in "${offered[@]}"; do
         # A verb with no subcommands is its own leaf, which is the rule as it was.
         leaves+=("$verb")
         continue
+    fi
+    # A node with children may still be a verb in its own right, and then it needs a bucket
+    # exactly as a childless one does — see `runs_without_a_subcommand`.
+    if runs_without_a_subcommand "$verb"; then
+        leaves+=("$verb")
     fi
     for sub in "${subs[@]}"; do
         leaves+=("$verb-$sub")
@@ -495,6 +526,22 @@ documents=0
 daemonless="$scratch/no-daemon"
 mkdir -p "$daemonless"
 
+# The two photographs `photo diff` compares, taken here rather than transcribed — see the note
+# above the table. `webcam-handler-cli` replays the profile in its own process, so this costs no
+# daemon time and touches nothing the rows below read. They go under this gate's scratch
+# directory, which is under `target/`, so `no-frame-bytes-in-repo.sh` stays true of a pair of
+# synthetic frames.
+# The second is mirrored, so the pair really differs: measured on this corpus, an image and its
+# mirror agree on every flip-invariant metric and score -0.0667 on the similarity, which is the
+# field that would have read 1.0000 on a pair that was secretly one file.
+if ! "$wch" --backend fake --profile "$profile" photo "cam:$camera_id" \
+    -o "$scratch/diff-a.png" >/dev/null 2>"$scratch/wch.err" ||
+    ! "$wch" --backend fake --profile "$profile" photo "cam:$camera_id" --transform hflip \
+        -o "$scratch/diff-b.png" >/dev/null 2>"$scratch/wch.err"; then
+    gate_fail "webcam-handler-cli could not take the two photographs the document row for 'photo diff' compares: $(head -n1 "$scratch/wch.err")"
+    gate_finish
+fi
+
 # Substitute the tokens a row uses. `<snapshot>` and `<session>` are produced by earlier rows,
 # so a table reordered under them fails loudly rather than comparing a stale document.
 expand() {
@@ -509,6 +556,8 @@ expand() {
     argv="${argv//<refused>/$scratch/refused.jpg}"
     argv="${argv//<other-profile>/$other_profile}"
     argv="${argv//<profile>/$profile}"
+    argv="${argv//<photo-a>/$scratch/diff-a.png}"
+    argv="${argv//<photo-b>/$scratch/diff-b.png}"
     printf '%s\n' "$argv"
 }
 

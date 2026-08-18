@@ -30,6 +30,7 @@ set	WriteReport
 snapshot	Snapshot
 restore	RestoreReport
 photo	PhotoReport
+photo-diff	PhotoComparison
 record	RecordReport
 calibrate-start	Session
 calibrate-plan	Session

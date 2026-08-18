@@ -191,7 +191,7 @@ webcam-handler-client restore <CAMERA> <PATH>
 
 ### `photo`
 
-Take a photo
+Take a photo, or compare two that were already taken
 
 ```text
 webcam-handler-client photo <CAMERA> [--out <PATH>] [--format <FORMAT>] [--transform <TRANSFORM>] [--size <WxH>] [--pixel-format <FOURCC>] [--skip-frames <N>] [--settle-for <MS>] [--settle-deadline <MS>] [--wait]
@@ -214,6 +214,21 @@ webcam-handler-client photo <CAMERA> [--out <PATH>] [--format <FORMAT>] [--trans
 | `--settle-for` | `<MS>` | — | Discard frames for this long before taking one, in milliseconds |
 | `--settle-deadline` | `<MS>` | — | How long the whole settle may take, in milliseconds. At most 10000, because one camera is one thread and a longer settle is time nobody else gets; a bigger number is refused rather than quietly shortened |
 | `--wait` | — | — | Wait for room in the camera's command queue rather than being refused (D12) |
+
+### `photo diff`
+
+Compare two photographs: what each one measures, and what moved between them
+
+```text
+webcam-handler-client photo diff <A> <B>
+```
+
+`--json` answers with one `PhotoComparison` document.
+
+| Argument | What it is |
+|---|---|
+| `<A>` | A photograph, as `photo --out` wrote it |
+| `<B>` | The photograph to compare it against |
 
 ### `record`
 
@@ -501,6 +516,7 @@ Two cameras can match one spelling — one USB device often hosts two logical ca
 | `snapshot` | [`Snapshot`](../schemas/webcam-handler-schema.json) |
 | `restore` | [`RestoreReport`](../schemas/webcam-handler-schema.json) |
 | `photo` | [`PhotoReport`](../schemas/webcam-handler-schema.json) |
+| `photo diff` | [`PhotoComparison`](../schemas/webcam-handler-schema.json) |
 | `record` | [`RecordReport`](../schemas/webcam-handler-schema.json) |
 | `calibrate start` | [`Session`](../schemas/webcam-handler-schema.json) |
 | `calibrate plan` | [`Session`](../schemas/webcam-handler-schema.json) |
