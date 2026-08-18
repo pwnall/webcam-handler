@@ -25514,3 +25514,37 @@ found it is `a session driven from the page records the operator's own choice`, 
 deliberately does **not** abort `/preview` the way P5's sweep-watching claim does — that arm
 worked around the collision to get a free camera, which was right for what it asserts and is
 exactly why the collision survived to be found here.
+
+## N265 — An `<img>` cannot read a refusal, so the page asks for it once
+
+**Doc:** design D20's workbench; D13's "a message is payload — the part the primary consumer
+reads first"; D11's gate, which this change does not move.
+
+**Repo:** `crates/web/assets/preview.js`'s `error` handler.
+
+**What the workbench met the first time it was pointed at a camera with no MJPEG mode.** The
+preview route serves `multipart/x-mixed-replace` MJPEG, so a device offering only raw formats is
+refused — correctly, and with an exact sentence: *"format MJPG is unavailable; YUYV, NV12, GREY
+would be accepted"*. What an operator saw was *"either this daemon has no such camera (404) or
+the camera is not available right now — busy, gone, or refused (503)"*, because an `<img>`
+reports **that** it failed and never **why**: there is no status code and no body on an `error`
+event, so the page could only name both candidates. Neither candidate was true. The camera was
+there, nothing was busy, and the fact the operator needed — *this camera has no MJPEG mode* —
+was in a response body nothing could read.
+
+**The repair is one request on the failure path**: the same URL, fetched once, and the body
+shown if it says anything. It replaces nothing when it cannot answer, because a page with two
+stories about one failure is worse than a page with a guess. No new route, no new parameter, and
+the gate is untouched — the fetch carries the same credential the `<img>` did, which is what the
+token in the URL is for.
+
+**Why this is worth a note rather than a diff.** The generic sentence was not lazy: it was
+written when the only failures anyone had produced were 404 and 503, and it names both because
+the page genuinely could not tell them apart. What changed is that a *third* failure exists and
+is a fact about the device rather than about its availability — which is exactly the distinction
+AGENTS rule 7 is about, arriving at a person instead of at an agent. The corpus grew a virtual
+device with 83 raw formats and no bitstream (note **N261**), the workbench pointed at it, and the
+page said the one thing that was not so.
+
+**What this does not do**: retry, poll, or hold the preview open. One request, on an event that
+has already failed, and the operator gets the daemon's own words.

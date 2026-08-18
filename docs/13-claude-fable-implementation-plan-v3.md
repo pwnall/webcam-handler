@@ -1,8 +1,8 @@
 # webcam-handler — Implementation Plan (v3)
 
-Doc 13 in the webcam-handler series, **v3 — second revision**. Status: **issued, adoption
-pending** (docs/12's adoption paragraph governs the whole set); supersedes docs/7 (v2)
-upon adoption, which then lives under `docs/historical/` with its P0–P6 closure ledger
+Doc 13 in the webcam-handler series, **v3 — second revision**. Status: **adopted**, at P7a
+(commit `796babb`, 2026-08-18); supersedes docs/7 (v2), which now lives under
+`docs/historical/` with its P0–P6 closure ledger
 intact — that ledger is closed history and this document carries it **by reference, not by
 copy**: the phases, closing commits, criteria counts, evidence entries and review records
 for P0–P6 are docs/7's and stay there. Consumes the design (docs/12); gate criteria are
@@ -68,6 +68,26 @@ Carried, with the v3 additions marked:
 - **No rename in passing** *(v3 — N90/N91/N126's lesson as a convention)*: a name sweep
   is always its own sub-milestone with the orphaned-artifact checklist, and the wire
   namespace is a wire break no sweep may touch.
+
+## Execution record (live, reconciled at each gate close)
+
+Written here as it happens, docs/7's ledger discipline applied to this document. **The
+sub-milestone boundaries below are coarser than the plan's in one place and it is recorded
+rather than smoothed over**: P7c, P7d, P8a, P8b and P8c's hermetic half landed in one commit,
+because their generated artifacts are one JSON bundle and one guide between them and a
+boundary that split them would have been red on `schema-artifacts-current.sh` at every commit
+but the last. The sizing lesson stands and this is its cost, paid once and stated.
+
+| Sub-milestone | Landed | What the tree gained |
+|---|---|---|
+| P7a | `796babb` | the v3 set is the set of record; `dependency-registry-sync.sh`; the `toml` pin's disposition (N256); the first five `g7` rows |
+| P7b | `561c91c` | `schema::selector`, the widened resolver, both roots and the wire; the R3 twins run once at three cameras (**E19**) |
+| P7c, P7d, P8a, P8b, P8c | `7dd0c3e` | the projection and `profile compare`; `engine::facade`; the stream-stats accumulator and `Fault::FrameGap`; `imaging::compare` with `image-compare` adopted (N260); D19's hermetic contract and the declining `hw_gone_*` recipes |
+| P9a, P9b | `b3aa781` | the two-pane workbench shell over the 77-control fixture; `/session-photo` and both halves of its route partition |
+| P9c | `a907975` | the human-driven flow, `selector: human` produced at last, and the preview-release wait N264 records |
+
+Counts at the last of those commits: **1625 tests**, 39 gate predicates, 12 `g7` rows, 7 `g8`
+rows, 5 `g9` rows, and the browser rung at 28 claims and 259 assertions.
 
 ## P7 — Adoption and the consumer contracts
 

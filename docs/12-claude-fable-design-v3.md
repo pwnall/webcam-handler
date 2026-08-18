@@ -1,16 +1,16 @@
 # Design Document: webcam-handler — Architecture (v3)
 
-Doc 12 in the webcam-handler series, **v3 — second revision**. Status: **issued, adoption
-pending**; supersedes docs/6 (v2) upon adoption, whose section and registry numbering this
+Doc 12 in the webcam-handler series, **v3 — second revision**. Status: **adopted** at docs/13
+P7a (commit `796babb`, 2026-08-18); supersedes docs/6 (v2) upon adoption, whose section and registry numbering this
 revision preserves — v2 citations in the implementation notes, the commit history and the
 gate scripts stay resolvable. Companion documents: the phased implementation plan
 (docs/13, v3 — docs/7's P0–P6 ledger is closed and carries forward by reference), the code
 review rubric (docs/14, v3), the automated quality gates (docs/15, v3), and AGENTS.md
 (docs/16, v3 — deployed at the repository root at adoption).
 
-**Adoption is one sub-milestone, and it is the first one** (docs/13 P7a). Because two
-mechanisms read the v2 documents by name, issuing this revision does not supersede anything
-until a session executes the swap: move docs/6, 7, 8, 9 and 10 under `docs/historical/`;
+**Adoption was one sub-milestone and it was the first one** (docs/13 P7a, commit `796babb`).
+Because two mechanisms read the v2 documents by name, issuing this revision superseded nothing
+until that session executed the swap: move docs/6, 7, 8, 9 and 10 under `docs/historical/`;
 repoint the one predicate that reads the design by literal path (`wire-surface-sync.sh`,
 `design_path=`) **and the two selftest case files that seed the old paths**
 (`cases/wire-surface-sync.cases.sh`, `cases/agents-md-current.cases.sh`) — verified the

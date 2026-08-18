@@ -62,12 +62,34 @@ export function watch(img, status, camera, token) {
   });
   frame.addEventListener("error", () => {
     status.classList.add("failed");
-    // Both candidates, named. The daemon knows which; a page holding an `<img>` does not.
+    // Both candidates, named — an `<img>` reports *that* it failed and never *why*, so this
+    // is everything the element itself can say.
     status.textContent =
       `the browser could not load the preview for ${camera}: either this daemon has no ` +
       `such camera (404) or the camera is not available right now — busy, gone, or refused ` +
-      `(503). The daemon's own sentence is in the network panel; the socket answers the ` +
-      `typed refusal.`;
+      `(503).`;
+    // …and then ask the daemon, once, for the sentence it already wrote.
+    //
+    // **Worth a request because the guess above can be actively misleading**, which the
+    // workbench found the day it met a camera with no MJPEG mode: this route serves
+    // `multipart/x-mixed-replace` MJPEG, so a device that offers only raw formats is refused
+    // *"format MJPG is unavailable; YUYV, NV12, GREY would be accepted"* — a fact about the
+    // camera, arriving at an operator as "busy, gone, or refused". The body is D13's rendering
+    // and this is the only way an `<img>`'s failure can reach it.
+    //
+    // Only on the failure path, only once, and it replaces nothing if it cannot answer: a
+    // page that had *two* stories about one failure would be worse than one that guessed.
+    fetch(previewUrl(camera, token), { method: "GET" })
+      .then((response) => (response.ok ? null : response.text()))
+      .then((sentence) => {
+        if (typeof sentence === "string" && sentence.trim() !== "") {
+          status.textContent = `${camera}: ${sentence.trim()}`;
+        }
+      })
+      .catch(() => {
+        // The network is gone too. The sentence above already says the page could not load
+        // the preview, which is the true thing and the whole of what is known.
+      });
   });
   status.classList.remove("failed");
   status.textContent = `opening a preview of ${camera}…`;

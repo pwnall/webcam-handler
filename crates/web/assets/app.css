@@ -202,14 +202,30 @@ ul.sessions {
 }
 
 /* One camera per row in the preview pane: the cards carry an id and a node list, and two of
- * them side by side in a 22rem pane elide away the characters that tell them apart. */
+ * them side by side in a 22rem pane elide away the characters that tell them apart.
+ *
+ * A **grid** and not a column flex box, which is not a preference: a wrapping column flex
+ * container sizes its cross axis to its content, so a card holding a four-node listing made
+ * the whole picker wider than the pane and `text-overflow` had nothing to trim against. One
+ * `minmax(0, 1fr)` column is the shape that says "as wide as the pane, never wider". */
 .pane-preview ul.cameras {
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.35rem;
 }
 
 .pane-preview .cameras button {
   width: 100%;
+  /* Both halves are needed for the id line to elide rather than to overflow the pane: a flex
+   * item's default `min-width` is `auto`, which means "as wide as my content", so without this
+   * the button is as wide as the longest node list and `text-overflow` has nothing to trim
+   * against. */
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pane-preview ul.cameras > li {
+  min-width: 0;
 }
 
 .cameras button {
@@ -253,6 +269,8 @@ ul.sessions {
    * about four cards, and the fifth scrolls. */
   max-height: 11rem;
   overflow-y: auto;
+  /* Never sideways: a camera whose id does not fit is a line to elide, not a pane to widen. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 
