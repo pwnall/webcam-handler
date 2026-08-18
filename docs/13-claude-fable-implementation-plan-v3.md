@@ -1,0 +1,287 @@
+# webcam-handler — Implementation Plan (v3)
+
+Doc 13 in the webcam-handler series, **v3 — second revision**. Status: **issued, adoption
+pending** (docs/12's adoption paragraph governs the whole set); supersedes docs/7 (v2)
+upon adoption, which then lives under `docs/historical/` with its P0–P6 closure ledger
+intact — that ledger is closed history and this document carries it **by reference, not by
+copy**: the phases, closing commits, criteria counts, evidence entries and review records
+for P0–P6 are docs/7's and stay there. Consumes the design (docs/12); gate criteria are
+enforced by the gate suite (docs/15) and the review bar by the rubric (docs/14). Section
+references §n.m and D-numbers point into docs/12 unless prefixed.
+
+**What changed from v2, and why.** v2's shape — session-sized sub-milestones, criteria
+accreting row by row, the phase review in its own session — survived contact with four
+phases and a whole-tree review and is kept without modification. What v2 could not
+know is what its own execution taught, and three of those lessons now bind the *planning*
+rather than the sessions:
+
+- **Size by story, not by subsystem** [N54]: P4d was two sub-milestones wearing one name,
+  and a falling false-positive rate on a large diff is a saturation signal, not quality.
+  Every sub-milestone below is one story.
+- **Count the terminal rungs at planning time** [N54]: each sub-milestone below names the
+  rungs that must end RAN (or counted-SKIPPED) before it commits, so the cost is priced
+  when the work is cut, not discovered at the boundary.
+- **The repair loop is part of the estimate** (rubric Part E; the G6 measurement):
+  every implementation batch gets an independent adversarial read before it commits, and
+  two rounds is the norm — three of eleven G6 repair commits were green with regressions
+  no test asked about. A sub-milestone's session budget includes its reader.
+
+## The P0–P6 record
+
+Closed. `docs/historical/7-claude-fable-implementation-plan-v2.md` holds the ledger:
+seven phases (P0–P6), gates `g0`–`g6` (207 criteria rows at the v3 baseline), evidence
+entries E1–E18, six adversarial reviews (five phase-scoped, P1–P5; and G6 over the whole
+tree — `docs/11`), and the notes' case law through N255. The v3 baseline tree is `799ee73`:
+`just ci` green at 1532 tests, 36 gate predicates, 82 pass arms and 368 fail arms all
+naming their sentence, R1-web at 24 claims/206 assertions, five committed profiles (one
+carrying measured pairs), and the mutation floor's post-review triple run triaged
+[N251–N255].
+
+## Standing conventions, in force from P0 — v3 restatement
+
+Carried, with the v3 additions marked:
+
+- **`docs/implementation-notes.md` is case law.** N-entries the day a thing is learned;
+  PF-entries for hardware behavior; E-entries append-only. Reviews do not re-report an
+  entry; empirical disproof retires one.
+- **A fix or feature lands with its gate, in the same PR** (rubric rule 1). The
+  commissioning record is docs/15 Part 2.
+- **Every criterion is a row** in `scripts/gates/phase-criteria.tsv`; `just gate-gN` runs
+  and counts a phase's rows; `counted-selections.sh` proves no selection went to zero;
+  rows land in the same commit as the thing they prove.
+- **Milestones are session-sized**; a sub-milestone that turns out to be two splits,
+  recorded, rather than stretching.
+- **The phase review is its own session** (docs/14 Part E), and **every implementation
+  batch gets an independent adversarial reader before it commits** *(v3 — promoted from
+  G6 practice to convention)*: the reader is read-only and parallel-safe, gets the
+  author's claims and the instruction that green CI is not evidence, and the batch lands
+  as one commit after the reader's findings are repaired.
+- **Corpus discipline** (§3.2): tool-captured, provenance, immutable, wholesale
+  replacement; new device behavior lands as corpus + a note the day it is seen.
+- **Hardware needs**: P7 wants the attached cameras for selector twins; P8 wants them for
+  the D16/D19 recording arms; P9 needs no camera (fake + browser). All `hw_`/`vivid_`
+  suites serialize in the one-thread `exclusive-device` group; motor suites run by
+  default with `WCH_NO_MOTION=1` as the counted opt-out (owner, 2026-08-08).
+- **Doc-comment edits move committed artifacts** — the schema bundle, the OpenRPC
+  document, `docs/agent-guide.md` — so `just generate` rides any surface change
+  (`schema-artifacts-current.sh` and `agent-guide-current.sh` are the backstops).
+- **No rename in passing** *(v3 — N90/N91/N126's lesson as a convention)*: a name sweep
+  is always its own sub-milestone with the orphaned-artifact checklist, and the wire
+  namespace is a wire break no sweep may touch.
+
+## P7 — Adoption and the consumer contracts
+
+The smallest coherent story: the v3 documents take effect, and the sibling ledger's two
+highest-value requests (selection, comparison) plus the facade land — everything a
+library consumer needs before its own bring-up starts. Gate `g7`.
+
+### P7a — Adoption of the v3 document set
+
+**Lands:** docs/6, 7, 8, 9, 10 move under `docs/historical/`; `wire-surface-sync.sh`'s
+`design_path` repoints at docs/12, and so do the two selftest case files that seed the
+old paths (`cases/wire-surface-sync.cases.sh`, `cases/agents-md-current.cases.sh`) — the
+complete set of path-reading gate files, verified; docs/16's deploy **and redirect**
+sentences move into its preamble and the root `AGENTS.md` becomes its byte-identical
+copy in the same commit docs/10 leaves; `CLAUDE.md` unchanged (`@AGENTS.md`);
+`dependency-registry-sync.sh` lands against §2.8's table (docs/15 Part 2), with the
+`toml` pin's L32-class disposition — remove it or land its consumer — decided and
+recorded in the same commit; the first `g7` rows land (the doc-set swap itself is a
+criterion: the gates that derive their subjects run green on the new set, and
+`wire-surface-sync.sh` reconciles docs/12's D10 sentence). **Proves:** the successor
+documents are the documents of record, every reconciler followed, and the registry
+reconciles both ways from day one. **Terminal rungs:** none beyond `just ci`.
+**Sizing:** half a session; pairs with P7b.
+
+### P7b — Camera selectors (D14)
+
+**Lands:** `schema::selector` (the closed five-spelling vocabulary and the one parser);
+`engine::resolve::camera` widened to the selector; both roots' camera positionals and the
+wire's `camera` parameter routed through it; D10's parameter prose and the agent guide
+regenerated; the refusals reusing `CameraUnknown`/`CameraAmbiguous` with the
+scheme-vocabulary message. **Proves (criteria):** every spelling parses and mis-parses in
+both directions; the corpus's shared-`usb_id` pair answers `CameraAmbiguous` naming both;
+a serial-less device matches no `serial:`; `NodePath` resolves against the live listing
+(a fake hotplug renumbering moves the answer — the PF:22 semantics, asserted); selection
+never filters enumeration (ids stable under any selector — the D1 ordinal claim);
+`--json` failures round-trip against the bundle. **Terminal rungs:** R3 selector twins
+(`hw_a_selector_finds_the_camera_its_fingerprint_names`, ambiguity on the Chicony pair)
+run once and recorded. **Sizing:** one session including its reader.
+
+### P7c — The device projection and `profile compare` (D15)
+
+**Lands:** the destructuring projection and `ProfileComparison` DTO in
+`schema::profile`; `DeviceProfile::compare`/`device_matches`; the `profile compare`
+document verb on both roots (T4's below-the-executor clause; `cli-parity.sh` gains the
+`document` bucket with its argument); `corpus_replay` deletes its private mask and
+consumes the projection; schemas and guide regenerated. **Proves:** partition closure (a
+field added to `ProfileInvariant` breaks the compile until sided — the arm is a
+compile-fail fixture); every committed profile device-equals its identity-rewritten self
+and device-differs from every other, sections named; the format-tree-only distinction
+survives into the DTO; identity deltas match `differing_fields`. **Terminal rungs:** none
+beyond `just ci` (corpus-shaped by design; §3.3 item 11 stays open and says why).
+**Sizing:** one session.
+
+### P7d — The embedding facade (D18)
+
+**Lands:** `engine::facade`; the direct CLI's `InProcess` executor rebuilt as
+parse-and-render around facade calls; the stability table in the module doc; the
+`facade-is-the-composition.sh` predicate (the CLI names no engine composition module but
+the facade — population derived from the facade's own exports). **Proves:** the executor's
+only engine reach is the facade (gate, both directions); facade answers byte-identical to
+the pre-move executor on every read verb over the fake (a one-time equivalence criterion,
+then the parity gate owns it transitively); the facade refuses what the composition
+refused (lock held, bad selector) in the same words. **Terminal rungs:** none new.
+**Sizing:** one session; the risk is churn in `cli/src/main.rs`, contained by the
+equivalence criterion.
+
+### P7e — G7 close
+
+All `g7` rows counted; the review session (docs/14 Part E — populations named at
+preflight: the selector vocabulary walk, the projection destructuring, the facade's
+export list); fixes; evidence entry; reconciliation into docs/14's record. **Then** the
+notes and this document's live counts reconciled.
+
+## P8 — The instruments
+
+Stream health, photograph comparison, and the device-loss contract — the measurement
+story. Gate `g8`.
+
+### P8a — Stream stats (D16)
+
+**Lands:** `imaging::stream_stats::Accumulator` (+ its place beside
+`imaging::video`'s interval home); `Frame.sequence`/`timestamp_us` contract tests;
+`Fault::FrameGap` in the fake's menu (exhaustive-match walked like every fault);
+`RecordReport.stats` filled by the record path (wall-clock skew there and only there);
+schemas and guide regenerated. **Proves:** gap accounting from constructed vectors (both
+directions — a gap counted, an unbroken run zero); percentile exactness within the
+retained bound and the stated degradation past it (the truncation is on the answer, never
+silent); the fake's gap fault produces the dropped count end to end through `record`;
+`declared_interval` and the accumulator agree on the mean over the same take (one home,
+two readers, reconciled). **Terminal rungs:** one R3 recording arm re-run to record real
+stats on a healthy camera (the numbers are evidence, not assertions — orderings only).
+**Sizing:** one session.
+
+### P8b — `photo diff` (D17)
+
+**Lands:** `imaging::compare` (total core, SSIM-unavailability representation); the
+`image-compare` adoption **measurement** — the resolved feature graph checked clean
+(`feature-posture.sh` is the standing backstop) and the lockfile diff recorded in the
+note; if dirty, the owned-SSIM fallback lands instead and the note says so; the
+`photo diff` document verb; schemas and guide regenerated. **Proves:** metric deltas over
+the committed synthetic fixtures in both orders; `MetricName::ALL` walked (a sixth metric
+joins by existing — asserted); dimension mismatch answers the reason vocabulary, never a
+refusal; SSIM ranks a blurred fixture below its original against the sharp pair (the same
+both-directions shape the metrics already carry); `--json` round-trips. **Terminal
+rungs:** none new. **Sizing:** one session.
+
+### P8c — The device-loss contract (D19)
+
+**Lands:** the D19 contract as R1 tests over the fake's `DeviceGoneMidStream` — a photo
+answers `DeviceGone` (never `SettleTimeout`/`Busy`); a take finalizes valid-to-last-frame
+with the end named and the stats carried; a preview ends and the slot reaps; the hotplug
+removal arrives bounded — plus the committed `hw_gone_*` recipes that self-skip counted
+("needs an arrangeable mid-stream device loss") on every local host; the
+contributed-evidence protocol paragraph in the notes (what an E-entry from the partner
+rig must carry). **Proves:** every sentence of D19 has a driven hermetic twin, and the
+hardware recipes exist, are recipe-named, and decline by name. **Terminal rungs:** the
+`hw_gone_*` recipes run once locally to prove the *decline* (counted, named — the skip
+path is the testable half here). **Sizing:** one session.
+
+### P8d — G8 close
+
+As P7e: rows counted, review in its own session, fixes, evidence, reconciliation.
+
+## P9 — The operator's workbench (D20)
+
+The web client's design pass, landed. No camera required — fake plus browser throughout;
+the R1-web rung is this phase's terminal rung and its cost is named up front (the rung
+grows by roughly a third; every sub-milestone below prices its claims). Gate `g9`.
+
+### P9a — The workbench shell and live tuning
+
+**Lands:** the two-pane viewport-height shell (sticky preview pane, independently
+scrolling control column, stacked-narrow fallback); the tuning arrangement over the
+existing guarded writes and M32/N154 identity fences; the vivid-profile layout fixture.
+**Proves (browser claims):** preview and the adjusted control simultaneously visible at
+every scroll position, at the pinned viewport, against 77 controls; a clamp moves the
+slider on screen with both numbers; a write during a photo-suspend lands after resume
+(queued, not lost); the stale-panel fences hold under the new layout. **Terminal rungs:**
+R1-web. **Sizing:** one session.
+
+### P9b — `/session-photo` and the sample grid
+
+**Lands:** the `/session-photo` route (GET + HEAD twin; reference-addressed, path derived
+server-side through D9's rules); `CAMERA_BEARING_PATHS` grows its third entry **in the
+same commit**, with both halves of the route-gating partition extended
+(`web-routes-are-gated.sh` arms; `every_camera_bearing_route_is_behind_the_gate` drives
+the new path anonymous-401/token-200/cross-site-403); the sample grid view reading the
+session document it already has. **Proves:** the route serves exactly the session tree's
+own samples by reference (a reference outside the session answers 404, a
+caller-shaped path never touches the filesystem — arms in both directions); HEAD answers
+about the route and opens nothing [N179's shape]; the privacy §5 clause holds (no other
+door serves a stored frame — the gate's population proves the absence). **Terminal
+rungs:** R1-web. **Sizing:** one session — the route is small and the gate arms are the
+work, which is the right proportion for a camera-bearing door.
+
+### P9c — Human-driven calibration
+
+**Lands:** the start → plan → sweep → review → select(`human`) → apply → restore flow on
+the page, sequenced over the eight existing verbs and the live subscription; the
+sweep-time pane swap (progress + freshest sample through `/session-photo`); D13 refusals
+rendered as the flow's guard rails. **Proves (browser claims):** the full flow end to end
+against the fake with `selector: human` landing in the session document (asserted through
+`calibrate status` on a second socket — the page and the wire agree); an
+`IllegalTransition` from an out-of-order click renders its instruction-last sentence and
+the flow recovers; the sweep view paints each sample as its event lands; the CLI can
+drive a session the page started and vice versa (one state machine, two hands — asserted,
+because it is the claim T4's law makes here). **Terminal rungs:** R1-web. **Sizing:** one
+to two sessions — split between flow and sweep-view if the first session says so.
+
+### P9d — G9 close
+
+Rows counted; the review session — with the P5 lesson standing (a web-client review's
+reconciliation is written, or the gate is not closed; G5's absence cost five recurrences
+one gate later); fixes; evidence; reconciliation. **This is also where the v3 plan's own
+live counts are reconciled**, docs/7's ledger-discipline applied to this document.
+
+## Post-plan triggers (recorded, uncommissioned)
+
+| Item | Trigger | Ref |
+|---|---|---|
+| UVC H.264 → MP4 remux (L1) | hardware that exhibits `V4L2_PIX_FMT_H264` | D7, §8.3 |
+| Control-change events | the workbench's stale-panel cost observed in real use | D20, §8.4 |
+| AV1/WebM ingestion output (L2) | a real model-vendor ingestion need; an actual upload attempt is what makes N103's table `measured` | §7; N103 |
+| The `wch-` rename | the owner's ruling on §8.11; lands as its own sub-milestone with the N90/N126 checklist, never in passing | §8.11; N90, N91, N126 |
+| A process-failure D13 kind | the owner's ruling on N238's question (wire + exit-code change) | §8.12; N238 |
+| D19's first contributed evidence | the partner rig runs the `hw_gone_*` recipes; lands as an E-entry + the E5 resemblance check of the fake's fault against it | D19; §3.3 items 9, 11 |
+| Cross-machine profile comparison evidence | the same rig runs `profile compare` direct-vs-forwarded; retires §3.3 item 11's `declared` | D15; §3.3 item 11 |
+| Session GC | a *measured* store-size quantity (instrumentation first — N55's re-phrasing stands) | §8.8; N55 |
+| `webcam-handler-cli` auto-forward | refusal friction observed | §8.7 |
+| Audio | a license-clean path appears | §8.2 |
+| Mutation-floor default jobs | the owner's ruling on N251's price sheet: `nproc` (hides survivors under load — measured, four real defects waved through) vs 1 (13–19 h); the interim posture is `mutants.sh`'s stated warning | N251 |
+| Re-run N5's jsonrpsee measurement | any jsonrpsee bump | §2.8, N5 |
+| Re-check PF:16 against `little_exif` | any little_exif bump | D6, PF:16 |
+
+## Risks to the plan
+
+- **The context budget is a real resource** — unchanged, and the v3 shape holds the v2
+  mitigations: session-sized sub-milestones, reviews and readers in their own contexts,
+  split-don't-stretch.
+- **P9 concentrates rung cost.** The browser rung grows by roughly a third and it is the
+  slowest suite in `just ci` on node hosts. Mitigation: claims are priced per
+  sub-milestone above; a claim that cannot be written tersely is a sub-milestone split
+  signal, and the rung's manifest count keeps growth deliberate.
+- **The adoption swap is a single-commit hazard**: five documents move, one gate repoints
+  and one deploys, and any partial state is red somewhere by design (the gates' own
+  arms). Mitigation: P7a is half a session *because* it must be one commit; the checklist
+  is docs/12's adoption paragraph, verbatim.
+- **An owner ruling can land mid-phase** (the rename, N238's kind, the mutants default).
+  The convention holds: a ruling executes as its own sub-milestone against its checklist;
+  nothing lands in passing. The plan's phases do not depend on any of the three.
+- **The partner dependency is asymmetric by design**: nothing in P7–P9 blocks on
+  usb-teleporter; the two `declared` items (§3.3 items 9 and 11) retire on contributed
+  evidence whenever it arrives, and staying `declared` forever costs only honesty
+  already paid.
+- **Kernel/driver variance remains the standing unknown** — unchanged; PF findings land
+  as notes + corpus the day they appear, and no phase closes with an unexplained R3
+  failure.
