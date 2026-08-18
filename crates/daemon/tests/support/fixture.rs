@@ -26,6 +26,7 @@ use jsonrpsee_server::Methods;
 use schema::backend::CameraBackend;
 use schema::camera::{CameraId, CameraInfo};
 use schema::control::{ControlDesc, ControlSlug};
+use schema::selector::CameraSelector;
 
 use crate::wire::Wire;
 
@@ -244,9 +245,14 @@ impl Fixture {
             .expect("the synthetic profile has a writable scalar control");
 
         Ask {
-            camera: first,
-            ambiguous,
-            unknown_camera: CameraId::parse("cam:nothing-answers-to-this").expect("a literal id"),
+            // Requests, so selectors (D14): an `Ask` is what a suite hands a verb, and what a
+            // verb takes is the spelling rather than the resolved id. The id itself is still
+            // `fixture.cameras`', which is where an *answer* is compared against.
+            camera: CameraSelector::Id(first),
+            ambiguous: CameraSelector::Id(ambiguous),
+            unknown_camera: CameraSelector::Id(
+                CameraId::parse("cam:nothing-answers-to-this").expect("a literal id"),
+            ),
             control,
             unknown_control: ControlSlug::parse("brightnes").expect("a literal slug"),
         }
@@ -298,9 +304,9 @@ pub(crate) fn camera(cameras: &[CameraInfo], index: usize) -> &CameraInfo {
 /// The camera and control names every suite asks about.
 #[derive(Debug, Clone)]
 pub(crate) struct Ask {
-    pub(crate) camera: CameraId,
-    pub(crate) ambiguous: CameraId,
-    pub(crate) unknown_camera: CameraId,
+    pub(crate) camera: CameraSelector,
+    pub(crate) ambiguous: CameraSelector,
+    pub(crate) unknown_camera: CameraSelector,
     pub(crate) control: ControlSlug,
     pub(crate) unknown_control: ControlSlug,
 }

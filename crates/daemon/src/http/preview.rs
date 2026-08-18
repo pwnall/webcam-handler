@@ -86,7 +86,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use schema::camera::CameraId;
+use schema::selector::CameraSelector;
 use schema::{Error, ErrorKind, limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -264,11 +264,12 @@ async fn stream(State(previews): State<Previews>, request: Request) -> Response 
 ///
 /// **So a `200` here is a statement about the route and never about a camera, and the gap is
 /// wider than "cannot say whether it is busy"** (note **N179**, amended). [`named`] is the whole
-/// of what this can decide, and D1's grammar is permissive by design — `CameraId::parse` refuses
-/// an empty body and nothing else, because a caller may name a camera by any unambiguous prefix
-/// and it is the live enumeration that says whether one answers. So the refusals this makes are
-/// `400` for a request carrying no `camera=` at all and `404` for `camera=cam:`; **every other
-/// spelling answers `200`**, including a well-formed name no camera on this machine has, which
+/// of what this can decide, and the selector grammar is permissive by design —
+/// `schema::selector::parse` refuses an empty body, an unknown scheme and a malformed `usb:`
+/// pair and nothing else, because a caller may name a camera by any unambiguous prefix and it
+/// is the live enumeration that says whether one answers. So the refusals this makes are `400`
+/// for a request carrying no `camera=` at all and `404` for `camera=cam:` and its siblings;
+/// **every other spelling answers `200`**, including a well-formed name no camera has, which
 /// a `GET` refuses with `404`. Measured against a live daemon:
 /// `HEAD /preview?camera=cam%3Anope-does-not-exist` → `200`, `GET` of the same → `404`.
 ///
@@ -335,7 +336,8 @@ fn stream_head() -> [(header::HeaderName, String); 2] {
 enum Unnamed {
     /// The request carried no `camera=` at all.
     NotAsked,
-    /// It carried a value D1's grammar refuses, which is not an id and therefore names nothing.
+    /// It carried a value D14's grammar refuses, which is no spelling of a camera and
+    /// therefore names nothing.
     NotAnId(String),
 }
 
@@ -343,13 +345,15 @@ enum Unnamed {
 ///
 /// The half of a preview request that needs no device, split out because two methods answer it
 /// identically and a second copy would be the place they came to disagree. Nothing here opens
-/// anything: it is [`camera_of`]'s reading of the query string and D1's grammar in
-/// [`CameraId::parse`], which is its one home.
-fn named(query: Option<&str>) -> Result<CameraId, Unnamed> {
+/// anything: it is [`camera_of`]'s reading of the query string and D14's grammar in
+/// [`schema::selector::parse`], which is its one home. Through *that* parser and never through
+/// `CameraId::parse`: this route is the web client's, and a spelling the wire accepts and this
+/// route refuses would be a camera an operator can drive and cannot see.
+fn named(query: Option<&str>) -> Result<CameraSelector, Unnamed> {
     let Some(requested) = camera_of(query) else {
         return Err(Unnamed::NotAsked);
     };
-    CameraId::parse(&requested).ok_or(Unnamed::NotAnId(requested))
+    schema::selector::parse(&requested).map_err(|_| Unnamed::NotAnId(requested))
 }
 
 /// What a request that named no camera is answered with.
@@ -470,9 +474,10 @@ fn part(shot: &Shot) -> Vec<u8> {
 /// either has it or does not.
 ///
 /// `+` is **not** read as a space: that is the `application/x-www-form-urlencoded` convention
-/// for form bodies rather than a rule about query strings, and no camera id has a space in it
-/// (D1's grammar is a slug), so reading it would only invent a second spelling of a name that
-/// does not exist.
+/// for form bodies rather than a rule about query strings. A `serial:` body is device text and
+/// may hold a space — D14 widened the grammar past D1's slug — but the client that builds this
+/// URL calls `encodeURIComponent`, which spells a space `%20` and a `+` as itself, so reading
+/// `+` as a space would turn a serial that really contains one into a name no device reports.
 ///
 /// Duplicates: the **first** wins, and the difference from the gate's answer is the same
 /// difference. Two disagreeing credentials have no right answer and are refused; two
@@ -498,7 +503,7 @@ fn camera_of(query: Option<&str>) -> Option<String> {
 /// An escape that is not two hex digits is left **as written** rather than refused or dropped.
 /// A camera id containing a stray `%` is a camera id that matches nothing, and the enumeration
 /// is what says so; refusing here would mean this function had an opinion about D1's grammar,
-/// which lives in `CameraId::parse` (design §2.10).
+/// which lives in `schema::selector::parse` (design §2.10).
 ///
 /// Bytes rather than characters, then one UTF-8 check at the end, because percent-escapes
 /// encode bytes: `%C3%A9` is two escapes and one `é`, and a decoder that worked on `char`s
@@ -542,9 +547,10 @@ fn hex(byte: Option<&u8>) -> Option<u8> {
 
 /// The refusal for a name no camera answers to.
 ///
-/// Built here rather than reached for, because the resolution never happened: `CameraId::parse`
-/// refused the string before any enumeration, and the honest thing to tell a client is the
-/// same thing it would have been told by a live enumeration that found nothing.
+/// Built here rather than reached for, because the resolution never happened:
+/// `schema::selector::parse` refused the string before any enumeration, and the honest thing to
+/// tell a client is the same thing it would have been told by a live enumeration that found
+/// nothing.
 fn unknown(requested: &str) -> Error {
     Error::CameraUnknown {
         requested: requested.to_owned(),
@@ -579,6 +585,8 @@ fn refused(err: &Error) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use schema::selector::SelectorScheme;
+
     use super::*;
 
     #[test]
@@ -610,7 +618,7 @@ mod tests {
     fn a_request_that_names_no_camera_names_no_camera() {
         // Every shape "nothing" takes, and the empty-value one is the interesting member: a
         // URL truncated at its `=` must reach the `400` this route answers rather than a
-        // `CameraId::parse` of the empty string.
+        // `schema::selector::parse` of the empty string.
         for query in [None, Some(""), Some("token=c0ffee"), Some("camera=")] {
             assert_eq!(camera_of(query), None, "{query:?}");
         }
@@ -678,7 +686,7 @@ mod tests {
         // them needs a device. The third answer — "no camera answers to this id" — is not here
         // and cannot be, because it is a fact about a live enumeration.
         let named = named(Some("camera=cam%3Aone")).expect("a well-formed id");
-        assert_eq!(named.as_str(), "cam:one");
+        assert_eq!(named.to_string(), "cam:one");
         assert_eq!(
             no_camera(&super::named(None).expect_err("no camera was named")).status(),
             StatusCode::BAD_REQUEST
@@ -686,6 +694,40 @@ mod tests {
         assert_eq!(
             no_camera(&super::named(Some("camera=cam%3A")).expect_err("`cam:` is not an id"))
                 .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn this_route_reads_every_spelling_the_wire_reads() {
+        // D14 at the one door that has its own reader. This route builds its camera from a
+        // query string rather than from a deserialized parameter, so a build that left
+        // `CameraId::parse` here would compile and would answer `404` to a preview of
+        // `/dev/video0` on a daemon whose `wch_photo` takes it — a camera the operator can
+        // drive and cannot see. The walk is over the vocabulary, so a sixth scheme fails it
+        // by having no sample rather than by being quietly unreadable here.
+        let spellings = [
+            (SelectorScheme::Id, "cam%3Aone", "cam:one"),
+            (SelectorScheme::NodePath, "%2Fdev%2Fvideo0", "/dev/video0"),
+            (SelectorScheme::BusPath, "bus%3A3-4%3A1.2", "bus:3-4:1.2"),
+            (SelectorScheme::UsbId, "usb%3A04f2%3Ab83c", "usb:04f2:b83c"),
+            (SelectorScheme::Serial, "serial%3A0001", "serial:0001"),
+        ];
+        assert_eq!(spellings.len(), SelectorScheme::ALL.len());
+        for (scheme, escaped, spelling) in spellings {
+            let named = named(Some(&format!("camera={escaped}")))
+                .unwrap_or_else(|why| panic!("{spelling} was refused: {why:?}"));
+            assert_eq!(named.scheme(), scheme, "{spelling}");
+            assert_eq!(named.to_string(), spelling, "{spelling}");
+        }
+        // And a scheme this build does not know is the `404` a name no camera can have gets,
+        // which is the same status a well-formed name nothing answers to gets from a `GET`.
+        assert_eq!(
+            no_camera(
+                &super::named(Some("camera=bus_path%3A3-4"))
+                    .expect_err("`bus_path:` is not a scheme this build knows")
+            )
+            .status(),
             StatusCode::NOT_FOUND
         );
     }

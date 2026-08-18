@@ -128,6 +128,7 @@ use schema::report::{
     CameraDetail, CameraList, ControlReport, DiscoveryReport, TerminationReport, TerminationSignal,
     WriteReport,
 };
+use schema::selector::CameraSelector;
 use schema::session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::video::{RecordReport, RecordRequest, RecordStatus};
@@ -937,14 +938,15 @@ impl Wchd {
         }
     }
 
-    /// Resolve a caller-supplied id or prefix (D1) against a live enumeration.
+    /// Resolve a caller-supplied selector — D1's ids and prefixes, D14's four other
+    /// spellings — against a live enumeration.
     ///
     /// The rule is `engine::resolve::camera`'s, which is what stops `webcam-handler-cli` and
     /// `webcam-handler-daemon` disagreeing about what a prefix means. Enumeration is live
     /// every time (E2): a daemon that cached its camera list would answer about a camera that
     /// had been unplugged, and noticing that is P4d's hotplug watch rather than an assumption
     /// this can make.
-    async fn resolve(&self, requested: CameraId) -> schema::Result<CameraInfo> {
+    async fn resolve(&self, requested: CameraSelector) -> schema::Result<CameraInfo> {
         self.offload(move |inner| {
             let cameras = inner.cameras.enumerate()?;
             engine::resolve::camera(&cameras, &requested).cloned()
@@ -974,14 +976,26 @@ impl Wchd {
     /// than a second resolver, and the id is the one `record_start` answered with. Every other
     /// refusal from the enumeration travels unchanged: a backend that cannot enumerate at all
     /// is not a camera that vanished.
-    async fn recording_camera(&self, requested: CameraId) -> schema::Result<CameraId> {
+    ///
+    /// **D14's four other spellings do not reach that fallback, and cannot**: a `bus:`, a
+    /// `usb:`, a `serial:` or a `/dev` path is resolved by *filtering the live listing*, and a
+    /// camera that was unplugged mid-take is no longer in it — there is nothing left on this
+    /// machine to match the spelling against, and matching it against the take's recorded
+    /// `CameraId` would be a second resolver with a different grammar. So a caller that
+    /// addressed a take by anything but its id is answered `CameraUnknown` when the device
+    /// goes, and collects the take by the id `wch_record_start` answered with, which every
+    /// answer on this surface carries.
+    async fn recording_camera(&self, requested: CameraSelector) -> schema::Result<CameraId> {
         match self.resolve(requested.clone()).await {
             Ok(info) => Ok(info.id),
-            Err(err)
-                if err.kind() == ErrorKind::CameraUnknown
-                    && self.0.recordings.holds(&requested).await =>
-            {
-                Ok(requested)
+            Err(err) if err.kind() == ErrorKind::CameraUnknown => {
+                let Some(id) = requested.as_id() else {
+                    return Err(err);
+                };
+                if self.0.recordings.holds(id).await {
+                    return Ok(id.clone());
+                }
+                Err(err)
             }
             Err(err) => Err(err),
         }
@@ -1003,7 +1017,11 @@ impl Wchd {
     /// the five calibrate ones, which check a session's fingerprint against the camera —
     /// takes [`Wchd::resolve`] and then [`Wchd::on_resolved_camera_with_state`] rather than
     /// paying for a second enumeration and getting a second opinion with it.
-    async fn on_camera<T, F>(&self, requested: CameraId, work: F) -> schema::Result<(CameraInfo, T)>
+    async fn on_camera<T, F>(
+        &self,
+        requested: CameraSelector,
+        work: F,
+    ) -> schema::Result<(CameraInfo, T)>
     where
         F: FnOnce(OpenCamera<'_>) -> schema::Result<T> + Send + 'static,
         T: Send + 'static,
@@ -1745,12 +1763,12 @@ impl WchRpcServer for Wchd {
         Ok(self.offload(Inner::list_cameras).await?)
     }
 
-    async fn info(&self, camera: CameraId) -> Result<CameraDetail, WireError> {
+    async fn info(&self, camera: CameraSelector) -> Result<CameraDetail, WireError> {
         let (info, formats) = self.on_camera(camera, |device| device.formats()).await?;
         Ok(CameraDetail { formats, info })
     }
 
-    async fn controls(&self, camera: CameraId) -> Result<ControlReport, WireError> {
+    async fn controls(&self, camera: CameraSelector) -> Result<ControlReport, WireError> {
         let (info, controls) = self.on_camera(camera, |device| device.controls()).await?;
         Ok(ControlReport {
             // Nothing measured: T5's `controls` is read-only, and the probe that would fill
@@ -1762,14 +1780,18 @@ impl WchRpcServer for Wchd {
         })
     }
 
-    async fn get(&self, camera: CameraId, control: ControlSlug) -> Result<ControlDesc, WireError> {
+    async fn get(
+        &self,
+        camera: CameraSelector,
+        control: ControlSlug,
+    ) -> Result<ControlDesc, WireError> {
         let (_, controls) = self.on_camera(camera, |device| device.controls()).await?;
         Ok(engine::pairing::describe(&controls, &control)?)
     }
 
     async fn calibrate_status(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         session: SessionRef,
     ) -> Result<SessionStatus, WireError> {
         // No lock, under either of D9's protocols. A `with_lock` here would not hang — `flock`
@@ -1785,7 +1807,10 @@ impl WchRpcServer for Wchd {
             .await?)
     }
 
-    async fn calibrate_list(&self, camera: Option<CameraId>) -> Result<SessionList, WireError> {
+    async fn calibrate_list(
+        &self,
+        camera: Option<CameraSelector>,
+    ) -> Result<SessionList, WireError> {
         // `None` means every session on this machine, so there is nothing to resolve and no
         // enumeration to do — a `calibrate list` still answers on a host whose cameras have
         // all been unplugged, which is the point of a listing that parses nothing (D9).
@@ -1806,7 +1831,7 @@ impl WchRpcServer for Wchd {
     // D9's session tree, which is why this step needs no lock token (see this module's
     // header).
 
-    async fn discover_pairs(&self, camera: CameraId) -> Result<DiscoveryReport, WireError> {
+    async fn discover_pairs(&self, camera: CameraSelector) -> Result<DiscoveryReport, WireError> {
         // The whole document, assembled in the engine: probe (which writes), then read the
         // control set the camera is *now* in, then merge declared with measured so measured
         // wins (E1). Note N34 booked that move against this sub-milestone, and the reason
@@ -1820,7 +1845,7 @@ impl WchRpcServer for Wchd {
 
     async fn set(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         writes: Vec<ControlWrite>,
         guarded: bool,
     ) -> Result<WriteReport, WireError> {
@@ -1839,7 +1864,7 @@ impl WchRpcServer for Wchd {
             .1)
     }
 
-    async fn snapshot(&self, camera: CameraId) -> Result<Snapshot, WireError> {
+    async fn snapshot(&self, camera: CameraSelector) -> Result<Snapshot, WireError> {
         // `now` enters at the composition root because the engine reads no clock; the pair
         // set does not, for `engine::write::set_requested`'s reason.
         let now = schema::time::Stamp::now();
@@ -1853,7 +1878,7 @@ impl WchRpcServer for Wchd {
 
     async fn restore(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         snapshot: Snapshot,
     ) -> Result<RestoreReport, WireError> {
         // The pair set is this device's, read now — the snapshot arrived over a socket and a
@@ -1873,7 +1898,7 @@ impl WchRpcServer for Wchd {
 
     async fn profile_capture(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         capturer: String,
         discover_pairs: bool,
     ) -> Result<DeviceProfile, WireError> {
@@ -1916,7 +1941,7 @@ impl WchRpcServer for Wchd {
 
     async fn photo(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         request: PhotoRequest,
     ) -> Result<api::PhotoResponse, WireError> {
         // Three steps before the camera is touched, in an order where each one is the
@@ -2059,7 +2084,7 @@ impl WchRpcServer for Wchd {
 
     async fn record_start(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         request: RecordRequest,
     ) -> Result<RecordStatus, WireError> {
         // Four steps before the camera is touched, in `wch_photo`'s order and for its reason:
@@ -2144,7 +2169,7 @@ impl WchRpcServer for Wchd {
         }
     }
 
-    async fn record_status(&self, camera: CameraId) -> Result<RecordStatus, WireError> {
+    async fn record_status(&self, camera: CameraSelector) -> Result<RecordStatus, WireError> {
         // A read, and the cheapest one on this surface: the resolution is the only work it
         // does. It opens no camera and takes no lock the driver wants, so a poll loop running
         // at `limits::CLIENT_RECORD_POLL_MS` costs the take nothing — which is the property
@@ -2158,7 +2183,7 @@ impl WchRpcServer for Wchd {
         Ok(self.0.recordings.status(&camera).await)
     }
 
-    async fn record_stop(&self, camera: CameraId) -> Result<RecordReport, WireError> {
+    async fn record_stop(&self, camera: CameraSelector) -> Result<RecordReport, WireError> {
         // Stop *and* collect, which `crate::record`'s header argues is one verb because it is
         // one question. Nothing here touches the camera: the driver owns the take and the
         // stop is a flag it reads between turns, so a stop does not queue behind the recording
@@ -2176,7 +2201,7 @@ impl WchRpcServer for Wchd {
 
     async fn terminate_holder(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         pid: i32,
     ) -> Result<TerminationReport, WireError> {
         // Nothing here touches the camera, and that is a decision rather than an omission:
@@ -2265,7 +2290,7 @@ impl WchRpcServer for Wchd {
 
     async fn calibrate_start(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         task: String,
         goal: String,
         criteria: Vec<String>,
@@ -2315,7 +2340,7 @@ impl WchRpcServer for Wchd {
 
     async fn calibrate_plan(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         session: SessionRef,
         controls: Vec<ControlSlug>,
         order: bool,
@@ -2382,7 +2407,7 @@ impl WchRpcServer for Wchd {
 
     async fn calibrate_sweep(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         session: SessionRef,
         request: SweepRequest,
     ) -> Result<Session, WireError> {
@@ -2439,7 +2464,7 @@ impl WchRpcServer for Wchd {
 
     async fn calibrate_select(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         session: SessionRef,
         control: ControlSlug,
         selection: Selection,
@@ -2473,7 +2498,7 @@ impl WchRpcServer for Wchd {
 
     async fn calibrate_apply(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         session: SessionRef,
         partial: bool,
     ) -> Result<WriteReport, WireError> {
@@ -2503,7 +2528,7 @@ impl WchRpcServer for Wchd {
 
     async fn calibrate_restore(
         &self,
-        camera: CameraId,
+        camera: CameraSelector,
         session: SessionRef,
     ) -> Result<RestoreReport, WireError> {
         let info = self.resolve(camera).await?;
@@ -3259,7 +3284,10 @@ mod tests {
         );
 
         let camera = only_camera(&backend);
-        wchd.info(camera.clone()).await.expect("the fake opens");
+        // The same camera as a *request*: a verb takes D14's selector, and the answers below
+        // name it by id.
+        let asked = CameraSelector::Id(camera.clone());
+        wchd.info(asked.clone()).await.expect("the fake opens");
         assert_eq!(backend.opens(), 1);
         assert_eq!(
             wchd.activity()
@@ -3270,7 +3298,7 @@ mod tests {
         );
 
         // A second verb reuses the handle: one actor, one descriptor (note N41).
-        wchd.controls(camera).await.expect("still open");
+        wchd.controls(asked).await.expect("still open");
         assert_eq!(backend.opens(), 1, "the second verb re-opened the device");
         assert_eq!(backend.closes(), 0);
     }
@@ -3312,7 +3340,10 @@ mod tests {
         // fact (note N42).
         let (backend, _temp, wchd) = daemon(0);
         let camera = only_camera(&backend);
-        wchd.info(camera.clone()).await.expect("the fake opens");
+        // The same camera as a *request*: a verb takes D14's selector, and the answers below
+        // name it by id.
+        let asked = CameraSelector::Id(camera.clone());
+        wchd.info(asked.clone()).await.expect("the fake opens");
         assert_eq!((backend.opens(), backend.closes()), (1, 0));
 
         // The first pass after a command declines and takes the grace with it (note N45).
@@ -3328,7 +3359,7 @@ mod tests {
 
         // A closed camera is not a broken one, and a second pass closes nothing twice.
         assert_eq!(wchd.sweep_idle_cameras(), Vec::new());
-        wchd.info(camera).await.expect("it opens again");
+        wchd.info(asked).await.expect("it opens again");
         assert_eq!((backend.opens(), backend.closes()), (2, 1));
     }
 
@@ -3366,7 +3397,10 @@ mod tests {
 
         let (backend, closes, _temp, wchd) = announcing_daemon(0);
         let camera = only_camera(&backend);
-        wchd.info(camera.clone()).await.expect("the fake opens");
+        // The same camera as a *request*: a verb takes D14's selector, and the answers below
+        // name it by id.
+        let asked = CameraSelector::Id(camera.clone());
+        wchd.info(asked.clone()).await.expect("the fake opens");
         assert_eq!((backend.opens(), backend.closes()), (1, 0));
 
         // Note N45's grace, spent by a pass this test makes itself. It is spent *here*
@@ -3453,7 +3487,10 @@ mod tests {
         const CADENCE_MS: Millis = 1;
         let (backend, closes, _temp, wchd) = announcing_daemon(0);
         let camera = only_camera(&backend);
-        wchd.info(camera.clone()).await.expect("the fake opens");
+        // The same camera as a *request*: a verb takes D14's selector, and the answers below
+        // name it by id.
+        let asked = CameraSelector::Id(camera.clone());
+        wchd.info(asked.clone()).await.expect("the fake opens");
         // Note N45's grace, spent here rather than by a pass, so that the pass after the
         // panicking one is the pass that closes.
         assert_eq!(wchd.sweep_idle_cameras(), Vec::new());
@@ -3730,7 +3767,7 @@ mod tests {
 
     async fn the_photo_interlock() {
         let (backend, _temp, wchd) = daemon(limits::CAMERA_IDLE_CLOSE_MS);
-        let camera = only_camera(&backend);
+        let camera = CameraSelector::Id(only_camera(&backend));
         let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
         let photo = scratch.base().join("during-a-take.jpg");
         let take = scratch.base().join("take.avi");
@@ -4011,7 +4048,7 @@ mod tests {
         // `STREAMOFF` — a build with no repair never issues one, and nothing here spins while
         // that wait lasts.
         let (backend, gated, _temp, wchd) = halting_daemon();
-        let camera = only_camera(&backend);
+        let camera = CameraSelector::Id(only_camera(&backend));
         let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
         let abandoned = scratch.base().join("hung-up.avi");
         let after = scratch.base().join("after.avi");
@@ -4128,13 +4165,33 @@ mod tests {
             lifetime_lock(&temp),
             crate::shutdown::Shutdown::new(),
         );
-        let camera = only_camera(&inner);
+        let camera = CameraSelector::Id(only_camera(&inner));
+        // The same camera in a spelling that needs the live listing, taken while there still
+        // is one — the D14 half of this note, asserted below.
+        let by_bus_path = CameraSelector::BusPath(
+            inner
+                .enumerate()
+                .expect("the fake enumerates what it replays")
+                .first()
+                .map(|info| info.fingerprint.bus_path.clone())
+                .expect("one profile is one camera"),
+        );
         let scratch = engine::paths::TempRuntimeDir::new().expect("a throw-away directory");
         let path = scratch.base().join("unplugged.avi");
 
         wchd.record_start(camera.clone(), a_recording(&path, 60_000))
             .await
             .expect("a camera with no take on it");
+        // The bus path resolves while the camera is here, which is what separates the two
+        // readings of the refusal below: "that spelling never named this camera" and "that
+        // spelling needs a listing this camera has left".
+        assert!(
+            wchd.record_status(by_bus_path.clone())
+                .await
+                .expect("a bus path names this camera while it is plugged in")
+                .take
+                .is_some()
+        );
 
         gone.store(true, std::sync::atomic::Ordering::Release);
 
@@ -4145,6 +4202,20 @@ mod tests {
         assert!(
             status.take.is_some(),
             "the take stopped being reported the moment its camera stopped enumerating"
+        );
+        // **And the fallback is id-only**, said here because it is a decision rather than an
+        // omission: the four D14 spellings are filters over the live listing, and an unplugged
+        // camera is not in it — so there is nothing to filter, and this daemon does not grow a
+        // second resolver that matches a bus path against the id a take was started under. A
+        // caller that addressed the take that way collects it by the id `record_start`
+        // answered with, which is the very next line.
+        assert_eq!(
+            wchd.record_status(by_bus_path)
+                .await
+                .expect_err("a bus path has no live listing left to match")
+                .0
+                .kind(),
+            ErrorKind::CameraUnknown
         );
         let report = wchd
             .record_stop(camera.clone())
@@ -4160,7 +4231,7 @@ mod tests {
             .await
             .expect_err("this daemon holds nothing for that name any more");
         assert_eq!(refused.0.kind(), ErrorKind::CameraUnknown);
-        let never = CameraId::parse("cam:nothing-here").expect("a literal id");
+        let never = CameraSelector::Id(CameraId::parse("cam:nothing-here").expect("a literal id"));
         assert_eq!(
             wchd.record_stop(never)
                 .await

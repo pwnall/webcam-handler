@@ -117,6 +117,7 @@ use schema::error::{Error, ErrorKind};
 use schema::pairing::AutomationPair;
 use schema::profile::DeviceProfile;
 use schema::report::{DiscoveryReport, TerminationReport, TerminationSignal, WriteReport};
+use schema::selector::CameraSelector;
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot};
 use schema::video::{RecordRequest, VideoFormat};
 
@@ -466,7 +467,7 @@ async fn every_mutating_verb_answers_what_the_engine_answers() {
         .expect("every writable control reads back");
     let mut handle = fixture
         .backend
-        .open(&ask.camera)
+        .open(&camera(&fixture.cameras, 0).id)
         .expect("the fake hands out a second view of one device");
     let directly = engine::snapshot::take(handle.as_mut(), &pairs, schema::time::Stamp::now())
         .expect("the engine reads the same device");
@@ -746,7 +747,10 @@ async fn the_probe_writes_to_the_camera_and_the_answer_says_it_put_it_back() {
     let engine_snapshot = {
         let controls = fixture.controls();
         let pairs = engine::pairing::in_effect(&controls, Vec::new());
-        let mut handle = fixture.backend.open(&ask.camera).expect("the fake opens");
+        let mut handle = fixture
+            .backend
+            .open(&camera(&fixture.cameras, 0).id)
+            .expect("the fake opens");
         engine::snapshot::take(handle.as_mut(), &pairs, schema::time::Stamp::now())
             .expect("the engine reads the same device")
     };
@@ -877,7 +881,7 @@ async fn the_failure_directions_cross_both_transports_as_the_same_typed_error() 
 
     // A snapshot that genuinely belongs to the *other* camera the fixture replays — its
     // fingerprint differs in two fields, which is what the refusal has to name.
-    let other = camera(&fixture.cameras, 1).id.clone();
+    let other = CameraSelector::Id(camera(&fixture.cameras, 1).id.clone());
     let (_, wire) = fixture
         .wires()
         .into_iter()
@@ -982,7 +986,7 @@ async fn a_camera_another_process_holds_is_busy_and_stays_busy_across_the_wire()
     // a camera is open would sit there unfired and this test would assert nothing.
     let fixture = Fixture::start();
     let ask = fixture.ask();
-    let untouched = camera(&fixture.cameras, 1).id.clone();
+    let untouched = CameraSelector::Id(camera(&fixture.cameras, 1).id.clone());
 
     for (name, wire) in fixture.wires() {
         fixture.backend.queue_fault(fake::Fault::Busy);
@@ -1049,7 +1053,7 @@ async fn the_camera_verbs_leave_d9s_session_tree_alone_and_never_answer_store_lo
     );
 
     // And the refusals they *can* make are never that one.
-    let other = camera(&fixture.cameras, 1).id.clone();
+    let other = CameraSelector::Id(camera(&fixture.cameras, 1).id.clone());
     let other_cameras: Snapshot = wire
         .snapshot(other)
         .await
@@ -1182,7 +1186,10 @@ async fn a_returned_photo_crosses_the_wire_byte_for_byte_as_the_cameras_own_bits
     // length, not against a hash of what arrived. Both wires, because the socket and the
     // in-memory dispatch serialize the same document through different code.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    // Both spellings of one camera, because this test needs both: the *request* is a
+    // selector, and the second view of the device `engine_photo` opens is by id.
+    let camera_id = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera_id.clone());
     let request = photo_request(Sink::ReturnBytes {
         format: PhotoFormat::Jpeg,
     });
@@ -1228,7 +1235,7 @@ async fn a_returned_photo_crosses_the_wire_byte_for_byte_as_the_cameras_own_bits
         // Still a JPEG on arrival: base64 is a transport encoding and nothing else.
         assert_eq!(bytes.as_slice().get(..2), Some(&[0xff, 0xd8][..]), "{name}");
 
-        let directly = engine_photo(&fixture, &camera, &request, answer.report.taken_at);
+        let directly = engine_photo(&fixture, &camera_id, &request, answer.report.taken_at);
         assert_eq!(
             bytes.as_slice(),
             directly
@@ -1251,7 +1258,8 @@ async fn a_photo_written_to_a_server_path_lands_on_the_daemons_host_and_says_whe
     // `no-frame-bytes-in-repo.sh` content-sniffs every file in the repository, and a photo
     // written into it would be a frame in the repository.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera_id = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera_id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
 
     for (name, wire) in fixture.wires() {
@@ -1288,7 +1296,7 @@ async fn a_photo_written_to_a_server_path_lands_on_the_daemons_host_and_says_whe
         let engine_path = scratch.base().join(format!("{name}-engine.jpg"));
         let directly = engine_photo(
             &fixture,
-            &camera,
+            &camera_id,
             &photo_request(Sink::ServerPath {
                 path: engine_path.clone(),
             }),
@@ -1313,7 +1321,7 @@ async fn the_negotiated_format_and_size_are_surfaced_when_they_differ_from_the_r
     // both as the adjustment list and as the dimensions of the image the bytes actually
     // encode, because a client that trusted its own request would mis-scale every photo.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let (_, wire) = fixture
         .wires()
         .into_iter()
@@ -1412,7 +1420,7 @@ async fn a_sink_only_a_socket_can_build_is_refused_before_any_camera_is_opened()
     // build was never going to honour must not cost anybody a descriptor, and on a machine
     // with one webcam that is the difference between a typo and an interrupted call.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let (_, wire) = fixture
         .wires()
@@ -1567,7 +1575,7 @@ async fn a_server_path_that_is_not_a_regular_file_is_refused_before_the_camera_i
     // build that lost the flag turns this into a named nextest `TIMEOUT` rather than a wrong
     // answer.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let (_, wire) = fixture
         .wires()
@@ -1662,7 +1670,7 @@ async fn a_path_swapped_after_the_check_cannot_redirect_the_photo_or_park_the_ca
             release: std::sync::Mutex::new(Some(held)),
         }) as Arc<dyn CameraBackend>
     });
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
 
     // The destination the client names, existing and ordinary at the moment it is checked.
@@ -1779,7 +1787,7 @@ async fn d12s_wait_flag_crosses_the_wire_both_ways_and_neither_spelling_changes_
             release: std::sync::Mutex::new(Some(held)),
         }) as Arc<dyn CameraBackend>
     });
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let bytes = photo_request(Sink::ReturnBytes {
         format: PhotoFormat::Jpeg,
     });
@@ -1894,8 +1902,8 @@ async fn d12s_wait_flag_crosses_the_wire_both_ways_and_neither_spelling_changes_
 }
 
 /// The camera every photo in this file names, for a test that needed it twice.
-fn camera_id(fixture: &Fixture) -> CameraId {
-    camera(&fixture.cameras, 0).id.clone()
+fn camera_id(fixture: &Fixture) -> CameraSelector {
+    CameraSelector::Id(camera(&fixture.cameras, 0).id.clone())
 }
 
 #[tokio::test]
@@ -1964,7 +1972,7 @@ async fn every_refusal_the_photo_path_can_make_crosses_the_wire_as_itself() {
     // `DeviceGone` have a producer at all — and the first place they could be confused with
     // each other, since both arrive from `next_frame`.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let (_, wire) = fixture
         .wires()
@@ -2218,7 +2226,7 @@ async fn a_photo_while_a_photo_is_in_flight_shares_one_descriptor_and_never_stre
             release: std::sync::Mutex::new(Some(held)),
         }) as Arc<dyn CameraBackend>
     });
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let request = photo_request(Sink::ReturnBytes {
         format: PhotoFormat::Jpeg,
     });
@@ -2456,8 +2464,8 @@ fn scratch_node() -> (TempRuntimeDir, Utf8PathBuf) {
 }
 
 /// The first camera and the first wire, which every test here uses.
-fn ask(fixture: &Fixture) -> (CameraId, Wire) {
-    let camera = camera(&fixture.cameras, 0).id.clone();
+fn ask(fixture: &Fixture) -> (CameraSelector, Wire) {
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let (_, wire) = fixture
         .wires()
         .into_iter()
@@ -2552,7 +2560,9 @@ async fn a_holder_the_caller_named_is_signalled_and_the_answer_names_it_back() {
     // The answer names the target back — the camera the caller named, and the holder as it
     // was diagnosed *before* the signal, in the same `Holder` type an `Error::Busy` refusal
     // carries so that both verbs name a process the same way.
-    assert_eq!(report.camera, camera);
+    // The answer names it by *id*, which is what an answer does; the request named it by
+    // selector, which is what a request does (D14).
+    assert_eq!(CameraSelector::Id(report.camera.clone()), camera);
     assert_eq!(report.holder.pid, pid);
     assert!(
         report.holder.comm.is_some_and(|comm| !comm.is_empty()),
@@ -2810,7 +2820,7 @@ async fn a_recording_reaches_the_device_and_the_report_counts_what_the_file_hold
     // *both* sides: the daemon's report, and the file read back by
     // `imaging::avi::read::read_stream`, which shares no code with the muxer that wrote it.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let path = scratch.base().join("take.avi");
     let (_, wire) = fixture
@@ -2897,7 +2907,8 @@ async fn a_second_start_is_told_to_retry_and_the_status_tracks_the_one_take_a_ca
     // duration. The `holders` list is empty on purpose — naming the pid would name this
     // daemon and invite a client to kill the process it is talking to.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera_id = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera_id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let (_, wire) = fixture
         .wires()
@@ -2912,7 +2923,10 @@ async fn a_second_start_is_told_to_retry_and_the_status_tracks_the_one_take_a_ca
         .expect("the camera resolves");
     assert!(idle.take.is_none(), "{idle:?}");
     assert!(!idle.is_running());
-    assert_eq!(idle.camera, camera, "a status names the camera it is about");
+    assert_eq!(
+        idle.camera, camera_id,
+        "a status names the camera it is about"
+    );
 
     // 2. Recording. The take runs long enough that the assertions below are about a *live*
     // one rather than about whatever the scheduler left behind — the stop ends it, so the
@@ -2996,7 +3010,7 @@ async fn a_photograph_during_a_take_is_told_who_has_the_camera_and_waiting_does_
     // refusal, and fails a message that attributes the hold to somebody else — and then
     // asks with `wait: true` to pin the guide's corrected sentence.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let (_, wire) = fixture
         .wires()
@@ -3087,7 +3101,7 @@ async fn a_stop_with_no_recording_is_refused_in_words_that_name_the_verb_that_ma
     // something this build will not do — and the remedy is in the sentence because AGENTS'
     // primary consumer has no hands to work it out with.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let (_, wire) = fixture
         .wires()
         .into_iter()
@@ -3120,7 +3134,7 @@ async fn a_recording_request_only_a_socket_can_build_is_refused_before_any_camer
     // anybody a descriptor, and on a machine with one webcam that is the difference between
     // a typo and an interrupted call.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let (_, wire) = fixture
         .wires()
@@ -3222,7 +3236,7 @@ async fn a_polled_status_counts_the_frames_the_finished_report_counts() {
     // down, and "the take ended" is an event — a test that polled the registry for it would
     // be a test with a sleep in it under another name (AGENTS).
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let path = scratch.base().join("counted.avi");
     let (_, wire) = fixture
@@ -3294,7 +3308,7 @@ async fn a_recording_over_an_earlier_one_leaves_no_tail_of_the_take_it_replaced(
     // file — bytes no reader of either container is looking for, in a file whose name says
     // it is a recording.
     let fixture = Fixture::start();
-    let camera = camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(camera(&fixture.cameras, 0).id.clone());
     let scratch = TempRuntimeDir::new().expect("a throw-away directory");
     let path = scratch.base().join("reused.avi");
     let (_, wire) = fixture

@@ -87,7 +87,6 @@ pub mod photo;
 pub mod wire;
 
 use schema::backend::HotplugEvent;
-use schema::camera::CameraId;
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug, ControlWrite};
 use schema::profile::DeviceProfile;
@@ -95,6 +94,7 @@ use schema::progress::ProgressEvent;
 use schema::report::{
     CameraDetail, CameraList, ControlReport, DiscoveryReport, TerminationReport, WriteReport,
 };
+use schema::selector::CameraSelector;
 use schema::session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::video::{RecordReport, RecordRequest, RecordStatus};
@@ -147,10 +147,10 @@ wire_surface! {
         ///
         /// # Errors
         ///
-        /// [`schema::Error::CameraUnknown`] or [`schema::Error::CameraAmbiguous`] for an id
-        /// that does not resolve; otherwise whatever the backend says.
+        /// [`schema::Error::CameraUnknown`] or [`schema::Error::CameraAmbiguous`] for a
+        /// selector that does not resolve; otherwise whatever the backend says.
         #[method(name = "info")]
-        async fn info(&self, camera: CameraId) -> Result<CameraDetail, WireError>;
+        async fn info(&self, camera: CameraSelector) -> Result<CameraDetail, WireError>;
 
         /// One camera's control set, and the auto/manual pairs in effect for it.
         ///
@@ -162,7 +162,7 @@ wire_surface! {
         ///
         /// As `wch_info`.
         #[method(name = "controls")]
-        async fn controls(&self, camera: CameraId) -> Result<ControlReport, WireError>;
+        async fn controls(&self, camera: CameraSelector) -> Result<ControlReport, WireError>;
 
         /// Measure this camera's auto/manual pairs by asking it (D3's second layer).
         ///
@@ -185,7 +185,7 @@ wire_surface! {
         /// As `wch_info`, plus whatever the camera said when the probe could not begin —
         /// a probe that cannot record where the camera started must not start.
         #[method(name = "discover_pairs")]
-        async fn discover_pairs(&self, camera: CameraId) -> Result<DiscoveryReport, WireError>;
+        async fn discover_pairs(&self, camera: CameraSelector) -> Result<DiscoveryReport, WireError>;
 
         /// One control's descriptor and current value.
         ///
@@ -200,7 +200,7 @@ wire_surface! {
         #[method(name = "get")]
         async fn get(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             control: ControlSlug,
         ) -> Result<ControlDesc, WireError>;
 
@@ -220,7 +220,7 @@ wire_surface! {
         #[method(name = "set")]
         async fn set(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             writes: Vec<ControlWrite>,
             guarded: bool,
         ) -> Result<WriteReport, WireError>;
@@ -231,7 +231,7 @@ wire_surface! {
         ///
         /// As `wch_info`.
         #[method(name = "snapshot")]
-        async fn snapshot(&self, camera: CameraId) -> Result<Snapshot, WireError>;
+        async fn snapshot(&self, camera: CameraSelector) -> Result<Snapshot, WireError>;
 
         /// Put a snapshot back, automation before manual (D4).
         ///
@@ -248,7 +248,7 @@ wire_surface! {
         #[method(name = "restore")]
         async fn restore(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             snapshot: Snapshot,
         ) -> Result<RestoreReport, WireError>;
 
@@ -294,7 +294,7 @@ wire_surface! {
         #[method(name = "photo")]
         async fn photo(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             request: PhotoRequest,
         ) -> Result<PhotoResponse, WireError>;
 
@@ -347,7 +347,7 @@ wire_surface! {
         #[method(name = "record_start")]
         async fn record_start(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             request: RecordRequest,
         ) -> Result<RecordStatus, WireError>;
 
@@ -379,7 +379,7 @@ wire_surface! {
         /// and a refusal there would make an agent unable to tell "nothing is recording" from
         /// "this camera is gone" (AGENTS rule 7).
         #[method(name = "record_status")]
-        async fn record_status(&self, camera: CameraId) -> Result<RecordStatus, WireError>;
+        async fn record_status(&self, camera: CameraSelector) -> Result<RecordStatus, WireError>;
 
         /// End `camera`'s recording and hand over what it turned out to be (D7, D10).
         ///
@@ -413,7 +413,7 @@ wire_surface! {
         /// ended the take: the device's answer, or [`schema::Error::StorageIo`] naming the
         /// file.
         #[method(name = "record_stop")]
-        async fn record_stop(&self, camera: CameraId) -> Result<RecordReport, WireError>;
+        async fn record_stop(&self, camera: CameraSelector) -> Result<RecordReport, WireError>;
 
         /// One camera's full device profile (T3).
         ///
@@ -438,7 +438,7 @@ wire_surface! {
         #[method(name = "profile_capture")]
         async fn profile_capture(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             capturer: String,
             discover_pairs: bool,
         ) -> Result<DeviceProfile, WireError>;
@@ -458,7 +458,7 @@ wire_surface! {
         #[method(name = "terminate_holder")]
         async fn terminate_holder(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             pid: i32,
         ) -> Result<TerminationReport, WireError>;
 
@@ -472,7 +472,7 @@ wire_surface! {
         #[method(name = "calibrate_start")]
         async fn calibrate_start(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             task: String,
             goal: String,
             criteria: Vec<String>,
@@ -491,7 +491,7 @@ wire_surface! {
         #[method(name = "calibrate_plan")]
         async fn calibrate_plan(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             session: SessionRef,
             controls: Vec<ControlSlug>,
             order: bool,
@@ -524,7 +524,7 @@ wire_surface! {
         #[method(name = "calibrate_sweep")]
         async fn calibrate_sweep(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             session: SessionRef,
             request: SweepRequest,
         ) -> Result<Session, WireError>;
@@ -539,7 +539,7 @@ wire_surface! {
         #[method(name = "calibrate_status")]
         async fn calibrate_status(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             session: SessionRef,
         ) -> Result<SessionStatus, WireError>;
 
@@ -552,7 +552,7 @@ wire_surface! {
         #[method(name = "calibrate_select")]
         async fn calibrate_select(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             session: SessionRef,
             control: ControlSlug,
             selection: Selection,
@@ -570,7 +570,7 @@ wire_surface! {
         #[method(name = "calibrate_apply")]
         async fn calibrate_apply(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             session: SessionRef,
             partial: bool,
         ) -> Result<WriteReport, WireError>;
@@ -590,7 +590,7 @@ wire_surface! {
         #[method(name = "calibrate_restore")]
         async fn calibrate_restore(
             &self,
-            camera: CameraId,
+            camera: CameraSelector,
             session: SessionRef,
         ) -> Result<RestoreReport, WireError>;
 
@@ -609,7 +609,7 @@ wire_surface! {
         /// session whose document this build cannot read still *lists* — listing parses
         /// nothing (D9).
         #[method(name = "calibrate_list")]
-        async fn calibrate_list(&self, camera: Option<CameraId>) -> Result<SessionList, WireError>;
+        async fn calibrate_list(&self, camera: Option<CameraSelector>) -> Result<SessionList, WireError>;
     }
 
     /// Everything the daemon *tells* a client without being asked (design D10, T5).
@@ -739,63 +739,66 @@ mod tests {
         async fn list(&self) -> Result<CameraList, WireError> {
             Err(nothing("list"))
         }
-        async fn info(&self, _camera: CameraId) -> Result<CameraDetail, WireError> {
+        async fn info(&self, _camera: CameraSelector) -> Result<CameraDetail, WireError> {
             Err(nothing("info"))
         }
-        async fn controls(&self, _camera: CameraId) -> Result<ControlReport, WireError> {
+        async fn controls(&self, _camera: CameraSelector) -> Result<ControlReport, WireError> {
             Err(nothing("controls"))
         }
-        async fn discover_pairs(&self, _camera: CameraId) -> Result<DiscoveryReport, WireError> {
+        async fn discover_pairs(
+            &self,
+            _camera: CameraSelector,
+        ) -> Result<DiscoveryReport, WireError> {
             Err(nothing("discover_pairs"))
         }
         async fn get(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _control: ControlSlug,
         ) -> Result<ControlDesc, WireError> {
             Err(nothing("get"))
         }
         async fn set(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _writes: Vec<ControlWrite>,
             _guarded: bool,
         ) -> Result<WriteReport, WireError> {
             Err(nothing("set"))
         }
-        async fn snapshot(&self, _camera: CameraId) -> Result<Snapshot, WireError> {
+        async fn snapshot(&self, _camera: CameraSelector) -> Result<Snapshot, WireError> {
             Err(nothing("snapshot"))
         }
         async fn restore(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _snapshot: Snapshot,
         ) -> Result<RestoreReport, WireError> {
             Err(nothing("restore"))
         }
         async fn photo(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _request: PhotoRequest,
         ) -> Result<PhotoResponse, WireError> {
             Err(nothing("photo"))
         }
         async fn record_start(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _request: RecordRequest,
         ) -> Result<RecordStatus, WireError> {
             Err(nothing("record_start"))
         }
-        async fn record_status(&self, _camera: CameraId) -> Result<RecordStatus, WireError> {
+        async fn record_status(&self, _camera: CameraSelector) -> Result<RecordStatus, WireError> {
             Err(nothing("record_status"))
         }
-        async fn record_stop(&self, _camera: CameraId) -> Result<RecordReport, WireError> {
+        async fn record_stop(&self, _camera: CameraSelector) -> Result<RecordReport, WireError> {
             Err(nothing("record_stop"))
         }
         async fn profile_capture(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _capturer: String,
             _discover_pairs: bool,
         ) -> Result<DeviceProfile, WireError> {
@@ -803,14 +806,14 @@ mod tests {
         }
         async fn terminate_holder(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _pid: i32,
         ) -> Result<TerminationReport, WireError> {
             Err(nothing("terminate_holder"))
         }
         async fn calibrate_start(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _task: String,
             _goal: String,
             _criteria: Vec<String>,
@@ -819,7 +822,7 @@ mod tests {
         }
         async fn calibrate_plan(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _session: SessionRef,
             _controls: Vec<ControlSlug>,
             _order: bool,
@@ -828,7 +831,7 @@ mod tests {
         }
         async fn calibrate_sweep(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _session: SessionRef,
             _request: SweepRequest,
         ) -> Result<Session, WireError> {
@@ -836,14 +839,14 @@ mod tests {
         }
         async fn calibrate_status(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _session: SessionRef,
         ) -> Result<SessionStatus, WireError> {
             Err(nothing("calibrate_status"))
         }
         async fn calibrate_select(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _session: SessionRef,
             _control: ControlSlug,
             _selection: Selection,
@@ -852,7 +855,7 @@ mod tests {
         }
         async fn calibrate_apply(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _session: SessionRef,
             _partial: bool,
         ) -> Result<WriteReport, WireError> {
@@ -860,14 +863,14 @@ mod tests {
         }
         async fn calibrate_restore(
             &self,
-            _camera: CameraId,
+            _camera: CameraSelector,
             _session: SessionRef,
         ) -> Result<RestoreReport, WireError> {
             Err(nothing("calibrate_restore"))
         }
         async fn calibrate_list(
             &self,
-            _camera: Option<CameraId>,
+            _camera: Option<CameraSelector>,
         ) -> Result<SessionList, WireError> {
             Err(nothing("calibrate_list"))
         }

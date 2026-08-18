@@ -71,6 +71,7 @@ pub mod paths;
 pub mod profile;
 pub mod progress;
 pub mod report;
+pub mod selector;
 pub mod session;
 pub mod slug;
 pub mod snapshot;
@@ -92,6 +93,7 @@ pub use report::{
     CameraDetail, CameraList, ControlReport, DiscoveryReport, ListHint, TerminationReport,
     WriteReport,
 };
+pub use selector::{CameraSelector, SelectorScheme};
 pub use session::{Selection, Session, SessionList, SessionRef, SessionStatus, SweepRequest};
 pub use snapshot::{RestoreReport, Snapshot};
 pub use time::Stamp;

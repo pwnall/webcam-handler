@@ -292,7 +292,7 @@ async fn a_fresh_client_is_served(fixture: &Fixture, ask: &Ask, after: &str) {
     .await
     .expect("the daemon is listening");
     assert!(
-        support::body(&answered).contains(ask.camera.as_str()),
+        support::body(&answered).contains(&ask.camera.to_string()),
         "{after}: the transport that never subscribes stopped answering: {}",
         support::body(&answered)
     );
@@ -426,7 +426,7 @@ async fn one_websocket_connection_carries_a_subscription_and_a_call_at_the_same_
     .await
     .expect("the daemon is listening");
     assert!(
-        support::body(&answered).contains(ask.camera.as_str()),
+        support::body(&answered).contains(&ask.camera.to_string()),
         "{}",
         support::body(&answered)
     );

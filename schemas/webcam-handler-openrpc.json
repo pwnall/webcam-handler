@@ -614,6 +614,10 @@
         ],
         "type": "object"
       },
+      "CameraSelector": {
+        "description": "Which camera, in any of the spellings webcam-handler understands: cam:<id>; /dev/videoN; bus:<interface-path>; usb:<vid>:<pid>; serial:<text>.",
+        "type": "string"
+      },
       "CapReached": {
         "description": "Which bound ended the recording.\n\n`ALL` is generated from this definition, and the tests walk it: a cap that no\nrecording can reach is a bound that is not a bound, and a hand-written list of the\nthree would let one quietly stop being enforced (rubric rule 6). Since P6b the walk\nis two-dimensional — `CapReached::ALL` × `VideoFormat::ALL` — because the two\ncontainers count their own bytes and a cap enforced in one of them is not a cap.",
         "oneOf": [
@@ -1524,7 +1528,7 @@
             "type": "object"
           },
           {
-            "description": "No camera matched the id or prefix.",
+            "description": "No camera matched the selector — an id, a prefix, or any of D14's other spellings.",
             "properties": {
               "kind": {
                 "const": "camera_unknown",
@@ -5407,7 +5411,7 @@
       "summary": "Every camera, plus anything worth saying about what is missing (D1)."
     },
     {
-      "description": "One camera's identity and format tree.\n\n# Errors\n\n`camera_unknown` or `camera_ambiguous` for an id\nthat does not resolve; otherwise whatever the backend says.",
+      "description": "One camera's identity and format tree.\n\n# Errors\n\n`camera_unknown` or `camera_ambiguous` for a\nselector that does not resolve; otherwise whatever the backend says.",
       "errors": [
         {
           "$ref": "#/components/errors/device_gone"
@@ -5471,7 +5475,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         }
       ],
@@ -5549,7 +5553,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         }
       ],
@@ -5627,7 +5631,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         }
       ],
@@ -5705,7 +5709,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -5790,7 +5794,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -5885,7 +5889,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         }
       ],
@@ -5963,7 +5967,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6048,7 +6052,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6133,7 +6137,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6218,7 +6222,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         }
       ],
@@ -6296,7 +6300,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         }
       ],
@@ -6374,7 +6378,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6466,7 +6470,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6552,7 +6556,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6654,7 +6658,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6756,7 +6760,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6848,7 +6852,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -6933,7 +6937,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -7032,7 +7036,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -7124,7 +7128,7 @@
           "name": "camera",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CameraId"
+            "$ref": "#/components/schemas/CameraSelector"
           }
         },
         {
@@ -7211,7 +7215,7 @@
           "schema": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/CameraId"
+                "$ref": "#/components/schemas/CameraSelector"
               },
               {
                 "type": "null"

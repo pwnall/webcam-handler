@@ -207,6 +207,14 @@ pub(crate) fn guide() -> Result<String> {
             body: vocabularies(),
         },
         Section {
+            title: "How to name a camera".to_owned(),
+            provenance: Provenance::Derived(
+                "`schema::selector`'s closed scheme vocabulary — every spelling, and whether \
+                 it survives a replug",
+            ),
+            body: camera_selectors(),
+        },
+        Section {
             title: "What `--json` answers with".to_owned(),
             provenance: Provenance::Derived("`crates/cli-core/json-contracts.tsv`"),
             body: json_contracts()?,
@@ -693,6 +701,60 @@ fn vocabularies() -> String {
                 .iter()
                 .map(|chooser| chooser.selector().label())
         )
+    );
+    out
+}
+
+/// Every spelling that names a camera, and what each one survives.
+///
+/// Two columns and a disposition, in the register this document uses: the reader is a program
+/// choosing which string to send, and the choice it has to get right is *stability*. A node
+/// path is an address — probe-order bookkeeping the kernel rotates on a driver reload — so a
+/// harness that stores one and comes back tomorrow addresses whatever moved into that number.
+/// The three fingerprint spellings survive a replug. Derived from the scheme vocabulary's own
+/// `stability()`, so a sixth spelling arrives here with its disposition attached rather than
+/// waiting for somebody to remember this table.
+fn camera_selectors() -> String {
+    use schema::selector::{SelectorScheme, Stability};
+
+    let mut out = String::from(
+        "Every verb that takes a camera takes any of these. An id or a prefix is what `list` \
+         prints; the other four are for a caller that already holds something.\n\n\
+         | Write | Matches | Survives a replug |\n|---|---|---|\n",
+    );
+    for scheme in SelectorScheme::ALL {
+        let (matches, survives) = match scheme {
+            SelectorScheme::Id => (
+                "the id `list` printed, or any unambiguous prefix of one",
+                "no — ids are assigned over the cameras attached right now",
+            ),
+            SelectorScheme::NodePath => (
+                "any `/dev` node the camera owns, capture or metadata",
+                "no — node numbers are probe order and a driver reload rotates them",
+            ),
+            SelectorScheme::BusPath => ("the USB interface path the camera sits on", "yes"),
+            SelectorScheme::UsbId => (
+                "the vendor and product ids, in hex — two cameras of one model match both",
+                "yes",
+            ),
+            SelectorScheme::Serial => (
+                "the serial the device reports; a device that reports none matches nothing",
+                "yes",
+            ),
+        };
+        // The `Survives` column is a claim about `stability()` and is checked against it here
+        // rather than trusted: a table that said "yes" for an address would be the one
+        // sentence in this document that costs a harness a wrong camera.
+        debug_assert_eq!(
+            survives.starts_with("yes"),
+            scheme.stability() == Stability::Fingerprint
+        );
+        let _ = writeln!(out, "| `{}` | {matches} | {survives} |", scheme.example());
+    }
+    out.push_str(
+        "\nTwo cameras can match one spelling — one USB device often hosts two logical \
+         cameras behind one vendor:product pair. That is answered with `camera_ambiguous`, \
+         which lists every candidate id; send one of those.\n",
     );
     out
 }

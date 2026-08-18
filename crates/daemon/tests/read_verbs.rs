@@ -60,6 +60,7 @@ use schema::backend::CameraBackend;
 use schema::control::ControlDesc;
 use schema::error::{Error, ErrorKind};
 use schema::report::{CameraDetail, CameraList, ControlReport};
+use schema::selector::CameraSelector;
 use schema::session::{SessionList, SessionRef, SessionStatus};
 use tokio::net::UnixStream;
 
@@ -235,7 +236,7 @@ async fn every_read_verb_answers_what_the_engine_answers() {
         answers.info.formats,
         fixture
             .backend
-            .open(&ask.camera)
+            .open(&camera(&fixture.cameras, 0).id)
             .expect("the fake opens")
             .formats()
             .expect("the fake answers")
@@ -244,7 +245,12 @@ async fn every_read_verb_answers_what_the_engine_answers() {
     // `controls` is the device's control set and the pair set the engine says is in
     // effect for it — read-only, so nothing was measured (note N30).
     assert_eq!(answers.controls.controls, controls);
-    assert_eq!(answers.controls.camera, ask.camera);
+    // The answer names the camera by id and the request named it by selector (D14), so the
+    // comparison says so rather than hiding it behind a type that carries both.
+    assert_eq!(
+        CameraSelector::Id(answers.controls.camera.clone()),
+        ask.camera
+    );
     assert_eq!(
         answers.controls.pairs,
         engine::pairing::in_effect(&controls, Vec::new())

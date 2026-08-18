@@ -387,8 +387,8 @@ pub enum Error {
         hint: String,
     },
 
-    /// No camera matched the id or prefix.
-    #[error("no camera matches {requested:?}")]
+    /// No camera matched the selector — an id, a prefix, or any of D14's other spellings.
+    #[error("no camera matches {requested:?}{}", crate::selector::scheme_hint(.requested))]
     CameraUnknown {
         /// What the caller asked for.
         requested: String,

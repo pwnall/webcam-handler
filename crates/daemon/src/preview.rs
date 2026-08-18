@@ -185,6 +185,7 @@ use engine::settle::{Clock, MonotonicClock};
 use schema::camera::{CameraId, CameraInfo};
 use schema::capture::Frame;
 use schema::error::Occupation;
+use schema::selector::CameraSelector;
 use schema::{Error, ErrorKind, Result, limits};
 use tokio::sync::{Mutex, oneshot, watch};
 
@@ -585,7 +586,7 @@ impl Previews {
     /// is full. [`Error::FormatUnsupported`] when the device negotiates something a browser
     /// cannot render (`engine::preview::start`). [`Error::DeviceIo`] when an actor thread
     /// cannot be started, and whatever the device refused `STREAMON` with otherwise.
-    pub async fn attach(&self, requested: &CameraId) -> Result<Viewer> {
+    pub async fn attach(&self, requested: &CameraSelector) -> Result<Viewer> {
         let info = self.resolve(requested).await?;
         let (feed, viewer, owes_a_start) = self.reserve(info.clone()).await?;
         if owes_a_start.is_none() {
@@ -631,8 +632,8 @@ impl Previews {
         }
     }
 
-    /// Resolve a caller-supplied id or prefix against a live enumeration (D1, E2).
-    async fn resolve(&self, requested: &CameraId) -> Result<CameraInfo> {
+    /// Resolve a caller-supplied selector against a live enumeration (D1, D14, E2).
+    async fn resolve(&self, requested: &CameraSelector) -> Result<CameraInfo> {
         let cameras = Arc::clone(&self.0.cameras);
         let requested = requested.clone();
         match tokio::task::spawn_blocking(move || {

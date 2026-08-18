@@ -43,10 +43,10 @@ use std::sync::Mutex;
 
 use camino::Utf8PathBuf;
 use cli_core::{Executor as _, SessionRef, SweepWatcher};
-use schema::camera::CameraId;
 use schema::capture::{PhotoFormat, SettlePolicy, StreamRequest};
 use schema::control::ControlSlug;
 use schema::progress::{CalibrationProgress, ProgressEvent};
+use schema::selector::CameraSelector;
 use schema::session::{SweepRequest, SweepSpec};
 use serde_json::Value;
 
@@ -620,7 +620,9 @@ fn a_sweep_delivers_its_progress_while_the_call_it_belongs_to_is_still_in_flight
     .expect("the daemon is listening");
 
     let cameras = remote.list().expect("the daemon enumerates");
-    let camera: CameraId = cameras.cameras.first().expect("one camera").id.clone();
+    // The id an answer carries, asked back as a *request*: D14's selector is what a verb
+    // takes, and `CameraSelector::Id` is the spelling this enumeration just handed over.
+    let camera = CameraSelector::Id(cameras.cameras.first().expect("one camera").id.clone());
     let control = ControlSlug::parse("brightness").expect("literal slug");
 
     let session = remote

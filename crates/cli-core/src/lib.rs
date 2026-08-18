@@ -40,7 +40,7 @@ mod render;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand};
 use schema::backend::BackendKind;
-use schema::camera::{CameraId, PixelFormat};
+use schema::camera::PixelFormat;
 use schema::capture::{
     PhotoFormat, PhotoRequest, SettlePolicy, SettleSpec, Sink, StreamRequest, Transform,
 };
@@ -49,6 +49,7 @@ use schema::error::{Error, ErrorKind, Result};
 use schema::metrics::MetricName;
 use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::selector::CameraSelector;
 use schema::session::{Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::video::{RecordReport, RecordRequest};
@@ -541,26 +542,27 @@ impl std::str::FromStr for SizeArg {
     }
 }
 
-/// A camera id or unambiguous prefix, as typed (D1).
+/// A camera, in any spelling the caller holds (D1, D14).
 #[derive(Debug, Clone, Args)]
 pub struct CameraArg {
-    /// The camera: `cam:obsbot-tiny-3`, or any unambiguous prefix such as `cam:obsbot`.
+    /// Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path
+    /// (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001`.
     #[arg(value_name = "CAMERA")]
     pub camera: String,
 }
 
 impl CameraArg {
-    /// The id to resolve.
+    /// The selector to resolve.
     ///
     /// # Errors
     ///
-    /// [`Error::CameraUnknown`] for an argument that is not an id at all — the empty
-    /// string. Anything else is resolved against the live enumeration, which is where a
-    /// name nothing answers to becomes an error that can list what *does* exist.
-    pub fn id(&self) -> Result<CameraId> {
-        CameraId::parse(&self.camera).ok_or_else(|| Error::CameraUnknown {
-            requested: self.camera.clone(),
-        })
+    /// [`Error::CameraUnknown`] for an argument no camera could ever match — the empty string,
+    /// a scheme this build does not know, a scheme with an empty body, a malformed `usb:` pair
+    /// — with the refusal naming the whole vocabulary. Anything else is resolved against the
+    /// live enumeration, which is where a name nothing answers to becomes an error that can
+    /// list what *does* exist.
+    pub fn selector(&self) -> Result<CameraSelector> {
+        schema::selector::parse(&self.camera)
     }
 }
 
@@ -1105,7 +1107,7 @@ pub enum CalibrateCommand {
 
     /// Every session on this machine, newest first.
     List {
-        /// One camera's sessions, by id or unambiguous prefix. All cameras when omitted.
+        /// One camera's sessions, in any spelling `info` takes. All cameras when omitted.
         #[arg(value_name = "CAMERA")]
         camera: Option<String>,
     },
@@ -1446,9 +1448,9 @@ pub trait Executor {
     ///
     /// # Errors
     ///
-    /// [`Error::CameraUnknown`] or [`Error::CameraAmbiguous`] for an id that does not
+    /// [`Error::CameraUnknown`] or [`Error::CameraAmbiguous`] for a selector that does not
     /// resolve; otherwise whatever the backend says.
-    fn info(&mut self, camera: &CameraId) -> Result<CameraDetail>;
+    fn info(&mut self, camera: &CameraSelector) -> Result<CameraDetail>;
 
     /// One camera's control set, and the auto/manual pairs in effect for it.
     ///
@@ -1460,7 +1462,7 @@ pub trait Executor {
     /// # Errors
     ///
     /// As [`Executor::info`].
-    fn controls(&mut self, camera: &CameraId, discover_pairs: bool) -> Result<ControlReport>;
+    fn controls(&mut self, camera: &CameraSelector, discover_pairs: bool) -> Result<ControlReport>;
 
     /// One control's descriptor and current value.
     ///
@@ -1471,7 +1473,7 @@ pub trait Executor {
     /// # Errors
     ///
     /// As [`Executor::info`], plus [`Error::ControlUnknown`] naming the closest slugs.
-    fn get(&mut self, camera: &CameraId, control: &ControlSlug) -> Result<ControlDesc>;
+    fn get(&mut self, camera: &CameraSelector, control: &ControlSlug) -> Result<ControlDesc>;
 
     /// Write controls, switching automation off first unless `guarded` is false (D3).
     ///
@@ -1480,7 +1482,7 @@ pub trait Executor {
     /// As [`Executor::info`], plus the planner's refusals and the device's.
     fn set(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         writes: &[ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport>;
@@ -1490,7 +1492,7 @@ pub trait Executor {
     /// # Errors
     ///
     /// As [`Executor::info`].
-    fn snapshot(&mut self, camera: &CameraId) -> Result<Snapshot>;
+    fn snapshot(&mut self, camera: &CameraSelector) -> Result<Snapshot>;
 
     /// Put a snapshot back (D4).
     ///
@@ -1499,7 +1501,7 @@ pub trait Executor {
     /// As [`Executor::info`], plus [`Error::FingerprintMismatch`] when the snapshot came
     /// from a different camera. A control that could not be put back is in the *report*,
     /// not an error.
-    fn restore(&mut self, camera: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport>;
+    fn restore(&mut self, camera: &CameraSelector, snapshot: &Snapshot) -> Result<RestoreReport>;
 
     /// Take one photo (D5, D6).
     ///
@@ -1510,7 +1512,7 @@ pub trait Executor {
     /// # Errors
     ///
     /// As [`Executor::info`], plus [`Error::SettleTimeout`] and whatever the sink says.
-    fn photo(&mut self, camera: &CameraId, request: &PhotoRequest) -> Result<Photograph>;
+    fn photo(&mut self, camera: &CameraSelector, request: &PhotoRequest) -> Result<Photograph>;
 
     /// Record one video, start to finish (D7, D10).
     ///
@@ -1534,7 +1536,7 @@ pub trait Executor {
     /// something else, [`Error::FormatUnsupported`] when the container the path names cannot
     /// carry what the camera negotiated, [`Error::StorageIo`] from the file, and the device's
     /// own answer for anything it refused.
-    fn record(&mut self, camera: &CameraId, request: &RecordRequest) -> Result<RecordReport>;
+    fn record(&mut self, camera: &CameraSelector, request: &RecordRequest) -> Result<RecordReport>;
 
     /// One camera's full device profile (T3).
     ///
@@ -1552,7 +1554,7 @@ pub trait Executor {
     /// a snapshot that could not be taken, which stops the probe before it writes anything.
     fn capture_profile(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         capturer: &str,
         discover_pairs: bool,
     ) -> Result<DeviceProfile>;
@@ -1566,7 +1568,7 @@ pub trait Executor {
     /// [`Error::StoreLocked`] when a daemon owns the state directory (D9).
     fn calibrate_start(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         task: &str,
         goal: &str,
         criteria: &[String],
@@ -1584,7 +1586,7 @@ pub trait Executor {
     /// permutation of the queue.
     fn calibrate_plan(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         controls: &[ControlSlug],
         order: bool,
@@ -1604,7 +1606,7 @@ pub trait Executor {
     /// said at the sample that stopped it.
     fn calibrate_sweep(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         request: &SweepRequest,
         watch: &dyn SweepWatcher,
@@ -1616,7 +1618,11 @@ pub trait Executor {
     ///
     /// As [`Executor::info`], plus [`Error::SchemaVersionForeign`] for a session another
     /// build wrote (D9).
-    fn calibrate_status(&mut self, camera: &CameraId, which: &SessionRef) -> Result<SessionStatus>;
+    fn calibrate_status(
+        &mut self,
+        camera: &CameraSelector,
+        which: &SessionRef,
+    ) -> Result<SessionStatus>;
 
     /// Record a control's chosen value and who chose it (D8).
     ///
@@ -1626,7 +1632,7 @@ pub trait Executor {
     /// never swept, a value no sample holds, a metric that cannot rank.
     fn calibrate_select(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         control: &ControlSlug,
         selection: &Selection,
@@ -1642,7 +1648,7 @@ pub trait Executor {
     /// `partial` is false.
     fn calibrate_apply(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         partial: bool,
     ) -> Result<WriteReport>;
@@ -1659,8 +1665,11 @@ pub trait Executor {
     ///
     /// As [`Executor::calibrate_start`], plus [`Error::FingerprintMismatch`] naming the
     /// fields that differ when the camera is not the one the session was recorded against.
-    fn calibrate_restore(&mut self, camera: &CameraId, which: &SessionRef)
-    -> Result<RestoreReport>;
+    fn calibrate_restore(
+        &mut self,
+        camera: &CameraSelector,
+        which: &SessionRef,
+    ) -> Result<RestoreReport>;
 
     /// Every session on this machine, or one camera's, newest first.
     ///
@@ -1669,7 +1678,7 @@ pub trait Executor {
     /// As [`Executor::info`] when a camera is named; otherwise whatever the store says.
     /// A session whose document this build cannot read still *lists* — listing parses
     /// nothing (D9).
-    fn calibrate_list(&mut self, camera: Option<&CameraId>) -> Result<SessionList>;
+    fn calibrate_list(&mut self, camera: Option<&CameraSelector>) -> Result<SessionList>;
 }
 
 impl SessionArg {
@@ -1704,14 +1713,14 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             render::list(&list, cli.json, out)
         }
         Command::Info(arg) => {
-            let detail = executor.info(&arg.id()?)?;
+            let detail = executor.info(&arg.selector()?)?;
             render::info(&detail, cli.json, out)
         }
         Command::Controls {
             camera,
             discover_pairs,
         } => {
-            let report = executor.controls(&camera.id()?, *discover_pairs)?;
+            let report = executor.controls(&camera.selector()?, *discover_pairs)?;
             render::controls(&report, cli.json, out)
         }
         Command::Get { camera, control } => {
@@ -1719,7 +1728,7 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
                 requested: control.clone(),
                 did_you_mean: Vec::new(),
             })?;
-            let desc = executor.get(&camera.id()?, &slug)?;
+            let desc = executor.get(&camera.selector()?, &slug)?;
             render::control(&desc, cli.json, out)
         }
         Command::Set {
@@ -1731,19 +1740,19 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
                 .iter()
                 .map(|assignment| assignment.0.clone())
                 .collect();
-            let report = executor.set(&camera.id()?, &writes, !*no_guard)?;
+            let report = executor.set(&camera.selector()?, &writes, !*no_guard)?;
             render::writes(&report, cli.json, out)
         }
         Command::Snapshot {
             camera,
             out: destination,
         } => {
-            let snapshot = executor.snapshot(&camera.id()?)?;
+            let snapshot = executor.snapshot(&camera.selector()?)?;
             render::snapshot(&snapshot, destination.as_deref(), out)
         }
         Command::Restore { camera, snapshot } => {
             let document = read_snapshot(snapshot)?;
-            let report = executor.restore(&camera.id()?, &document)?;
+            let report = executor.restore(&camera.selector()?, &document)?;
             render::restore(&report, cli.json, out)
         }
         Command::Photo { camera, .. } => {
@@ -1752,7 +1761,7 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
                 .command
                 .photo_request(&cwd)?
                 .ok_or_else(unreachable_photo)?;
-            let taken = executor.photo(&camera.id()?, &request)?;
+            let taken = executor.photo(&camera.selector()?, &request)?;
             render::photo(&taken.report, taken.returned.as_deref(), cli.json, out)
         }
         Command::Record { camera, .. } => {
@@ -1761,7 +1770,7 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
                 .command
                 .record_request(&cwd)?
                 .ok_or_else(unreachable_record)?;
-            let report = executor.record(&camera.id()?, &request)?;
+            let report = executor.record(&camera.selector()?, &request)?;
             render::record(&report, cli.json, out)
         }
         Command::Calibrate(command) => calibrate(command, cli.json, executor, out),
@@ -1771,7 +1780,8 @@ pub fn run<E: Executor>(cli: &Cli, executor: &mut E, out: &mut Output) -> Result
             capturer,
             discover_pairs,
         }) => {
-            let profile = executor.capture_profile(&camera.id()?, capturer, *discover_pairs)?;
+            let profile =
+                executor.capture_profile(&camera.selector()?, capturer, *discover_pairs)?;
             render::profile(&profile, destination.as_deref(), out)
         }
     }
@@ -1795,7 +1805,7 @@ fn calibrate<E: Executor>(
             goal,
             criteria,
         } => {
-            let session = executor.calibrate_start(&camera.id()?, task, goal, criteria)?;
+            let session = executor.calibrate_start(&camera.selector()?, task, goal, criteria)?;
             render::session(&session, as_json, out)
         }
         CalibrateCommand::Plan {
@@ -1806,7 +1816,7 @@ fn calibrate<E: Executor>(
         } => {
             let slugs = control_slugs(controls)?;
             let session =
-                executor.calibrate_plan(&camera.id()?, &which.which()?, &slugs, *order)?;
+                executor.calibrate_plan(&camera.selector()?, &which.which()?, &slugs, *order)?;
             render::session(&session, as_json, out)
         }
         CalibrateCommand::Sweep {
@@ -1831,8 +1841,12 @@ fn calibrate<E: Executor>(
             // it goes to standard error: a sweep's `--json` document shares standard output
             // with nothing, and a bar drawn into it would make the answer unparsable.
             let watcher = render::watcher(as_json);
-            let session =
-                executor.calibrate_sweep(&camera.id()?, &which.which()?, &request, &*watcher)?;
+            let session = executor.calibrate_sweep(
+                &camera.selector()?,
+                &which.which()?,
+                &request,
+                &*watcher,
+            )?;
             watcher.finish();
             render::session(&session, as_json, out)?;
             // The camera is still borrowed, and saying so is the difference between a
@@ -1851,7 +1865,7 @@ fn calibrate<E: Executor>(
             Ok(())
         }
         CalibrateCommand::Status { camera, which } => {
-            let status = executor.calibrate_status(&camera.id()?, &which.which()?)?;
+            let status = executor.calibrate_status(&camera.selector()?, &which.which()?)?;
             render::status(&status, as_json, out)
         }
         CalibrateCommand::Select {
@@ -1861,7 +1875,7 @@ fn calibrate<E: Executor>(
             by,
         } => {
             let session = executor.calibrate_select(
-                &camera.id()?,
+                &camera.selector()?,
                 &which.which()?,
                 &control_slug(control)?,
                 &by.selection()?,
@@ -1873,11 +1887,12 @@ fn calibrate<E: Executor>(
             which,
             partial,
         } => {
-            let report = executor.calibrate_apply(&camera.id()?, &which.which()?, *partial)?;
+            let report =
+                executor.calibrate_apply(&camera.selector()?, &which.which()?, *partial)?;
             render::writes(&report, as_json, out)
         }
         CalibrateCommand::Restore { camera, which } => {
-            let report = executor.calibrate_restore(&camera.id()?, &which.which()?)?;
+            let report = executor.calibrate_restore(&camera.selector()?, &which.which()?)?;
             // An empty report is not "restored nothing", it is "there was nothing to put
             // back" — the ordinary answer to running this twice, and the two would be
             // indistinguishable from a table with no rows in it.
@@ -1890,15 +1905,12 @@ fn calibrate<E: Executor>(
             render::restore(&report, as_json, out)
         }
         CalibrateCommand::List { camera } => {
-            let id = camera
-                .as_deref()
-                .map(|name| {
-                    CameraId::parse(name).ok_or_else(|| Error::CameraUnknown {
-                        requested: name.to_owned(),
-                    })
-                })
-                .transpose()?;
-            let sessions = executor.calibrate_list(id.as_ref())?;
+            // Through the one parser, exactly as `CameraArg::selector` is: this positional is
+            // optional rather than flattened, which is the only reason it is not a `CameraArg`,
+            // and a second grammar for it would be a spelling that works on every other verb
+            // and not on this one (D14).
+            let selector = camera.as_deref().map(schema::selector::parse).transpose()?;
+            let sessions = executor.calibrate_list(selector.as_ref())?;
             render::sessions(&sessions, as_json, out)
         }
     }
@@ -2105,6 +2117,7 @@ pub fn exit_code(error: &Error) -> u8 {
 #[cfg(test)]
 mod tests {
     use schema::control::ControlValue;
+    use schema::selector::SelectorScheme;
 
     use super::*;
 
@@ -2214,7 +2227,10 @@ mod tests {
         let Command::Info(arg) = &cli.command else {
             panic!("expected info");
         };
-        assert_eq!(arg.id().expect("an id").as_str(), "cam:obsbot");
+        assert_eq!(
+            arg.selector().expect("a selector").to_string(),
+            "cam:obsbot"
+        );
 
         // The prefix D1 promises, and the `cam:` prefix being optional on input.
         let cli =
@@ -2226,7 +2242,10 @@ mod tests {
         else {
             panic!("expected controls");
         };
-        assert_eq!(camera.id().expect("an id").as_str(), "cam:obsbot");
+        assert_eq!(
+            camera.selector().expect("a selector").to_string(),
+            "cam:obsbot"
+        );
         assert!(
             !discover_pairs,
             "the probe is opt-in: it writes to the camera"
@@ -2408,7 +2427,46 @@ mod tests {
         let arg = CameraArg {
             camera: String::new(),
         };
-        assert!(matches!(arg.id(), Err(Error::CameraUnknown { .. })));
+        assert!(matches!(arg.selector(), Err(Error::CameraUnknown { .. })));
+    }
+
+    #[test]
+    fn a_camera_positional_reaches_the_executor_in_every_spelling_the_parser_knows() {
+        // D14 at *this* door. A `CameraArg` that had kept D1's parser would compile, would
+        // pass every test above, and would refuse `photo /dev/video0` on the one surface the
+        // primary consumer types into — so the walk is over the vocabulary rather than over a
+        // list written here, and a sixth scheme fails it by having no sample.
+        let spellings = [
+            (SelectorScheme::Id, "cam:obsbot-tiny-3"),
+            (SelectorScheme::NodePath, "/dev/video0"),
+            (SelectorScheme::BusPath, "bus:3-4:1.2"),
+            (SelectorScheme::UsbId, "usb:04f2:b83c"),
+            (SelectorScheme::Serial, "serial:0001"),
+        ];
+        assert_eq!(spellings.len(), SelectorScheme::ALL.len());
+        for (scheme, spelling) in spellings {
+            let cli = Cli::try_parse_from(["webcam-handler-cli", "info", spelling])
+                .unwrap_or_else(|error| panic!("{spelling} did not parse: {error}"));
+            let Command::Info(arg) = &cli.command else {
+                panic!("expected info");
+            };
+            let selector = arg
+                .selector()
+                .unwrap_or_else(|error| panic!("{spelling} is not a selector: {error}"));
+            assert_eq!(selector.scheme(), scheme, "{spelling}");
+            assert_eq!(selector.to_string(), spelling, "{spelling}");
+        }
+        // And the refusal, at the same door: a scheme this build does not know is a request no
+        // camera can ever match, which is what makes it `CameraUnknown` rather than a new kind.
+        let cli =
+            Cli::try_parse_from(["webcam-handler-cli", "info", "bus_path:3-4"]).expect("parses");
+        let Command::Info(arg) = &cli.command else {
+            panic!("expected info");
+        };
+        assert!(matches!(
+            arg.selector(),
+            Err(Error::CameraUnknown { requested }) if requested == "bus_path:3-4"
+        ));
     }
 
     #[test]

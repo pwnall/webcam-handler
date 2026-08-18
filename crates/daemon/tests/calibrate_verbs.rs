@@ -75,6 +75,7 @@ use schema::control::{ControlDesc, ControlSlug, ControlValue};
 use schema::error::{Error, ErrorKind};
 use schema::metrics::MetricName;
 use schema::report::WriteReport;
+use schema::selector::CameraSelector;
 use schema::session::{
     ControlStatus, Selection, Selector, Session, SessionRef, SweepRequest, SweepSpec,
 };
@@ -103,7 +104,7 @@ fn fixture_session() -> SessionRef {
 }
 
 /// The first camera and the first wire.
-fn ask(fixture: &Fixture) -> (CameraId, Wire, Ask) {
+fn ask(fixture: &Fixture) -> (CameraSelector, Wire, Ask) {
     let (_, wire) = fixture
         .wires()
         .into_iter()
@@ -207,7 +208,7 @@ impl Shape {
 /// call sites.
 async fn calibrate_through<C: WchRpcClient + Sync>(
     client: &C,
-    camera: &CameraId,
+    camera: &CameraSelector,
     task: &str,
     first: &ControlSlug,
     second: &ControlSlug,
@@ -1013,7 +1014,7 @@ async fn the_calibrate_half_is_really_crossing_the_socket() {
     // document*, and D9's state tree is the thing a client and a daemon have to agree about
     // when they are not the same process.
     let mut fixture = Fixture::start();
-    let camera = nth_camera(&fixture.cameras, 0).id.clone();
+    let camera = CameraSelector::Id(nth_camera(&fixture.cameras, 0).id.clone());
     let [(_, in_memory), (_, over_uds)] = fixture.wires();
 
     over_uds

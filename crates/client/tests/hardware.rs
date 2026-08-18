@@ -114,6 +114,7 @@ use schema::limits;
 use schema::metrics::MetricName;
 use schema::progress::{CalibrationProgress, ProgressEvent};
 use schema::report::CameraList;
+use schema::selector::CameraSelector;
 use schema::session::{SweepRequest, SweepSpec};
 use schema::snapshot::Snapshot;
 use testkit::battery;
@@ -528,10 +529,14 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
         );
         return None;
     }
+    // This camera as a *request*: an answer names a camera by id, and a request names one by
+    // selector (D14), so the id an enumeration handed back becomes the spelling every verb
+    // below asks with.
+    let asked = CameraSelector::Id(info.id.clone());
     // The read verb, not `--discover-pairs`: that one is a probe that writes, and a sweep is
     // already the write this arm is about.
     let report = remote
-        .controls(&info.id, false)
+        .controls(&asked, false)
         .unwrap_or_else(|error| panic!("{}: controls failed over the socket: {error}", info.id));
     // Two questions, and the second one is note **N72**'s finding: "this sensor does not
     // have a brightness-class control" and "it has one and something about it stops this arm
@@ -576,7 +581,7 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
 
     // The witness, over the same socket, before anything is written.
     let witness = remote
-        .snapshot(&info.id)
+        .snapshot(&asked)
         .unwrap_or_else(|error| panic!("{}: snapshot failed: {error}", info.id));
     let held = recorded(&witness, &control).cloned().unwrap_or_else(|| {
         panic!(
@@ -587,7 +592,7 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
 
     let session = remote
         .calibrate_start(
-            &info.id,
+            &asked,
             "R3 socket calibration",
             "a sample an operator would call correctly exposed",
             &["the operator's own eye on the sample photos".to_owned()],
@@ -597,7 +602,7 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
     // rather than the control-shaped approximation it falls back to.
     let which = SessionRef::Id { id: session.id };
     remote
-        .calibrate_plan(&info.id, &which, std::slice::from_ref(&control), false)
+        .calibrate_plan(&asked, &which, std::slice::from_ref(&control), false)
         .unwrap_or_else(|error| panic!("{control}: the plan was refused: {error}"));
 
     let watcher = Recording::new();
@@ -617,7 +622,7 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
     };
     let began = Instant::now();
     let finished = remote
-        .calibrate_sweep(&info.id, &which, &request, &watcher)
+        .calibrate_sweep(&asked, &which, &request, &watcher)
         .unwrap_or_else(|error| panic!("{control}: the sweep failed on {}: {error}", info.id));
     let took = began.elapsed();
     assert_eq!(
@@ -633,7 +638,7 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
     // recovery both make — reading the snapshot the daemon persisted before the sweep's first
     // write.
     let restore = remote
-        .calibrate_restore(&info.id, &which)
+        .calibrate_restore(&asked, &which)
         .unwrap_or_else(|error| panic!("{control}: the restore failed: {error}"));
     assert!(
         restore.is_complete(),
@@ -667,7 +672,7 @@ fn sweep_one_camera(remote: &mut client::remote::Remote, info: &CameraInfo) -> O
     // the run. `account_for` adds the third: a restore whose exclusions ate the whole
     // population is a red arm, not a green one that compared nothing.
     let after = remote
-        .snapshot(&info.id)
+        .snapshot(&asked)
         .unwrap_or_else(|error| panic!("{}: the closing snapshot failed: {error}", info.id));
     let claim = battery::restoration_claim(&restore);
     let mut compared = 0usize;

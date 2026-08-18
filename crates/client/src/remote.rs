@@ -55,7 +55,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cli_core::{Executor, Photograph, Selection, SessionRef, SweepWatcher};
 use jsonrpsee::core::ClientError;
 use jsonrpsee::core::client::{Client, ClientBuilder, Subscription};
-use schema::camera::CameraId;
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug, ControlWrite};
 use schema::error::{Error, Result};
@@ -63,6 +62,7 @@ use schema::limits;
 use schema::profile::DeviceProfile;
 use schema::progress::ProgressEvent;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::selector::CameraSelector;
 use schema::session::{Session, SessionList, SessionStatus, SweepRequest};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::video::{RecordReport, RecordRequest, RecordStatus};
@@ -317,7 +317,7 @@ struct Polling<'client> {
     /// The socket, so a transport failure names it — [`refusal`]'s argument.
     socket: Utf8PathBuf,
     client: &'client Client,
-    camera: CameraId,
+    camera: CameraSelector,
 }
 
 impl RecordSource for Polling<'_> {
@@ -818,7 +818,7 @@ impl Executor for Remote {
         self.on(self.client().list())
     }
 
-    fn info(&mut self, camera: &CameraId) -> Result<CameraDetail> {
+    fn info(&mut self, camera: &CameraSelector) -> Result<CameraDetail> {
         self.on(self.client().info(camera.clone()))
     }
 
@@ -837,7 +837,7 @@ impl Executor for Remote {
     /// this call site: a second copy of that rendering would be the fork design §2.10
     /// forbids, in the one place the parity gate cannot see it (it is stderr, and the gate
     /// compares `--json`).
-    fn controls(&mut self, camera: &CameraId, discover_pairs: bool) -> Result<ControlReport> {
+    fn controls(&mut self, camera: &CameraSelector, discover_pairs: bool) -> Result<ControlReport> {
         if !discover_pairs {
             return self.on(self.client().controls(camera.clone()));
         }
@@ -846,24 +846,24 @@ impl Executor for Remote {
         Ok(found.controls)
     }
 
-    fn get(&mut self, camera: &CameraId, control: &ControlSlug) -> Result<ControlDesc> {
+    fn get(&mut self, camera: &CameraSelector, control: &ControlSlug) -> Result<ControlDesc> {
         self.on(self.client().get(camera.clone(), control.clone()))
     }
 
     fn set(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         writes: &[ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport> {
         self.on(self.client().set(camera.clone(), writes.to_vec(), guarded))
     }
 
-    fn snapshot(&mut self, camera: &CameraId) -> Result<Snapshot> {
+    fn snapshot(&mut self, camera: &CameraSelector) -> Result<Snapshot> {
         self.on(self.client().snapshot(camera.clone()))
     }
 
-    fn restore(&mut self, camera: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
+    fn restore(&mut self, camera: &CameraSelector, snapshot: &Snapshot) -> Result<RestoreReport> {
         // The snapshot travels as a **document**, not a path: `webcam-handler-client restore`
         // reads the caller's filesystem (the shared surface already did, in `cli_core::run`)
         // and sends the value, so a snapshot on a machine the daemon cannot see still
@@ -884,7 +884,7 @@ impl Executor for Remote {
     /// A response that disagrees with itself is [`Error::DeviceIo`] — **ours, not the
     /// device's**, which is the same reading `daemon::server::photo_response` gives it: the
     /// camera said nothing wrong, a document did.
-    fn photo(&mut self, camera: &CameraId, request: &PhotoRequest) -> Result<Photograph> {
+    fn photo(&mut self, camera: &CameraSelector, request: &PhotoRequest) -> Result<Photograph> {
         let response = self.on(self.client().photo(camera.clone(), request.clone()))?;
         if !response.bytes_match_the_delivery() {
             return Err(Error::DeviceIo {
@@ -954,7 +954,7 @@ impl Executor for Remote {
     /// which is the take's own outcome — a `RecordReport` for a recording that happened, and
     /// the device's or the disk's refusal for one that did not (AGENTS rule 7: a `DeviceGone`
     /// arriving as a successful recording is the conversion that is forbidden).
-    fn record(&mut self, camera: &CameraId, request: &RecordRequest) -> Result<RecordReport> {
+    fn record(&mut self, camera: &CameraSelector, request: &RecordRequest) -> Result<RecordReport> {
         let (socket, runtime, client) = (&self.socket, &self.runtime, self.client());
 
         runtime.block_on(async {
@@ -999,7 +999,7 @@ impl Executor for Remote {
     /// not.
     fn capture_profile(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         capturer: &str,
         discover_pairs: bool,
     ) -> Result<DeviceProfile> {
@@ -1010,7 +1010,7 @@ impl Executor for Remote {
 
     fn calibrate_start(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         task: &str,
         goal: &str,
         criteria: &[String],
@@ -1025,7 +1025,7 @@ impl Executor for Remote {
 
     fn calibrate_plan(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         controls: &[ControlSlug],
         order: bool,
@@ -1131,7 +1131,7 @@ impl Executor for Remote {
     /// own caller is the one being refused" — and it is this call's error that is returned.
     fn calibrate_sweep(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         request: &SweepRequest,
         watch: &dyn SweepWatcher,
@@ -1161,7 +1161,11 @@ impl Executor for Remote {
         })
     }
 
-    fn calibrate_status(&mut self, camera: &CameraId, which: &SessionRef) -> Result<SessionStatus> {
+    fn calibrate_status(
+        &mut self,
+        camera: &CameraSelector,
+        which: &SessionRef,
+    ) -> Result<SessionStatus> {
         self.on(self
             .client()
             .calibrate_status(camera.clone(), which.clone()))
@@ -1169,7 +1173,7 @@ impl Executor for Remote {
 
     fn calibrate_select(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         control: &ControlSlug,
         selection: &Selection,
@@ -1184,7 +1188,7 @@ impl Executor for Remote {
 
     fn calibrate_apply(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
         partial: bool,
     ) -> Result<WriteReport> {
@@ -1195,7 +1199,7 @@ impl Executor for Remote {
 
     fn calibrate_restore(
         &mut self,
-        camera: &CameraId,
+        camera: &CameraSelector,
         which: &SessionRef,
     ) -> Result<RestoreReport> {
         self.on(self
@@ -1203,7 +1207,7 @@ impl Executor for Remote {
             .calibrate_restore(camera.clone(), which.clone()))
     }
 
-    fn calibrate_list(&mut self, camera: Option<&CameraId>) -> Result<SessionList> {
+    fn calibrate_list(&mut self, camera: Option<&CameraSelector>) -> Result<SessionList> {
         // `None` means every session on the machine — the one optional parameter on this
         // surface, and the daemon answers a missing key and an explicit `null` identically
         // (`webcam-handler-api`'s `wch_calibrate_list` measured it).
@@ -1395,7 +1399,7 @@ mod tests {
     /// A take that is running, on `camera`.
     fn a_running_status() -> RecordStatus {
         RecordStatus {
-            camera: CameraId::parse("cam:test").expect("a literal id"),
+            camera: schema::camera::CameraId::parse("cam:test").expect("a literal id"),
             take: Some(schema::video::TakeStatus {
                 path: "/tmp/take.avi".into(),
                 format: schema::video::VideoFormat::Avi,

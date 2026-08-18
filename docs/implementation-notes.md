@@ -25146,3 +25146,105 @@ one closed vocabulary, all of it in the pin cell where a version would otherwise
 mark the gate honours is counted and named in its output — a mark that bought silence would be
 the L32 defect wearing the gate's approval.
 
+
+
+## E19 — The selector twins at three attached cameras, 2026-08-18
+
+The R3 half of D14, run once at the sub-milestone that landed it (docs/13 P7b names it as the
+terminal rung). E15, E17 and E18 are the shape: a dated run against something this project does
+not control, recorded once and not amended.
+
+### The fixture
+
+**Host:** `pwnblet`, Ubuntu 26.04 LTS, kernel `7.0.0-30-generic` (x86_64), on the working tree
+that became this sub-milestone's commit.
+
+**Attached: three logical cameras**, six nodes, all `uvcvideo` — an OBSBOT Tiny 3 on
+`/dev/video0,1` and the Chicony's two halves on `/dev/video2,3` (RGB) and `/dev/video4,5` (IR).
+The Dell U3224KB and the Logitech BRIO of E15/E18 are off the bus; both are in the corpus, so the
+hermetic arms in `crates/engine/tests/selectors.rs` cover what this run could not reach.
+
+### The transcript
+
+```
+running 2 tests
+3 camera(s): 13 spelling(s) resolved uniquely, 4 answered ambiguously naming their own camera
+test hw_a_selector_finds_the_camera_its_fingerprint_names ... ok
+usb:04f2:b83c: 2 logical cameras, named
+test hw_two_logical_cameras_on_one_device_are_ambiguous_by_usb_id_and_separable_by_bus_path ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out
+```
+
+### What the two numbers mean
+
+**Seventeen spellings, thirteen unique and four ambiguous**, and the split is the finding rather
+than an accounting detail. Every spelling was read off the enumeration in that same run — the id,
+the bus path, the USB id when the device reports one, the serial when it reports one, and every
+node path — so this is the live enumeration answering questions about itself.
+
+The four ambiguous ones are the Chicony's, and they are ambiguous for exactly the two reasons
+\[PF:13\] and \[PF:8\] predict: its RGB and IR halves report one `usb_id` (`04f2:b83c`) **and one
+serial** (`0001`), so `usb:04f2:b83c` and `serial:0001` each name two cameras and each is asked
+twice — once per half. D14 calls that a first-class refusal rather than an edge, and the arm
+holds the sentence that makes the refusal usable: the camera the spelling was read off must be
+*among the candidates*. An ambiguity that lost its own source would be a filter wearing an
+ambiguity's name.
+
+**And the pair is separable**, which is the sentence the sibling consumer actually needs: the two
+halves' bus paths are `3-4:1.0` and `3-4:1.2`, one interface apart, so `bus:` tells them apart on
+a host where `usb:` and `serial:` cannot. That is the same shape as a forwarded camera beside a
+local twin of the same model — the case §1.3's ledger describes — and it is why D14 makes the
+candidates list carry ids rather than a count.
+
+**The OBSBOT contributed the serial-less half of PF:8**: it reports no serial at all, so no
+`serial:` spelling was generated for it and none could have matched one. The hermetic arm
+`a_device_that_reports_no_serial_is_reachable_by_no_serial_spelling` asserts the stronger claim —
+that an absent serial matches *nothing* rather than becoming a wildcard — because a live run can
+only observe the absence, never the wildcard it did not become.
+
+### What this run does not establish
+
+It does not exercise `NodePath` across a renumbering: that needs a `uvcvideo` cycle, which is
+E18's arm and was not re-run here. The hermetic twin
+(`a_node_path_is_an_address_so_the_same_spelling_moves_when_the_numbers_do`) drives the
+renumbering directly, and the corpus arm exercises the collision \[PF:22\] leaves behind. Nor does
+it say anything about a machine with two devices of one model, which no host here has; the
+corpus's shared-`usb_id` pair is the only fixture for that and it is committed.
+
+## N257 — A refusal teaches the selector grammar only when the grammar was the problem
+
+**Doc:** design D14's closing clause — a colon-delimited scheme this build does not know
+"resolves to `CameraUnknown` with a message naming the scheme vocabulary".
+
+**Repo:** `schema::selector::scheme_hint`, and the one `#[error]` format it feeds —
+`no camera matches {requested:?}{}` on `Error::CameraUnknown`.
+
+**The clause is conditional, and the condition is the whole decision.** `no camera matches
+"cam:obsbot"` is a fact about the machine: the spelling was fine and the camera is not here.
+Appending *"— a camera selector is one of: …"* to that would tell an unattended reader its own
+spelling was wrong when the camera was merely unplugged, and the primary consumer reads the
+message first (D13: a message is payload). So the hint appears exactly when `parse` would have
+refused the string — an unknown scheme, a scheme with an empty body, a malformed `usb:` pair,
+the empty string — and is empty otherwise. `scheme_hint` decides that by *calling the parser*
+rather than by re-deriving the condition, which is the same one-home rule the parser itself
+exists for: a second copy of "what is a well-formed selector" is the thing that would come to
+disagree with the first. `a_spelling_no_camera_can_match_is_refused_naming_the_vocabulary`
+asserts both halves — the grammar lesson on a mis-spelling, and its **absence** on a
+well-formed spelling that matched nothing.
+
+**Zero new error kinds, and this is why that is honest rather than clever.** D14 could have
+asked for a `SelectorMalformed` kind, and the argument against it is D13's own: `CameraUnknown`
+means *resolved to nothing*, and a spelling no camera can ever match resolves to nothing in the
+most complete sense available. An agent's dispatch table already knows the kind, already knows
+it is terminal, and now gets the repair in the payload it already reads.
+
+**What it does not do**: name the *nearest* scheme. `ControlUnknown` carries `did_you_mean`
+suggestions and this deliberately does not, because a five-member closed vocabulary printed in
+full is shorter than a suggestion and cannot be wrong; a suggester over five items would be
+machinery whose only failure mode is proposing the scheme the caller did not want.
+
+**One consequence worth stating, because it is load-bearing and invisible**: the committed
+artifacts do not move. `Error::example(CameraUnknown)` carries `requested: "cam:nope"`, which
+parses, so the OpenRPC document's example message is the sentence it always was — the hint is a
+runtime clause on a request that went wrong, not a change to the registry's published shape.

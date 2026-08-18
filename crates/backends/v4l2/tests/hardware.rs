@@ -289,6 +289,146 @@ fn hw_controls_enumerate_on_every_node_without_panicking() {
 
 #[test]
 #[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_a_selector_finds_the_camera_its_fingerprint_names() {
+    // D14 on real hardware, and the half a hermetic suite cannot reach: the fake replays a
+    // fingerprint out of a committed document, so a resolver that agreed with the corpus
+    // would pass there whatever the kernel says today. Here the bus paths, USB ids and
+    // serials are read off the attached devices in this run, and every spelling has to find
+    // the camera it was read from.
+    //
+    // Invariants and orderings only (§3.1): nothing here asserts *which* cameras are
+    // attached, only that each one is reachable by what it reports about itself.
+    let Some((_, cameras)) = attached() else {
+        return;
+    };
+
+    let mut resolved = 0usize;
+    let mut ambiguous = 0usize;
+    for info in &cameras {
+        // Every spelling this device can be named by, built from the enumeration itself.
+        let mut spellings = vec![
+            info.id.to_string(),
+            format!("bus:{}", info.fingerprint.bus_path),
+        ];
+        if let Some(usb) = info.fingerprint.usb_id {
+            spellings.push(format!("usb:{usb}"));
+        }
+        if let Some(serial) = info.fingerprint.serial.as_deref() {
+            spellings.push(format!("serial:{serial}"));
+        }
+        for node in &info.nodes {
+            spellings.push(node.path.to_string());
+        }
+
+        for spelling in spellings {
+            let selector = schema::selector::parse(&spelling)
+                .unwrap_or_else(|err| panic!("{spelling} is a spelling the parser refuses: {err}"));
+            match engine::resolve::camera(&cameras, &selector) {
+                Ok(found) => {
+                    assert_eq!(
+                        found.id, info.id,
+                        "{spelling} was read off {} and resolved to {}",
+                        info.id, found.id
+                    );
+                    resolved += 1;
+                }
+                Err(schema::error::Error::CameraAmbiguous { candidates, .. }) => {
+                    // A legitimate answer on this rung rather than a failure: one USB device
+                    // hosting two logical cameras shares a `usb_id` and often a serial
+                    // [PF:13, PF:8]. What must hold is that the camera the spelling came
+                    // from is among the candidates — an ambiguity that lost its own source
+                    // would be a filter, not an ambiguity.
+                    assert!(
+                        candidates.contains(&info.id),
+                        "{spelling} was read off {} and the ambiguity does not name it: \
+                         {candidates:?}",
+                        info.id
+                    );
+                    ambiguous += 1;
+                }
+                Err(other) => panic!("{spelling} was read off {} and refused: {other}", info.id),
+            }
+        }
+    }
+
+    // Counted rather than assumed: a run where every spelling was ambiguous would prove
+    // nothing about resolution, and a run of zero spellings would prove nothing at all.
+    println!(
+        "{} camera(s): {resolved} spelling(s) resolved uniquely, {ambiguous} answered \
+         ambiguously naming their own camera",
+        cameras.len()
+    );
+    assert!(
+        resolved > 0,
+        "no spelling on this host resolved to one camera"
+    );
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_two_logical_cameras_on_one_device_are_ambiguous_by_usb_id_and_separable_by_bus_path() {
+    // The pair the seed hardware has and the corpus records [PF:13]: a Chicony whose RGB and
+    // IR halves share one VID:PID. D14 makes that a first-class refusal, and this arm is the
+    // live half of the claim — plus the sentence a consumer needs next, which is that the
+    // candidates *are* separable by something the fingerprint carries.
+    let Some((_, cameras)) = attached() else {
+        return;
+    };
+
+    let mut shared: std::collections::BTreeMap<String, Vec<&schema::camera::CameraInfo>> =
+        std::collections::BTreeMap::new();
+    for info in &cameras {
+        if let Some(usb) = info.fingerprint.usb_id {
+            shared.entry(usb.to_string()).or_default().push(info);
+        }
+    }
+    let pairs: Vec<(&String, &Vec<&schema::camera::CameraInfo>)> =
+        shared.iter().filter(|(_, group)| group.len() > 1).collect();
+    if pairs.is_empty() {
+        println!(
+            "SKIP (partial): no attached USB device hosts two logical cameras, so this host \
+             cannot exhibit PF:13's ambiguity; the corpus arm in \
+             crates/engine/tests/selectors.rs covers it hermetically"
+        );
+        return;
+    }
+
+    for (usb, group) in pairs {
+        let spelling = format!("usb:{usb}");
+        let selector = schema::selector::parse(&spelling).expect("a well-formed pair");
+        match engine::resolve::camera(&cameras, &selector) {
+            Err(schema::error::Error::CameraAmbiguous { candidates, .. }) => {
+                assert_eq!(candidates.len(), group.len());
+                println!("{spelling}: {} logical cameras, named", candidates.len());
+            }
+            other => panic!("expected an ambiguity for {spelling}, got {other:?}"),
+        }
+
+        // And what tells them apart. The bus path is the interface number, which differs per
+        // logical camera on one device — this is the sentence the FR's consumer needs when a
+        // forwarded camera and a local twin of the same model are on one host.
+        let bus_paths: std::collections::BTreeSet<&str> = group
+            .iter()
+            .map(|info| info.fingerprint.bus_path.as_str())
+            .collect();
+        assert_eq!(
+            bus_paths.len(),
+            group.len(),
+            "{spelling}: the candidates share a bus path too, so nothing in the fingerprint \
+             separates them"
+        );
+        for info in group {
+            let spelling = format!("bus:{}", info.fingerprint.bus_path);
+            let selector = schema::selector::parse(&spelling).expect("a bus path");
+            let found = engine::resolve::camera(&cameras, &selector)
+                .unwrap_or_else(|err| panic!("{spelling} did not separate the pair: {err}"));
+            assert_eq!(found.id, info.id);
+        }
+    }
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
 fn hw_enumeration_matches_the_committed_profile() {
     // Drift is a finding either way: the corpus is stale, or the kernel changed
     // behaviour, and both are worth knowing (design §3.1 R3).
@@ -2175,7 +2315,7 @@ fn oracles_missing() -> Vec<testkit::oracle::Oracle> {
 /// the automation pairs empirically and persist the merge (D3, N16).
 ///
 /// The scratch store is the caller's to keep alive — dropping it removes the tree, photos
-/// included, which is [design §5](../../../../docs/6-claude-fable-design-v2.md): a frame may
+/// included, which is [design §5](../../../../docs/12-claude-fable-design-v3.md): a frame may
 /// contain a person and test captures live in gitignored scratch directories.
 fn start_session(
     store: &engine::store::SessionStore,

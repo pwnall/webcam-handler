@@ -27,7 +27,7 @@ use engine::calibrate::{SweepContext, SweepRequest};
 use engine::lifecycle::{self, SessionSpec};
 use engine::store::SessionStore;
 use schema::backend::{BackendKind, Camera, CameraBackend};
-use schema::camera::{CameraId, CameraInfo};
+use schema::camera::CameraInfo;
 use schema::capture::PhotoRequest;
 use schema::control::{ControlDesc, ControlSlug};
 use schema::error::Result;
@@ -35,6 +35,7 @@ use schema::pairing::ProbeSkip;
 use schema::profile::DeviceProfile;
 use schema::progress::ProgressEvent;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
+use schema::selector::CameraSelector;
 use schema::session::{Session, SessionList, SessionStatus};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::time::Stamp;
@@ -106,18 +107,19 @@ struct InProcess {
 }
 
 impl InProcess {
-    /// Resolve a caller-supplied id or prefix (D1) against a live enumeration.
+    /// Resolve a caller-supplied selector (D1's ids and prefixes, D14's four other
+    /// spellings) against a live enumeration.
     ///
     /// Enumerating first is what lets the refusal name the candidates, which is the difference
     /// between `CameraAmbiguous` being actionable and being a shrug. The rule itself lives in
     /// `engine::resolve`, so `webcam-handler-cli` and the P4 daemon cannot disagree about what
     /// a prefix means.
-    fn resolve(&self, requested: &CameraId) -> Result<CameraInfo> {
+    fn resolve(&self, requested: &CameraSelector) -> Result<CameraInfo> {
         let cameras = self.backend.enumerate()?;
         engine::resolve::camera(&cameras, requested).cloned()
     }
 
-    fn open(&self, requested: &CameraId) -> Result<(CameraInfo, Box<dyn Camera>)> {
+    fn open(&self, requested: &CameraSelector) -> Result<(CameraInfo, Box<dyn Camera>)> {
         let info = self.resolve(requested)?;
         let camera = self.backend.open(&info.id)?;
         Ok((info, camera))
@@ -176,7 +178,7 @@ impl Executor for InProcess {
         engine::resolve::list(self.backend.as_ref())
     }
 
-    fn info(&mut self, requested: &CameraId) -> Result<CameraDetail> {
+    fn info(&mut self, requested: &CameraSelector) -> Result<CameraDetail> {
         let (info, camera) = self.open(requested)?;
         Ok(CameraDetail {
             formats: camera.formats()?,
@@ -184,7 +186,11 @@ impl Executor for InProcess {
         })
     }
 
-    fn controls(&mut self, requested: &CameraId, discover_pairs: bool) -> Result<ControlReport> {
+    fn controls(
+        &mut self,
+        requested: &CameraSelector,
+        discover_pairs: bool,
+    ) -> Result<ControlReport> {
         let (info, mut camera) = self.open(requested)?;
         if discover_pairs {
             // The probe writes, and the document it produces is assembled in the engine —
@@ -207,7 +213,7 @@ impl Executor for InProcess {
         })
     }
 
-    fn get(&mut self, requested: &CameraId, control: &ControlSlug) -> Result<ControlDesc> {
+    fn get(&mut self, requested: &CameraSelector, control: &ControlSlug) -> Result<ControlDesc> {
         let (_, camera) = self.open(requested)?;
         // The suggestion list on a miss comes from the planner's, so `get brightnes` and
         // `set brightnes=1` name the same candidates — which is why the lookup lives in
@@ -217,7 +223,7 @@ impl Executor for InProcess {
 
     fn set(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         writes: &[schema::control::ControlWrite],
         guarded: bool,
     ) -> Result<WriteReport> {
@@ -229,17 +235,21 @@ impl Executor for InProcess {
         engine::write::set_requested(camera.as_mut(), writes, guarded)
     }
 
-    fn snapshot(&mut self, requested: &CameraId) -> Result<Snapshot> {
+    fn snapshot(&mut self, requested: &CameraSelector) -> Result<Snapshot> {
         let (_, mut camera) = self.open(requested)?;
         engine::snapshot::take_in_effect(camera.as_mut(), Stamp::now())
     }
 
-    fn restore(&mut self, requested: &CameraId, snapshot: &Snapshot) -> Result<RestoreReport> {
+    fn restore(
+        &mut self,
+        requested: &CameraSelector,
+        snapshot: &Snapshot,
+    ) -> Result<RestoreReport> {
         let (_, mut camera) = self.open(requested)?;
         engine::snapshot::restore_in_effect(camera.as_mut(), snapshot)
     }
 
-    fn photo(&mut self, requested: &CameraId, request: &PhotoRequest) -> Result<Photograph> {
+    fn photo(&mut self, requested: &CameraSelector, request: &PhotoRequest) -> Result<Photograph> {
         let (_, mut camera) = self.open(requested)?;
         let taken = engine::photo::take(
             camera.as_mut(),
@@ -283,7 +293,11 @@ impl Executor for InProcess {
     /// The daemon's is the other one (design §2.10 — one rule, two callers, and the difference
     /// is stated rather than assumed), because its `open(2)` would run on a camera actor's one
     /// thread (note **N51**).
-    fn record(&mut self, requested: &CameraId, request: &RecordRequest) -> Result<RecordReport> {
+    fn record(
+        &mut self,
+        requested: &CameraSelector,
+        request: &RecordRequest,
+    ) -> Result<RecordReport> {
         let (_, mut camera) = self.open(requested)?;
         engine::record::run(
             camera.as_mut(),
@@ -300,7 +314,7 @@ impl Executor for InProcess {
 
     fn calibrate_start(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         task: &str,
         goal: &str,
         criteria: &[String],
@@ -341,7 +355,7 @@ impl Executor for InProcess {
 
     fn calibrate_plan(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         which: &SessionRef,
         controls: &[ControlSlug],
         order: bool,
@@ -376,7 +390,7 @@ impl Executor for InProcess {
 
     fn calibrate_sweep(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         which: &SessionRef,
         request: &SweepRequest,
         watch: &dyn SweepWatcher,
@@ -404,7 +418,7 @@ impl Executor for InProcess {
 
     fn calibrate_status(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         which: &SessionRef,
     ) -> Result<SessionStatus> {
         // No lock: reading is not a state write, and a `webcam-handler-cli calibrate status`
@@ -417,7 +431,7 @@ impl Executor for InProcess {
 
     fn calibrate_select(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         which: &SessionRef,
         control: &ControlSlug,
         selection: &Selection,
@@ -437,7 +451,7 @@ impl Executor for InProcess {
 
     fn calibrate_apply(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         which: &SessionRef,
         partial: bool,
     ) -> Result<WriteReport> {
@@ -458,7 +472,7 @@ impl Executor for InProcess {
 
     fn calibrate_restore(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         which: &SessionRef,
     ) -> Result<RestoreReport> {
         let store = self.store()?;
@@ -473,7 +487,7 @@ impl Executor for InProcess {
         })
     }
 
-    fn calibrate_list(&mut self, requested: Option<&CameraId>) -> Result<SessionList> {
+    fn calibrate_list(&mut self, requested: Option<&CameraSelector>) -> Result<SessionList> {
         let store = self.store()?;
         // Resolving first, and only when a camera was named: `None` means every session on
         // this machine, and a listing that enumerated cameras to answer it would refuse on
@@ -487,7 +501,7 @@ impl Executor for InProcess {
 
     fn capture_profile(
         &mut self,
-        requested: &CameraId,
+        requested: &CameraSelector,
         capturer: &str,
         discover_pairs: bool,
     ) -> Result<DeviceProfile> {
@@ -517,7 +531,11 @@ impl Executor for InProcess {
         let (profile, found) = engine::profile::capture_probed(camera.as_mut(), &context)?;
         eprintln!(
             "{}: probe measured {} pair(s), declined {}, left the camera alone: {}",
-            requested.as_str(),
+            // The selector's canonical spelling, which is what the caller typed — the
+            // *resolved* id is not in hand here, and naming a camera back to a caller in a
+            // spelling they did not use is a note about a different string than the one they
+            // are looking at.
+            requested,
             profile.invariant.measured_pairs.len(),
             found.skipped.len(),
             found.left_the_camera_alone()

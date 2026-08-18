@@ -1282,7 +1282,7 @@
           "type": "object"
         },
         {
-          "description": "No camera matched the id or prefix.",
+          "description": "No camera matched the selector — an id, a prefix, or any of D14's other spellings.",
           "properties": {
             "kind": {
               "const": "camera_unknown",
