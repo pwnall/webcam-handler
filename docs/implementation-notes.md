@@ -25548,3 +25548,40 @@ page said the one thing that was not so.
 
 **What this does not do**: retry, poll, or hold the preview open. One request, on an event that
 has already failed, and the operator gets the daemon's own words.
+
+## E20 — The whole R3 rung against three attached cameras after the v3 batch, 2026-08-18
+
+E19 recorded the selector twins on the day they landed. This is the *whole* rung run once more
+at the end of the batch, because four things in it had since moved underneath the hardware
+suites: the fake learned that a camera which vanishes mid-stream leaves the listing (D19), both
+muxers' sequence accounting moved into one accumulator (D16, note **N259**), the camera
+positional became a selector everywhere (D14), and the daemon grew a third route (D20).
+
+**Host and fixture:** `pwnblet`, kernel `7.0.0-30-generic`; three logical cameras on six nodes —
+the OBSBOT Tiny 3 and the Chicony's RGB and IR halves. `vivid` was unloaded again before this run
+(the helper's `vivid down`), so the machine is the one an operator has.
+
+```
+smoke-hw: SKIP 1 — motor-moving suites (hw_motion_*) are excluded by WCH_NO_MOTION=1
+smoke-hw: 6 capture node(s) present; running test(/(^|::)hw_/) - test(/(^|::)hw_motion_/)
+     Summary [  36.996s] 25 tests run: 25 passed, 1637 skipped
+smoke-hw: 25 of 25 selected test(s) ran — the suite is complete
+```
+
+**The motion suites were excluded deliberately and it is a named, counted skip** rather than a
+silent one: the owner's 2026-08-08 ruling runs them by default and provides `WCH_NO_MOTION=1`
+"for runs where the camera points at a person", and a session that cannot see the room the
+cameras are in should take the option the ruling put there. Everything that does not move a motor
+ran.
+
+**Four partial skips, each naming what it did not check** — and they are the honest half of a
+green line: two controls the device's own automation owns at both ends of a restore \[PF:24\];
+PF:19's four-node counter-example, which no attached camera exhibits; three committed profiles
+that match no camera here (`dell-u3224kb`, `logitech-brio`, `vivid`); and the Chicony IR camera's
+lack of an enabled non-motorized boolean to toggle.
+
+**What this run adds over E19.** The two `hw_gone_*` recipes declined by name, which is the
+testable half of D19 on a host that cannot arrange a mid-stream loss, and both selector twins
+passed again on a machine whose node numbering had changed since E19 (`vivid` had come and gone
+between the two runs) — which is `NodePath`-as-address surviving exactly the event PF:22
+describes, observed rather than argued.
