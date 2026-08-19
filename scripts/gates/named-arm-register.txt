@@ -47,6 +47,7 @@ json-validates
 kill-is-never-a-fallback
 license-allowlist
 lint-posture
+luma-has-one-home
 msrv-sync
 mutation-verdict
 no-external-fetch-in-web

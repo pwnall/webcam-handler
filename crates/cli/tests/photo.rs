@@ -218,6 +218,305 @@ fn wch_photo_with_a_transform_stamps_the_orientation_rather_than_rotating_the_by
     );
 }
 
+/// `webcam-handler-cli --json photo diff <a> <b>`, parsed as the one document it prints.
+///
+/// A document verb (§2.7), so no backend and no profile: it reads two files and answers.
+fn diff(a: &Utf8Path, b: &Utf8Path) -> schema::metrics::PhotoComparison {
+    let output = wch()
+        .args(["--json", "photo", "diff", a.as_str(), b.as_str()])
+        .output()
+        .expect("webcam-handler-cli runs");
+    assert!(
+        output.status.success(),
+        "webcam-handler-cli photo diff failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("standard output carries a PhotoComparison")
+}
+
+/// `webcam-handler-cli --json photo …`, parsed as the one document that verb prints.
+///
+/// The sibling of [`photo`], which reads the human rendering. Both exist because the two
+/// documents this suite reconciles are printed by two different runs of one verb.
+fn photo_report(device: &Replayed, extra: &[&str]) -> schema::capture::PhotoReport {
+    let output = wch()
+        .args([
+            "--json",
+            "--backend",
+            "fake",
+            "--profile",
+            device.profile.as_str(),
+            "photo",
+            &device.camera,
+        ])
+        .args(extra)
+        .output()
+        .expect("webcam-handler-cli runs");
+    assert!(
+        output.status.success(),
+        "webcam-handler-cli --json photo {extra:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("standard output carries a PhotoReport")
+}
+
+/// One of the two classes of camera D6 partitions this build's JPEG sink by, and what each
+/// one does with a requested transform.
+///
+/// **The partition is the population, and one profile is not it.** A camera whose frames
+/// arrive already compressed gets the verbatim sink, where the orientation *is* the
+/// transform; a camera that delivers raw pixels gets the re-encode sink, where the pixels
+/// are turned and the tag has nothing left to say. Every arm below walks both rows, because
+/// the defect these arms were written for — a stored raster and an Orientation tag both
+/// carrying the same quarter turn, so every EXIF-aware reader turns it twice — is invisible
+/// on the first row and lives on the second (note **N267**).
+struct JpegSinkClass {
+    /// The committed profile the camera is replayed from.
+    profile: &'static str,
+    /// The id it enumerates as.
+    camera: &'static str,
+    /// Where a `--transform rot90` goes on this class's JPEG, as the report states it.
+    application: schema::capture::TransformApplication,
+    /// What an independent EXIF reader must then find in that JPEG, in `kamadak-exif`'s
+    /// own words.
+    orientation: &'static str,
+}
+
+/// The two rows, named once. `chicony-ir`'s only format is GREY, which is why it is the
+/// re-encode row — D6's "grayscale is not optional", read the other way round.
+const JPEG_SINK_CLASSES: [JpegSinkClass; 2] = [
+    JpegSinkClass {
+        profile: "chicony-rgb",
+        camera: "cam:integrated-camera-integrated-c",
+        application: schema::capture::TransformApplication::ExifOrientation { orientation: 6 },
+        orientation: "row 0 at right and column 0 at top",
+    },
+    JpegSinkClass {
+        profile: "chicony-ir",
+        camera: "cam:integrated-camera-integrated-i",
+        application: schema::capture::TransformApplication::Pixels,
+        orientation: "row 0 at top and column 0 at left",
+    },
+];
+
+#[test]
+fn photo_diff_scores_one_frame_written_to_both_sinks() {
+    // One frame, one transform, two of this build's own sinks, and D17's whole purpose is that
+    // the two are comparable. They are written differently on purpose (D6): on a camera whose
+    // frames arrive compressed the JPEG sink passes the bitstream through and stamps the
+    // rotation as an EXIF Orientation, and the PNG sink has no bitstream to pass through so it
+    // turns the pixels. A reader that dropped the tag would therefore hand `photo diff`
+    // 2592x1944 against 1944x2592 and refuse it a similarity score — which is what this arm is
+    // here to notice, from outside the process, where the unit arms in `imaging::compare`
+    // cannot look.
+    //
+    // Walked over both classes, because a writer that stamped a tag onto a raster it had
+    // already turned would put the *re-encode* row back into two shapes while leaving this
+    // row green.
+    for class in &JPEG_SINK_CLASSES {
+        let scratch = Scratch::new();
+        let device = replayed(class.profile, class.camera);
+        let turned_jpeg = scratch.path("turned.jpg");
+        let turned_png = scratch.path("turned.png");
+        photo(
+            &device,
+            &["-o", turned_jpeg.as_str(), "--transform", "rot90"],
+        );
+        photo(
+            &device,
+            &["-o", turned_png.as_str(), "--transform", "rot90"],
+        );
+
+        let turned = diff(&turned_jpeg, &turned_png);
+        assert_eq!(
+            (turned.a.width, turned.a.height),
+            (turned.b.width, turned.b.height),
+            "the tool's own JPEG and PNG of one rot90 frame from {} came back at two shapes: \
+             {}x{} against {}x{}",
+            class.profile,
+            turned.a.width,
+            turned.a.height,
+            turned.b.width,
+            turned.b.height
+        );
+        let score = turned.ssim.score().unwrap_or_else(|| {
+            panic!(
+                "the tool's own JPEG and PNG of one rot90 frame from {} have no similarity \
+                 score: {:?}",
+                class.profile, turned.ssim
+            )
+        });
+        // A floor and not a range, because a range is a claim about the *type* and this arm
+        // owes a claim about the *pixels*. Measured through the shipped binary: both sides are
+        // one frame, so the pair scores 1.0 on the verbatim row and 0.9994 on the re-encode
+        // row, while the pair a reader that turned one side the *other* way would produce —
+        // this build's own rot90 and rot270 renderings of the same frame, which is what a
+        // misread Orientation 6 amounts to — scores −0.1852 and 0.0563 on the same two
+        // cameras. SSIM is defined on [-1, 1] and a range over it would have admitted both.
+        assert!(
+            score >= 0.9,
+            "the tool's own JPEG and PNG of one rot90 frame from {} agree only to {score}: the \
+             reader turned one of them a different way",
+            class.profile
+        );
+
+        // The untransformed pair scores too, which is what stops a green run above from being a
+        // run in which the rotation was the only thing being asserted — and what separates
+        // "orientation honoured" from "orientation ignored on both sides".
+        let plain_jpeg = scratch.path("plain.jpg");
+        let plain_png = scratch.path("plain.png");
+        photo(&device, &["-o", plain_jpeg.as_str()]);
+        photo(&device, &["-o", plain_png.as_str()]);
+        let plain = diff(&plain_jpeg, &plain_png);
+        assert!(
+            plain.ssim.score().is_some(),
+            "an untransformed pair from the same frame of {} has no similarity score either: \
+             {:?}",
+            class.profile,
+            plain.ssim
+        );
+        assert_eq!(
+            (turned.a.width, turned.a.height),
+            (plain.a.height, plain.a.width),
+            "a quarter turn exchanges the two extents on {}, whichever sink wrote the file",
+            class.profile
+        );
+    }
+}
+
+#[test]
+fn a_jpeg_carries_the_orientation_its_own_raster_still_needs_and_no_other() {
+    // The writer's half of the arm above, asserted where a similarity score cannot see it: a
+    // photograph whose pixels were already turned must carry Orientation 1, and one whose
+    // pixels were left alone must carry the tag that says to turn them. Stamping the
+    // *requested* transform on both is the defect — the re-encode row comes out with turned
+    // pixels and a tag saying to turn them again, which `photo diff` sees as two shapes and
+    // every other EXIF-aware reader sees as a picture on its side.
+    for class in &JPEG_SINK_CLASSES {
+        let scratch = Scratch::new();
+        let device = replayed(class.profile, class.camera);
+        let path = scratch.path("turned.jpg");
+        let report = photo_report(&device, &["-o", path.as_str(), "--transform", "rot90"]);
+
+        assert_eq!(
+            report.transform, class.application,
+            "{} took its rot90 through {:?} and this suite's partition says {:?}; the two rows \
+             below are the partition, so a class that changed sinks makes every claim here a \
+             claim about one sink twice",
+            class.profile, report.transform, class.application
+        );
+        assert_eq!(
+            field(&exif_of(&path), Tag::Orientation),
+            class.orientation,
+            "{}'s rot90 JPEG went to the sink through {:?} and carries the wrong Orientation: a \
+             raster that was already turned and a tag that says to turn it is a photograph \
+             every EXIF-aware reader turns twice, and a raster nobody turned with a tag that \
+             says so is one nobody turns at all",
+            class.profile,
+            report.transform
+        );
+
+        // And the stored raster itself, read by the `image` crate rather than by this build's
+        // own reader, because the claim above is only worth having if the two answers are
+        // about the same file: the re-encode row stores the turned raster and the verbatim row
+        // stores the camera's.
+        let stored = image::load_from_memory(&std::fs::read(&path).expect("the file exists"))
+            .expect("a real JPEG decodes");
+        let negotiated = (report.negotiated.width, report.negotiated.height);
+        let expected = match class.application {
+            schema::capture::TransformApplication::Pixels => (negotiated.1, negotiated.0),
+            _ => negotiated,
+        };
+        assert_eq!(
+            (stored.width(), stored.height()),
+            expected,
+            "{}'s rot90 JPEG stores a {}x{} raster where the {:?} path stores {}x{}",
+            class.profile,
+            stored.width(),
+            stored.height(),
+            report.transform,
+            expected.0,
+            expected.1
+        );
+    }
+}
+
+/// Which transforms exchange a photograph's two extents when they are honoured, as a table
+/// this suite commits rather than computes.
+///
+/// The EXIF standard's own partition: 1, 2, 3 and 4 name permutations that keep the raster's
+/// shape and 5–8 name the ones that turn it. Written out because the reconciliation below is
+/// about two documents disagreeing, and a table derived from the code under test could not
+/// notice them agreeing on the wrong answer.
+const TRANSFORMS_THAT_EXCHANGE_THE_EXTENTS: [(schema::capture::Transform, bool); 6] = [
+    (schema::capture::Transform::None, false),
+    (schema::capture::Transform::HFlip, false),
+    (schema::capture::Transform::VFlip, false),
+    (schema::capture::Transform::Rot90, true),
+    (schema::capture::Transform::Rot180, false),
+    (schema::capture::Transform::Rot270, true),
+];
+
+#[test]
+fn the_two_documents_this_build_prints_about_one_photograph_agree_about_its_shape() {
+    // `photo` answers the **stored** raster and `photo diff` answers the **displayed** shape.
+    // This is the arm that keeps the relationship between them from being prose: over every
+    // member of `Transform::ALL`, on the sink where the two can differ, it holds in the
+    // direction the tables say. The convention itself is stated in `imaging::compare`'s module
+    // header and in note **N267**, and **not yet in the two schema descriptions an agent
+    // reads** — `PhotoMeasurements.width` still says "Width in pixels, as decoded", which is
+    // the one point N267 puts in front of the owner. This arm is what makes the answer
+    // discoverable meanwhile: whichever way that is ruled, the two documents cannot drift
+    // apart without it going red.
+    assert_eq!(
+        TRANSFORMS_THAT_EXCHANGE_THE_EXTENTS.len(),
+        schema::capture::Transform::ALL.len(),
+        "the committed table names {} transforms and this build has {}; a table that has \
+         stopped covering the vocabulary is a reconciliation over a subset of it",
+        TRANSFORMS_THAT_EXCHANGE_THE_EXTENTS.len(),
+        schema::capture::Transform::ALL.len()
+    );
+
+    let class = &JPEG_SINK_CLASSES[0];
+    let device = replayed(class.profile, class.camera);
+    for (transform, exchanges) in TRANSFORMS_THAT_EXCHANGE_THE_EXTENTS {
+        assert!(
+            schema::capture::Transform::ALL.contains(&transform),
+            "{transform:?} is not a member of this build's transform vocabulary"
+        );
+        let scratch = Scratch::new();
+        let path = scratch.path("shot.jpg");
+        let report = photo_report(
+            &device,
+            &["-o", path.as_str(), "--transform", transform.as_str()],
+        );
+        let measured = diff(&path, &path);
+
+        let stored = (report.width, report.height);
+        let displayed = (measured.a.width, measured.a.height);
+        let expected = if exchanges {
+            (stored.1, stored.0)
+        } else {
+            stored
+        };
+        assert_eq!(
+            displayed,
+            expected,
+            "`photo` said {}x{} and `photo diff` said {}x{} about one {transform:?} \
+             photograph, where the stored raster and the displayed shape are {}",
+            stored.0,
+            stored.1,
+            displayed.0,
+            displayed.1,
+            if exchanges {
+                "a quarter turn apart"
+            } else {
+                "the same shape"
+            }
+        );
+    }
+}
+
 #[test]
 fn wch_photo_to_a_png_sink_produces_a_decodable_png_at_the_negotiated_size() {
     let scratch = Scratch::new();

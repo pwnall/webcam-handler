@@ -25585,3 +25585,246 @@ testable half of D19 on a host that cannot arrange a mid-stream loss, and both s
 passed again on a machine whose node numbering had changed since E19 (`vivid` had come and gone
 between the two runs) — which is `NodePath`-as-address surviving exactly the event PF:22
 describes, observed rather than argued.
+
+## N266 — One picture, two colour models, and a scene that scored 0.9688 against itself
+
+**Doc:** design §2.10's one-home law; D8's comparability sentence ("two photos an hour apart
+must differ only where the *device* differs"); D17's *"JPEG/PNG/PPM through the existing
+`imaging` paths, to luma"*.
+
+**Repo:** `imaging::decode::luma_sample` (new, promoted out of `rgb_to_luma`),
+`imaging::compare::read`, `scripts/gates/luma-has-one-home.sh`.
+
+**Three homes, two definitions.** `compare::read` sent JPEG and PNG through `image`'s
+`to_luma8`, which is Rec. 709 (`SRGB_LUMA = [2126, 7152, 722] / 10000`); the Netpbm arm eight
+lines below it carried an inline Rec. 601 in rationals, `(299r + 587g + 114b) / 1000`, under a
+comment that stated the invariant its sibling was breaking — *"a second set of coefficients here
+would make a PPM's metrics disagree with the same picture's PNG"*; and `decode.rs` held the
+BT.601 integer form, `(77r + 150g + 29b) >> 8`, which is what the YUV decode, `Decoded::luma`,
+`engine::calibrate` and every committed hardware `mean_luma` have always used. D17's sentence
+says the reader goes to luma *through the existing `imaging` paths*, and `to_luma8` is not one.
+
+**Measured through the shipped code**, one committed fixture (`fixtures::colour_bars(64, 16)`)
+encoded through this crate's own three sinks and read back through `compare::read`, with the two
+expectations computed independently of the code under test:
+
+```
+bar  RGB            BT.601 Rec.709 | PNG PPM JPEG capture
+1  (255,255,  0)     226    237    | 237 225 237 226
+2  (  0,255,255)     179    201    | 201 178 201 178
+3  (  0,255,  0)     150    182    | 182 149 182 149
+4  (255,  0,255)     105     73    |  73 105  73 105
+5  (255,  0,  0)      76     54    |  54  76  54  76
+6  (  0,  0,255)      29     18    |  18  29  18  28
+```
+
+**The `BT.601` column is that definition in floats, rounded; the home's own answer is the
+`capture` column.** Spelled out because the label became load-bearing the moment these numbers
+were committed as a table in `compare.rs`. `0.299r + 0.587g + 0.114b` rounded answers 226, 179,
+150, 105, 76, 29 for these bars; the home's `(77r + 150g + 29b) >> 8` truncates instead and
+answers 226, 178, 149, 105, 76, 28 — one code lower on bars 2, 3 and 6, which is the same
+truncation this note records two paragraphs down between the `>> 8` and the `/ 1000` spellings.
+`COLOUR_BAR_LUMA` in `imaging::compare`'s suite is `[255, 226, 178, 149, 105, 76, 28, 0]`, which
+is the `capture` column. The `Rec.709` column needs no such caveat: `image`'s `to_luma8` rounds
+rather than truncating — measured rather than read off its source, `[255,255,0]` answering 237
+where the integer form answers 236 — so the definition and that implementation agree on every bar.
+
+Worst per-pixel `|PNG − PPM|` **33 codes**. On the same picture, PNG `mean_luma` 0.500000 / rms
+0.375217 / sharpness 495.09 against PPM 0.498529 / 0.333595 / 305.53 — rms 12.5 % apart,
+sharpness 62 % apart. And `compare::photos` of one scene against itself, its PNG against its own
+PPM: `MeanLuma −0.00147`, `RmsContrast −0.0416`, `Sharpness −189.56`, **`ssim 0.9688`** where a
+picture against itself is 1.0. On saturated flats the gap is larger still: pure green reads
+0.713725 as a PNG and 0.584314 as a PPM. The third home differs from the second by up to one
+code as well (bar 1: 226 against 225) — the `>> 8` spelling against the `/ 1000` one — so even
+the two BT.601 arms were two homes.
+
+**Why nothing went red.** `every_format_this_build_writes_is_a_format_the_comparison_reads`
+walks `PhotoFormat::ALL`, which is the right population, over a **grey** fixture — and grey is a
+fixed point of every luma definition there is, so all three homes answer identically on it. The
+walk asserted dimensions and sniffing and never a pixel value. A test cannot be faulted for
+being green here; what it lacked was a fixture with colour in it, which is what
+`one_colour_scene_reads_the_same_luma_out_of_every_format_this_build_writes` now supplies,
+against a table derived from the definition rather than from the function under test (N252).
+
+**The reading chosen: BT.601, and `decode::luma_sample` is the one home.** Not because it is the
+better luma for sRGB — Rec. 709 arguably is — but because it is the one every committed
+measurement in this repository was taken through. Moving `compare` onto the capture path's
+numbers costs one committed transcript (none exists; `corpus/images/` holds no photographs) and
+makes `photo diff` agree with the calibration stream about the same photograph. Moving the
+*whole crate* the other way would invalidate every hardware `mean_luma` in these notes, so it is
+the owner's call and not a repair. The spelling is also the one whose weights sum to 256 exactly,
+which is why routing a grey source through `to_rgb8` and back costs a transient copy and no
+accuracy: `luma_sample(v, v, v)` is `(256 · v) >> 8`, which is `v`.
+
+**What was rejected.** Leaving the two arms alone and *documenting* the difference: that is D8's
+comparability sentence traded for a paragraph, and the consumer this project is built for reads
+numbers rather than paragraphs. Adopting Rec. 709 everywhere: the same repair with every
+committed hardware measurement invalidated, for a definition no consumer has asked for.
+
+**The gate is `luma-has-one-home.sh`**, because the class is "a second definition of luma in this
+tree" and the next one will not be `to_luma8` — its four claims, its derived populations and the
+residual it cannot see (a coefficient set nobody standardised) are argued in its own header.
+
+## N267 — A photograph this build stamps, read at the shape it is stored in
+
+**Doc:** D6 (*"the orientation **is** the transform on that path"* — the verbatim sink); E6
+("nothing resizes, ever"); D17, which is silent about orientation.
+
+**Repo:** `imaging::compare::oriented_luma` (new), `imaging::compare::read`,
+`engine::photo::from_capture`, `crates/cli/tests/photo.rs`.
+
+**One frame, two of this build's own sinks, no similarity score.** `engine::photo::take` stamps
+an EXIF Orientation on every JPEG it writes, the verbatim one included, because on that path no
+pixel moves and the tag is the whole of the transform. The PNG sink has no bitstream to pass
+through, so it turns the pixels instead. `compare::read` used `image::load_from_memory`, whose
+orientation handling is opt-in and off, so it read the JPEG at its stored shape. Driven through
+the shipped binary against `corpus/profiles/chicony-rgb.json`:
+
+```
+webcam-handler-cli --backend fake --profile … photo cam:… -o turned.jpg --transform rot90
+webcam-handler-cli --backend fake --profile … photo cam:… -o turned.png --transform rot90
+webcam-handler-cli --json photo diff turned.jpg turned.png
+  "a": {"width": 2592, "height": 1944 …}
+  "b": {"width": 1944, "height": 2592 …}
+  "ssim": {"kind":"unavailable","reason":{"reason":"dimensions_differ",
+           "a":[2592,1944],"b":[1944,2592]}}
+```
+
+An independent EXIF walk (hand-written TIFF/IFD0 reader, sharing no code with `little_exif`)
+reads `Orientation 0x0112 = 6` from `turned.jpg`, and the file is byte-identical in size to the
+untransformed one, which is the verbatim path. So the tool refused a similarity score to its own
+two renderings of one frame.
+
+**Why no test saw it.** `compare.rs`'s round-trip walk encodes through `crate::encode` only, and
+`crate::encode` never stamps — the stamp is applied one layer up, in `engine::photo::take`. The
+module doc said `read` accepts *"exactly what `crate::encode` writes"*, which is precisely the
+seam: the product writes `exif::stamp_jpeg(encode::jpeg(…))` and the reader was only ever tested
+against the inner half.
+
+**The reading chosen: honour the tag.** D17 is silent, so this is a gap and not a re-litigation —
+and D6 has already ruled that on the verbatim sink the orientation *is* the transform, so
+honouring it on read makes `photo diff` agree with a settled D-number rather than argue with one.
+Applied to PNG through the same helper as JPEG, because `image`'s `PngDecoder` reads `eXIf` too
+and a helper per format is a hole that reopens on the day somebody writes one. Netpbm carries no
+orientation. E6's "nothing resizes, ever" is untouched: a quarter turn is a permutation of pixels,
+not a resample.
+
+**The consequence, stated rather than left to be discovered.** `PhotoMeasurements.width` and
+`height` are now the **displayed** shape of a stamped photograph, not its stored raster's. No
+schema field moves, so `schema-artifacts-current.sh` stays green and a reviewer diffing
+`schemas/` sees nothing — which is exactly why it is written here. **This is the one point in the
+repair put in front of the owner**: the alternative is to report the stored shape and add an
+`orientation` field to `PhotoMeasurements`, which regenerates the committed bundle, moves the
+byte-for-byte `--json` expectation in `cli-core`, and still leaves the agent with no score for
+two files the tool produced from one frame.
+
+**The writer was the other half, and honouring the tag is what exposed it.**
+`engine::photo::from_capture` stamped `request.transform` on **every** JPEG, and only the
+verbatim sink leaves the pixels alone: on a camera whose frames arrive uncompressed —
+`corpus/profiles/chicony-ir.json`, whose only format is GREY — `imaging::photo` turns the pixels
+and the same tag then says to turn them again. A reader that drops the tag cannot see that; a
+reader that honours it hands `photo diff` 640x360 against 360x640 for one frame, which is the
+defect this note is about, arriving on the other camera class. Measured on the tree that landed
+the reader repair alone, before the writer one:
+
+```
+webcam-handler-cli --backend fake --profile corpus/profiles/chicony-ir.json \
+    photo cam:… -o turned.jpg --transform rot90     (and -o turned.png)
+webcam-handler-cli --json photo diff turned.jpg turned.png
+  "a": {"width": 640, "height": 360 …}   "b": {"width": 360, "height": 640 …}
+```
+
+An independent JPEG marker walk reads the stored raster as 360x640 *and* Orientation 6 out of the
+same file: the raster is already turned and the tag says to turn it again. **The tag says what is
+left to do, not what was asked for.** `imaging::photo::Photo.transform` already answers which
+happened — `TransformApplication::Pixels` against `ExifOrientation` — so the writer reads that
+answer instead of the request, and stamps Orientation 1 where the pixels moved. The decision keeps
+one home: `imaging::photo` decides, `engine::photo` reports.
+
+**Why no test saw *that* either.** The suite walked one profile, and D6's sink partition has two
+rows: `chicony-rgb` is MJPG and takes the verbatim path, `chicony-ir` is GREY and takes the
+re-encode path. Every arm added here walks `JPEG_SINK_CLASSES`, both rows, because the population
+is the partition and one profile is not it.
+
+**What was rejected.** Representing harder — the dimension mismatch is *already* represented as
+data, with both shapes on it, and representing it better does not answer the question the agent
+asked. Resizing, cropping or padding: E6, and never. Stamping the requested transform and
+teaching the reader to ignore the tag on re-encoded files: there is nothing in a JPEG that says
+which sink wrote it, which is the whole reason the tag has to be true.
+
+## N268 — A sixty-eight-byte PNG that takes the process down, and the bound that refuses it
+
+**Doc:** AGENTS "bounded everything" — constants in `webcam-handler-schema::limits`,
+caller-supplied numbers capped at the door; D2 (an unattended consumer branches on data, never
+on a parsed refusal); the owner's 2026-08-15 ruling that a failing `--json` run prints a document
+too (N127, N128).
+
+**Repo:** `schema::limits::MAX_PHOTO_DECODE_BYTES` (new), `imaging::compare::budget`,
+`imaging::compare::oriented_luma`.
+
+**Building the decoders per format is what dropped the bound.** `image::load_from_memory` goes
+through `ImageReader::decode`, which applies `Limits::default()` — `max_alloc: Some(512 MiB)` —
+reserves against `decoder.total_bytes()` *before* allocating, and constructs `PngDecoder` through
+`with_limits`. N267's repair needed the decoder itself, to read the orientation off it before it
+was consumed, so `read` began calling `PngDecoder::new` and `JpegDecoder::new` directly — and
+`PngDecoder::new(r)` is `with_limits(r, Limits::no_limits())` by its own definition. Nothing was
+left holding the number.
+
+**Measured on the shipped binary.** A 68-byte PNG whose IHDR declares 200 000 x 200 000 in 8-bit
+RGBA — header only, valid CRCs, no raster behind it — and a 150-byte JPEG whose SOF0 declares
+65535 x 65535 in three components. Both are built in the test module rather than committed to
+`corpus/images/`, which holds photographs this build could have taken and a header describing
+200 000 pixels on a side is not one; the CRCs are computed rather than transcribed, because the
+`png` crate checks them and a fixture refused for the wrong reason is an arm green for the wrong
+reason. Both sizes are what the committed builders answer, measured. Run through the binary as it
+stood before the bound came back:
+
+```
+webcam-handler-cli --json photo diff bomb.png bomb.png
+  memory allocation of 160000000000 bytes failed
+  Aborted (core dumped)   exit=134
+webcam-handler-cli --json photo diff bomb.jpg bomb.jpg
+  memory allocation of 12884508675 bytes failed
+  Aborted (core dumped)   exit=134
+```
+
+`photo diff <a> <b>` takes two paths a caller named, so the number deciding the allocation came
+out of a file's header — a caller-supplied number reaching an allocator. The allocator's answer to
+a number it cannot serve is Rust's alloc error handler, which is `abort`: **no `Failure` document,
+no exit code from the D13 registry, nothing on standard output at all**, which is the one failure
+shape the `--json` ruling forbids. A truncated file, by contrast, still produces the ordinary
+document (`png decode failed: unexpected end of file`, exit 26) — and so, now, does the bomb:
+
+```
+webcam-handler-cli --json photo diff bomb.png bomb.png
+  {"failed": true, "error": {"kind": "device_io",
+   "operation": "read a photograph for comparison", "errno": null,
+   "message": "the png header declares 200000x200000, which is 160000000000 bytes of
+               raster and past this build's decode budget of 536870912 bytes"}}
+  exit=26
+```
+
+**The reading chosen: this build's own constant, set to the number the ecosystem uses.**
+`MAX_PHOTO_DECODE_BYTES` is 512 MiB, which is `image`'s `Limits::default()` and deliberately the
+same figure: this build reads what that crate's decoders write, so a cap below its default would
+refuse files the ecosystem considers ordinary, and a cap above it would be this project asserting
+headroom it has not measured. It is more than twenty-five times the largest raster any camera in
+`corpus/` delivers — 2592 x 1944 in RGBA is 20 MB. The constant lives in `schema::limits` rather
+than in the reader because that is where AGENTS puts bounds, and it is driven **from both sides**
+(N255): past it, both compressed formats are refused with a message naming the format and the
+budget; a raster twice the largest the product can produce is not refused for its size.
+
+**Only the allocation ceiling is set.** `image::Limits` also carries two *dimension* ceilings and
+they stay unset: a photograph is refused here for what it would cost, not for how it is shaped,
+and a camera that one day delivers a very wide, very short frame is a device this build represents
+rather than an input it declines (rule 6). PNG takes the budget at construction as well as through
+the shared helper, because `PngDecoder::set_limits` leaves the `png` crate's own internal buffers
+alone by its own comment, and construction is the only door they can be bounded through.
+
+**What was rejected.** Catching the allocation failure: there is nothing to catch — the default
+handler aborts, and a `--json` run that prints nothing is worse than one that prints a refusal.
+Refusing by declared width and height instead: the quantity that hurts is bytes, and a bound on
+extents is a bound on the wrong number, differently wrong for every colour type. Shortening the
+answer the way `MAX_EXIF_TEXT_BYTES` shortens a text field: a photograph is the subject of the
+comparison rather than metadata beside it, and half a photograph compared with a whole one is a
+number with nothing underneath it.

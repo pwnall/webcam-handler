@@ -37,7 +37,9 @@ use std::os::unix::fs::OpenOptionsExt as _;
 
 use camino::Utf8Path;
 use schema::backend::Camera;
-use schema::capture::{PhotoDelivery, PhotoFormat, PhotoReport, PhotoRequest, Sink};
+use schema::capture::{
+    PhotoDelivery, PhotoFormat, PhotoReport, PhotoRequest, Sink, Transform, TransformApplication,
+};
 use schema::control::{ControlSlug, ControlValue};
 use schema::error::{Error, Result};
 use schema::time::Stamp;
@@ -347,13 +349,25 @@ pub fn from_capture(
         // Both JPEG paths are stamped, the verbatim one included: the orientation *is*
         // the transform on that path (E6), so a pass-through photo with no EXIF would be
         // a photo that silently dropped what the caller asked for.
+        //
+        // **The tag says what is left to do, not what was asked for.** On the re-encode
+        // path the pixels have already been turned, so the same tag would say to turn
+        // them again — a raster and a tag both carrying one quarter turn, which every
+        // EXIF-aware reader honours twice and this build's own `photo diff` sees as two
+        // shapes for one frame (note **N267**). Which happened is not this function's to
+        // decide: `imaging::photo` owns that decision and states it as
+        // `TransformApplication` (§2.10), and this reads its answer.
+        let stamped = match photo.transform {
+            TransformApplication::ExifOrientation { .. } => request.transform,
+            TransformApplication::Identity | TransformApplication::Pixels => Transform::None,
+        };
         imaging::exif::stamp_jpeg(
             &photo.bytes,
             &imaging::exif::CaptureMetadata {
                 captured_at: now,
                 camera: fingerprint,
                 negotiated: captured.negotiated.clone(),
-                transform: request.transform,
+                transform: stamped,
                 controls,
             },
         )?

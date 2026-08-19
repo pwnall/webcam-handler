@@ -63,7 +63,7 @@ trusted), the panic/indexing set present at every shipped root and **walked by
 crate that reads kernel-shaped integers, `disallowed-methods` carrying the PF:1 ban and
 the workspace-wide sleep ban (N3).
 
-### The predicate register — one claim per predicate, 39 predicates
+### The predicate register — one claim per predicate, 40 predicates
 
 The count is the check: `run-all.sh` prints the same number every run, and `selftest.sh`
 fails on a predicate with no case file. Full rationale: each script's header.
@@ -89,6 +89,7 @@ fails on a predicate with no case file. Full rationale: each script's header.
 | `kill-is-never-a-fallback.sh` | terminating a holder has one home, one caller, counted by call site |
 | `license-allowlist.sh` | the permissive allowlist plus every named ban, selftested with a violation |
 | `lint-posture.sh` | the panic/indexing lint set is at every shipped root, all-or-none, population from metadata |
+| `luma-has-one-home.sh` | colour becomes brightness in one place: one declaration, no borrowed conversion, no second coefficient set, consumers reconciled both ways |
 | `msrv-sync.sh` | the MSRV is one fact and every copy agrees |
 | `mutation-verdict.sh` | the mutation floor keeps PASS / FAIL / NO-VERDICT apart, and the phase runner preserves the distinction |
 | `no-external-fetch-in-web.sh` | the web client loads nothing off-origin |
@@ -161,6 +162,7 @@ authoritative; this table is the commissioning record).
 | ~~**`facade-is-the-composition.sh`**~~ (landed) | P7d | the CLI executor's only engine reach is the facade, population derived from the facade's exports; plus the one-time byte-equivalence criterion at introduction | the facade and the CLI drifting into siblings — the FR's own upgrade-risk, inverted onto us |
 | ~~**Stats criteria + `FrameGap` fault**~~ (landed) | P8a | the accumulator's both-direction arms; the fault's exhaustive-menu membership; the one-home reconciliation with `declared_interval`; truncation stated on the answer | gap accounting with no driven inverse; a second interval home; silent truncation |
 | ~~**D17 adoption measurement**~~ (landed) | P8b | the resolved-graph check recorded in the landing note; `feature-posture.sh` is the standing backstop that makes the trap impossible to re-open silently | `image-compare` re-enabling `image`'s defaults through feature unification — the avif→rav1e drag |
+| ~~**`luma-has-one-home.sh`**~~ (landed) | P8b | the crate's one RGB→luma home declared once; no product code reaching another crate's colour-to-grey conversion, banned as a family of names, call syntaxes and trait doors rather than as one spelling; no file carrying a complete set of luma coefficients it has no business with — the four standard sets against every file including the home, and the home's own triple, read out of its own body, against every file but the home; the register of consumers reconciled **both ways** | the N266 class — a comparison reader measuring JPEG in Rec. 709 and PPM in BT.601, 33 codes apart, with a scene scoring 0.9688 against itself and every test green, because the walk that covered every format fed a grey fixture |
 | ~~**`hw_gone_*` decline accounting**~~ (landed) | P8c | the recipes decline by name on hosts that cannot arrange mid-stream loss, counted through the existing census machinery | D19's recipes rotting into silence before the partner rig ever runs them |
 | ~~**`/session-photo` route partition**~~ (landed) | P9b | both halves in the same commit as the route: `web-routes-are-gated.sh` arms for the third list entry, and `every_camera_bearing_route_is_behind_the_gate` driving anonymous-401 / token-200 / cross-site-403 / out-of-session-404 / HEAD-opens-nothing | the N82 defect class's first live exercise: a camera-bearing route added without its gate |
 | ~~**Workbench claims**~~ (landed) | P9a–P9c | the R1-web additions: the layout claim at the pinned viewport over the vivid profile; live-tuning round trips; the human flow end to end with `selector: human` asserted through a second socket; the sweep-time pane swap; refusal rendering and recovery | the browser half of D20 asserted only through the JSON the page consumes |
@@ -175,6 +177,10 @@ than it is:
 - **`token-comparison-has-one-home.sh` checks shape, and shape is not timing** — a
   short-circuit written *inside* `verify` passes all its claims; the argument beside the
   code and the diff reader carry the residual.
+- **`luma-has-one-home.sh` cannot see a coefficient set nobody standardised** — a fourth
+  luma written with freshly-derived weights passes its coefficient claim; what closes
+  the residual is its consumer register asking why a new file converts at all, plus the
+  colour arm in `imaging::compare`'s suite that holds every format to a committed table.
 - **`web-routes-are-gated.sh` sees registrations, not wrapping** — its behavioral twin
   drives the listed paths; neither half is worth having alone.
 - **`avi-reparse-is-independent.sh` sees imports and layout, and neither is derivation**

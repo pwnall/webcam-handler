@@ -1236,6 +1236,29 @@ pub const MAX_EXIF_TEXT_BYTES: usize = 16 * 1024;
 // corrupt file.
 const _: () = assert!(2 * MAX_EXIF_TEXT_BYTES + 1024 < MAX_EXIF_APP1_BYTES);
 
+/// The most raster a photograph read for comparison may ask this build to allocate, in bytes.
+///
+/// **The bound on a number the file supplies.** `photo diff` takes two paths a caller named
+/// and a compressed file's *header* declares its own extents, so the buffer the decode needs
+/// is a device-independent, caller-supplied number reaching an allocator — and the allocator's
+/// answer to a number it cannot serve is `abort`, not a `Result`. A 72-byte PNG whose IHDR
+/// declares 200 000 x 200 000 RGBA asks for 160 GB and takes the process down with it, which
+/// on a `--json` run is the one shape that prints no document at all.
+///
+/// Five hundred and twelve mebibytes, which is `image`'s own `Limits::default()` and is
+/// deliberately the same number: this build reads what that crate's decoders write, so a cap
+/// below its default would refuse files the ecosystem considers ordinary, and a cap above it
+/// would be this project asserting a headroom it has not measured. It is more than twenty-five
+/// times the largest raster any camera in `corpus/` delivers — 2592 x 1944 in RGBA is 20 MB —
+/// so nothing this build produces comes near it.
+///
+/// **The refusal is a `Failure` document and not a shortened answer**, unlike
+/// [`MAX_EXIF_TEXT_BYTES`]: a photograph is the subject of the comparison rather than
+/// metadata beside it, and half a photograph compared with a whole one is a number with
+/// nothing underneath it. Read by `imaging::compare::read`, which is the one door a stored
+/// photograph enters this build through.
+pub const MAX_PHOTO_DECODE_BYTES: u64 = 512 * 1024 * 1024;
+
 /// The most processes a `Busy` refusal names.
 ///
 /// The walk that finds them reads the whole process table, and a refusal listing four

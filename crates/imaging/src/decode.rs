@@ -154,20 +154,34 @@ impl Decoded {
     }
 }
 
-/// BT.601 luma, in integers.
+/// BT.601 luma of one colour sample, in integers — **the crate's one RGB→luma home**.
 ///
 /// The same coefficients the YUV decode path uses, so a YUYV frame's luma round-trips
 /// through RGB to within rounding rather than drifting to a different definition of
-/// "brightness" — which would make two samples in one sweep incomparable.
-fn rgb_to_luma(image: &RgbImage) -> GrayImage {
+/// "brightness" — which would make two samples in one sweep incomparable. That argument
+/// is not confined to the capture path: a photograph measured through a second definition
+/// disagrees with the stream it was taken from, and with the same picture written to
+/// another sink, by up to 33 codes (note **N266**). So every colour this crate reduces to
+/// brightness — the YUV decode, [`Decoded::luma`], `compare::read`'s two colour paths —
+/// arrives here, and `luma-has-one-home.sh` is what keeps a second definition from
+/// landing beside it.
+///
+/// The scalar is separate from [`rgb_to_luma`] because the two callers want two shapes:
+/// a whole frame of pixels, and one Netpbm triple at a time out of a byte walk.
+pub(crate) fn luma_sample(r: u8, g: u8, b: u8) -> u8 {
+    let weighted = 77 * u32::from(r) + 150 * u32::from(g) + 29 * u32::from(b);
+    // 77 + 150 + 29 == 256, so the sum is at most 255 << 8 and the shift is exact.
+    u8::try_from(weighted >> 8).unwrap_or(u8::MAX)
+}
+
+/// [`luma_sample`] over a whole frame.
+pub(crate) fn rgb_to_luma(image: &RgbImage) -> GrayImage {
     // Built by zipping two same-length pixel iterators rather than by `from_raw`, so
     // there is no length invariant to assert and no `Option` to unwrap.
     let mut out = GrayImage::new(image.width(), image.height());
     for (destination, source) in out.pixels_mut().zip(image.pixels()) {
         let [r, g, b] = source.0;
-        let weighted = 77 * u32::from(r) + 150 * u32::from(g) + 29 * u32::from(b);
-        // 77 + 150 + 29 == 256, so the sum is at most 255 << 8 and the shift is exact.
-        destination.0 = [u8::try_from(weighted >> 8).unwrap_or(u8::MAX)];
+        destination.0 = [luma_sample(r, g, b)];
     }
     out
 }
