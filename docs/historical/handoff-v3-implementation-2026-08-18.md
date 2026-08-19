@@ -29,11 +29,19 @@ browser rung is 28 claims / 259 assertions.
 
 ## What is left, in the order I would do it
 
-1. **`just gate-g7`.** It was last run mid-flight while another session was editing `cli-core`,
-   and failed on exactly two rows — `run-all.sh` and `selftest.sh` — because `agent-guide-current`
-   and `cli-parity` were red against a half-edited tree. A re-run was started at the end of this
-   session (`/tmp/wchd-design/g7b.log`, which will not survive a reboot; just run it again).
-   **Expect it to pass**; if it does not, the failure is real and new.
+1. **`just gate-g7` wants one clean run, and nothing else is known to be wrong with it.** It was
+   run twice this session and failed both times *for reasons that were not the gate*: the first
+   run overlapped another agent's edits to `cli-core` (so `agent-guide-current` and `cli-parity`
+   were red against a half-edited tree), and the second overlapped my own commits, which
+   `selftest.sh` correctly reported as **"an arm changed the checkout"**. Run afterwards on a
+   settled tree, `./scripts/gates/selftest.sh` is **PASS — 39 predicates, 94 pass arms, 411 fail
+   arms, "the checkout is as the arms found it"**, and `run-all.sh` is green. So the two rows
+   that failed are accounted for and `just gate-g7` should pass; run it once with nothing else
+   touching the tree, and if it does not, the failure is real and new.
+
+   The lesson is worth carrying: `selftest.sh` copies the tree per arm and compares before and
+   after, so **any edit during its ~18 minutes is reported as a problem**. Do not commit while a
+   phase gate is running.
 2. **The three gate closes** — docs/13 P7e, P8d, P9d. Each is: rows counted (`just gate-gN`), a
    review session in its own context, fixes, an evidence entry, and **the reconciliation written
    into docs/14's record**. That last one is the meta-rule and G5's skipped reconciliation cost
