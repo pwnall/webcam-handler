@@ -127,10 +127,24 @@ fn backend_for(cli: &Cli) -> Result<Box<dyn CameraBackend>> {
 /// from the facade on purpose — "a facade method that half-owned a session would be a second
 /// lifecycle home", which is the defect §2.10 exists to prevent. An embedder that wants those
 /// wants the daemon or this binary, and this binary is entitled to them because it *is* one of
-/// the two blessed compositions (design §2.11). So `engine::record`, `engine::store`,
-/// `engine::lifecycle`, `engine::session`, `engine::calibrate` and `engine::progress` are
-/// still named below, and nothing else in the engine is: the gate's policy list is that
-/// sentence, made checkable.
+/// the two blessed compositions (design §2.11).
+///
+/// The lifecycles this file assembles itself are `engine::record`, `engine::store`,
+/// `engine::lifecycle`, `engine::session`, `engine::calibrate` and `engine::progress`,
+/// and that list is the policy `scripts/gates/facade-is-the-composition.sh` declares at the
+/// top of itself — reconciled against this sentence in both directions, so neither copy can
+/// carry a name the other has dropped and neither can quietly grow one. The reconciliation is
+/// what makes the two copies worth having: this is where a reader learns *why* the names are
+/// kept, and note **N269** records what the unreconciled pair cost.
+///
+/// Engine paths that are *not* lifecycles are named below too, and they are allowed rather
+/// than excused: `engine::settle`'s monotonic clock, which the two lifecycles above take as an
+/// argument, and the reaches that belong to the composition root rather than to a verb —
+/// `engine::profile::read`, which builds the fake backend out of a corpus document, and
+/// `engine::photo::WhereverTheCallerSaid`, the destination seam a facade caller supplies. How
+/// many there are is not written here, because the same predicate prints every one of them on
+/// every run: the allowance is visible rather than inferred from silence, and counted where a
+/// count can go stale without anybody noticing.
 ///
 /// Note that the excluded verbs still *select* their camera through the facade —
 /// [`Facade::open`], [`Facade::resolve`], [`Facade::open_id`]. What D18 excludes is the

@@ -24621,6 +24621,24 @@ unreachable and removed. A later pass may prefer a mechanical population — eve
 in a predicate against every sentence its arms claim — which this list is the hand-made argument
 for.
 
+**Amendment, 2026-08-20 — what P7d's two predicates add to this list, and what they do not.**
+`facade-is-the-composition.sh` and `facade-stability-table-sync.sh` land twelve
+`gate_require_nonzero` calls between them, and six of the twelve are *reached* by an arm that
+claims a different sentence — measured by seeding each arm and reading the output: "facade
+exports", "engine modules the facade encapsulates", "engine reaches in the executor", "excluded
+lifecycles the executor still reaches" and "lifecycle names in the executor's policy sentence"
+in the first, and "engine modules on the facade's own surface" in the second, that last one on
+the unterminated-import arm's way past. Two more cannot fire at all while the anchors above them
+hold — the executor crate's file list (its `main.rs` is asserted to be a file first) and the
+stability table's row count (a reworded header exits before it) — which is a branch to delete
+rather than to arm if a later reader agrees. **The four genuinely unclaimed and reachable are**
+the executor's import-statement count, and the table's *crates named*, *module names carried*
+and *modules classified in exactly one column*: each needs a seed that empties a whole
+derivation at once, which no arm does today. Written down rather than armed for this entry's
+stated reason. Nothing else new is unclaimed — the branches a review named as armless (a *Where*
+cell naming no crate, no **Yes** row for the engine, a second `#[cfg(test)]` marker in the
+facade) each got an arm in the same commit as this amendment.
+
 ---
 
 ## N245 — An arm whose set of red branches was a function of the runner's umask
@@ -25828,3 +25846,309 @@ extents is a bound on the wrong number, differently wrong for every colour type.
 answer the way `MAX_EXIF_TEXT_BYTES` shortens a text field: a photograph is the subject of the
 comparison rather than metadata beside it, and half a photograph compared with a whole one is a
 number with nothing underneath it.
+
+## N269 — A module-reach ban one brace wide, and the exemption nothing exercised
+
+**Date:** 2026-08-20. **Subject:** `scripts/gates/facade-is-the-composition.sh`, the D18
+predicate that holds `webcam-handler-cli`'s executor to reaching the engine only through
+`engine::facade`. **Class:** note **N249**'s, one gate later — *a ban on a defect names the
+class, not one spelling of it* (rubric A17). N249 was N123's defect wearing a backslash; this
+is the module-reach ban wearing a brace.
+
+**What the doc says.** D18's whole mechanism is a consumer relationship: "the direct CLI's
+executor is rebuilt on it … so the facade cannot drift from what `webcam-handler-cli` ships,
+and the CLI parity gate transitively pins the facade's answers". The predicate's own header
+argues, at length and correctly, that the argument rests on one property — that the executor
+has no *other* way in — and that nothing about a green `just ci` would say so if it acquired
+one.
+
+**What it did.** The walk matched `engine::[a-z_][a-z0-9_]*`, so `engine::` had to be followed
+by a lowercase letter. A `{` ends the match attempt, and the line yields nothing at all.
+Measured, not argued, over two checkouts of `a71748a` differing only in one seeded line:
+
+```
+$ sed -i 's|^use engine::facade::Facade;$|&\nuse engine::{pairing, write};|' h2/crates/cli/src/main.rs
+$ WCH_GATE_ROOT=h1 h1/scripts/gates/facade-is-the-composition.sh   # exit 0
+$ WCH_GATE_ROOT=h2 h2/scripts/gates/facade-is-the-composition.sh   # exit 0
+$ diff <(grep -E '^(  ok|PASS)' h1.out) <(grep -E '^(  ok|PASS)' h2.out)
+                                                                  # no output
+```
+
+Both `pairing` and `write` are in the derived encapsulated set, so that seeded line is the
+exact defect the predicate exists for — the executor assembling a verb out of the engine again
+— and the **counted summary did not move by a byte**. A gate whose output is identical over a
+seeded violation is worse than one that is merely absent: the number in the CI log is what a
+reader checks, and this one said the same thing either way. The grouped form is not contrived;
+the file already ships `use engine::lifecycle::{self, SessionSpec};`, and rustfmt emits the
+multi-line group on its own once a list is long enough.
+
+**Three further spellings, each measured.** A nested group (`use engine::{pairing::in_effect,
+write::set_requested};`) and the rustfmt-broken form (`use engine::{`, then the names, then
+`};`) each passed with a summary byte-identical to the pristine tree's, exactly as the flat
+group did; the repaired predicate is red on all three. A crate-root binding — `use engine as e;`,
+after which every `e::pairing::…` is a path text cannot follow — passed and is *not*
+normalisable, because the alias line carries no `engine::` at all. **The one spelling the header
+named as invisible was already caught**: `use engine::pairing as p;` is red at `a71748a`, because
+the module is *named* before it is renamed — and so, measured beside it, is the fully qualified
+`::engine::pairing::in_effect(`, which the header made no claim about either way. The residual
+bullet therefore asserted a false thing about the predicate's own behaviour,
+which is the half of this that docs/14's provenance rule and AGENTS' "docs state each fact
+once" both refuse.
+
+**The repair, and what it deliberately is not.** An import is joined across the lines rustfmt
+broke it over and then flattened innermost-first, so nesting, `self`, `as` renames and trailing
+commas all reduce to the one spelling the existing scan already read. The joiner is bounded —
+an unterminated `use` would otherwise swallow the rest of the file into one logical line and
+report every violation at the first `use`'s line number, which is a worse answer than none — and
+the bound has its own arm. The crate-root binding is refused rather than carried: it gets a
+`gate_fail` naming the shape and a counted population of its own, because *a commission
+satisfied by blindness is the one shape a predicate here may not have*. What is **not** widened
+is the facade-side derivation (`crate::[a-z_]+::[a-z_]+\(`): that is a *call* matcher, the
+header argues that scope deliberately, and moving it would move the encapsulated population for
+an unrelated reason. The flattener is scoped to `use` statements rather than run over every
+line, because `::{` is essentially a use-tree spelling and a macro that produced one would
+otherwise land a phantom module name on the "declares no module" branch.
+
+**The house precedent this missed.** `avi-reparse-is-independent.sh:232` already matches
+`(::|[{,][[:space:]]*)${sibling}\b` and names the class in words at :206 — "preceded by `::` or
+by a `use` list's `{` or `,`". One import-walking predicate in this suite banned the class while
+another banned one spelling of it, and nothing compared them.
+
+**The second finding, in the same file: seven exemptions held to nothing, one of them excusing a
+reach nobody made.** The predicate held its two composition-root reaches to being *still made* —
+an exemption with nothing behind it is note **N164**'s L32 class — and held its seven excluded
+lifecycles to nothing of the sort. Asked of each of the seven, the executor answers five, two,
+two, two, three, three and **zero**, so the population of exemptions nobody exercised is one and
+the population nothing was checking was seven; the repaired predicate prints both numbers, as
+"checked 6 excluded lifecycles the executor still assembles itself" and "checked 2 reaches
+declared above as the composition root's own". `sweep` was the one: the executor names `engine::calibrate::{SweepContext, SweepRequest}` and has
+never named `engine::sweep`, so the line excused a reach nobody made. Proved by deletion, in a
+scratch copy of `a71748a`: removing `sweep` from the list left every verdict and every note where
+they were and moved exactly two numbers — the size of the policy list (7 to 6) and the total that
+sums it (70 to 69), both of them the list's own measurements. Nothing the predicate said about
+the tree changed, which is what a line that bought nothing looks like. It is out, and the remaining six are each asserted to be a reach the executor
+still makes. The executor's own doc comment wrote the same list in prose and wrote **six** where
+the policy had seven; the two copies exist on purpose, because the prose is where a reader
+learns why the names are kept, but a difference between them nothing can see is not one of the
+things they are for. The sentence is now bounded by markers the predicate reads and reconciled
+against the policy list in both directions.
+
+**A dead arm, found by the same move, and it is the more general lesson.**
+`fail_case_a_declared_lifecycle_is_no_longer_a_module_the_engine_declares` seeded `pub mod
+sweep;` → `pub mod sweeps;`. With `sweep` out of the policy list that seed applies perfectly and
+proves nothing: the arm ran, the predicate stayed green, and `gate_red_because` reported "the
+predicate stayed green". This is note **N186**'s dead-seed class arriving through the other
+door — not a seed that stopped applying, but a live seed against a subject that has gone — and
+`gate_seed`'s changed-anything check cannot see it, by construction. The arm is repointed at
+`record`. What retires this paragraph is a harness that can tell an arm its subject left, which
+is not something a byte comparison can answer.
+
+**What would retire the entry.** A reader that resolves Rust paths rather than reading source
+text — at which point the flattener, the crate-binding refusal and the joiner's bound all become
+unnecessary, and the residual ("a path assembled by a macro, or reached from a crate other than
+these two") closes with them.
+
+**Amendment, 2026-08-20 (same day, one review later): the residual paragraph above was wrong
+again, and four more spellings were measured passing.** The repair recognised a statement as an
+import through `use` and `pub use` only, so `pub(crate) use engine::{pairing, write};` and
+`extern crate engine as e;` fell through to the plain-line reader; `use engine::*;` reduced to a
+path the walk's own regex could not match; and the walk read one file in a crate whose next
+refactor splits it. Each passed with a counted summary byte-identical to the unseeded tree's,
+which is this entry's own standard of proof used against its own repair. Note **N271** records
+what that says about writing a widened matcher rather than sharing one, and the reader is now
+one file both predicates include.
+
+## N270 — A contract table with a hole in it reads exactly like a complete one
+
+**Date:** 2026-08-20. **Subject:** the stability table in `crates/engine/src/facade.rs`'s module
+doc, and the new `scripts/gates/facade-stability-table-sync.sh`. **Commissioned** at docs/14
+:466-469 — "the stability table matches the exports both ways. `CI` `test`" — and never landed.
+
+**What the doc says.** D18 asks the facade's module doc to carry "a stability table naming what
+an embedder may hold … and what it may not", and calls it the supported-composition contract:
+"the named seams move *deliberately*, a break gets a Changes row and a note, and nothing else is
+promised at all."
+
+**What the repo had.** A table nothing reconciled. Measured against the engine's own
+`crates/engine/src/lib.rs`, which declares twenty `pub mod`s: six were **Yes**, seven were
+**No**, and `capture`, `discover`, `paths`, `profile`, `progress`, `snapshot` and `write` were in
+neither column. Seven of twenty is more than a third of the crate, and an embedder reading the
+table to decide what they may depend on learned nothing about any of them — while the table
+itself read exactly like a complete answer, because a Markdown table with a hole in it looks the
+same as one without. A module added to the engine joined neither column and no run of anything
+moved. That is a paragraph, and the difference between a paragraph and a contract is entirely
+whether something holds it to the tree (notes **N153**, **N158**).
+
+**The contradiction the hole made possible, and it was live.** The **No** row read "the engine's
+shell modules — `actor`, `store`, `lifecycle`, `calibrate`, `record`, `preview`, `photo`'s
+destinations", while `Facade::photo` — the headline verb D18 promotes, the whole of FR-W5's
+request — took a `&mut dyn Destination` and answered a `Photograph`, both of which live only in
+`engine::photo` and are re-exported nowhere. The same module doc's "What a caller still supplies"
+section told the embedder to hand in exactly the thing the table forbade. **The verb an embedder
+holds could not be called from inside the contract**, and there was no reader anywhere that could
+notice, because the table's only audience was a person.
+
+**The reading chosen: fix the contract, not the signature.** Where a photograph goes "is a fact
+about the caller's process rather than about the camera" (note **N51**) — this is why
+`Destination` is a parameter at all, and a facade that chose would be choosing for the wrong
+process. So `photo` is **Yes**: an embedder hands in `WhereverTheCallerSaid` or an implementation
+of its own, and what stays out of reach is the pipeline the facade runs around it.
+`IntoTheSessionTree` belongs to the other half in spirit — it writes into D9's session tree,
+which is `store`'s — and the Why column says so rather than the table pretending a module can be
+split. The other two forced-open doors are named the same way: `crate::discover::Discovery` is
+half of what `Facade::profile_probed` hands back, and `crate::profile::read` is the corpus door a
+`--backend fake` composition root goes through. The backend crates get a row for the reason
+`Facade::new(backend: Box<dyn CameraBackend>)` makes unavoidable — constructing one is the
+caller's job by construction and no facade method could cover it — and `session` and `sweep`
+stay **Yes** as the pure cores the design names, which is a different question from whether the
+CLI assembles a lifecycle out of them (that is `facade-is-the-composition.sh`'s policy list, and
+the two lists answer different questions on purpose).
+
+**The reconciler, in `wire-surface-sync.sh`'s shape.** The table is parsed out of the doc comment
+and held to the crates it names in both directions: every `pub mod` a classified crate declares
+sits in exactly one column, every module a row names is one the crate still declares, every crate
+a row names resolves to a manifest under `crates/`, a crate answered both as "the whole crate" and
+module by module is red, and a verdict that is neither **Yes** nor **No** is red. A crate the
+table does not name is promised nothing — the table says so in its own words — so an unnamed
+crate is a counted note rather than a finding, printed because an allowance nobody can see is the
+silent skip AGENTS rule 3 forbids. Run against `a71748a`'s table it refuses at
+the header anchor — that table had two columns where this one needs four — which is the right
+answer rather than a lenient one: a table whose shape this reader cannot resolve is one it cannot
+reconcile, and passing over it would be the emptied-population failure the whole suite is written
+against.
+
+**The fourth claim is the review's finding made into a class.** Every `crate::<module>` the
+facade's `use` lines or its `pub fn` **signatures** name must sit in a **Yes** row for
+`webcam-handler-engine`. Signatures and not bodies, and the distinction is the whole of D18:
+`Facade::set` calls `crate::write::set_requested` and `write` is correctly **No**, because that
+call is what the facade *encapsulates* and an embedder never names it. What an embedder cannot
+avoid naming is what a signature hands them or asks of them. The imports are read as well as the
+signatures, because `Destination` and `Photograph` are spelled unqualified at the signature and
+come in through a `use` — a reader that walked only signatures would have missed the very
+instance this exists for.
+
+**What it deliberately does not claim.** The table's unit is a module, so a crate's public
+*types* could move under a **Yes** module and this would not notice. That is the honest residual:
+the contract D18 wrote is at module granularity, and a reconciler that invented a finer one would
+be enforcing a rule the design did not make. What would retire it is D18 growing an item-level
+contract, at which point the population becomes the items and this becomes the coarse half of it.
+
+## N271 — Two predicates read the same fact and each was written narrow, one revision apart
+
+**Date:** 2026-08-20. **Subject:** `scripts/gates/facade-is-the-composition.sh`,
+`scripts/gates/facade-stability-table-sync.sh`, and the new
+`scripts/gates/rust-imports.awk` they now share. **Class:** note **N249**'s and note **N269**'s,
+compounded — *a ban on a defect names the class, not one spelling of it* — with the second half
+being the reason it recurred: the repair for N269 widened one matcher instead of moving it, and
+the very same commit wrote a second reader of the same fact beside it, with the same hole.
+
+**Five spellings, each measured passing, each with a counted summary byte-identical to the
+unseeded tree's.** The standard of proof is N269's own: copy the checkout, seed one line, run
+the shipped predicate against both, and diff the `ok`/`note`/`PASS` lines.
+
+- `pub(crate) use engine::{pairing, write};` in the executor — exit 0. The import rule was
+  `^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]`, so a restricted visibility was not an import
+  at all; the statement fell through to the plain-line reader, which cannot see a brace group,
+  and the joiner, the flattener **and** the crate-binding refusal were skipped together.
+  `pub(super) use engine::{pairing::in_effect};` and `pub(crate) use engine as e;` the same.
+- `extern crate engine as e;` — exit 0, by the same rule. It is legal Rust 2024 here, nothing
+  in `[workspace.lints]` denies `unused_extern_crates`, and it binds the crate exactly the way
+  `use engine as e;` does.
+- `use engine::*;` — exit 0, and this one the repaired header had explicitly claimed was not a
+  residual. The flattener reduces the in-group form to `engine::*`, which the walk's
+  `engine::[a-z_]…` cannot match, and every module the glob brings into scope is then reachable
+  as a bare `pairing::in_effect(…)` that names no crate at all. Measured twice: with the glob
+  already in the file, *adding the bypass beside it* moved not one number in the summary. It is
+  not exotic here — `use super::*;` appears 104 times across eleven directories under `crates/`
+  — and no lint in this workspace forbids one: `grep -rn 'pedantic\|wildcard_imports'` over
+  every `.rs` and `.toml` outside `target/` returns nothing.
+- A bypass in a **second file of the same crate** — exit 0. `executor_rel` was one path, and
+  `crates/cli/src/` holds exactly `main.rs`, which is precisely why nothing had caught it: the
+  file is four hundred lines and the obvious next refactor splits it. The repaired header called
+  its residuals "a path assembled by a macro, or reached from a crate other than these two"; a
+  sibling module of the executor's own crate is neither.
+- In `facade-stability-table-sync.sh`, `use crate::{photo::{Destination, Photograph}, …};` —
+  exit 0, and **worse than silent**: the claim-4 line went from "checked 3 engine modules" to
+  "checked 1", so a forbidden module hid *and* the population shrank, with
+  `gate_require_nonzero` satisfied by the survivor. Driven end to end: a facade handing an
+  embedder a `crate::preview::Gap` — the module the table puts in **No** — shipped green through
+  both predicates, `cargo fmt` and `clippy -D warnings` clean.
+
+**Two more holes of the same shape, found by asking the same question of the rest of each
+predicate.** Claim 4 walked only the `pub fn`s inside `impl Facade {`, so a module-scope
+`pub fn`, `pub type` or `pub struct` field naming a forbidden module was invisible —
+`unreachable_pub` is a workspace lint, so a bare `pub` there is genuinely reachable API. And
+both predicates derived "the engine's module vocabulary" from `^pub mod [a-z_]*;`, which cannot
+see `pub mod telemetry { … }`: an inline module joined neither column of the stability table and
+neither side of the policy check. The engine declares file modules exclusively today, which is
+the same reason the one-file walk survived — the tree has not yet written the shape the reader
+cannot read.
+
+**The repair, and the part of it that is not a widened regex.** `rust-imports.awk` is the one
+home for reading a Rust import: it recognises every visibility and both keywords, joins a
+statement across the lines rustfmt broke it over, flattens groups innermost-first, and calls
+three hooks the including predicate defines. Both predicates include it; neither carries a copy.
+`gate_pub_mods` in `lib.sh` is the same move for a `pub mod` declaration, both spellings. The
+executor walk's population is now the directory listing under `crates/cli/src`, derived the way
+`gate_predicates` derives its own and for the same reason. The two unreducible shapes — a crate
+binding and a glob — are each a refusal with a counted population of its own rather than a
+residual, because *a commission satisfied by blindness is the one shape a predicate here may not
+have*. And the facade-side call walk now reads every method of `impl Facade` rather than the
+`pub fn`s alone, because an assembly moved into a private helper would otherwise leave the
+encapsulated population without failing: `Facade::context` already reaches
+`crate::profile::kernel_release` from exactly such a helper.
+
+**The claim that closes the shrink.** An import that names the crate and yields no module at all
+is a finding in `facade-stability-table-sync.sh`, not a smaller number. That is the branch the
+grouped import needed and the one `gate_require_nonzero` cannot be: a population can fall from
+three to one and still be non-zero, and the number in the run's output is what a reader checks.
+
+**What would retire the entry.** The same thing that would retire N269 — a reader that resolves
+Rust paths rather than reading source text — and, before that, the discipline this entry is
+really about: when a second predicate needs a fact a first one already reads, the fix is one
+reader in `lib.sh` or beside it, never a second matcher that looks right.
+
+## N272 — An arm that read its answer off a re-run of its own subject
+
+**Date:** 2026-08-20. **Subject:**
+`facade::tests::a_photo_through_the_facade_interrupts_no_preview_and_a_photo_beside_one_does`,
+and the `Facade::photo_taken` seam that ends it. **Class:** note **N252**'s — *an expectation
+taken from the function under test, or from a test-module shadow of it, is red-able in one
+direction only*.
+
+**What the arm claimed.** `Facade::photo` drops `crate::photo::Taken`'s `gap`, and `Taken`
+exists so that a gap cannot go missing in silence ("a gap nobody counted is exactly the silence
+rubric rule 3 is about"). The drop rests on one property: this composition opens a camera per
+call and closes it, so nothing in the caller's process is streaming the device. The arm was
+written to drive that property in both directions.
+
+**What it actually asserted.** It read the gap off a `crate::photo::take` the *test* assembled
+beside `Facade::photo`, tied to the subject only by the two answers carrying the same
+`PhotoReport`. A preview interrupt changes no field of `PhotoReport`, so the tie holds either
+way. Measured: `Facade::photo`'s body replaced with one that starts a stream, takes the photo,
+stops the stream and drops the gap — precisely the defect the doc comment says cannot happen —
+and `cargo nextest run -p webcam-handler-engine -E 'test(/facade::/)'` answered **10 tests run:
+10 passed**. An `assert!(taken.gap.is_some())` inside the mutant held, which proves the facade
+produced `Some(gap)` inside its own call and dropped it on the floor with every arm green.
+
+**Why the author's own proof mutant did not catch this.** Starting a stream and never stopping
+it *does* turn the arm red — but through the fake, whose device-level stream state outlives the
+dropped camera handle, so the *later* hand-assembled take is what observes it. The arm was
+sensitive to a facade that leaks a stream **between** calls, and blind to one that interrupts a
+preview **inside** one. Two failure modes, one of them the subject of the sentence.
+
+**The repair.** `Facade::photo` is now one line over a private `Facade::photo_taken`, which
+returns the `Taken` with the gap still on it; the arm reads `gap.is_none()` off that, which is
+the composition the verb runs rather than a second assembly that resembles it. The seam is
+private on purpose — `preview` stays in the stability table's **No** column and no `pub fn`
+hands a `Gap` out — and the public verb is driven beside it, asserted to answer what the take it
+sits over answered, so the seam cannot become a second implementation the arm reads instead of
+the one that ships. Both directions re-proved by mutation: the preview-around-the-take mutant
+now fails at the arm's own sentence, and a `crate::photo::take` that always answers `gap: None`
+fails at the other half's.
+
+**The general shape, because it is not about photos.** The tie was an equality between two
+answers, and it was chosen for being available rather than for being sensitive to the property
+under test. Before an arm compares a subject to a hand-assembled twin, ask which field of the
+comparison the defect would move — if the answer is "none", the comparison is decoration and the
+assertion beside it is a shadow.

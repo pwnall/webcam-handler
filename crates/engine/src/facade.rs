@@ -28,16 +28,41 @@
 //! in the design and a note in `docs/implementation-notes.md` — and that nothing else is
 //! promised at all.
 //!
-//! | May an embedder hold it? | What |
-//! |---|---|
-//! | **Yes** | every `webcam-handler-schema` type — the vocabulary all four masters share |
-//! | **Yes** | `schema::backend`'s `CameraBackend` / `Camera` traits (T1/T2), including writing a backend against them |
-//! | **Yes** | this facade |
-//! | **Yes** | the engine's pure cores, by name: `pairing`, `settle`, `sweep`, `session`, `resolve` |
-//! | **Yes** | `webcam-handler-imaging`'s pure functions — `metrics`, `compare`, `stream_stats`, the decoders and encoders |
-//! | **Yes** | `webcam-handler-testkit::battery` — the conformance suite is *for* backend consumers |
-//! | **No** | the engine's shell modules — `actor`, `store`, `lifecycle`, `calibrate`, `record`, `preview`, `photo`'s destinations |
-//! | **No** | anything in `webcam-handler-daemon`, `webcam-handler-cli-core` or `webcam-handler-web` |
+//! **The table below is reconciled against the tree.**
+//! `scripts/gates/facade-stability-table-sync.sh` reads it out of this doc comment and holds
+//! it to the crates it names in both directions: every module one of those crates declares
+//! sits in exactly one row, and every module a row names is one the crate still declares. A
+//! row whose *What* cell reads `the whole crate` carries its verdict for every module in that
+//! crate. So a module added to the engine stops the gate until somebody has decided which
+//! column it belongs in, which is the difference between a contract and a paragraph
+//! (notes **N153**, **N158**).
+//!
+//! | May an embedder hold it? | Where | What | Why |
+//! |---|---|---|---|
+//! | **Yes** | `webcam-handler-schema` | the whole crate | the vocabulary all four masters share, `CameraBackend` and `Camera` (T1/T2) among them — writing a backend against those traits is a supported thing to do |
+//! | **Yes** | `webcam-handler-v4l2`, `webcam-handler-fake` | the whole crate | [`Facade::new`] takes a `Box<dyn CameraBackend>`, so constructing one is the caller's job by construction and no method here could cover it; `V4l2Backend::new` and `FakeBackend::new` are what both composition roots call |
+//! | **Yes** | `webcam-handler-engine` | `discover`, `facade`, `pairing`, `photo`, `profile`, `resolve`, `session`, `settle`, `sweep` | the pure cores by name — and every module this facade's own imports and signatures force on a caller, because a headline verb that cannot be called from inside this column would make the column a fiction: [`crate::photo::Destination`] and [`crate::photo::Photograph`] are [`Facade::photo`]'s seam and its answer, [`crate::discover::Discovery`] is half of what [`Facade::profile_probed`] hands back, and [`crate::profile::read`] is the corpus door a `--backend fake` composition root goes through |
+//! | **No** | `webcam-handler-engine` | `actor`, `calibrate`, `capture`, `lifecycle`, `paths`, `preview`, `progress`, `record`, `snapshot`, `store`, `write` | the shell: threads, locks, session state, the state directory and the write path. [`crate::photo::IntoTheSessionTree`] is the destination implementation that belongs to this half in spirit — it writes into D9's session tree, which is `store`'s — and an embedder that wants it wants the daemon or the CLI |
+//! | **Yes** | `webcam-handler-imaging` | `avi`, `compare`, `decode`, `encode`, `exif`, `fixtures`, `metrics`, `photo`, `stream_stats`, `video`, `y4m` | pure functions over values, every one of them: bytes and numbers in, bytes and numbers out, no clock and no file |
+//! | **Yes** | `webcam-handler-testkit` | `battery`, `corpus`, `fixtures`, `images` | the conformance suite is *for* backend consumers, and a consumer replaying this project's corpus needs the loader and the fixtures beside it |
+//! | **No** | `webcam-handler-testkit` | `oracle` | it drives `ffprobe` and `mpv`, which are this repository's own test oracles and not something a consumer inherits |
+//! | **No** | `webcam-handler-daemon`, `webcam-handler-cli-core`, `webcam-handler-web` | the whole crate | the long-lived composition, the shared command surface and the browser client are products rather than seams |
+//!
+//! A crate the table does not name is promised nothing, which is why the one **No** row that
+//! answers for whole crates is written out rather than left to that default: it names the
+//! crates the design names, and a reader looking for them should find them there rather than
+//! infer them from a silence.
+//!
+//! **`session` sits in the Yes column here and also on `facade-is-the-composition.sh`'s
+//! excluded-lifecycle list, and that is not a contradiction: the two lists answer different
+//! questions.** This one asks whether an embedder may hold a module; that one names the engine
+//! modules `webcam-handler-cli` assembles a *lifecycle* out of, because D18 keeps calibration
+//! and recording off this surface. `engine::session` is a pure state machine over values, which is
+//! exactly why it is holdable and exactly why the CLI can build a session lifecycle on it.
+//! `sweep` used to be on both and the resolution went the other way: the executor has never
+//! named `engine::sweep`, so the exemption excused a reach nobody made and it is gone from that
+//! list (note **N269**). It stays **Yes** here, because the design names the sweep planner among
+//! the pure cores and holding it costs an embedder nothing.
 //!
 //! ## What a caller still supplies
 //!
@@ -51,6 +76,12 @@
 //! implementations and a scriptable double, and which one is right is a fact about the
 //! caller's process rather than about the camera: `webcam-handler-cli` blocks on a path a
 //! person typed, and the daemon must not block an actor thread on `open(2)` (note **N51**).
+//! That is why `photo` is in the **Yes** column: [`Facade::photo`]'s own signature takes a
+//! `&mut dyn Destination` and answers a [`crate::photo::Photograph`], so a table that forbade
+//! them would forbid calling the headline verb this module exists for — note **N270** records
+//! what that cost while nothing reconciled the two. An embedder hands in
+//! [`crate::photo::WhereverTheCallerSaid`] or an implementation of its own; what stays out of
+//! reach is the pipeline the facade runs around it.
 
 use std::fmt;
 
@@ -264,10 +295,19 @@ impl Facade {
     /// deadline runs on is this module's.
     ///
     /// The take's [`crate::preview::Gap`] — what this photo did to a preview, when there was one
-    /// to interrupt — is deliberately dropped here. A facade caller has no preview to
+    /// to interrupt — is deliberately dropped here, which is why `preview` is in the **No**
+    /// column: the type never crosses this boundary. A facade caller has no preview to
     /// interrupt: this composition opens a camera per call and closes it, so nothing in the
     /// caller's process is streaming the device. The daemon is the composition that keeps the
     /// gap, because it is the one with viewers to tell (note **N83**).
+    ///
+    /// [`crate::photo::Taken`] exists so that a gap cannot go missing in silence, so the drop
+    /// is not left resting on this paragraph. The take is assembled by a private
+    /// `photo_taken` and this verb is the line that drops the gap, which is what lets
+    /// `a_photo_through_the_facade_interrupts_no_preview_and_a_photo_beside_one_does` read the
+    /// gap off **this composition's own take** rather than off a pipeline the test assembled
+    /// beside it — an expectation taken from a re-run of the subject is the shadow note
+    /// **N252** is about, and that arm was one until 2026-08-20 (note **N272**).
     ///
     /// # Errors
     ///
@@ -282,15 +322,32 @@ impl Facade {
         destination: &mut dyn Destination,
         now: Stamp,
     ) -> Result<Photograph> {
+        self.photo_taken(requested, request, destination, now)?
+            .outcome
+    }
+
+    /// [`Self::photo`]'s whole composition, with the gap still on it.
+    ///
+    /// Private on purpose: [`crate::preview::Gap`] is in the stability table's **No** column and
+    /// this seam does not change that — no `pub fn` here hands one out. What it buys is that the
+    /// claim [`Self::photo`]'s doc comment makes — *this* composition interrupts no preview,
+    /// because it opens a camera per call and closes it — is a fact a test can read off the
+    /// facade's own take instead of off a second assembly that merely resembles it.
+    fn photo_taken(
+        &self,
+        requested: &CameraSelector,
+        request: &schema::capture::PhotoRequest,
+        destination: &mut dyn Destination,
+        now: Stamp,
+    ) -> Result<crate::photo::Taken> {
         let (_, mut camera) = self.open(requested)?;
-        crate::photo::take(
+        Ok(crate::photo::take(
             camera.as_mut(),
             request,
             destination,
             &MonotonicClock::new(),
             now,
-        )
-        .outcome
+        ))
     }
 
     /// Capture a device profile: everything this backend can enumerate about one camera (T3).
@@ -371,14 +428,17 @@ impl Facade {
 mod tests {
     use super::*;
 
-    fn facade() -> Facade {
-        let profiles = testkit::corpus::load_all()
+    fn profiles() -> Vec<DeviceProfile> {
+        testkit::corpus::load_all()
             .expect("the corpus parses")
             .into_iter()
             .map(|(_path, profile)| profile)
-            .collect();
+            .collect()
+    }
+
+    fn facade() -> Facade {
         Facade::new(Box::new(
-            fake::FakeBackend::new(profiles).expect("the corpus replays"),
+            fake::FakeBackend::new(profiles()).expect("the corpus replays"),
         ))
     }
 
@@ -477,6 +537,194 @@ mod tests {
             profile.provenance.backend,
             schema::backend::BackendKind::Fake,
             "a profile captured from the fake must say so, or it is circular corpus"
+        );
+    }
+
+    #[test]
+    fn the_watch_is_the_backends_own_and_two_of_them_report_the_same_event() {
+        // `Facade::watch` is the one verb §1.3's stated consumer holds — the sibling
+        // project's harness waits for a forwarded camera to arrive — and it was asserted
+        // nowhere. The claim is every other method's claim: the facade is the composition
+        // rather than a second opinion, so a watch taken through it and a watch taken off
+        // the backend it drives answer the same scripted event.
+        // Two scripted arrivals, one for each watch: the fake's fault queue is shared and
+        // each `next_event` takes one. They are queued before the backend is handed over
+        // because `Facade` owns it from that point on — which is itself the D18 boundary,
+        // and the reason this arm compares two watches rather than reaching for a counter.
+        let backend = fake::FakeBackend::new(profiles()).expect("the corpus replays");
+        backend.queue_faults(&[fake::Fault::HotplugAdd, fake::Fault::HotplugAdd]);
+        let facade = Facade::new(Box::new(backend));
+
+        let mut through = facade.watch().expect("this backend gives out a watch");
+        let mut direct = facade
+            .backend()
+            .watch()
+            .expect("this backend gives out a watch");
+
+        // `Instant::now()` is a deadline already spent, so nothing here waits on a clock and
+        // no `sleep` stands in for synchronisation: the fake answers a queued event before it
+        // looks at the deadline at all, and reaches the deadline only when the queue is
+        // empty — which is why an already-spent one is a zero wait rather than a panic.
+        let a = through
+            .next_event(std::time::Instant::now())
+            .expect("the watch is working");
+        let b = direct
+            .next_event(std::time::Instant::now())
+            .expect("the watch is working");
+        assert!(
+            matches!(&a, Some(schema::backend::HotplugEvent::Added { .. })),
+            "the facade's watch reported {a:?} for a scripted arrival"
+        );
+        assert_eq!(
+            a, b,
+            "a watch through the facade and a watch off the backend it drives disagreed"
+        );
+    }
+
+    #[test]
+    fn a_host_that_cannot_give_a_watch_is_refused_rather_than_answered_with_no_cameras() {
+        // Rule 7, on the one verb whose refusal is easiest to soften: "this host has no
+        // hotplug watch to give" is not "no cameras arrived". The fake scripts exactly that
+        // host — `Fault::WatchUnavailable`, `DeviceIo` and never `DeviceGone` — and the two
+        // assertions below are the two halves the facade's own doc comment claims: the
+        // refusal keeps its kind, and the cameras are still all there while it is made.
+        //
+        // **The second half is asserted against the input that separates the two readings**,
+        // not on its own. `Facade::watch` is `self.backend.watch()` over a `&self` that holds
+        // no state, so nothing it could be mutated into empties this enumeration: on this host
+        // alone, "the cameras are still there" is true by construction and its false branch is
+        // unreachable, which is a skip that reads as a pass (notes **N160**, **N231**,
+        // **N235**). So a second host is scripted below — one that really does enumerate
+        // nothing — and the pair is what carries the claim: each of the two facts this arm
+        // holds apart is produced here by its own input (note **N250**).
+        let backend = fake::FakeBackend::new(profiles()).expect("the corpus replays");
+        backend.queue_fault(fake::Fault::WatchUnavailable);
+        let facade = Facade::new(Box::new(backend));
+
+        let refused = facade.watch().expect_err("this host has no watch to give");
+        assert!(
+            matches!(&refused, schema::Error::DeviceIo { .. }),
+            "a host with no watch to give was reported as {refused}"
+        );
+        assert!(
+            !facade.list().expect("lists").cameras.is_empty(),
+            "the watch refusal was allowed to read as a machine with no cameras"
+        );
+
+        // And the refusal is about the watch rather than about the facade: the next call
+        // gets one, which is what makes "the next subscriber starts a fresh watch" reachable
+        // through this surface too.
+        facade.watch().expect("a watch after the refusal");
+
+        // The separating host: a machine with no cameras at all. It enumerates nothing and
+        // still gives out a watch — the opposite pairing from the one above, and the answer to
+        // "what would an empty enumeration actually take?". A backend that folded the watch
+        // refusal into "no cameras" would have to agree with one of these two hosts and
+        // disagree with the other, which is what makes the assertion above about something.
+        let empty = Facade::new(Box::new(
+            fake::FakeBackend::new(Vec::new()).expect("a host with no cameras is still a host"),
+        ));
+        assert!(
+            empty.list().expect("lists").cameras.is_empty(),
+            "a backend built with no profiles enumerated cameras from somewhere"
+        );
+        empty
+            .watch()
+            .expect("a machine with no cameras still has a watch to give");
+    }
+
+    #[test]
+    fn a_photo_through_the_facade_interrupts_no_preview_and_a_photo_beside_one_does() {
+        // `Facade::photo` drops `Taken::gap`, and `crate::photo::Taken` exists precisely so
+        // that a gap cannot go missing in silence — "a gap nobody counted is exactly the
+        // silence rubric rule 3 is about". The drop rests on one claim: this composition
+        // opens a camera per call, so nothing in the caller's process is streaming the
+        // device. That claim is what is driven here, in both directions — no preview, no
+        // gap; a preview, a gap — because without the second half the first is an assertion
+        // whose false branch nothing could reach.
+        //
+        // **The first half reads the gap off the facade's own take.** It was read off a
+        // `crate::photo::take` the test assembled beside `Facade::photo` until 2026-08-20,
+        // tied to the subject only by the two reports being equal — and a preview interrupt
+        // changes no field of `PhotoReport`, so a facade that started a preview around its
+        // take and stopped it again left all ten arms in this module green, measured (note
+        // **N272**). That is the shadow note **N252** names: an expectation taken from a
+        // re-run of the subject rather than from the subject. `Facade::photo_taken` is the
+        // seam that ends it — `Facade::photo` is one line over it, so what is asserted here
+        // is the composition the verb runs.
+        let facade = facade();
+        let selector = first(&facade);
+        let request = schema::capture::PhotoRequest {
+            stream: schema::capture::StreamRequest::default(),
+            settle: schema::capture::SettlePolicy {
+                spec: schema::capture::SettleSpec::SkipFrames { frames: 0 },
+                deadline_ms: 5_000,
+            },
+            transform: schema::capture::Transform::None,
+            sink: schema::capture::Sink::ReturnBytes {
+                format: schema::capture::PhotoFormat::Jpeg,
+            },
+            wait: false,
+        };
+
+        let crate::photo::Taken { outcome, gap } = facade
+            .photo_taken(
+                &selector,
+                &request,
+                &mut crate::photo::WhereverTheCallerSaid,
+                Stamp::epoch(),
+            )
+            .expect("a photo through the facade");
+        let quiet = outcome.expect("a photo off a camera nobody is watching");
+        assert!(
+            gap.is_none(),
+            "the facade's own composition interrupted a preview it does not have, and \
+             `Facade::photo` drops that fact on the floor"
+        );
+
+        // And the public verb is driven beside it, so the seam is not a second implementation
+        // the arm reads instead of the one that ships: `Facade::photo` is the line that drops
+        // the gap, and it answers what the take it is one line over answered.
+        let public = facade
+            .photo(
+                &selector,
+                &request,
+                &mut crate::photo::WhereverTheCallerSaid,
+                Stamp::epoch(),
+            )
+            .expect("a photo through the facade's public verb");
+        assert_eq!(
+            public.report, quiet.report,
+            "`Facade::photo` and the take it is one line over answered differently, so the \
+             seam this arm reads the gap off is not the verb's own composition"
+        );
+
+        // The other direction, over the same pipeline the facade runs, with the one
+        // difference the claim is about: somebody is streaming the camera. A facade cannot
+        // produce this state on itself — that is the property under test — so the second
+        // half is assembled here, and what it proves is that `gap` is a field this pipeline
+        // does fill, which is what makes the assertion above able to go red.
+        let (_, mut watched) = facade.open(&selector).expect("opens again");
+        // `StreamRequest::default()` rather than `crate::preview::request()`: what this half
+        // needs is a camera that is *streaming for somebody*, and pinning the preview's own
+        // MJPEG request would tie the arm to whichever camera the corpus happens to list
+        // first — the first one today is the Chicony IR module, which has GREY and nothing
+        // else.
+        watched
+            .start_stream(&schema::capture::StreamRequest::default())
+            .expect("every camera in the corpus has some mode");
+        let interrupted = crate::photo::take(
+            watched.as_mut(),
+            &request,
+            &mut crate::photo::WhereverTheCallerSaid,
+            &MonotonicClock::new(),
+            Stamp::epoch(),
+        );
+        interrupted.outcome.expect("a photo during a preview");
+        assert!(
+            interrupted.gap.is_some(),
+            "the same pipeline reported no gap over a camera that was streaming, so the \
+             assertion above proves nothing about the facade"
         );
     }
 

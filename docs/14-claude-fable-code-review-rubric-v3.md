@@ -463,10 +463,16 @@ landed.
       new metric joins by existing; nothing resamples, ever [A6]; SSIM orders the
       committed blurred/sharp pairs in both directions like every metric before it.
       `test`
-- [ ] **The facade is the composition** — the CLI executor's only engine reach is the
-      facade (gate, derived population); introduction carried a byte-equivalence
-      criterion against the pre-move executor; the stability table matches the exports
-      both ways. `CI` `test`
+- [ ] **The facade is the composition** — the executor *crate's* only engine reach is the
+      facade (`facade-is-the-composition.sh`, derived population over every file under
+      `crates/cli/src`, and the ban is on the class of reach rather than one spelling of
+      it: a grouped import, a restricted visibility, an `extern crate`, a glob and a
+      sibling module are the same reach, and the import reader is shared rather than
+      copied — `rust-imports.awk`, note **N271**); introduction carried a byte-equivalence
+      criterion against the pre-move executor; the stability table matches the exports both
+      ways (`facade-stability-table-sync.sh`), an engine module the facade's *public
+      surface* forces on a caller is in the **Yes** column, and D18's own bullet names the
+      table rather than restating it. `CI` `test`
 - [ ] **The workbench's layout claim is asserted at the pinned viewport over the widest
       committed profile** (vivid's 77 controls) — preview and the adjusted control
       simultaneously visible at every scroll position; a friendly-profile pass is the

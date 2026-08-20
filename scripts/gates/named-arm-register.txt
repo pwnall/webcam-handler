@@ -24,9 +24,11 @@
 #
 # The files converted at L25 that turned out to be red on a branch other than the one their name
 # claimed are recorded in notes **N241**, **N242** and **N245**–**N248**; that is what this register
-# is for. Since tranche 2 the list is one file short of being the population: the residual is three
-# arms in `schema-artifacts-current`, and note **N240**'s second amendment says what closing that
-# last gap retires.
+# is for. The list is the population now — `selftest.sh` prints how many case files it held to
+# the rule and how many arms elsewhere still read only the exit status, and that second number is
+# the one to watch, because it is the only place a new file could hide. How many names are below
+# is not written here: the harness counts them on every run, and a count in a comment is a claim
+# nothing reconciles (notes **N153**, **N158**).
 
 agent-guide-current
 agents-md-current
@@ -41,6 +43,7 @@ dependency-registry-sync
 dependency-walls
 doc-comments-open-with-a-summary
 facade-is-the-composition
+facade-stability-table-sync
 feature-posture
 ignored-suites-have-recipes
 json-validates

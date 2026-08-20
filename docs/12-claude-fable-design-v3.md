@@ -785,12 +785,24 @@ shaped so drift is structurally impossible:
   boundary is stated in the module doc, with the daemon named as the long-lived
   composition (§2.1).
 - **The supported-composition contract** (the FR's option b, delivered beside option a):
-  a stability table in the facade's module doc naming what an embedder may hold — the
-  schema types and T1/T2 (the vocabulary), the engine's pure cores by name (pairing,
-  settle, sweep, session, metrics), `engine::resolve`, the facade itself, `imaging`'s
-  pure functions, and `webcam-handler-testkit::battery` (the conformance suite is *for*
-  backend consumers) — and what it may not: engine shell-module internals, the daemon's
-  modules, `cli-core`, `web`. Versioning honesty: this workspace is 0.x and consumed
+  a stability table in the facade's module doc naming what an embedder may hold and what
+  it may not. **The table is the list, and this sentence is not a second copy of it.**
+  What belongs in the Yes column is stated here as a rule rather than an enumeration: the
+  schema types and T1/T2 (the vocabulary all four masters share), the backend crates
+  (`Facade::new` takes a `Box<dyn CameraBackend>`, so constructing one is the caller's job
+  by construction and no facade method could cover it), the engine's pure cores, the facade
+  itself, every engine module a facade *signature* forces on a caller, `imaging`'s pure
+  functions — the metrics among them, since metrics are imaging's and the engine has no
+  such module — and the conformance suite, which is *for* backend consumers. What belongs
+  in the No column: the engine's shell-module internals, the daemon's modules, `cli-core`,
+  `web`, and the test oracles. Which modules those rules land on is answered by the table
+  and by nothing else, because a prose copy of a contract drifts from it silently and this
+  one had — measured, three engine modules and three testkit modules apart, with nothing
+  able to compare them (notes **N270**, **N271**). `facade-stability-table-sync.sh` holds
+  the table to the crates it names in both directions, so every module of every crate it
+  classifies sits in exactly one column, a module added to the engine stops the gate until
+  somebody has decided which, and this sentence is held to naming the table rather than
+  restating it. Versioning honesty: this workspace is 0.x and consumed
   pinned-by-rev; the contract is that the named seams move *deliberately*, a break gets a
   Changes row and a note, and nothing else is promised.
 
@@ -970,8 +982,10 @@ owner ruling; N239). E5 applies to the fake's replay of every section, coupling 
 ### 2.4 The engine
 
 The engine stays deliberately thin around pure cores — pairing planner, settle policy,
-sweep planner, session state machine, metrics — with the imperative shell (actors, store,
-sinks) around them, every shell seam doubled and fault-menu'd (§2.9). v3 adds two pure
+sweep planner, session state machine — with the imperative shell (actors, store,
+sinks) around them, every shell seam doubled and fault-menu'd (§2.9). The metrics are
+`webcam-handler-imaging`'s and not the engine's, which is where §2.5 puts them and what
+the facade's stability table says. v3 adds two pure
 cores and one public composition:
 
 - **The stream-stats accumulator** (D16): pure, integer, bounded; lives beside the one

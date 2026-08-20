@@ -146,11 +146,20 @@ beyond `just ci` (corpus-shaped by design; §3.3 item 11 stays open and says why
 **Lands:** `engine::facade`; the direct CLI's `InProcess` executor rebuilt as
 parse-and-render around facade calls; the stability table in the module doc; the
 `facade-is-the-composition.sh` predicate (the CLI names no engine composition module but
-the facade — population derived from the facade's own exports). **Proves:** the executor's
-only engine reach is the facade (gate, both directions); facade answers byte-identical to
-the pre-move executor on every read verb over the fake (a one-time equivalence criterion,
-then the parity gate owns it transitively); the facade refuses what the composition
-refused (lock held, bad selector) in the same words. **Terminal rungs:** none new.
+the facade — population derived from the facade's own exports); `facade-stability-table-sync.sh`
+(the stability table reconciled against the crates it names, both directions, and against
+D18's own bullet for the one-home claim). **Proves:** the executor crate's only engine
+reach is the facade (gate, both directions, and the ban is on the *class* of reach rather
+than on one spelling of it — a grouped import, a restricted visibility, an `extern crate`,
+a glob and a second file of the same crate are all the same reach); facade
+answers byte-identical to the pre-move executor on every read verb over the fake (a
+one-time equivalence criterion, then the parity gate owns it transitively); the facade
+refuses a bad selector in the words the composition uses; every engine module the facade's
+own surface forces on a caller is in the table's **Yes** column. The store-lock refusal is
+**not** a facade criterion and cannot be one: no `Facade` method touches the session
+store, because D18 excludes the store-locked lifecycles, so that claim lives in
+`cli-parity.sh`, which drives the session-writing verbs against a store a daemon holds and
+counts how many it drove. **Terminal rungs:** none new.
 **Sizing:** one session; the risk is churn in `cli/src/main.rs`, contained by the
 equivalence criterion.
 

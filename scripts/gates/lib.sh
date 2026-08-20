@@ -425,6 +425,32 @@ gate_product_lines() {
     sed -n "1,${last}p" "$file" | sed 's://.*::'
 }
 
+# --------------------------------------------------------------- reading Rust source text
+#
+# **Two predicates read "which paths does this file name" and both were written narrow.** Note
+# **N269** measured the first: a `{` after the colons ended the match attempt, so a grouped
+# import yielded no path and the gate passed with a summary byte-identical to the unseeded
+# tree's. Note **N271** measured the second, written in the same commit as the repair for the
+# first and carrying a fresh copy of the same hole. `rust-imports.awk` beside this file is the
+# one home for the joining and flattening both of them need; this is where a predicate finds it,
+# so a caller writes a path to it in exactly one place.
+gate_rust_imports_awk() {
+    printf '%s/rust-imports.awk\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+}
+
+# Every module `pub mod`-declared by the crate root $1, printed one per line.
+#
+# **Both spellings of a declaration, because a ban names the class** (note **N249**): a file
+# module ends the line with `;` and an inline one opens a block with `{`, and a walk that read
+# only the first would let `pub mod telemetry { … }` join neither column of D18's stability
+# table and neither side of `facade-is-the-composition.sh`'s policy check. The engine declares
+# file modules exclusively today, which is exactly why nothing here had ever caught it.
+gate_pub_mods() {
+    sed 's://.*::' "$1" |
+        grep -oE '^pub mod [a-z_][a-z0-9_]*[[:space:]]*[;{]' |
+        sed 's/^pub mod //; s/[[:space:]]*[;{]$//'
+}
+
 # --------------------------------------------------------------- cargo metadata
 #
 # `cargo metadata` is the authority on the dependency graph: manifests lie by omission
