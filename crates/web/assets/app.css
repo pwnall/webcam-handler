@@ -282,6 +282,43 @@ ul.sessions {
   gap: 0.25rem;
 }
 
+/* **The live picture and the sweep view are the same slot, placed rather than stacked.** Only
+ * one of them is ever on screen — the preview's `<img>` has no `src` while a sweep runs, and
+ * `#sweep-view` is `hidden` when one is not — and placing both in row 1 is what keeps that true
+ * of the *layout* as well: with auto-placement, hiding the picture would promote the caption
+ * into the row the picture had, and the pane would resize under an operator twice per sweep. */
+#preview-frame,
+#sweep-view {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+#preview-status {
+  grid-row: 2;
+}
+
+#recording-status {
+  grid-row: 3;
+}
+
+/* The sweep pane: the freshest sample, and how far along the sweep is. The picture gets the
+ * room and the line gets what it needs, which is the same division the live figure makes —
+ * because it is the same question, asked of a photograph a moment old instead of a frame. */
+.sweep-view {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0.25rem;
+}
+
+/* `hidden` is an attribute the UA styles as `display: none`, and a `display` rule of our own
+ * outranks it — so a pane declared `hidden` in the markup would be on screen from the first
+ * paint, over a preview nobody had suspended. Stated here rather than left to the cascade
+ * because the browser rung goes red on it and a reader should not have to find out that way. */
+.sweep-view[hidden] {
+  display: none;
+}
+
 .pane-preview img {
   display: block;
   max-width: 100%;
@@ -497,8 +534,17 @@ td {
   font-size: 0.85rem;
 }
 
-.flow-start input {
+.flow-start input,
+.flow-start textarea {
   font: inherit;
+}
+
+/* The criteria field is prose the operator writes rather than a value they pick, so it gets the
+ * row to itself and resizes downward only — a textarea that could be dragged wider would push
+ * the control column into a horizontal scroll the shell has no room for. */
+.flow-start textarea {
+  resize: vertical;
+  min-height: 2.5rem;
 }
 
 .flow-buttons {

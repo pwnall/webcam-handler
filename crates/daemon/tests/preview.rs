@@ -281,9 +281,24 @@ impl Preview {
     /// *browser* sends. A serde round trip through the Rust type would assert that this build
     /// agrees with itself.
     async fn call(&self, method: &str, params: &str) -> serde_json::Value {
+        owned_call(
+            self.wchd.clone(),
+            self.camera.clone(),
+            method.to_owned(),
+            params.to_owned(),
+        )
+        .await
+    }
+
+    /// This fixture's camera's control set, as a client reads it.
+    ///
+    /// Its own method rather than a [`Preview::call`] with empty parameters, because
+    /// `wch_controls` takes the camera and nothing else and that helper's template puts a comma
+    /// after it.
+    async fn controls(&self) -> serde_json::Value {
         let methods = daemon::server::mount(self.wchd.clone()).expect("a second reader of T5");
         let request = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"camera":"{camera}",{params}}}}}"#,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"wch_controls","params":{{"camera":"{camera}"}}}}"#,
             camera = self.camera.as_str()
         );
         let (answer, _subscriptions) = methods
@@ -357,6 +372,32 @@ impl Preview {
 /// satisfied by a build in which the *recording* fed it nothing. Two of the mutants in note
 /// **N117** survived exactly that way before this constant existed.
 const A_TAKE_LONGER_THAN_THIS_TEST: u64 = 30_000;
+
+/// [`Preview::call`], holding everything it needs rather than borrowing the fixture.
+///
+/// **Its reason is a claim that needs two calls in flight at once.** `tokio::join!` drives both
+/// of its branches on *one* task, and the daemon's photo handler blocks the worker it is on for
+/// the length of a suspend — so a joined pair is not two clients, it is one client that cannot
+/// send the second request until the first has answered (measured: the second branch got no turn
+/// for 750 ms). A call that owns its arguments can go on a task of its own, which is what two
+/// connections actually are.
+async fn owned_call(
+    wchd: Wchd,
+    camera: CameraId,
+    method: String,
+    params: String,
+) -> serde_json::Value {
+    let methods = daemon::server::mount(wchd).expect("a second reader of T5");
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"camera":"{camera}",{params}}}}}"#,
+        camera = camera.as_str()
+    );
+    let (answer, _subscriptions) = methods
+        .raw_json_request(&request, 1)
+        .await
+        .expect("the surface answered");
+    serde_json::from_str(&answer.to_string()).expect("the T5 surface answers JSON")
+}
 
 /// The settle policy every photo in this file uses unless it is about the deadline.
 ///
@@ -1718,6 +1759,150 @@ async fn a_photo_taken_during_a_preview_suspends_the_stream_and_the_preview_resu
         "one preview, one photo and one resume is three streams — no more and no fewer"
     );
     assert_eq!(preview.wchd.previewed_cameras(), 1);
+}
+
+/// The settle a photo carries here, and the width of the window a write has to arrive inside.
+///
+/// **A property of the request rather than a delay this test takes**, which is the distinction
+/// AGENTS' no-sleep rule turns on: `settle_for` is a policy any caller may send, and the daemon
+/// spends it inside `engine::preview::while_suspended` — between the preview's `STREAMOFF` and
+/// the resume's `STREAMON`. `A_TAKE_LONGER_THAN_THIS_TEST` beside it is the same instrument one
+/// verb over. Nothing below *asserts* this number: the claim is read off the fake's stream
+/// counter, so a machine slow enough to make the window irrelevant makes the arrangement weaker
+/// and never makes the assertion wrong.
+const A_SETTLE_LONGER_THAN_A_WRITE_TAKES: u64 = 750;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_sent_while_a_photo_holds_the_camera_is_queued_rather_than_refused() {
+    // **Design D20's live-tuning sentence, driven**: *a write during a suspend (a photo's pause,
+    // note **N83**) queues on the actor exactly as any command does* — restated by docs/13's P9a
+    // as "a write during a photo-suspend lands after resume (queued, not lost)". Until today
+    // nothing in this workspace asserted any of it. It is true by construction — one actor thread
+    // per camera, one command at a time, and `while_suspended` is the photo's whole body — but
+    // "true by construction" is a reading of the code, and what a reading cannot see is a build
+    // that gives the photo path a claim of its own and answers `Busy` to whatever arrives inside
+    // it. That is exactly what this daemon did to *photos during previews* before the owner's
+    // ruling of 2026-08-12 (N83), and AGENTS rule 7 is the rule such a build breaks: availability
+    // is not capability, and a queued command answered `Busy` converts one into the other.
+    //
+    // **What is asserted is the queue's effect, not its order, and that is a deliberate retreat
+    // from the plan's wording** (note **N274**). "Lands *after resume*" needs a claim to know that
+    // the actor had already begun the photo when the write was sent, and nothing this daemon
+    // publishes says so: `CameraActivity::last_used_ms` moves for the preview's own turns too, so
+    // a watcher on it lets the write in first under load (measured — the write answered with the
+    // fake's stream count still at one, in two runs of eight); and `FakeBackend::streams_started`,
+    // which *would* say it, locks the per-camera state the actor re-takes for every frame of a
+    // settle, so a watcher hammering it is starved for the whole window and reads one, then three.
+    // Both orders are the same claim about the same mechanism, so the claim is written to hold in
+    // either: whichever command the actor takes first, the other is neither refused nor lost, and
+    // neither gets a descriptor or a stream of its own.
+    //
+    // Two connections, because one client sequencing its own calls would be asserting about
+    // itself. `owned_call` mounts the T5 surface per call, so these are two.
+    let preview = Preview::start().await;
+    let mut stream = preview.watching().await;
+    assert!(stream.part().await.is_jpeg());
+    assert_eq!(
+        preview.backend.streams_started(),
+        1,
+        "the preview's own stream, and nothing else has started one yet"
+    );
+
+    // The value to move away from, read off the device rather than assumed: a test that
+    // hard-coded the fixture's 128 would be green about a camera it had stopped describing.
+    let before = brightness_of(&preview.controls().await);
+    let target = if before == 64 { 65 } else { 64 };
+
+    // **The photo goes on a task of its own, and that is not tidiness.** The daemon's handler
+    // blocks the worker it is polled on for the length of a suspend, so a `tokio::join!` of the
+    // two would be one client that cannot send its second request until the first has answered —
+    // measured, and the reason [`owned_call`] exists. Two tasks on two workers is what two
+    // connections are.
+    let taking = tokio::spawn(owned_call(
+        preview.wchd.clone(),
+        preview.camera.clone(),
+        "wch_photo".to_owned(),
+        format!(
+            r#""request":{{"settle":{{"spec":{{"kind":"settle_for","millis":{A_SETTLE_LONGER_THAN_A_WRITE_TAKES}}},"deadline_ms":5000}},"sink":{{"kind":"return_bytes","format":"jpeg"}}}}"#
+        ),
+    ));
+    let report = preview
+        .call(
+            "wch_set",
+            &format!(
+                r#""writes":[{{"control":"brightness","value":{{"kind":"int","value":{target}}}}}],"guarded":false"#
+            ),
+        )
+        .await;
+    let photo = taking.await.expect("the photo's task");
+
+    // **The write is not refused and not lost, and it comes back with both numbers** (D3/E4,
+    // \[PF:6\]). This is the arm a `Busy` composed for a camera that is "in use" goes red on, and
+    // it is the one the design sentence is about.
+    let landed = report["result"]["writes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the write was refused while a photo held the camera: {report}"));
+    assert_eq!(landed.len(), 1, "one write in, one write out: {report}");
+    assert_eq!(
+        landed[0]["requested"],
+        serde_json::json!({ "kind": "int", "value": target })
+    );
+    assert_eq!(
+        landed[0]["applied"],
+        serde_json::json!({ "kind": "int", "value": target }),
+        "the fixture declares brightness 0..255 with step 1, so this write is exact"
+    );
+    // …and the camera holds it, asked afresh: a report is what the daemon said, and this is what
+    // the driver kept. A build that answered the write from beside the actor rather than on it
+    // goes red here.
+    assert_eq!(
+        brightness_of(&preview.controls().await),
+        target,
+        "the write answered and the device did not keep it"
+    );
+
+    // The photo happened too, and the two shared one device rather than racing for it: one
+    // descriptor, one suspension, and three streams — the preview's, the photo's own, and the
+    // resume. A write that opened a handle of its own, or that suspended anything, moves one of
+    // these.
+    let taken = photograph(&photo);
+    assert!(taken.bytes_match_the_delivery());
+    assert_eq!(
+        preview.backend.opens(),
+        1,
+        "the write opened a second handle instead of queueing on the one the actor owns"
+    );
+    assert_eq!(
+        *preview.wchd.watch_preview_interruptions().borrow(),
+        1,
+        "something other than the one photo suspended the preview"
+    );
+    assert_eq!(
+        preview.backend.streams_started(),
+        3,
+        "one preview, one photo and one resume is three streams — no more and no fewer"
+    );
+
+    // The preview came back, which is the other half of the pair: a write landing over a preview
+    // this photo never restarted would be a camera the operator has lost.
+    assert!(stream.part().await.is_jpeg(), "the tab stopped painting");
+}
+
+/// The fixture camera's brightness, out of a `wch_controls` answer.
+///
+/// Read off the document the daemon sent rather than off the profile on disk: what the claim
+/// above is about is what the device holds now, and the profile is what it held when the fake
+/// was loaded.
+fn brightness_of(answer: &serde_json::Value) -> i64 {
+    answer["result"]["controls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a control report: {answer}"))
+        .iter()
+        .find(|desc| desc["slug"] == "brightness")
+        .unwrap_or_else(|| panic!("the fixture declares a brightness control: {answer}"))["current"]
+        ["value"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("brightness is an integer control: {answer}"))
 }
 
 #[tokio::test]

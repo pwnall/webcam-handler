@@ -26152,3 +26152,574 @@ answers, and it was chosen for being available rather than for being sensitive t
 under test. Before an arm compares a subject to a hand-assembled twin, ask which field of the
 comparison the defect would move — if the answer is "none", the comparison is decoration and the
 assertion beside it is a shadow.
+
+## N273 — Two buttons that could not succeed, behind a claim that stopped at the grid
+
+**Date:** 2026-08-20. **Subject:** `crates/web/assets/calibrate-flow.js`'s `apply` and
+`restore`, and the P9c browser claim that drove the flow past them. **Class:** rubric B7's
+sentence at the end of a flow — *a browser behavior verified only through the JSON the page
+consumes is not verified* — plus the reason it survived: the claim that drives a sequence
+stopped one gesture short of the end of it.
+
+**What shipped.** `apply` rendered `applied ${report.applied.length} control(s), ${report
+.skipped.length} left undecided` and `restore` rendered `report.complete ? … :
+${report.restored.length} … ${report.failed.length}`. `wch_calibrate_apply` answers
+`schema::report::WriteReport` — `camera`, `writes`, `disabled_automation` — and
+`wch_calibrate_restore` answers `schema::snapshot::RestoreReport` — `outcomes`, `freed`.
+None of the five fields the page read has ever been on the wire; `is_complete` is a Rust
+method and serializes as nothing, so the ternary always took the else arm and the else arm
+always threw. Measured in the pinned Chromium against a fake daemon: after start and plan, a
+click on Apply put `Cannot read properties of undefined (reading 'length')` into
+`#flow-status` with the `failed` class, and so did Restore. **Both verbs had already
+succeeded** — the wire calls land and `refresh()` runs before the throw — so what an operator
+got was a correct camera and a JavaScript error where the sentence should be.
+
+**Why nothing was red.** `grep -n "flow-apply\|flow-restore" client.spec.mjs` returned
+nothing. The D20 flow claim drove start, plan, sweep, review and the grid click, and stopped
+there; its title — "a session driven from the page records the operator's own choice" — is
+about the selection, and the selection worked. A claim that walks a sequence and ends before
+its last two steps is not a claim about the sequence, and the two steps it left out were the
+two that write to the camera.
+
+**The repair, and the one decision inside it.** Both sentences are rebuilt out of the fields
+the wire really carries. For apply that is `writes.length`, the `disabled_automation` list a
+guarded write is entitled to announce, and both numbers of any write the device did not take
+exactly \[PF:6\]. For restore it is the outcome vocabulary, one phrase per tag, plus the
+controls the device would not put back and the `freed` list N139 added.
+
+**What the page deliberately does not say is the verdict.** "Is the camera back where the
+snapshot found it" is `RestoreReport::is_complete`, and that rule is a policy rather than a
+reading: `OwnedByAutomation` counts as complete because the control's owner is the one that
+owned it before (note **N9**), and a `Restored` that did not land exactly counts as
+incomplete. A copy of that in JavaScript would be a second home for it (design §2.10) and
+would go stale the day N9 is amended — so the page renders what the document says and leaves
+the verdict to the surface that owns it. The alternative considered and declined was
+serialising the verdict onto `RestoreReport`: it is nineteen construction sites, and a stored
+bool beside a computed method is a second copy with a shorter fuse than the one it replaced.
+
+**What goes red.** The P9c flow claim now clicks both buttons and asserts the sentence each
+paints *and* that `#flow-status` does not carry `failed`. Measured on the unrepaired module,
+in the rung: `Expected pattern: /^applied 1 write\(s\)/ · Received string: "Cannot read
+properties of undefined (reading 'length')"`.
+
+**Retires when:** nothing retires it. The general form is the one to carry: a browser claim
+that drives a *flow* ends where the flow ends, and a verb with no gesture behind it in the
+rung is a verb this project has never run.
+
+## N274 — A queue that can be shown to have queued, and an order that cannot
+
+**Date:** 2026-08-20. **Subject:** `crates/daemon/tests/preview.rs`'s
+`a_write_sent_while_a_photo_holds_the_camera_is_queued_rather_than_refused`, and D20's
+sentence *a write during a suspend (a photo's pause, note **N83**) queues on the actor exactly
+as any command does* — restated by docs/13's P9a as "a write during a photo-suspend lands
+after resume (queued, not lost)".
+
+**The gap.** Nothing in the workspace asserted any of it. `crates/daemon/tests/preview.rs`
+carries the whole suspend family and not one of its members issues a `wch_set`; `wch_set`
+appears in `web_client.rs`'s refusal-vocabulary and D3 cases, never concurrent with a photo.
+The behaviour is real by construction — one actor thread per camera, one command at a time,
+`engine::preview::while_suspended` is the photo's whole body — but a construction is a reading
+of the code, and what a reading cannot see is a build that gives the photo path a claim of its
+own and answers `Busy` to whatever arrives inside it. This daemon did exactly that to *photos
+during previews* until the owner's ruling of 2026-08-12 (N83).
+
+**What the claim asserts, and the half it does not.** It asserts the queue's *effect*: a
+`wch_set` sent from a second connection while a photo holds the camera is answered with its
+`{requested, applied}` pair, the device is holding the new value afterwards, the photo still
+answers its own bytes, and the pair cost one descriptor, one suspension and three streams. It
+does **not** assert that the write landed *after the resume*, and the retreat from the plan's
+wording is deliberate rather than an omission.
+
+**Why the ordering half is not asserted — measured, twice.** Asserting "after the resume"
+needs the claim to know that the actor had already begun the photo when the write was sent,
+and nothing this daemon publishes says so.
+
+- `daemon::server::Wchd::activity`'s `last_used_ms` is the clock reading of the last command
+  that needed the device, and it moves for the preview's own turns as well — so a watcher that
+  waits for it to change lets the write in first. Measured: in two runs of eight, the write was
+  answered with the fake's stream count still at one, i.e. before the photo had taken the
+  device at all.
+- `fake::FakeBackend::streams_started` *would* say it — two is "inside the window", three is
+  "the resume has run" — but reading it takes the per-camera lock the actor re-takes for every
+  frame of a settle. A watcher thread hammering an unfair mutex is starved for the whole
+  window: measured, the count read 1 at 1 ms and 3 at 752 ms, and the state the check exists to
+  catch was never visible. Backing the spin off with `spin_loop` hints did not fix it; adding an
+  `eprintln!` between reads did, which is the shape of a check whose green depends on how slow
+  its own loop is.
+
+A third finding fell out of the same session and is worth carrying separately: **`tokio::join!`
+is not two clients.** Both of its branches run on one task, and the daemon's photo handler
+blocks the worker it is polled on for the length of the suspend — so a joined pair cannot send
+its second request until the first has answered. Measured on the single-threaded default: the
+second branch got no turn between 7 ms and 756 ms. The fixture grew `owned_call` for that
+reason, so a claim that needs two connections can put one of them on a task of its own.
+
+**What goes red.** Two seeds, both driven in a scratch checkout. A `Wchd::set` that refuses
+while the device is streaming — the pre-ruling posture — is red at *"the write was refused
+while a photo held the camera"*, quoting the daemon's own `busy` document. A `Wchd::set` that
+answers from the resolve alone, never reaching the actor, is red at *"the write answered and
+the device did not keep it"*, at 128 where 64 was asked for.
+
+**Retires when:** the daemon publishes a per-camera "the actor is inside a command" observable
+— the `busy` flag `engine::actor`'s `Live` already keeps and `CameraActivity` does not carry.
+With that, the ordering half is one `watch` away and this claim should grow it. Until then the
+plan's wording is stronger than anything that can be driven, and docs/13 P9a says so.
+
+## N275 — A route whose only consumer was five string literals
+
+**Date:** 2026-08-20. **Subject:** `crates/web/assets/credential.js`,
+`crates/daemon/src/http/session_photo.rs`, the new
+`the_urls_the_page_builds_are_the_routes_this_daemon_serves` and the new
+`scripts/gates/web-assets-cite-real-rust-items.sh`. **Class:** note **N157**'s, one kind of
+constant over — *a browser cannot `use` a Rust constant, so the numbers are a second copy, and
+a second copy is only as good as the thing that reconciles it*.
+
+**The asymmetry.** D20's `/session-photo` landed with both halves of the route-gating partition
+extended: `web-routes-are-gated.sh` reconciles this crate's route registrations against
+`daemon::http::CAMERA_BEARING_PATHS`, and `every_camera_bearing_route_is_behind_the_gate`
+reconciles that list against a `401` on a socket. Neither has the *page* as a subject. `/rpc`
+and `/preview` have consumer proof incidentally — a drifted `RPC_PATH` fails every browser
+claim that opens the page's socket, and a drifted `PREVIEW_PATH` or camera parameter fails the
+claim that reads `naturalWidth` off a painted frame — and `/session-photo` had neither. Its
+only consumer built its URL out of one named constant and four bare inline literals, and every
+Rust test that touches the route builds its own URLs from `daemon::http`'s constants, so a
+renamed parameter moves both sides of every Rust assertion at once and leaves the shipped grid
+serving three broken images.
+
+**The drift that had already happened.** `credential.js`'s doc comment named
+`daemon::http::samples::SESSION_PHOTO_PATH`. There is no `samples` module and there never has
+been; `daemon::http` declares `gate, listener, posture, preview, provenance, rpc,
+session_photo, token`. The spelling of the route was right, so nothing was broken — but the
+sentence written to justify the copy had drifted before the copy did, which is what an
+unreconciled second copy looks like on the way to being wrong. The same paragraph counted the
+camera-bearing routes as "the two" in four places while the list had held three since D20,
+which AGENTS/N153 says is not a claim to make.
+
+**Three checks, three subjects, and none of them the same one twice.**
+`the_urls_the_page_builds_are_the_routes_this_daemon_serves` (in the daemon's web-client suite,
+beside the `limits` reconciler it is modelled on) compares the page's nine declared wire names
+with `daemon::http`'s own constants, both directions, and holds the routes the page builds and
+the routes on `CAMERA_BEARING_PATHS` to being the same *set* — so a camera-bearing route the
+page cannot reach and a page URL nobody gated are each a failure with its own sentence. It
+reads `web::get`, not the file on disk, so a source tree edited without a rebuild cannot make
+it pass. `web-assets-cite-real-rust-items.sh` resolves the Rust paths the client's prose cites,
+which is the `samples` defect's own class and runs on a host with no toolchain. And the P9c
+browser claims assert that the grid's photographs decode and that the same reference without a
+token decodes nothing, which is the half no text comparison can reach: `passOf(sample)` and
+`sample.requested` are derived numbers whose drift is a 404.
+
+**What goes red.** Measured in a scratch checkout with `PASS_PARAM` renamed to `"sweep_pass"`:
+the Rust reconciler is red at *"assets/credential.js does not declare `const PASS_PARAM =
+\"pass\";` exactly once; `daemon::http` says `pass`"*; the flow claim's `[true, true, true]` is
+red at three undecoded images; and the sweep-pane claim is red on the URL it observed. With
+`daemon::http::session_photo` written as `daemon::http::samples`, the gate is red at *"declares
+no `samples` — nor is it a module of it"*.
+
+**Retires when:** nothing retires it. The general form is the rule this client already followed
+and had one exception to: every wire name in `credential.js` is a named constant on one line
+with the Rust home in its doc comment, because that shape is what the two reconcilers read.
+
+## N276 — A plan row that named a refusal the page cannot reach
+
+**Date:** 2026-08-20. **Subject:** docs/13's P9c "Proves" row, and
+`client.spec.mjs`'s "an out-of-order click is the daemon's refusal, rendered, and the flow
+carries on". **Class:** a criterion stated about a behaviour nothing can produce, which is a
+criterion that cannot be failed.
+
+**What the row said and what the claim drove.** P9c asks for "an `IllegalTransition` from an
+out-of-order click renders its instruction-last sentence and the flow recovers". The claim
+drives a duplicate `wch_calibrate_start` on the same task, which is `SessionConflict` — a
+different D13 kind (`schema::error`'s registry declares both). Nothing in the spec mentions
+`illegal_transition` at all.
+
+**Where I looked for a gesture that produces one.** `IllegalTransition` is reachable on the
+wire — `calibrate select` against an untouched control answers `untouched: cannot select
+contrast`, and against a value no sample was taken at answers `no_sample_applied(999): cannot
+select brightness`, both driven against a fake daemon. Neither is reachable *from this page*:
+the grid only offers samples that exist, so a selection always names a swept control at a value
+it was sampled at; `nextControl` skips a control that already has samples, so "Sweep next" never
+re-sweeps; `Apply` always sends `partial: true`, which the daemon accepts (driven: a session
+with a swept-but-unselected control answered `{"writes":[]}`, exit 0); and `paint` disables the
+verbs whose precondition the page can see. The one shape that would reach it is a queued control
+the daemon refuses to sweep — a motorized one, which is what `flow.refused` exists for — and no
+committed profile the browser rung serves has motors.
+
+**The decision.** The plan row is amended to name `session_conflict`, the refusal the page's own
+buttons produce, rather than the claim being written against a gesture nobody can make. **And
+the message is asserted, not the discriminant**: the arm checked `toContainText
+("session_conflict")` and nothing else, so a build that dropped the D13 message body and printed
+the kind alone stayed green — measured, by seeding exactly that. It now matches the whole line
+and asserts that the instruction is last, which is D13's rendering rule (note **N212**).
+
+The line reads `session_conflict: session conflict: session <id> is still open …`, and the
+doubling is the variant's rather than the page's: `SessionConflict`'s `Display` opens with the
+words its discriminant is spelled in, and `run()` shows the kind beside the message because the
+kind is what a reader branches on. Asserted as it really reads, because an arm written against a
+tidied version of a sentence is an arm about a sentence nobody ships.
+
+**Amended 2026-08-20, the same day, and the amendment is the interesting half.** The paragraph
+above looked at four gestures and missed the fifth: **a double-click**. `nextControl` skips a
+control that already has samples, and *during* a sweep the control does not yet have any — so
+until the sweep was made non-re-entrant, the second half of an ordinary `page.dblclick
+("#flow-sweep")` was handed the same slug and answered `illegal_transition: sweeping: cannot
+sweep brightness`, driven against `corpus/profiles/chicony-rgb.json`, the profile this rung
+already serves (note **N279**). A plan criterion was relaxed on the strength of an absence claim
+that was false.
+
+The claim now rests on the **synchronous guard at the top of `sweep()`** rather than on
+`nextControl` alone: `flow.sweeping` is set and `paint` runs before the first `await`, so the
+button is disabled before a second click can be dispatched. That is the sentence that would make
+this note false again, and `a double-click on Sweep next is one sweep, and the page says so once`
+is the arm that goes red on it. The other three reasons are unchanged and were re-checked.
+
+**Retires when:** the rung serves a profile with a motorized control, at which point "Sweep
+next" reaches `illegal_transition` with `motion(allow_motion=false)` and P9c's original wording
+becomes drivable. Whoever adds that fixture should restore the row and drive both.
+
+## N277 — A pane described in the present tense that no line of code built
+
+**Date:** 2026-08-20. **Subject:** D20's sweep-time pane, `crates/web/assets/calibrate-flow.js`,
+`index.html`, and docs/13's P9c ledger row. **Class:** a licensed split that nobody wrote down,
+and prose that went on describing the whole of what was planned.
+
+**What was missing.** D20 says that during a sweep "the preview pane *becomes the sweep*:
+progress from the subscription, and the freshest sample rendered through `/session-photo` as
+each lands, so the operator watches what the camera saw at each step". P9c's "Lands" names it —
+"the sweep-time pane swap (progress + freshest sample through `/session-photo`)" — and P9c's
+sizing licenses the split: "one to two sessions — split between flow and sweep-view if the first
+session says so". The flow landed at `a907975`; the sweep view did not. `grep subscribe
+calibrate-flow.js` was empty, the sweep was one awaited RPC behind a static status line, and the
+samples appeared only in the grid afterwards.
+
+**What made it a finding rather than a plan.** Three sentences in the tree described the pane in
+the present tense. `calibrate-flow.js`'s header: "during the sweep the preview pane *becomes*
+the sweep: progress from the subscription, and the freshest sample rendered through
+`/session-photo` as each one lands." `index.html`, over the photo slot: "calibration.js takes
+the slot over while a sweep is running and gives it back when the sweep ends" — a module that
+does no such thing, named wrongly on top of it. And the ledger row for P9c recorded the flow
+landing and recorded no deferral, so the plan and the tree agreed about a thing that was not
+there. A split the plan licenses is not a defect; a split nobody records is, because the next
+session reads the prose.
+
+**What landed now.** `#sweep-view` in the preview pane, taking the slot when the preview stands
+down and giving it back on every ending a sweep has, refusals included; a `progress` handler in
+`calibrate-flow.js` fanned in from the **one** `wch_subscribe_calibration` this page opens —
+the stream is per client, so a second registration would spend a slot from
+`limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` to receive the events the log is already
+receiving — filtered to the session this page is driving, because a sweep somebody else started
+is a line in the log beside and never a picture in this operator's pane.
+
+**One CSS finding worth its line.** `hidden` is an attribute a browser styles as `display:
+none`, and any `display` rule of our own outranks it. `.sweep-view { display: grid }` therefore
+put the pane on screen from the first paint, over a preview nobody had suspended. The browser
+rung caught it — `Expected: hidden · unexpected value "visible"` — and the repair is
+`.sweep-view[hidden] { display: none }`, stated rather than left to the cascade.
+
+**What goes red, and how the claim is written.** A sweep of three samples against the fake is
+over in under a second, so a claim that looked at the pane *while* it ran would assert whichever
+instant Playwright polled and would pass on a pane that painted once at the end. The claim
+records the pane's whole history from the page — every `src`, every progress line, every
+`hidden` transition — and asserts the sequence afterwards. Measured on a build where the
+subscription's fan-out is dropped: red at *"the progress line never reached 3/3"*.
+
+**Retires when:** nothing retires it. The rule to carry is the ledger's: when a sub-milestone's
+sizing licenses a split and the split is taken, the ledger row says which half landed, in the
+commit that lands it.
+
+## N278 — A pane released on the answer, when the sweep's ending is a different frame
+
+**Date:** 2026-08-20. **Subject:** `crates/web/assets/calibrate-flow.js`'s sweep pane, and
+`client.spec.mjs`'s "the sweep-time pane becomes the sweep and paints each sample as its event
+lands". **Class:** a consumer that treated a call's answer as the end of the thing the call
+started, over a duplex connection where the two are separate frames with no ordering between
+them.
+
+**The mechanism, which is already case law.** `engine::calibrate` emits `SweepFinished` or
+`SweepInterrupted` and *then* returns; the daemon sends the event through the events fanout, a
+per-subscription task and the socket, and sends the answer from the method handler. Two tasks,
+one socket, no sequencing. **N69** recorded a helper "carrying all seven of the sweep's events
+except the terminal one" and **N87** wrote the rule down: "on a duplex connection an answer and a
+notification are in flight together, so a helper that dropped whichever lost the race would make
+a delivered event look like an undelivered one." The pane landed as exactly that helper —
+`progress()` refused to paint unless `flow.sweeping` was true, and `flow.sweeping` was retired in
+the `finally` of the answer, which also blanked the pane.
+
+**Measured, on the shipped tree and with no mutation.** The adversarial reader saw the rung's own
+sweep-pane claim red 1 run in 11 unloaded and 1 in 4 with six busy loops pinned to the CPU. This
+session's first clean run of `./scripts/rung-web.sh` was red on the first attempt, at
+`client.spec.mjs`'s
+`expect(swept.progress.at(-1)).toMatch(/^[a-z_]+: 3 sample\(s\) taken$/)`, receiving
+`brightness: 3/3 at 254 · sharpness 68342.733 …`. The last sample line was the last line the pane
+ever held.
+
+**The ordering forced, so the claim is not a coin flip either way.** Deferring the fan-in one turn
+of the event loop — `setTimeout(() => alsoTell(event), 0)` in `calibration.js` — removes no
+behaviour and produces an ordering the daemon is entitled to produce. Over that seed the repaired
+page is green four runs out of four and the unrepaired one is red every time, with output
+byte-identical to the load-induced failures.
+
+**What the pane owns itself with now.** `flow.pane` — a record that outlives the answer, carrying
+the session it filters on and **a count of the endings it is still owed**. `SweepStarted` adds
+one; each terminal event takes one away; the hand-back waits while the count is above zero, with
+`SWEEP_ENDING_WAIT_MS` as a bound so a socket that dies between the two cannot strand the pane
+over a live preview (docs/11 **H2** — a state a failure strands with no verb out).
+
+**A count and not a flag, and this is the half a first repair got wrong.** One click can announce
+several sweeps: `sweepOnceThePreviewIsGone` retries `wch_calibrate_sweep` while this daemon is
+still streaming the node, and every attempt that reaches the device announces itself and is
+interrupted. A flag set by the first attempt's ending told the last attempt that its own ending
+had already arrived, so the last attempt's `SweepFinished` was dropped exactly as before —
+measured: with a boolean the seeded rung was red 2 runs in 3; with the count it is green 4 in 4.
+
+**One process finding, recorded because it cost a false lead and will happen again.** Before that
+first run, `webcam-handler-daemon`'s browser-rung binary in `target/` had been built from a
+*different tree*: a reviewing session had copied the workspace to `~/.cache/wch-review/tree` and
+run it with `CARGO_TARGET_DIR` pointed back at this one. The stale artifact's baked
+`CARGO_MANIFEST_DIR` made the rung panic with "the suite's package.json is committed beside it:
+NotFound", and the same contamination is the likeliest explanation for the one unreproducible
+`the_urls_the_page_builds_are_the_routes_this_daemon_serves` failure the reader recorded: that
+test asserts about the bytes `rust-embed` baked, and the bytes in the shared target directory
+were another tree's assets. `debug-embed` does register every file under `crates/web/assets/` as
+a rebuild input — driven here, by editing an asset and watching `cargo nextest` rebuild
+`webcam-handler-web` and `webcam-handler-daemon` before the rung ran — so there is no staleness
+defect to fix. **A scratch copy of this tree must use its own target directory**, or every
+measurement taken in the original afterwards is about somebody else's build.
+
+**Retires when:** nothing retires it. The rule to carry is N87's, restated for a consumer: a
+verb's answer says the daemon is done, and a stream's terminal event says the stream is done, and
+a surface that shows the stream ends on the stream.
+
+## N279 — One gesture, two sweeps, and a sentence wearing the other one's colour
+
+**Date:** 2026-08-20. **Subject:** `crates/web/assets/calibrate-flow.js`'s `sweep` and `run`.
+**Class:** an async verb whose guard was installed after its first `await`, and a status line
+whose text and colour were written by two different statements.
+
+**The gesture.** `page.dblclick("#flow-sweep")` against the fake daemon. `sweep()` disabled the
+button in `paint()`, which ran four lines *after* `rangeOf()`'s round trip — so the second half of
+an ordinary double-click found the button still enabled and ran a second `sweep()` for the same
+control. `nextControl()` handed it the same slug, because during a sweep the control does not yet
+have samples.
+
+**Three wrong statements out of one click**, recorded by a `MutationObserver` on `#flow-status`:
+the loser was answered `illegal_transition: sweeping: cannot sweep brightness`; the loser's
+`catch` filed a **successfully swept** control in `flow.refused`, so sweeping that session to
+exhaustion later told the operator to go to the command line about a control with two samples on
+disk; and the final DOM was `class="status failed"` with the text
+`brightness swept — pick the sample that looks right` — the success sentence in the refusal
+colour, `rgb(180, 83, 9)`, until the next click, because only entry to `run()` cleared the class.
+
+**The two repairs, which are two rules.** `sweep()` sets `flow.sweeping` and paints **before its
+first await**, so the verb the page knows is in flight is disabled before the second click can be
+dispatched; and `run()` **owns the whole line** — a step answers with its sentence and `run`
+writes the words and the class in the same statement, so a refusal that landed between two
+overlapping verbs cannot leave its colour over a later sentence. The second half is not made
+redundant by the first: two sample clicks in the grid are an ordinary overlap and always were.
+
+**What goes red.** Removing the synchronous guard reddens
+`a double-click on Sweep next is one sweep, and the page says so once` at its wait for
+`/ swept — pick the sample that looks right$/`, receiving
+`illegal_transition: sweeping: cannot sweep brightness`; the claim then counts the
+`sweeping <control> in N step(s)…` sentences and asserts no line was ever painted `failed`.
+
+**It also falsifies an absence claim.** **N276** listed "`nextControl` skips a control that
+already has samples, so 'Sweep next' never re-sweeps" among four reasons `IllegalTransition` is
+unreachable from this page. The reasoning looked at four gestures and not at the fifth, and a plan
+criterion was relaxed on the strength of it. N276 is amended: the claim now rests on this guard,
+and the guard is named as the sentence that would make it false again.
+
+**Retires when:** nothing retires it. The rule to carry: a guard that is installed after an
+`await` is not a guard against a second click, and a colour and its words are one statement.
+
+## N280 — A fence over the read, with the assignment in front of it
+
+**Date:** 2026-08-20. **Subject:** `calibrate-flow.js`'s `start`, and the `reads` fence the same
+batch added for docs/11 **M32**'s fourth element. **Class:** a staleness fence installed at the
+second of two writes.
+
+**What the fence covered and what it did not.** `watching()` nulls `flow.session` on every camera
+switch because *a session does not follow a camera*, and bumps `reads` so an answer already on the
+wire can be told it is stale. `refresh()` compared the number before assigning `flow.status`.
+`start()` assigned `flow.session` straight out of the `wch_calibrate_start` answer, with nothing
+in front of it — so a start answer that landed after a camera switch put the previous camera's
+session back, and the fence one line down then dropped only the *read* about it.
+
+**Driven.** Both gestures dispatched in one task —
+`document.getElementById("flow-start").click(); document.querySelectorAll("#camera-list button")[2].click();`
+— left the OBSBOT camera selected and previewing while `#flow` wore the Chicony session's id, and
+every verb from then on was refused `fingerprint_mismatch: camera fingerprint differs from the
+session's in: bus_path, usb_id, card`. The daemon protects the hardware; what was wrong was the
+page's belief about which session it was driving, and the batch's own fence could not see it.
+
+**The repair, and the claim's shape.** `start()` takes the read number before its await and
+installs nothing if it is no longer current. The claim holds the `wch_calibrate_start` **answer**
+on the wire rather than racing it, because `toHaveAttribute` retries until it matches: an
+assertion made while the answer is still in flight is satisfied by the instant after the switch
+and says nothing about the instant after the arrival. Removing the fence reddens it at
+`expect(page.locator("#flow")).toHaveAttribute("data-session", "")`, receiving the session id.
+
+**Retires when:** nothing retires it. The rule to carry: fence the assignment, not only the read
+— every write a late answer makes is a write the fence has to be in front of.
+
+## N281 — A refusal that emptied the grid the operator was reviewing
+
+**Date:** 2026-08-20. **Subject:** `calibrate-flow.js`'s `sweep` and `grid`. **Class:** state
+moved in anticipation of a call and left there when the call was refused.
+
+**What happened.** `sweep()` set `flow.reviewing` to the control it was *about to* sweep, before
+the request went out. `grid()` paints whatever `flow.reviewing` names. On a refusal the assignment
+survived and the refusal path repainted nothing, so the drift was invisible until the next verb
+— and then the grid found a control with no samples and emptied itself. Driven twice against the
+fake: sweep `brightness` (three samples, sample 1 `aria-pressed="true"`), hold the camera from a
+second tab so the next "Sweep next" is refused `busy`, then click Apply: `applied 1 write(s)`,
+and **the grid count after Apply is 0**. Choosing by eye instead of applying gives the same:
+`brightness = 127, chosen by eye`, grid 0, captions `[]`.
+
+**Why it is worth a note rather than a line.** This is the one surface D20 exists to give the
+human selector, and what vanished was the photographs *and* the `aria-pressed` record of the
+operator's own choice, with no sentence saying why, at the moment the choice was confirmed.
+
+**The repair.** `flow.reviewing` moves after the sweep has produced samples and not before; the
+control the live pane filters on is the pane's own record instead. The claim sweeps, selects,
+provokes a refusal on the wire, runs Apply, and asserts three samples and the pressed sample still
+pressed; moving the assignment back reddens it at `expect(samples).toHaveCount(3)` with 0.
+
+**Retires when:** nothing retires it.
+
+## N282 — A wait that named a holder it had no way to know
+
+**Date:** 2026-08-20. **Subject:** `calibrate-flow.js`'s `sweepOnceThePreviewIsGone`. **Class:**
+a sentence that says more than its predicate proves.
+
+**The predicate and the sentence.** The page ends its own preview before `calibrate_sweep`, and
+the daemon retires a feed when the socket closes — so for a few milliseconds the sweep is refused
+`Busy` with an `Occupation` of `streaming`, and the page retries. The retry is right and the
+sentence was not: it read "waiting for this page's own preview to let the camera go…", while
+`this_process` is *this daemon*, not this page. Driven with two tabs on one fake daemon — tab 2
+previewing, tab 1 clicking "Sweep next" — the page held that sentence for the whole two-second
+retry window about a camera a different tab was holding.
+
+**The second half of the same view.** Beside it the pane read
+`brightness: stopped after 0/3 — busy: /dev/video0 is busy: this process is already streaming it`.
+That is truthful about an attempt: a sweep that reaches the device and meets `EBUSY` there has
+already emitted `SweepStarted` and is then interrupted. But it is a statement about an attempt
+that has been superseded, under a line saying the page is still waiting — two statements about one
+moment, one of them false.
+
+**The repair.** The wait says what its predicate proves — "this daemon is still streaming the
+camera; waiting for the stream to end…" — and each retry resets the pane's line to
+`<control>: waiting for the camera…`. The count of endings the pane is owed is deliberately *not*
+reset, because each attempt announces itself and is ended and the count is what keeps one
+attempt's ending from answering for another's (note **N278**).
+
+**Retires when:** nothing retires it. What is *not* repaired here and is worth the next session's
+eye: a twenty-attempt retry loop makes up to twenty `SweepStarted`/`SweepInterrupted` pairs, which
+every subscriber's log carries.
+
+## N283 — Two guards the code argues for at length, and nothing that could go red on either
+
+**Date:** 2026-08-20. **Subject:** `calibrate-flow.js`'s `progress` filter and `refresh`'s
+refusal fence, and `client.spec.mjs`'s `interposed`. **Class:** rule 2's red-on-inverse missing
+from exactly the lines the prose says are load-bearing.
+
+**Measured.** Both guards replaced with dead ones in a scratch copy, `node --check` clean:
+`progress`'s whole guard as `if (false)` and `refresh`'s `catch` fence deleted. The rung ran
+**30 claims, 310 assertions, green**. The first is the entire safety argument of the
+one-subscription fan-in — two module headers state it twice, "a sweep somebody else started is a
+line in the log beside, never a picture in this operator's pane" — and the second's own comment
+says "**the refusal arm is fenced too, and it is the louder half**".
+
+**What the arms needed, and what `interposed` grew.** Both are arrivals a healthy daemon will not
+arrange, so the wire is where they are arranged, which is what that proxy is for. It gained two
+things. `notices()` and `tell(frame)`: a claim takes a **real** subscription frame this daemon
+sent, rewrites the one field the consumer filters on, and sends it back — so what is arranged is a
+different session's event rather than a shape a test invented. And `refuse` now passes its
+refusal through the same `holding` question the daemon's own answers pass, because a *late
+refusal* and a late answer are two different arrivals and only one of them was reachable.
+
+**The two claims.** The fan-in's: with this page's own pane up (its sweep answer held), a frame
+carrying another session's `sweep_started` reaches the log below the session listing and does not
+touch the pane — red at `not_this_operators_control: 0/3` with the session comparison dropped. The
+fence's: a held `wch_calibrate_status` refusal released after a camera switch changes nothing on
+screen — red at `not.toHaveClass(/failed/)` receiving `status failed` with the fence removed.
+
+**Retires when:** nothing retires it. The rule to carry is the one the batch's own prose invites:
+a comment that argues for a guard is a claim that something can go red on it.
+
+## N284 — A ban on one spelling of a citation, and the other spelling in the same comment
+
+**Date:** 2026-08-20. **Subject:** `scripts/gates/web-assets-cite-real-rust-items.sh`,
+`crates/web/assets/credential.js`, `crates/web/src/lib.rs`. **Class:** AGENTS' "a ban on a defect
+names the class, not one spelling of it" (**N249**), going the wrong way — and a *derived*
+population with two silent exclusions in it.
+
+**The instance.** **N275** landed a predicate over "a citation that resolves to nothing", built
+for the shape the measured defect took: `` `daemon::http::samples` ``, a Rust path naming a module
+that has never existed. The same commit shipped the other spelling of the same class beside it.
+`credential.js` and `crates/web/src/lib.rs` both told a reader that
+`scripts/gates/web-client-urls-sync.sh` "makes the same comparison over the source on a host with
+no toolchain". `ls scripts/gates/*urls*` answers nothing; the predicate that landed is
+`web-assets-cite-real-rust-items.sh`, which is what N275 itself names. The paragraph carrying the
+dangling name is the one arguing "**Something does reconcile it**, which is what makes the
+paragraph above a claim rather than an intention".
+
+**Two silent exclusions, in a population the header calls derived.** The walk was
+`gate_find "$assets" -name '*.js'`, which reads ten of the twelve shipped assets — `index.html`
+carries `` `schema::session::Session::criteria` ``, added by the same batch, and was never read.
+And the citation pattern anchored on a lowercase first segment, so twenty-two citations whose head
+is a type name — `Applied::is_exact`, `RestoreReport::is_complete`,
+`WriteReport::disabled_automation`, three of them written by that batch next to the bug it was
+fixing — were dropped out of the population **and** out of the count of what was skipped. The
+note printed "8 crate-less shorthand path(s)"; the honest figure over the widened walk is 35.
+Neither exclusion was hiding a broken citation — all twenty-three resolve — so this is coverage
+the header claimed and did not have, which is note **N10**'s family.
+
+**The repair.** The population is every shipped asset rather than every `.js`; the first segment
+is any identifier and a type-shaped head is counted in the same named shorthand bucket as
+`limits::…`; and a **second rule** resolves backticked repository paths — `` `…/….sh` ``,
+`` `…/….rs` `` — against the filesystem, over the assets *and* `crates/web/src`, which is where
+the second half of the instance was. Five arms in the case file, both directions: a page's
+citation that resolves to nothing, a repository path that resolves to nothing in each of the two
+places, and the two empty populations.
+
+**Retires when:** nothing retires it. The rule to carry: when a predicate is written for a defect
+class, the first thing to ask is which other spellings of that class it cannot see — and the
+second is which files its "derived" population quietly does not read.
+
+## N285 — A camera that was busy for two seconds, remembered as a camera that cannot
+
+**Date:** 2026-08-20. **Subject:** `calibrate-flow.js`'s `flow.refused`. **Class:** AGENTS rule 7
+— availability converted into capability — at a button.
+
+**What the set is for and what it was doing.** "Sweep next" walks the session's queue, and a
+control the daemon refuses to sweep would otherwise be handed to the operator forever; `§5` says a
+plan that would move motors says so first, this page sends no `allow_motion`, and so a motorized
+control wedges the flow at the thirteenth entry. `flow.refused` exists for that. It interned
+**every** refusal, whatever its kind, and `nextControl()` then skips the control for the life of
+the camera selection.
+
+**Driven.** Two tabs on one fake daemon: tab 2 previewing while tab 1 clicked "Sweep next" on
+`contrast`, which was refused `busy: /dev/video0 is busy: this process is already streaming it, and
+a node takes one stream — ask again once that one ends`. Tab 2 closed, the camera free: the next
+two clicks went straight to `saturation` and then `hue`. `contrast` was never offered again. The
+terminal sentence then read "every control this page can sweep has been swept; brightness,
+auto_exposure was refused and is still queued — the command-line surface can sweep it, and a
+motorized one needs `--allow-motion`", where one had been refused by a two-second `EBUSY` and the
+other by `device_io: VIDIOC_S_EXT_CTRLS (auto_exposure) failed (errno 22)`. Neither is a motor and
+neither is an incapacity; the only escape was switching cameras and back, which also drops the
+session and is undiscoverable. `rpc.js`'s own header states the rule this breaks: "`busy`,
+`device_gone` and `permission_denied` are three different facts about a machine and none of them
+means 'this camera cannot'".
+
+**The repair.** Only `illegal_transition` is remembered — the one refusal that is a statement
+about the *control* rather than about the machine at a moment. The terminal sentence names what
+the daemon would not sweep, and agrees with itself about number.
+
+**What goes red, both directions.** The claim reads which control each click chose off the page's
+own `sweeping <control> in N step(s)…` line, because that is the only place `nextControl()`'s
+choice is visible. Interning every kind reddens it at the wait after the busy refusal is
+withdrawn; interning nothing reddens it at the wait after the `illegal_transition` one, where the
+page offers the refused control again and the fake answers
+`device_io: VIDIOC_S_EXT_CTRLS (auto_exposure) failed (errno 22)`.
+
+**Retires when:** nothing retires it.

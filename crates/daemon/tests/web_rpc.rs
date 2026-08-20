@@ -4,7 +4,7 @@
 //! `http.rs` is this suite's neighbour and they divide the transport between them.
 //! That file's subject is the **credential, the matrix and the split** — which requests need
 //! the token at all since the owner's 2026-08-12 ruling, 401-without and past-the-gate-with on
-//! the two camera-bearing routes, the client's own files served to a request presenting
+//! the camera-bearing routes, the client's own files served to a request presenting
 //! nothing, and one test per D11 cell — and it hands the listener a surface with no methods on
 //! it, because none of its claims would be made truer by one. This file's subject is **what the listener carries**,
 //! so it needs a real daemon, and it gets the one every other suite in this crate uses

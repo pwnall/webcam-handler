@@ -69,5 +69,6 @@ token-comparison-has-one-home
 uapi-constants-are-declared
 uds-permissions
 unsafe-scope
+web-assets-cite-real-rust-items
 web-routes-are-gated
 wire-surface-sync

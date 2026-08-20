@@ -153,6 +153,13 @@ const nodes = {
   flowRestore: byId("flow-restore"),
   flowStatus: byId("flow-status"),
   flowGrid: byId("flow-grid"),
+  flowCriteria: byId("flow-criteria"),
+  // The pane the sweep borrows (D20). It lives in the *preview* section rather than beside the
+  // flow's buttons because that is the whole of the requirement: during a sweep the preview pane
+  // becomes the sweep, in the slot the operator is already looking at.
+  sweepView: byId("sweep-view"),
+  sweepSample: byId("sweep-sample"),
+  sweepProgress: byId("sweep-progress"),
 };
 
 /// The flow's node table in the shape `calibrate-flow.js` names them.
@@ -168,6 +175,10 @@ const flowNodes = () => ({
   restore: nodes.flowRestore,
   status: nodes.flowStatus,
   grid: nodes.flowGrid,
+  criteria: nodes.flowCriteria,
+  view: nodes.sweepView,
+  sample: nodes.sweepSample,
+  progress: nodes.sweepProgress,
 });
 
 main();
@@ -208,10 +219,20 @@ async function main() {
   state.socketOpen = true;
   say(nodes.connection, "connected");
 
-  await calibration.watchSweeps(state.rpc, {
-    status: nodes.sweepStatus,
-    log: nodes.sweeps,
-  });
+  // **One subscription, two consumers.** `wch_subscribe_calibration` is per client and takes no
+  // parameters (`crates/api`'s `WchEvents`), so opening a second one for the flow's pane would
+  // spend a slot from `limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` to receive events this one
+  // is already receiving. The log below every session gets every event; the flow's pane filters
+  // to the session this page is driving, which is a decision that belongs where the filtering
+  // criterion lives (calibrate-flow.js's `progress`).
+  await calibration.watchSweeps(
+    state.rpc,
+    {
+      status: nodes.sweepStatus,
+      log: nodes.sweeps,
+    },
+    (event) => flow.progress(event, flowNodes()),
+  );
   // The flow borrows the preview for the length of a sweep — a sweep is minutes of exclusive
   // capture and whichever streaming operation asks second meets `Busy` (note N83, E16), so
   // the page stands its own preview down rather than racing itself. The two functions it is

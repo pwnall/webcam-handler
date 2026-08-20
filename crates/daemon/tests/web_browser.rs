@@ -194,9 +194,32 @@ struct Floor {
 /// the page's belief about a session is exactly what must not be the evidence — and the arm that
 /// holds an out-of-order click to being the daemon's refusal rendered rather than a button the
 /// page greyed out on a guess.
+///
+/// Raised twice more when P9c's deferred half landed, and once for what the flow's own claim had
+/// stopped short of. **The sweep-time pane** — D20's "the preview pane becomes the sweep" — was
+/// split off when the flow landed and the deferral was never written down, so the module's header
+/// described a pane in the present tense that no line of code built (note **N277**). **The stale
+/// answer** is docs/11 M32's fourth element, measured in this browser before its fence existed
+/// (notes **N154**, **N156**). And the flow's claim had never clicked Apply or Restore, both of
+/// which rendered fields no version of the wire has carried and threw a `TypeError` where the
+/// sentence should be (note **N273**) — so the claim now ends where an operator's session does,
+/// and the assertions it gained are what a floor left behind its manifest would let be deleted
+/// in silence.
+///
+/// Raised six more by the adversarial reading of that batch, and every one of the six is a
+/// gesture or an arrival the flow had no arm for. **A double-click** on "Sweep next" ran two
+/// sweeps for one control and filed the swept one as refused (note **N279**). **A `Busy`** was
+/// interned as though it were an incapacity, which is AGENTS rule 7 converted at a button
+/// (**N285**). **A refusal between a selection and the next verb** emptied the sample grid the
+/// human selector was judging in (**N281**). **A start answer that lands after a camera switch**
+/// reinstated the previous camera's session, because the batch's fence covered the read and not
+/// the assignment in front of it (**N280**). And two guards the batch argued for at length could
+/// be deleted with the rung staying green — the one-subscription fan-in's session filter and
+/// `refresh`'s refusal fence — which is rule 2's red-on-inverse missing from the two places the
+/// code says are load-bearing (**N283**).
 const FLOOR: Floor = Floor {
-    claims: 28,
-    assertions: 259,
+    claims: 37,
+    assertions: 387,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.

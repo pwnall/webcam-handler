@@ -63,7 +63,7 @@ trusted), the panic/indexing set present at every shipped root and **walked by
 crate that reads kernel-shaped integers, `disallowed-methods` carrying the PF:1 ban and
 the workspace-wide sleep ban (N3).
 
-### The predicate register — one claim per predicate, 41 predicates
+### The predicate register — one claim per predicate, 42 predicates
 
 The count is the check: `run-all.sh` prints the same number every run, and `selftest.sh`
 fails on a predicate with no case file. Full rationale: each script's header.
@@ -109,6 +109,7 @@ fails on a predicate with no case file. Full rationale: each script's header.
 | `uapi-constants-are-declared.sh` | every kernel name asked of bindgen exists in this host's headers, or the decline names the package |
 | `uds-permissions.sh` | the socket directory is private, and a daemon handed anything else refuses |
 | `unsafe-scope.sh` | `unsafe` lives in one module; every other root forbids; the residual register reconciles both ways |
+| `web-assets-cite-real-rust-items.sh` | every Rust item path and every repository path the shipped web client's prose cites resolves, in the assets and in the crate that serves them — a citation that names nothing sends a reader nowhere about the second copy it stands beside |
 | `web-routes-are-gated.sh` | every camera-bearing route is named on the list and the list is behind the gate; only the asset fallback is open |
 | `wire-surface-sync.sh` | the `wire_surface!` macro and D10's sentence reconcile, member by member, both directions |
 
@@ -167,7 +168,9 @@ authoritative; this table is the commissioning record).
 | ~~**`luma-has-one-home.sh`**~~ (landed) | P8b | the crate's one RGB→luma home declared once; no product code reaching another crate's colour-to-grey conversion, banned as a family of names, call syntaxes and trait doors rather than as one spelling; no file carrying a complete set of luma coefficients it has no business with — the four standard sets against every file including the home, and the home's own triple, read out of its own body, against every file but the home; the register of consumers reconciled **both ways** | the N266 class — a comparison reader measuring JPEG in Rec. 709 and PPM in BT.601, 33 codes apart, with a scene scoring 0.9688 against itself and every test green, because the walk that covered every format fed a grey fixture |
 | ~~**`hw_gone_*` decline accounting**~~ (landed) | P8c | the recipes decline by name on hosts that cannot arrange mid-stream loss, counted through the existing census machinery | D19's recipes rotting into silence before the partner rig ever runs them |
 | ~~**`/session-photo` route partition**~~ (landed) | P9b | both halves in the same commit as the route: `web-routes-are-gated.sh` arms for the third list entry, and `every_camera_bearing_route_is_behind_the_gate` driving anonymous-401 / token-200 / cross-site-403 / out-of-session-404 / HEAD-opens-nothing | the N82 defect class's first live exercise: a camera-bearing route added without its gate |
-| ~~**Workbench claims**~~ (landed) | P9a–P9c | the R1-web additions: the layout claim at the pinned viewport over the vivid profile; live-tuning round trips; the human flow end to end with `selector: human` asserted through a second socket; the sweep-time pane swap; refusal rendering and recovery | the browser half of D20 asserted only through the JSON the page consumes |
+| ~~**Workbench claims**~~ (landed) | P9a–P9c | the R1-web additions: the layout claim at the pinned viewport over the vivid profile; live-tuning round trips; the human flow end to end with `selector: human` asserted through a second socket; the sweep-time pane swap; refusal rendering and recovery. **Delta (2026-08-20):** the sweep-time pane was split off when the flow landed and the deferral was not recorded, so this row was struck through over a pane no line of code built (note **N277**); the flow's own claim stopped at the grid click, leaving Apply and Restore — both rendering fields no version of the wire has carried — unclicked (note **N273**); the narrow-viewport claim asserted a box position true in *both* layouts, so it could not go red on the stacking its title names (note **N262**); and the refusal arm asserted the D13 discriminant and not the message. All four landed together with the fences and the field the flow was missing | the browser half of D20 asserted only through the JSON the page consumes — and, since the delta, a claim that walks a flow and stops before its last two steps |
+| ~~**`/session-photo`'s consumer**~~ (landed) | P9c | the third camera-bearing route reconciled with the page that is its only consumer: `the_urls_the_page_builds_are_the_routes_this_daemon_serves` compares the nine wire names `credential.js` declares with `daemon::http`'s own constants, both directions, and holds the routes the page builds and the routes on `CAMERA_BEARING_PATHS` to being one set — read out of the embedded bytes a browser is served; `web-assets-cite-real-rust-items.sh` resolves the Rust paths the client's prose cites; and the browser claims assert the grid's photographs decode and that the same reference without a token does not | note **N275**'s class — a wire name copied into a page with nothing reconciling it, and a doc comment naming a module (`daemon::http::samples`) that has never existed, both green in every suite this workspace runs |
+| ~~**The write-during-suspend claim**~~ (landed) | P9a | D20's live-tuning sentence driven at last: a `wch_set` from a second connection while a photo holds the camera comes back with `{requested, applied}`, the device keeps it, and the pair costs one descriptor, one suspension and three streams | a design sentence with no driven twin, on the path AGENTS rule 7 is about — and specifically a build that answers `Busy` to whatever arrives inside a suspend, which is what this daemon did to photos during previews until 2026-08-12 |
 
 ## Recorded gaps and honest limits (v3)
 
@@ -215,8 +218,21 @@ than it is:
 - **The selftest harness cannot test gates whose subject is the harness** (bootstrap);
   review plus the derived-table rule cover it.
 - **The workbench layout claim is one viewport** — the pinned one, over the widest
-  committed profile. Layout truth at other sizes is Chrome's continuity plus a manual
-  glance; the claim's honesty is its named viewport, not an implied "all".
+  committed profile, **and one more**: the narrow-viewport twin asserts the stacked shell
+  at 700×800 and at no other width. Layout truth between and beyond those two is Chrome's
+  continuity plus a manual glance; the claims' honesty is their named viewports, not an
+  implied "all".
+- **The write-during-suspend claim asserts the queue's effect and not its order** — "lands
+  *after* resume" needs an observable this daemon does not publish, and note **N274**
+  carries the two measurements that ruled out the two candidates. It retires when
+  `CameraActivity` carries the `busy` flag `engine::actor` already keeps.
+- **`web-assets-cite-real-rust-items.sh` resolves addresses, not aptness** — a page citing
+  the *wrong* real constant passes, and a crate-less shorthand is counted and named rather
+  than guessed at: `limits::…` and `render::…`, and a type-shaped head like
+  `RestoreReport::is_complete`, which is crate-less by the same rule. What holds the values
+  is the pair of reconcilers in the daemon's web-client suite. It checks **two** spellings
+  of one class — a Rust path and a repository path — because the batch that landed the
+  first shipped the second beside it, in the same comment (note **N284**).
 - **D19's contract is locally undriveable beyond the fake** by design (§2.13's
   interlock); the recipes exist to decline, until a rig that can arrange the event runs
   them.
@@ -235,7 +251,7 @@ than it is:
 | A2/A3 (device authority, represent unknown) | battery arms + PF corpus + the `query_controls` ban + `uapi-constants-are-declared.sh` |
 | A5 (one home) | `atomic-write-home.sh`, `dependency-walls.sh`, the T5 walk, `cli-parity.sh`, `facade-is-the-composition.sh`, `facade-stability-table-sync.sh`, `dependency-registry-sync.sh` |
 | A7 (leave as found) | battery + R3 twins + crash-recovery + the Drop-guard arms |
-| A12/§5 (privacy) | `no-frame-bytes-in-repo.sh`, `state-dir-permissions.sh`, the route partition (two routes today, the third at P9b), `no-external-fetch-in-web.sh`, token + UDS gates |
+| A12/§5 (privacy) | `no-frame-bytes-in-repo.sh`, `state-dir-permissions.sh`, the route partition (every entry on `daemon::http::CAMERA_BEARING_PATHS`, `/session-photo` included since P9b), `no-external-fetch-in-web.sh`, token + UDS gates |
 | B7 (the browser half in the browser) | the R1-web rung + its manifest counts + skip accounting |
 | B9 (licenses) | `license-allowlist.sh` + `feature-posture.sh` |
 | B10 (unsafe boundary) | `unsafe-scope.sh` + lint policy + cast lints + Miri + the SIGSEGV-inverse clamp test |

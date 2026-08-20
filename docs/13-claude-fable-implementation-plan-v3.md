@@ -84,10 +84,24 @@ but the last. The sizing lesson stands and this is its cost, paid once and state
 | P7b | `561c91c` | `schema::selector`, the widened resolver, both roots and the wire; the R3 twins run once at three cameras (**E19**) |
 | P7c, P7d, P8a, P8b, P8c | `7dd0c3e` | the projection and `profile compare`; `engine::facade`; the stream-stats accumulator and `Fault::FrameGap`; `imaging::compare` with `image-compare` adopted (N260); D19's hermetic contract and the declining `hw_gone_*` recipes |
 | P9a, P9b | `b3aa781` | the two-pane workbench shell over the 77-control fixture; `/session-photo` and both halves of its route partition |
-| P9c | `a907975` | the human-driven flow, `selector: human` produced at last, and the preview-release wait N264 records |
+| P9c (flow) | `a907975` | the human-driven flow, `selector: human` produced at last, and the preview-release wait N264 records — **the sweep-time pane was split off here under P9c's own sizing licence, and the deferral was not written down**, which left three sentences in the tree describing a pane no line of code built (note **N277**) |
+| P9c (sweep view) | *this batch* | the pane swap D20 asks for: `#sweep-view` taking the preview's slot for the length of a sweep and giving it back **on the sweep's own terminal event** rather than on the call's answer (N278), with progress and the freshest sample off the one `wch_subscribe_calibration` this page opens; plus what P9c's own claims had stopped short of — the two verbs nothing had clicked (N273), the M32 fence the flow was missing over its read *and its assignment* (N154, N156, N280), `/session-photo`'s consumer reconciled with the daemon (N275), and D20's criteria field. The batch's own adversarial reading landed with it: a non-re-entrant sweep (N279), a `busy` no longer interned as an incapacity (N285), a grid a refusal no longer empties (N281), a wait that says what its predicate proves (N282), driven arms for the two guards nothing could redden (N283), and the citation predicate widened to the class it names (N284) |
 
-Counts at the last of those commits: **1625 tests**, 39 gate predicates, 12 `g7` rows, 7 `g8`
-rows, 5 `g9` rows, and the browser rung at 28 claims and 259 assertions.
+Counts at `a907975`, every one of them read out of that commit's own tree: **38 gate
+predicates** (`scripts/gates/*.sh` less the four harness files `gate_predicates` excludes), 12
+`g7` rows, 7 `g8` rows, 5 `g9` rows, and the browser rung at **28 claims and 259 assertions**,
+which are `browser/claims.json`'s own two numbers and `web_browser.rs`'s floor.
+
+**The commit is named rather than called "the last of those", and naming it corrected one number
+and removed another** (2026-08-20). A sentence whose antecedent is "the last row of the table
+above" becomes
+false the moment a row is added, which is what happened; and the predicate figure read `39` from
+the day it was written, when the tree at that commit and at the two before it held 38 — nobody
+could check it, because the sentence named nothing to check it against (**N153**, **N158**). The
+test total is not restated at all: nothing here can reconcile it without building that commit,
+and a number in this document that only a build can confirm is the same claim in a smaller
+disguise. Reconciling the live counts is P9d's, docs/7's ledger discipline applied to this
+document; what belongs here as it happens is the boundary.
 
 ## P7 — Adoption and the consumer contracts
 
@@ -258,13 +272,31 @@ work, which is the right proportion for a camera-bearing door.
 the page, sequenced over the eight existing verbs and the live subscription; the
 sweep-time pane swap (progress + freshest sample through `/session-photo`); D13 refusals
 rendered as the flow's guard rails. **Proves (browser claims):** the full flow end to end
-against the fake with `selector: human` landing in the session document (asserted through
-`calibrate status` on a second socket — the page and the wire agree); an
-`IllegalTransition` from an out-of-order click renders its instruction-last sentence and
-the flow recovers; the sweep view paints each sample as its event lands; the CLI can
-drive a session the page started and vice versa (one state machine, two hands — asserted,
-because it is the claim T4's law makes here). **Terminal rungs:** R1-web. **Sizing:** one
-to two sessions — split between flow and sweep-view if the first session says so.
+against the fake — start, plan, sweep, review, select, **apply and restore** — with
+`selector: human`, the goal and the criteria the operator typed landing in the session
+document (asserted through `calibrate status` on a second socket — the page and the wire
+agree); a `session_conflict` from an out-of-order click renders **the whole of** its
+instruction-last sentence and the flow recovers; the sweep view paints each sample as its
+event lands; the CLI can drive a session the page started and vice versa (one state
+machine, two hands — asserted, because it is the claim T4's law makes here).
+**Terminal rungs:** R1-web. **Sizing:** one to two sessions — split between flow and
+sweep-view if the first session says so.
+
+*Amended 2026-08-20 (note **N276**), and the row is weaker on paper and stronger in the
+rung.* It asked for an `IllegalTransition`, and no gesture this page offers produces one:
+the grid offers only samples that exist, `Sweep next` cannot be clicked twice into the same
+control, `Apply` always sends `partial: true` — which the daemon accepts — and the flow
+disables the verbs whose precondition it can see. `session_conflict` is the refusal the
+page's own buttons reach, and what the claim now holds is the **message**, not the
+discriminant: the arm asserted the kind alone, so a build that dropped D13's message body
+stayed green. The original wording becomes drivable the day the rung serves a profile with
+a motorized control, which is `flow.refused`'s reason for existing.
+
+*The second clause of that amendment is itself amended, later the same day (**N279**).* The
+first version rested on "`Sweep next` skips a control that already has samples", and a
+double-click reaches `illegal_transition` past exactly that reasoning — during the sweep the
+control has no samples yet. The sweep is now non-re-entrant at the door and the absence claim
+rests on that guard, which a browser arm drives.
 
 ### P9d — G9 close
 

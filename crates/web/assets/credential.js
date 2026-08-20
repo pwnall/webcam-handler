@@ -1,4 +1,4 @@
-// The bearer token, and the only two URLs in this client that carry it.
+// The bearer token, and the URLs in this client that carry it.
 //
 // ## Where the token comes from
 //
@@ -23,8 +23,19 @@
 // makes "belt and braces" — a token in the query *and* in a header, or twice in the query —
 // a request that is refused the moment the two spellings drift, and there is no reason for
 // this client to ever send two. So there is exactly one place in this directory that writes
-// the token into anything, it writes it once per URL, and the URLs it writes are the two
-// routes on `daemon::http::CAMERA_BEARING_PATHS`.
+// the token into anything, it writes it once per URL, and the URLs it writes are exactly the
+// routes on `daemon::http::CAMERA_BEARING_PATHS` — not "the two", because that list is a
+// decision that grows (D20 gave it a third entry) and a number written here would be a prose
+// count of code with nothing reconciling it (notes **N153**, **N158**).
+//
+// **Something does reconcile it**, which is what makes the paragraph above a claim rather than
+// an intention: `the_urls_the_page_builds_are_the_routes_this_daemon_serves`
+// (`crates/daemon/tests/web_client.rs`) reads the constants below out of the bytes this daemon
+// serves and compares them with `daemon::http`'s own, both directions, paths and query names
+// alike; `scripts/gates/web-assets-cite-real-rust-items.sh` holds the doc comment beside each
+// constant to naming a Rust home that is really there, on a host with no toolchain. Every wire
+// name in this file is therefore a named constant on one line under a citation that resolves —
+// that shape is what those two read (note **N275**).
 //
 // The other half of the same rule is an absence: **nothing sends the token to a static
 // asset.** Since the owner's ruling of 2026-08-12 the client's own files are served
@@ -42,11 +53,23 @@ const RPC_PATH = "/rpc";
 /** `daemon::http::preview::PREVIEW_PATH`. */
 const PREVIEW_PATH = "/preview";
 
-/** `daemon::http::samples::SESSION_PHOTO_PATH` — the third camera-bearing route (D20). */
+/** `daemon::http::session_photo::SESSION_PHOTO_PATH` — the third camera-bearing route (D20). */
 const SESSION_PHOTO_PATH = "/session-photo";
 
 /** `daemon::http::preview::CAMERA_QUERY_PARAM`. */
 const CAMERA_PARAM = "camera";
+
+/** `daemon::http::session_photo::SESSION_QUERY_PARAM`. */
+const SESSION_PARAM = "session";
+
+/** `daemon::http::session_photo::CONTROL_QUERY_PARAM`. */
+const CONTROL_PARAM = "control";
+
+/** `daemon::http::session_photo::PASS_QUERY_PARAM`. */
+const PASS_PARAM = "pass";
+
+/** `daemon::http::session_photo::VALUE_QUERY_PARAM`. */
+const VALUE_PARAM = "value";
 
 /**
  * The token this page was opened with, or `null` when it was opened without one.
@@ -120,10 +143,10 @@ export function previewUrl(camera, token) {
  */
 export function samplePhotoUrl({ session, control, pass, value }, token = tokenFromLocation()) {
   const query = new URLSearchParams();
-  query.set("session", session);
-  query.set("control", control);
-  query.set("pass", String(pass));
-  query.set("value", String(value));
+  query.set(SESSION_PARAM, session);
+  query.set(CONTROL_PARAM, control);
+  query.set(PASS_PARAM, String(pass));
+  query.set(VALUE_PARAM, String(value));
   if (token !== null) {
     query.set(TOKEN_PARAM, token);
   }

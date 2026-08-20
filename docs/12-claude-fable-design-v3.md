@@ -94,8 +94,9 @@ decision. Each row names its source:
   (docs/11 H1). The repair pattern — the refusal moved into the shared resolver — is now a
   §2.10 law, and every v3 contract names the population that walks it on both backends.
 - **Security posture unchanged** (D11): UDS always; TCP opt-in, loopback + token;
-  provenance before credentials; the token gates the two camera-bearing routes and not the
-  client's own open-source assets.
+  provenance before credentials; the token gates the camera-bearing routes — the list, which
+  D20 gives a third entry, rather than a count of it — and not the client's own open-source
+  assets.
 - **Licenses**: permissive only, enforced by cargo-deny; the ban list is unchanged and
   `dssim` stays on it — D17's SSIM is MIT `image-compare` or owned code, never AGPL.
 
@@ -506,7 +507,7 @@ Three absorbed amendments complete the posture:
 
 - **The token is for the camera, not for the client's own source** (owner ruling,
   2026-08-12; N82): the bearer token gates exactly the routes that carry or drive the
-  camera — `daemon::http::CAMERA_BEARING_PATHS`, which names `/rpc` and `/preview`,
+  camera — `daemon::http::CAMERA_BEARING_PATHS`, which names them,
   and which D20 makes **three** when `/session-photo` lands (docs/13 P9b) — and not the
   static assets, which are this project's own open-source code. "Every route is gated" is a property of that list, and
   the two halves that go red on a route added without a gate are
@@ -852,8 +853,11 @@ tune and see without scrolling; drive a calibration session from the page.
 
 - **The layout is two independent panes, and the preview never scrolls away.** One
   viewport-height app shell: the preview pane (the MJPEG `<img>`, the camera picker, the
-  status line) stays put — `position: sticky` at Chrome's feature level, per the §2.7
-  browser ruling — while the control column scrolls on its own axis beside it. The
+  status line) stays put because **nothing scrolls under it** — the shell is a `100dvh`
+  grid with `overflow: hidden` and the pane is a non-scrolling item of it — while the
+  control column scrolls on its own axis beside it. `position: sticky` is the *stacked*
+  shell's mechanism, where the document is the scroll container; at Chrome's feature
+  level, per the §2.7 browser ruling. The
   precise requirement, stated testably: **the preview and the control being adjusted are
   simultaneously visible at every scroll position of the control column**, at the rung's
   pinned viewport size; on a viewport too narrow for two panes the shell stacks with the

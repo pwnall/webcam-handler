@@ -64,6 +64,24 @@
           <img id="preview-frame" alt="" />
           <figcaption id="preview-status" class="status"></figcaption>
           <!--
+            **During a sweep the pane becomes the sweep** (D20). The preview is ended before
+            `calibrate_sweep` — a sweep is minutes of exclusive capture and whichever streaming
+            operation asks second meets `Busy` (note N83, E16) — so this is what fills the slot
+            while it is gone: progress off the live subscription, and the freshest sample
+            rendered through `/session-photo` as each one lands. Not a live view of the camera,
+            which would show the settle transients between samples; what the operator is
+            judging is the samples.
+
+            Two elements rather than one, for the reason the two status lines below have: two
+            views sharing one node overwrite each other within milliseconds and the loser is
+            whichever wrote first. `hidden` here rather than absent, because calibrate-flow.js
+            hands the pane back on every ending a sweep has, refusals included.
+          -->
+          <div id="sweep-view" class="sweep-view" hidden>
+            <img id="sweep-sample" alt="" />
+            <p id="sweep-progress" class="status"></p>
+          </div>
+          <!--
             A second line rather than a second writer of the one above, and P5d's browser
             rung is why that distinction is written down: two views sharing one element
             overwrite each other within milliseconds, and the loser is whichever wrote
@@ -76,11 +94,10 @@
         </figure>
 
         <!--
-          The photograph a person takes to look at, and the sample they are reviewing
-          during a sweep, are the same slot: only one of them is ever the answer to "what
-          did the camera just see", and two side by side would make the operator ask which
-          one is current. calibration.js takes the slot over while a sweep is running and
-          gives it back when the sweep ends.
+          The photograph a person takes to look at is its own slot, below the live figure,
+          because the two answer different questions: this one is a shot an operator asked
+          for and kept, and the figure above is whatever the camera is doing now — which
+          during a sweep is #sweep-view's business.
         -->
         <div class="capture">
           <button id="take-photo" type="button" disabled>Take a photo</button>
@@ -125,6 +142,17 @@
             <div class="flow-start">
               <label>Task <input id="flow-task" type="text" placeholder="dut-display" /></label>
               <label>Goal <input id="flow-goal" type="text" placeholder="text legible on the DUT display" /></label>
+              <!--
+                What the operator is judging against, one per line and in priority order —
+                `schema::session::Session::criteria` is an ordered list and `calibrate start
+                --criterion` is repeatable, so lines are the same grammar with a different
+                keyboard. D20 says goal *and criteria* are set at start, and D8 records them
+                because the selector needs them; the one surface built for the human selector
+                is the last one that should be unable to say what the human is judging.
+              -->
+              <label>Criteria
+                <textarea id="flow-criteria" rows="2" placeholder="one per line, most important first"></textarea>
+              </label>
               <!--
                 What a click on "Sweep next" costs, in photographs. A sweep is minutes (D8) and
                 `SweepSpec::All` is 256 shots on an ordinary control — the right default for a

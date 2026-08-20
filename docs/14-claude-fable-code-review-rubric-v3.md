@@ -336,8 +336,8 @@ landed.
 - [ ] Shutdown: SIGTERM and SIGINT each tested for real; the worst case is a bounded
       table beside the unit's `TimeoutStopSec`, per-connection sockets included
       [S:N174, N175]; the state lock releases; STOPPING emitted. `test`
-- [ ] The token gates exactly `CAMERA_BEARING_PATHS` — two routes today, three once
-      D20's `/session-photo` lands — and a route
+- [ ] The token gates exactly `CAMERA_BEARING_PATHS`, however many entries that is — D20's
+      `/session-photo` landed at P9b and joined it — and a route
       off that list is a finding whatever else it does (N82's partition, both halves);
       provenance runs before credentials, method-complete, reading every copy of the
       header it trusts [S:N180, N185]; the journald sink redacts the credential and the

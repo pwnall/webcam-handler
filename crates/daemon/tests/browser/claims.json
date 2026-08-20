@@ -141,18 +141,63 @@
     },
     {
       "title": "a narrow viewport stacks the shell and keeps the preview at the top",
-      "assertions": 7,
-      "what": "D20 — the same claim one column wide: a sticky pane inside a scroll container that is not the document sticks to nothing, and that failure looks exactly like a working page until somebody scrolls"
+      "assertions": 15,
+      "what": "D20 — the same claim one column wide, both halves of it: the shell really stacks (one column, the panes one above the other, the document the scroll container), and the preview is stuck to its top rather than merely somewhere on the screen — the half that was asserted before is true in either layout"
     },
     {
       "title": "a session driven from the page records the operator's own choice",
-      "assertions": 14,
-      "what": "D20 — the whole human-driven flow through the buttons an operator uses, with `selector: human` asserted on a second socket rather than through the page's own belief; the page stands its own preview down before the sweep, which is N83's boundary and E16's collision answered"
+      "assertions": 22,
+      "what": "D20 — the whole human-driven flow through the buttons an operator uses, Apply and Restore included, with `selector: human`, the goal and the criteria the operator typed asserted on a second socket rather than through the page's own belief; the sample photographs really decode through /session-photo and stop decoding without the token; the page stands its own preview down before the sweep, which is N83's boundary and E16's collision answered"
+    },
+    {
+      "title": "the sweep-time pane becomes the sweep and paints each sample as its event lands",
+      "assertions": 19,
+      "what": "D20's sweep-time pane swap, split off from the flow at P9c and landed now: the preview pane is handed to the sweep and handed back, the progress line advances on `wch_subscribe_calibration`'s own index/total, and each sample is painted through /session-photo as its event arrives"
+    },
+    {
+      "title": "a sweep the device refused hands the pane back with the device's own reason painted in it",
+      "assertions": 12,
+      "what": "D20's \"handed back on every ending a sweep has, refusals included\", for the sentence and not only the `hidden` bit: the fake refuses `auto_exposure`'s first write, and the pane reads out `sweep_interrupted`'s discriminant and message before the preview takes the slot back (N278)"
+    },
+    {
+      "title": "a stale session document is not painted over the sample the operator chose",
+      "assertions": 15,
+      "what": "docs/11 M32's fourth element — a late `wch_calibrate_status` answer marks neither the wrong sample nor writes the wrong sentence, with the current answer asserted to have painted (N154, N156)"
     },
     {
       "title": "an out-of-order click is the daemon's refusal, rendered, and the flow carries on",
-      "assertions": 7,
-      "what": "D20 — the state machine's refusals are the page's guard rails rather than duplicated client-side logic: an illegal step is sent, refused, rendered with its D13 kind, and the next legal step works"
+      "assertions": 8,
+      "what": "D20 — the state machine's refusals are the page's guard rails rather than duplicated client-side logic: an illegal step is sent, refused, rendered with its D13 kind *and the whole of its instruction-last message*, and the next legal step works; the two halves of that message are asserted independently rather than one entailing the other (N250)"
+    },
+    {
+      "title": "a double-click on Sweep next is one sweep, and the page says so once",
+      "assertions": 11,
+      "what": "N279 — the sweep is non-re-entrant at the door, so the gesture an operator makes without thinking starts one sweep: one `sweeping …` sentence, no `illegal_transition` on screen, and no refusal colour left over the success sentence"
+    },
+    {
+      "title": "a control refused because the camera was busy is offered again; one the daemon will not sweep is not",
+      "assertions": 13,
+      "what": "AGENTS rule 7 at a button (N285) — `busy` is a fact about a machine at a moment and stays retryable, `illegal_transition` is a statement about the control and is remembered; the control each click chose is read off the page's own progress sentence"
+    },
+    {
+      "title": "a refused sweep leaves the samples the operator is reviewing on the screen",
+      "assertions": 12,
+      "what": "N281 — `flow.reviewing` moves only when a sweep produced samples, so a refusal between a selection and the next verb does not empty the grid the human selector is judging in"
+    },
+    {
+      "title": "a session does not follow a camera, even when the start answer lands after the switch",
+      "assertions": 10,
+      "what": "N280 — the M32 fence over the *assignment* and not only the read: a held `wch_calibrate_start` answer released after a camera switch is dropped rather than installed, so no verb afterwards is refused `fingerprint_mismatch`; the positive control is the same gesture with nothing to retire it"
+    },
+    {
+      "title": "a sweep in another session is a line in the log beside, never a picture in this pane",
+      "assertions": 10,
+      "what": "N283 — the one-subscription fan-in's safety argument, driven: a real frame this daemon sent, replayed with its session rewritten, reaches the log below and not the operator's pane"
+    },
+    {
+      "title": "a refusal about a session nobody is looking at is not painted in red over a current line",
+      "assertions": 9,
+      "what": "N283 — the louder half of M32's fourth element: a held `wch_calibrate_status` refusal released after a camera switch changes nothing on screen (N154, N156)"
     }
   ]
 }

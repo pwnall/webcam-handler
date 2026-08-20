@@ -184,8 +184,9 @@ impl Client {
     ///
     /// No credential, and that is the assertion rather than an omission: since the owner's
     /// ruling of 2026-08-12 the client's own files are served unauthenticated (note **N82**),
-    /// and `credential.js` deliberately sends the token to nothing but the two camera-bearing
-    /// routes.
+    /// and `credential.js` deliberately sends the token to nothing but the camera-bearing routes
+    /// `http::CAMERA_BEARING_PATHS` names — three of them since D20, which is why the sentence
+    /// quantifies over the list rather than counting it.
     async fn asset(&self, path: &str) -> Answer {
         tcp::get(self.serving.bound(), path, &[])
             .await
@@ -406,6 +407,367 @@ fn the_bounds_the_page_runs_on_are_the_ones_this_build_declares() {
             "a constant this page does not declare at all was accepted"
         );
     }
+}
+
+/// Where `source` fails to declare `name` as the string literal `value`, exactly once. Empty is
+/// green.
+///
+/// [`declares`]'s sibling, for the other kind of second copy a browser is forced into: that one
+/// reconciles the *numbers* `schema::limits` owns, this one the *names* `daemon::http` owns. Same
+/// two sentences, and the split between them is the same — a constant that drifted and a constant
+/// that is no longer there are different findings, and reporting the first about the second sends
+/// a reader looking for a value in a file that has no such name in it.
+fn spells(source: &str, name: &str, value: &str) -> Vec<String> {
+    let mut drift = Vec::new();
+    let exact = format!("const {name} = \"{value}\";");
+    if source.matches(exact.as_str()).count() != 1 {
+        drift.push(format!(
+            "assets/credential.js does not declare `{exact}` exactly once; `daemon::http` says \
+             `{value}`"
+        ));
+    }
+    let declaration = format!("const {name} =");
+    let declared = source.matches(declaration.as_str()).count();
+    if declared != 1 {
+        drift.push(format!(
+            "assets/credential.js declares `{name}` {declared} time(s); a wire name the page \
+             writes twice is two wire names"
+        ));
+    }
+    drift
+}
+
+/// Every route `source` declares — the `const NAME = "/…";` lines, by value.
+///
+/// A **derived population**, which is what makes the partition below a claim rather than a list:
+/// a route the page learns to build and nobody gated is as much a finding as a gated route the
+/// page can no longer reach, and neither is visible to a check that walks a hand-written table.
+/// The shape it matches is the one `credential.js` is written in and says it is written in, one
+/// declaration per line.
+fn routes_the_page_builds(source: &str) -> std::collections::BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("const ")?;
+            let (_, value) = rest.split_once(" = \"")?;
+            let path = value.strip_suffix("\";")?;
+            path.starts_with('/').then(|| path.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn the_urls_the_page_builds_are_the_routes_this_daemon_serves() {
+    // **The third side of a triangle whose other two sides were already there.**
+    // `scripts/gates/web-routes-are-gated.sh` reconciles this crate's route *registrations*
+    // against `http::CAMERA_BEARING_PATHS`, and `every_camera_bearing_route_is_behind_the_gate`
+    // (crates/daemon/tests/preview.rs) reconciles that list against a `401` on a socket. Neither
+    // has the *page* as a subject — and `/session-photo`'s only consumer is a page, which built
+    // its URL out of five literals nothing compared with anything (note **N275**).
+    //
+    // What that cost was already in the tree when this was written: `credential.js`'s doc comment
+    // named `daemon::http::samples::SESSION_PHOTO_PATH`, and there is no `samples` module. The
+    // spelling that mattered happened to be right; the sentence beside it had already drifted,
+    // which is what an unreconciled second copy looks like on the way to being wrong.
+    //
+    // `/rpc` and `/preview` have consumer proof incidentally — a drifted `RPC_PATH` fails every
+    // browser claim that opens the page's socket, and a drifted `PREVIEW_PATH` or camera
+    // parameter fails the claim that reads `naturalWidth` off a painted frame. `/session-photo`
+    // had neither, and the browser rung self-skips on a host without node, so the text
+    // reconciliation is the half that runs everywhere.
+    //
+    // What it reads is `web::get`, not the file on disk — `the_bounds_the_page_runs_on_are_the_
+    // ones_this_build_declares`' reason, verbatim: the bytes asserted about are the bytes a
+    // browser is served (`debug-embed`), so a source tree edited without a rebuild cannot make
+    // this pass.
+    let module = web::get("credential.js").expect("the client's one credential writer");
+    let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+
+    let names = [
+        ("RPC_PATH", http::RPC_PATH),
+        ("PREVIEW_PATH", http::PREVIEW_PATH),
+        ("SESSION_PHOTO_PATH", http::SESSION_PHOTO_PATH),
+        ("TOKEN_PARAM", http::TOKEN_QUERY_PARAM),
+        ("CAMERA_PARAM", http::CAMERA_QUERY_PARAM),
+        ("SESSION_PARAM", http::SESSION_QUERY_PARAM),
+        ("CONTROL_PARAM", http::CONTROL_QUERY_PARAM),
+        ("PASS_PARAM", http::PASS_QUERY_PARAM),
+        ("VALUE_PARAM", http::VALUE_QUERY_PARAM),
+    ];
+    // Pairwise distinct, or one declaration in the page could satisfy two rows and this pair of
+    // sentences would be checking less than it claims to — `the_bounds…`' `assert_ne!`,
+    // generalised to nine.
+    for (i, (left_name, left)) in names.iter().enumerate() {
+        for (right_name, right) in &names[i + 1..] {
+            assert_ne!(
+                left, right,
+                "`{left_name}` and `{right_name}` are the same string, so one declaration in the \
+                 page satisfies both rows"
+            );
+        }
+    }
+
+    for (name, value) in names {
+        let drift = spells(&source, name, value);
+        assert!(drift.is_empty(), "{drift:?}");
+        // Both directions, driven rather than asserted about: a name that moved in `daemon::http`
+        // and not in the page is the whole failure mode, so it is the one that has to be seen.
+        assert!(
+            !spells(&source, name, &format!("{value}-not-this")).is_empty(),
+            "`{name}` was accepted at a spelling this daemon does not serve"
+        );
+        assert!(
+            !spells(&source, &format!("{name}_THAT_IS_NOT_THERE"), value).is_empty(),
+            "a wire name this page does not declare at all was accepted"
+        );
+    }
+
+    // **The partition**: every route the page builds is one this daemon keeps behind the gate,
+    // and every route behind the gate is one the page can reach. The second half is what a
+    // reviewer reads when a camera-bearing route is added and its consumer is forgotten; the
+    // first is what they read when a page learns to fetch something nobody gated.
+    let built = routes_the_page_builds(&source);
+    let gated: std::collections::BTreeSet<String> = http::CAMERA_BEARING_PATHS
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect();
+    assert_eq!(
+        built, gated,
+        "the routes assets/credential.js builds and the routes on \
+         `daemon::http::CAMERA_BEARING_PATHS` are not the same set"
+    );
+
+    // Both directions of the partition, driven over text this tree does not carry — the same
+    // reason the drift arms above are driven rather than reasoned about.
+    let without = source.replace(
+        &format!(
+            "const SESSION_PHOTO_PATH = \"{}\";",
+            http::SESSION_PHOTO_PATH
+        ),
+        "",
+    );
+    assert_ne!(
+        routes_the_page_builds(&without),
+        gated,
+        "a page that builds no URL for a camera-bearing route was accepted"
+    );
+    let with_extra = format!("{source}\nconst SNAPSHOT_PATH = \"/snapshot\";\n");
+    assert_ne!(
+        routes_the_page_builds(&with_extra),
+        gated,
+        "a page that builds a URL for a route nobody gated was accepted"
+    );
+}
+
+/// The body of the top-level function `name` in `source`, brace to brace.
+///
+/// The same coarse rule [`code_lines`] states and for the same reason: from the line that
+/// declares the function to the `}` in the first column that ends it. What is read out of it is
+/// property *names*, and a JavaScript parser to find those would be a second opinion about a
+/// language this repository does not otherwise read.
+fn body_of(source: &str, name: &str) -> String {
+    let opening = format!("function {name}(");
+    let start = source
+        .find(opening.as_str())
+        .unwrap_or_else(|| panic!("assets/calibrate-flow.js declares `{name}`"));
+    let rest = &source[start..];
+    let end = rest
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("`{name}` is closed by a `}}` in the first column"));
+    rest[..end].to_owned()
+}
+
+/// Every wire field `name`'s body reads off a document this daemon answered.
+///
+/// **A derived population**, which is the whole point: the four rendering branches this
+/// reconciles were written by reading `schema::report::WriteReport` and
+/// `schema::snapshot::RestoreReport` and typing the field names out again, and note **N273** is
+/// what that costs when one of them is wrong — `report.applied.length` and `report.complete`,
+/// neither of which any version of either type has carried, on a path no claim walked. The
+/// receivers are named because they are the ones bound to a document off the wire: `report` is
+/// the answer, `write` is an element of `report.writes`, `outcome` is an element of
+/// `report.outcomes`.
+fn wire_fields_read(body: &str) -> std::collections::BTreeSet<String> {
+    let mut fields = std::collections::BTreeSet::new();
+    for receiver in ["report.", "write.", "outcome."] {
+        let mut rest = body;
+        while let Some(at) = rest.find(receiver) {
+            rest = &rest[at + receiver.len()..];
+            let field: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            if !field.is_empty() {
+                fields.insert(field);
+            }
+        }
+    }
+    fields
+}
+
+/// Every object key anywhere in `document`, at any depth.
+fn keys_of(document: &Value) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    match document {
+        Value::Object(map) => {
+            for (key, value) in map {
+                keys.insert(key.clone());
+                keys.extend(keys_of(value));
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                keys.extend(keys_of(item));
+            }
+        }
+        _ => {}
+    }
+    keys
+}
+
+/// Which of `fields` no document in `documents` carries.
+fn unanswered(documents: &[&Value], fields: &std::collections::BTreeSet<String>) -> Vec<String> {
+    let mut carried = std::collections::BTreeSet::new();
+    for document in documents {
+        carried.extend(keys_of(document));
+    }
+    fields.difference(&carried).cloned().collect()
+}
+
+#[test]
+fn the_report_fields_the_flow_renders_are_fields_these_reports_carry() {
+    // **Note N273's class, closed for the branches no claim walks.** Apply and Restore render
+    // `schema::report::WriteReport` and `schema::snapshot::RestoreReport`, and the versions that
+    // shipped read `report.applied.length` and `report.complete` — two fields no version of
+    // either type has ever carried, so every click threw a `TypeError` into `#flow-status` after
+    // the verb had already succeeded. The browser rung now clicks both buttons, which holds the
+    // *ordinary* answer. It does not hold the four branches underneath: automation switched off
+    // to make a write stick, a write the device clamped, a control that could not be put back,
+    // and a stranded sweep given back. Every one of those reads more field names off the wire,
+    // on a path no fixture this rung serves produces.
+    //
+    // So the reports are built here, in Rust, out of the real types — which is what makes this
+    // go red on a **rename** rather than on a shape a test invented. A doctored JSON answer fed
+    // to the page would agree with a renamed field forever, because the invented fixture and the
+    // page would both be wrong in the same direction (note **N252**'s family).
+    //
+    // What it deliberately does not claim: that the page *renders* anything. That is P5d's line,
+    // stated at the top of this file, and the sentence it produces is the browser rung's.
+    let module = web::get("calibrate-flow.js").expect("the client's calibration flow");
+    let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+
+    let slug = |name: &str| schema::control::ControlSlug::parse(name).expect("a non-empty slug");
+    let value = |v: i64| schema::control::ControlValue::Int(v);
+    let clamped = schema::control::Applied {
+        control: schema::control::ControlId(0x0098_0900),
+        slug: slug("brightness"),
+        requested: value(300),
+        applied: value(255),
+        warnings: Vec::new(),
+    };
+    let write_report = serde_json::to_value(schema::report::WriteReport {
+        camera: CameraId::parse("cam:one").expect("a non-empty camera id"),
+        writes: vec![clamped.clone()],
+        disabled_automation: vec![slug("auto_exposure")],
+    })
+    .expect("a write report serializes");
+    let restore_report = serde_json::to_value(schema::snapshot::RestoreReport {
+        outcomes: vec![
+            schema::snapshot::RestoreOutcome::Restored {
+                applied: clamped.clone(),
+            },
+            schema::snapshot::RestoreOutcome::AlreadyCorrect {
+                control: slug("contrast"),
+            },
+            schema::snapshot::RestoreOutcome::OwnedByAutomation {
+                control: slug("exposure_time_absolute"),
+                automation: Some(slug("auto_exposure")),
+            },
+            schema::snapshot::RestoreOutcome::Unrestorable {
+                control: slug("gain"),
+                reason: schema::snapshot::UnrestorableReason::Volatile,
+            },
+        ],
+        freed: vec![slug("saturation")],
+    })
+    .expect("a restore report serializes");
+
+    // Every branch is present in the two documents above, so a field read on any of them is a
+    // field this reconciles. A report with an empty `disabled_automation` or no `Unrestorable`
+    // would make the sentences below vacuous about exactly the branches they exist for.
+    let documents = [&write_report, &restore_report];
+    for name in ["applySentence", "restoreSentence"] {
+        let fields = wire_fields_read(&body_of(&source, name));
+        assert!(
+            !fields.is_empty(),
+            "`{name}` reads no wire field at all, so this reconciliation is about nothing"
+        );
+        let missing = unanswered(&documents, &fields);
+        assert!(
+            missing.is_empty(),
+            "assets/calibrate-flow.js's `{name}` reads {missing:?} off a document this daemon \
+             answers, and neither `WriteReport` nor `RestoreReport` carries it"
+        );
+    }
+
+    // Both directions, driven over text this tree does not carry: the arm that matters is a page
+    // reading a field that has been renamed in Rust, and it is the one that has to be seen.
+    let renamed = source.replace("report.writes", "report.written");
+    assert_ne!(renamed, source, "the seed changed nothing");
+    assert_eq!(
+        unanswered(
+            &documents,
+            &wire_fields_read(&body_of(&renamed, "applySentence"))
+        ),
+        vec!["written".to_owned()],
+        "a page reading a field off `WriteReport` that no version of it carries was accepted"
+    );
+    let dropped = source.replace("outcome.reason", "outcome.excuse");
+    assert_ne!(dropped, source, "the seed changed nothing");
+    assert_eq!(
+        unanswered(
+            &documents,
+            &wire_fields_read(&body_of(&dropped, "restoreSentence"))
+        ),
+        vec!["excuse".to_owned()],
+        "a page reading a field off `RestoreOutcome` that no version of it carries was accepted"
+    );
+
+    // **The outcome vocabulary, both ways.** `outcomeWords` renders one phrase per
+    // `RestoreOutcome` tag and has a payload-carrying fallback for a daemon newer than this page
+    // (AGENTS rule 6), so a tag it does not name is not a crash — it is a phrase an operator
+    // cannot act on. The tags are `serde(tag = "outcome", rename_all = "snake_case")`'s, read out
+    // of the document rather than transcribed.
+    let vocabulary = body_of(&source, "outcomeWords");
+    let mut tags: Vec<String> = restore_report["outcomes"]
+        .as_array()
+        .expect("outcomes is an array")
+        .iter()
+        .map(|outcome| {
+            outcome["outcome"]
+                .as_str()
+                .expect("every outcome is tagged")
+                .to_owned()
+        })
+        .collect();
+    tags.sort();
+    tags.dedup();
+    assert_eq!(
+        tags.len(),
+        4,
+        "the four outcomes above are four distinct tags"
+    );
+    for tag in &tags {
+        assert!(
+            vocabulary.contains(&format!("case \"{tag}\":")),
+            "assets/calibrate-flow.js's `outcomeWords` has no phrase for `{tag}`, which this \
+             daemon answers, so an operator would read the fallback instead"
+        );
+    }
+    assert!(
+        !vocabulary.contains("case \"restored_exactly\":"),
+        "a tag `RestoreOutcome` does not carry was accepted as one it does"
+    );
 }
 
 /// How many lines of code `source` gives the top-level function `name`.

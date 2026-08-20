@@ -811,10 +811,14 @@ test("the client loads with no credential and the camera is still refused", asyn
   const modules = [...served].filter(([path]) => path.endsWith(".js"));
   expect(modules.map(([, status]) => status)).toEqual(Array(moduleCount).fill(200));
 
-  // …and the two routes that carry the camera turn the same anonymous browser away. Both are
-  // attempted the way the page itself would attempt them, because that is the only way to find
-  // out what a browser does with the answer: a `401` on a WebSocket handshake is not observable
-  // from script at all, and a `401` on an `<img>` is an `error` event with nothing in it.
+  // …and the camera-bearing routes an anonymous page can even *reach* turn it away. Two of them
+  // here rather than all of `CAMERA_BEARING_PATHS`, and the difference is not a count that went
+  // stale: `/session-photo` answers about a session, so a page with none has nothing to ask it —
+  // the flow claim below refuses it from the same browser with a reference it really has. Both
+  // are attempted the way the page itself would attempt them, because that is the only way to
+  // find out what a browser does with the answer: a `401` on a WebSocket handshake is not
+  // observable from script at all, and a `401` on an `<img>` is an `error` event with nothing in
+  // it.
   const upgrade = await page.evaluate(
     () =>
       new Promise((resolve) => {
@@ -1122,6 +1126,17 @@ test("a subscription that died with the socket stops saying it is watching", asy
  *   which is how a claim asks whether the daemon replied to something the *page* decided to
  *   send. The heartbeat is the only such call — nothing in the client's own code path asks for
  *   it — so it is the only one whose arrival is otherwise unobservable from the DOM.
+ * - **`notices()`** hands back the subscription frames the daemon has sent, and **`tell(frame)`**
+ *   sends one to the page. Together they are how a claim says "this daemon is also running a
+ *   sweep somebody else started": the frame is a real one this daemon produced, with the one
+ *   field the consumer filters on rewritten, so what is arranged is a *different session's*
+ *   event and not a shape invented here.
+ *
+ * **`refuse` and `hold` compose**, because a late refusal and a late answer are two different
+ * arrivals and only one of them was reachable before: `refresh` in `calibrate-flow.js` fences
+ * both, and the refusal arm is the louder half — a stale red line painted over a current sentence
+ * (note **N283**). A refused frame therefore goes through the same `holding` question the
+ * daemon's own answers do.
  */
 async function interposed(page) {
   const wire = {
@@ -1131,6 +1146,7 @@ async function interposed(page) {
     held: [],
     toPage: null,
     answered: [],
+    notices: [],
   };
   await page.routeWebSocket(
     (url) => url.pathname === "/rpc",
@@ -1155,9 +1171,14 @@ async function interposed(page) {
         asked.set(frame.id, frame);
         const refusal = wire.refusals.find((candidate) => candidate.matches(frame));
         if (refusal !== undefined) {
-          socket.send(
-            JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: refusal.error }),
-          );
+          const answer = JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: refusal.error });
+          // Through the same gate the daemon's answers pass, so a claim can arrange a refusal
+          // that arrives *late* as well as one that arrives at all.
+          if (wire.holding(frame, JSON.parse(answer))) {
+            wire.held.push(answer);
+            return;
+          }
+          socket.send(answer);
           return;
         }
         server.send(message);
@@ -1167,6 +1188,11 @@ async function interposed(page) {
           return;
         }
         const frame = JSON.parse(message);
+        // A subscription frame carries no `id`, which is how it is told from an answer: kept so a
+        // claim can send one back with a field rewritten rather than compose one out of guesses.
+        if (frame.id === undefined) {
+          wire.notices.push(message);
+        }
         const request = asked.get(frame.id);
         if (wire.holding(request ?? {}, frame)) {
           wire.held.push(message);
@@ -1212,6 +1238,10 @@ async function interposed(page) {
     },
     held: () => wire.held.length,
     answered: (method) => wire.answered.filter((name) => name === method).length,
+    /** Every subscription frame this daemon has sent the page so far, newest last. */
+    notices: () => [...wire.notices],
+    /** Send one frame to the page, as though the daemon had. */
+    tell: (message) => wire.toPage.send(message),
     sever: () => {
       wire.severed = true;
     },
@@ -1224,8 +1254,9 @@ async function interposed(page) {
  * Open `count` readers of one camera's preview and answer what the daemon said to each.
  *
  * **This is the daemon's own viewer count, read through the one aperture a browser has.**
- * Nothing on this listener reports how many readers a feed has — `CAMERA_BEARING_PATHS` is two
- * routes and neither is a status page — but `Previews::reserve` refuses the reader past
+ * Nothing on this listener reports how many readers a feed has — no route on
+ * `CAMERA_BEARING_PATHS` is a status page, and the list is a decision that grows — but
+ * `Previews::reserve` refuses the reader past
  * `limits::PREVIEW_MAX_VIEWERS_PER_CAMERA` with `Error::Busy`, which reaches an HTTP client as
  * `503`. So a camera with *no* readers left over serves every one of `previewViewerCap`, and a
  * camera holding one serves one fewer and refuses the last. The two answers are different
@@ -1830,22 +1861,64 @@ test("the preview and the control being adjusted are visible together at every s
 });
 
 test("a narrow viewport stacks the shell and keeps the preview at the top", async ({ page }) => {
-  // D20's other half: *on a viewport too narrow for two panes the shell stacks with the
-  // preview sticky at the top*. The same claim, made the only way one column can make it —
-  // and the reason it is asserted rather than left to the media query is that a sticky
-  // element inside a scroll container that is not the document sticks to nothing, which is a
-  // failure that looks exactly like a working page until you scroll.
+  // D20's other half, and it is two sentences rather than one: *on a viewport too narrow for two
+  // panes the shell **stacks** with the preview **sticky at the top***. Both halves are asserted
+  // here because the failure modes are different and neither shows the other. A sticky element
+  // inside a scroll container that is not the document sticks to nothing, which looks exactly
+  // like a working page until somebody scrolls; and a shell that never stacked at all would put
+  // a 352px control column beside a 348px picture at this width and go on satisfying every
+  // sentence about where the preview *is*.
+  //
+  // Until 2026-08-20 this claim asserted only that the preview's box was on the screen after a
+  // scroll, which is true in **both** layouts — measured: with `@media (max-width: 60rem)`
+  // deleted the document does not scroll at all (800 === 800), the `scrollTo` is a no-op, and
+  // the box never moves, so all three assertions held over the defect the title names
+  // (note **N262**).
   await openClient(page);
   await page.locator(`button[data-camera="${wideCameraId}"]`).click();
   await expect(page.locator("#controls-status")).toHaveText(/^77 controls/);
+
+  // Two panes at the rung's pinned viewport first, so "stacks" below is a change this claim
+  // caused rather than a shape the page was already in. Red on a shell that is one column
+  // everywhere: side by side at 1280 is #stage 435px wide at x=0 and #column beyond its edge.
+  const wideStage = await page.locator("#stage").boundingBox();
+  const wideColumn = await page.locator("#column").boundingBox();
+  expect(wideColumn.x).toBeGreaterThanOrEqual(wideStage.x + wideStage.width - 1);
+
   await page.setViewportSize({ width: 700, height: 800 });
 
   const preview = page.locator("#preview-frame");
   const before = await preview.boundingBox();
   expect(before).not.toBeNull();
 
-  // The document is the scroll container now, and the pane is stuck to its top.
+  // *The shell stacks*: one column, the panes one above the other, both of them its full width.
+  // Red with the media query removed, where #stage is 352 wide at x=0, #column is 348 wide at
+  // x=352, and #stage's bottom is 800 rather than above #column's top.
+  const stage = await page.locator("#stage").boundingBox();
+  const column = await page.locator("#column").boundingBox();
+  expect(column.y).toBeGreaterThanOrEqual(stage.y + stage.height - 1);
+  expect(Math.abs(column.x - stage.x)).toBeLessThan(1);
+  expect(Math.abs(column.width - stage.width)).toBeLessThan(1);
+
+  // …and the document is the scroll container now, which is the exact inverse of the wide
+  // claim's `documentElement.scrollHeight <= window.innerHeight + 1`. Red with the media query
+  // removed, where the shell is 100dvh with `overflow: hidden` and 800 is not greater than 801.
+  expect(
+    await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight + 1),
+  ).toBe(true);
+
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+
+  // There was somewhere to scroll: a viewport in which `scrollTo` is a no-op makes every
+  // sentence after it vacuous, which is what the assertions below had become.
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+  // The pane is stuck to the document's top, not merely somewhere on the screen. Red at −6830
+  // with `position: sticky` deleted from app.css, and red at 52 with the media query removed.
+  const stageAfter = await page.locator("#stage").boundingBox();
+  expect(stageAfter.y).toBeGreaterThanOrEqual(0);
+  expect(stageAfter.y).toBeLessThan(1);
+
   const after = await preview.boundingBox();
   expect(after).not.toBeNull();
   expect(after.y).toBeGreaterThanOrEqual(0);
@@ -1870,7 +1943,14 @@ test("a session driven from the page records the operator's own choice", async (
   await expect(page.locator("#preview-status")).toContainText("streaming");
 
   const task = "p9c driven from a real browser";
+  const goal = "text legible on the DUT display";
   await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-goal").fill(goal);
+  // **The criteria the human selector is judging against** (D20: "goal and criteria are set at
+  // start"). One per line and in priority order, because `Session::criteria` is an ordered list
+  // and `calibrate start --criterion` is repeatable — and the blank line is here on purpose: an
+  // empty criterion is a line the operator left, not something anybody is judging by.
+  await page.locator("#flow-criteria").fill("sharpness of the glyph edges\n\ncolour of the background");
   await page.locator("#flow-samples").fill("3");
   await page.locator("#flow-start").click();
   await expect(page.locator("#flow-status")).toContainText("started for " + task);
@@ -1892,6 +1972,36 @@ test("a session driven from the page records the operator's own choice", async (
   const samples = page.locator("#flow-grid .sample-pick");
   await expect(samples).toHaveCount(3);
   await expect(samples.first().locator(".score")).toContainText("sharpness");
+
+  // **And the photographs really arrived.** The reference `/session-photo` answers is built out
+  // of derived numbers — `passOf(sample)` off the stored path, and the *requested* value rather
+  // than the applied one \[PF:6\] — so a wrong spelling, a wrong pass or a missing token is
+  // three broken images and an alt text this claim would otherwise have passed on. Nothing else
+  // in this workspace holds them: the route's own suite builds its URLs from `daemon::http`'s
+  // constants, and this is the only place the *page's* arithmetic reaches the route.
+  expect(
+    await samples.locator("img").evaluateAll((images) =>
+      images.map((image) => image.complete && image.naturalWidth > 0),
+    ),
+  ).toEqual([true, true, true]);
+
+  // The other direction, from the same page and the same reference: strip the credential and the
+  // route refuses it. `/session-photo` serves stored camera frames, so it is on
+  // `CAMERA_BEARING_PATHS` behind D11's token like its two siblings (note **N82**) — and an
+  // `<img>` that 401s decodes nothing, which is what a browser can see about a gate.
+  expect(
+    await samples.locator("img").first().evaluate(async (image) => {
+      const anonymous = new URL(image.src, location.href);
+      anonymous.searchParams.delete("token");
+      const probe = new Image();
+      probe.src = anonymous.toString();
+      await new Promise((done) => {
+        probe.addEventListener("load", done, { once: true });
+        probe.addEventListener("error", done, { once: true });
+      });
+      return probe.naturalWidth;
+    }),
+  ).toBe(0);
 
   const picked = await samples.nth(1).locator(".value").textContent();
   await samples.nth(1).click();
@@ -1941,7 +2051,11 @@ test("a session driven from the page records the operator's own choice", async (
       );
       return calibrated === undefined
         ? null
-        : { slug: calibrated[0], status: calibrated[1].status };
+        : {
+            slug: calibrated[0],
+            status: calibrated[1].status,
+            session: { goal: status.session.goal, criteria: status.session.criteria ?? [] },
+          };
     },
     { camera: cameraId, wire: `${origin.replace(/^http/, "ws")}/rpc?token=${encodeURIComponent(token)}`, task },
   );
@@ -1950,6 +2064,268 @@ test("a session driven from the page records the operator's own choice", async (
   // `human`, spelled the way D8 spells it, on the session's own document.
   expect(recorded.status.selector).toEqual({ kind: "human" });
   expect(String(recorded.status.value)).toEqual(picked);
+  // What the operator typed at the start reached the document too, in the order they typed it
+  // and without the line they left blank. D8 records criteria *because the selector needs them*,
+  // and this is the surface built for the selector D8 reserved the word `human` for.
+  expect(recorded.session.goal).toBe(goal);
+  expect(recorded.session.criteria).toEqual([
+    "sharpness of the glyph edges",
+    "colour of the background",
+  ]);
+
+  // **The last two buttons, which nothing had ever clicked.** They shipped rendering fields no
+  // version of the wire has carried — `report.applied.length` off a `WriteReport`,
+  // `report.complete` off a `RestoreReport` — so every click threw a `TypeError` into
+  // `#flow-status` *after* the verb had already succeeded: a correct camera, and a JavaScript
+  // error where the sentence should be (note **N273**). The `failed` class is the arm that would
+  // have gone red on it, and it is asserted on both.
+  const status = page.locator("#flow-status");
+  await page.locator("#flow-apply").click();
+  await expect(status).toHaveText(/^applied 1 write\(s\)/);
+  await expect(status).not.toHaveClass(/failed/);
+
+  await page.locator("#flow-restore").click();
+  // The outcome vocabulary, one phrase per tag, and no verdict: "is the camera back where the
+  // snapshot found it" is `RestoreReport::is_complete`, a policy with one home in Rust
+  // (`OwnedByAutomation` is a *success*, note **N9**), and a copy of it here would be a second
+  // home for it. What the page says is what the document says.
+  await expect(status).toHaveText(/^restore — .*put back/);
+  await expect(status).not.toHaveClass(/failed/);
+});
+
+test("the sweep-time pane becomes the sweep and paints each sample as its event lands", async ({
+  page,
+}) => {
+  // **D20's other half of the sweep/preview collision.** The page ends its own preview before
+  // `calibrate_sweep` — a sweep is minutes of exclusive capture and whichever streaming operation
+  // asks second meets `Busy` (note **N83**, E16) — and *during* the sweep "the preview pane
+  // becomes the sweep: progress from the subscription, and the freshest sample rendered through
+  // `/session-photo` as each lands, so the operator watches what the camera saw at each step".
+  //
+  // docs/13's P9c named that pane and the flow landed without it: `calibrate-flow.js`'s header
+  // described it in the present tense, the sweep was one awaited RPC behind a static line, and
+  // the samples appeared only afterwards (note **N277**). This is the claim that half now has.
+  //
+  // Its subject is the *live* path — the events, not the document — so it watches the pane while
+  // the sweep runs rather than looking at it after. Every wait below is Playwright auto-waiting
+  // on a condition the daemon caused; nothing sleeps.
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  const task = "p9c the sweep-time pane";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  // **Everything the pane does is recorded as it happens, and asserted afterwards.** A sweep of
+  // three samples against the fake is over in under a second, so a claim that looked at the pane
+  // *while* it ran would be asserting whichever instant Playwright happened to poll — and would
+  // pass on a pane that painted once at the end. The observers below keep the sequence; the
+  // assertions read it.
+  await page.evaluate(() => {
+    window.wchSweep = { samples: [], progress: [], shown: [] };
+    const image = document.querySelector("#sweep-sample");
+    const line = document.querySelector("#sweep-progress");
+    const view = document.querySelector("#sweep-view");
+    new MutationObserver(() => {
+      const src = image.getAttribute("src");
+      if (src !== null && window.wchSweep.samples.at(-1) !== src) {
+        window.wchSweep.samples.push(src);
+      }
+    }).observe(image, { attributes: true, attributeFilter: ["src"] });
+    new MutationObserver(() => {
+      const said = line.textContent;
+      if (said !== "" && window.wchSweep.progress.at(-1) !== said) {
+        window.wchSweep.progress.push(said);
+      }
+    }).observe(line, { childList: true, characterData: true, subtree: true });
+    new MutationObserver(() => {
+      window.wchSweep.shown.push(!view.hidden);
+    }).observe(view, { attributes: true, attributeFilter: ["hidden"] });
+  });
+
+  const view = page.locator("#sweep-view");
+  await expect(view).toBeHidden();
+
+  await page.locator("#flow-sweep").click();
+  await expect(page.locator("#flow-status")).toContainText("pick the sample that looks right", {
+    timeout: 20_000,
+  });
+
+  const swept = await page.evaluate(() => window.wchSweep);
+
+  // The pane took the slot and gave it back, once each. A pane that never appeared answers `[]`;
+  // one that appeared and stayed answers `[true]`.
+  expect(swept.shown).toEqual([true, false]);
+
+  // It said something before the first event arrived — an empty figure between the click and the
+  // first sample is the shell looking broken — and then it advanced on the subscription.
+  // `index/total` rides on every in-flight event precisely so a consumer paints a truthful bar
+  // without counting, and this reads it off the pane rather than off a count of its own.
+  //
+  // **The last line is the sweep's own ending, and this arm is not a coin flip.** The terminal
+  // event and `wch_calibrate_sweep`'s answer are produced by two tasks and reach one socket in
+  // whichever order the daemon's scheduler chose (notes **N69**, **N87**), and until 2026-08-20
+  // the pane's ownership ended with the *answer* — so this line was red 1 run in 11 unloaded and
+  // 1 in 4 under load, on `sweep_finished` never painting (note **N278**). The ordering is forced
+  // deterministically by deferring `calibration.js`'s fan-in one turn of the event loop
+  // (`setTimeout(() => alsoTell(event), 0)`), which removes no behaviour and is an ordering the
+  // daemon is entitled to produce: with the pane released on the ending this claim is green over
+  // that seed, and released on the answer it is red at the line below with
+  // `brightness: 3/3 at 254 · sharpness …` — byte-identical to the load-induced failures.
+  expect(swept.progress[0]).toMatch(/^[a-z_]+: waiting for the first sample…$/);
+  expect(swept.progress.some((said) => /^[a-z_]+: 3\/3 at -?\d+/.test(said))).toBe(true);
+  expect(swept.progress.at(-1)).toMatch(/^[a-z_]+: 3 sample\(s\) taken$/);
+
+  // **One picture per sample, and a different one each time.** Three distinct references, each a
+  // `/session-photo` URL this page built out of the event's own stored path and its *requested*
+  // value \[PF:6\] — which is what the store names the file after, and what a page that used the
+  // applied value would 404 on wherever a device clamps.
+  expect(swept.samples).toHaveLength(3);
+  expect(new Set(swept.samples).size).toBe(3);
+  for (const src of swept.samples) {
+    expect(src).toMatch(
+      /^\/session-photo\?session=[0-9a-f-]{36}&control=[a-z_]+&pass=\d+&value=-?\d+&token=/,
+    );
+  }
+
+  // The pane is handed back when the sweep ends, and the preview with it: a sweep view left up
+  // over a live camera is a picture of the past labelled as the present.
+  await expect(view).toBeHidden();
+  await expect(page.locator("#sweep-sample")).not.toHaveAttribute("src", /./);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+});
+
+test("a sweep the device refused hands the pane back with the device's own reason painted in it", async ({
+  page,
+}) => {
+  // **D20 asks for the pane "handed back on every ending a sweep has, refusals included", and
+  // until now only the `hidden` bit was asserted** — never the sentence an operator would read
+  // about the refusal. That sentence is the sweep's own terminal event, and it is the half the
+  // pane dropped whenever `wch_calibrate_sweep`'s answer beat it to the socket (note **N278**):
+  // the pane's ownership ended with the answer, so `sweep_interrupted` arrived to a pane that had
+  // already been taken down.
+  //
+  // The refusal is the fake backend's own, not the wire's: `auto_exposure` is a menu whose
+  // indices are 1 and 3, the planner's uniform stride starts at 0, and the device refuses the
+  // write. That is a refusal *after* `SweepStarted` — `engine::calibrate`'s "one start, one end"
+  // promises a terminal event for it — which is exactly the case a pane released on the answer
+  // loses, and the case a pane released on `started` alone would never wait for.
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  const task = "p9c a refusal the pane reads out";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  // Recorded as it happens, because the pane is handed back immediately afterwards and the line
+  // is gone: what an operator sees is a sequence, and a claim that read the node at the end would
+  // be reading the empty pane the hand-back leaves.
+  await page.evaluate(() => {
+    window.wchPane = [];
+    const line = document.querySelector("#sweep-progress");
+    new MutationObserver(() => {
+      const said = line.textContent;
+      if (said !== "" && window.wchPane.at(-1) !== said) {
+        window.wchPane.push(said);
+      }
+    }).observe(line, { childList: true, characterData: true, subtree: true });
+  });
+
+  // The first control sweeps; the second is the one the device will not take.
+  await page.locator("#flow-sweep").click();
+  await expect(page.locator("#flow-status")).toContainText("pick the sample that looks right", {
+    timeout: 20_000,
+  });
+  await page.locator("#flow-sweep").click();
+  const status = page.locator("#flow-status");
+  await expect(status).toHaveText(/^device_io: /, { timeout: 20_000 });
+
+  // **The pane read out the ending, with both halves of it** — the D13 discriminant a consumer
+  // branches on and the sentence a person reads — and it did so before it was handed back. Red
+  // with the pane released on `wch_calibrate_sweep`'s answer rather than on the sweep's own
+  // ending, where this array holds the last `value_set` line and stops.
+  const pane = await page.evaluate(() => window.wchPane);
+  expect(pane.at(-1)).toMatch(
+    /^auto_exposure: stopped after 0\/\d+ — device_io: VIDIOC_S_EXT_CTRLS \(auto_exposure\) failed \(errno 22\)/,
+  );
+
+  // …and the pane is the preview's again, whatever happened: a page that left it blank after a
+  // refusal would have taken the operator's camera away to no purpose.
+  await expect(page.locator("#sweep-view")).toBeHidden();
+  await expect(page.locator("#sweep-sample")).not.toHaveAttribute("src", /./);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  // The refusal is a fact about the device at a moment and not a statement about the control, so
+  // the control stays the flow's to offer — AGENTS rule 7, in the arm below this one's vocabulary.
+  await expect(status).toHaveClass(/failed/);
+});
+
+test("a stale session document is not painted over the sample the operator chose", async ({
+  page,
+}) => {
+  // **docs/11 M32's defect in its fourth element** (notes **N154**, **N156**). `refresh()` in
+  // `calibrate-flow.js` assigned `wch_calibrate_status`'s answer to module state with no
+  // comparison in front of it, and every verb wrote its sentence into `#flow-status` on the line
+  // after — so two sample clicks put two reads on the wire, and the *first* one's answer landing
+  // last marked the sample the operator did not choose and said so underneath, permanently, with
+  // nothing on screen to say otherwise. Measured in this browser before the fence existed: the
+  // daemon had recorded the second value and the page read the first.
+  //
+  // The arrival is reproduced rather than simulated: `interposed`'s proxy holds the answers off
+  // the page and releases them **newest first**, which is what a daemon that spawns a task per
+  // inbound message does and what no other instrument here can arrange.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  const task = "p9c two clicks and one late answer";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+  await page.locator("#flow-sweep").click();
+  await expect(page.locator("#flow-status")).toContainText("pick the sample that looks right", {
+    timeout: 20_000,
+  });
+
+  const samples = page.locator("#flow-grid .sample-pick");
+  await expect(samples).toHaveCount(3);
+  const second = await samples.nth(1).locator(".value").textContent();
+
+  // Two clicks, two reads held. The selections themselves reach the daemon: what is held is the
+  // page's re-read of the document, which is the answer that paints.
+  wire.hold((request) => request.method === "wch_calibrate_status");
+  await samples.nth(0).click();
+  await samples.nth(1).click();
+  await expect.poll(() => wire.held()).toBe(2);
+  wire.hold(() => false);
+
+  // The newest answer first — the positive control, and the claim's meaning: without it, "the
+  // stale one changed nothing" is satisfied by a module that paints nothing at all.
+  expect(wire.release()).toBe(true);
+  await expect(samples.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#flow-status")).toHaveText(`brightness = ${second}, chosen by eye`);
+
+  // …and then the stale one, which must change nothing. Its delivery is established rather than
+  // assumed: a WebSocket delivers in order, so a page that reports its closure has already run
+  // its handler for every frame in front of it.
+  expect(wire.release()).toBe(true);
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+  await expect(samples.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await expect(samples.nth(0)).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#flow-status")).toHaveText(`brightness = ${second}, chosen by eye`);
 });
 
 test("an out-of-order click is the daemon's refusal, rendered, and the flow carries on", async ({
@@ -1969,14 +2345,412 @@ test("an out-of-order click is the daemon's refusal, rendered, and the flow carr
   // The same task again, while the first session is still open. The daemon refuses; the page
   // prints the kind beside the message, because the kind is what a reader branches on and the
   // message is what tells them which session.
+  //
+  // **The kind is `session_conflict` and the plan said `illegal_transition`, and the plan is
+  // what changed** (docs/13 P9c; note **N276**). `IllegalTransition` is not reachable from this
+  // page's buttons: the flow disables what it knows cannot be sent, `Sweep next` skips a control
+  // that already has samples, `Apply` always sends `partial: true` — which the daemon accepts —
+  // and the grid only offers samples that exist. Naming a refusal the page cannot produce made
+  // the row unfalsifiable; naming the one it does produce makes it a claim.
+  //
+  // **And the whole sentence is asserted, not the discriminant.** D13's message body is the half
+  // that tells an operator *which* session and what to do about it, and it is instruction-last by
+  // the same rule `IllegalTransition` follows (note **N212**). Until 2026-08-20 this arm checked
+  // `toContainText("session_conflict")` and nothing else, so a build that dropped the message and
+  // printed the kind alone stayed green.
   await page.locator("#flow-start").click();
   const refusal = page.locator("#flow-status");
   await expect(refusal).toHaveClass(/failed/);
-  await expect(refusal).toContainText("session_conflict");
+  const said = await refusal.textContent();
+  // The kind, then the daemon's own sentence — `err.kind` beside `err.message`, which is what
+  // `run()` composes and why. `SessionConflict`'s `Display` opens with the same words its
+  // discriminant is spelled in, so the line says both; that is the variant's, not the page's, and
+  // asserting the text as it really reads is what keeps this arm about the message rather than
+  // about a version of it somebody tidied.
+  //
+  // **The two assertions are independent, and were not.** The first was `$`-anchored on the whole
+  // line and the second is that line's literal tail, so every string the first accepted ended
+  // with it: an assertion with no input that separates it from the one above, counted into this
+  // rung's floor and unable to defend it (**N250**, rubric A16). The prefix is now unanchored, so
+  // dropping D13's instruction from the message reddens exactly the second and rewording what
+  // comes before it reddens exactly the first.
+  expect(said).toMatch(
+    /^session_conflict: session conflict: session [0-9a-f-]{36} is still open for this camera and task \(p9c the same task twice\); /,
+  );
+  // The instruction is last, which is what makes the sentence readable at the end of a line an
+  // operator is scanning rather than a label they have to read past.
+  expect(said.endsWith("resume it, or finish it before starting another")).toBe(true);
 
   // …and the flow is not wedged: the next legal step works, and the failure styling goes with
   // it. A page that had latched on a refusal would leave an operator restarting a browser.
   await page.locator("#flow-plan").click();
   await expect(refusal).toContainText(/^planned \d+ control\(s\)$/);
   await expect(refusal).not.toHaveClass(/failed/);
+});
+
+test("a double-click on Sweep next is one sweep, and the page says so once", async ({ page }) => {
+  // **The gesture an operator makes without thinking, and it produced two sweeps.**
+  // `calibrate-flow.js` disabled the button in `paint()`, four lines *after* `rangeOf`'s round
+  // trip, so the second half of a double-click ran a second `sweep()` for the same control. Three
+  // things came out of it and every one of them is a statement that is not what happened: the
+  // daemon answered the loser `illegal_transition: sweeping: cannot sweep brightness`; the
+  // refusal's colour was left over the winner's success sentence, because only entry to `run()`
+  // cleared it; and the loser's `catch` filed a successfully swept control in `flow.refused`
+  // (note **N279**).
+  //
+  // The first two are asserted here. The third is the same guard's — no second `sweep()` runs, so
+  // no `catch` interns anything — and what holds the interning rule itself is the arm below this
+  // one, which is where AGENTS rule 7 lives.
+  //
+  // It is also the counterexample to **N276**'s absence claim, which listed `nextControl` skipping
+  // a swept control as one of four reasons `IllegalTransition` is unreachable from this page:
+  // during the sweep the control is not yet swept, so the second click was handed the same slug.
+  // The note now rests on the guard this claim drives.
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  const task = "p9c one click or two";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  // Every sentence `#flow-status` holds, with the class it held it in, because the defect is
+  // about a line that is *right at one instant and wrong afterwards*: the success sentence was
+  // painted last and the refusal's class outlived it, so a claim that read the node once at the
+  // end would see the words it wanted in the colour of a refusal. `sweeping <control> in N
+  // step(s)…` is written before each request goes out, which is the only place the choice
+  // `nextControl()` made is visible — and the count of those is the count of sweeps.
+  await page.evaluate(() => {
+    window.wchSaid = [];
+    const line = document.querySelector("#flow-status");
+    new MutationObserver(() => {
+      window.wchSaid.push({ said: line.textContent, failed: line.classList.contains("failed") });
+    }).observe(line, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+  });
+
+  const status = page.locator("#flow-status");
+  await page.dblclick("#flow-sweep");
+  await expect(status).toHaveText(/ swept — pick the sample that looks right$/, { timeout: 20_000 });
+
+  const said = await page.evaluate(() => window.wchSaid);
+  // **One sweep was started, not two.** Red at 2 with the synchronous `flow.sweeping = true;
+  // paint(nodes);` taken off the top of `sweep()`, where the second half of the double-click
+  // finds the button still enabled and is handed the same control.
+  expect(said.filter((entry) => /^sweeping [a-z_]+ in \d+ step\(s\)…$/.test(entry.said))).toHaveLength(
+    1,
+  );
+  // **Nothing was ever refused, and no sentence was ever painted in the refusal colour.** Red at
+  // `illegal_transition: sweeping: cannot sweep brightness` on the same mutation — and red on the
+  // colour alone if `run()` goes back to writing a step's text without its class, because the
+  // loser's `failed` outlives the winner's sentence.
+  expect(said.filter((entry) => /illegal_transition/.test(entry.said))).toEqual([]);
+  expect(said.filter((entry) => entry.failed)).toEqual([]);
+  await expect(status).not.toHaveClass(/failed/);
+
+  // …and the control really was swept, once, with the samples an operator reviews.
+  await expect(page.locator("#flow-grid .sample-pick")).toHaveCount(3);
+});
+
+test("a control refused because the camera was busy is offered again; one the daemon will not sweep is not", async ({
+  page,
+}) => {
+  // **AGENTS rule 7 at a button.** `sweep()`'s `catch` interned *every* refusal in `flow.refused`,
+  // and `nextControl()` skips what is in there for the life of the camera selection — so a
+  // two-second `EBUSY` became "this page cannot sweep this control", with no verb that undoes it
+  // and a terminal sentence that offered `--allow-motion` as the remedy for a camera that had
+  // simply been in use. `rpc.js`'s own header states the rule: "`busy`, `device_gone` and
+  // `permission_denied` are three different facts about a machine and none of them means 'this
+  // camera cannot'".
+  //
+  // Both refusals are arranged on the wire, and for opposite reasons. No fixture this rung serves
+  // has a motorized control, so `illegal_transition` cannot be had from the daemon here at all;
+  // and a real `Busy` would depend on a second client's timing. What is under test is this page's
+  // branch on `err.kind`, so the kind is the input and the wire is where an input goes.
+  //
+  // **Which control each click chose is read off the page's own progress sentence** — `sweeping
+  // <control> in 3 step(s)…`, written before the request goes out — because that is the only place
+  // the choice `nextControl()` made is visible, and the choice is the whole subject.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  const task = "p9c busy is not incapacity";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  await page.evaluate(() => {
+    window.wchChose = [];
+    const line = document.querySelector("#flow-status");
+    new MutationObserver(() => {
+      const chose = /^sweeping ([a-z_]+) in \d+ step\(s\)…$/.exec(line.textContent);
+      if (chose !== null) {
+        window.wchChose.push(chose[1]);
+      }
+    }).observe(line, { childList: true, characterData: true, subtree: true });
+  });
+  const chosen = () => page.evaluate(() => window.wchChose);
+  const status = page.locator("#flow-status");
+
+  // A `Busy` that names another process, so the page's own preview-drain wait does not retry at
+  // it — that wait is for `this_process: streaming` and this is deliberately not that.
+  wire.refuse((request) => request.method === "wch_calibrate_sweep", {
+    code: -32010,
+    message: "/dev/video0 is busy: another process is streaming it",
+    data: { kind: "busy", path: "/dev/video0" },
+  });
+  await page.locator("#flow-sweep").click();
+  await expect(status).toHaveText(/^busy: /);
+
+  // The camera is free again, and **the control the page was refused is the one it offers**. Red
+  // on `flow.refused.add(control)` running for every kind, where this click chooses the control
+  // after it and the busy one is never offered again.
+  wire.allow();
+  await page.locator("#flow-sweep").click();
+  await expect(status).toHaveText(/ swept — pick the sample that looks right$/, { timeout: 20_000 });
+  const afterBusy = await chosen();
+  expect(afterBusy).toHaveLength(2);
+  expect(afterBusy[1]).toBe(afterBusy[0]);
+
+  // …and the other direction, which is what the set is *for*: `illegal_transition` is a statement
+  // about the control rather than about the machine — the planner will not sweep it from here —
+  // so it is remembered and the queue moves on rather than handing the operator the same refusal
+  // forever.
+  wire.refuse((request) => request.method === "wch_calibrate_sweep", {
+    code: -32013,
+    message: "cannot sweep pan_absolute: motion(allow_motion=false); pass --allow-motion",
+    data: { kind: "illegal_transition" },
+  });
+  await page.locator("#flow-sweep").click();
+  await expect(status).toHaveText(/^illegal_transition: /);
+
+  wire.allow();
+  await page.locator("#flow-sweep").click();
+  await expect(status).toHaveText(/ swept — pick the sample that looks right$/, { timeout: 20_000 });
+  const all = await chosen();
+  expect(all).toHaveLength(4);
+  // Red on interning nothing, where the refused control is offered again and these two are equal.
+  expect(all[3]).not.toBe(all[2]);
+  await expect(status).not.toHaveClass(/failed/);
+});
+
+test("a refused sweep leaves the samples the operator is reviewing on the screen", async ({
+  page,
+}) => {
+  // `sweep()` set `flow.reviewing` to the control it was *about to* sweep, before the request went
+  // out, and left it there on a refusal — so `grid()`, which paints whatever `flow.reviewing`
+  // names, found a control with no samples the next time anything repainted and emptied itself.
+  // The photographs and the `aria-pressed` record of the operator's own choice both vanished, with
+  // no sentence saying why, at the moment of the *next successful verb* (note **N281**). This is
+  // the one surface D20 exists to give the human selector.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  const task = "p9c the grid survives a refusal";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+  await page.locator("#flow-sweep").click();
+  await expect(page.locator("#flow-status")).toContainText("pick the sample that looks right", {
+    timeout: 20_000,
+  });
+
+  const samples = page.locator("#flow-grid .sample-pick");
+  await expect(samples).toHaveCount(3);
+  await samples.nth(1).click();
+  await expect(page.locator("#flow-status")).toContainText("chosen by eye");
+  await expect(samples.nth(1)).toHaveAttribute("aria-pressed", "true");
+
+  // The next control is refused — the camera was taken for two seconds by something else.
+  wire.refuse((request) => request.method === "wch_calibrate_sweep", {
+    code: -32010,
+    message: "/dev/video0 is busy: another process is streaming it",
+    data: { kind: "busy", path: "/dev/video0" },
+  });
+  await page.locator("#flow-sweep").click();
+  await expect(page.locator("#flow-status")).toHaveText(/^busy: /);
+  wire.allow();
+
+  // …and then any verb at all repaints. **Red at 0 samples and `aria-pressed="false"`** with
+  // `flow.reviewing = control` moved back above the request: Apply succeeds, the grid is emptied
+  // under the operator, and the sentence beside it says the write landed.
+  await page.locator("#flow-apply").click();
+  await expect(page.locator("#flow-status")).toHaveText(/^applied 1 write\(s\)/);
+  await expect(samples).toHaveCount(3);
+  await expect(samples.nth(1)).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a session does not follow a camera, even when the start answer lands after the switch", async ({
+  page,
+}) => {
+  // `watching()` nulls `flow.session` on every camera switch because *a session does not follow a
+  // camera* — and `start()` assigned `flow.session` after its own await with nothing in front of
+  // it, so a start answer that landed after the switch put the previous camera's session back.
+  // The daemon then refused every verb `fingerprint_mismatch: camera fingerprint differs from the
+  // session's in: bus_path, usb_id, card`, which is the hardware being protected from a belief
+  // this page had no business holding (note **N280**). The fence the batch added covered the
+  // *read* and not the assignment in front of it.
+  //
+  // The answer is **held** rather than raced: `toHaveAttribute` retries until it matches, so an
+  // assertion made while the answer is still in flight is satisfied by the instant after the
+  // switch and says nothing about the instant after the arrival. What is under test is an
+  // arrival, so the arrival is arranged.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  // The positive control first, because "the flow is driving no session" is also true of a page
+  // that never starts one: on the camera the operator is looking at, a start installs a session.
+  await page.locator("#flow-task").fill("p9c a session the operator is looking at");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", /[0-9a-f-]{36}/);
+
+  await page.locator(`#camera-list button[data-camera="${secondCameraId}"]`).click();
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", "");
+
+  // …and now the same gesture with the answer in flight across the switch.
+  wire.hold((request) => request.method === "wch_calibrate_start");
+  await page.locator("#flow-task").fill("p9c a session the operator walked away from");
+  await page.locator("#flow-start").click();
+  await expect.poll(() => wire.held()).toBe(1);
+  await page.locator(`#camera-list button[data-camera="${cameraId}"]`).click();
+  await expect(page.locator(`#camera-list button[data-camera="${cameraId}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  wire.hold(() => false);
+  expect(wire.release()).toBe(true);
+  // Delivery is established rather than assumed, exactly as the stale-document claim above does
+  // it: a WebSocket delivers in order, so a page that reports its closure has already run its
+  // handler for every frame in front of it.
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+
+  // **The flow is driving no session at all.** Red with the fence removed, where `#flow` wears the
+  // session id the *second* camera's start answered with while the operator looks at the first,
+  // and Plan is enabled over it — the next click on any verb then reads `fingerprint_mismatch`.
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", "");
+  await expect(page.locator("#flow-plan")).toBeDisabled();
+});
+
+test("a sweep in another session is a line in the log beside, never a picture in this pane", async ({
+  page,
+}) => {
+  // The one `wch_subscribe_calibration` this page opens carries **every** session this daemon is
+  // running (`calibration.js`'s header, twice, and `calibrate-flow.js`'s), and the fan-in in
+  // `app.js` hands every frame to both consumers. What keeps the operator's pane theirs is one
+  // comparison in `progress()` — and nothing could go red on it: the whole guard replaced by
+  // `if (false)` left the rung green at thirty claims (note **N283**).
+  //
+  // The other session's event is a **real frame this daemon produced**, replayed with its
+  // `session` rewritten: what is arranged is a different session's event, not a shape invented
+  // here. It is delivered while this page's own pane is up, which is arranged by holding the
+  // sweep's answer — the pane belongs to the sweep until its ending arrives, and the answer is not
+  // that ending (note **N278**).
+  const wire = await interposed(page);
+  await openClient(page);
+
+  const task = "p9c somebody else's sweep";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  wire.hold((request) => request.method === "wch_calibrate_sweep");
+  await page.locator("#flow-sweep").click();
+  // The pane is the sweep's, and it has painted the sweep's own ending. Everything below is about
+  // a frame that arrives *after* this and must not touch it.
+  const line = page.locator("#sweep-progress");
+  await expect(line).toHaveText(/^[a-z_]+: 3 sample\(s\) taken$/, { timeout: 20_000 });
+  const mine = await line.textContent();
+
+  // A frame the daemon really sent, with one field rewritten. `sweep_started` is chosen because
+  // its rendering is unmistakable — `<control>: 0/<total>` — and because it is the arm that would
+  // also hand this pane's ownership to a sweep it does not own.
+  const notices = wire.notices().map((frame) => JSON.parse(frame));
+  const sample = notices.findLast((frame) => frame.params?.result?.progress === "sweep_started");
+  expect(sample).not.toBeUndefined();
+  sample.params.result.session = "00000000-0000-4000-8000-000000000000";
+  sample.params.result.control = "not_this_operators_control";
+  wire.tell(JSON.stringify(sample));
+
+  // Delivery is established rather than assumed: a WebSocket delivers in order, so a page that has
+  // rendered the log line *after* it has already run every handler in front of it. The log below
+  // the session listing takes every event, which is what makes this a fan-in and not a filter on
+  // the socket.
+  await expect(page.locator("#sweep-log")).toContainText("not_this_operators_control");
+
+  // **Red at `not_this_operators_control: 0/3`** with the session comparison dropped from
+  // `progress()`'s guard.
+  expect(await line.textContent()).toBe(mine);
+
+  wire.hold(() => false);
+  expect(wire.release()).toBe(true);
+  await expect(page.locator("#flow-status")).toContainText("pick the sample that looks right", {
+    timeout: 20_000,
+  });
+});
+
+test("a refusal about a session nobody is looking at is not painted in red over a current line", async ({
+  page,
+}) => {
+  // The louder half of docs/11 **M32**'s fourth element, and the half nothing could go red on:
+  // `refresh()`'s `catch` fences a stale refusal for the same reason its success path fences a
+  // stale answer — "a stale refusal painted over a current sentence is the same wrong statement as
+  // a stale answer, in red" — and deleting the fence left the rung green (note **N283**).
+  //
+  // The refusal is arranged on the wire *and held*, because both halves are needed at once: a
+  // `wch_calibrate_status` this daemon will always answer, refused, and refused **late** — after
+  // the operator has switched cameras and the page has stopped looking at that session.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  const task = "p9c a stale refusal";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+
+  wire.refuse((request) => request.method === "wch_calibrate_status", {
+    code: -32011,
+    message: "session 0198f0e4-0000-7000-8000-000000000000 is not on this machine",
+    data: { kind: "session_unknown" },
+  });
+  wire.hold((request) => request.method === "wch_calibrate_status");
+  await page.locator("#flow-plan").click();
+  await expect.poll(() => wire.held()).toBe(1);
+
+  // The operator moves to another camera. `watching()` bumps the read counter precisely because
+  // "a session does not follow a camera", and everything on the wire about the old one is now
+  // about a session nobody is looking at.
+  await page.locator(`#camera-list button[data-camera="${secondCameraId}"]`).click();
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", "");
+  const before = await page.locator("#flow-status").textContent();
+
+  // …and now the refusal lands. **Red at `session_unknown: session … is not on this machine`, in
+  // the refusal colour**, with the `read !== reads` arm removed from `refresh()`'s `catch`.
+  expect(wire.release()).toBe(true);
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+  await expect(page.locator("#flow-status")).not.toHaveClass(/failed/);
+  expect(await page.locator("#flow-status").textContent()).toBe(before);
 });

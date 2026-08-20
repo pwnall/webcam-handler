@@ -75,8 +75,8 @@ export const secondBrightness = required("WCH_E2E_SECOND_BRIGHTNESS");
 /**
  * `schema::limits::PREVIEW_MAX_VIEWERS_PER_CAMERA`, as the number a probe opens.
  *
- * The daemon publishes no count of a camera's readers — it serves two camera-bearing routes
- * and neither is a status page — so the count is read where the daemon already refuses on it:
+ * The daemon publishes no count of a camera's readers — no route on its camera-bearing list is
+ * a status page — so the count is read where the daemon already refuses on it:
  * the reader past this many meets `Error::Busy` and a `503`. A probe that opens exactly this
  * many readers of one camera and is served every one of them has established that the camera
  * had no readers left over, which is the only browser-visible form of "the preview the page

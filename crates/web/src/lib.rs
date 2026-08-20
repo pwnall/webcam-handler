@@ -36,8 +36,14 @@
 //! MJPEG preview stay behind D11's token (note **N82**, which retires N76;
 //! `daemon::http::listener`'s header carries the same finding beside the gate). So the module
 //! graph below is ordinary `import` statements, and the one place in it that writes the
-//! credential into a URL is `assets/credential.js`, which writes it into exactly the two
-//! routes `daemon::http::CAMERA_BEARING_PATHS` names.
+//! credential into a URL is `assets/credential.js`, which writes it into exactly the routes
+//! `daemon::http::CAMERA_BEARING_PATHS` names — the list rather than a count of it, because the
+//! list grew a third entry with D20 and a number here is a prose count of code (notes **N153**,
+//! **N158**). What holds the two in step is
+//! `the_urls_the_page_builds_are_the_routes_this_daemon_serves` in `crates/daemon`'s web-client
+//! suite, and `scripts/gates/web-assets-cite-real-rust-items.sh` beside it, which holds every
+//! Rust home and every repository path this crate's prose names — including the two in this
+//! sentence — to being somewhere a reader can go (notes **N275**, **N284**).
 //!
 //! ## What this crate asserts about those files, and what it deliberately does not
 //!

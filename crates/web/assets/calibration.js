@@ -4,13 +4,19 @@
 // ## A view, and deliberately not a console
 //
 // docs/7 P5c asks for "calibration session view over the subscription", and that is exactly
-// the scope: this page reads `wch_calibrate_list`, `wch_calibrate_status` and the
-// `wch_subscribe_calibration` stream, and starts nothing. A sweep is minutes of camera time
-// and, on a PTZ camera, minutes of motor wear — design §5 puts a plan that would move
-// motors behind an explicit decision, and AGENTS says the caps in `schema::limits` bound
-// every sweep. A "sweep this control" button on a web page is that decision made by a click
-// with no plan attached, so it is not here. What *is* here is the half that has no downside
-// and that nothing else in this project offers: watching one.
+// the scope of *this module*: it reads `wch_calibrate_list`, `wch_calibrate_status` and the
+// `wch_subscribe_calibration` stream, and starts nothing.
+//
+// **The page does start sweeps now, and this module still does not** — the sentence used to read
+// "this page … starts nothing", and D20 made that false the day `calibrate-flow.js` gave D8's
+// `selector: human` a producer. The distinction that survives is about what a click carries. A
+// sweep is minutes of camera time and, on a PTZ camera, minutes of motor wear — design §5 puts a
+// plan that would move motors behind an explicit decision, and AGENTS says the caps in
+// `schema::limits` bound every sweep. A "sweep this control" button beside a *session listing*
+// is that decision made with no plan attached; the flow's button is not, because it comes after
+// a session, a plan and a photograph budget the operator typed. So the button stays over there
+// and what is here is the half that has no downside and that nothing else in this project
+// offers: watching one, whoever started it.
 //
 // ## The stream carries every session, and the consumer filters
 //
@@ -81,13 +87,26 @@ let reads = 0;
  * Called once, at startup, rather than per camera: the stream is per client (see the
  * header), and re-subscribing on every camera switch would spend a slot from
  * `limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` for each one.
+ *
+ * `alsoTell` is the second consumer of that one stream — D20's sweep-time pane — and it defaults
+ * to doing nothing so that this view stays usable on its own, which is what it is in the
+ * one-module tests that hand it a stub `rpc`.
  */
-export async function watchSweeps(rpc, { status, log }) {
+export async function watchSweeps(rpc, { status, log }, alsoTell = () => {}) {
   fill(log, []);
   try {
     await rpc.subscribe(
       "wch_subscribe_calibration",
-      (event) => append(log, line(event)),
+      (event) => {
+        append(log, line(event));
+        // **The second consumer of the one subscription** (D20's sweep-time pane). It is handed
+        // the event rather than opening a stream of its own, because this stream is per client
+        // and a second registration would spend a slot from
+        // `limits::RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION` for the same frames. The log is written
+        // first and unconditionally: this view is about *every* sweep this daemon runs, and a
+        // consumer that threw would otherwise take the log's line down with it.
+        alsoTell(event);
+      },
       (reason) => {
         status.classList.add("failed");
         // The stream ended and said why. `shutting_down` and a failed source are different
