@@ -247,6 +247,74 @@ impl DeviceDifference {
     pub fn is_empty(&self) -> bool {
         self.sections().is_empty()
     }
+
+    /// The one computation of D15's verdict, from the one walk of these fields.
+    ///
+    /// Both of [`ProfileComparison`]'s bools are readings of this, and nothing else computes
+    /// it, so the three answers a consumer can get out of a comparison — "same device",
+    /// "only the format tree", "differs" — cannot come to disagree with each other or with
+    /// [`Self::sections`] (design §2.10).
+    ///
+    /// **A `match` on the section list, and never a conjunction over the fields.** The
+    /// obvious spelling of the middle arm is `formats && controls.is_empty() &&
+    /// !measured_pairs`, and note **N89** rules it out by name: it "keeps answering `true`
+    /// when a *fifth* section is added later, which would silently extend the owner's ruling
+    /// to something nobody was asked about". Written over the list, an unrecognised
+    /// combination falls to the wildcard and lands in [`DeviceVerdict::Differs`] — the
+    /// direction a permission has to fail in.
+    #[must_use]
+    pub fn verdict(&self) -> DeviceVerdict {
+        match self.sections().as_slice() {
+            [] => DeviceVerdict::SameDevice,
+            [InvariantDifference::FORMATS] => DeviceVerdict::OnlyTheFormatTree,
+            _ => DeviceVerdict::Differs,
+        }
+    }
+}
+
+/// What one comparison says about the device half, as a closed vocabulary on the document
+/// (design D15; owner's 2026-08-13 ruling; note **N89**).
+///
+/// **Why this is on the document and not only a pair of accessors.** `ProfileComparison`
+/// exists for the consumer design §1.3 names — the sibling HIL harness, which pins this
+/// library *and* shells out to `--json`, comparing answers across machines. That consumer
+/// reading the document got `device` and `identity` and had to rebuild the verdict itself,
+/// and the only spelling available to it was the conjunction over the three device fields
+/// that N89 says fails **open** the day a fourth section lands. A verdict a Rust caller can
+/// read and a `--json` caller cannot is a verdict published in the one form its stated reader
+/// cannot safely use, so the serialized document carries it — computed at write time by
+/// [`DeviceDifference::verdict`], which is where it is computed for every other reader too
+/// (note **N289**: the value stores no copy, because the half it is derived from is public
+/// and a stored summary is one a caller can leave behind).
+///
+/// **Three arms and no fourth.** They are the three answers the owner's ruling distinguishes:
+/// nothing moved; the format tree moved and nothing else, which a camera is licensed to do
+/// each time it is plugged in \[PF:23\]; and anything else, which no measurement licenses.
+/// A section added to [`ProfileInvariant`] later joins [`Self::Differs`] by falling through
+/// the wildcard rather than by being waved through a permission, which is the whole reason
+/// the computation is an equality against a list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceVerdict {
+    /// The device half is empty: the two profiles describe the same device, whatever their
+    /// identity halves say.
+    ///
+    /// The default, because an empty [`DeviceDifference`] *is* the same device and a
+    /// `ProfileComparison::default()` that said otherwise would be a document disagreeing
+    /// with its own contents.
+    #[default]
+    SameDevice,
+    /// The advertised format tree is the **only** section that differs.
+    ///
+    /// The owner's 2026-08-13 ruling in one word: a camera's format tree is invariant within
+    /// a connection and nowhere else \[PF:23, note **N89**\], so a consumer may treat this as
+    /// a fact about a replug rather than about a different device. This tool reports the
+    /// shape and declines to guess what it means for somebody else's rig.
+    OnlyTheFormatTree,
+    /// Something the ruling does not license moved — including a format-tree difference with
+    /// a second finding beside it, which is two observations at once and the second one is
+    /// unexplained.
+    Differs,
 }
 
 impl fmt::Display for DeviceDifference {
@@ -275,18 +343,166 @@ impl fmt::Display for DeviceDifference {
 /// because the consumer needs both: [`Self::device`] is the fidelity assertion — the
 /// forwarded camera is the same device — and [`Self::identity`] is the expected-delta
 /// report, since a different bus path is exactly what forwarding *means*.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// **The verdict is on the document, and it is not a field of this value** (notes **N286**,
+/// **N289**). §1.3's sibling harness pins this library *and* shells out, and reading the
+/// document it got `device` and `identity` and had to rebuild the format-tree permission
+/// from three fields by the conjunction note **N89** rules out — so the answer has to be in
+/// the bytes. It gets there by being *computed at write time*, in
+/// [`DeviceDifference::verdict`], rather than by being stored here: [`Self::device`] is a
+/// public field of a public type on a value that derives `Default`, so a stored summary of
+/// it is a summary any caller can leave behind, and note **N289** measured that hole open —
+/// `ProfileComparison::default()` plus `device.formats = true` answered "same device" and
+/// serialized bytes this type's own `Deserialize` refused. Every reading below is a reading
+/// of `device` as it stands at the moment it is taken, so there is nothing to go stale.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProfileComparison {
     /// What the device *is*: formats, controls, measured pairs.
     pub device: DeviceDifference,
     /// Where the device *is*: the `info` fields that differ, in the order and the spelling
     /// [`CameraInfo::differing_fields`] produced. Expected to be non-empty across a
     /// forwarded bus, a different port, a reboot or another machine.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identity: Vec<String>,
 }
 
+/// The document a [`ProfileComparison`] is written to and read from — D15's two halves with
+/// D15's verdict beside them.
+///
+/// **`verdict` is on the document and not on the value**, because the two have different
+/// hazards. A `--json` consumer holds bytes it cannot recompute anything from without
+/// reimplementing note **N89**'s rule, so the bytes must carry the answer; a Rust caller
+/// holds a value whose `device` half it can edit, so the value must not carry a copy that
+/// could be left behind (note **N289**). This struct is where those meet: it is the one
+/// shape [`ProfileComparison`]'s `Serialize`, `Deserialize` and `JsonSchema` all go through,
+/// so the bytes, the refusal and the published schema cannot come to describe three
+/// different documents.
+///
+/// A shadow struct rather than a `serialize_with`/`deserialize_with` on the field, because
+/// the verdict is a function of a *sibling* field and a field (de)serializer sees only its
+/// own — the one way this differs from [`crate::error::Failure`]'s marker, whose
+/// contradiction is visible in the field itself.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct ProfileComparisonDocument {
+    /// What the device *is*: formats, controls, measured pairs. The fidelity assertion.
+    device: DeviceDifference,
+    /// Where the device *is*: the `info` fields that differ. Expected to be non-empty across
+    /// a forwarded bus, a different port, a reboot or another machine, and omitted when
+    /// nothing about the address moved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    identity: Vec<String>,
+    /// D15's answer about the device half, in one closed word: `same_device`,
+    /// `only_the_format_tree` or `differs`.
+    ///
+    /// A reading of `device` and never a second opinion beside it — computed by
+    /// [`DeviceDifference::verdict`] on the way out, and refused on the way *in* when the
+    /// bytes state one the sections they carry do not support, because bytes arrive from
+    /// somewhere else and nothing this crate does can constrain how they were written.
+    verdict: DeviceVerdict,
+}
+
+/// Refuse a comparison whose stated verdict is not the one its device half supports.
+///
+/// The verdict is a reading of `device`, so a document that disagrees with itself is one of
+/// two things and both are worse than a refusal: a hand-written comparison claiming a
+/// permission its sections do not license — `same_device` over a non-empty device half, or
+/// `only_the_format_tree` over a difference with a control beside it — or a document written
+/// by a version of this tool whose section vocabulary is not this one's. Refusing rather than
+/// recomputing is AGENTS rule 6's direction: a value that silently replaced the stated verdict
+/// with the computed one would parse the second case into an answer nobody wrote.
+fn refuse_a_verdict_the_sections_do_not_support(
+    document: ProfileComparisonDocument,
+) -> std::result::Result<ProfileComparison, String> {
+    let ProfileComparisonDocument {
+        device,
+        identity,
+        verdict,
+    } = document;
+    let computed = device.verdict();
+    if verdict == computed {
+        Ok(ProfileComparison { device, identity })
+    } else {
+        Err(format!(
+            "a comparison's `verdict` is a reading of its `device` half; this document says \
+             {verdict:?} where the sections it carries ({}) say {computed:?}",
+            if device.sections().is_empty() {
+                "none".to_owned()
+            } else {
+                device.sections().join(", ")
+            }
+        ))
+    }
+}
+
+impl Serialize for ProfileComparison {
+    /// Through `ProfileComparisonDocument` — a private type, so this is a plain reference and
+    /// not an intra-doc link — so the word in the bytes is computed from the device half being
+    /// written rather than read out of a field that was filled earlier.
+    ///
+    /// The halves are cloned to build it. That is a bool, a slug list and a short string list
+    /// copied once per `profile compare` answer, and the alternative — a second, borrowing
+    /// shadow struct — would be a second home for the document's field list, free to drift
+    /// from the one the deserializer and the published schema use (design §2.10).
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ProfileComparisonDocument {
+            device: self.device.clone(),
+            identity: self.identity.clone(),
+            verdict: self.device.verdict(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileComparison {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<ProfileComparison, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        refuse_a_verdict_the_sections_do_not_support(ProfileComparisonDocument::deserialize(
+            deserializer,
+        )?)
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+/// The published schema is the *document*'s, under this type's name.
+///
+/// Delegated rather than derived, because what a `--json` consumer validates against has to
+/// be the shape [`Serialize`] emits and [`Deserialize`] accepts — which carries `verdict`,
+/// and which this Rust value deliberately does not (note **N289**). Deriving it here would
+/// publish a schema with no `verdict` property while every document this crate writes has
+/// one, and `scripts/gates/json-validates.sh` validates real `--json` output against the
+/// committed bundle, which is where that would surface.
+impl JsonSchema for ProfileComparison {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ProfileComparison".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        concat!(module_path!(), "::ProfileComparison").into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        ProfileComparisonDocument::json_schema(generator)
+    }
+}
+
 impl ProfileComparison {
+    /// D15's verdict about the device half — the one word the document carries.
+    ///
+    /// Computed from [`Self::device`] on every call, by [`DeviceDifference::verdict`], and the
+    /// two bools below are readings of it. A consumer holding the deserialized document reads
+    /// the `verdict` field; a consumer holding the value calls this; they are the same answer
+    /// because both are the same computation over the same half, and
+    /// `refuse_a_verdict_the_sections_do_not_support` is what keeps a *foreign* document from
+    /// claiming otherwise.
+    #[must_use]
+    pub fn verdict(&self) -> DeviceVerdict {
+        self.device.verdict()
+    }
+
     /// Whether the two profiles describe the same device, whatever their identity says.
     ///
     /// The derived bool, for callers that only branch. Everything that decides it is on
@@ -294,7 +510,7 @@ impl ProfileComparison {
     /// twice to find out.
     #[must_use]
     pub fn device_matches(&self) -> bool {
-        self.device.is_empty()
+        self.verdict() == DeviceVerdict::SameDevice
     }
 
     /// Whether the advertised format tree is the **only** thing the device half disagrees
@@ -306,13 +522,13 @@ impl ProfileComparison {
     /// captures across a replug may legitimately differ here and nowhere else. This tool
     /// reports the shape and declines to guess what it means for somebody else's rig.
     ///
-    /// Written as an equality against [`DeviceDifference::sections`] rather than as a
-    /// conjunction, for the reason [`InvariantDifference::is_only_the_format_tree`] gives:
-    /// a conjunction fails *open* the day a fourth section is added, and a permission
-    /// should fail closed.
+    /// A reading of [`Self::verdict`], which is written as an equality against
+    /// [`DeviceDifference::sections`] rather than as a conjunction, for the reason
+    /// [`InvariantDifference::is_only_the_format_tree`] gives: a conjunction fails *open* the
+    /// day a fourth section is added, and a permission should fail closed.
     #[must_use]
     pub fn device_differs_only_in_the_format_tree(&self) -> bool {
-        self.device.sections() == [InvariantDifference::FORMATS]
+        self.verdict() == DeviceVerdict::OnlyTheFormatTree
     }
 }
 
@@ -1135,6 +1351,292 @@ mod tests {
         );
     }
 
+    /// A profile whose invariant carries one measured automation pair.
+    ///
+    /// The shape D3's probe produces on the seed hardware — a manual control, the automation
+    /// that has to be switched off first, how to switch it off, and `Measured` because a probe
+    /// saw it — so the section this exercises is compared in the form it is actually captured
+    /// in rather than in a placeholder.
+    fn profile_pairing(manual: &str, automation: &str) -> DeviceProfile {
+        use crate::pairing::{AutomationOff, Provenance};
+
+        let mut out = profile(vec![control(manual, 0, 50)]);
+        out.invariant.measured_pairs = vec![AutomationPair {
+            manual: ControlSlug::parse(manual).expect("literal slug"),
+            automation: ControlSlug::parse(automation).expect("literal slug"),
+            off: AutomationOff::Value { value: 0 },
+            provenance: Provenance::Measured,
+        }];
+        out
+    }
+
+    #[test]
+    fn a_pair_set_the_two_sides_measured_differently_is_a_device_difference() {
+        // The third device section, which was implemented, reached production and was
+        // asserted by nothing: `sections()`'s `measured_pairs` arm could be deleted, or the
+        // field hardwired to `false` in `compare`, and the whole workspace stayed green
+        // (note **N287**).
+        //
+        // It belongs to the description half and not to identity for D3's reason: which
+        // control has to be switched off before another can be driven by hand is a fact about
+        // what the device *is*, measured on the device itself \[PF:3\], and a forwarded camera
+        // whose pairs moved is not the same camera however its bus path reads.
+        let mine = profile_pairing("exposure_time_absolute", "auto_exposure");
+        let mut theirs = mine.clone();
+        theirs.invariant.measured_pairs[0].automation =
+            ControlSlug::parse("exposure_auto_priority").expect("literal slug");
+
+        // Non-vacuity first: the two profiles differ in this section and in nothing else, so
+        // an assertion below that named another section would be naming a fixture defect.
+        assert_ne!(
+            mine.invariant.measured_pairs, theirs.invariant.measured_pairs,
+            "the fixture has to differ in the section under test"
+        );
+        assert_eq!(
+            mine.invariant.formats, theirs.invariant.formats,
+            "the fixture has to differ in the section under test and in no other"
+        );
+        assert_eq!(
+            mine.invariant.controls, theirs.invariant.controls,
+            "the fixture has to differ in the section under test and in no other"
+        );
+
+        let comparison = mine.compare(&theirs);
+        assert!(
+            !comparison.device_matches(),
+            "a pair set the two sides measured differently is a device difference, so this is \
+             not the same device — {comparison}"
+        );
+        assert!(
+            comparison.device.measured_pairs,
+            "the pair section did not notice a pair set that moved — {comparison}"
+        );
+        assert_eq!(
+            comparison.device.sections(),
+            vec!["measured_pairs"],
+            "a measured-pair difference has to be the only section named — {comparison}"
+        );
+        assert!(
+            !comparison.device_differs_only_in_the_format_tree(),
+            "the owner's 2026-08-13 format-tree permission was granted to a pair-set \
+             difference — {comparison}"
+        );
+        assert_eq!(
+            comparison.verdict(),
+            DeviceVerdict::Differs,
+            "a pair set that moved is not a verdict the ruling licenses — {comparison}"
+        );
+        assert_eq!(
+            comparison.to_string(),
+            "device differs: measured_pairs",
+            "the human line does not name the section the comparison found"
+        );
+
+        // Both directions, because a diff that noticed a pair one way round and not the other
+        // would be an answer that depended on which profile was passed first.
+        assert_eq!(
+            theirs.compare(&mine).device.sections(),
+            vec!["measured_pairs"],
+            "the pair-set difference is reported one way round and not the other"
+        );
+
+        // And a pair set only one side measured at all, which is what a capture taken without
+        // `--discover-pairs` looks like beside one taken with it.
+        let unprobed = profile(vec![control("exposure_time_absolute", 0, 50)]);
+        assert!(
+            unprobed.invariant.measured_pairs.is_empty(),
+            "the unprobed fixture has to carry no pairs, or it is not the capture under test"
+        );
+        assert_eq!(
+            unprobed.compare(&mine).device.sections(),
+            vec!["measured_pairs"],
+            "a capture taken without `--discover-pairs` beside one taken with it is a \
+             pair-set difference and nothing else"
+        );
+        assert_eq!(
+            mine.compare(&unprobed).device.sections(),
+            vec!["measured_pairs"],
+            "a capture taken without `--discover-pairs` beside one taken with it is a \
+             pair-set difference the other way round too"
+        );
+    }
+
+    #[test]
+    fn a_pair_set_beside_the_format_tree_is_not_the_plug_event_permission() {
+        // The permission the owner's 2026-08-13 ruling grants is about a device re-deciding
+        // what it advertises, and a run in which the measured pairs moved *as well* is two
+        // findings at once. Written over `measured_pairs` and not only over `controls`,
+        // because a `verdict` rewritten as a conjunction that forgot this field would grant
+        // the permission here and nowhere a controls-shaped arm could see it.
+        let mine = profile_pairing("exposure_time_absolute", "auto_exposure");
+        let mut theirs = mine.clone();
+        theirs.invariant.measured_pairs.clear();
+        theirs.invariant.formats.push(crate::camera::FormatInfo {
+            pixel_format: crate::camera::PixelFormat::MJPG,
+            description: "Motion-JPEG".to_owned(),
+            flags: 0,
+            sizes: Vec::new(),
+        });
+
+        let comparison = mine.compare(&theirs);
+        assert_eq!(
+            comparison.device.sections(),
+            vec!["formats", "measured_pairs"],
+            "the fixture moved the format tree and the pair set, and the comparison names \
+             something else — {comparison}"
+        );
+        assert!(
+            !comparison.device_differs_only_in_the_format_tree(),
+            "a pair set that moved beside the format tree was given the owner's plug-event \
+             permission — {comparison}"
+        );
+        assert_eq!(
+            comparison.verdict(),
+            DeviceVerdict::Differs,
+            "two findings at once were given a verdict that licenses one — {comparison}"
+        );
+    }
+
+    /// The three verdicts, the profile pair that produces each, and the word the document
+    /// spells it with.
+    ///
+    /// Written down rather than derived from [`DeviceDifference::verdict`], because an
+    /// expectation computed by the function under test is red-able in one direction only
+    /// (note **N252**): each row's verdict is read off the *design's* three cases — nothing
+    /// moved, the format tree alone moved, something the ruling does not license moved — and
+    /// each row's word is the serde spelling a `--json` consumer matches on.
+    fn every_verdict_with_the_pair_that_produces_it() -> Vec<(
+        &'static str,
+        DeviceProfile,
+        DeviceProfile,
+        DeviceVerdict,
+        &'static str,
+    )> {
+        let base = profile(vec![control("brightness", 0, 50)]);
+
+        let mut moved = base.clone();
+        moved.invariant.info.fingerprint.bus_path = "9-9:1.0".to_owned();
+
+        let mut fewer_modes = base.clone();
+        fewer_modes
+            .invariant
+            .formats
+            .push(crate::camera::FormatInfo {
+                pixel_format: crate::camera::PixelFormat::MJPG,
+                description: "Motion-JPEG".to_owned(),
+                flags: 0,
+                sizes: Vec::new(),
+            });
+
+        let mut reshaped = base.clone();
+        reshaped.invariant.controls[0].range.max = 200;
+
+        vec![
+            (
+                "the same capture reached over a forwarded bus",
+                base.clone(),
+                moved,
+                DeviceVerdict::SameDevice,
+                "same_device",
+            ),
+            (
+                "one pixel format more and nothing else",
+                base.clone(),
+                fewer_modes,
+                DeviceVerdict::OnlyTheFormatTree,
+                "only_the_format_tree",
+            ),
+            (
+                "a control the two sides describe differently",
+                base,
+                reshaped,
+                DeviceVerdict::Differs,
+                "differs",
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_json_document_carries_the_verdict_and_not_only_the_halves_it_reads() {
+        // D15's answer for the reader D15 names. `ProfileComparison` is a schema DTO because
+        // §1.3's sibling harness pins this library *and* shells out to `--json`; before note
+        // **N286** that reader got `device` and `identity` and had to rebuild the format-tree
+        // permission itself, and the only spelling available to it was the conjunction over
+        // the three device fields that note **N89** says keeps answering `true` the day a
+        // fifth section lands. So the verdict has to be *in the bytes*, and this arm reads it
+        // out of the bytes rather than off the Rust value.
+        for (what, mine, theirs, expected, word) in every_verdict_with_the_pair_that_produces_it() {
+            let comparison = mine.compare(&theirs);
+            assert_eq!(comparison.verdict(), expected, "{what}");
+
+            let document: serde_json::Value =
+                serde_json::from_str(&serde_json::to_string(&comparison).expect("serialize"))
+                    .expect("the comparison is an object");
+            assert_eq!(
+                document.get("verdict").and_then(serde_json::Value::as_str),
+                Some(word),
+                "{what}: the verdict a Rust caller reads is absent from the document a \
+                 subprocess consumer reads — {document}"
+            );
+
+            // …and the two bools are readings of that one field rather than two more
+            // computations beside it, which is what stops the document and the table coming
+            // to disagree about one comparison.
+            assert_eq!(
+                comparison.device_matches(),
+                expected == DeviceVerdict::SameDevice,
+                "{what}"
+            );
+            assert_eq!(
+                comparison.device_differs_only_in_the_format_tree(),
+                expected == DeviceVerdict::OnlyTheFormatTree,
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_whose_verdict_disagrees_with_its_sections_is_refused() {
+        // The half computing the word at write time cannot give, and the `Failure`/`failed`
+        // shape one document along: the bytes arrive from somewhere else, so the verdict is
+        // checked against the sections beside it on the way *in* as well. Both directions,
+        // because a deserializer that refused everything would satisfy the refusing half and
+        // destroy the type.
+        let (_, mine, theirs, _, _) = every_verdict_with_the_pair_that_produces_it()
+            .into_iter()
+            .find(|(_, _, _, verdict, _)| *verdict == DeviceVerdict::Differs)
+            .expect("the table carries a differing pair");
+        let honest = serde_json::to_string(&mine.compare(&theirs)).expect("serialize");
+        assert!(honest.contains("\"differs\""), "{honest}");
+
+        // The accepting direction first.
+        let back: ProfileComparison = serde_json::from_str(&honest).expect("the honest bytes");
+        assert_eq!(back.verdict(), DeviceVerdict::Differs);
+
+        // Each of the two permissions a hand-written document could help itself to, refused by
+        // name. `same_device` over a non-empty device half is a comparison denying its own
+        // contents; `only_the_format_tree` over a control difference is the owner's ruling
+        // extended to an observation nobody made.
+        for claimed in ["same_device", "only_the_format_tree"] {
+            let doctored = honest.replace("\"differs\"", &format!("\"{claimed}\""));
+            assert_ne!(doctored, honest, "the doctoring has to change the bytes");
+            let refusal = serde_json::from_str::<ProfileComparison>(&doctored)
+                .expect_err("a comparison that says a verdict its sections do not support");
+            let said = refusal.to_string();
+            assert!(
+                said.contains("controls"),
+                "the refusal has to name the sections that contradict the verdict: {said}"
+            );
+        }
+
+        // And a document with no verdict at all is refused rather than defaulted, because a
+        // missing field silently read as `same_device` is the fail-open direction wearing an
+        // absence.
+        let stripped = r#"{"device":{"formats":false,"measured_pairs":false}}"#;
+        serde_json::from_str::<ProfileComparison>(stripped)
+            .expect_err("a comparison with no verdict at all");
+    }
+
     #[test]
     fn a_comparison_round_trips_through_json_because_a_subprocess_consumer_reads_it() {
         let mine = profile(vec![control("brightness", 0, 50)]);
@@ -1146,5 +1648,269 @@ mod tests {
         let json = serde_json::to_string_pretty(&comparison).expect("serialize");
         let back: ProfileComparison = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, comparison);
+        // The verdict is part of what round-trips, and it is a field of the *document* and
+        // not of the value: a consumer that deserialized one has to be able to read the answer
+        // it branched on, which is why the value answers it with a method rather than by
+        // carrying a copy of the word it was handed.
+        assert_eq!(
+            back.verdict(),
+            comparison.verdict(),
+            "the comparison that came back answers a different verdict from the one that went \
+             out"
+        );
+        assert_eq!(
+            back.verdict(),
+            DeviceVerdict::Differs,
+            "a control described differently on the two sides is not a verdict the owner's \
+             ruling licenses"
+        );
+
+        // …and the default is the one verdict an empty device half supports, asserted rather
+        // than assumed: `ProfileComparison::default()` is public API, and a default that said
+        // anything else would be a document contradicting its own contents from the moment it
+        // was built.
+        let empty = ProfileComparison::default();
+        assert!(
+            empty.device.is_empty(),
+            "a fresh comparison has to carry an empty device half"
+        );
+        assert_eq!(
+            empty.verdict(),
+            DeviceVerdict::SameDevice,
+            "the default comparison says something its own empty device half does not support"
+        );
+        assert!(
+            empty.device_matches(),
+            "the default comparison is not the same device as itself"
+        );
+    }
+
+    #[test]
+    fn the_invariant_projection_keeps_a_payloads_shape_because_pf17_is_not_absorbed() {
+        // PF:17's other half, and the one no arm held until 2026-08-20. `corpus_replay`'s
+        // `a_compound_controls_element_count_is_a_device_difference_because_pf17_is_not_absorbed`
+        // holds the *comparison* side — a committed profile is compared as it was loaded, so
+        // masking the shape in `differing_control_slugs` reddens it. This function runs at
+        // *capture*, so stripping `elems`, `elem_size` and `dims` here leaves that arm green
+        // while making every profile already in `corpus/` disagree with its own re-capture —
+        // which is the symptom PF:17 opened with.
+        //
+        // Measured at workspace scope on 2026-08-20 by making that edit: the `corpus_replay`
+        // arm passed, and the four arms that did go red said `the_committed_document_matches_
+        // the_constructor`, `an_unknown_control_round_trips_its_opaque_payload` and two
+        // downstream of them. Every one of those reads as *a fixture to re-bless*, which is
+        // the repair a reader takes from them and the wrong one — so the shape needs a
+        // sentence that names the rule rather than the fixture.
+        //
+        // So the capture side gets its own sentence to go red on. PF:17's **Retires when:**
+        // clause conditions the split on a device where the reshape does not happen *and* a
+        // per-control statement of which descriptor fields may move; until both land, the
+        // shape stays in the invariant section, docs/12's T3 says so, and this is what makes
+        // the day somebody changes it a day the design document has to move too.
+        let mut compound = control("u16_8x16_matrix", KnownFlag::Inactive.bit(), 7);
+        compound.control_type = ControlType::Unknown { raw: 0x0101 };
+        compound.elems = 128;
+        compound.elem_size = 2;
+        compound.dims = vec![8, 16];
+
+        let projected = invariant_control(&compound);
+
+        assert_eq!(
+            (projected.elems, projected.elem_size, projected.dims.clone()),
+            (128, 2, vec![8, 16]),
+            "a payload's shape is compared as description until PF:17 retires, and the \
+             invariant projection dropped it — T3, note **N288**"
+        );
+
+        // Non-vacuity, and the other direction of the same claim: the projection is not the
+        // identity function, so "it kept the shape" is a decision rather than an accident.
+        assert_eq!(
+            projected.current, None,
+            "the invariant projection has to clear the current value, or this arm is passing \
+             because nothing happened"
+        );
+        assert_eq!(
+            projected.flags.raw,
+            compound.flags.raw & !VOLATILE_FLAG_BITS,
+            "the invariant projection has to mask the volatile flag bits, or this arm is \
+             passing because nothing happened"
+        );
+        assert_ne!(
+            projected, compound,
+            "the invariant projection has to change something, or every claim above is vacuous"
+        );
+
+        // And what that costs, said where a reader of the projection meets it: two captures of
+        // one vivid-class device taken across an `S_FMT` differ in the *description* half.
+        let reshaped = {
+            let mut out = compound.clone();
+            out.dims[0] -= 1;
+            out.elems -= 16;
+            invariant_control(&out)
+        };
+        assert_ne!(
+            projected, reshaped,
+            "a reshaped payload has to survive the projection as a difference, because that \
+             is what the comparison arm in `corpus_replay` is asserting on the other side"
+        );
+    }
+
+    /// Every device half a caller can put on a comparison, with the four answers it supports.
+    ///
+    /// Written down rather than derived from [`DeviceDifference::verdict`], for note
+    /// **N252**'s reason: each row's verdict is read off the *design's* three cases — nothing
+    /// moved, the format tree alone moved, anything the owner's ruling does not license — and
+    /// each row's word is the serde spelling a `--json` consumer matches on, so a `verdict`
+    /// that started answering something else has an expectation outside itself to fail.
+    ///
+    /// The fourth row is the pair set beside the format tree, because that is the combination
+    /// a conjunction-shaped verdict would wave through and no other row separates it.
+    fn every_device_half_with_the_answers_it_supports() -> Vec<(
+        &'static str,
+        DeviceDifference,
+        DeviceVerdict,
+        &'static str,
+        &'static str,
+    )> {
+        vec![
+            (
+                "nothing moved",
+                DeviceDifference::default(),
+                DeviceVerdict::SameDevice,
+                "same device",
+                "same_device",
+            ),
+            (
+                "the format tree alone moved",
+                DeviceDifference {
+                    formats: true,
+                    ..DeviceDifference::default()
+                },
+                DeviceVerdict::OnlyTheFormatTree,
+                "device differs: formats",
+                "only_the_format_tree",
+            ),
+            (
+                "one control is described differently",
+                DeviceDifference {
+                    controls: vec![ControlSlug::parse("brightness").expect("literal slug")],
+                    ..DeviceDifference::default()
+                },
+                DeviceVerdict::Differs,
+                "device differs: controls (brightness)",
+                "differs",
+            ),
+            (
+                "the measured pairs moved beside the format tree",
+                DeviceDifference {
+                    formats: true,
+                    measured_pairs: true,
+                    ..DeviceDifference::default()
+                },
+                DeviceVerdict::Differs,
+                "device differs: formats, measured_pairs",
+                "differs",
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_reading_of_a_comparison_answers_from_the_device_half_it_currently_carries() {
+        // The hole note **N286** left open, closed and now held here (note **N289**). The
+        // verdict was a *cached* field beside a `pub device` on a type that derives `Default`,
+        // so `ProfileComparison::default()` plus one field write — public API, no constructor
+        // involved — produced a value whose verdict summarised a device half that was no
+        // longer there. Measured at workspace scope on 2026-08-20 before the repair:
+        // `device.formats = true` on a default gave `verdict() == SameDevice`,
+        // `device_matches() == true`, `device_differs_only_in_the_format_tree() == false`, a
+        // `Display` of "device differs: formats", and bytes carrying `"same_device"` that this
+        // type's own `Deserialize` refused.
+        //
+        // So the claim is not "the constructors agree with themselves" — they always did — but
+        // that the five readings a consumer can take are all readings of `device` **as it
+        // stands when they are taken**, whatever route the value arrived by.
+        for (what, device, verdict, line, word) in every_device_half_with_the_answers_it_supports()
+        {
+            // Two routes to the same value, because the ones that could disagree are the ones
+            // no constructor was involved in: a `Default` a caller filled in, and a `compare`
+            // result a caller edited afterwards.
+            let mut from_default = ProfileComparison::default();
+            assert!(
+                from_default.device.is_empty(),
+                "{what}: a fresh `ProfileComparison` has to start with an empty device half, \
+                 or the edit below is not an edit"
+            );
+            from_default.device = device.clone();
+
+            let mine = profile(vec![control("brightness", 0, 50)]);
+            let mut theirs = mine.clone();
+            theirs.invariant.controls[0].range.max = 200;
+            let mut from_compare = mine.compare(&theirs);
+            assert_eq!(
+                from_compare.verdict(),
+                DeviceVerdict::Differs,
+                "{what}: the edited-afterwards route has to start somewhere other than the row \
+                 it is edited into, or it proves nothing"
+            );
+            from_compare.device = device.clone();
+
+            for (route, comparison) in [
+                ("a default a caller filled in", &from_default),
+                ("a compare result a caller edited", &from_compare),
+            ] {
+                assert_eq!(
+                    comparison.verdict(),
+                    verdict,
+                    "{what}, via {route}: the verdict is not the one this device half \
+                     supports — {comparison}"
+                );
+                assert_eq!(
+                    comparison.device_matches(),
+                    verdict == DeviceVerdict::SameDevice,
+                    "{what}, via {route}: the fidelity assertion §1.3's harness branches on \
+                     disagrees with the device half beside it — {comparison}"
+                );
+                assert_eq!(
+                    comparison.device_differs_only_in_the_format_tree(),
+                    verdict == DeviceVerdict::OnlyTheFormatTree,
+                    "{what}, via {route}: the owner's 2026-08-13 format-tree permission \
+                     disagrees with the device half beside it — {comparison}"
+                );
+                assert_eq!(
+                    comparison.to_string(),
+                    line,
+                    "{what}, via {route}: the human line and the device half describe \
+                     different comparisons"
+                );
+
+                // And the bytes, because the table `render::comparison` prints and the
+                // document a subprocess consumer parses are the two halves that must not come
+                // apart.
+                let bytes = serde_json::to_string(comparison).expect("serialize");
+                let document: serde_json::Value =
+                    serde_json::from_str(&bytes).expect("the comparison is an object");
+                assert_eq!(
+                    document.get("verdict").and_then(serde_json::Value::as_str),
+                    Some(word),
+                    "{what}, via {route}: the word in the bytes is not the verdict the value \
+                     answers — {bytes}"
+                );
+
+                // The round trip is the same claim from the other side: a document this type
+                // emitted and its own `Deserialize` refuses is a library that cannot read what
+                // it writes.
+                let back: ProfileComparison = serde_json::from_str(&bytes).unwrap_or_else(|e| {
+                    panic!(
+                        "{what}, via {route}: this type serialized a document its own \
+                         deserializer refuses — {e}: {bytes}"
+                    )
+                });
+                assert_eq!(
+                    &back, comparison,
+                    "{what}, via {route}: the comparison that came back is not the one that \
+                     went out"
+                );
+            }
+        }
     }
 }

@@ -1774,10 +1774,15 @@ pub(crate) fn comparison(
     ]);
     out.line(&table.to_string())?;
 
-    // The owner's 2026-08-13 ruling as the one line a reader can act on. It is computed by
-    // the answer rather than here, so a caller reading `--json` reaches the same conclusion
-    // from the same three fields — the rule this module opens with — and this tool reports
-    // the shape rather than guessing what it means for somebody else's rig.
+    // The owner's 2026-08-13 ruling as the one line a reader can act on. It branches on
+    // `ProfileComparison::verdict`, which the `--json` document *carries*, so the two readings
+    // are the same computation over the same half and not two derivations of it — the rule this
+    // module opens with, and the reason that verdict is on the document at all (note **N286**):
+    // the conjunction a `--json` consumer would otherwise write over the three device fields is
+    // the spelling note **N89** says fails open. The value stores no copy of the answer, so the
+    // table below and the bytes a subprocess reads cannot be summaries of two different device
+    // halves (note **N289**). This tool reports the shape and declines to guess what it means
+    // for somebody else's rig.
     if comparison.device_differs_only_in_the_format_tree() {
         out.note(
             "note: the format tree is the only device section that differs, and a camera may \

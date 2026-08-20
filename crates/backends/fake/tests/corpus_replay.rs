@@ -20,12 +20,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use camino::Utf8PathBuf;
 use fake::FakeBackend;
 use schema::backend::CameraBackend;
 use schema::camera::{NodeKind, PixelFormat, SinkFidelity};
 use schema::capture::{ChoiceReason, StreamRequest};
 use schema::control::{ControlType, ControlValue, KnownFlag};
-use schema::profile::DeviceProfile;
+use schema::profile::{DeviceProfile, DeviceVerdict};
 use testkit::battery::{self, BatteryArm};
 use testkit::corpus;
 
@@ -285,17 +286,43 @@ fn no_two_committed_profiles_are_the_same_device_and_each_names_why() {
     );
 }
 
+/// The first committed profile that carries at least one format **and** at least one
+/// control, with the population named when the corpus has none.
+///
+/// The subject is chosen **by the shape the arm needs** rather than pinned to whichever file
+/// sorts first, and the two are different things: the arm below perturbs a format and a
+/// control, so a control-less capture — the Chicony IR camera enumerates three controls and
+/// a future one may enumerate none — would make it permanently red for a fact about a real
+/// device rather than for a defect. Choosing by shape also closes the other end, which is
+/// what the `if let` this replaced left open: a corpus in which *nothing* has both cannot
+/// go quietly green, because there is no subject and this says so with the count it looked
+/// at (the shape `binary(selectors)`'s arms use — fail loudly when the corpus stops
+/// exhibiting what an arm pins). Note **N287** records both ends and the measurement behind
+/// each.
+fn the_first_profile_that_carries_a_format_and_a_control() -> (Utf8PathBuf, DeviceProfile) {
+    let profiles = corpus::load_all().expect("the corpus parses");
+    let considered = profiles.len();
+    profiles
+        .into_iter()
+        .find(|(_, profile)| {
+            !profile.invariant.formats.is_empty() && !profile.invariant.controls.is_empty()
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "none of the {considered} committed profile(s) carries both a format and a \
+                 control, so no committed capture can exhibit a format-tree difference with a \
+                 second finding beside it"
+            )
+        })
+}
+
 #[test]
 fn a_formats_only_difference_is_the_one_the_owners_ruling_licenses() {
     // The distinction D15 puts on the answer, driven over a real captured document rather
     // than a constructed one: a camera's advertised format tree is invariant within a
     // connection and nowhere else (owner ruling, 2026-08-13; \[PF:23\], note **N89**), so a
     // consumer needs to know when *that* is the only thing that moved.
-    let (path, profile) = corpus::load_all()
-        .expect("the corpus parses")
-        .into_iter()
-        .next()
-        .expect("the corpus is not empty");
+    let (path, profile) = the_first_profile_that_carries_a_format_and_a_control();
 
     let mut fewer_modes = profile.clone();
     assert!(
@@ -308,21 +335,124 @@ fn a_formats_only_difference_is_the_one_the_owners_ruling_licenses() {
         comparison.device_differs_only_in_the_format_tree(),
         "{path}: dropping a pixel format moved something besides the format tree — {comparison}"
     );
+    assert_eq!(
+        comparison.verdict(),
+        DeviceVerdict::OnlyTheFormatTree,
+        "{path}: the verdict the document carries disagrees with the predicate that reads it"
+    );
 
     // And with anything beside it the permission goes away, because the ruling is about a
-    // device re-deciding what it advertises and not about two findings at once.
-    if let Some(control) = fewer_modes.invariant.controls.first_mut() {
-        control.range.max = control.range.max.saturating_add(1);
-        let both = profile.compare(&fewer_modes);
-        assert!(
-            !both.device_differs_only_in_the_format_tree(),
-            "{path}: a control moved too and the format-tree permission still applied"
-        );
-        assert!(
-            !both.device.controls.is_empty(),
-            "{path}: the control that moved is not named"
-        );
-    }
+    // device re-deciding what it advertises and not about two findings at once. Unconditional,
+    // the way the `formats.pop()` above already is: this claim sat inside an `if let` over the
+    // control list until 2026-08-20, so three assertions would have stopped running — silently,
+    // with the arm still reporting PASS — the day a control-less capture sorted first (note
+    // **N287**).
+    let Some(control) = fewer_modes.invariant.controls.first_mut() else {
+        panic!(
+            "{path}: a profile with no controls cannot exhibit a format difference with a \
+             second finding beside it, and this subject was chosen for having one"
+        )
+    };
+    control.range.max = control.range.max.saturating_add(1);
+    let both = profile.compare(&fewer_modes);
+    assert!(
+        !both.device_differs_only_in_the_format_tree(),
+        "{path}: a control moved too and the format-tree permission still applied"
+    );
+    assert_eq!(
+        both.verdict(),
+        DeviceVerdict::Differs,
+        "{path}: two findings at once were given a verdict that licenses one"
+    );
+    assert!(
+        !both.device.controls.is_empty(),
+        "{path}: the control that moved is not named"
+    );
+}
+
+#[test]
+fn a_compound_controls_element_count_is_a_device_difference_because_pf17_is_not_absorbed() {
+    // PF:17's consequence for D15's device half, asserted rather than left to a design
+    // sentence that said the opposite. `vivid`'s `u8_pixel_array` reshapes from `elems=300
+    // dims=[15, 20]` to `elems=240 dims=[12, 20]` across an `S_FMT` on one file descriptor —
+    // the grid is `ceil(height/16) × ceil(width/16)` — and `profile::invariant_control` clears
+    // only `current` and the volatile flag bits, so `elems`, `elem_size` and `dims` stay in the
+    // invariant section and D15's *description* half reports a `controls` difference for a
+    // device that did not change shape.
+    //
+    // That is the tree's deliberate behaviour and PF:17's **Retires when:** clause has not
+    // fired: retiring it needs a device on which the reshape does not happen *and* a
+    // per-control statement of which descriptor fields may move, and this rig has measured
+    // neither. So docs/12's T3 records the rule as unabsorbed with PF:17 carrying the status,
+    // and this arm is what makes that a fact something checks.
+    //
+    // **What reddens it is the half of PF:17's fix that D15 actually stands on**, and the two
+    // halves are not the same edit — measured on 2026-08-20 by making each one and running
+    // this arm. Teaching `invariant_control` to strip `elems` and `dims` leaves this green,
+    // because a committed profile is compared *as it was loaded* and that function runs at
+    // capture; what reddens it is `differing_control_slugs` comparing descriptors with the
+    // payload's shape masked out. So a future fix that moves only the capture side would leave
+    // two profiles captured a year apart still disagreeing, and this arm is what says so
+    // (note **N288**).
+    let profiles = corpus::load_all().expect("the corpus parses");
+    let considered = profiles.len();
+    let (path, profile, index) = profiles
+        .into_iter()
+        .find_map(|(path, profile)| {
+            let index = profile
+                .invariant
+                .controls
+                .iter()
+                .position(|desc| desc.elems > 1 && desc.dims.len() > 1)?;
+            Some((path, profile, index))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "none of the {considered} committed profile(s) carries a multi-dimensional \
+                 compound control, so PF:17's reshape has no captured subject and this arm \
+                 would be asserting nothing"
+            )
+        });
+
+    // The reshape PF:17 measured, in its own shape: one row fewer off the leading dimension,
+    // and the element count down by the product of the dimensions that row held. Derived from
+    // the descriptor's own `dims` rather than from anything under test.
+    let mut reshaped = profile.clone();
+    let desc = &mut reshaped.invariant.controls[index];
+    let slug = desc.slug.clone();
+    let row: u32 = desc.dims[1..].iter().product();
+    desc.dims[0] -= 1;
+    desc.elems -= row;
+    assert_ne!(
+        profile.invariant.controls[index], reshaped.invariant.controls[index],
+        "{path}: the fixture has to differ in the fields under test"
+    );
+    assert_eq!(
+        profile.invariant.controls[index].current, reshaped.invariant.controls[index].current,
+        "{path}: this arm is about the payload's shape and not about its value"
+    );
+
+    let comparison = profile.compare(&reshaped);
+    assert_eq!(
+        comparison.device.controls,
+        vec![slug.clone()],
+        "{path}: a compound control that reshaped is named by its slug and nothing else moved"
+    );
+    assert_eq!(
+        comparison.device.sections(),
+        vec!["controls"],
+        "{path}: {comparison}"
+    );
+    assert_eq!(
+        comparison.verdict(),
+        DeviceVerdict::Differs,
+        "{path}: {slug} reshaped and the comparison licensed it"
+    );
+    assert!(
+        !comparison.device_matches(),
+        "{path}: the invariant split treats a payload's shape as identity, so this is a device \
+         difference until PF:17 retires — {comparison}"
+    );
 }
 
 #[test]

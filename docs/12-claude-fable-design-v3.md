@@ -171,7 +171,10 @@ P3–P5 on the same host** (the OBSBOT, the Dell U3224KB and the Logitech BRIO j
 two Chicony logical cameras). Full transcripts live in the implementation notes, which is
 where a new finding always lands first; this registry absorbs each finding's one-line law
 at each revision. PF:1–16 are restated in docs/6 v2 §1.2 verbatim and are not repeated
-here beyond their titles; PF:17–28 are absorbed at this revision.
+here beyond their titles; PF:17–28 are absorbed at this revision. *Absorbed into this
+registry* means the finding's one-line law is restated below; it is not a claim that the tree
+acts on it. Where the two come apart the design section that owns the rule carries the status,
+which for PF:17 is T3.
 
 - **PF:1** — the `v4l` crate panics on modern control types (the reason the control loop
   is ours). **PF:2** — menu indices are sparse. **PF:3** — INACTIVE tracks pairing live,
@@ -188,7 +191,9 @@ here beyond their titles; PF:17–28 are absorbed at this revision.
 - **PF:17 (vivid)** — **a compound control's element count is not invariant**: vivid's
   `u8_pixel_array` reshapes with the negotiated format, so payload shape is device
   *state*, not identity, and a mis-sized payload is *applied truncated*, not refused —
-  the fake resembles that now [N136].
+  the fake resembles that now [N136]. The partition does not act on the first half of that:
+  `profile::invariant_control` keeps `elems`, `elem_size` and `dims`, so payload shape is
+  compared as description — T3 and note **N288**.
 - **PF:18 (OBSBOT)** — **a PTZ move is acknowledged before it happens**: `pan_absolute`
   reads back the commanded position in ~21 ms while the head is still traveling.
   `{requested, applied}` means *accepted*, not *achieved*, for motor controls; settle
@@ -324,17 +329,19 @@ descriptor carries numeric id, name, slug (the pinned transform — `Zoom, Conti
 `zoom_continuous`), type, range `{min, max, step}` as i64, default, flags (raw u32 plus
 the decoded known set [PF:12], the decoded set compared against bindgen's own constants
 rather than hand-copied — thirteen bits had drifted from nothing checking [docs/11 L11,
-N228]), sparse menu map [PF:2], element count and size for array/compound controls
-(element count is device *state*, not identity [PF:17]), and the current value *as read,
-unvalidated* [PF:4]. Control types are a closed enum with `Unknown { raw }` carrying
-payload size [PF:1]. Out-of-range currents and defaults are reported as measured, flagged,
-never corrected [PF:4, PF:5]. The enumeration loop is ours (raw `QUERY_EXT_CTRL` +
-`QUERYMENU` tolerating holes); `v4l::query_controls` is lint-banned [PF:1]. Two rules the
-G6 review added: **one control the device declines to read is carried valueless rather
-than ending the walk** — and the tolerance is `EBUSY` alone, because folding EPERM, EIO
-and timeouts into "no value" converts three of rule 7's four classes (docs/11 M6; N192,
-N196) — and **a declined value is a visible absence**: snapshots record it, profile
-capture refuses on it, restore neither invents it nor reports complete over it (N195).
+N228]), sparse menu map [PF:2], element count and size for array/compound controls (a
+payload's shape is device *state* on at least one driver [PF:17]; the invariant split does
+**not** act on that and T3 carries the status, so `elems`, `elem_size` and `dims` are
+compared as description today), and the current value *as read, unvalidated* [PF:4].
+Control types are a closed enum with `Unknown { raw }` carrying payload size [PF:1].
+Out-of-range currents and defaults are reported as measured, flagged, never corrected
+[PF:4, PF:5]. The enumeration loop is ours (raw `QUERY_EXT_CTRL` + `QUERYMENU` tolerating
+holes); `v4l::query_controls` is lint-banned [PF:1]. Two rules the G6 review added: **one
+control the device declines to read is carried valueless rather than ending the walk** —
+and the tolerance is `EBUSY` alone, because folding EPERM, EIO and timeouts into "no
+value" converts three of rule 7's four classes (docs/11 M6; N192, N196) — and **a declined
+value is a visible absence**: snapshots record it, profile capture refuses on it, restore
+neither invents it nor reports complete over it (N195).
 
 **D3 — Writes read back; guarded writes handle automation.** Unchanged from v2: `set`
 returns `{requested, applied}`; a clamp [PF:6] is a warning-carrying success; a guarded
@@ -970,14 +977,41 @@ died at P4d as scheduled). One note is new at v3:
   item 10 keeps the gap named; this note is its standing instruction.
 
 **T3 — The device profile.** The two-section shape stands — the *invariant* description
-against the *state* block, provenance outside both — with three absorbed rules and one
-addition. Absorbed: a node's `path` is provenance, not invariant — comparison excludes it
-[N63, PF:22]; the format tree is invariant within a connection and nowhere else [N89,
-PF:23], and the comparison answers per-section so that fact is representable; a compound
-control's element count is state, not identity [PF:17]. Added at v3: **the
-identity/device partition is a stated projection with a named-diff compare** — D15 —
-which is the comparison semantics this section always owed a consumer comparing one
-device across two addresses. Profiles are captured by the tool, committed with
+against the *state* block, provenance outside both — with two absorbed rules, one that is
+**not** absorbed and now says so, and one addition. Absorbed: a node's `path` is
+provenance, not invariant — comparison excludes it [N63, PF:22]; the format tree is
+invariant within a connection and nowhere else [N89, PF:23], and the comparison answers
+per-section so that fact is representable.
+
+**Unabsorbed, with PF:17 carrying the status:** a compound control's element count *ought*
+to be state rather than identity and it is not. `profile::invariant_control` clears
+`current` and the volatile flag bits and keeps everything else, so `elems`, `elem_size`
+and `dims` stay in the invariant section — and `vivid`'s `u8_pixel_array` reshaping from
+`elems=300 dims=[15, 20]` to `elems=240 dims=[12, 20]` across an `S_FMT` on one file
+descriptor therefore reads as a `controls` difference on D15's *description* half for a
+device that changed nothing. v2 recorded the rule as settled and the tree never
+implemented it; PF:17 has said so in its own **Retires when:** clause since 2026-08-08,
+and that clause has not fired: retiring the finding needs a device on which the reshape
+does not happen *and* a per-control statement of which descriptor fields may move, and
+this rig has measured neither. Restating the status is the smaller of the two available
+errors — landing the per-control split now would redefine T3's partition for every
+descriptor on both backends on the strength of taste rather than of the measurement PF:17
+conditions it on. The consequence is held by an arm rather than by this paragraph:
+`corpus_replay` finds the first committed profile carrying a multi-dimensional compound
+control — `u16_8x16_matrix` in `vivid.json` on today's corpus, since the arm is
+deliberately written to pin a shape rather than a slug — reshapes it the way PF:17
+measured, and holds the answer to a device difference, so the day the *comparison* stops
+treating a payload's shape as description the arm goes red and this sentence has to move
+with it. That is the half of the fix D15 stands on, and it is not the same edit as
+teaching `invariant_control` to strip the shape — a fix landed on the capture side alone
+leaves every profile already committed disagreeing with its own re-capture, which is what
+PF:17 opened with. The capture side therefore has an arm of its own, in `schema::profile`,
+because the arms it *did* redden all read as a committed fixture to re-bless rather than
+as a design rule to move (2026-08-20; note **N288**).
+
+Added at v3: **the identity/device partition is a stated projection with a named-diff
+compare** — D15 — which is the comparison semantics this section always owed a consumer
+comparing one device across two addresses. Profiles are captured by the tool, committed with
 provenance, immutable, replaced wholesale; a profile may carry *measured* automation
 pairs when the caller asked for the probe and the probe restored (`--discover-pairs`,
 owner ruling; N239). E5 applies to the fake's replay of every section, coupling included

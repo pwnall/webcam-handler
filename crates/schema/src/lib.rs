@@ -88,7 +88,7 @@ pub use control::{
     Applied, ControlDesc, ControlId, ControlSlug, ControlValue, ControlWrite, WriteWarning,
 };
 pub use error::{BackendError, Error, ErrorKind, Failure, Result};
-pub use profile::{DeviceDifference, DeviceProfile, ProfileComparison};
+pub use profile::{DeviceDifference, DeviceProfile, DeviceVerdict, ProfileComparison};
 pub use report::{
     CameraDetail, CameraList, ControlReport, DiscoveryReport, ListHint, TerminationReport,
     WriteReport,

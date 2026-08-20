@@ -26723,3 +26723,260 @@ page offers the refused control again and the fake answers
 `device_io: VIDIOC_S_EXT_CTRLS (auto_exposure) failed (errno 22)`.
 
 **Retires when:** nothing retires it.
+
+## N286 — A verdict published in the one form its stated reader could not use
+
+**Date:** 2026-08-20. **Subject:** `schema::profile::ProfileComparison`, `DeviceVerdict`,
+`cli_core::render::comparison`. **Class:** design D15 delivered to the wrong reader — a
+derived answer carried as a Rust method by a DTO that exists for a `--json` subprocess.
+
+**The instance.** `ProfileComparison` is a schema DTO and its own doc comment says why: "the
+consumer that asked for it reads `--json` out of a subprocess" — design §1.3's usb-teleporter
+harness, which pins this library *and* shells out, comparing answers across machines. D15 puts
+two answers on that document: the fidelity assertion, and the owner's 2026-08-13 licence for a
+camera to advertise a different format tree each time it is plugged in. Both were `pub fn`s
+and neither was serialized. Measured through the shipped binary on a formats-only pair
+(`chicony-rgb` with one pixel format dropped, written to scratch): the table printed *note: the
+format tree is the only device section that differs, and a camera may advertise a different one
+each time it is plugged in*, and `--json` printed, in full,
+`{"device":{"formats":true,"measured_pairs":false}}`. So the human got the ruling and the
+document's stated reader got three flags.
+
+**Why that is worse than a missing convenience.** The only way to rebuild the answer from three
+flags is the conjunction `formats && controls.is_empty() && !measured_pairs`, and note **N89**
+rules that spelling out by name: it "keeps answering `true` when a *fifth* section is added
+later, which would silently extend the owner's ruling to something nobody was asked about". The
+in-tree computation had already been written as an equality against `sections()` for exactly
+that reason. So the tree held the fail-closed spelling and published only the shape that
+obliges its consumer to write the fail-open one — and it fails open across precisely the version
+skew this consumer has, since it pins one copy of the library and executes another.
+
+**The repair.** `DeviceVerdict` — `same_device`, `only_the_format_tree`, `differs` — computed in
+one place, `DeviceDifference::verdict`, as a `match` on the section list with a wildcard, so a
+fourth section joins `Differs` by falling through rather than by being waved past a permission.
+The document carries it, and the value does **not**: `ProfileComparison::verdict` calls that
+computation over the device half it holds at the moment it is asked, and `Serialize` writes the
+word by calling it again over the half it is writing, so there is no stored copy for a caller to
+leave behind (the first draft of this repair had one and note **N289** measured the hole).
+`device_matches` and `device_differs_only_in_the_format_tree` become readings of the same
+computation rather than two more beside it; `render::comparison` branches on the same answer the
+document carries, so the note and the `--json` reader are one fact and not two derivations of it.
+
+**The precedent, and the two places it had to be widened.** `schema::error::Failure` is the
+in-crate shape: `failed` is private, derived, serialized, and refused on the way in by
+`refuse_a_document_that_says_it_did_not_fail`, because a constructor cannot reach bytes that
+arrive from somewhere else. `verdict` takes the refusal and leaves the field. It differs in the
+deserializer's form — `Failure`'s contradiction is visible in the field itself, so a
+`deserialize_with` suffices, while a verdict is a claim *about the field beside it* — so
+`ProfileComparison` deserializes through a shadow document, `ProfileComparisonDocument`, and
+`refuse_a_verdict_the_sections_do_not_support`, which refuses and never repairs (AGENTS rule 6):
+a value that silently replaced a stated verdict with the computed one would parse a document
+written by a tool with a different section vocabulary into an answer nobody wrote. And it
+differs in whether the derived answer is *stored*, which is note **N289**: `Failure::failed` is a
+constant of the shape and cannot go stale whatever a holder does to `error`, while a verdict is
+derived from a sibling half this DTO deliberately leaves public, so the same shadow document
+serves `Serialize` and `JsonSchema` as well and the word is computed at write time.
+
+**What it costs, stated.** The committed bundle moved — `DeviceVerdict` is a new `$def` and
+`verdict` a new required property of `ProfileComparison`, so `schema-artifacts-current.sh` is
+red until `just generate` is committed. It is **not** a wire break in note **N91**'s sense:
+`profile compare` is a document verb, and the only profile method on the wire is
+`wch_profile_capture`, which carries a `DeviceProfile`. `ProfileComparison` keeps both halves
+public and stays constructible by struct literal, because the verdict is no longer a field for a
+literal to get wrong. A hand-written *document* that was accepted before is now refused when it
+contradicts itself, which is the fail-closed behaviour rule 6 asks for and a behaviour change
+worth naming — and the committed bundle cannot express that cross-field rule, so bytes that
+validate green against `schemas/webcam-handler-schema.json` can still be refused by
+`ProfileComparison::deserialize`. That only reaches a consumer that *writes* comparisons, which
+§1.3's harness does not; it reads them.
+
+**Retires when:** nothing retires it. The rule to carry: when a type's doc comment names the
+consumer it exists for, every answer that type computes is owed to *that* consumer in the form
+that consumer reads — and "the Rust caller can compute it" is not an answer when the Rust
+caller is not the reader named.
+
+## N287 — Three D15 claims that fired in production and could not go red
+
+**Date:** 2026-08-20. **Subject:** `schema::profile::DeviceDifference::sections`,
+`cli_core::render::comparison`, `crates/backends/fake/tests/corpus_replay.rs`. **Class:** AGENTS
+rule 2 — a claim nothing can go red on — three of them under one design item.
+
+**The pair set.** `DeviceDifference.measured_pairs` is implemented, is named by `sections()`,
+and fires in production: `profile compare corpus/profiles/chicony-rgb.json
+corpus/profiles/chicony-ir.json` reports it. Nothing asserted it. The D15 block in
+`schema::profile` had arms for identity rewrite, control-by-slug, control-on-one-side-only,
+control reordering, formats-only, identity-only and JSON round-trip, and the corpus walk asserts
+only that `sections()` is non-empty and symmetric, which stays true through `formats` and
+`controls` alone. Deleting the `measured_pairs` arm from `sections()`, or hardwiring the field to
+`false` in `compare`, left the whole workspace green.
+
+**The rendered caveat.** `render::comparison` emits the one line a human consumer acts on, and
+`grep` over `crates/` and `scripts/` found exactly one occurrence of it in the tree: the string
+literal itself. The only arm that mentioned it asserted `notes.is_empty()` over a pair that is
+*not* formats-only — the negative direction alone — and no arm drove a formats-only pair through
+the verb, because the two corpus profiles the block uses differ in formats, controls *and*
+pairs. Deleting the whole `if` block kept `just ci` green.
+
+**The conditional that could not go red.** The corpus arm
+`a_formats_only_difference_is_the_one_the_owners_ruling_licenses` put its second claim inside an
+`if let` over `fewer_modes.invariant.controls.first_mut()`, so three assertions would have
+stopped running — silently, with the arm still reporting PASS — the day a control-less capture
+sorted first. The line four above it already did it the honest way for `formats`. The subject was
+`load_all().next()`, the alphabetically first profile, so the branch happened to be taken; a
+control-less profile is a document this loader accepts and compares fine, measured by emptying
+`invariant.controls` and watching the arm run past the conditional to its next assertion.
+
+**The repair, and the part that is not the obvious one.** The `if let` becomes a `let … else`
+that panics with its sentence. That alone would have made the arm permanently red for a
+*non-defect* the day a control-less capture sorted first — the Chicony IR camera enumerates
+three controls and a future capture may enumerate none — so the subject is chosen **by the shape
+the arm needs**, first profile with at least one format and at least one control, and the empty
+population is loud: a corpus in which nothing has both panics naming the count it looked at.
+Both ends close, which is the point — a `filter`/`continue` over the corpus would have been the
+same skip-that-reads-as-pass one shape over (**N160**, **N231**, **N235**). Beside it: a schema
+arm building two profiles that differ only in `measured_pairs`, in both orders and with a
+one-sided pair set as the third case; a schema arm holding a pair-set difference *beside* a
+format-tree one to `Differs`, since a verdict rewritten as a conjunction that forgot this field
+would grant the permission where no controls-shaped arm could see it; and a `cli-core` arm
+driving a doctored capture — one pixel format dropped, under `schema::paths::scratch_root()` and
+never into `corpus/` — through the shipped verb, asserting the printed ruling and the
+`only_the_format_tree` the document carries.
+
+**Retires when:** nothing retires it. The rule to carry: a section list, a rendered caveat and a
+conditional's false branch are three different places the same question gets asked — "what would
+go red if this stopped being true" — and D15 answered "nothing" in all three while every arm
+around them was green.
+
+## N288 — "Absorbed" for a rule the tree never absorbed, and PF:17's clause that had not fired
+
+**Date:** 2026-08-20. **Subject:** docs/12's T3, `schema::profile::invariant_control`, PF:17.
+**Class:** a design document stating as settled a rule the code contradicts, where the finding
+that contradicts it says so and nobody reconciled the two.
+
+**The instance.** T3 listed three "absorbed" rules, the third being "a compound control's element
+count is state, not identity [PF:17]". It is not absorbed. `invariant_control` clears `current`
+and the volatile flag bits and keeps everything else, so `elems`, `elem_size` and `dims` stay in
+`ProfileInvariant.controls` and `DeviceProfile::compare`'s `differing_control_slugs` treats a
+payload's shape as description. The corpus exhibits it — `jq '.invariant.controls[] |
+select(.elems > 1)' corpus/profiles/*.json` answers with compound controls, among them
+`u8_pixel_array elems=300 elem_size=1 dims=[15, 20]` in `vivid.json`, which is the exact control
+PF:17 measured reshaping to `elems=240 dims=[12, 20]` across an `S_FMT` on one file descriptor. PF:17 states the cost in its own words ("two `profile capture`
+runs against one such device disagree in the *invariant* section whenever the negotiated format
+differed between them") and carries a **Retires when:** clause that has not fired.
+
+**Why it lands on D15 rather than only on T3.** D15's whole claim is that description is what
+the device *is* and must not move across a forwarded bus, another port or another machine. On a
+vivid-class device the description half can report a `controls` difference for a device that
+changed nothing — so the one section D15 asks a cross-machine consumer to trust is the section
+this finding perturbs.
+
+**The decision, and the argument for it.** PF:17 names the honest fix — a per-control statement
+of which descriptor fields may move, since `elems` is invariant for every other control on this
+driver — and conditions retirement on *two* things, of which the second is that statement and
+the first is a device on which the reshape does not happen. This rig has measured neither.
+Landing the per-control split now would redefine T3's partition for every descriptor on both
+backends on the strength of taste rather than of the measurement PF:17 conditions it on, which
+is the move AGENTS' "do not re-litigate without new evidence" refuses. So the design sentence
+moves instead: T3 records two absorbed rules and one that is **not** absorbed, with PF:17
+carrying the status.
+
+**And the consequence stops being prose.** A restated paragraph is exactly the kind of claim
+that drifts back, so `corpus_replay` gains an arm that finds the first committed profile with a
+multi-dimensional compound control — `u16_8x16_matrix` in `vivid.json` on today's corpus —
+reshapes it the way PF:17 measured (one row off the leading dimension, the element count down by
+the product of the dimensions that row held, derived from the descriptor's own `dims`), and
+holds the answer to a `controls` difference with the slug named and a `Differs` verdict. It
+names its population when the corpus carries no such control, rather than passing over an empty
+one.
+
+**PF:17's fix has two halves and only one of them is on D15's path** — measured while proving
+this arm's inverse, by making each edit and running it. Teaching `invariant_control` to strip
+`elems` and `dims` leaves the arm **green**: that function runs at *capture*, and a committed
+profile is compared as it was loaded, so nothing on the comparison path changed. What reddens
+the arm is `differing_control_slugs` comparing descriptors with the payload's shape masked out.
+So the retirement PF:17 asks for is not one edit: a fix landed on the capture side alone would
+make new captures agree with each other and leave every profile already in the corpus
+disagreeing with its own re-capture, which is the symptom PF:17 opened with. Worth knowing
+before anybody starts, and it is why the arm is written over `compare` rather than over
+`invariant_control`.
+
+**And the capture side gets a sentence of its own**, added when this note's own measurement was
+re-run at workspace scope. Stripping the shape in `invariant_control` leaves the `corpus_replay`
+arm green as recorded, and the four arms it *does* redden —
+`fixtures::tests::the_committed_document_matches_the_constructor`,
+`resemblance::an_unknown_control_round_trips_its_opaque_payload` and two downstream of them —
+every one of them reads as a committed fixture that needs re-blessing. That is the repair a
+reader takes from them, and it is the wrong one: the right one is to move T3, PF:17 and this
+note together. So `schema::profile::tests::the_invariant_projection_keeps_a_payloads_shape_
+because_pf17_is_not_absorbed` asserts the projection keeps `elems`, `elem_size` and `dims`,
+with the cleared current value and the masked volatile bits beside it as the non-vacuity, and
+says in its failure which rule moved.
+
+**Retires when:** the per-control statement lands, on the evidence PF:17 asks for. Then this
+note, PF:17 and T3's bullet all move in one commit, and the corpus arm inverts.
+
+## N289 — A derived answer cached beside the public half it is derived from
+
+**Date:** 2026-08-20. **Subject:** `schema::profile::ProfileComparison`,
+`ProfileComparisonDocument`. **Class:** a fail-closed mechanism with an unguarded door — a
+summary stored next to a mutable source, so the summary can outlive what it summarises, and the
+direction it fails in is the permissive one.
+
+**The instance.** Note **N286**'s first draft put `DeviceVerdict` on `ProfileComparison` as a
+private, serialized field filled once by `DeviceProfile::compare`, with
+`refuse_a_verdict_the_sections_do_not_support` guarding the deserializer and both bools rewritten
+as readings of the field. The half it is derived from — `pub device: DeviceDifference`, whose own
+fields are `pub` — stayed public and mutable, and the type derives `Default`. So three public
+constructors existed, not two, and one of them needs no argument at all. Measured at workspace
+scope on 2026-08-20, in four lines of nothing but public API:
+
+    let mut c = ProfileComparison::default();
+    c.device.formats = true;
+
+    device.sections()                        = ["formats"]
+    verdict()                                = SameDevice
+    device_matches()                         = true
+    device_differs_only_in_the_format_tree() = false
+    Display                                  = "device differs: formats"
+    serialized                               = {"device":{"formats":true,…},"verdict":"same_device"}
+    round trip                               = refused by this type's own Deserialize
+
+Every one of those is a defect this batch exists to prevent. `device_matches` is the fidelity
+assertion design §1.3's harness branches on and it answered "same device" over a device half
+naming a section — before the batch it was `self.device.is_empty()` and could not be wrong for
+any value, so the change was a regression in the one answer D15 is for. The owner's 2026-08-13
+format-tree permission was mis-answered in the other direction at the same time. And a DTO that
+serializes bytes its own deserializer refuses cannot round-trip a value it can produce, which
+made `refuse_a_verdict_the_sections_do_not_support` a door held shut beside an open window.
+
+**Why the cited precedent does not carry it.** `schema::error::Failure` also derives a field from
+a public sibling, and it is house style — but `failed` is a *constant of the shape*, `true` for
+every `Failure` there will ever be, so no edit to `error` can leave it stale, and `Failure`
+carries no `Default`. `verdict` is derived from data. A derived-constant-behind-a-public-field
+and a derived-*value*-behind-a-public-field are different shapes and only the first is safe; the
+first draft read the precedent as licensing the second.
+
+**The repair.** Stop storing it. `ProfileComparison` holds the two halves and nothing else;
+`verdict()` calls `DeviceDifference::verdict` over the half it holds; the two bools read that
+call. `ProfileComparisonDocument` — already written as the shadow the deserializer checks
+through — becomes the one shape `Serialize`, `Deserialize` and `JsonSchema` all go through, so
+the word in the bytes is computed from the half being written, the refusal still guards foreign
+bytes, and the published schema still declares `verdict` required. Staleness stops being
+representable rather than being refused at one more door. Making the halves private with
+accessors would also have closed it, and was declined because it narrows the DTO's public shape
+for every reader to fix a hazard that has a fix costing nothing.
+
+**What holds it.** `every_reading_of_a_comparison_answers_from_the_device_half_it_currently_carries`
+in `schema::profile::tests` walks a written-down table of four device halves — nothing moved, the
+format tree alone, one control, the pair set *beside* the format tree — and for each one takes
+every reading a consumer can take (the verdict, both bools, `Display`, the serialized word, the
+round trip) over a value built two ways: a `Default` a caller filled in, and a `compare` result a
+caller edited afterwards. Written red first: against the cached field it failed at the first row,
+`nothing moved, via a compare result a caller edited: the verdict is not the one this device half
+supports`. The expectations are read off the design's three cases and the serde spellings, not
+off `verdict()`, so the arm is red-able in both directions (note **N252**).
+
+**Retires when:** nothing retires it. The rule to carry: a derived field is safe beside a public
+sibling only when it is derived from *nothing* — a constant of the shape. Derive it from data and
+the question is not "who constructs this" but "who can reach the source afterwards", and
+`#[derive(Default)]` plus one `pub` field answers *anybody*.

@@ -1225,6 +1225,26 @@
       ],
       "type": "object"
     },
+    "DeviceVerdict": {
+      "description": "What one comparison says about the device half, as a closed vocabulary on the document\n(design D15; owner's 2026-08-13 ruling; note **N89**).\n\n**Why this is on the document and not only a pair of accessors.** `ProfileComparison`\nexists for the consumer design §1.3 names — the sibling HIL harness, which pins this\nlibrary *and* shells out to `--json`, comparing answers across machines. That consumer\nreading the document got `device` and `identity` and had to rebuild the verdict itself,\nand the only spelling available to it was the conjunction over the three device fields\nthat N89 says fails **open** the day a fourth section lands. A verdict a Rust caller can\nread and a `--json` caller cannot is a verdict published in the one form its stated reader\ncannot safely use, so the serialized document carries it — computed at write time by\n`DeviceDifference::verdict`, which is where it is computed for every other reader too\n(note **N289**: the value stores no copy, because the half it is derived from is public\nand a stored summary is one a caller can leave behind).\n\n**Three arms and no fourth.** They are the three answers the owner's ruling distinguishes:\nnothing moved; the format tree moved and nothing else, which a camera is licensed to do\neach time it is plugged in [PF:23]; and anything else, which no measurement licenses.\nA section added to `ProfileInvariant` later joins `Self::Differs` by falling through\nthe wildcard rather than by being waved through a permission, which is the whole reason\nthe computation is an equality against a list.",
+      "oneOf": [
+        {
+          "const": "same_device",
+          "description": "The device half is empty: the two profiles describe the same device, whatever their\nidentity halves say.\n\nThe default, because an empty `DeviceDifference` *is* the same device and a\n`ProfileComparison::default()` that said otherwise would be a document disagreeing\nwith its own contents.",
+          "type": "string"
+        },
+        {
+          "const": "only_the_format_tree",
+          "description": "The advertised format tree is the **only** section that differs.\n\nThe owner's 2026-08-13 ruling in one word: a camera's format tree is invariant within\na connection and nowhere else [PF:23, note **N89**], so a consumer may treat this as\na fact about a replug rather than about a different device. This tool reports the\nshape and declines to guess what it means for somebody else's rig.",
+          "type": "string"
+        },
+        {
+          "const": "differs",
+          "description": "Something the ruling does not license moved — including a format-tree difference with\na second finding beside it, which is two observations at once and the second one is\nunexplained.",
+          "type": "string"
+        }
+      ]
+    },
     "Error": {
       "description": "Everything that can go wrong, as a value the caller can branch on.",
       "oneOf": [
@@ -3213,22 +3233,27 @@
       "type": "string"
     },
     "ProfileComparison": {
-      "description": "Two profiles compared with identity held to one side (design D15; FR-W2).\n\nThe document `profile compare` answers, and a schema DTO because the consumer that asked\nfor it reads `--json` out of a subprocess. Both halves come back from one comparison\nbecause the consumer needs both: `Self::device` is the fidelity assertion — the\nforwarded camera is the same device — and `Self::identity` is the expected-delta\nreport, since a different bus path is exactly what forwarding *means*.",
+      "description": "The document a `ProfileComparison` is written to and read from — D15's two halves with\nD15's verdict beside them.\n\n**`verdict` is on the document and not on the value**, because the two have different\nhazards. A `--json` consumer holds bytes it cannot recompute anything from without\nreimplementing note **N89**'s rule, so the bytes must carry the answer; a Rust caller\nholds a value whose `device` half it can edit, so the value must not carry a copy that\ncould be left behind (note **N289**). This struct is where those meet: it is the one\nshape `ProfileComparison`'s `Serialize`, `Deserialize` and `JsonSchema` all go through,\nso the bytes, the refusal and the published schema cannot come to describe three\ndifferent documents.\n\nA shadow struct rather than a `serialize_with`/`deserialize_with` on the field, because\nthe verdict is a function of a *sibling* field and a field (de)serializer sees only its\nown — the one way this differs from `error::Failure`'s marker, whose\ncontradiction is visible in the field itself.",
       "properties": {
         "device": {
           "$ref": "#/$defs/DeviceDifference",
-          "description": "What the device *is*: formats, controls, measured pairs."
+          "description": "What the device *is*: formats, controls, measured pairs. The fidelity assertion."
         },
         "identity": {
-          "description": "Where the device *is*: the `info` fields that differ, in the order and the spelling\n`CameraInfo::differing_fields` produced. Expected to be non-empty across a\nforwarded bus, a different port, a reboot or another machine.",
+          "description": "Where the device *is*: the `info` fields that differ. Expected to be non-empty across\na forwarded bus, a different port, a reboot or another machine, and omitted when\nnothing about the address moved.",
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/DeviceVerdict",
+          "description": "D15's answer about the device half, in one closed word: `same_device`,\n`only_the_format_tree` or `differs`.\n\nA reading of `device` and never a second opinion beside it — computed by\n`DeviceDifference::verdict` on the way out, and refused on the way *in* when the\nbytes state one the sections they carry do not support, because bytes arrive from\nsomewhere else and nothing this crate does can constrain how they were written."
         }
       },
       "required": [
-        "device"
+        "device",
+        "verdict"
       ],
       "type": "object"
     },

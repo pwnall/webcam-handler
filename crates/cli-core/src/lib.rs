@@ -4453,6 +4453,80 @@ mod tests {
     }
 
     #[test]
+    fn a_formats_only_difference_prints_the_owners_ruling_and_says_so_in_the_document_too() {
+        // The one line a human consumer acts on, and the field the `--json` consumer branches
+        // on, driven through the shipped verb over the same pair. Both halves were unasserted
+        // until 2026-08-20: the note's string literal had exactly one occurrence in the tree —
+        // itself — so deleting the whole `if` block in `render::comparison` left `just ci`
+        // green, and the verdict was a Rust method the document did not carry at all (notes
+        // **N89**, **N286**, **N287**). The negative direction is the `notes.is_empty()`
+        // assertion in the arm above, over a pair that is not formats-only.
+        //
+        // `TempDir::new_in` over the one scratch root, not `tempfile::tempdir()`: the owner's
+        // 2026-08-12 ruling (note **N84**) puts every test's scratch under `target/`, and a
+        // doctored capture is a document a test made rather than one a tool captured, so it
+        // never goes near `corpus/`.
+        let root = schema::paths::scratch_root().expect("a scratch root");
+        let dir = tempfile::TempDir::new_in(&root).expect("a scratch directory");
+        let a = corpus_path("chicony-rgb");
+        let mut fewer_modes = corpus("chicony-rgb");
+        let dropped = fewer_modes
+            .invariant
+            .formats
+            .pop()
+            .expect("a committed capture advertises at least one pixel format");
+        assert!(
+            !fewer_modes.invariant.formats.is_empty(),
+            "dropping the last pixel format would make this a capture of a camera that \
+             advertises nothing, which is a different claim from a replug"
+        );
+        let b = Utf8PathBuf::from_path_buf(dir.path().join("fewer-modes.json"))
+            .expect("a UTF-8 scratch path");
+        std::fs::write(&b, serde_json::to_vec(&fewer_modes).expect("serializes"))
+            .expect("writes the doctored capture");
+
+        let argv = ["profile", "compare", a.as_str(), b.as_str()];
+        let (answered, table, notes) = compared(&[&["webcam-handler-cli"], &argv[..]].concat());
+        answered.expect("the comparison answers");
+        assert!(
+            table.contains("formats"),
+            "the section that moved is missing from:\n{table}"
+        );
+        assert!(
+            notes.contains(
+                "the format tree is the only device section that differs, and a camera may \
+                 advertise a different one each time it is plugged in"
+            ),
+            "a capture that stopped advertising {} is the owner's 2026-08-13 ruling and the \
+             rendering said nothing about it: {notes:?}",
+            dropped.pixel_format
+        );
+
+        // …and the same conclusion out of the document, from the field rather than from a
+        // conjunction over the three device flags — which is the spelling note **N89** rules
+        // out and the reason the verdict is on the document at all.
+        let (answered, json_text, _) =
+            compared(&[&["webcam-handler-cli", "--json"], &argv[..]].concat());
+        answered.expect("the comparison answers");
+        let document: schema::profile::ProfileComparison =
+            serde_json::from_str(&json_text).expect("a ProfileComparison");
+        assert_eq!(
+            document.verdict(),
+            schema::profile::DeviceVerdict::OnlyTheFormatTree,
+            "{json_text}"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json_text)
+                .expect("an object")
+                .get("verdict")
+                .and_then(serde_json::Value::as_str),
+            Some("only_the_format_tree"),
+            "the table printed the ruling and the document a subprocess reads did not carry \
+             it: {json_text}"
+        );
+    }
+
+    #[test]
     fn a_file_that_is_not_a_profile_is_refused_by_name_and_never_compared() {
         // Three refusals, all from the D13 registry v3 adds nothing to, and each one naming
         // what a caller has to fix. An agent reading these unsupervised needs the path in the
