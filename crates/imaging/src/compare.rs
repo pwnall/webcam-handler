@@ -74,6 +74,32 @@ const READ_OP: &str = "read a photograph for comparison";
 /// the one quantity that needs equal shapes says so on itself.
 #[must_use]
 pub fn photos(a: &GrayImage, b: &GrayImage) -> PhotoComparison {
+    photos_corroborated_by(a, b, &measured_ssim)
+}
+
+/// What a structural-similarity implementation answers: a score, or what it said instead.
+///
+/// A `String` rather than the dependency's error type, so the seam below is about *an*
+/// implementation refusing and not about which one this build pinned.
+type Corroboration = std::result::Result<f64, String>;
+
+/// The same comparison with the corroborator handed in.
+///
+/// **A seam, and the reason is D17's closed reason vocabulary** (note **N295**).
+/// [`SsimUnavailable::ComputationFailed`] is a member a consumer branches on, and the pinned
+/// `image-compare` 0.5.0 constructs no refusal on the `MSSIMSimple` path this build takes —
+/// its only `CompareError` is the dimension mismatch [`ssim`] answers itself, one layer
+/// earlier and with both shapes on the answer. So without this seam the variant would be a
+/// wire arm nothing in this workspace can reach, which is the same defect as an arm no
+/// consumer can branch on: a closed set with a member nobody has ever seen is a set nobody
+/// has checked. The variant stays — a pin that moves, or an algorithm that gains a degenerate
+/// case, must be represented rather than panicked on (AGENTS rule 6) — and this is what
+/// drives it.
+fn photos_corroborated_by(
+    a: &GrayImage,
+    b: &GrayImage,
+    corroborator: &dyn Fn(&GrayImage, &GrayImage) -> Corroboration,
+) -> PhotoComparison {
     let a_metrics = crate::metrics::measure_all(a);
     let b_metrics = crate::metrics::measure_all(b);
 
@@ -101,12 +127,23 @@ pub fn photos(a: &GrayImage, b: &GrayImage) -> PhotoComparison {
             metrics: b_metrics,
         },
         delta,
-        ssim: ssim(a, b),
+        ssim: ssim(a, b, corroborator),
     }
 }
 
-/// The structural-similarity corroborator, or a stated reason there is none.
-fn ssim(a: &GrayImage, b: &GrayImage) -> Ssim {
+/// This build's corroborator: `image-compare`'s `MSSIMSimple`, MIT-licensed (design D17).
+fn measured_ssim(a: &GrayImage, b: &GrayImage) -> Corroboration {
+    image_compare::gray_similarity_structure(&image_compare::Algorithm::MSSIMSimple, a, b)
+        .map(|similarity| similarity.score)
+        .map_err(|refused| refused.to_string())
+}
+
+/// The structural-similarity corroborator's answer, or a stated reason there is none.
+fn ssim(
+    a: &GrayImage,
+    b: &GrayImage,
+    corroborator: &dyn Fn(&GrayImage, &GrayImage) -> Corroboration,
+) -> Ssim {
     if a.dimensions() != b.dimensions() {
         // Checked here rather than left to the implementation's own refusal, because the
         // answer this design wants carries *both shapes* and a refusal carries neither.
@@ -117,14 +154,10 @@ fn ssim(a: &GrayImage, b: &GrayImage) -> Ssim {
             },
         };
     }
-    match image_compare::gray_similarity_structure(&image_compare::Algorithm::MSSIMSimple, a, b) {
-        Ok(similarity) => Ssim::Measured {
-            score: similarity.score,
-        },
+    match corroborator(a, b) {
+        Ok(score) => Ssim::Measured { score },
         Err(refused) => Ssim::Unavailable {
-            reason: SsimUnavailable::ComputationFailed {
-                message: refused.to_string(),
-            },
+            reason: SsimUnavailable::ComputationFailed { message: refused },
         },
     }
 }
@@ -481,6 +514,66 @@ mod tests {
             other => panic!("expected a represented mismatch, got {other:?}"),
         }
         assert!(comparison.ssim.score().is_none());
+    }
+
+    #[test]
+    fn a_corroborator_that_refused_leaves_every_other_scalar_on_the_answer() {
+        // The other member of D17's closed reason vocabulary, driven (note **N295**). Until
+        // this arm existed `ComputationFailed` was a wire variant a consumer had to branch on
+        // and nothing in this workspace could produce: the pinned `image-compare` 0.5.0
+        // refuses only on a dimension mismatch, which `ssim` answers itself one layer earlier
+        // with both shapes on it. A member of a closed set that nobody has ever seen is a
+        // member nobody has checked, so the seam exists and this is what goes through it.
+        let a = fixtures::checkerboard(16, 16, 4);
+        let b = fixtures::checkerboard(16, 16, 8);
+        let refusal = "the corroborator declined this pair";
+        let comparison = photos_corroborated_by(&a, &b, &|_, _| Err(refusal.to_owned()));
+
+        // Rule 6's whole point: the answer that could not compute one quantity still answers
+        // the rest, so a consumer loses the corroboration and keeps the comparison.
+        assert_eq!(comparison.a.width, 16);
+        assert_eq!(comparison.b.width, 16);
+        assert_eq!(comparison.delta.len(), MetricName::ALL.len());
+        assert_eq!(comparison.a.metrics.len(), MetricName::ALL.len());
+        assert_eq!(comparison.b.metrics.len(), MetricName::ALL.len());
+        match &comparison.ssim {
+            Ssim::Unavailable {
+                reason: SsimUnavailable::ComputationFailed { message },
+            } => assert_eq!(
+                message, refusal,
+                "the reason is carried verbatim, not summarised"
+            ),
+            other => panic!("expected a represented refusal, got {other:?}"),
+        }
+        assert!(comparison.ssim.score().is_none());
+
+        // And the direction that stops the arm above reading as pass for the wrong reason:
+        // the *same pair* through the same seam with a corroborator that answers gets a
+        // score, so the refusal above is about the corroborator and not about the images.
+        //
+        // Only the score, deliberately. Asserting that the two answers carry the same delta
+        // would read like a second claim and is not one: `photos_corroborated_by` computes
+        // both metric maps and the whole delta before the corroborator is called, over the
+        // same two images, so no implementation of this seam could make that comparison fail
+        // (note **N298**).
+        let measured = photos_corroborated_by(&a, &b, &|_, _| Ok(0.25));
+        assert_eq!(measured.ssim.score(), Some(0.25));
+    }
+
+    #[test]
+    fn this_builds_corroborator_is_the_one_the_public_entry_point_uses() {
+        // What the seam must not become: a pair of code paths where the tested one is not the
+        // shipped one. `photos` is a one-line call into `photos_corroborated_by` with
+        // `measured_ssim`, so this is a **structural guard against that body growing a second
+        // path** and not a driven claim — it goes red when somebody edits `photos`, and no
+        // input can make it go red today (note **N298**). It is counted among this file's
+        // arms on that footing and not among the both-directions ones.
+        let a = fixtures::checkerboard(16, 16, 4);
+        let b = fixtures::checkerboard(16, 16, 8);
+        assert_eq!(
+            photos(&a, &b),
+            photos_corroborated_by(&a, &b, &measured_ssim)
+        );
     }
 
     #[test]

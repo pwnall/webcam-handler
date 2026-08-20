@@ -198,6 +198,7 @@ verbs=(
     "restore|restore <camera> <snapshot>"
     "photo|photo <camera> -o <photo>"
     "photo-diff|photo diff <photo-a> <photo-b>"
+    "photo-diff|photo diff <photo-a> <photo-c>"
     "record|record <camera> -o <recording> --duration 100ms"
     "calibrate-start|calibrate start <camera> --task gate --goal gate-run"
     "calibrate-plan|calibrate plan <camera> --task gate <control>"
@@ -324,7 +325,37 @@ if [[ ! -x "$binary" ]]; then
         }
 fi
 
+# A raster size this camera offers that is not the one it negotiates by default, for the
+# mismatched `photo diff` row below. Derived from the camera's own enumeration, and empty when
+# it has only one — which that row reports as the fixture problem it is rather than skipping.
+#
+# **Both probes tolerate their own failure, deliberately.** This predicate runs under
+# `pipefail`, and a build whose camera cannot answer at all is a condition the verb loop below
+# already reports in the right words ("a verb that cannot answer cannot be validated") — so a
+# probe that aborted the script here would replace that sentence with an exit status nobody can
+# read, and the arm that seeds exactly that condition would go red for the wrong reason.
+size_probe="$("$binary" --backend fake --profile "$profile" --json \
+    photo "cam:$camera_id" -o "$scratch/size-probe.png" 2>/dev/null || true)"
+default_size="$(printf '%s' "$size_probe" |
+    jq -r 'if (.negotiated | type) == "object" then "\(.negotiated.width)x\(.negotiated.height)" else "" end' 2>/dev/null || true)"
+size_listing="$("$binary" --backend fake --profile "$profile" --json info "cam:$camera_id" 2>/dev/null || true)"
+second_size="$(printf '%s' "$size_listing" |
+    jq -r --arg default "$default_size" '
+        [ .formats[]?.sizes[]?.size
+          | select(.kind == "discrete")
+          | "\(.width)x\(.height)" ]
+        | unique
+        | map(select(. != $default and . != ""))
+        | first // ""' 2>/dev/null || true)"
+if [[ -n "$default_size" && -n "$second_size" ]]; then
+    gate_note "the mismatched photo diff row compares $default_size against $second_size"
+else
+    gate_note "this camera could not be asked for a second raster size; the mismatched photo diff row says so where it runs"
+fi
+
 checked=0
+ssim_measured=0
+ssim_unavailable=0
 for row in "${verbs[@]}"; do
     IFS='|' read -r name argv <<<"$row"
 
@@ -369,8 +400,30 @@ for row in "${verbs[@]}"; do
             gate_fail "could not take the second photograph the diff row compares"
             continue
         fi
+        # And a third at a *different size*, because the two rows above ask for two different
+        # documents: `photo diff` over a same-sized pair produces `ssim.kind == "measured"`
+        # and over a mismatched pair produces the `unavailable` half of D17's closed reason
+        # vocabulary, which is the arm an unattended consumer branches on. Until 2026-08-20
+        # this gate took both of its photographs from one replayed camera at one size, so the
+        # `unavailable` shape never reached the committed bundle at all (note **N296**).
+        #
+        # The size is *derived* from what this camera enumerates rather than written down: an
+        # explicit size no mode fits is refused rather than substituted (D5, note **N134**),
+        # so a literal would be a row that stops running the day the corpus changes — and it
+        # would stop running by failing to take a photograph, which is a sentence about the
+        # fixture rather than about the contract.
+        if [[ -z "$second_size" ]]; then
+            gate_fail "the replayed camera enumerates one raster size, so no pair of photographs from it can disagree about their shapes; the mismatched diff row has nothing to drive"
+            continue
+        fi
+        if ! "$binary" --backend fake --profile "$profile" \
+            photo "cam:$camera_id" --size "$second_size" -o "$scratch/diff-c.png" >/dev/null 2>&1; then
+            gate_fail "could not take the third photograph the mismatched diff row compares, at the $second_size this camera enumerates"
+            continue
+        fi
         argv="${argv//<photo-a>/$scratch/diff-a.png}"
         argv="${argv//<photo-b>/$scratch/diff-b.png}"
+        argv="${argv//<photo-c>/$scratch/diff-c.png}"
     fi
 
     output=""
@@ -406,7 +459,34 @@ for row in "${verbs[@]}"; do
     # report stands on.
     checked=$((checked + 1))
     gate_note "$name → #/\$defs/$def"
+
+    # D17's closed reason vocabulary, counted rather than assumed. `why_it_does_not_validate`
+    # compares top-level `required` and `properties` and never descends into a `$ref`, so a
+    # `PhotoComparison` validates whichever arm of `ssim` it carries — which means the two
+    # `photo-diff` rows above would be one row twice unless something reads the arm each of
+    # them produced.
+    if [[ "$name" == "photo-diff" ]]; then
+        kind="$(printf '%s' "$output" | jq -r '.ssim.kind // "absent"')"
+        case "$kind" in
+        measured) ssim_measured=$((ssim_measured + 1)) ;;
+        unavailable)
+            ssim_unavailable=$((ssim_unavailable + 1))
+            reason_kind="$(printf '%s' "$output" | jq -r '.ssim.reason.reason // "absent"')"
+            if [[ "$reason_kind" != "dimensions_differ" ]]; then
+                gate_fail "a photo diff over a mismatched pair answered ssim.reason.reason='$reason_kind'; D17's reason vocabulary is closed and this row exists to drive the member a consumer meets when the two shapes disagree"
+            fi
+            ;;
+        *) gate_fail "webcam-handler-cli --json $argv answered ssim.kind='$kind', which is neither arm of the vocabulary a consumer branches on" ;;
+        esac
+    fi
 done
+
+# Both directions of the one field this bundle check cannot see into, each required to have
+# been produced at least once by a row above.
+gate_checked "$ssim_measured" "photo diff answer(s) carrying a measured similarity score"
+gate_checked "$ssim_unavailable" "photo diff answer(s) carrying a stated reason there is none"
+gate_require_nonzero "$ssim_measured" "photo diff answers with a measured similarity score"
+gate_require_nonzero "$ssim_unavailable" "photo diff answers with a stated reason there is none"
 
 gate_checked "$checked" "--json verb answers validated against the committed bundle, each required not to carry the '$marker' marker"
 gate_require_nonzero "$checked" "--json verb answers"

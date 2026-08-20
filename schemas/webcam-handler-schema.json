@@ -3632,14 +3632,7 @@
         },
         "stats": {
           "$ref": "#/$defs/StreamStats",
-          "default": {
-            "clock_reversals": 0,
-            "frames_delivered": 0,
-            "frames_dropped": 0,
-            "gap_events": 0,
-            "sequence_resets": 0
-          },
-          "description": "How the take's frames were *delivered* (design D16).\n\nBeside `Self::summary` rather than inside it, because they answer two questions\nabout one take: the summary is what the **file** turned out to be, and this is what\nthe **link** turned out to be. A consumer proving a camera-forwarding path reads this\none — `frames_dropped` here and `RecordingSummary::dropped_frames` are two readings\nof one accumulator, so they cannot disagree, and everything else here (the gap runs,\nthe interval distribution, the skew against this report's own wall clock) exists\nnowhere else in the document."
+          "description": "How the take's frames were *delivered* (design D16).\n\nBeside `Self::summary` rather than inside it, because they answer two questions\nabout one take: the summary is what the **file** turned out to be, and this is what\nthe **link** turned out to be. A consumer proving a camera-forwarding path reads this\none — `frames_dropped` here and `RecordingSummary::dropped_frames` are two readings\nof one accumulator, so they cannot disagree, and everything else here (the gap runs,\nthe interval distribution, the skew against this report's own wall clock) exists\nnowhere else in the document.\n\n**Required on the wire, and that is the whole of its shape** (note **N291**). A\n`#[serde(default)]` here would make \"this daemon never measured delivery\" and \"this\nlink delivered nothing\" the same document, because the default `StreamStats` is\nbyte-identical to the answer a `RecordingEnd::DeviceQuiet` take produces — the\nconversion AGENTS rule 7 forbids, arriving through a serde attribute rather than\nthrough a `match`. An `Option` would be the other wrong answer: no producer in this\ntree can construct the `None`, so it would be an arm every consumer must branch on and\nnothing can ever reach. An answer that arrives without this field is a version skew,\nand a version skew is refused by name."
         },
         "summary": {
           "$ref": "#/$defs/RecordingSummary",
@@ -3659,6 +3652,7 @@
         "format",
         "negotiated",
         "summary",
+        "stats",
         "wall_clock_ms",
         "ended"
       ],
@@ -4572,7 +4566,7 @@
       "type": "object"
     },
     "StreamStats": {
-      "description": "How a stream *delivered*, as distinct from what it delivered (design D16; FR-W4).\n\nUSB-over-IP's characteristic failures — added latency, isochronous bandwidth collapse,\ndropped frames — are visible only in two fields every frame already carries:\n`capture::Frame::sequence`, whose gaps mean dropped frames, and\n`capture::Frame::timestamp_us`, the driver's own clock. Thermal throttling and a\ncontended hub look the same way on an ordinary rig. This is what an accumulator over\nthose two numbers can say about a take, and **nothing here is a judgement**: the stats\nrank and report exactly as D8's metrics do, and deciding whether a stream was \"healthy\"\nbelongs to the consumer whose tolerance it is.\n\nEvery quantity is an integer in microseconds. `imaging::stream_stats::Accumulator`\ncomputes it; the recording path fills `Self::wall_clock_skew_us`, which is the one field\nno pure core could produce because the engine is the only layer that reads a clock.",
+      "description": "How a stream *delivered*, as distinct from what it delivered (design D16; FR-W4).\n\nUSB-over-IP's characteristic failures — added latency, isochronous bandwidth collapse,\ndropped frames — are visible only in two fields every frame already carries:\n`capture::Frame::sequence`, whose gaps mean dropped frames, and\n`capture::Frame::timestamp_us`, the driver's own clock. Thermal throttling and a\ncontended hub look the same way on an ordinary rig. This is what an accumulator over\nthose two numbers can say about a take, and **nothing here is a judgement**: the stats\nrank and report exactly as D8's metrics do, and deciding whether a stream was \"healthy\"\nbelongs to the consumer whose tolerance it is.\n\nEvery quantity is an integer in microseconds. `imaging::stream_stats::Accumulator`\ncomputes it; the recording path fills `Self::wall_clock_skew_us`, which is the one field\nno pure core could produce because the engine is the only layer that reads a clock.\n\n# The frame contract these numbers are read out of\n\nStated here, and here only, because this is the surface a `--json` consumer holds: the two\nframe fields are not wire types — a `capture::Frame` never leaves the process —\nso their semantics would otherwise live in rustdoc that no committed artifact carries and\nno gate can see (note **N290**). Every backend owes a caller these three sentences. Two of\nthem are claims a stream either honours or breaks, and `testkit::battery::FrameLedger` is\nthe one place they are asserted — pushed into by the conformance battery's stream arm and\nby both real-device stream arms, so the claim rides whichever backend is in front of it.\nThe third is a *reading* rather than a claim: the counters below are where it is answered,\nand nothing in this tree refuses a stream for it (note **N298**).\n\n- **A gap means dropped frames.** `capture::Frame::sequence` advances by one for\n  each frame the driver delivered, so a sequence that jumps from *s* to *s + n* is\n  *n - 1* frames the driver had and this link did not — the arithmetic written out\n  because a consumer implementing it off this sentence must land on the same number the\n  tool reports (note **N298**). Those frames are `Self::frames_dropped`, summed over\n  every jump; the jumps themselves are `Self::gap_events`, counted as runs.\n- **A reset is not a gap.** A sequence number that repeats or goes backwards is a driver\n  restarting its counter, not the four billion frames a wrapping subtraction would invent;\n  it is `Self::sequence_resets` and it joins no drop count (AGENTS rule 6).\n- **Both numbers are per stream, and the clock is the driver's own.**\n  `capture::Frame::timestamp_us` is that clock in microseconds, not this host's.\n  A frame that arrives no later than the one before it contributes no interval and is\n  counted as `Self::clock_reversals` — a finding about the link rather than a broken\n  backend, which is why it is a number here and not a refusal anywhere (D16's last\n  bullet: deciding what a reading means belongs to the consumer). A `STREAMON` may\n  legitimately restart both fields, so no claim here reaches across one.",
       "properties": {
         "clock_reversals": {
           "description": "Frames whose timestamp was not later than the one before it.\n\nA negative interval is not a duration, so it joins no statistic below; the count is\nhere because a clock that ran backwards is a finding about the host, not noise.",
@@ -4581,13 +4575,13 @@
           "type": "integer"
         },
         "frames_delivered": {
-          "description": "How many frames reached us.",
+          "description": "How many frames this accumulator was given.\n\n**Which side of the cap that is, stated rather than left to be discovered** (note\n**N292**): for a take it is the frames the *container took*, because both muxers push\nfrom inside their commit path and a frame a cap refused is refused here too — so a\ntake that ended on `RecordingSummary::cap_reached` reached this process with one\nframe more than this counts, and the summary's own `cap_reached` is what says one did.\nA consumer aggregating a live stream in process pushes every frame it receives and\ngets the literal reading. The difference is that one frame at the end of a capped take\nand nothing at all otherwise, and a forwarding path judged on this number needs to\nknow which reading it is holding.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "frames_dropped": {
-          "description": "How many the driver's sequence numbers say never did.\n\nSummed forward gaps. A repeated or backwards sequence number is not a gap — it is a\ndriver doing something else, counted as `Self::sequence_resets` rather than as the\nfour billion frames a wrapping subtraction would invent.",
+          "description": "How many the driver's sequence numbers say never did.\n\nSummed forward gaps, each one counted as the frames it hides: a jump from *s* to\n*s + n* contributes *n - 1*, so a link that lost nothing contributes nothing. A\nrepeated or backwards sequence number is not a gap — it is a driver doing something\nelse, counted as `Self::sequence_resets` rather than as the four billion frames a\nwrapping subtraction would invent.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

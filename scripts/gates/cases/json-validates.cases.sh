@@ -158,6 +158,44 @@ fail_case_a_verb_that_is_also_a_subtree_loses_its_validation_row() {
     gate_red_because "which runs without naming a subcommand" bash "$mutant"
 }
 
+# D17's closed reason vocabulary, both arms. The bundle check compares top-level `required`
+# and `properties` and never descends into a `$ref`, so a `PhotoComparison` validates
+# whichever arm of `ssim` it happens to carry — which means the two `photo-diff` rows are one
+# row twice unless the counts beside them are load-bearing. Seeded in the predicate, in the
+# shape of the two arms above, because the alternative is a corpus profile that enumerates
+# exactly one raster size.
+fail_case_the_photo_diff_rows_stop_producing_a_mismatched_pair() {
+    local dir mutant
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-json-ssim.XXXXXXXX")"
+    mutant="$dir/$(basename "$GATE")"
+    cp "$(dirname "$GATE")/lib.sh" "$dir/lib.sh"
+    # The row whose second photograph is the differently-sized one. Dropping it leaves every
+    # remaining diff answering `measured`, which is precisely the state this gate was in
+    # before 2026-08-20 and which it reported PASS on.
+    grep -v '<photo-a> <photo-c>' "$GATE" >"$mutant"
+    if grep -q '<photo-a> <photo-c>' "$mutant"; then
+        printf 'selftest: the mismatched photo diff row was not removed\n' >&2
+        return 0
+    fi
+    gate_red_because 'photo diff answers with a stated reason there is none' bash "$mutant"
+}
+
+fail_case_the_photo_diff_rows_stop_producing_a_measured_score() {
+    local dir mutant
+    dir="$(mktemp -d "$(gate_scratch_root)/wch-json-ssim.XXXXXXXX")"
+    mutant="$dir/$(basename "$GATE")"
+    cp "$(dirname "$GATE")/lib.sh" "$dir/lib.sh"
+    # The other direction, which is what stops the arm above from being satisfied by a build
+    # that answered `unavailable` to everything — a comparison core that had stopped
+    # corroborating at all would otherwise look like a gate doing its job.
+    grep -v '<photo-a> <photo-b>' "$GATE" >"$mutant"
+    if grep -q '<photo-a> <photo-b>' "$mutant"; then
+        printf 'selftest: the same-sized photo diff row was not removed\n' >&2
+        return 0
+    fi
+    gate_red_because 'photo diff answers with a measured similarity score' bash "$mutant"
+}
+
 # The other half of the completeness claim, and since docs/7 P6e it has a seam in the *tree*
 # rather than only in the predicate: the verb-to-document mapping moved to
 # `crates/cli-core/json-contracts.tsv`, which three readers share (note **N122**). A row

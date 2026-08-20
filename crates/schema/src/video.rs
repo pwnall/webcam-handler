@@ -233,15 +233,56 @@ pub struct RecordingSummary {
 /// Every quantity is an integer in microseconds. `imaging::stream_stats::Accumulator`
 /// computes it; the recording path fills [`Self::wall_clock_skew_us`], which is the one field
 /// no pure core could produce because the engine is the only layer that reads a clock.
+///
+/// # The frame contract these numbers are read out of
+///
+/// Stated here, and here only, because this is the surface a `--json` consumer holds: the two
+/// frame fields are not wire types — a [`crate::capture::Frame`] never leaves the process —
+/// so their semantics would otherwise live in rustdoc that no committed artifact carries and
+/// no gate can see (note **N290**). Every backend owes a caller these three sentences. Two of
+/// them are claims a stream either honours or breaks, and `testkit::battery::FrameLedger` is
+/// the one place they are asserted — pushed into by the conformance battery's stream arm and
+/// by both real-device stream arms, so the claim rides whichever backend is in front of it.
+/// The third is a *reading* rather than a claim: the counters below are where it is answered,
+/// and nothing in this tree refuses a stream for it (note **N298**).
+///
+/// - **A gap means dropped frames.** [`crate::capture::Frame::sequence`] advances by one for
+///   each frame the driver delivered, so a sequence that jumps from *s* to *s + n* is
+///   *n - 1* frames the driver had and this link did not — the arithmetic written out
+///   because a consumer implementing it off this sentence must land on the same number the
+///   tool reports (note **N298**). Those frames are [`Self::frames_dropped`], summed over
+///   every jump; the jumps themselves are [`Self::gap_events`], counted as runs.
+/// - **A reset is not a gap.** A sequence number that repeats or goes backwards is a driver
+///   restarting its counter, not the four billion frames a wrapping subtraction would invent;
+///   it is [`Self::sequence_resets`] and it joins no drop count (AGENTS rule 6).
+/// - **Both numbers are per stream, and the clock is the driver's own.**
+///   [`crate::capture::Frame::timestamp_us`] is that clock in microseconds, not this host's.
+///   A frame that arrives no later than the one before it contributes no interval and is
+///   counted as [`Self::clock_reversals`] — a finding about the link rather than a broken
+///   backend, which is why it is a number here and not a refusal anywhere (D16's last
+///   bullet: deciding what a reading means belongs to the consumer). A `STREAMON` may
+///   legitimately restart both fields, so no claim here reaches across one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StreamStats {
-    /// How many frames reached us.
+    /// How many frames this accumulator was given.
+    ///
+    /// **Which side of the cap that is, stated rather than left to be discovered** (note
+    /// **N292**): for a take it is the frames the *container took*, because both muxers push
+    /// from inside their commit path and a frame a cap refused is refused here too — so a
+    /// take that ended on [`RecordingSummary::cap_reached`] reached this process with one
+    /// frame more than this counts, and the summary's own `cap_reached` is what says one did.
+    /// A consumer aggregating a live stream in process pushes every frame it receives and
+    /// gets the literal reading. The difference is that one frame at the end of a capped take
+    /// and nothing at all otherwise, and a forwarding path judged on this number needs to
+    /// know which reading it is holding.
     pub frames_delivered: u64,
     /// How many the driver's sequence numbers say never did.
     ///
-    /// Summed forward gaps. A repeated or backwards sequence number is not a gap — it is a
-    /// driver doing something else, counted as [`Self::sequence_resets`] rather than as the
-    /// four billion frames a wrapping subtraction would invent.
+    /// Summed forward gaps, each one counted as the frames it hides: a jump from *s* to
+    /// *s + n* contributes *n - 1*, so a link that lost nothing contributes nothing. A
+    /// repeated or backwards sequence number is not a gap — it is a driver doing something
+    /// else, counted as [`Self::sequence_resets`] rather than as the four billion frames a
+    /// wrapping subtraction would invent.
     pub frames_dropped: u64,
     /// How many *runs* of dropped frames there were.
     ///
@@ -867,7 +908,16 @@ pub struct RecordReport {
     /// of one accumulator, so they cannot disagree, and everything else here (the gap runs,
     /// the interval distribution, the skew against this report's own wall clock) exists
     /// nowhere else in the document.
-    #[serde(default)]
+    ///
+    /// **Required on the wire, and that is the whole of its shape** (note **N291**). A
+    /// `#[serde(default)]` here would make "this daemon never measured delivery" and "this
+    /// link delivered nothing" the same document, because the default [`StreamStats`] is
+    /// byte-identical to the answer a [`RecordingEnd::DeviceQuiet`] take produces — the
+    /// conversion AGENTS rule 7 forbids, arriving through a serde attribute rather than
+    /// through a `match`. An `Option` would be the other wrong answer: no producer in this
+    /// tree can construct the `None`, so it would be an arm every consumer must branch on and
+    /// nothing can ever reach. An answer that arrives without this field is a version skew,
+    /// and a version skew is refused by name.
     pub stats: StreamStats,
     /// How long the recording took on the engine's monotonic clock, in milliseconds.
     ///
@@ -1698,6 +1748,69 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<RecordRequest>(&json).expect("deserialize"),
             waiting
+        );
+    }
+
+    #[test]
+    fn a_report_with_no_stream_stats_is_refused_rather_than_read_as_a_zeroed_take() {
+        // AGENTS rules 6 and 7, and the inverse of the test above: `RecordRequest::wait` is a
+        // *request* field a caller may legitimately omit, and this is an *answer* field no
+        // producer omits. `#[serde(default)]` on it would let a document that carries no
+        // delivery accounting deserialize into one that carries an accounting of nothing —
+        // and a `DeviceQuiet` take really does answer all-zeros, so the two would be the same
+        // document and a consumer proving a forwarded camera could not tell them apart.
+        //
+        // Asserted rather than trusted, because a `#[serde(default)]` added to one field is a
+        // change nothing else in this workspace would notice (note **N291**).
+        let full = RecordReport {
+            camera: CameraId::parse("cam:test").expect("a literal id"),
+            started_at: Stamp::epoch(),
+            path: "/tmp/take.avi".into(),
+            format: VideoFormat::Avi,
+            negotiated: running_take("/tmp/take.avi").negotiated,
+            summary: RecordingSummary {
+                frames_written: 0,
+                bytes_written: 0,
+                declared_interval_us: 33_333,
+                interval_source: IntervalSource::Negotiated,
+                span_us: None,
+                dropped_frames: 0,
+                cap_reached: None,
+            },
+            // Exactly what a take that delivered nothing answers, which is the point: this
+            // value and the serde default are indistinguishable, so only the field's
+            // *presence* can tell a reader which of them it is looking at.
+            stats: StreamStats::default(),
+            wall_clock_ms: 240,
+            ended: RecordingEnd::DeviceQuiet,
+        };
+
+        let doc = serde_json::to_string(&full).expect("serialize");
+        assert!(
+            doc.contains("\"stats\""),
+            "the answer always carries its stats: {doc}"
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordReport>(&doc).expect("deserialize"),
+            full
+        );
+
+        // The inverse, driven from the same document rather than hand-written, so the
+        // fixture and the thing under test cannot drift apart.
+        let mut value: serde_json::Value = serde_json::from_str(&doc).expect("a document");
+        assert!(
+            value
+                .as_object_mut()
+                .expect("an object")
+                .remove("stats")
+                .is_some(),
+            "the fixture must actually have had the key this arm removes"
+        );
+        let refusal = serde_json::from_value::<RecordReport>(value)
+            .expect_err("a report with no stats parsed as a take that delivered nothing");
+        assert!(
+            refusal.to_string().contains("stats"),
+            "the refusal must name the field a consumer has to go and look for: {refusal}"
         );
     }
 

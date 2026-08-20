@@ -32,7 +32,39 @@ fail_case_image_default_features() {
     md="$(gate_metadata_snapshot)"
     jq '(.resolve.nodes[] | select(.id | test("#image@")) | .features) += ["default"]' \
         "$md" >"$md.seeded"
-    gate_red_because 'has its default feature set enabled' \
+    gate_red_because 'has banned feature(s) enabled: default' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
+}
+
+# The seed the arm above could not distinguish itself from until 2026-08-20: the trap D17
+# names is `avif`, and asking only whether the *set* called `default` was on left one
+# explicit `features = ["avif"]` arriving green (note **N294**). Seeded on `avif` alone,
+# with `default` deliberately absent, so this arm goes red on the named feature and not on
+# the set.
+fail_case_image_avif_without_the_default_set() {
+    local md
+    md="$(gate_metadata_snapshot)"
+    jq '(.resolve.nodes[] | select(.id | test("#image@")) | .features) += ["avif", "default-formats"]' \
+        "$md" >"$md.seeded"
+    gate_red_because 'has banned feature(s) enabled: default-formats, avif' \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
+}
+
+# And the other half of the same wall: an AV1 encoder that arrived through somebody else's
+# default set rather than through ours. The feature ban above cannot see that one — the
+# feature would be on a crate no policy rule names — so the graph is walked for the crate.
+fail_case_av1_crate_in_graph() {
+    local md
+    md="$(gate_metadata_snapshot)"
+    jq '.packages += [{
+            "name": "rav1e",
+            "version": "0.7.1",
+            "id": "registry+https://example.invalid#rav1e@0.7.1",
+            "features": {},
+            "manifest_path": "/nonexistent/rav1e/Cargo.toml",
+            "targets": []
+        }]' "$md" >"$md.seeded"
+    gate_red_because 'AV1 codec crate rav1e 0.7.1 is in the graph' \
         env WCH_GATE_METADATA="$md.seeded" "$GATE"
 }
 

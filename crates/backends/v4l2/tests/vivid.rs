@@ -443,6 +443,10 @@ fn vivid_a_stream_negotiates_starts_delivers_and_stops_twice_over() {
             let negotiated = camera
                 .start_stream(&StreamRequest::default())
                 .unwrap_or_else(|error| panic!("{}: cycle {cycle} start: {error}", info.id));
+            // The same D16 ledger the conformance battery and the R3 stream arm push into
+            // (note **N290**) — here against a driver this code has never met, which is the
+            // hole R2 exists to narrow.
+            let mut ledger = battery::FrameLedger::new();
             for index in 0..FRAMES_PER_VIVID_CYCLE {
                 let deadline =
                     Instant::now() + Duration::from_millis(schema::limits::FRAME_DEADLINE_MS);
@@ -455,7 +459,15 @@ fn vivid_a_stream_negotiates_starts_delivers_and_stops_twice_over() {
                     (negotiated.width, negotiated.height)
                 );
                 assert!(!frame.bytes.is_empty(), "frame {index} carries no bytes");
+                ledger.push(&frame);
             }
+            let breaches = ledger.breaches();
+            assert!(
+                breaches.is_empty(),
+                "{}: cycle {cycle} broke D16's frame contract: {}",
+                info.id,
+                breaches.join("; ")
+            );
             camera
                 .stop_stream()
                 .unwrap_or_else(|error| panic!("{}: cycle {cycle} stop: {error}", info.id));

@@ -25604,6 +25604,171 @@ passed again on a machine whose node numbering had changed since E19 (`vivid` ha
 between the two runs) — which is `NodePath`-as-address surviving exactly the event PF:22
 describes, observed rather than argued.
 
+## E21 — D16's stream stats at three attached cameras, the first real numbers, 2026-08-20
+
+docs/13's P8a names one terminal rung — "one R3 recording arm re-run to record real stats on a
+healthy camera (the numbers are evidence, not assertions — orderings only)" — and until today the
+arm could not produce them: it computed `RecordReport.stats` and printed everything but
+(note **N293**). This is that rung, run with the stats on its line.
+
+**Host and fixture:** `pwnblet`, kernel `7.0.0-30-generic`; three logical cameras — the OBSBOT
+Tiny 3 and the Chicony Integrated Camera's RGB and IR halves. No motor moves in this arm, so
+`WCH_NO_MOTION` was not set and nothing was excluded by it. One second per take.
+
+```
+$ cargo nextest run --offline \
+    -E 'test(/hw_a_short_recording_from_every_attached_camera/)' \
+    --run-ignored all --success-output final
+
+SKIP (partial): 3 committed profile(s) match no camera attached to this host, so this arm
+did not check them against a device: dell-u3224kb, logitech-brio, vivid
+
+cam:integrated-camera-integrated-c: avi 2592x1944 — 27 frame(s), 4919436 bytes, declared
+37539 us/frame (Measured); file duration 1013 ms, driver span 976 ms, engine wall clock
+1012 ms, this test measured 1165 ms; declared-vs-wall +1/-0 ms against a 37 ms frame
+period; 1 dropped, ended Duration
+cam:integrated-camera-integrated-c: D16 stats — 27 delivered, 1 dropped in 1 gap event(s),
+0 sequence reset(s), 0 clock reversal(s); intervals 26 observed / 26 retained, mean 37539
+us, min 31983 us, max 144012 us, p50 32008 us, p99 144012 us, jitter 8189 us; wall-clock
+skew 35976 us
+
+cam:integrated-camera-integrated-i: y4m 640x360 — 15 frame(s), 3456139 bytes, declared
+73430 us/frame (Measured); file duration 1101 ms, driver span 1028 ms, engine wall clock
+1064 ms, this test measured 1106 ms; declared-vs-wall +37/-0 ms against a 73 ms frame
+period; 1 dropped, ended Duration
+cam:integrated-camera-integrated-i: D16 stats — 15 delivered, 1 dropped in 1 gap event(s),
+0 sequence reset(s), 0 clock reversal(s); intervals 14 observed / 14 retained, mean 73430
+us, min 64168 us, max 148032 us, p50 68000 us, p99 148032 us, jitter 10657 us; wall-clock
+skew 35978 us
+
+cam:obsbot-tiny-3-obsbot-tiny-3-st: avi 3840x2160 — 21 frame(s), 10762372 bytes, declared
+33692 us/frame (Measured); file duration 707 ms, driver span 673 ms, engine wall clock
+1032 ms, this test measured 1135 ms; declared-vs-wall +0/-325 ms against a 33 ms frame
+period; 0 dropped, ended Duration
+cam:obsbot-tiny-3-obsbot-tiny-3-st: D16 stats — 21 delivered, 0 dropped in 0 gap event(s),
+0 sequence reset(s), 0 clock reversal(s); intervals 20 observed / 20 retained, mean 33692
+us, min 30699 us, max 45177 us, p50 33263 us, p99 45177 us, jitter 1148 us; wall-clock skew
+358150 us
+
+     Summary [   4.838s] 1 test run: 1 passed, 1702 skipped
+```
+
+**What the numbers say, and none of it is a threshold.** Both Chicony halves dropped exactly one
+frame, and the stats say *how*: one gap event each, so it was one loss and not a run of them. The
+`max_us` on each is the receipt — 144012 us against a 37539 us mean on the RGB half and 148032
+against 73430 on the IR — a single stretched interval where the missing frame should have been,
+which is precisely the "one gap of sixty against sixty gaps of one" distinction
+`StreamStats::gap_events` exists to make. The p50 sits *below* the mean on both (32008 against
+37539; 68000 against 73430), which is the same fact read a second way: the distribution is a tight
+body with one long tail sample, and the mean is the one the file's header carries.
+
+The OBSBOT lost nothing across 21 frames of 3840x2160 MJPG and its jitter is 1148 us against the
+Chicony halves' 8189 and 10657 — seven to nine times steadier on this desk, at four times the
+raster. No driver reset its counter and no clock ran backwards on any of the three, so
+`sequence_resets` and `clock_reversals` are zero everywhere and D16's two tolerances are
+*untested by this rig* rather than confirmed by it (design D19's `declared`-until-measured
+reading applies: a rig that can restart a driver's sequence mid-take would be the one that
+measures them).
+
+**And the wall-clock skew is the finding this rung had never printed.** 35976 us and 35978 us on
+the two Chicony halves — twin to the microsecond, which is what a shared USB interface and a
+shared `STREAMON` path look like — against 358150 us on the OBSBOT. Ten times as much, and it is
+not delivery health: it is the time between the engine starting its own clock and the driver's
+first 4K MJPG frame timestamp, plus the container close at the other end. The OBSBOT's
+declared-vs-wall line says the same thing from the file's side (`-325 ms`, against `+1` and
+`+37`). So the quantity a forwarding path is judged on carries a fixed per-camera startup cost on
+a *direct* link, and a consumer comparing a forwarded camera against a direct one has to compare
+like with like — which is the sentence this evidence exists to put under D16's skew field.
+
+**Method note.** These are the first stats numbers in any E-entry; `grep -n 'jitter\|gap_events\|p99_us'`
+over this file found none before today. They are evidence and not assertions: the three orderings
+the arm asserts are `frames_delivered >= frames_written`,
+`summary.dropped_frames == stats.frames_dropped` and
+`intervals.observed + clock_reversals + 1 == frames_delivered`, and nothing bounds jitter, drops
+or skew — deciding what "healthy" means is the consumer's, which is D16's own last bullet.
+
+### Amendment, 2026-08-20: the arm changed under an adversarial read, and one inference above does not survive n=1
+
+The batch this entry was captured from was read adversarially before it committed (note
+**N298**), and two of its findings land here. Nothing in the transcript above is edited: the point
+of a transcript is that it was true once (the same rule E1's amendments state). What follows is
+what a reader has to know beside it.
+
+**The block above is not the whole of what the command printed, and it is from a tree two tests
+behind the one that committed.** The arm prints an `oracles: 4 container claim(s) … checked by
+ffprobe and mpv` line after each camera; all three were cut with no ellipsis marking the cut, and
+the `1 test run: 1 passed, 1702 skipped` summary line is from a tree holding 1703 tests where the
+committed one holds 1706. The rule to carry: an E-entry's fenced block is the repository's device
+record, so it is pasted whole or its elision is marked — a `$` prompt above an abridged block
+reads as a claim that this is what the machine said.
+
+**The arm's own assertions changed, so the rung was re-run.** The first of the three orderings was
+`frames_delivered >= frames_written`, which two readings of one `Accumulator` cannot violate; it is
+an equality now (N298, and N293's own correction). Re-run whole on the committed tree, both R3 arms
+together, on the same three cameras, `WCH_NO_MOTION` unset and no motor moved. One run, in the
+order `--success-output final` prints it — the counted summary first, then each arm's own output —
+and **the only lines cut are libtest's per-test framing** (`stdout ───`, `running 1 test`,
+`test … ok`, `test result: ok …`) with the four-space indentation stripped; every line the arms
+themselves printed is here:
+
+```
+$ cargo nextest run --offline \
+    -E 'test(/hw_a_stream_negotiates_delivers_frames_and_stops_twice_over/) or \
+        test(/hw_a_short_recording_from_every_attached_camera/)' \
+    --run-ignored all --success-output final
+
+    Starting 2 tests across 53 binaries (1704 tests skipped)
+        PASS [   4.689s] (1/2) webcam-handler-v4l2::hardware hw_a_short_recording_from_every_attached_camera_is_read_back_by_two_third_parties
+        PASS [   2.877s] (2/2) webcam-handler-v4l2::hardware hw_a_stream_negotiates_delivers_frames_and_stops_twice_over
+     Summary [   7.569s] 2 tests run: 2 passed, 1704 skipped
+
+SKIP (partial): 3 committed profile(s) match no camera attached to this host, so this arm did not check them against a device: dell-u3224kb, logitech-brio, vivid
+cam:integrated-camera-integrated-c: avi 2592x1944 — 27 frame(s), 7449516 bytes, declared 37540 us/frame (Measured); file duration 1013 ms, driver span 976 ms, engine wall clock 1012 ms, this test measured 1167 ms; declared-vs-wall +1/-0 ms against a 37 ms frame period; 1 dropped, ended Duration
+cam:integrated-camera-integrated-c: D16 stats — 27 delivered, 1 dropped in 1 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 26 observed / 26 retained, mean 37540 us, min 31943 us, max 144028 us, p50 32035 us, p99 144028 us, jitter 8191 us; wall-clock skew 35954 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpkVnHY3/take-3-4-1-0 checked by ffprobe and mpv
+cam:integrated-camera-integrated-i: y4m 640x360 — 15 frame(s), 3456139 bytes, declared 73435 us/frame (Measured); file duration 1101 ms, driver span 1028 ms, engine wall clock 1064 ms, this test measured 1107 ms; declared-vs-wall +37/-0 ms against a 73 ms frame period; 1 dropped, ended Duration
+cam:integrated-camera-integrated-i: D16 stats — 15 delivered, 1 dropped in 1 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 14 observed / 14 retained, mean 73435 us, min 64007 us, max 148022 us, p50 67998 us, p99 148022 us, jitter 10654 us; wall-clock skew 35899 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpkVnHY3/take-3-4-1-2 checked by ffprobe and mpv
+cam:obsbot-tiny-3-obsbot-tiny-3-st: avi 3840x2160 — 21 frame(s), 11273012 bytes, declared 33746 us/frame (Measured); file duration 708 ms, driver span 674 ms, engine wall clock 1023 ms, this test measured 1125 ms; declared-vs-wall +0/-315 ms against a 33 ms frame period; 0 dropped, ended Duration
+cam:obsbot-tiny-3-obsbot-tiny-3-st: D16 stats — 21 delivered, 0 dropped in 0 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 20 observed / 20 retained, mean 33746 us, min 30715 us, max 45292 us, p50 33178 us, p99 45292 us, jitter 1171 us; wall-clock skew 348075 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpkVnHY3/take-3-1-1-0 checked by ffprobe and mpv
+
+cam:integrated-camera-integrated-c: streamed MJPG at 2592x1944 (30 fps), two cycles, 6 frames each
+cam:integrated-camera-integrated-i: streamed GREY at 640x360 (15 fps), two cycles, 6 frames each
+cam:obsbot-tiny-3-obsbot-tiny-3-st: streamed MJPG at 3840x2160 (30 fps), two cycles, 6 frames each
+```
+
+Every finding of the original run reproduces: both Chicony halves drop exactly one frame in
+exactly one gap event, each with the single stretched interval (144028 us against a 37540 mean;
+148022 against 73435) that tells one loss from a run of them; the OBSBOT loses nothing across 21
+frames of 3840x2160 and is seven to nine times steadier (jitter 1171 us against 8191 and 10654);
+no reset and no reversal anywhere. The byte counts differ from the run above because the scene
+does — nothing in this rung is about pixel content.
+
+**And the skew paragraph claims more than five runs support.** "Twin to the microsecond, which is
+what a shared USB interface and a shared `STREAMON` path look like" is a mechanism read off one
+sample. The recording arm was run four more times after the transcript above, on the same three
+cameras, same desk, same tree — six readings in all counting the original:
+
+| run | Chicony RGB | Chicony IR | delta | OBSBOT |
+|---|---|---|---|---|
+| the transcript above | 35954 us | 35899 us | 55 us | 348075 us |
+| a | 35988 us | 35978 us | 10 us | 348566 us |
+| b | 35963 us | 35967 us | 4 us | 345058 us |
+| c | 35961 us | 35997 us | 36 us | 348739 us |
+| d | 35966 us | 35985 us | 19 us | 335872 us |
+
+What holds: the two halves land within **55 us of each other on every run**, and both stay inside a
+100 us band around 35.95 ms — the closeness is real and reproduces. What does not: "to the
+microsecond" is the tightest of six samples (the original 2 us, then 4, 10, 19, 36, 55) rather than
+a property, and the OBSBOT's skew moves over 335872–358150 us, a ±3% band, so "a fixed per-camera
+startup cost" is one sample's word for something that varies. The ~10x OBSBOT-to-Chicony ratio
+reproduces on all six runs and is the part worth carrying. **The shared-interface explanation stays
+`declared`** (AGENTS rule 4, and the docs rule that a claim about a device without a probe behind
+it is marked): this rig has one hub and one enumeration order, so nothing here separates "they
+share an interface" from "they are the same silicon" or from "both are small rasters off a slow
+sensor". A rig that varies the hub would measure it.
+
 ## N266 — One picture, two colour models, and a scene that scored 0.9688 against itself
 
 **Doc:** design §2.10's one-home law; D8's comparability sentence ("two photos an hour apart
@@ -26980,3 +27145,635 @@ off `verdict()`, so the arm is red-able in both directions (note **N252**).
 sibling only when it is derived from *nothing* — a constant of the shape. Derive it from data and
 the question is not "who constructs this" but "who can reach the source afterwards", and
 `#[derive(Default)]` plus one `pub` field answers *anybody*.
+
+## N290 — D16's two frame fields: contract in the design, asserted against one backend, carried by no committed artifact
+
+**Date:** 2026-08-20. **Subject:** `schema::capture::Frame::sequence`,
+`Frame::timestamp_us`, `testkit::battery::FrameLedger`, `schema::video::StreamStats`'s doc.
+**Class:** docs/11 H1 in its exact shape — a backend contract enforced where only one backend
+inherits it — plus a "the committed schemas carry them" clause naming an artifact that did not
+exist.
+
+**The instance.** D16's first bullet (docs/12:706-710) says the two doc comments' semantics
+"become stated, tested contract: the committed schemas carry them, the fake's frame synthesis
+honours them, and a scripted `Fault::FrameGap` exists". Two of the three clauses held. The other
+two did not.
+
+*Asserted against one backend.* The battery's stream arm is `arm_stream_lifecycle` →
+`stream_once` → `check_frame`, and `check_frame` read the pixel format, the geometry, the byte
+count, the JPEG SOI marker and the driver's declared maximum — and neither of D16's two fields.
+The only assertion on either was `crates/backends/fake/tests/faults.rs`'s `frame_gap`, in the
+fake's own suite. `webcam-handler-v4l2` plumbs both out of the dequeued buffer at
+`crates/backends/v4l2/src/lib.rs:1121-1122`, and the only thing that read that plumbing was the
+byte-level decode unit one layer below it. So a real driver whose sequence went constant, or a
+build that stopped converting the driver timestamp, would have been green everywhere above the
+ioctl decoder — including in `StreamStats`, which would have reported every take as a perfect
+link. §2.11's closing sentence is the test: *ask of every backend contract which arm of the
+battery would fail if one side stopped honouring it.* The answer here was none. The battery's own
+constant said so out loud: `FRAMES_PER_CYCLE = 3`, documented "Two would prove the sequence
+advances; three leaves room for the first to be the odd one out" — sized for an assertion nobody
+had written.
+
+*Carried by no committed artifact.* `Frame` derives `Clone, PartialEq, Eq` and neither
+`Serialize` nor `JsonSchema`: a frame never leaves the process, so it is not a wire type, and no
+definition in `schemas/` has a `sequence` or a `timestamp_us` property. The two semantics lived
+as one line of rustdoc each on a non-wire type — comments that are an input to nothing, so
+`schema-artifacts-current.sh`, the mechanism AGENTS' "Done means" names for making a doc comment
+load-bearing, could not see them. The reset and monotonicity rules the accumulator actually
+relies on were written down nowhere at all.
+
+**The repair, both halves.** `testkit::battery::FrameLedger` is the one home for the claim: push
+a frame's `(sequence, timestamp_us)` per cycle, read `breaches()` at the end. Two claims and no
+more than two — the cycle advanced the sequence at least once, and advanced the driver's clock at
+least once. Everything past that is a *measurement*, and `StreamStats` is where measurements go.
+It deliberately tolerates a sequence that repeats or goes backwards inside a cycle, because that
+is a driver restarting its counter and AGENTS rule 6 forbids calling it four billion drops; it
+tolerates a *clock* that goes backwards for the same reason one field over, which this note first
+got wrong and note **N298** corrects. It is the weakest claim that still goes red when a backend
+stops filling a field at all. A cycle with fewer than two frames is itself a breach — but only a
+cycle that *ran*, because the usual reason a cycle is short is a camera another process grabbed
+mid-stream, and answering that with a claim about `Frame::sequence` is rule 7's conversion
+(N298 again).
+
+Three callers push into it: the battery's `stream_once`, so the claim rides whichever backend is
+in front of it; `hw_a_stream_negotiates_delivers_frames_and_stops_twice_over`, the R3 arm, whose
+hand-written frame checks were the second copy of the same law; and
+`vivid_a_stream_negotiates_starts_delivers_and_stops_twice_over` on R2, against a driver this
+code has never met.
+
+The second half is the contract's home in a committed artifact. `StreamStats` *is* in the bundle
+and its rustdoc *is* its `description` there, so the three sentences go on it under "The frame
+contract these numbers are read out of", stating gap-means-dropped, reset-is-not-a-gap, and
+per-stream monotonicity with the `STREAMON` restart named. Editing one now moves
+`schemas/webcam-handler-schema.json` and `schema-artifacts-current.sh` goes red until `just
+generate` runs — which is what D16's "the committed schemas carry them" was asking for.
+
+**Written red first, on the real backend as well as the fake.** `FrameLedger::breaches` has seven
+unit arms over constructed vectors — the honest cycle, the gap, the reset, the repeat, each
+frozen field, the tolerated clock reversal (N298), and the too-short cycle. Through the battery,
+`StuckFrameFields` is the honest fake with one of the two fields nailed to its first reading, and
+both directions were driven: `a_backend_that_stopped_advancing_the_sequence_fails_the_stream_arm`
+and `…_stopped_converting_the_driver_timestamp_…`. And on the real backend, on this desk with
+three cameras attached, `crates/backends/v4l2/src/lib.rs:1121` was doctored to `sequence: 0` and
+then `timestamp_us: 0`, one at a time:
+
+    cam:integrated-camera-integrated-c: cycle 1 broke D16's frame contract: the driver's
+    sequence number never advanced across 6 frames of one stream (it read 0, 0, 0, 0, 0, 0)
+
+    cam:integrated-camera-integrated-c: cycle 1 broke D16's frame contract: the driver's
+    timestamp never advanced across 6 frames of one stream (it read 0, 0, 0, 0, 0, 0 us)
+
+Green on all three attached cameras with the plumbing restored. That is the direction docs/11 H1
+says to check: a rule enforced by the fake and violated by the real backend was green on both.
+
+**Retires when:** nothing retires it. The rule to carry: a field whose *only* reader is the
+backend that produces it is not a contract, and a doc comment on a non-wire type is not a
+committed artifact. Both questions have one form — name the arm that would fail, and name the
+file that would move.
+
+## N291 — An answer field that defaulted, so "never measured" and "delivered nothing" were the same document
+
+**Date:** 2026-08-20. **Subject:** `schema::video::RecordReport::stats`. **Class:** AGENTS rule
+7's forbidden conversion, arriving through a serde attribute rather than through a `match`.
+
+**The instance.** `RecordReport::stats` carried `#[serde(default)]`, with no argument and no
+prose beside it, and `StreamStats` derives `Default`. Read out of the committed bundle,
+`RecordReport`'s `required` array did not name `stats`. So a document with no `stats` validated
+against the committed schema *and* deserialized to all zeros: nothing delivered, nothing dropped,
+no gap events, no resets, no reversals, no intervals, no skew. That value is byte-identical to
+what a real `RecordingEnd::DeviceQuiet` take produces — `engine::record::drive` answers
+`DeviceQuiet` after `RECORDING_MAX_EMPTY_TURNS` idle turns and `finish` then reports a successful
+take over a zeroed accumulator. "This daemon never measured delivery" and "this link delivered
+nothing" were one document, which is exactly the availability-into-capability conversion rule 7
+forbids, and the unavailable going unrepresented, which is rule 6.
+
+**It is not the odd one out, and the first version of this note said it was** (corrected
+2026-08-20 by an adversarial read; note **N298**). The claim here was that every other
+`#[serde(default)]` in this schema carries an explicit argument and sits on a request field, and
+that this was the only argumentless one and the only one on an answer. All three parts are false,
+and the grep that says so is `grep -rn '^\s*#\[serde(default)\]\s*$' crates/schema/src/`:
+**nineteen** argumentless defaults, across `session.rs` (8), `capture.rs` (5), `profile.rs` (3),
+`video.rs` (2) and `progress.rs` (1). One of the two named examples is itself one of them —
+`RecordRequest::wait` is a bare `#[serde(default)]` in this same struct's own file — and the
+other, `capture`'s `sink_fidelity`, is `#[serde(default, skip)]`, which never reaches the wire at
+all. **Nine of the nineteen sit on answers**: `Session::controls`, `SessionStatus::log`,
+`SessionList::sessions`, the `precision` on `ControlSession`'s swept state, on the `SweepStarted`
+log line and on the `sweep_started` progress event, and `ProfileState`'s `values` and `flags`
+under `DeviceProfile::state`.
+
+**What was taken here, and what was left, stated rather than implied.** Only this instance was
+repaired. Six of the other nine are a list or a map whose empty value is a real answer a producer
+does construct — an empty log, an empty listing, a session with no controls queued yet — so the
+missing key and the empty value mean the same thing and no conversion happens. Two are the
+`precision` fields, and they carry the **opposite** ruling for the same version-skew reason this
+note's last paragraph reasons from: `session.rs`'s own words are "Zero on a document an older
+build wrote, which is why it is `#[serde(default)]` rather than required". The ninth,
+`DeviceProfile::state`, reproduces this note's conversion exactly — `ProfileState` derives
+`Default`, so a profile document with no `state` key parses as a profile whose every control was
+unreadable, and "never captured" and "captured nothing" are one document again. It was **not**
+taken, and the reason is that it is a different kind of decision rather than a smaller one: a
+`DeviceProfile` is a *persisted* document with an immutable committed corpus behind it and a
+`limits::PROFILE_SCHEMA_VERSION` whose own doc says it is bumped "when the on-disk shape changes
+**in a way a `#[serde(default)]` cannot absorb**". Making the field required is exactly such a
+change, so it is a version bump plus a corpus decision, and both are the owner's. It is carried to
+the owner as an open question rather than repaired in this batch, and it is written down here so
+that the next reader meets the surviving instance rather than the sentence that said there was
+none.
+
+**The repair, and the alternative it was chosen over.** Delete the attribute; `stats` is
+required. Not `Option<StreamStats>`: no producer in this tree can construct the `None` —
+`engine::record::finish` is the only construction site and it always fills the field — so an
+`Option` would be an arm every consumer must branch on and nothing can ever reach, which is the
+same defect as a closed vocabulary with an unreachable member (note **N295**). D16 (docs/12:721)
+names the field unconditionally. The field has no `skip_serializing_if`, so every live document
+already carries it and no producer's output changes shape; what changes is that a pre-D16
+document is now a *named* version skew — the shape `api::codes` already owns — instead of a
+silently zeroed take. `RecordReport` is never persisted, so `limits`' on-disk version is not
+implicated.
+
+**What holds it.** `a_report_with_no_stream_stats_is_refused_rather_than_read_as_a_zeroed_take`
+in `schema::video::tests`, modelled on the arm two tests above it that asserts the *opposite*
+property for `RecordRequest::wait`. The fixture is a `DeviceQuiet` report with a defaulted
+`StreamStats` — chosen because that value and the serde default are indistinguishable, so only
+the field's *presence* can tell a reader which it is holding. Forward: the document carries the
+key and round-trips. Inverse: the same document with the one key removed is refused, and the
+refusal names the field. `remove("stats").is_some()` is asserted first so the inverse arm cannot
+pass vacuously. Driven red by reinstating the attribute, which produced
+`a report with no stats parsed as a take that delivered nothing` with the whole zeroed value
+printed. The second half is `schema-artifacts-current.sh`, which was red until `just generate`
+moved `"stats"` into `RecordReport`'s `required` array in both committed schemas.
+
+**Retires when:** the owner rules otherwise on wire compatibility. Adding a required field to an
+answer is a strictness change a pre-D16 producer's document fails; that is the intent, and it is
+not a `wch_*` namespace change (N91), so it was taken rather than escalated — but the decision is
+recorded here rather than left in a diff, and it is weaker than it first read. The nearest
+precedent in this schema rules the other way on the same question: `ControlSession`'s `precision`
+is `#[serde(default)]` **because** an older build's document would not carry it. The difference
+this note relies on is that `RecordReport` is never persisted and never re-read by a later build —
+it is answered and consumed in one exchange — while a session document is written by one build and
+read by the next. If the owner does not accept that difference, the repair to reverse is this one,
+not the `precision` fields.
+
+## N292 — `frames_delivered` counts what the container took, and the cap is where the two readings part
+
+**Date:** 2026-08-20. **Subject:** `schema::video::StreamStats::frames_delivered`,
+`imaging::avi::write`, `imaging::y4m`. **Class:** a field doc that states a stronger sentence than
+the code holds, with nothing asserting either.
+
+**The instance.** The doc read "How many frames reached us." Both muxers push into their
+`Accumulator` from inside the commit path — `avi/write.rs:496` and `y4m.rs:564` — which is *past*
+the sticky cap check that returns `FrameOutcome::Refused` early. So on a cap-ended take a frame
+reaches this process, is validated, is refused by the cap, and is never counted. The existing
+passing test `a_recording_stops_asking_the_device_the_moment_a_cap_refuses_a_frame` pins the
+arithmetic from the other side: with `max_frames: 2` it asserts `frames_written == 2` and
+`camera.asked == 3`. Three reached us; `frames_delivered` said two. Nothing asserted the field on
+a capped take in either direction.
+
+**The repair.** Hold the sentence the code holds, and say which side of the cap it is on. The
+accumulator's home is the muxer and the muxer counts what it took; a consumer aggregating a live
+stream in process pushes every frame it receives and gets the literal reading. The difference is
+one frame at the end of a capped take and nothing at all otherwise, and the doc now says so —
+because a forwarding path judged on this number needs to know which reading it is holding.
+Moving the push to the other side of the cap check was the alternative; it was declined because
+it would make the accumulator count a frame the file does not have and give
+`RecordingSummary::dropped_frames` — the same accumulator, read twice — an interval from a frame
+nothing wrote.
+
+**What holds it, and where** — corrected 2026-08-20 by an adversarial read, note **N298**. The
+sentence says *both* muxers, and each muxer has its own accumulator and its own cap check, so the
+claim is about two independent pieces of code and needs an arm that walks both. It is
+`imaging::video::tests::both_containers_report_every_cap_in_the_vocabulary`, which already drives
+`VideoFormat::ALL` × `CapReached::ALL` and now reads the recorder's stats beside its summary:
+`stats.frames_delivered == summary.frames_written`, six arms, in the crate where both muxers live.
+The first version of this repair asserted it only through `engine::record`'s
+`a_recording_stops_asking_the_device_the_moment_a_cap_refuses_a_frame`, which records to
+`take.avi` — so the identical hoist in `y4m.rs` left the **whole workspace green** (1670 passed),
+which is docs/11 H1's shape inside the batch that cites H1 as its motivation.
+
+Driven red on both, in a copy of the tree, by moving the push above the cap check:
+
+    y4m.rs, workspace scope       1671 tests, 1 failed — FAIL webcam-handler-imaging
+                                  video::tests::both_containers_report_every_cap_in_the_
+                                  vocabulary: "y4m/Size: the accumulator counted a frame the
+                                  container refused, or missed one it took", left: 3, right: 2
+    avi/write.rs, workspace scope FAIL webcam-handler-engine record::tests::a_recording_stops_
+                                  asking_the_device_the_moment_a_cap_refuses_a_frame — the
+                                  engine arm runs first and nextest stops there
+    avi/write.rs, imaging scope   FAIL the same walk: "avi/Size: …", left: 3, right: 2
+
+The engine arm keeps its own assertion and it is not a second copy: what it holds is that the two
+numbers on one `RecordReport` came out of one take — `finish` reads `recorder.stats()` before
+`recorder.finish()` consumes the recorder — which goes red for a build that read them at two
+different moments and which the muxer-level arm cannot see.
+
+**Retires when:** a consumer needs the literal count from a take. The answer then is a second
+field, not a moved push — the two numbers are different facts and the file's is the one
+`RecordingSummary` is about.
+
+## N293 — The P8a terminal rung computed D16's numbers and threw them away
+
+**Date:** 2026-08-20. **Subject:**
+`hw_a_short_recording_from_every_attached_camera_is_read_back_by_two_third_parties`. **Class:** a
+terminal rung named in the plan, landed as code that cannot produce the evidence the plan asked
+for.
+
+**The instance.** docs/13's P8a names one terminal rung: "one R3 recording arm re-run to record
+real stats on a healthy camera (the numbers are evidence, not assertions — orderings only)". The
+arm's report line printed frames, bytes, the declared interval, the file duration, the driver
+span, the engine wall clock, the test's own clock and `summary.dropped_frames` — and never
+touched `report.stats`. No hardware suite in the workspace read it. A run of this arm on
+2026-08-20 saw two of the three attached cameras drop one frame each, which is exactly the
+evidence P8a wanted, and the rung could not say whether that was one gap event or two, what the
+interval distribution was, whether the driver's clock reset, or what the wall-clock skew was.
+E20, the only R3 evidence entry after D16 landed, carries no stats numbers either.
+
+**The repair.** `report.stats` joins the printed line — delivered, dropped, gap events, resets,
+reversals, the interval five-number summary with its retention, and the skew — so a `just
+smoke-hw` run *is* the evidence. Three orderings beside it, and no threshold. A bound on jitter or
+on drops was declined: that would be this arm deciding what "healthy" means on somebody else's
+desk, which D16 says belongs to the consumer.
+
+**Two of the three are structural, and the note first mis-sold one of them** (corrected
+2026-08-20, note **N298**). `frames_delivered == frames_written` and
+`summary.dropped_frames == stats.frames_dropped` are both two readings of one `Accumulator` in one
+process: each muxer pushes on the line after it increments `frames_written`, and
+`engine::record::finish` reads the stats off the same recorder it then finishes. No camera on this
+desk can separate either pair; what they go red on is a build that grows a second home for the
+arithmetic. That is worth asserting and is worth saying out loud, so a reader of the R3 transcript
+does not count them as device evidence — and the first version of this note asserted the first as
+`frames_delivered >= frames_written`, which is weaker still: it has no false branch at all, and it
+stayed green under the very mutation the sibling engine arm was commissioned with (`left: 3,
+right: 2` there, `3 >= 2` here). It is an equality now, with the same sentence.
+
+The third is the one the cameras answer: `intervals.observed + clock_reversals + 1 ==
+frames_delivered`, which is `StreamStats`' own stated semantics — every consecutive pair is
+either an interval or a reversal — with the arithmetic closed over it rather than read off the
+accumulator (note **N252**).
+
+The brief's proposed second ordering was `intervals.observed == frames_written - 1` for a take
+with no reset. Checked before asserting, and it is not the identity: `Accumulator::observe` folds
+only strictly-positive deltas, so a clock reversal costs an interval and a *reset* costs none.
+The identity above is the one that holds for every take.
+
+**The evidence:** E21.
+
+**Retires when:** nothing retires it. The rule to carry: a terminal rung that prints a number is
+evidence, and a terminal rung that computes one and drops it is a sentence in the plan with
+nothing behind it.
+
+## N294 — A posture rule that asked whether `default` was on, not whether `avif` was
+
+**Date:** 2026-08-20. **Subject:** `scripts/gates/feature-posture.sh`. **Class:** a ban written
+as one spelling of a defect rather than as the class of it (N249, rubric A17).
+
+**The instance.** D17 (docs/12:752-755) names the trap this predicate exists for: `image`'s
+`avif` feature drags the rav1e AV1 encoder, "and that gate reads the *resolved* graph, so the
+trap cannot arrive silently even if this sentence is forgotten". The policy was
+`{ "name": "image", "rule": "default-off" }` and the rule's whole body was
+`if ($on | index("default")) != null` — it asked whether the feature literally named `default`
+was enabled. In the resolved graph `image 0.25.10` has `default = [rayon, default-formats]` and
+`default-formats` contains `avif`, and `avif = [dep:ravif, dep:rgb]`. So one explicit
+`features = ["avif"]`, or one `default-formats` arriving through a sibling's edge, opened the door
+green. cargo-deny is not a second wall: `deny.toml` names no `rav1e`/`ravif`/`dav1d`, and rav1e's
+BSD-2-Clause is on the allowlist.
+
+**The repair.** Two walls in the shapes this predicate already has. The posture rule becomes
+`features-off` with the features *named* — `default`, `default-formats`, `avif`, `avif-native` —
+so the ban is on the class and the violation says which member arrived. And a crate-name wall
+beside the TLS one, deliberately over-broad
+(`rav1e|ravif|dav1d|dav1d-sys|libdav1d-sys|aom|aom-sys|avif-serialize|avif-parse`), because the
+two fail differently: the feature ban catches *this* workspace turning `avif` on, and the name
+wall catches an AV1 encoder arriving through anybody else's default set, where no policy rule
+names the crate the feature is on. An innocent match is resolved by a recorded note, the way a
+TLS one is.
+
+**What holds it.** Two new arms in `cases/feature-posture.cases.sh`, each seeded on the real
+resolved graph through the `WCH_GATE_METADATA` seam and each naming its sentence.
+`fail_case_image_avif_without_the_default_set` adds `avif` and `default-formats` with `default`
+deliberately absent, so it goes red on the named feature and not on the set — the seed the old
+arm could not have been distinguished from. `fail_case_av1_crate_in_graph` inserts a `rav1e
+0.7.1` package. Both driven; the pre-existing `fail_case_image_default_features` keeps working
+against the new message. The genuine posture today is clean — `image :: jpeg,png`,
+`image-compare :: default`, no AV1 crate in the graph — which is why nothing was red.
+
+**Retires when:** nothing retires it. The rule to carry: a posture rule whose predicate names the
+*set* a feature usually arrives in has banned an arrival route, not a feature.
+
+## N295 — D17's closed reason vocabulary had a member nothing could produce
+
+**Date:** 2026-08-20. **Subject:** `schema::metrics::SsimUnavailable::ComputationFailed`,
+`imaging::compare`. **Class:** an arm a consumer must branch on and no code path in the workspace
+can reach.
+
+**The instance.** D17 (docs/12:743-745) states "a closed reason vocabulary, so an unattended
+consumer branches on data instead of parsing a refusal". `SsimUnavailable` has two members.
+`DimensionsDiffer` is answered by `compare::ssim` itself, one layer above the implementation and
+with both shapes on it — deliberately, because the answer this design wants carries both and a
+refusal carries neither. That leaves `ComputationFailed` behind the `Err` arm of
+`image_compare::gray_similarity_structure`, and the pinned `image-compare 0.5.0` constructs no
+refusal on the `MSSIMSimple` path: its only `CompareError` on that path is the dimension mismatch
+already answered above it, and `ssim_simple` ends in an unconditional `Ok`. Four sites in the
+tree name the variant — the definition, the unreachable producer, the renderer's match arm, and a
+rendering test that hand-builds the value and drives no comparison. A member of a closed set that
+nobody has ever seen is a member nobody has checked.
+
+**The repair, and the alternative it was chosen over.** Retiring the variant was the other
+option, and it was declined: the `Err` arm has to answer *something*, panicking is forbidden, and
+converting an implementation's refusal into "these images cannot be compared" is rule 7's
+conversion. A pin that moves or an algorithm that grows a degenerate case must be represented
+(rule 6). So the variant stays and gains a way to be driven: `compare::photos` becomes a one-line
+call into `photos_corroborated_by(a, b, &measured_ssim)`, with the corroborator a
+`&dyn Fn(&GrayImage, &GrayImage) -> Result<f64, String>`. A `String` rather than the dependency's
+error type, so the seam is about *an* implementation refusing and not about which one this build
+pinned.
+
+**What holds it.** `a_corroborator_that_refused_leaves_every_other_scalar_on_the_answer` drives
+the seam with a refusing corroborator and asserts what rule 6 is for: both sides' scalars, both
+metric maps and the whole delta are still on the answer, the reason is carried verbatim, and
+`score()` is `None`. Its second half runs the *same pair* through the same seam with a
+corroborator that answers, so the refusal is demonstrably about the corroborator and not about
+the images. Beside it, `this_builds_corroborator_is_the_one_the_public_entry_point_uses` asserts
+`photos == photos_corroborated_by(.., &measured_ssim)`, which is what stops a seam becoming a
+pair of code paths where the tested one is not the shipped one. Driven red by swallowing the
+refusal into `Ssim::Measured { score: 0.0 }`.
+
+**Retires when:** the pin moves to an implementation that refuses on this path. The seam then has
+a second driver and stays anyway, because the arm is about the record's shape and not about who
+produced the refusal.
+
+## N296 — A validation row that took both its photographs from one camera at one size
+
+**Date:** 2026-08-20. **Subject:** `scripts/gates/json-validates.sh`'s `photo-diff` row.
+**Class:** a gate whose population covers a vocabulary and whose fixture reaches one member of
+it.
+
+**The instance.** The row was `"photo-diff|photo diff <photo-a> <photo-b>"` and the two tokens
+were two photographs taken from the *same replayed camera*, the second mirrored. So the only
+`Ssim` arm the gate ever produced was `measured`. It would not have looked inside `ssim` in any
+case: `why_it_does_not_validate` compares top-level `required` and `properties` and never
+descends into a `$ref`, so a `PhotoComparison` validates whichever arm it carries. The
+`unavailable` half of D17's closed reason vocabulary — the one an unattended consumer meets when
+two photographs disagree about their shapes — never reached the committed bundle. The Rust-side
+assertion exists (`cli-core`'s suite parses the document and asserts the exact value), so this
+was a bundle gap rather than a behaviour gap: the contract held that day and nothing in CI held
+it the next.
+
+**The repair.** A second `photo-diff` row whose third photograph is taken at a *different* size,
+and two counted claims that make the pair load-bearing: at least one answer carrying a measured
+score, at least one carrying a stated reason there is none, with the `unavailable` row's
+`ssim.reason.reason` required to be `dimensions_differ`. The size is derived from the camera's
+own enumeration rather than written down — an explicit size no mode fits is refused rather than
+substituted (D5, note **N134**), so a literal would be a row that stops running the day the
+corpus changes, and it would stop by failing to take a photograph, which is a sentence about the
+fixture rather than about the contract. On this corpus it compares 2592x1944 against 1280x720.
+
+**What holds it.** Two arms in `cases/json-validates.cases.sh`, one per direction:
+`fail_case_the_photo_diff_rows_stop_producing_a_mismatched_pair` deletes the new row and goes red
+on "photo diff answers with a stated reason there is none" — which is precisely the state this
+gate was in before today and reported PASS on — and
+`fail_case_the_photo_diff_rows_stop_producing_a_measured_score` deletes the old one, which is
+what stops the first arm being satisfied by a build that answered `unavailable` to everything.
+Both driven.
+
+**Retires when:** `why_it_does_not_validate` learns to follow `$ref`/`oneOf`. That is a
+whole-gate change with several consumers and belongs with them; until then, the counts beside the
+rows are what reads inside the document.
+
+## N297 — The one D16 field no pure core can produce, and no test anywhere selected it
+
+**Date:** 2026-08-20. **Subject:** `schema::video::StreamStats::wall_clock_skew_us`,
+`engine::record::Recording::finish`. **Class:** a field that is shipped, well-defined, reachable
+through the binary, inside the mutation floor's scope — and asserted nowhere.
+
+**The instance.** Counted in the house's own language: `cargo nextest list -E 'test(/skew/)'`
+selected **zero** tests, against eleven for the control `test(/stream_stats::/)`. An exhaustive
+grep for `wall_clock_skew` over the tree hit five non-generated files and no test file, and no
+whole-struct equality constrained it either — `StreamStats` appears in nine places, all under
+`src/`. The field is also invisible to the human renderer: `cli_core::render` builds the `record`
+table from twelve fields and none of them is from `report.stats`. So it is a `--json`-only
+quantity with zero coverage, computed at `record.rs:515` by the one layer that reads a clock,
+inside `.cargo/mutants.toml`'s `examine_globs` — and that file's own line says the floor has never
+been run against `record.rs`. Every mutation of the subtraction, its scale, its sign or its
+`and_then` survived by construction.
+
+**The repair, two arms, absence first.** The value arm extends
+`the_wall_clock_budget_ends_a_recording_whose_camera_is_still_delivering`, which already runs a
+`TickingClock` the test owns and already asserts `wall_clock_ms == 240` and the span ordering — it
+stopped one line short of the subtraction those two numbers name. Both terms come from somewhere
+other than the line under test: 240 ms is the clock's own arithmetic, asserted five lines above,
+and the span is the driver's, carried out of the muxer in another crate. Deliberately not the
+literal `Some(140_001)`, which would silently encode the fake's 33 333 us synthesis interval —
+a number that is not this test's to own (note **N252**).
+
+The absence arm is new and was written first:
+`a_take_that_spanned_nothing_reports_no_skew_rather_than_a_skew_of_zero`. A budget of 50 on a
+clock that ticks 40 gives one frame, one frame spans no interval, `summary.span_us` is `None`, and
+the skew must be absent rather than zero — because a consumer proving a forwarded camera has to
+be able to tell "the driver's clock said nothing" from "the two clocks agreed exactly", and zero
+is the one answer that cannot say which happened (AGENTS rule 6). Two assertions beside it stop
+the `None` reading as pass for the wrong reason: the take took time on the engine's own clock, and
+the accumulator saw the frame the container wrote — a take that never ran also has no span.
+
+**Driven red both ways.** Weakening the `and_then` to `Some(map_or(0, …))` fails the absence arm
+with `left: Some(0), right: None` on "a skew against no span was reported as a quantity".
+Reversing the subtraction fails the value arm with `left: Some(-140001), right: Some(140001)` on
+"D16's skew is the engine's 240 ms against the driver's 99999 us". Neither mutation is visible to
+any other test in the workspace.
+
+**No mutants acceptance is recorded for this**, per N209 and N251: the new arms kill a live
+survivor, and the correct move on a "stopped surviving" line is to apply the mutant by hand on an
+idle machine, which is what the two paragraphs above are.
+
+**Retires when:** nothing retires it. The rule to carry: `test(/<field>/)` selecting zero is a
+finding about the field, not about the filter — and a `--json`-only quantity has no renderer to
+notice it going wrong.
+
+## N298 — The second reading of the D16 batch: a measurement carried as a contract, a refusal carried as an incapacity, and three sentences that could not go red
+
+**Date:** 2026-08-20. **Subject:** `testkit::battery::FrameLedger` and `stream_once`,
+`schema::video::StreamStats`' committed doc, `imaging::video`'s container/cap walk,
+`imaging::compare`'s corroborator arms, the `g8` frame-contract criterion, and the correction
+paragraphs now inside notes **N290**–**N293**. **Class:** the rubric-8 class — a repair read
+adversarially before it commits, and the repair itself carrying five defects of the kinds it was
+written to remove.
+
+The batch these notes describe (N290–N297) landed D16's frame contract, its committed artifact and
+the arms around it. Its own adversarial reading is this note. Green `just ci` is not evidence about
+a fix (rubric rule 8), and here it was evidence for the wrong side in the most literal way there
+is: the mutation the batch's own new committed sentence forbids — the `y4m.rs` push moved to the
+other side of its cap check — left the whole workspace at **1670 passed, 0 failed**.
+
+### 1. One device event, two incompatible answers
+
+`FrameLedger::breaches` had a third claim: a pair whose sequence went forward while its timestamp
+went backwards "is neither a reset nor a gap", and therefore a breach of D16's frame contract. But
+`StreamStats::clock_reversals` counts exactly that event as a **number**, and its own doc has said
+since P8a that "a clock that ran backwards is a finding about the host, not noise". D16's closing
+bullet is the rule the two answers have to be judged against: the stats *rank and report*, and
+deciding what a reading means "belongs to the consumer whose tolerance it is". Nothing in D16 makes
+the driver's clock contractually monotonic; the two `Frame` doc comments the design says to promote
+say "gaps mean dropped frames" and "the driver's timestamp, in microseconds on its own clock", and
+neither says it only moves forward.
+
+So one device behaviour — a driver handing back a frame no later than the one before it while its
+sequence advances — had two answers in one tree: a counted measurement on the wire, and a hard
+failure in the battery, the R3 stream arm and the R2 vivid arm at once. Whether any driver on this
+desk does it is `declared`, not measured: six R3 runs report `0 clock reversal(s)` on all three
+cameras, which is exactly why the contradiction was invisible here and would not have been on
+somebody else's rig. That is rule 2's own
+failure mode, three rungs going red for the wrong reason about the right thing. The contradiction
+had also reached the committed bundle, which told an unattended consumer in consecutive sentences
+that the clock "does not run backwards under an advancing sequence" and that there is a counter for
+when it does.
+
+**The repair.** The claim is gone; the ledger makes two, and both are "this field still moves".
+`a_clock_that_reverses_under_an_advancing_sequence_is_a_measurement_and_not_a_breach` asserts the
+tolerance so that re-adding the claim is red rather than quiet, with the inverse beside it — the
+same reversal with nothing else advancing is still a breach, because then no pair advanced the
+clock at all. The bundle's third bullet now says the clock is the driver's own, that a frame
+arriving no later than the one before it contributes no interval and is counted as
+`clock_reversals`, and that this is a finding rather than a broken backend. If monotonicity is to
+be contract, that is a D16 amendment with a stated relationship to `clock_reversals`, and it is the
+owner's, not a batch's.
+
+### 2. A camera somebody else grabbed, answered with a claim about `Frame::sequence`
+
+`stream_once` ran `for breach in ledger.breaches()` unconditionally, including after the `Err` arm
+that `break`s out of the frame loop. `breaches()` calls a cycle with fewer than two marks a breach
+in its own words — correctly, for a cycle that *ran*; a caller that lowered `FRAMES_PER_CYCLE`
+must not be able to switch the contract off in silence. But the dominant real trigger is not a
+lowered constant. It is `EBUSY` between two frames. So a battery run against a camera another
+process opened mid-cycle answered with the availability sentence **and** with "a stream cycle
+delivered 1 frame(s), so nothing was asked of `Frame::sequence` or `Frame::timestamp_us`" — a
+capability claim about a device that was never asked, which is AGENTS rule 7's forbidden conversion
+and the exact repair **N138** made to `arm_explicit_request`'s `formats()` call four hundred lines
+up in the same file.
+
+**The repair.** The ledger is asked for a verdict only for a cycle a refusal did not cut short. The
+refusal itself is unchanged and still fails the arm — what changes is that the failure is one
+sentence about who holds the camera instead of two sentences, one of them about the driver.
+`crates/backends/fake/tests/battery.rs` gains `RefusingMidCycle`, the honest fake delivering one
+frame per cycle and then `Error::busy`, and
+`a_camera_grabbed_between_two_frames_is_unavailable_and_not_a_frame_contract_breach`
+asserts both halves: the availability complaint is present, and no complaint names "asserts
+neither" or "never advanced". Driven red by deleting the guard.
+
+### 3. The criterion that claimed both backends and selected neither
+
+The `g8` row said "the frame contract is enforced where both backends inherit it" and "the inverse
+is driven from both sides". Resolved, its filterset selected nine tests: seven `webcam-handler-
+testkit` units over hand-built `(sequence, timestamp_us)` pairs and two `webcam-handler-fake`
+battery arms. None of them links `webcam-handler-v4l2`. `grep -rn 'battery::run' --include=*.rs
+crates/` finds ten call sites — nine before this note added one — and every one of them is in
+`crates/backends/fake/tests/`: the conformance battery has **no real-backend caller**, so `stream_once`'s push into the ledger never executes
+against a real driver in any hermetic run. The R3 doctoring N290 records is real evidence and is
+not a criterion — it was a one-time manual act on an `#[ignore]`d arm.
+
+**The repair.** `./scripts/rung-vivid.sh` joins `g8` as a counted, re-runnable criterion in the
+shape `g1`, `g2` and `g3` already carry it: the vivid stream arm pushes every frame it dequeues
+into the same `FrameLedger`, through the real ioctl path, on a machine with no camera attached, and
+the rung reports a named counted skip when the blessed helper is absent (rule 3). The row above it
+now says what it selects — the shared law and the fake-side inverse — rather than claiming a walk
+it cannot deliver.
+
+### 4. "Both muxers", held on one muxer
+
+The batch put a new sentence on `StreamStats::frames_delivered` and shipped it into
+`schemas/webcam-handler-schema.json`: for a take it is the frames the *container took*, "because
+**both muxers** push from inside their commit path and a frame a cap refused is refused here too".
+N292's subject line names both files. Its arm named one: `engine::record`'s
+`a_recording_stops_asking_the_device_the_moment_a_cap_refuses_a_frame` records to `take.avi`.
+Hoisting `y4m.rs`'s push above its own `cap_for` — the mutation the sentence forbids — left the
+**whole workspace green**, 1670 passed, while every capped Y4M take reported one more delivered
+frame than the file holds and the committed schema told a `--json` consumer otherwise. docs/11's H1
+shape, inside the batch that cites H1 as its motivation. The R3 arm did not close it either: its
+one-second takes reach no cap.
+
+**The repair.** The claim moved to where both muxers are.
+`imaging::video::tests::both_containers_report_every_cap_in_the_vocabulary` already walks
+`VideoFormat::ALL` × `CapReached::ALL` and drives a refusal in each cell; it now reads the
+recorder's stats beside its summary and asserts `frames_delivered == frames_written`, six cells,
+with the sentence in the message. The engine arm keeps its own assertion on a different footing,
+stated in its comment: that the two numbers on one `RecordReport` came out of one take, which is
+the engine's plumbing and not the muxers'.
+
+### 5. Three sentences with no false branch
+
+- `hw_a_short_recording_…`'s first "ordering" was
+  `stats.frames_delivered >= u64::from(report.summary.frames_written)`. Both muxers push on the
+  line **after** `self.frames_written = next_count;`, with no early return between them, and
+  `engine::record::finish` reads both numbers off that one accumulator: the inequality is an
+  equality by construction and no reachable state violates it. Worse, it stayed green under the
+  very mutation its sibling was commissioned with (`left: 3, right: 2` there; `3 >= 2` here) — a
+  claim presented in N293 as one of the rung's three checks, blind to the defect its neighbour
+  exists for. It is an equality now, with the same sentence, and the note says which of the three
+  the cameras can actually falsify.
+- `compare::tests::a_corroborator_that_refused_…` closed with
+  `assert_eq!(measured.delta, comparison.delta)`. `photos_corroborated_by` computes both metric
+  maps and the whole delta *before* the corroborator is called, over the same two images, so no
+  implementation of the seam can make that comparison fail. Removed: the `Some(0.25)` beside it is
+  what separates "the corroborator refused" from "these images cannot be compared".
+- `this_builds_corroborator_is_the_one_the_public_entry_point_uses` asserts `photos(a, b) ==
+  photos_corroborated_by(a, b, &measured_ssim)` against a `photos` whose entire body is that call.
+  Kept — it goes red when somebody edits the body — but its comment now says it is a structural
+  guard rather than a driven claim, so a reader does not count it among the both-directions arms.
+
+### 6. The gap arithmetic, off by one in a committed artifact
+
+The bundle's first bullet read "a forward jump of *n* is *n* frames the driver had and this link
+did not". `stream_stats.rs` adds `gap.saturating_sub(1)`, and the committed unit arm pushes
+sequences 0, 1, 5 — a jump of 4 — and asserts three dropped. Item (d) of this batch exists so an
+unattended consumer can implement D16's semantics **from the bundle**, and a consumer implementing
+that sentence computes one extra dropped frame per gap event for ever. The natural reading is the
+delta, because the preceding clause defines the field as advancing by one per delivered frame; the
+charitable reading is unanchored, and an unanchored wire sentence is the defect. It now says a
+sequence that jumps from *s* to *s + n* is *n - 1* frames, and `frames_dropped`'s own one-liner —
+"Summed forward gaps", loose in the same direction — says it once and says it right beside it.
+`just generate` moved both committed schemas.
+
+### 7. "The odd one out" was three false claims
+
+N291's rewritten paragraph carries this one: the grep it reasoned from finds nineteen argumentless
+`#[serde(default)]`s in this schema, nine of them on answers, and both of the examples it named are
+misdescribed. The instance taken is still the right one to take; what was wrong was the argument
+that it was unique. `DeviceProfile::state` survives with the identical shape and is left, with the
+reason stated — it is a persisted document with an immutable corpus and a
+`PROFILE_SCHEMA_VERSION` behind it — and carried to the owner rather than repaired here.
+`ControlSession::precision` carries the **opposite** ruling for the same version-skew reason, which
+the escalation paragraph now cites, because it is the precedent that most weakens the decision to
+take a wire-visible strictness change rather than escalate it.
+
+**What holds all of it.** Every repair above lands with the arm that goes red on it, and each arm
+names its sentence: the ledger's tolerance arm and its inverse; the mid-cycle-refusal double and
+its two-sided assertion; the R2 rung as a counted criterion; the container/cap walk's equality;
+the R3 equality. Driven red at workspace scope, one at a time, in a byte-identical copy of the
+tree:
+
+    y4m.rs push above the cap check      FAIL imaging video::tests::both_containers_report_
+                                         every_cap_in_the_vocabulary — "y4m/Size: the accumulator
+                                         counted a frame the container refused, or missed one it
+                                         took", left: 3, right: 2
+    avi/write.rs push above the cap      FAIL engine record::tests::a_recording_stops_asking_the_
+                                         device_the_moment_a_cap_refuses_a_frame first, and the
+                                         same walk at imaging scope — "avi/Size: …", 3 against 2
+    the third ledger claim restored      FAIL testkit battery::tests::a_clock_that_reverses_
+                                         under_an_advancing_sequence_is_a_measurement_and_not_a_
+                                         breach — left: ["frame 2 advanced the driver's sequence
+                                         from 4 to 5 while its timestamp went backwards from
+                                         33333 us to 20000 us"], right: []
+    the cut-short guard removed          FAIL webcam-handler-fake::battery a_camera_grabbed_
+                                         between_two_frames_is_unavailable_and_not_a_frame_
+                                         contract_breach — "a camera another process holds was
+                                         answered with a claim about `Frame::sequence`", with the
+                                         complaint printed for both cycles
+
+**The evidence:** E21's amendment, which carries the re-run of both R3 arms on the repaired tree —
+the first ordering is an equality there now — and the five further runs that put the skew
+inference back inside what the data supports.
+
+**Retires when:** nothing retires it. Four rules to carry. A number a wire type already reports is
+a *measurement*, and a test that refuses the same event has given one device behaviour two answers
+— ask of every new assertion which field already carries the same fact. A verdict asked for after a
+refusal is a rule-7 conversion however carefully the verdict is worded. A criterion that names two
+backends is a claim to resolve with `cargo nextest list`, not to read. And a doc sentence that says
+"both" is a claim that needs a population, not an example.

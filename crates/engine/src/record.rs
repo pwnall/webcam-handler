@@ -1529,6 +1529,25 @@ mod tests {
             camera.asked, 3,
             "the loop asked the device for frames after the cap had stopped writing them"
         );
+        // Three frames reached this process and two reached the file, which is the one take
+        // where D16's delivery count and the container's count can differ — so this is where
+        // `StreamStats::frames_delivered`'s doc gets its engine-side arm (note **N292**).
+        //
+        // **The engine's half of the claim, and the muxers' half is one crate down.** What
+        // this asserts is that the two numbers on one `RecordReport` came out of one take:
+        // `finish` reads `recorder.stats()` before `recorder.finish()` consumes the recorder,
+        // and a build that read them at two different moments — or off two accumulators —
+        // reports a delivery count for a file it does not describe. That both *muxers* count
+        // on the container's side of their own cap check is a claim about two independent
+        // pieces of code, and it is held where both of them are, over
+        // `VideoFormat::ALL` × `CapReached::ALL`, by
+        // `imaging::video::tests::both_containers_report_every_cap_in_the_vocabulary` — this
+        // arm records to one container and could never have held it (note **N298**).
+        assert_eq!(
+            report.stats.frames_delivered,
+            u64::from(report.summary.frames_written),
+            "the accumulator counted a frame the container refused, or missed one it took"
+        );
     }
 
     #[test]
@@ -1566,11 +1585,71 @@ mod tests {
         // The pair docs/7 P6d subtracts. The driver's own span is the frame timestamps and it
         // is *shorter* than the wall clock for an honest take, because the header write, the
         // close and every turn that brought no frame are outside it.
-        let span_ms = report.summary.span_us.expect("four frames span something") / 1_000;
+        let span_us = report.summary.span_us.expect("four frames span something");
+        let span_ms = span_us / 1_000;
         assert!(
             span_ms <= report.wall_clock_ms,
             "a driver span of {span_ms} ms inside {} ms of wall clock",
             report.wall_clock_ms
+        );
+
+        // D16's one engine-filled field, and the subtraction the two clocks above name.
+        // Both terms come from somewhere other than the line under test: the 240 ms is this
+        // `TickingClock`'s own arithmetic, asserted five lines up, and the span is the
+        // driver's, carried out of the muxer in `webcam-handler-imaging`. A literal here
+        // would silently encode the fake's frame-synthesis interval, which is not this
+        // test's number to own (notes **N252**, **N297**).
+        let wall_us = i64::try_from(report.wall_clock_ms).expect("a wall clock fits") * 1_000;
+        assert_eq!(
+            report.stats.wall_clock_skew_us,
+            Some(wall_us - i64::try_from(span_us).expect("a span fits")),
+            "D16's skew is the engine's {} ms against the driver's {span_us} us",
+            report.wall_clock_ms
+        );
+    }
+
+    #[test]
+    fn a_take_that_spanned_nothing_reports_no_skew_rather_than_a_skew_of_zero() {
+        // AGENTS rule 6, and note **N297**: a skew against no span is not a quantity, so it
+        // is absent rather than zero — a `--json` consumer proving a forwarded camera must be able to tell
+        // "the driver's clock said nothing" from "the two clocks agreed exactly", and a
+        // zero is the one answer that cannot say which happened.
+        //
+        // A budget of 50 on a clock that ticks 40: `begin` reads 0, the first turn reads 40
+        // and takes a frame, the second reads 80 and is past the budget. One frame spans no
+        // interval, so `summary.span_us` is `None` and the skew has nothing to subtract from.
+        let scratch = Scratch::new();
+        let path = scratch.path("one-frame.avi");
+        let clock = TickingClock::new(40);
+        let mut camera = camera_from("chicony-rgb");
+        let report = run(
+            camera.as_mut(),
+            &request(&path, Some(50)),
+            &mut OnDisk,
+            &clock,
+            Stamp::epoch(),
+        )
+        .expect("records");
+
+        assert_eq!(
+            report.summary.frames_written, 1,
+            "the fixture is a one-frame take"
+        );
+        assert_eq!(report.summary.span_us, None, "one frame spans no interval");
+        assert_eq!(
+            report.stats.wall_clock_skew_us, None,
+            "a skew against no span was reported as a quantity"
+        );
+        // What stops the `None` above reading as pass for the wrong reason: a take that
+        // never ran at all also has no span, and this take demonstrably ran.
+        assert!(
+            report.wall_clock_ms > 0,
+            "the take took no time on the engine's own clock, so the absence above is about \
+             a recording that never happened rather than about a span of one frame"
+        );
+        assert_eq!(
+            report.stats.frames_delivered, 1,
+            "the accumulator saw a different take from the container"
         );
     }
 

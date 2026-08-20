@@ -1330,16 +1330,42 @@ fn stream_once(camera: &mut dyn Camera, cycle: u32, log: &mut ArmLog<'_>) -> Str
         }
     };
 
+    // D16's frame accounting rides whatever backend is in front of us, which is the whole
+    // point of running it from here: `FRAMES_PER_CYCLE` was sized for exactly this claim,
+    // and until this ledger existed the two fields were asserted against one backend only
+    // (note **N290**).
+    let mut ledger = FrameLedger::new();
+    let mut cut_short = false;
     for index in 0..FRAMES_PER_CYCLE {
         let deadline = Instant::now() + Duration::from_millis(limits::FRAME_DEADLINE_MS);
         match camera.next_frame(deadline) {
-            Ok(frame) => check_frame(&frame, &negotiated, index, log),
+            Ok(frame) => {
+                check_frame(&frame, &negotiated, index, log);
+                ledger.push(&frame);
+            }
             Err(error) => {
                 log.fail(format!(
                     "next_frame() failed on cycle {cycle} frame {index}: {error}"
                 ));
+                cut_short = true;
                 break;
             }
+        }
+    }
+    // For a cycle that *ran*, unconditionally: a short cycle is a breach in its own words
+    // rather than a silent one, so a build that collected fewer frames cannot turn this
+    // contract off without saying so.
+    //
+    // For a cycle a refusal cut short, nothing — and that is AGENTS rule 7 rather than
+    // tidiness (note **N298**). The dominant real trigger for a short cycle is not a lowered
+    // `FRAMES_PER_CYCLE`; it is a camera somebody else grabbed between two frames, or a
+    // deadline, or a device that left. The refusal above already says so in the right words,
+    // and adding "nothing was asked of `Frame::sequence` or `Frame::timestamp_us`" on top of
+    // it would answer an availability failure with a claim about what the device can do —
+    // the same conversion N138 took out of `arm_explicit_request` four hundred lines up.
+    if !cut_short {
+        for breach in ledger.breaches() {
+            log.fail(format!("on cycle {cycle}, {breach}"));
         }
     }
 
@@ -1400,6 +1426,118 @@ fn check_frame(frame: &Frame, negotiated: &NegotiatedStream, index: u32, log: &m
                 frame.bytes_per_line
             )
         });
+    }
+}
+
+/// D16's two frame fields, accounted across one stream cycle — the one home for the claim.
+///
+/// [`schema::capture::Frame::sequence`] and [`schema::capture::Frame::timestamp_us`] are the
+/// only two things a consumer proving a forwarded camera reads about delivery (design D16),
+/// and they are the *driver's* numbers rather than ours. So the rule about them lives here,
+/// where the battery's stream arm asserts it against whichever backend is in front of it,
+/// and the hardware and vivid stream arms push into the same ledger rather than keeping a
+/// second copy of it (design §2.10, and §2.11's "ask of every backend contract which arm of
+/// the battery would fail if one side stopped honouring it").
+///
+/// **Two claims, and no more than two.** A cycle's frames must advance the sequence at
+/// least once and must advance the driver's clock at least once. Everything past that is a
+/// *measurement* rather than a contract, and [`schema::video::StreamStats`] is where
+/// measurements go.
+///
+/// **What it deliberately does not claim.** A sequence that goes backwards is a driver
+/// restarting its counter, which `StreamStats::sequence_resets` carries as data and which
+/// AGENTS rule 6 forbids this ledger from calling four billion dropped frames; a sequence
+/// that repeats is the same finding. A *clock* that goes backwards is the same shape one
+/// field over: `StreamStats::clock_reversals` counts it, its own doc calls it "a finding
+/// about the host, not noise", and D16's last bullet leaves deciding what a finding means
+/// to the consumer — so this ledger does not call it a breach either, whatever the
+/// sequence beside it did. Making it one would give one device event two incompatible
+/// answers: a counted measurement on the wire and a hard failure here, and on a rig whose
+/// uvcvideo timestamps go non-monotonic the R3 stream arm, the R2 vivid arm and the
+/// conformance battery would all go red for the wrong reason at once (note **N298**). Any
+/// of the three may happen inside a cycle without a breach, so long as the cycle as a
+/// whole moved — the weakest claim that still goes red when a backend stops filling the
+/// field at all.
+#[derive(Debug, Default)]
+pub struct FrameLedger {
+    /// One `(sequence, timestamp_us)` per frame, in delivery order.
+    marks: Vec<(u32, i64)>,
+}
+
+impl FrameLedger {
+    /// A ledger for one start→frames→stop cycle. One per cycle, because a driver may
+    /// legitimately restart both numbers at `STREAMON` and D16's claims are per-stream.
+    #[must_use]
+    pub fn new() -> FrameLedger {
+        FrameLedger { marks: Vec::new() }
+    }
+
+    /// Record what one frame said about its own delivery.
+    ///
+    /// The bytes are never read and never held: a frame may contain a person (rubric A12),
+    /// and two integers are the whole of what D16 is about.
+    pub fn push(&mut self, frame: &Frame) {
+        self.marks.push((frame.sequence, frame.timestamp_us));
+    }
+
+    /// Every way this cycle broke D16's frame contract, one sentence each; empty when it
+    /// honoured it.
+    ///
+    /// A cycle with fewer than two frames in it is itself a breach rather than a quiet pass:
+    /// both claims below are read across *consecutive* frames, so a caller that stopped
+    /// collecting would otherwise turn this whole contract off without a word (AGENTS: no
+    /// skip that reads as pass). That is a claim about a cycle that *ran*, which is why
+    /// `stream_once` asks only about cycles a refusal did not cut short — a device somebody
+    /// else grabbed mid-cycle has not told us anything about `Frame::sequence` (AGENTS
+    /// rule 7, and note **N298**).
+    #[must_use]
+    pub fn breaches(&self) -> Vec<String> {
+        let mut breaches = Vec::new();
+        if self.marks.len() < 2 {
+            breaches.push(format!(
+                "a stream cycle delivered {} frame(s), so nothing was asked of \
+                 `Frame::sequence` or `Frame::timestamp_us`: D16 reads both across \
+                 consecutive frames, and a cycle with no pair in it asserts neither",
+                self.marks.len()
+            ));
+            return breaches;
+        }
+
+        if !self.marks.windows(2).any(|pair| pair[1].0 > pair[0].0) {
+            breaches.push(format!(
+                "the driver's sequence number never advanced across {} frames of one stream \
+                 (it read {}): D16 reads a gap in `Frame::sequence` as dropped frames, so a \
+                 field that never moves reports every take as perfect",
+                self.marks.len(),
+                self.sequences()
+            ));
+        }
+        if !self.marks.windows(2).any(|pair| pair[1].1 > pair[0].1) {
+            breaches.push(format!(
+                "the driver's timestamp never advanced across {} frames of one stream (it \
+                 read {} us): D16 reads `Frame::timestamp_us` as the driver's own clock, so \
+                 a field that never moves makes every frame interval zero",
+                self.marks.len(),
+                self.timestamps()
+            ));
+        }
+        breaches
+    }
+
+    fn sequences(&self) -> String {
+        self.marks
+            .iter()
+            .map(|(sequence, _)| sequence.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn timestamps(&self) -> String {
+        self.marks
+            .iter()
+            .map(|(_, timestamp)| timestamp.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -1483,6 +1621,12 @@ fn arm_fault_menu(_backend: &dyn CameraBackend, _log: &mut ArmLog<'_>) -> ArmOut
 
 /// How many frames each stream cycle takes. Two would prove the sequence advances; three
 /// leaves room for the first to be the odd one out \[PF:11\].
+///
+/// That sizing is the reason [`FrameLedger`] is pushed from [`stream_once`]: the constant was
+/// written for D16's frame accounting and the accounting was not there to use it, so this
+/// number described an assertion nobody had written (note **N290**). Two frames is now the
+/// floor the ledger itself enforces, and lowering this constant to it would make the
+/// odd-first-frame allowance disappear rather than the claim.
 const FRAMES_PER_CYCLE: u32 = 3;
 
 /// How far past a control's maximum the PF:6 probe writes. Far enough that no step
@@ -2456,6 +2600,135 @@ mod tests {
     use schema::error::Result;
 
     use super::*;
+
+    /// One frame carrying nothing but what [`FrameLedger`] reads, so the ledger's own suite
+    /// constructs its inputs rather than borrowing a backend's (AGENTS: expectations come
+    /// from committed tables or independent derivations, never from the thing under test).
+    fn marked(sequence: u32, timestamp_us: i64) -> Frame {
+        Frame {
+            bytes: vec![0xff, 0xd8],
+            pixel_format: PixelFormat::MJPG,
+            width: 2,
+            height: 2,
+            bytes_per_line: 0,
+            sequence,
+            timestamp_us,
+        }
+    }
+
+    fn ledger_over(marks: &[(u32, i64)]) -> FrameLedger {
+        let mut ledger = FrameLedger::new();
+        for &(sequence, timestamp_us) in marks {
+            ledger.push(&marked(sequence, timestamp_us));
+        }
+        ledger
+    }
+
+    #[test]
+    fn a_cycle_whose_two_fields_both_advance_breaches_nothing() {
+        // The positive direction, and it has to be first: every arm below asserts a
+        // *specific* sentence, and a ledger that complained about an honest cycle would make
+        // all of them red for the wrong reason.
+        assert_eq!(
+            ledger_over(&[(7, 1_000), (8, 34_333), (9, 67_666)]).breaches(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_sequence_gap_is_not_a_breach_because_it_is_the_finding_d16_exists_to_carry() {
+        // The distinction the whole surface rests on: a gap is dropped frames, which is a
+        // *measurement* `StreamStats::frames_dropped` reports and never a contract
+        // violation. A ledger that refused a gap would make `Fault::FrameGap` unusable and
+        // turn a lossy link into a broken backend.
+        assert_eq!(
+            ledger_over(&[(0, 0), (4, 133_332), (5, 166_665)]).breaches(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_driver_restarting_its_counter_mid_cycle_is_a_reset_and_not_four_billion_drops() {
+        // AGENTS rule 6, and `StreamStats::sequence_resets`' own doc: a backwards or repeated
+        // sequence number is a driver doing something else, carried as data. So long as the
+        // cycle moved somewhere, the ledger says nothing — the weakest claim that still goes
+        // red when a backend stops filling the field at all.
+        assert_eq!(
+            ledger_over(&[(9, 0), (0, 33_333), (1, 66_666)]).breaches(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ledger_over(&[(9, 0), (9, 33_333), (10, 66_666)]).breaches(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_backend_that_stopped_advancing_the_sequence_breaches_the_frame_contract() {
+        // The defect this ledger was written for: `webcam-handler-v4l2` plumbs
+        // `Frame::sequence` out of the dequeued buffer, and until this arm existed nothing
+        // above the ioctl decoder would have noticed it going constant (note **N290**).
+        let breaches = ledger_over(&[(3, 0), (3, 33_333), (3, 66_666)]).breaches();
+        assert_eq!(breaches.len(), 1, "{breaches:?}");
+        assert!(
+            breaches[0].contains("never advanced")
+                && breaches[0].contains("reports every take as perfect"),
+            "{breaches:?}"
+        );
+    }
+
+    #[test]
+    fn a_backend_that_stopped_converting_the_driver_timestamp_breaches_the_frame_contract() {
+        // The other half of the same plumbing, and the one that decides every interval the
+        // accumulator computes: a constant clock makes each frame interval zero, which reads
+        // as a stream of infinite quality rather than as a field nobody filled.
+        let breaches = ledger_over(&[(3, 900), (4, 900), (5, 900)]).breaches();
+        assert_eq!(breaches.len(), 1, "{breaches:?}");
+        assert!(
+            breaches[0].contains("never advanced")
+                && breaches[0].contains("makes every frame interval zero"),
+            "{breaches:?}"
+        );
+    }
+
+    #[test]
+    fn a_clock_that_reverses_under_an_advancing_sequence_is_a_measurement_and_not_a_breach() {
+        // The claim this ledger deliberately does not make, asserted so that re-adding it is
+        // red rather than quiet (note **N298**). `StreamStats::clock_reversals` counts this
+        // exact event — "a finding about the host, not noise", its own doc says — and D16's
+        // last bullet leaves deciding what a finding means to the consumer. A ledger that
+        // called it a breach would answer one device event two incompatible ways: a counted
+        // measurement on the wire and a hard failure here.
+        assert_eq!(
+            ledger_over(&[(3, 0), (4, 33_333), (5, 20_000)]).breaches(),
+            Vec::<String>::new()
+        );
+        // And the direction that stops the line above reading as pass for the wrong reason:
+        // the same reversal with *nothing* else advancing is still a breach, because then no
+        // pair advanced the clock at all.
+        let breaches = ledger_over(&[(3, 33_333), (4, 20_000), (5, 10_000)]).breaches();
+        assert_eq!(breaches.len(), 1, "{breaches:?}");
+        assert!(
+            breaches[0].contains("makes every frame interval zero"),
+            "{breaches:?}"
+        );
+    }
+
+    #[test]
+    fn a_cycle_too_short_to_hold_a_pair_says_so_rather_than_passing_quietly() {
+        // AGENTS: no skip that reads as pass. Both claims are read across consecutive
+        // frames, so a caller that lowered its frame count would otherwise switch this whole
+        // contract off without a word — which is exactly how `FRAMES_PER_CYCLE` came to
+        // describe an assertion nobody had written.
+        for marks in [&[][..], &[(0, 0)][..]] {
+            let breaches = ledger_over(marks).breaches();
+            assert_eq!(breaches.len(), 1, "{marks:?}: {breaches:?}");
+            assert!(
+                breaches[0].contains("asserts neither"),
+                "{marks:?}: {breaches:?}"
+            );
+        }
+    }
 
     /// A backend that exists to be *wrong* in one dimension at a time.
     ///

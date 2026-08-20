@@ -30,9 +30,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # The per-crate postures design §2.8 states. Each named crate must be *present* in the
 # graph: a posture rule about a crate that has silently left the tree is a rule that can
 # no longer fail, so its absence is a violation rather than a pass.
+# `features-off` names the features rather than the *set* they arrive in, because a ban on
+# a defect names the class and not one spelling of it (AGENTS: N249, rubric A17). Asking
+# only whether `default` was on left `avif` — the feature that drags the AV1 encoder — one
+# explicit `features = ["avif"]` away from arriving green (note **N294**).
 policy='[
   { "name": "v4l",   "rule": "subset-of-default" },
-  { "name": "image", "rule": "default-off" }
+  { "name": "image", "rule": "features-off",
+    "features": ["default", "default-formats", "avif", "avif-native"] }
 ]'
 
 # Deliberately over-broad. A feature or crate name carrying `tls`/`ssl` that turns out to
@@ -41,10 +46,19 @@ policy='[
 tls_name_pattern='^(rustls|rustls-[a-z0-9_-]+|native-tls|openssl|openssl-sys|openssl-probe|webpki|webpki-roots|tokio-rustls|tokio-native-tls|hyper-rustls|hyper-tls|schannel|security-framework)$'
 tls_feature_pattern='tls|ssl'
 
+# The same wall, for the AV1 stack `image`'s `avif` feature reaches (design D17: the
+# `avif` -> rav1e drag "is the trap `feature-posture.sh` exists for"). A crate wall beside
+# the feature wall because they fail differently: a feature ban catches this workspace
+# turning `avif` on, and a name wall catches an AV1 encoder arriving through anybody else's
+# default set — the resolved graph is what both read. Over-broad on purpose, and an
+# innocent match is resolved by a recorded note the way a TLS one is.
+av1_name_pattern='^(rav1e|ravif|dav1d|dav1d-sys|libdav1d-sys|aom|aom-sys|avif-serialize|avif-parse)$'
+
 findings="$(gate_metadata | jq -r \
     --argjson policy "$policy" \
     --arg tlsname "$tls_name_pattern" \
-    --arg tlsfeat "$tls_feature_pattern" '
+    --arg tlsfeat "$tls_feature_pattern" \
+    --arg av1name "$av1_name_pattern" '
     # The transitive closure of a package s own `default` feature, restricted to real
     # features (entries of the form "dep:x" and "x/y" name other crates, not features
     # of this one).
@@ -75,10 +89,11 @@ findings="$(gate_metadata | jq -r \
                 | if ($extra | length) > 0 then
                     "VIOLATION\t\($p.name) \($p.version) has non-default feature(s) enabled: \($extra | join(", "))"
                   else empty end
-              elif $rule.rule == "default-off" then
-                if ($on | index("default")) != null then
-                  "VIOLATION\t\($p.name) \($p.version) has its default feature set enabled"
-                else empty end
+              elif $rule.rule == "features-off" then
+                ( ( $rule.features // [] ) - ( ( $rule.features // [] ) - $on ) ) as $banned
+                | if ($banned | length) > 0 then
+                    "VIOLATION\t\($p.name) \($p.version) has banned feature(s) enabled: \($banned | join(", "))"
+                  else empty end
               else
                 "VIOLATION\tunknown posture rule \($rule.rule) for \($rule.name)"
               end
@@ -90,6 +105,10 @@ findings="$(gate_metadata | jq -r \
     , ( $enabled | to_entries[] | .key as $id | .value[]
         | select(test($tlsfeat; "i"))
         | "VIOLATION\tTLS-shaped feature \($pkgs[$id].name // $id)/\(.) is enabled" )
+
+    # --- the AV1 wall -----------------------------------------------------------
+    , ( $pkgs[] | select(.name | test($av1name))
+        | "VIOLATION\tAV1 codec crate \(.name) \(.version) is in the graph" )
     )
 ')"
 

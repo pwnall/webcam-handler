@@ -1335,6 +1335,12 @@ fn hw_a_stream_negotiates_delivers_frames_and_stops_twice_over() {
                 Err(error) => panic!("{}: start_stream on cycle {cycle} failed: {error}", info.id),
             };
 
+            // D16's two frame fields, read by the same ledger the conformance battery pushes
+            // into. Until it existed the contract was asserted against the fake alone, which
+            // is docs/11 H1's shape verbatim: a rule enforced by one backend and violated by
+            // the other was green on both (note **N290**). The ledger is per cycle because a
+            // driver may restart both counters at `STREAMON`.
+            let mut ledger = battery::FrameLedger::new();
             for index in 0..FRAMES_PER_HARDWARE_CYCLE {
                 let deadline =
                     Instant::now() + Duration::from_millis(schema::limits::FRAME_DEADLINE_MS);
@@ -1344,6 +1350,7 @@ fn hw_a_stream_negotiates_delivers_frames_and_stops_twice_over() {
                         info.id
                     )
                 });
+                ledger.push(&frame);
 
                 assert_eq!(
                     frame.pixel_format, negotiated.pixel_format,
@@ -1373,6 +1380,14 @@ fn hw_a_stream_negotiates_delivers_frames_and_stops_twice_over() {
                     );
                 }
             }
+
+            let breaches = ledger.breaches();
+            assert!(
+                breaches.is_empty(),
+                "{}: cycle {cycle} broke D16's frame contract: {}",
+                info.id,
+                breaches.join("; ")
+            );
 
             camera.stop_stream().unwrap_or_else(|error| {
                 panic!("{}: stop on cycle {cycle} failed: {error}", info.id)
@@ -2185,6 +2200,60 @@ fn hw_a_short_recording_from_every_attached_camera_is_read_back_by_two_third_par
             info.id
         );
 
+        // ---- D16's delivery record, which is what docs/13's P8a terminal rung asks this arm
+        // for: "one R3 recording arm re-run to record real stats on a healthy camera (the
+        // numbers are evidence, not assertions — orderings only)". The numbers were being
+        // computed and thrown away — a previous run of this arm saw two of the three attached
+        // cameras drop a frame each and could not say whether that was one gap event or two,
+        // what the interval spread was, or whether the driver's clock reset (note **N293**).
+        //
+        // Three orderings, and no threshold: a bound on jitter or drops would be this arm
+        // deciding what "healthy" means on somebody else's desk, which is the one thing D16
+        // says belongs to the consumer.
+        //
+        // **The first two are structural rather than about the driver, and saying so is the
+        // point** (note **N298**): both muxers push into the accumulator on the line after
+        // they increment `frames_written`, and `engine::record::finish` reads both numbers
+        // off that one accumulator, so no camera on this desk can separate them. They go red
+        // when a build grows a second home for the arithmetic, and a reader of this
+        // transcript should not count them as device evidence. The third is the one the
+        // cameras answer.
+        let stats = &report.stats;
+        assert_eq!(
+            stats.frames_delivered,
+            u64::from(report.summary.frames_written),
+            "{}: the accumulator counted a frame the container refused, or missed one it \
+             took — the accumulator saw {} frame(s) and the container holds {}",
+            info.id,
+            stats.frames_delivered,
+            report.summary.frames_written
+        );
+        // Two readings of one accumulator, which is `RecordReport::stats`' own sentence:
+        // `RecordingSummary::dropped_frames` and this are the same count reported twice, so a
+        // build in which they can disagree has grown a second home for the gap arithmetic.
+        assert_eq!(
+            report.summary.dropped_frames, stats.frames_dropped,
+            "{}: the summary and the stats disagree about how many frames the driver's \
+             sequence numbers say never arrived",
+            info.id
+        );
+        // Every consecutive pair of frames is either an interval or a clock reversal, and
+        // there are one fewer pairs than frames. Derived from D16's stated semantics rather
+        // than from the accumulator: `StreamStats`' own doc says a frame that arrives no
+        // later than the one before it contributes no interval, and this is that sentence
+        // with the arithmetic closed over it.
+        let observed = stats.intervals.map_or(0, |intervals| intervals.observed);
+        assert_eq!(
+            observed + u64::from(stats.clock_reversals) + 1,
+            stats.frames_delivered,
+            "{}: {} interval(s) and {} clock reversal(s) do not account for the pairs between \
+             {} delivered frames",
+            info.id,
+            observed,
+            stats.clock_reversals,
+            stats.frames_delivered
+        );
+
         println!(
             "{}: {} {}x{} — {} frame(s), {} bytes, declared {} us/frame ({:?}); file duration \
              {declared_ms} ms, driver span {span_ms} ms, engine wall clock {wall_ms} ms, this \
@@ -2200,6 +2269,35 @@ fn hw_a_short_recording_from_every_attached_camera_is_read_back_by_two_third_par
             report.summary.interval_source,
             report.summary.dropped_frames,
             report.ended
+        );
+        println!(
+            "{}: D16 stats — {} delivered, {} dropped in {} gap event(s), {} sequence reset(s), \
+             {} clock reversal(s); intervals {}; wall-clock skew {}",
+            info.id,
+            stats.frames_delivered,
+            stats.frames_dropped,
+            stats.gap_events,
+            stats.sequence_resets,
+            stats.clock_reversals,
+            stats.intervals.map_or_else(
+                || "none (a take of fewer than two usable frames)".to_owned(),
+                |i| format!(
+                    "{} observed / {} retained, mean {} us, min {} us, max {} us, p50 {} us, \
+                     p99 {} us, jitter {} us",
+                    i.observed,
+                    i.retained,
+                    i.mean_us,
+                    i.min_us,
+                    i.max_us,
+                    i.p50_us,
+                    i.p99_us,
+                    i.jitter_us
+                )
+            ),
+            stats.wall_clock_skew_us.map_or_else(
+                || "none (this take spanned nothing)".to_owned(),
+                |skew| format!("{skew} us")
+            )
         );
 
         // ---- the oracles

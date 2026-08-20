@@ -373,7 +373,7 @@ impl<W: Write + Seek> Recorder<W> {
 mod tests {
     use std::io::Cursor;
 
-    use schema::video::IntervalSource;
+    use schema::video::{IntervalSource, StreamStats};
 
     use super::*;
     use crate::decode::SourceFormat;
@@ -436,11 +436,15 @@ mod tests {
     }
 
     /// Run a whole recording over an in-memory sink.
+    ///
+    /// The stats come out beside the summary because `finish` consumes the recorder and
+    /// D16's delivery record and the container's own count are two answers about one take
+    /// (`Recorder::stats`' own sentence).
     fn record(
         container: VideoFormat,
         caps: RecordingCaps,
         frames: &[Frame],
-    ) -> (Vec<u8>, Vec<FrameOutcome>, RecordingSummary) {
+    ) -> (Vec<u8>, Vec<FrameOutcome>, RecordingSummary, StreamStats) {
         let mut file = Vec::new();
         let mut recorder =
             Recorder::begin(container, Cursor::new(&mut file), params(container, caps))
@@ -450,8 +454,9 @@ mod tests {
             .iter()
             .map(|frame| recorder.write_frame(frame).expect("write_frame"))
             .collect();
+        let stats = recorder.stats();
         let summary = recorder.finish().expect("finish");
-        (file, outcomes, summary)
+        (file, outcomes, summary, stats)
     }
 
     #[test]
@@ -567,8 +572,8 @@ mod tests {
                 .collect();
             // The size one frame costs this container, measured rather than predicted: a
             // one-frame recording's own byte count is the only number that works for both.
-            let (_, _, one) = record(container, generous_caps(), &frames[..1]);
-            let (_, _, two) = record(container, generous_caps(), &frames[..2]);
+            let (_, _, one, _) = record(container, generous_caps(), &frames[..1]);
+            let (_, _, two, _) = record(container, generous_caps(), &frames[..2]);
             let per_frame = two.bytes_written - one.bytes_written;
 
             for &cap in CapReached::ALL {
@@ -591,7 +596,7 @@ mod tests {
                         ..generous_caps()
                     },
                 };
-                let (_, outcomes, summary) = record(container, caps, &frames);
+                let (_, outcomes, summary, stats) = record(container, caps, &frames);
                 assert_eq!(
                     summary.cap_reached,
                     Some(cap),
@@ -610,6 +615,21 @@ mod tests {
                 assert_eq!(
                     summary.frames_written, 2,
                     "{container}/{cap:?} wrote the wrong number of frames"
+                );
+                // **Which side of the cap `StreamStats::frames_delivered` counts on**, held
+                // for every container this build writes rather than for the one an engine
+                // test happened to record into (note **N292**, and note **N298** for why it
+                // is here and not there). Each muxer keeps its own accumulator and pushes
+                // into it from inside its own commit path, past the cap check — so the doc's
+                // "both muxers" is a claim about two independent pieces of code, and a build
+                // that hoisted either push above its cap check would report one more frame
+                // delivered than the file holds. The frame refused above is the one that
+                // makes this askable at all: without a cap the two counts cannot differ.
+                assert_eq!(
+                    stats.frames_delivered,
+                    u64::from(summary.frames_written),
+                    "{container}/{cap:?}: the accumulator counted a frame the container \
+                     refused, or missed one it took"
                 );
                 checked += 1;
             }
@@ -678,7 +698,7 @@ mod tests {
         for &container in VideoFormat::ALL {
             let format = representative(container);
             let frames = [frame(format, 0, 0), frame(format, 1, 50_000)];
-            let (_, _, summary) = record(container, generous_caps(), &frames);
+            let (_, _, summary, _) = record(container, generous_caps(), &frames);
             assert_eq!(summary.span_us, Some(50_000), "{container}");
             assert_eq!(
                 summary.measured_interval_us(),
@@ -707,7 +727,7 @@ mod tests {
         // finding (`schema::video::IntervalSource`'s whole reason for existing).
         for &container in VideoFormat::ALL {
             let format = representative(container);
-            let (_, _, summary) = record(container, generous_caps(), &[frame(format, 0, 0)]);
+            let (_, _, summary, _) = record(container, generous_caps(), &[frame(format, 0, 0)]);
             assert_eq!(summary.span_us, None, "{container}");
             assert_eq!(summary.measured_interval_us(), None, "{container}");
             assert_eq!(
@@ -751,7 +771,7 @@ mod tests {
         // recording recoverable (D7's promise) — and what makes a zero-frame take a file
         // rather than an empty one.
         for &container in VideoFormat::ALL {
-            let (file, outcomes, summary) = record(container, generous_caps(), &[]);
+            let (file, outcomes, summary, _) = record(container, generous_caps(), &[]);
             assert!(outcomes.is_empty());
             assert_eq!(summary.frames_written, 0, "{container}");
             assert_eq!(summary.span_us, None, "{container}");
