@@ -1824,6 +1824,10 @@ mod tests {
                 turns < 1_024,
                 "the cancelled record_start's slot never came back"
             );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a loop that waits for its condition rather than a count of turns that stands in for one; the count is the named escape (N178, N309)"
+            )]
             tokio::task::yield_now().await;
         }
         assert_eq!(
@@ -1886,6 +1890,10 @@ mod tests {
         });
         // One turn of the scheduler is what puts that task *in* the queue rather than merely
         // spawned; it is behind `adopt`, which asked first.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "one turn polls a task this runtime has already accepted onto this thread; nothing off it is being waited for (N309)"
+        )]
         tokio::task::yield_now().await;
         drop(held);
 
@@ -2008,6 +2016,10 @@ mod tests {
                 "the scripted record_stop never reached its wait, so nothing below is ordered \
                  against it"
             );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a loop that waits for its condition rather than a count of turns that stands in for one; the count is the named escape (N178, N309)"
+            )]
             tokio::task::yield_now().await;
         }
         edit(&mut *recordings.0.live.lock().await);

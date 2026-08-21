@@ -1782,18 +1782,44 @@ mod tests {
             "a feed somebody is reading was withdrawn by the take that finished"
         );
         drop(viewer);
-        drop(watchers);
-        // A bounded number of turns of a current-thread runtime, which is what a spawned task
-        // needs to run at all: a build whose `Drop` released a second time removes the now
-        // unwatched feed inside them.
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
+
+        // **What says the second give-back did not happen is the runtime's own count of tasks,
+        // and the count of feeds cannot say it** (note **N309**). A give-back is a *spawned
+        // task*, so a `Drop` that ran one is a task appearing; `#[tokio::test]`'s runtime owns
+        // this thread alone, and there is no `await` between the two readings, so nothing can be
+        // polled — and nothing can therefore be spawned or finish — between them. The difference
+        // is exactly what this `drop` did.
+        //
+        // The feed count was the earlier reading of the same claim and it could not carry it:
+        // `hand_back` revived this feed to a *fresh driver*, that driver is refused by a backend
+        // replaying no cameras, and it then retires the feed on its own. So "still one feed"
+        // held only until the driver's cross-thread round trip finished, and the eight turns of
+        // the scheduler it was given were a stopwatch with the units filed off: it was reported
+        // red once in twelve loaded runs, on a sentence about a double release that a probe of
+        // every give-back path showed had not happened.
+        let runtime = tokio::runtime::Handle::current();
         assert_eq!(
-            previews.feeds(),
+            runtime.metrics().num_workers(),
             1,
+            "this arm reads a task count across a drop, which is exact only on the one-thread \
+             runtime #[tokio::test] gives it"
+        );
+        let alive = runtime.metrics().num_alive_tasks();
+        drop(watchers);
+        assert_eq!(
+            runtime.metrics().num_alive_tasks(),
+            alive,
             "the claim was given back twice, and the second release is a second driver"
         );
+
+        // And the driver `hand_back` handed this feed to is a real one rather than a value in a
+        // log line: nothing else is left that can retire the feed, so the count reaching zero is
+        // that driver reaching the device. Waited for rather than polled, for the first half's
+        // reason.
+        feeds
+            .wait_for(|open| *open == 0)
+            .await
+            .expect("the fan-out's own count, which this registry owns for its whole life");
     }
 
     #[tokio::test]

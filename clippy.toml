@@ -7,6 +7,15 @@ disallowed-methods = [
     { path = "v4l::device::Device::query_controls", reason = "panics on unknown control types (PF:1); use the raw QUERY_EXT_CTRL layer in crates/backends/v4l2/src/sys/" },
     # A sleep is a flake being scheduled — settle logic runs on a stepped clock.
     { path = "std::thread::sleep", reason = "no sleeps as synchronization (rubric Part C); use the stepped clock or a condvar" },
+    # A *turn of the scheduler* is the same defect in the units a sleep does not have, so the
+    # ban names the class rather than the one spelling of it (note **N309**, rubric A17). A
+    # fixed count of turns is exact only for something that runs on this runtime and this
+    # thread; for anything reached across a thread — an actor, a device, a socket — it is a
+    # stopwatch, and it loses under load. Every legitimate site takes a narrow `#[expect]`
+    # whose reason says which of the two it is, which is N3's auditable-exception shape.
+    { path = "tokio::task::yield_now", reason = "a fixed count of scheduler turns is a sleep with the units filed off (N309); wait on the thing itself, or take the exception and say why the turns are exact" },
+    { path = "tokio::task::consume_budget", reason = "a fixed count of scheduler turns is a sleep with the units filed off (N309); wait on the thing itself, or take the exception and say why the turns are exact" },
+    { path = "std::thread::yield_now", reason = "a fixed count of scheduler turns is a sleep with the units filed off (N309); wait on the thing itself, or take the exception and say why the turns are exact" },
     { path = "std::process::exit", reason = "exit only from main, so destructors and the state lock release (rubric)" },
 ]
 

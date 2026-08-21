@@ -28645,3 +28645,138 @@ home bought with one inference for a reader with no hands. The exit, if the owne
 readers a vocabulary's home does not speak to are the ones that transcribe, and a *generated*
 document is not proof they were all found — the failure table and the selector table are both
 generated, from the same crate, and disagreed with each other.
+
+## N309 — A count of scheduler turns is a sleep with the units filed off, and the arm holding one went red about something that had not happened
+
+**Date:** 2026-08-20. **Subject:**
+`daemon::preview::tests::a_camera_s_frames_come_back_when_the_value_claiming_them_is_dropped`,
+`clippy.toml`'s `disallowed-methods`, and the three `tokio::task::yield_now` sites in
+`crates/daemon/src/record.rs`. **Class:** rule 2 — an arm red for the wrong reason reads as green
+about the right one (rubric A16) — met in the one spelling of "no sleeps as synchronization"
+(note **N3**) that the ban did not name.
+
+The arm is note **N177**'s, and its second half asserts the half of the give-back that is
+correctness rather than tidiness: a `Watchers` whose `hand_back` has already run must not release
+again when its value is dropped, because a second `Previews::release` on a feed the first one
+*revived* finds it `Source::Preview` with readers and starts a second driver on a node V4L2
+allows one streamer on. It asserted that by dropping the value, spending **eight turns of the
+scheduler**, and then reading `Previews::feeds`, on the stated ground that eight turns are "what
+a spawned task needs to run at all". It failed intermittently — once in twelve loaded runs, and
+again once in twenty-one — on the sentence *"the claim was given back twice, and the second
+release is a second driver"*.
+
+**Nothing was given back twice.** The give-back is single, the `handed` atomic does exactly its
+job, and `Drop` returns early on it; what the eight turns were racing was a *legitimate* task the
+arm had itself created three lines earlier. `hand_back` on a feed somebody is reading answers
+`Handed::ToAFreshDriver` and `Previews::give_back` spawns `drive`; that driver asks the camera's
+actor thread for a `VIDIOC_STREAMON`, and this arm's fixture is `FakeBackend::new(Vec::new())` —
+a backend replaying **no cameras** — so the start is refused and `drive` retires the feed itself
+with `Revive::Never`. The feed count therefore reaches zero on every build, correct and mutant
+alike; the only question the eight turns were asking was whether an `open` on another OS thread,
+its refusal, and a `oneshot` back beat eight turns of a current-thread runtime. On an idle host
+it loses and on a loaded one it wins.
+
+**Measured rather than reasoned.** Four `eprintln` probes in the working tree — one at
+`Previews::release`'s removal, one at the top of `Watchers::drop`, and one at each of the two
+places `drive` gives a feed up — and the eight turns replaced by a 500 ms wait, which makes the
+loser win every time:
+
+```
+PROBE watchers-drop handed=false                 <- the first half's Drop, correctly firing
+PROBE release-removes revive=IfWatched readers=0
+PROBE watchers-drop handed=true                  <- the second half's Drop, correctly returning
+PROBE drive-start-refused err=no camera matches "cam:synthetic-basic"
+PROBE release-removes revive=Never readers=0     <- the fresh driver, retiring its own feed
+assertion `left == right` failed: the claim was given back twice, ...  left: 0  right: 1
+```
+
+`handed=true` at the drop under test is the whole finding: the `Drop` did not release, and the
+sentence the arm goes red on describes an act the probe shows did not happen. The product is
+correct and the repair is the test's.
+
+**The repair is a reading with no time in it.** A give-back is a *spawned task*, so a `Drop` that
+performed one is a task appearing — and `#[tokio::test]` runs on a one-thread runtime this test
+body owns, so a reading of `tokio::runtime::RuntimeMetrics::num_alive_tasks` on either side of
+`drop(watchers)`, with no `await` between them, cannot have anything polled, spawned or finished
+between them either. The difference is exactly what the drop did, and the arm reddens in three
+milliseconds instead of after a bet. `num_workers() == 1` is asserted first, with its own
+sentence, because the reading is exact only on that runtime and `#[tokio::test(flavor =
+"multi_thread")]` is one word away. What the feed count is still good for is the *positive* fact
+underneath — that `hand_back` handed this feed to a real driver rather than to a value in a log
+line — so the arm ends on `watch_feeds().wait_for(|open| *open == 0)`, which is the first half's
+own shape: an event waited for, ending in nextest's deadline rather than in a green test that
+asserted nothing.
+
+**The ban names the class rather than this spelling of it** (rubric A17, note **N249**). N3 bans
+`std::thread::sleep` workspace-wide and argues that a global ban with named exceptions is
+auditable where a test-only one is not; a *turn of the scheduler* is the same defect in the units
+a sleep does not have, and nothing banned it. `clippy.toml` now disallows `tokio::task::yield_now`,
+`tokio::task::consume_budget` and `std::thread::yield_now` together — the three ways this
+workspace could spell one turn — with a reason that states the distinction a site has to argue:
+a count of turns is exact for something that runs on *this* runtime and *this* thread, and is a
+stopwatch for anything reached across a thread. The three legitimate sites in `crates/daemon/src/
+record.rs` take a narrow `#[expect(clippy::disallowed_methods, reason = …)]` each, in N3's shape,
+and each reason says which of the two it is: two are loops that wait for their *condition* with
+the turn count as a named escape (note **N178**'s shape), and one is a single turn that polls a
+task this runtime has already accepted onto this thread.
+
+### What was measured
+
+Every mutation was applied in the working tree, run, and reverted; `git status --short` was clean
+after each.
+
+| Mutation | What went red |
+|---|---|
+| `Watchers::drop` without its `handed` guard — a real double release | the arm, in 3 ms, on *"the claim was given back twice, and the second release is a second driver"* (`left: 2, right: 1`) |
+| the arm on `#[tokio::test(flavor = "multi_thread")]` | the precondition, on *"this arm reads a task count across a drop, which is exact only on the one-thread runtime #[tokio::test] gives it"* (`left: 8, right: 1`) |
+| one `#[expect]` removed from `record.rs` | `cargo clippy -D warnings`, with *"use of a disallowed method `tokio::task::yield_now`"* |
+| the eight turns replaced by a 500 ms wait, on the tree as it stood | the arm, 1 run in 1, which is what identified the racer |
+
+The first was run at **workspace** scope as well as at the arm's, because a mutation verified at
+one arm's scope says nothing about what else was covering it. Three arms go red on it: this one,
+and `webcam-handler-daemon::preview`'s
+`a_record_start_refused_after_it_took_the_camera_gives_the_preview_back` and
+`a_take_that_ends_gives_the_camera_back_and_the_tab_keeps_its_own_response`.
+
+**The loaded runs are reported with their load, and one of them refutes a conclusion this note
+could otherwise have drawn** (notes **N69**, **N251**). Six `yes` spinners on eight cores with
+`cargo nextest run -p webcam-handler-daemon -E 'test(/preview::/)' -j 16` is the recipe that
+caught it twice for the reader who reported it; on this host today it caught nothing in 20 runs,
+nor in 200 runs of the arm's own binary under twelve spinners, nor in **25** runs of the
+pre-repair tree under sixteen spinners at `-j 24`. So the post-repair **30** green runs of that
+same harsher recipe, and 25 of `test(/record::/)` beside them, are consistent with the repair and
+are not by themselves evidence of it: the evidence is the probe trace above and the fact that the
+repaired assertion takes no timing input at all.
+
+### The other arms, and what was done about each
+
+`grep -rn yield_now` over the repaired workspace finds three call sites and one prose mention,
+all four of them already read. The three in `crates/daemon/src/record.rs` are the shape this
+defect is not: each waits for a *condition* — a
+slot coming back, a `record_stop` reaching its wait — or advances a task already on this runtime,
+and none of them asserts a negative after a fixed count. They hold 25 runs in 25 at `-j 24` under
+sixteen spinners and are left as they are, with the `#[expect]` that now makes each argument
+auditable. The one in `crates/client/src/remote.rs` is a doc comment saying why that module does
+*not* spin.
+
+**A second class was found in the same sweep and is not this one.** Past roughly four times
+oversubscription — `-p webcam-handler-daemon -j 16` with twelve spinners on eight cores — four
+runs put **fourteen** daemon integration arms red or timed out, five of them in
+`tests/subscriptions.rs`. An earlier reader reported that "two daemon subscription arms flake
+under load" and did not name them (note **N301**'s closing paragraph); this cannot say which two
+were meant, and says instead what all fourteen have in common. Every one of the 41 panics across
+those four runs carries the same answer and no other: `settle_timeout`, *"frames did not settle
+within N ms"* with `waited_ms` between 5 212 and 5 426 and eight to eleven frames seen — a
+**product wall-clock deadline** (`limits::DEFAULT_SETTLE_DEADLINE_MS`, 5 000 ms) missed inside a
+real daemon whose clock no integration test can own, because the host could not deliver the
+frames inside it. That is E3-correct behaviour from the daemon over a starved fixture, not a
+synchronization idiom, and it is a different repair from this one. At the documented parallelism
+with six spinners the same package is green 5 runs in 5. Whether that deadline should be
+reachable at all by a test that drives a real daemon is the owner's, and it is recorded here
+rather than repaired.
+
+**Retires when:** nothing retires the ban. What generalises is the question the eight turns did
+not survive: *when an arm asserts that something did not happen, what makes the moment it looks
+the right one?* A count of turns answers it only when everything that could have happened runs on
+the same thread the count is being made on — and here the racer was on another one, three lines
+above, put there by the arm itself.
